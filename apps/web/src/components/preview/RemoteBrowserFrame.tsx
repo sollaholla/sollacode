@@ -93,6 +93,12 @@ export function RemoteBrowserFrame(props: {
   const zoomView = useRemoteViewZoom();
   const zoomAdjustingRef = useRef(zoomView.adjusting);
   zoomAdjustingRef.current = zoomView.adjusting;
+  useEffect(() => {
+    // The adjust layer swallows the pointer-up that would have completed it,
+    // so a gesture caught mid-flight has to be dropped here or it stays
+    // latched and blocks the next press after the view is locked in.
+    if (zoomView.adjusting) gestureRef.current = null;
+  }, [zoomView.adjusting]);
   const frameRef = useRef<PreviewRemoteSnapshotResult | null>(null);
   frameRef.current = frame;
   const gestureRef = useRef<ActiveGesture | null>(null);
@@ -225,6 +231,9 @@ export function RemoteBrowserFrame(props: {
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // A drag already in flight when the mode was entered must not keep
+    // reporting; the gesture is finished by handlePointerCancel instead.
+    if (zoomAdjustingRef.current) return;
     const gesture = gestureRef.current;
     if (gesture === null || gesture.pointerId !== event.pointerId) return;
     const point = {
@@ -242,6 +251,13 @@ export function RemoteBrowserFrame(props: {
   };
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (zoomAdjustingRef.current) {
+      // Abandon a gesture that was in flight when the mode was entered rather
+      // than returning early and leaving it latched: gestureRef would stay set
+      // and the next real press would be rejected as "already dragging".
+      if (gestureRef.current?.pointerId === event.pointerId) gestureRef.current = null;
+      return;
+    }
     const gesture = gestureRef.current;
     if (gesture === null || gesture.pointerId !== event.pointerId) return;
     gestureRef.current = null;
@@ -287,7 +303,11 @@ export function RemoteBrowserFrame(props: {
     // scrolling underneath the frame needs a non-passive native listener.
     const onWheel = (event: WheelEvent) => {
       if (frameRef.current === null) return;
+      // Still swallow the event so the panel behind does not scroll, but send
+      // nothing: a trackpad scroll while the view is being adjusted belongs to
+      // the viewer, not to the page they are looking at.
       event.preventDefault();
+      if (zoomAdjustingRef.current) return;
       wheelAccumulatorRef.current = {
         x: wheelAccumulatorRef.current.x + event.deltaX,
         y: wheelAccumulatorRef.current.y + event.deltaY,
@@ -305,6 +325,7 @@ export function RemoteBrowserFrame(props: {
   }, [contentGeometry, visible]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (zoomAdjustingRef.current) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.target !== event.currentTarget) return;
     if (FORWARDED_PRESS_KEYS.has(event.key) || event.key.length === 1) {

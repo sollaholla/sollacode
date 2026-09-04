@@ -11,6 +11,7 @@ import {
   requestPointerLockIfSupported,
   shouldForwardEscapeOnPointerUnlock,
   shouldForwardRemoteSurfaceInput,
+  type RemoteControlSurfaceInputKind,
 } from "./remoteControlInput";
 
 describe("requestPointerLockIfSupported", () => {
@@ -211,5 +212,55 @@ describe("objectContainContentRect", () => {
   it("falls back to the element rect when intrinsic size is unknown", () => {
     const element = { left: 0, top: 0, width: 800, height: 600 };
     expect(objectContainContentRect(element, { width: 0, height: 0 })).toBe(element);
+  });
+});
+
+describe("shouldForwardRemoteSurfaceInput while the view is being adjusted", () => {
+  // Panning and dragging on the remote machine are the same gesture. The mode
+  // is only safe if the gate refuses EVERYTHING, including the two cases that
+  // otherwise forward regardless of capture - a pointer-down, which normally
+  // forwards so a click can take focus, and the pointer-up completing a press
+  // already in flight.
+  const kinds = [
+    "pointer-down",
+    "pointer-move",
+    "pointer-up",
+    "wheel",
+    "key",
+  ] as const satisfies readonly RemoteControlSurfaceInputKind[];
+
+  for (const kind of kinds) {
+    it(`refuses ${kind}`, () => {
+      expect(
+        shouldForwardRemoteSurfaceInput({
+          viewAdjusting: true,
+          capabilityGranted: true,
+          inputCaptured: true,
+          kind,
+          hasActivePointerPress: true,
+        }),
+      ).toBe(false);
+    });
+  }
+
+  it("still forwards once the view is locked in", () => {
+    expect(
+      shouldForwardRemoteSurfaceInput({
+        viewAdjusting: false,
+        capabilityGranted: true,
+        inputCaptured: true,
+        kind: "pointer-move",
+      }),
+    ).toBe(true);
+  });
+
+  it("is absent by default, so every existing caller is unaffected", () => {
+    expect(
+      shouldForwardRemoteSurfaceInput({
+        capabilityGranted: true,
+        inputCaptured: true,
+        kind: "pointer-down",
+      }),
+    ).toBe(true);
   });
 });

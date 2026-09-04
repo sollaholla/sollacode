@@ -60,6 +60,32 @@ describe("remote view zoom wiring", () => {
     ).toContain("imageRef.current");
   });
 
+  it("gates every one of the mirror's input paths, not just the obvious one", () => {
+    // The mirror sends on four separate paths and they do not share a gate:
+    // pointer down/move/up are React handlers, wheel is a NATIVE non-passive
+    // listener registered in an effect, and keys are their own handler. Gating
+    // only pointer-down still let a trackpad scroll and a keystroke through to
+    // the page while the viewer was moving their own picture around.
+    const source = read("preview", "RemoteBrowserFrame.tsx");
+    const handlers = [
+      "const handlePointerDown",
+      "const handlePointerMove",
+      "const handlePointerUp",
+      "const handleKeyDown",
+      "const onWheel",
+    ];
+    for (const handler of handlers) {
+      const start = source.indexOf(handler);
+      expect(start, `${handler} is gone; this check is stale`).toBeGreaterThan(-1);
+      const body = source.slice(start, start + 700);
+      expect(
+        body,
+        `${handler} dispatches to the desktop tab without checking whether the viewer is ` +
+          `adjusting their own view`,
+      ).toContain("zoomAdjustingRef.current");
+    }
+  });
+
   it("writes arbitrary media variants Tailwind can actually compile", () => {
     // Tailwind turns `_` into a space. Written without them, the condition
     // reaches the stylesheet as `(orientation:landscape)and(max-height:34rem)`,
