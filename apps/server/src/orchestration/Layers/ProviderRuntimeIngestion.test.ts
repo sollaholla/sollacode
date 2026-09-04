@@ -777,11 +777,12 @@ describe("ProviderRuntimeIngestion", () => {
     });
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provide(
-        Layer.succeed(ProviderRuntimeIngestionOptions, {
-          ...(options?.failoverHandoffAdmissionTimeoutMs === undefined
+        Layer.succeed(
+          ProviderRuntimeIngestionOptions,
+          options?.failoverHandoffAdmissionTimeoutMs === undefined
             ? {}
-            : { failoverHandoffAdmissionTimeoutMs: options.failoverHandoffAdmissionTimeoutMs }),
-        }),
+            : { failoverHandoffAdmissionTimeoutMs: options.failoverHandoffAdmissionTimeoutMs },
+        ),
       ),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),

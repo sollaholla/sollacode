@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - The native helper is an OS process, not an Effect service.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
-import * as NodeFs from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 
 import type {
   DesktopVoiceTranscriptionInput,
@@ -97,11 +97,11 @@ async function ensureDevelopmentHelper(
     );
     const outputDirectory = environment.path.join(environment.stateDir, "native-helpers");
     const outputPath = environment.path.join(outputDirectory, HELPER_NAME);
-    await NodeFs.mkdir(outputDirectory, { recursive: true });
+    await NodeFSP.mkdir(outputDirectory, { recursive: true });
 
     const [sourceStat, outputStat] = await Promise.all([
-      NodeFs.stat(sourcePath),
-      NodeFs.stat(outputPath).catch(() => null),
+      NodeFSP.stat(sourcePath),
+      NodeFSP.stat(outputPath).catch(() => null),
     ]);
     if (outputStat && outputStat.mtimeMs >= sourceStat.mtimeMs) return outputPath;
 
@@ -124,7 +124,7 @@ async function ensureDevelopmentHelper(
     if (compile.exitCode !== 0) {
       throw new Error(compile.stderr.trim() || "The macOS speech helper could not be compiled.");
     }
-    await NodeFs.rename(temporaryPath, outputPath);
+    await NodeFSP.rename(temporaryPath, outputPath);
     return outputPath;
   })().catch((cause) => {
     developmentHelperPromise = null;
@@ -163,8 +163,8 @@ export async function transcribeMacVoice(
   const temporaryDirectory = environment.path.join(environment.stateDir, "voice-transcription");
   const audioPath = environment.path.join(temporaryDirectory, `${NodeCrypto.randomUUID()}.wav`);
   try {
-    await NodeFs.mkdir(temporaryDirectory, { recursive: true });
-    await NodeFs.writeFile(audioPath, encodeMonoPcm16Wav(input));
+    await NodeFSP.mkdir(temporaryDirectory, { recursive: true });
+    await NodeFSP.writeFile(audioPath, encodeMonoPcm16Wav(input));
     const helperPath = await resolveHelper(environment);
     const result = await runCommand(
       helperPath,
@@ -184,6 +184,6 @@ export async function transcribeMacVoice(
       cause instanceof Error ? cause.message : "Apple native transcription failed.",
     );
   } finally {
-    await NodeFs.rm(audioPath, { force: true }).catch(() => undefined);
+    await NodeFSP.rm(audioPath, { force: true }).catch(() => undefined);
   }
 }

@@ -404,7 +404,7 @@ describe("confirmDestructiveSend", () => {
     };
     const hadWindow = "window" in globalScope;
     const previousWindow = globalScope.window;
-    globalScope.window = { ...(previousWindow ?? {}), confirm: stub };
+    globalScope.window = { ...previousWindow, confirm: stub };
     try {
       return run();
     } finally {

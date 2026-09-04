@@ -20,6 +20,7 @@ import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import {
@@ -489,8 +490,9 @@ export const make = (
         ),
       );
 
+    const hostPlatform = yield* HostProcessPlatform;
     const discoveredDescendantProcessGroups =
-      globalThis.process.platform === "win32"
+      hostPlatform === "win32"
         ? Effect.succeed<ReadonlyArray<number>>([])
         : spawner
             .string(
