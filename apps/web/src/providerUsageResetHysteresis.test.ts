@@ -184,6 +184,48 @@ describe("provider usage reset hysteresis", () => {
     expect(countOf(fewer)).toBe(2);
   });
 
+  it("does not double-count when the provider switches to a count-only row", () => {
+    // The same inventory can arrive either spelled out or collapsed into one
+    // count-only row. Holding the old shape alongside the new one would count
+    // every credit twice.
+    const detailed = mergeProviderUsageEntry(
+      {},
+      report(0, {
+        availableCount: 2,
+        credits: [credit(), credit({ id: "credit-b" })],
+      }),
+    );
+    expect(countOf(detailed)).toBe(2);
+
+    const collapsed = mergeProviderUsageEntry(
+      detailed,
+      report(30_000, {
+        availableCount: 1,
+        credits: [credit({ id: null, title: "Full reset" })],
+      }),
+    );
+
+    expect(creditsOf(collapsed)).toHaveLength(1);
+    expect(creditsOf(collapsed)[0]?.id).toBeNull();
+    expect(countOf(collapsed)).toBe(1);
+  });
+
+  it("does not double-count when the provider goes back to spelling them out", () => {
+    const collapsed = mergeProviderUsageEntry(
+      {},
+      report(0, { availableCount: 2, credits: [credit({ id: null, title: "2 full resets" })] }),
+    );
+    expect(countOf(collapsed)).toBe(2);
+
+    const detailed = mergeProviderUsageEntry(
+      collapsed,
+      report(30_000, { availableCount: 1, credits: [credit()] }),
+    );
+
+    expect(creditsOf(detailed).map((entry) => entry.id)).toEqual(["credit-a"]);
+    expect(countOf(detailed)).toBe(1);
+  });
+
   it("drops an expired credit even inside the grace window", () => {
     const seen = mergeProviderUsageEntry(
       {},
