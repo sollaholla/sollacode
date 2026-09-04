@@ -213,3 +213,34 @@ export function shouldShowFpsController(args: {
   if (!args.armed || !args.canControl || !args.canPointer || !args.canKeyboard) return false;
   return args.remoteLocked || args.pointerLocked;
 }
+
+/**
+ * Advance the look pad's virtual cursor.
+ *
+ * The pad used to send only `dx`/`dy` alongside a frozen absolute point. That
+ * works on Windows, whose helper takes a relative branch whenever a delta is
+ * present - and does nothing at all on macOS, whose helper has no relative
+ * path: it derives the cursor purely from `x`/`y`, so it warped to the same
+ * coordinates on every sample and the aim never moved. Carrying a position
+ * that actually changes makes the pad move the mouse on either host, while the
+ * deltas still ride along for a Windows game in mouse-look, where a position is
+ * meaningless and the relative branch is the correct one.
+ *
+ * Clamped to the surface: a drag that runs off the edge should stop at the
+ * edge, not wrap or accumulate somewhere unreachable.
+ */
+export function advanceFpsLookPointer(input: {
+  readonly point: { readonly x: number; readonly y: number };
+  readonly dx: number;
+  readonly dy: number;
+  readonly surface: { readonly width: number; readonly height: number } | null;
+}): { readonly x: number; readonly y: number } {
+  const width = input.surface?.width ?? 0;
+  const height = input.surface?.height ?? 0;
+  if (width <= 0 || height <= 0) return input.point;
+  const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+  return {
+    x: clamp01(input.point.x + input.dx / width),
+    y: clamp01(input.point.y + input.dy / height),
+  };
+}
