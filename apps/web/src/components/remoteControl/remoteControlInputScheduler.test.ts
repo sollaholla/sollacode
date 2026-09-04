@@ -202,3 +202,55 @@ it("reports a failed send without draining stale pending motion", async () => {
   expect(sends).toBe(1);
   expect(errors).toHaveLength(1);
 });
+
+const relativeMove = (dx: number): RemoteControlInput => ({
+  type: "pointer",
+  action: "move",
+  x: 0.5,
+  y: 0.5,
+  button: "left",
+  dx,
+  dy: 0,
+});
+
+async function drainSends(): Promise<void> {
+  for (let tick = 0; tick < 500; tick += 1) await Promise.resolve();
+}
+
+it("delivers the whole distance of a look drag over a slow link", async () => {
+  const observed: RemoteControlInput[] = [];
+  const frames: Array<() => void> = [];
+  const inFlight: Array<() => void> = [];
+  const scheduler = createRemoteControlInputScheduler({
+    send: (input) => {
+      observed.push(input);
+      return new Promise<void>((resolve) => {
+        inFlight.push(resolve);
+      });
+    },
+    scheduleFrame: (callback) => {
+      frames.push(callback);
+      return frames.length;
+    },
+  });
+
+  // 60 frames of a steady 6px drag while ONE send stays in flight the whole
+  // time - a phone on a slow link. That is the case that used to arrive as a
+  // dead stick.
+  let dragged = 0;
+  for (let frame = 0; frame < 60; frame += 1) {
+    scheduler.enqueue(relativeMove(6));
+    dragged += 6;
+    // One rAF per frame, exactly as the browser would.
+    frames.shift()?.();
+  }
+  expect(observed).toHaveLength(1);
+  inFlight.shift()?.();
+  await drainSends();
+
+  const delivered = observed.reduce((sum, input) => sum + ((input as { dx?: number }).dx ?? 0), 0);
+  expect(delivered).toBe(dragged);
+  // Two wire events for sixty frames: one in flight, one successor carrying
+  // everything that happened behind it. No replay backlog.
+  expect(observed).toHaveLength(2);
+});
