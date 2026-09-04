@@ -34,7 +34,6 @@ import {
   THREAD_SIDEBAR_MIN_WIDTH,
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "./threadSidebarWidth";
-import { MobileTabBar } from "./mobile/MobileTabBar";
 import { MobileTopBar } from "./mobile/MobileTopBar";
 import {
   Sidebar,
@@ -359,9 +358,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         {useSidebarV2 ? <ThreadSidebarV2 /> : <ThreadSidebar />}
         <SidebarRail />
       </Sidebar>
-      <SidebarInsetChromeProvider top={<MobileTopBar />} bottom={<MobileTabBar />}>
-        {children}
-      </SidebarInsetChromeProvider>
+      <SidebarInsetChromeProvider top={<MobileTopBar />}>{children}</SidebarInsetChromeProvider>
       <SidebarControl />
     </SidebarProvider>
   );

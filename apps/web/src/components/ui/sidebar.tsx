@@ -99,7 +99,8 @@ function SidebarInsetOverlayProvider({
  */
 interface SidebarInsetChrome {
   readonly top: React.ReactNode;
-  readonly bottom: React.ReactNode;
+  /** Optional: the phone shell has no bottom chrome. */
+  readonly bottom?: React.ReactNode;
 }
 
 const SidebarInsetChromeContext = React.createContext<SidebarInsetChrome>({

@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { SettingsIcon } from "lucide-react";
 import { memo } from "react";
 
 import { APP_BASE_NAME } from "../../branding";
@@ -6,10 +7,16 @@ import { cn } from "../../lib/utils";
 import { SidebarTrigger } from "../ui/sidebar";
 
 /**
- * The phone shell's top bar: the sheet trigger, the gold mark and the wordmark.
- * On a phone the sidebar is a sheet, so this row is the only place the brand
- * and the way into navigation are always on screen. Hidden from `md` up, where
- * the docked sidebar carries both.
+ * The phone shell's top bar: the sheet trigger, the gold mark, the wordmark and
+ * settings. On a phone the sidebar is a sheet, so this row is the only place the
+ * brand and the way into navigation are always on screen. Hidden from `md` up,
+ * where the docked sidebar carries both.
+ *
+ * Settings sits here because the bottom tab bar that used to carry it is gone -
+ * it duplicated navigation the sheet already had, and cost a whole row directly
+ * above the browser's own chrome. Everything else it offered is a section of
+ * the sheet, but settings had no other one-tap route: it would have become
+ * sheet -> command palette -> Settings.
  */
 export const MobileTopBar = memo(function MobileTopBar({
   className,
@@ -39,6 +46,13 @@ export const MobileTopBar = memo(function MobileTopBar({
         <span className="truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">
           {APP_BASE_NAME}
         </span>
+      </Link>
+      <Link
+        aria-label="Settings"
+        className="ms-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-hidden ring-ring hover:text-foreground focus-visible:ring-2"
+        to="/settings"
+      >
+        <SettingsIcon className="size-[18px]" />
       </Link>
     </div>
   );
