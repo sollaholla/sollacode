@@ -2867,6 +2867,21 @@ function ChatViewContent(props: ChatViewProps) {
     useRightPanelStore.getState().reconcileSideChatSurfaces(activeThreadRef, sideChatChildren);
   }, [activeThreadRef, sideChatChildren]);
 
+  /**
+   * How many surfaces the agent panel held last time the refill below looked.
+   *
+   * Distinguishes a panel that opened empty (fill it) from one the user just
+   * emptied (leave it closed). Reset per thread so switching agents cannot read
+   * as a deliberate close.
+   */
+  const browserOnlyPreviousSurfaceCountRef = useRef<number | null>(null);
+  const browserOnlyThreadKeyRef = useRef<string | null>(null);
+  const activeThreadKeyForBrowserOnly = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  if (browserOnlyThreadKeyRef.current !== activeThreadKeyForBrowserOnly) {
+    browserOnlyThreadKeyRef.current = activeThreadKeyForBrowserOnly;
+    browserOnlyPreviousSurfaceCountRef.current = null;
+  }
+
   useLayoutEffect(() => {
     const focus = resolveRightPanelThreadFocus(
       focusedRightPanelThreadKeyRef.current,
@@ -2899,12 +2914,15 @@ function ChatViewContent(props: ChatViewProps) {
       useRightPanelStore.getState().byThreadKey,
       activeThreadRef,
     );
+    const previousSurfaceCount = browserOnlyPreviousSurfaceCountRef.current;
+    browserOnlyPreviousSurfaceCountRef.current = currentPanel.surfaces.length;
     if (
       !shouldEnsureBrowserOnlySurface({
         browserOnly: browserOnlySurfaces,
         browserAvailable: isPreviewSupportedInRuntime(),
         panelOpen: currentPanel.isOpen,
         surfaceCount: currentPanel.surfaces.length,
+        previousSurfaceCount,
       })
     )
       return;

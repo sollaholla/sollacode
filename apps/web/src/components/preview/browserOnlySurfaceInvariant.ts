@@ -1,10 +1,33 @@
+/**
+ * Whether an empty agent panel should be refilled with a Browser tab.
+ *
+ * An agent's panel opens on its browser rather than the general-purpose "Open
+ * a surface" chooser, so a panel that is empty because nothing has been opened
+ * yet gets a Browser tab.
+ *
+ * What it must NOT do is refill a panel the user just emptied. Closing the last
+ * tab is how the column is meant to go away - {@link
+ * shouldAutoCollapseRightPanelOnEmpty} folds it, exactly as it does for a
+ * thread. The refill runs in a layout effect and that collapse runs in a
+ * passive one, so React fires the refill first and the tab snapped straight
+ * back: closing the final tab of an agent was simply impossible.
+ *
+ * `previousSurfaceCount` is what separates the two. Null (nothing observed yet)
+ * or zero means the panel opened empty and should be filled; anything above
+ * zero means it just lost its last surface, which is a deliberate close and has
+ * to be honoured. Reopening the panel later starts from zero again, so the
+ * Browser tab still comes back.
+ */
 export function shouldEnsureBrowserOnlySurface(input: {
   readonly browserOnly: boolean;
   readonly browserAvailable: boolean;
   readonly panelOpen: boolean;
   readonly surfaceCount: number;
+  readonly previousSurfaceCount: number | null;
 }): boolean {
-  return input.browserOnly && input.browserAvailable && input.panelOpen && input.surfaceCount === 0;
+  if (!input.browserOnly || !input.browserAvailable || !input.panelOpen) return false;
+  if (input.surfaceCount !== 0) return false;
+  return (input.previousSurfaceCount ?? 0) === 0;
 }
 
 /**
