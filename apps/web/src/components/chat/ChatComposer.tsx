@@ -2284,11 +2284,32 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     });
   }, [composerDraftTarget, pendingQuote, promptRef, setComposerDraftPrompt]);
 
+  /**
+   * Swipe down on the composer to put the keyboard away.
+   *
+   * Read through a ref so the listeners are installed once per viewport rather
+   * than re-bound every time the voice status or focus changes - re-installing
+   * mid-gesture would drop the touch that is in progress.
+   */
+  const swipeDownDismissRef = useRef<() => void>(() => undefined);
+  swipeDownDismissRef.current = () => {
+    // Not while the microphone is live: blurring during capture unmounts the
+    // recorder controls, which is the one thing the collapse rules already go
+    // out of their way to avoid.
+    if (pushToTalkStatus !== null) return;
+    if (!isComposerFocused) return;
+    blurFocusedComposerElement();
+  };
+
   useEffect(() => {
     if (!isMobileViewport) return;
     const composerForm = composerFormRef.current;
     if (!composerForm) return;
-    return installMobileComposerTouchBoundary(composerForm);
+    return installMobileComposerTouchBoundary(composerForm, {
+      onSwipeDownDismiss: () => {
+        swipeDownDismissRef.current();
+      },
+    });
   }, [isMobileViewport]);
   const expandMobileComposer = useCallback(() => {
     if (composerBlurFrameRef.current !== null) {

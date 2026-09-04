@@ -197,6 +197,36 @@ it("marks the most preferred available model as default", () => {
   );
 });
 
+it("promotes astra the moment Codex starts offering it", () => {
+  // Listed ahead of release. The preference is applied per snapshot, so the
+  // first model/list that carries Astra promotes it with no release of ours in
+  // between - which is the whole point of putting it in early.
+  const models = applyPreferredCodexDefaultModel([
+    {
+      slug: "gpt-5.6-sol",
+      name: "GPT-5.6-Sol",
+      isCustom: false,
+      isDefault: true,
+      capabilities: null,
+    },
+    { slug: "gpt-6-astra", name: "GPT-6 Astra", isCustom: false, capabilities: null },
+  ]);
+
+  assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-6-astra");
+});
+
+it("leaves today's default alone while astra is still unavailable", () => {
+  // The anticipatory entry must be inert: an account that cannot see Astra yet
+  // has to keep landing on Sol exactly as before.
+  const models = applyPreferredCodexDefaultModel([
+    { slug: "gpt-5.6-terra", name: "GPT-5.6-Terra", isCustom: false, capabilities: null },
+    { slug: "gpt-5.6-sol", name: "GPT-5.6-Sol", isCustom: false, capabilities: null },
+    { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, isDefault: true, capabilities: null },
+  ]);
+
+  assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.6-sol");
+});
+
 it("prefers sol over terra when both are available", () => {
   const models = applyPreferredCodexDefaultModel([
     { slug: "gpt-5.6-terra", name: "GPT-5.6-Terra", isCustom: false, capabilities: null },
