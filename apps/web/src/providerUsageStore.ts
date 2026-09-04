@@ -142,7 +142,7 @@ export function providerUsageResetCreditKey(credit: PersistedProviderUsageResetC
   return `anonymous:${JSON.stringify([credit.title, credit.description, credit.expiresAt])}`;
 }
 
-export function mergeResetCredits(
+function mergeResetCredits(
   previous: PersistedProviderUsageResetCredits | null | undefined,
   next: PersistedProviderUsageResetCredits | null | undefined,
   dismissedKeys: ReadonlySet<string>,
