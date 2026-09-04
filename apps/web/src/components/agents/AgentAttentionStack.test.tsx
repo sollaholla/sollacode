@@ -16,6 +16,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import type { InlineAgentAttention } from "./agentNotifications";
 
+// happy-dom does not implement Element.getAnimations, and @base-ui/react's
+// ScrollArea viewport calls it from a timeout that lands AFTER the test has
+// finished. That throws outside any test body, so vitest reports an uncaught
+// exception and exits non-zero even when every test passed - which is enough
+// on its own to keep the release preflight red. Installed at module scope so
+// it is in place before the component mounts and outlives afterEach teardown.
+if (typeof Element !== "undefined" && typeof Element.prototype.getAnimations !== "function") {
+  Element.prototype.getAnimations = () => [];
+}
+
 const mocks = vi.hoisted(() => {
   const composer = {
     readSnapshot: vi.fn(() => ({
