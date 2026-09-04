@@ -52,7 +52,25 @@ export interface PersistedProviderUsageResetCredit {
   readonly title: string;
   readonly description: string | null;
   readonly expiresAt: number | null;
+  /**
+   * When the provider last reported this credit. Mirrors the field usage
+   * windows carry: it is what lets an absence be tolerated briefly and then
+   * believed, rather than tolerated forever.
+   */
+  readonly lastSeenAt?: string;
 }
+
+/**
+ * How long a reset credit survives the provider no longer reporting it.
+ *
+ * The hysteresis exists because the two Codex endpoints desync: a refresh can
+ * omit a credit that is genuinely still there, and without a grace the row
+ * flickered on and off. Long enough to ride out that desync, short enough that
+ * a credit the user has actually spent disappears while they are still looking
+ * at the panel - and, critically, bounded, so two clients that saw different
+ * snapshots converge instead of each keeping its own high-water mark forever.
+ */
+export const PROVIDER_USAGE_RESET_CREDIT_GRACE_MS = 2 * 60_000;
 
 export interface PersistedProviderUsageResetCredits {
   readonly availableCount: number;
@@ -124,24 +142,53 @@ export function providerUsageResetCreditKey(credit: PersistedProviderUsageResetC
   return `anonymous:${JSON.stringify([credit.title, credit.description, credit.expiresAt])}`;
 }
 
-function mergeResetCredits(
+export function mergeResetCredits(
   previous: PersistedProviderUsageResetCredits | null | undefined,
   next: PersistedProviderUsageResetCredits | null | undefined,
   dismissedKeys: ReadonlySet<string>,
+  reportedAt: string,
 ): PersistedProviderUsageResetCredits | null {
+  // `undefined` means this refresh carried no reset information at all, so
+  // nothing was learned and nothing changes. `null` means the provider was
+  // asked and answered "none" - that IS news, and has to be able to clear a
+  // credit that is gone.
+  if (next === undefined) return previous ?? null;
   if (!previous && !next) return null;
+
+  const nowMs = Date.parse(reportedAt);
+  const nextByKey = new Map<string, PersistedProviderUsageResetCredit>();
+  for (const credit of next?.credits ?? []) {
+    nextByKey.set(providerUsageResetCreditKey(credit), { ...credit, lastSeenAt: reportedAt });
+  }
+
+  const survives = (key: string, credit: PersistedProviderUsageResetCredit): boolean => {
+    if (nextByKey.has(key)) return true;
+    // An expired credit is gone whatever the grace says; the provider will
+    // never mention it again and there is nothing to ride out.
+    if (credit.expiresAt !== null && Number.isFinite(nowMs) && credit.expiresAt <= nowMs) {
+      return false;
+    }
+    const seenMs = credit.lastSeenAt === undefined ? Number.NaN : Date.parse(credit.lastSeenAt);
+    // Never seen fresh, or the clock is unreadable: believe the provider now
+    // rather than keeping something we cannot age out.
+    if (!Number.isFinite(seenMs) || !Number.isFinite(nowMs)) return false;
+    return nowMs - seenMs <= PROVIDER_USAGE_RESET_CREDIT_GRACE_MS;
+  };
+
   const creditsByKey = new Map<string, PersistedProviderUsageResetCredit>();
   for (const credit of previous?.credits ?? []) {
-    creditsByKey.set(providerUsageResetCreditKey(credit), credit);
+    const key = providerUsageResetCreditKey(credit);
+    if (survives(key, credit)) creditsByKey.set(key, credit);
   }
-  for (const credit of next?.credits ?? []) {
-    creditsByKey.set(providerUsageResetCreditKey(credit), credit);
-  }
+  for (const [key, credit] of nextByKey) creditsByKey.set(key, credit);
 
   const credits = Array.from(creditsByKey.entries()).flatMap(([key, credit]) =>
     dismissedKeys.has(key) ? [] : [credit],
   );
-  const reportedAvailableCount = Math.max(previous?.availableCount ?? 0, next?.availableCount ?? 0);
+  // The newest reported count, not a running maximum. Maxing across refreshes
+  // let the number only ever climb, so a spent reset stayed on screen and two
+  // clients that peaked differently never agreed on it again.
+  const reportedAvailableCount = next?.availableCount ?? 0;
   let dismissedReportedCount = 0;
   for (const [key, credit] of creditsByKey) {
     if (!dismissedKeys.has(key)) continue;
@@ -150,6 +197,46 @@ function mergeResetCredits(
     dismissedReportedCount += credit.id === null ? reportedAvailableCount : 1;
   }
   const availableCount = Math.max(credits.length, reportedAvailableCount - dismissedReportedCount);
+  return availableCount > 0 && credits.length > 0 ? { availableCount, credits } : null;
+}
+
+/**
+ * Drop credits whose expiry has passed.
+ *
+ * The merge prunes them whenever a report lands, but a client that is idle (or
+ * offline) between reports would otherwise keep offering a reset that expired
+ * while it was sitting there.
+ */
+export function activeResetCredits(
+  resetCredits: PersistedProviderUsageResetCredits | null | undefined,
+  nowMs: number,
+): PersistedProviderUsageResetCredits | null {
+  if (!resetCredits) return null;
+  const credits = resetCredits.credits.filter(
+    (credit) => credit.expiresAt === null || credit.expiresAt > nowMs,
+  );
+  if (credits.length === resetCredits.credits.length) return resetCredits;
+  const availableCount = Math.min(resetCredits.availableCount, credits.length);
+  return availableCount > 0 && credits.length > 0 ? { availableCount, credits } : null;
+}
+
+function withoutDismissedResetCredits(
+  resetCredits: PersistedProviderUsageResetCredits | null | undefined,
+  dismissedKeys: ReadonlySet<string>,
+): PersistedProviderUsageResetCredits | null {
+  if (!resetCredits) return null;
+  const credits = resetCredits.credits.filter(
+    (credit) => !dismissedKeys.has(providerUsageResetCreditKey(credit)),
+  );
+  let dismissedReportedCount = 0;
+  for (const credit of resetCredits.credits) {
+    if (!dismissedKeys.has(providerUsageResetCreditKey(credit))) continue;
+    dismissedReportedCount += credit.id === null ? resetCredits.availableCount : 1;
+  }
+  const availableCount = Math.max(
+    credits.length,
+    resetCredits.availableCount - dismissedReportedCount,
+  );
   return availableCount > 0 && credits.length > 0 ? { availableCount, credits } : null;
 }
 
@@ -222,11 +309,16 @@ export function mergeProviderUsageEntry(
       ...(entry.dismissedResetCreditKeys ?? []),
     ]),
   );
-  const resetCredits = mergeResetCredits(
-    previous?.resetCredits,
-    entry.resetCredits,
-    new Set(dismissedResetCreditKeys),
-  );
+  const resetCredits = entryIsOlder
+    ? // A late-arriving older report must not decide what is current; it can
+      // still only lose to what we already know.
+      withoutDismissedResetCredits(previous.resetCredits, new Set(dismissedResetCreditKeys))
+    : mergeResetCredits(
+        previous?.resetCredits,
+        entry.resetCredits,
+        new Set(dismissedResetCreditKeys),
+        entry.reportedAt,
+      );
   const merged = {
     ...entry,
     windows: survivingWindows,
@@ -249,9 +341,10 @@ export function dismissProviderUsageResetCredit(
   const creditKey = providerUsageResetCreditKey(credit);
   if (previous.dismissedResetCreditKeys?.includes(creditKey)) return state;
   const dismissedResetCreditKeys = [...(previous.dismissedResetCreditKeys ?? []), creditKey];
-  const resetCredits = mergeResetCredits(
+  // Dismissal is a local edit, not a provider report: it must not age credits
+  // out or restamp them as freshly seen, only drop the one the user acted on.
+  const resetCredits = withoutDismissedResetCredits(
     previous.resetCredits,
-    null,
     new Set(dismissedResetCreditKeys),
   );
   return {
@@ -301,7 +394,8 @@ function isPersistedResetCredit(value: unknown): value is PersistedProviderUsage
     (candidate.expiresAt === null ||
       (typeof candidate.expiresAt === "number" &&
         Number.isFinite(candidate.expiresAt) &&
-        candidate.expiresAt > 0))
+        candidate.expiresAt > 0)) &&
+    (candidate.lastSeenAt === undefined || typeof candidate.lastSeenAt === "string")
   );
 }
 

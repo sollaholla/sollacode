@@ -97,7 +97,11 @@ describe("provider usage summaries", () => {
       windows: [],
       reportedAt: "2026-08-25T20:01:00.000Z",
     });
-    expect(omittedByAnotherThread[accountKey]?.resetCredits?.credits).toEqual([resetCredit]);
+    // The store stamps each credit with when it was last reported; the credit
+    // itself has to come through the omission unchanged.
+    expect(omittedByAnotherThread[accountKey]?.resetCredits?.credits).toEqual([
+      expect.objectContaining(resetCredit),
+    ]);
 
     const dismissed = dismissProviderUsageResetCredit(
       omittedByAnotherThread,
@@ -123,7 +127,9 @@ describe("provider usage summaries", () => {
       reportedAt: "2026-08-25T20:03:00.000Z",
       resetCredits: { availableCount: 1, credits: [newCredit] },
     });
-    expect(genuinelyNewReset[accountKey]?.resetCredits?.credits).toEqual([newCredit]);
+    expect(genuinelyNewReset[accountKey]?.resetCredits?.credits).toEqual([
+      expect.objectContaining(newCredit),
+    ]);
   });
 
   it("links Grok usage to its reset inventory without claiming native redemption", () => {
@@ -153,7 +159,7 @@ describe("provider usage summaries", () => {
               resetType: "codexRateLimits",
               status: "available",
               grantedAt: 1_781_654_400,
-              expiresAt: 1_784_246_400,
+              expiresAt: 1_788_220_800,
               title: "Full reset",
               description: "Ready to redeem",
             },
