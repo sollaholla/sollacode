@@ -1,5 +1,37 @@
 export type ComposerTouchMoveDisposition = "allow-editor-scroll" | "block";
 
+/**
+ * Downward travel that commits the collapse.
+ *
+ * Generous on purpose. This gesture shares a surface with the editor's own
+ * scrolling and with a plain tap-to-place-the-caret, so anything short enough
+ * to trigger on a lazy thumb would dismiss the keyboard mid-sentence - a far
+ * worse failure than having to swipe again.
+ */
+export const COMPOSER_SWIPE_DOWN_DISMISS_PX = 64;
+
+/**
+ * Whether a downward drag on the composer should put the keyboard away.
+ *
+ * Only when the editor has nothing left to scroll up into: with text above the
+ * fold, a downward drag is the user reading what they have written, and
+ * stealing it to dismiss would make long prompts unreadable. At the top edge
+ * there is nothing else the gesture could mean.
+ *
+ * Travel is measured from where the finger went down rather than summed from
+ * per-move deltas, so a drag that wanders down, up and back down again does
+ * not accumulate its way past the threshold.
+ */
+export function shouldDismissComposerOnSwipeDown(input: {
+  readonly totalDeltaY: number;
+  readonly editorScrollTop: number | null;
+}): boolean {
+  if (input.totalDeltaY < COMPOSER_SWIPE_DOWN_DISMISS_PX) return false;
+  // Null means the touch did not start in the editor's scroll container - the
+  // padding around it, the toolbar - where there is no scroll to protect.
+  return (input.editorScrollTop ?? 0) <= SCROLL_EDGE_EPSILON;
+}
+
 const SCROLL_EDGE_EPSILON = 1;
 const COMPOSER_SCROLL_CONTAINER_SELECTOR = '[data-chat-composer-scroll-container="true"]';
 
@@ -42,11 +74,23 @@ function findTouch(touches: TouchList, identifier: number): Touch | null {
   return null;
 }
 
-export function installMobileComposerTouchBoundary(root: HTMLElement): () => void {
+export function installMobileComposerTouchBoundary(
+  root: HTMLElement,
+  options: {
+    /**
+     * Swipe-down-to-collapse. Called at most once per touch; the caller owns
+     * what "collapse" means and, importantly, whether it is allowed at all -
+     * dismissing during voice capture would unmount the recorder mid-take.
+     */
+    readonly onSwipeDownDismiss?: () => void;
+  } = {},
+): () => void {
   let activeTouch:
     | {
         identifier: number;
         lastY: number;
+        startY: number;
+        dismissed: boolean;
         editorScrollElement: HTMLElement | null;
       }
     | undefined;
@@ -62,6 +106,8 @@ export function installMobileComposerTouchBoundary(root: HTMLElement): () => voi
     activeTouch = {
       identifier: touch.identifier,
       lastY: touch.clientY,
+      startY: touch.clientY,
+      dismissed: false,
       editorScrollElement:
         editorScrollElement && root.contains(editorScrollElement) ? editorScrollElement : null,
     };
@@ -81,6 +127,21 @@ export function installMobileComposerTouchBoundary(root: HTMLElement): () => voi
       editorScrollHeight: editorScrollElement?.scrollHeight ?? null,
       editorClientHeight: editorScrollElement?.clientHeight ?? null,
     });
+
+    if (
+      !activeTouch.dismissed &&
+      options.onSwipeDownDismiss &&
+      shouldDismissComposerOnSwipeDown({
+        totalDeltaY: touch.clientY - activeTouch.startY,
+        editorScrollTop: editorScrollElement?.scrollTop ?? null,
+      })
+    ) {
+      // Latched for the rest of the touch: the finger keeps moving after the
+      // keyboard starts closing, and firing per move would re-dismiss against
+      // a composer the user may already be tapping back into.
+      activeTouch.dismissed = true;
+      options.onSwipeDownDismiss();
+    }
 
     if (disposition === "block" && event.cancelable) {
       event.preventDefault();

@@ -139,8 +139,16 @@ export const DEFAULT_MODEL = "gpt-5.6-sol";
  * Codex default-model preference, most preferred first. The provider snapshot
  * marks the first of these present in the live `model/list` response as
  * default; when none are available, Codex's own `isDefault` flag wins.
+ *
+ * A slug that Codex does not offer is simply skipped, so listing one ahead of
+ * time changes nothing until it appears and then promotes it on the first
+ * snapshot that carries it - no release of ours has to land in between.
+ * `gpt-6-astra` (announced 2026-09-03, rolling out in phases) sits at the top
+ * on that basis; `gpt-5.6-sol` stays the effective default until Codex serves
+ * Astra to this account.
  */
 export const PREFERRED_DEFAULT_CODEX_MODELS: ReadonlyArray<string> = [
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
 ];

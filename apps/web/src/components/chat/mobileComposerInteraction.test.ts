@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { composerTouchMoveDisposition } from "./mobileComposerInteraction";
+import {
+  COMPOSER_SWIPE_DOWN_DISMISS_PX,
+  composerTouchMoveDisposition,
+  shouldDismissComposerOnSwipeDown,
+} from "./mobileComposerInteraction";
 
 describe("mobile composer touch boundary", () => {
   it.each([
@@ -57,5 +61,51 @@ describe("mobile composer touch boundary", () => {
         editorClientHeight: 140,
       }),
     ).toBe("allow-editor-scroll");
+  });
+});
+
+describe("shouldDismissComposerOnSwipeDown", () => {
+  it("dismisses once the drag passes the threshold at the top of the editor", () => {
+    expect(
+      shouldDismissComposerOnSwipeDown({
+        totalDeltaY: COMPOSER_SWIPE_DOWN_DISMISS_PX,
+        editorScrollTop: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores a drag that has not travelled far enough", () => {
+    // Short of the threshold this is a lazy thumb on the way to tapping the
+    // caret, and dismissing there would close the keyboard mid-sentence.
+    expect(
+      shouldDismissComposerOnSwipeDown({
+        totalDeltaY: COMPOSER_SWIPE_DOWN_DISMISS_PX - 1,
+        editorScrollTop: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("never steals a scroll from a prompt with text above the fold", () => {
+    // Dragging down here is the user reading back what they wrote.
+    expect(shouldDismissComposerOnSwipeDown({ totalDeltaY: 400, editorScrollTop: 120 })).toBe(
+      false,
+    );
+  });
+
+  it("treats a touch outside the editor's scroller as dismissable", () => {
+    // The padding and the toolbar have no scroll position to protect.
+    expect(shouldDismissComposerOnSwipeDown({ totalDeltaY: 400, editorScrollTop: null })).toBe(
+      true,
+    );
+  });
+
+  it("does not fire on an upward drag", () => {
+    expect(shouldDismissComposerOnSwipeDown({ totalDeltaY: -400, editorScrollTop: 0 })).toBe(false);
+  });
+
+  it("measures from where the finger went down, not from summed deltas", () => {
+    // A wandering drag that ends 20px below its origin has not asked for
+    // anything, however far it travelled getting there.
+    expect(shouldDismissComposerOnSwipeDown({ totalDeltaY: 20, editorScrollTop: 0 })).toBe(false);
   });
 });
