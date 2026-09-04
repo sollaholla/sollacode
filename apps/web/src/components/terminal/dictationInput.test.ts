@@ -216,6 +216,49 @@ describe("resolveTerminalDictationInput", () => {
     expect(enter.state.forwarded).toBe("hello");
   });
 
+  it("keeps typing alive when a stale buffer is left sitting in the textarea", () => {
+    // Dictation (or a press-and-hold accent menu) leaves text in the textarea
+    // and we forward it once.
+    const dictated = resolveTerminalDictationInput({
+      payload: "hello",
+      textareaValue: "hello",
+      state: emptyTerminalDictationState,
+    });
+    expect(dictated.payload).toBe("hello");
+
+    // Now the user just types. xterm handles ordinary keys from `keydown` and
+    // emits onData WITHOUT touching the textarea, so that buffer is still
+    // sitting there unchanged - which used to reconcile every keystroke away
+    // to nothing and kill typing entirely until the textarea happened to clear.
+    const first = resolveTerminalDictationInput({
+      payload: "x",
+      textareaValue: "hello",
+      state: dictated.state,
+    });
+    expect(first.payload).toBe("x");
+
+    const second = resolveTerminalDictationInput({
+      payload: "y",
+      textareaValue: "hello",
+      state: first.state,
+    });
+    expect(second.payload).toBe("y");
+  });
+
+  it("still forwards a backspace typed against a stale buffer", () => {
+    const dictated = resolveTerminalDictationInput({
+      payload: "hello",
+      textareaValue: "hello",
+      state: emptyTerminalDictationState,
+    });
+    const backspace = resolveTerminalDictationInput({
+      payload: "\u007F",
+      textareaValue: "hello",
+      state: dictated.state,
+    });
+    expect(backspace.payload).toBe("\u007F");
+  });
+
   it("collapses a repeated whole-buffer resend to nothing", () => {
     const first = resolveTerminalDictationInput({
       payload: "run these tests",
