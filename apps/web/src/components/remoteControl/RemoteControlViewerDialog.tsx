@@ -1124,7 +1124,7 @@ export function RemoteControlViewerDialog(props: {
               // bottom of the remote screen is exactly what you are
               // reaching for. Under ~34rem of height the picture gives the
               // row its own strip instead of sharing.
-              className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-none bg-black outline-hidden overscroll-none [@media(orientation:landscape)and(max-height:34rem)]:pb-12 ${
+              className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-none bg-black outline-hidden overscroll-none [@media(orientation:landscape)_and_(max-height:34rem)]:pb-12 ${
                 inputCaptured
                   ? "ring-2 ring-primary ring-offset-2 ring-offset-background"
                   : "focus-visible:ring-2 focus-visible:ring-ring"
