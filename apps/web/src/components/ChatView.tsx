@@ -201,10 +201,10 @@ import {
   type DesktopPreviewOverlay,
 } from "../previewStateStore";
 import {
-  releaseQueuedComposerMessages,
-  removeQueuedComposerMessage,
-  shouldQueueComposerSend,
-  type QueuedComposerMessage,
+  holdComposerSend,
+  releaseComposerSendHold,
+  shouldHoldComposerSend,
+  shouldReleaseHeldComposerSend,
 } from "./chat/composerSendQueue";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import {
@@ -3878,67 +3878,6 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeThreadId, environmentId, stopThreadTask],
   );
-  /**
-   * Follow-ups typed while background work is still running.
-   *
-   * Sending one immediately hands it to the live agent loop, which abandons the
-   * background work it started for the previous request - so a long test run
-   * dies because a follow-up was typed. Holding it in the composer instead
-   * means remembering to send it later, and forgetting is routine. These are
-   * held here, never dispatched, and released in order the moment the tasks
-   * finish.
-   */
-  const [queuedComposerSends, setQueuedComposerSends] = useState<readonly QueuedComposerMessage[]>(
-    [],
-  );
-  /**
-   * The queued follow-ups, shown so they cannot be forgotten.
-   *
-   * Being invisible was half the original problem: the message waits, the
-   * tasks finish, and nobody remembers it was ever typed.
-   */
-  const queuedComposerSendPanel =
-    queuedComposerSends.length === 0 ? null : (
-      <div className="mx-auto w-full max-w-3xl px-2 pb-2">
-        <div className="rounded-lg border border-border/60 bg-muted/40 px-3 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-medium text-muted-foreground">
-              {queuedComposerSends.length === 1
-                ? "1 message queued until background tasks finish"
-                : `${queuedComposerSends.length} messages queued until background tasks finish`}
-            </span>
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => {
-                void onSendRef.current(undefined, undefined, { sendNow: true });
-              }}
-            >
-              Send now
-            </Button>
-          </div>
-          <ul className="mt-1 flex flex-col gap-1">
-            {queuedComposerSends.map((queued) => (
-              <li key={queued.id} className="flex items-center justify-between gap-2">
-                <span className="truncate text-xs text-foreground/80">{queued.text}</span>
-                <button
-                  type="button"
-                  aria-label="Remove queued message"
-                  className="text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() =>
-                    setQueuedComposerSends((current) =>
-                      removeQueuedComposerMessage(current, queued.id),
-                    )
-                  }
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-    );
   const providerTaskPanel =
     providerTasks.length === 0 ? null : (
       <ProviderTaskPanel
@@ -4351,6 +4290,74 @@ function ChatViewContent(props: ChatViewProps) {
     [providerTasks],
   );
   const hasRunningBackgroundTask = runningBackgroundTasks.length > 0;
+  /**
+   * Whether sending right now would stop background work the user can see.
+   *
+   * The one predicate behind the hold, its release, and the send-anyway
+   * confirmation - a running Grok session queues the message itself and keeps
+   * its tasks, so a send there destroys nothing and must neither wait nor
+   * warn. Deciding that separately at each site is how the three drift apart.
+   */
+  const sendWouldStopBackgroundTasks =
+    hasRunningBackgroundTask && !(activeSessionProviderDriver === "grok" && phase === "running");
+  /**
+   * Threads whose composer draft is waiting for background work to finish.
+   *
+   * Sending while background tasks run stops them, so the send is held instead
+   * of dispatched. What is held is only this flag: the message itself never
+   * leaves the composer, so switching threads, reloading, or a send refused
+   * downstream cannot lose it. Keyed by thread because a hold placed in one
+   * conversation must never fire into whichever one is on screen later.
+   */
+  const [heldSendThreadKeys, setHeldSendThreadKeys] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const sendIsHeld = activeThreadKey !== null && heldSendThreadKeys.has(activeThreadKey);
+  /**
+   * Says out loud that the message is waiting rather than sent.
+   *
+   * Silence here was the whole problem: the composer emptied, nothing was
+   * dispatched, and the chat read as broken. It stays typed and this explains
+   * why, with both ways out - send over the tasks, or stop waiting and keep
+   * editing.
+   */
+  const heldSendPanel = !sendIsHeld ? null : (
+    <div className="mx-auto w-full max-w-3xl px-2 pb-2">
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+        <span className="text-xs text-foreground/80">
+          {runningBackgroundTasks.length === 1
+            ? "Waiting for 1 background task to finish — this message sends automatically."
+            : `Waiting for ${runningBackgroundTasks.length} background tasks to finish — this message sends automatically.`}
+        </span>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => {
+              if (activeThreadKey !== null) {
+                setHeldSendThreadKeys((current) =>
+                  releaseComposerSendHold(current, activeThreadKey),
+                );
+              }
+              void onSendRef.current(undefined, undefined, { sendNow: true });
+            }}
+          >
+            Send now
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => {
+              if (activeThreadKey === null) return;
+              setHeldSendThreadKeys((current) => releaseComposerSendHold(current, activeThreadKey));
+            }}
+          >
+            Keep editing
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
   const visibleAgentAutoResumePending = shouldAnnounceAgentAutoResume({
     pending: agentAutoResumePending,
     isWorking,
@@ -7246,32 +7253,25 @@ function ChatViewContent(props: ChatViewProps) {
     // then stop them explicitly rather than letting them disappear silently.
     // Captured here, not read later: by the time the message is built these
     // tasks have been stopped and are gone from the list.
-    // Queue rather than destroy: the default for a send made while background
-    // work is running is to wait for it, not to kill it. `sendNow` is the
-    // explicit override behind the send-anyway control, which still confirms
-    // below before stopping anything.
+    // Wait rather than destroy: the default for a send made while background
+    // work is running is to hold until it finishes, not to kill it. The
+    // message stays in the composer - nothing is copied out, so nothing can be
+    // dropped between here and the release. `sendNow` is the explicit override
+    // behind the send-anyway control, which still confirms below before
+    // stopping anything.
     if (
-      shouldQueueComposerSend({
-        turnRunning: runningBackgroundTasks.length > 0,
+      activeThreadKey !== null &&
+      shouldHoldComposerSend({
+        backgroundTasksRunning: sendWouldStopBackgroundTasks,
+        hasSendableContent: !composerIsEmpty,
         sendNow: sendOptions?.sendNow === true,
-      }) &&
-      promptRef.current.trim().length > 0
+      })
     ) {
-      const queuedText = promptRef.current;
-      setQueuedComposerSends((current) => [
-        ...current,
-        { id: `queued-${Date.now()}-${current.length}`, text: queuedText },
-      ]);
-      promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
-      composerRef.current?.resetCursorState();
+      setHeldSendThreadKeys((current) => holdComposerSend(current, activeThreadKey));
       return;
     }
     let interruptedTaskTitles: ReadonlyArray<string> = [];
-    if (
-      runningBackgroundTasks.length > 0 &&
-      !(activeSessionProviderDriver === "grok" && phase === "running")
-    ) {
+    if (sendWouldStopBackgroundTasks) {
       if (!confirmDestructiveSend(describeSendOverRunningTasks(runningBackgroundTasks.length)))
         return;
       interruptedTaskTitles = runningBackgroundTasks.map(
@@ -7704,35 +7704,38 @@ function ChatViewContent(props: ChatViewProps) {
 
   const onSendRef = useRef(onSend);
   /**
-   * Release queued follow-ups once the background work they were waiting on is
-   * done, in the order they were typed.
+   * Send the held message once the background work it was waiting on is done.
    *
-   * Guarded by a ref rather than the queue's own emptiness: sending is async,
-   * and re-entering here mid-flush would send the same message twice.
+   * The hold is cleared before the send, not after: leaving it set across an
+   * await would re-enter here on the next render and send the same draft
+   * twice, and the draft is still in the composer either way, so a send that
+   * is refused downstream leaves the user their words rather than nothing.
    */
-  const flushingQueuedSendsRef = useRef(false);
+  const releasingHeldSendRef = useRef(false);
   useEffect(() => {
-    if (flushingQueuedSendsRef.current) return;
-    const release = releaseQueuedComposerMessages({
-      turnRunning: hasRunningBackgroundTask,
-      queued: queuedComposerSends,
-    });
-    if (release.length === 0) return;
-    flushingQueuedSendsRef.current = true;
-    setQueuedComposerSends([]);
+    if (releasingHeldSendRef.current) return;
+    const releasedThreadKey = activeThreadKey;
+    if (
+      releasedThreadKey === null ||
+      !shouldReleaseHeldComposerSend({
+        heldThreadKeys: heldSendThreadKeys,
+        activeThreadKey: releasedThreadKey,
+        backgroundTasksRunning: sendWouldStopBackgroundTasks,
+      })
+    ) {
+      return;
+    }
+    releasingHeldSendRef.current = true;
+    setHeldSendThreadKeys((current) => releaseComposerSendHold(current, releasedThreadKey));
     void (async () => {
       try {
-        for (const queued of release) {
-          promptRef.current = queued.text;
-          setComposerDraftPrompt(composerDraftTarget, queued.text);
-          // sendNow so a queued message cannot be re-queued by its own release.
-          await onSendRef.current(undefined, undefined, { sendNow: true });
-        }
+        // sendNow so the release cannot be held by its own condition.
+        await onSendRef.current(undefined, undefined, { sendNow: true });
       } finally {
-        flushingQueuedSendsRef.current = false;
+        releasingHeldSendRef.current = false;
       }
     })();
-  }, [composerDraftTarget, hasRunningBackgroundTask, queuedComposerSends, setComposerDraftPrompt]);
+  }, [activeThreadKey, heldSendThreadKeys, sendWouldStopBackgroundTasks]);
   onSendRef.current = onSend;
   // Reports whether the send actually started. The caller closes the
   // "Transcription ready" card on the strength of that: closing over a send
@@ -10134,7 +10137,7 @@ function ChatViewContent(props: ChatViewProps) {
                         </div>
                       </div>
                     </div>
-                    {queuedComposerSendPanel}
+                    {heldSendPanel}
                     {providerTaskPanel}
                     <div
                       aria-hidden
