@@ -75,6 +75,14 @@ export function RemoteControlFpsOverlay({
 
   const lookPointerRef = useRef<number | null>(null);
   const lookLastRef = useRef<{ x: number; y: number } | null>(null);
+  // The look side showed only a "Drag to look" pill, so a thumb on it got no
+  // acknowledgement at all: with nothing moving on screen and nothing moving
+  // on the remote machine, it read as a dead half of the controller rather
+  // than as aiming. It gets the same floating stick as movement - the thumb
+  // rides it freely (aiming is unbounded), the ring just says "you are here".
+  const [lookOrigin, setLookOrigin] = useState<{ x: number; y: number } | null>(null);
+  const lookThumbRef = useRef<HTMLDivElement | null>(null);
+  const lookZoneOriginRef = useRef<{ x: number; y: number } | null>(null);
 
   // Press/release input goes through the tracker so the "no stuck keys"
   // invariant lives in tested code rather than in three hand-rolled Sets.
@@ -178,6 +186,10 @@ export function RemoteControlFpsOverlay({
     if (lookPointerRef.current !== null) return;
     lookPointerRef.current = event.pointerId;
     lookLastRef.current = { x: event.clientX, y: event.clientY };
+    const rect = event.currentTarget.getBoundingClientRect();
+    lookZoneOriginRef.current = { x: event.clientX, y: event.clientY };
+    setLookOrigin({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+    if (lookThumbRef.current) lookThumbRef.current.style.transform = "translate3d(0px, 0px, 0)";
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
@@ -193,6 +205,20 @@ export function RemoteControlFpsOverlay({
     const dx = scaleFpsLookDelta(event.clientX - last.x, lookSensitivity);
     const dy = scaleFpsLookDelta(event.clientY - last.y, lookSensitivity);
     lookLastRef.current = { x: event.clientX, y: event.clientY };
+    const zoneOrigin = lookZoneOriginRef.current;
+    const thumb = lookThumbRef.current;
+    if (thumb && zoneOrigin) {
+      // Bounded to the ring for the visual only - the look itself is already
+      // an unbounded series of deltas, so clamping the picture here cannot
+      // cost aim, and an unclamped thumb would wander off across the screen.
+      const offsetX = event.clientX - zoneOrigin.x;
+      const offsetY = event.clientY - zoneOrigin.y;
+      const distance = Math.hypot(offsetX, offsetY);
+      const scale = distance > STICK_RADIUS ? STICK_RADIUS / distance : 1;
+      thumb.style.transform = `translate3d(${String(offsetX * scale)}px, ${String(
+        offsetY * scale,
+      )}px, 0)`;
+    }
     if (dx !== 0 || dy !== 0) onLook(dx, dy);
   };
 
@@ -205,6 +231,8 @@ export function RemoteControlFpsOverlay({
     }
     lookPointerRef.current = null;
     lookLastRef.current = null;
+    lookZoneOriginRef.current = null;
+    setLookOrigin(null);
   };
 
   const holdButton = (button: "left" | "right") => ({
@@ -256,7 +284,11 @@ export function RemoteControlFpsOverlay({
   });
 
   return (
-    <div data-remote-fps-overlay className="absolute inset-0 z-20 flex touch-none select-none">
+    // Above the surface's own bottom control row (z-40), which otherwise lies
+    // across this overlay's action buttons and fire cluster and takes their
+    // taps. While the controller is up it owns the screen; it carries its own
+    // Exit, so nothing becomes unreachable.
+    <div data-remote-fps-overlay className="absolute inset-0 z-50 flex touch-none select-none">
       {/* Movement half */}
       <div
         data-remote-fps-zone="move"
@@ -312,9 +344,33 @@ export function RemoteControlFpsOverlay({
         onPointerCancel={handleLookUp}
         onContextMenu={(event) => event.preventDefault()}
       >
-        <div className="pointer-events-none absolute top-6 right-6 rounded-full bg-black/55 px-3 py-1 text-[11px] text-white/80">
-          Drag to look
-        </div>
+        {lookOrigin ? (
+          <>
+            <div
+              className="pointer-events-none absolute rounded-full border-2 border-white/35 bg-black/25"
+              style={{
+                left: lookOrigin.x - STICK_RADIUS,
+                top: lookOrigin.y - STICK_RADIUS,
+                width: STICK_RADIUS * 2,
+                height: STICK_RADIUS * 2,
+              }}
+            />
+            <div
+              ref={lookThumbRef}
+              className="pointer-events-none absolute rounded-full border border-white/60 bg-white/35 will-change-transform"
+              style={{
+                left: lookOrigin.x - 22,
+                top: lookOrigin.y - 22,
+                width: 44,
+                height: 44,
+              }}
+            />
+          </>
+        ) : (
+          <div className="pointer-events-none absolute top-6 right-6 rounded-full bg-black/55 px-3 py-1 text-[11px] text-white/80">
+            Drag to look
+          </div>
+        )}
 
         {/* Bounded and wrapping: in portrait this half is barely 220px wide,
             and a single row of four action keys plus the fire cluster is wider

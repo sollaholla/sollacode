@@ -24,6 +24,11 @@ import {
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
+import {
+  RemoteViewAdjustLayer,
+  RemoteViewZoomToggle,
+  useRemoteViewZoom,
+} from "../remoteView/RemoteViewZoom";
 
 const LIVE_FRAME_INTERVAL_MS = 2_500;
 const WHEEL_FLUSH_MS = 140;
@@ -81,6 +86,13 @@ export function RemoteBrowserFrame(props: {
   const [frameError, setFrameError] = useState<string | null>(null);
   const [keyboardText, setKeyboardText] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // A phone renders the whole desktop page a few inches wide, where a link is
+  // smaller than a fingertip. Magnifying it is what makes the mirror clickable
+  // at all, so the frame carries the same zoom control as the remote desktop.
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const zoomView = useRemoteViewZoom();
+  const zoomAdjustingRef = useRef(zoomView.adjusting);
+  zoomAdjustingRef.current = zoomView.adjusting;
   const frameRef = useRef<PreviewRemoteSnapshotResult | null>(null);
   frameRef.current = frame;
   const gestureRef = useRef<ActiveGesture | null>(null);
@@ -152,7 +164,10 @@ export function RemoteBrowserFrame(props: {
     readonly origin: FramePoint;
     readonly size: FrameSize;
   } | null => {
-    const element = containerRef.current;
+    // The IMAGE's box, not the container's: it is the one that carries the
+    // zoom transform, so reading it keeps a tap landing on whatever the viewer
+    // is actually looking at. The two are identical at 1x.
+    const element = imageRef.current ?? containerRef.current;
     const current = frameRef.current;
     if (element === null || current === null) return null;
     const bounds = element.getBoundingClientRect();
@@ -168,9 +183,20 @@ export function RemoteBrowserFrame(props: {
   }, []);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // Panning and dragging on the page are the same gesture; while the view is
+    // being adjusted, nothing is sent to the desktop tab.
+    if (zoomAdjustingRef.current) return;
     if (event.button !== 0 || gestureRef.current !== null) return;
     const geometry = contentGeometry();
     if (geometry === null) return;
+    // Remember where the last tap landed so the first zoom magnifies the link
+    // that was just missed rather than the middle of the page.
+    if (geometry.size.width > 0 && geometry.size.height > 0) {
+      zoomView.setAnchor({
+        x: (event.clientX - geometry.origin.x) / geometry.size.width,
+        y: (event.clientY - geometry.origin.y) / geometry.size.height,
+      });
+    }
     const start = {
       x: event.clientX - geometry.origin.x,
       y: event.clientY - geometry.origin.y,
@@ -318,7 +344,9 @@ export function RemoteBrowserFrame(props: {
             alt=""
             className="absolute inset-0 h-full w-full object-contain"
             draggable={false}
+            ref={imageRef}
             src={`data:${frame.screenshot.mimeType};base64,${frame.screenshot.data}`}
+            style={zoomView.style}
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-white/70">
@@ -373,6 +401,29 @@ export function RemoteBrowserFrame(props: {
           <div className="absolute inset-x-3 bottom-3 rounded-lg border border-red-500/30 bg-red-950/80 px-3 py-2 text-xs text-red-200">
             {frameError}
           </div>
+        ) : null}
+        {frame ? (
+          <div className="absolute right-3 bottom-3 z-40 flex items-center gap-2">
+            <RemoteViewZoomToggle
+              adjusting={zoomView.adjusting}
+              view={zoomView.view}
+              onToggle={zoomView.toggleAdjusting}
+            />
+          </div>
+        ) : null}
+        {zoomView.adjusting ? (
+          <RemoteViewAdjustLayer
+            view={zoomView.view}
+            canZoomIn={zoomView.canZoomIn}
+            canZoomOut={zoomView.canZoomOut}
+            onZoomIn={zoomView.zoomIn}
+            onZoomOut={zoomView.zoomOut}
+            onReset={zoomView.reset}
+            onPanBy={zoomView.panBy}
+            onPaneResize={zoomView.setPane}
+            onDone={zoomView.stopAdjusting}
+            bottomOffset="3.5rem"
+          />
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-2 border-t border-border bg-background px-2 py-2">
