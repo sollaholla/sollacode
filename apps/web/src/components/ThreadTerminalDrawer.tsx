@@ -1748,16 +1748,25 @@ export function TerminalViewport({
       lastInputFailure = { message, at: now };
       writeSystemMessage(terminal, message);
     };
+    // The reconciliation below exists for ONE thing: iOS keyboard dictation
+    // rewriting words it already committed. That is a touch-keyboard
+    // behaviour, and a hardware keyboard must never be routed through it -
+    // guessing an input method's intent from the textarea misreads ordinary
+    // typing, which cost real keystrokes on macOS.
+    const usesTouchKeyboard =
+      typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
     const inputDisposable = terminal.onData((data) => {
       // While an input method holds text in the textarea, xterm's own diff is
       // unreliable: iOS dictation rewrites words it already committed, and
       // xterm answers by re-sending the entire buffer. Reconcile against the
       // textarea, which holds exactly what has been dictated so far.
-      const dictation = resolveTerminalDictationInput({
-        payload: data,
-        textareaValue: terminal.textarea?.value ?? "",
-        state: terminalDictationStateRef.current,
-      });
+      const dictation = usesTouchKeyboard
+        ? resolveTerminalDictationInput({
+            payload: data,
+            textareaValue: terminal.textarea?.value ?? "",
+            state: terminalDictationStateRef.current,
+          })
+        : { payload: data, state: emptyTerminalDictationState };
       terminalDictationStateRef.current = dictation.state;
       if (dictation.payload.length === 0) {
         return;
