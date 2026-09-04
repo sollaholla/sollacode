@@ -165,6 +165,7 @@ export function RemoteControlViewerDialog(props: {
   // Read inside event handlers that are not re-created per render.
   const zoomViewAdjustingRef = useRef(zoomView.adjusting);
   zoomViewAdjustingRef.current = zoomView.adjusting;
+  const zoomAdjusting = zoomView.adjusting;
   // Touch devices have no hardware keyboard to capture; this summons the
   // on-screen one via a hidden input and forwards its text natively.
   const [virtualKeyboardOpen, setVirtualKeyboardOpen] = useState(false);
@@ -857,6 +858,14 @@ export function RemoteControlViewerDialog(props: {
     if (real || pseudo) toggleFullScreen();
   }, [fpsActive, toggleFullScreen]);
 
+  // Entering the adjust mode stops forwarding, which would otherwise strand a
+  // key or mouse button that was down at that instant - the remote machine
+  // would sit on a stuck W or a held left-click for as long as the viewer
+  // spent panning. Release them on the way in.
+  useEffect(() => {
+    if (zoomAdjusting) releasePressedInputs();
+  }, [zoomAdjusting, releasePressedInputs]);
+
   const sendFpsKey = useCallback(
     (code: string, key: string, action: "down" | "up") => {
       // Same gate as the physical keyboard path. The pad can be on screen with
@@ -1278,6 +1287,14 @@ export function RemoteControlViewerDialog(props: {
                   onFocus={() => setVirtualKeyboardOpen(true)}
                   onBlur={() => setVirtualKeyboardOpen(false)}
                   onBeforeInput={(event) => {
+                    // The gate lives on the surface's own handlers, and this
+                    // input is not one of them - without this, typing while the
+                    // view is being adjusted still reaches the host and makes a
+                    // liar of the "nothing is sent" notice on screen.
+                    if (zoomViewAdjustingRef.current) {
+                      event.preventDefault();
+                      return;
+                    }
                     const native = event.nativeEvent as InputEvent;
                     if (
                       native.inputType === "insertText" ||
