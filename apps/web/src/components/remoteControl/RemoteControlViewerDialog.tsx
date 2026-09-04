@@ -866,6 +866,13 @@ export function RemoteControlViewerDialog(props: {
     if (zoomAdjusting) releasePressedInputs();
   }, [zoomAdjusting, releasePressedInputs]);
 
+  // Two modes that both want the whole surface. The controller wins - it is
+  // raised above the adjust layer anyway, so leaving both on would show a pad
+  // whose drags silently pan the picture behind it.
+  useEffect(() => {
+    if (fpsActive) zoomView.stopAdjusting();
+  }, [fpsActive, zoomView]);
+
   const sendFpsKey = useCallback(
     (code: string, key: string, action: "down" | "up") => {
       // Same gate as the physical keyboard path. The pad can be on screen with
