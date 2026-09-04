@@ -30,6 +30,23 @@ describe("composer swipe-down wiring", () => {
     ).toContain("onSwipeDownDismiss");
   });
 
+  it("actually collapses the composer, not just the keyboard", () => {
+    // The first version only blurred. On a phone thread in portrait -- the one
+    // layout most phones are held in -- shouldCollapseMobileComposer returns
+    // false unconditionally, so the keyboard went away and the composer stayed
+    // exactly the same size: "swipe down does nothing".
+    expect(SOURCE).toContain("setSwipeDismissedMobileComposer(true)");
+    const call = SOURCE.slice(SOURCE.indexOf("shouldCollapseMobileComposer({"));
+    expect(
+      call.slice(0, call.indexOf("})")),
+      "the collapse decision never sees the swipe, so the gesture cannot collapse anything",
+    ).toContain("swipeDismissed");
+  });
+
+  it("reopens on the next focus, so the collapse is not a trap", () => {
+    expect(SOURCE).toContain("setSwipeDismissedMobileComposer(false)");
+  });
+
   it("refuses to collapse while the microphone is live", () => {
     const handler = SOURCE.slice(SOURCE.indexOf("swipeDownDismissRef.current = "));
     const body = handler.slice(0, handler.indexOf("};"));

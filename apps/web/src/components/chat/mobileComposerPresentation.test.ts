@@ -13,6 +13,7 @@ const baseInput = {
   forceExpandedOnMobile: false,
   isComposerFocused: false,
   voiceStatus: null,
+  swipeDismissed: false,
 };
 
 describe("mobile composer presentation", () => {
@@ -159,5 +160,50 @@ describe("processing composer Enter action", () => {
         queuedPromotionDisabled: true,
       }),
     ).toBeNull();
+  });
+});
+
+describe("swipe down to put the composer away", () => {
+  it("collapses a portrait thread composer, which nothing else does", () => {
+    // The always-expanded rule for phone threads is what made the gesture look
+    // broken: it dismissed the keyboard and left the composer exactly as it
+    // was, on the one layout most phones are held in.
+    expect(shouldCollapseMobileComposer({ ...baseInput, swipeDismissed: true })).toBe(true);
+  });
+
+  it("collapses a focused composer, keyboard and all", () => {
+    expect(
+      shouldCollapseMobileComposer({
+        ...baseInput,
+        isComposerFocused: true,
+        swipeDismissed: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("never wins over live voice capture", () => {
+    // Collapsing here unmounts the recorder controls mid-take.
+    expect(
+      shouldCollapseMobileComposer({
+        ...baseInput,
+        voiceStatus: "recording",
+        swipeDismissed: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("never wins over an explicit force-expanded surface", () => {
+    expect(
+      shouldCollapseMobileComposer({
+        ...baseInput,
+        forceExpandedOnMobile: true,
+        swipeDismissed: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("leaves every existing case alone while unset", () => {
+    expect(shouldCollapseMobileComposer(baseInput)).toBe(false);
+    expect(shouldCollapseMobileComposer({ ...baseInput, isPortraitViewport: false })).toBe(true);
   });
 });
