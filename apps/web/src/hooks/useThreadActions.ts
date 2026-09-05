@@ -5,7 +5,13 @@ import {
 } from "@t3tools/client-runtime/environment";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { canSettle, canSnooze } from "@t3tools/client-runtime/state/thread-settled";
-import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  isAgentBuilderThreadId,
+  isOrchestratorThreadId,
+  type ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -70,6 +76,9 @@ export class ThreadSettleBlockedError extends Schema.TaggedErrorClass<ThreadSett
   },
 ) {
   override get message(): string {
+    if (isOrchestratorThreadId(this.threadId) || isAgentBuilderThreadId(this.threadId)) {
+      return "Orchestrator and Agent Builder chats stay active and cannot be settled.";
+    }
     return "This thread still needs attention. Resolve or interrupt it first, then try again.";
   }
 }

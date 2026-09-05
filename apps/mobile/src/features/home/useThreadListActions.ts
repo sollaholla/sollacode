@@ -1,5 +1,6 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { canSettle } from "@t3tools/client-runtime/state/thread-settled";
+import { isAgentBuilderThreadId, isOrchestratorThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Haptics from "expo-haptics";
 import { useCallback, useRef } from "react";
@@ -89,7 +90,9 @@ function useThreadActionExecutor(
         if (action === "settle" && !canSettle(thread, { now: new Date().toISOString() })) {
           Alert.alert(
             actionFailureTitle(action),
-            "This thread still needs attention. Resolve or interrupt it first, then try again.",
+            isOrchestratorThreadId(thread.id) || isAgentBuilderThreadId(thread.id)
+              ? "Orchestrator and Agent Builder chats stay active and cannot be settled."
+              : "This thread still needs attention. Resolve or interrupt it first, then try again.",
           );
           return false;
         }

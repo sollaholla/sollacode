@@ -1,7 +1,9 @@
 import {
+  AGENT_BUILDER_THREAD_ID,
   CommandId,
   EventId,
   MessageId,
+  ORCHESTRATOR_THREAD_ID,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -69,6 +71,36 @@ function makeSession(status: OrchestrationSession["status"]): OrchestrationSessi
 }
 
 it.layer(NodeServices.layer)("settled thread decider", (it) => {
+  for (const id of [
+    ORCHESTRATOR_THREAD_ID,
+    AGENT_BUILDER_THREAD_ID,
+    ThreadId.make("agent-builder:legacy-creator"),
+  ]) {
+    it.effect(`rejects settlement of persistent control chat ${id}`, () =>
+      Effect.gen(function* () {
+        const model = makeReadModel(null);
+        const error = yield* Effect.flip(
+          decideOrchestrationCommand({
+            command: {
+              type: "thread.settle",
+              commandId: CommandId.make(`settle-${id}`),
+              threadId: id,
+            },
+            readModel: {
+              ...model,
+              threads: model.threads.map((thread) => ({ ...thread, id })),
+            },
+          }),
+        );
+        expect(error).toMatchObject({
+          _tag: "OrchestrationCommandInvariantError",
+          commandType: "thread.settle",
+          detail: `thread ${id} is a persistent control chat and cannot be settled`,
+        });
+      }),
+    );
+  }
+
   it.effect("ignores a stale session write after a replacement session has started", () =>
     Effect.gen(function* () {
       const replacement = { ...makeSession("running"), updatedAt: "2026-01-01T00:00:01.000Z" };

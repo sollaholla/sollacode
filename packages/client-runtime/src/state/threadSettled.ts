@@ -1,4 +1,8 @@
-import type { OrchestrationThreadShell } from "@t3tools/contracts";
+import {
+  isAgentBuilderThreadId,
+  isOrchestratorThreadId,
+  type OrchestrationThreadShell,
+} from "@t3tools/contracts";
 
 export type ChangeRequestStateLike = "open" | "closed" | "merged";
 
@@ -69,7 +73,7 @@ export function hasQueuedTurnStart(
 }
 
 /**
- * A thread may be settled only when none of effectiveSettled's activity
+ * A non-persistent thread may be settled only when none of effectiveSettled's activity
  * blockers hold. This is deliberately the same list: anything the partition
  * refuses to CLASSIFY as settled must also be refused as a settle TARGET.
  * The server enforces its own invariants; this client-side twin exists so
@@ -78,10 +82,16 @@ export function hasQueuedTurnStart(
 export function canSettle(
   shell: Pick<
     OrchestrationThreadShell,
-    "hasPendingApprovals" | "hasPendingUserInput" | "session" | "latestUserMessageAt" | "latestTurn"
+    | "id"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "session"
+    | "latestUserMessageAt"
+    | "latestTurn"
   >,
   options: { readonly now: string },
 ): boolean {
+  if (isOrchestratorThreadId(shell.id) || isAgentBuilderThreadId(shell.id)) return false;
   if (shell.hasPendingApprovals || shell.hasPendingUserInput) return false;
   if (shell.session?.status === "starting" || shell.session?.status === "running") return false;
   // Queued work is as blocked-on-progress as a live session: settling it
@@ -234,6 +244,9 @@ export function effectiveSettled(
     readonly changeRequestState?: ChangeRequestStateLike | null;
   },
 ): boolean {
+  // These are persistent control chats, including older Agent Builder ids.
+  // Ignore stale settlement overrides from clients predating this exemption.
+  if (isOrchestratorThreadId(shell.id) || isAgentBuilderThreadId(shell.id)) return false;
   // Blocked work must remain visible even when a user explicitly settled it.
   if (shell.hasPendingApprovals || shell.hasPendingUserInput) return false;
   if (shell.session?.status === "starting" || shell.session?.status === "running") return false;

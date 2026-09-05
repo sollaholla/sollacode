@@ -79,3 +79,14 @@ operation, and legacy close reconciliation. Named-agent final-tab and batch
 closes emit only closure events and remain empty across a server restart.
 Existing tabs and browser profiles are preserved. Native mobile's separate
 navigation is unchanged.
+
+## Persistent chats incorrectly classified as settled
+
+The installed Orchestrator and Agent Builder rows had no saved settled override.
+The shared client inactivity rule treated them as ordinary work threads. The
+client now exempts the reserved Orchestrator id and Agent Builder id prefix
+from every settlement source, including stale explicit overrides. This shared
+rule covers web, desktop, and native mobile lists, plus the web chat banner.
+The server rejects explicit settle commands for the same identities, including
+requests from older clients. Ordinary delegated task threads remain eligible
+for settlement. No live database edits were needed.

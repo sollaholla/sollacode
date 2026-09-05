@@ -1,4 +1,6 @@
 import {
+  AGENT_BUILDER_THREAD_ID,
+  ORCHESTRATOR_THREAD_ID,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -92,6 +94,31 @@ describe("threadLastActivityAt", () => {
 });
 
 describe("effectiveSettled", () => {
+  it.each([
+    ORCHESTRATOR_THREAD_ID,
+    AGENT_BUILDER_THREAD_ID,
+    ThreadId.make("agent-builder:legacy-creator"),
+  ])("keeps persistent control chat %s active across every settlement source", (id) => {
+    for (const settledOverride of [null, "active", "settled"] as const) {
+      const shell = { ...makeShell({ activityAt: STALE, settledOverride }), id };
+      expect(canSettle(shell, { now: NOW })).toBe(false);
+      for (const changeRequestState of [null, "merged", "closed"] as const) {
+        expect(
+          effectiveSettled(shell, { now: NOW, autoSettleAfterDays: 1, changeRequestState }),
+        ).toBe(false);
+      }
+    }
+  });
+
+  it.each(["solla-orchestrator-task-1", "agent-worker:task-1", "ordinary-thread"])(
+    "still allows ordinary work %s to settle",
+    (id) => {
+      const shell = { ...makeShell({ activityAt: STALE }), id: ThreadId.make(id) };
+      expect(canSettle(shell, { now: NOW })).toBe(true);
+      expect(effectiveSettled(shell, { now: NOW, autoSettleAfterDays: 1 })).toBe(true);
+    },
+  );
+
   const overrideCases = [null, "settled", "active"] as const;
   const changeRequestStates = [undefined, "open", "merged"] as const;
   const inactivityCases = [
