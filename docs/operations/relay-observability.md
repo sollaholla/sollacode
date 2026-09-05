@@ -1,5 +1,7 @@
 # Relay observability
 
+This is reference material for the inherited relay integration. The `infra/relay` deployment package is not included in Solla Code; this guide does not imply that the fork operates a relay or has upstream service credentials. See [Release operations](./release.md#t3-connect-is-not-part-of-this-fork).
+
 The relay Alchemy stack owns a focused Axiom trace setup:
 
 - `t3-code-relay-traces-prod`, an OpenTelemetry trace dataset for Worker requests

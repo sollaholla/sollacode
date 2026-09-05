@@ -1,0 +1,23 @@
+{
+  "source": "Production client, lossless Chromium compositor frames",
+  "viewport": {
+    "width": 1314,
+    "height": 912
+  },
+  "duration": 10.565635919570923,
+  "actions": [
+    {
+      "at": 3.5226359367370605,
+      "x": 1256,
+      "y": 22,
+      "name": "Expand the dashboard artifact"
+    },
+    {
+      "at": 6.553636074066162,
+      "x": 1256,
+      "y": 22,
+      "name": "Restore the conversation beside the artifact"
+    }
+  ],
+  "errors": []
+}

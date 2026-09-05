@@ -1,6 +1,7 @@
 import type {
   ModelSelection,
   OrchestrationMessage,
+  OrchestrationThreadActivity,
   ProviderDriverKind,
   ProviderInstanceId,
   ServerProvider,
@@ -853,4 +854,158 @@ export function buildProviderHandoffTurnInput(input: {
     }
   }
   return bounded;
+}
+
+/** Activity kinds the failover writes; the restore reads them back. */
+export const PROVIDER_FAILOVER_COMPLETED_ACTIVITY_KIND = "provider.failover.completed";
+export const PROVIDER_FAILOVER_RESTORED_ACTIVITY_KIND = "provider.failover.restored";
+
+export interface UsageLimitFailoverRestore {
+  /** The selection the thread goes back to: what the user had before the failover. */
+  readonly modelSelection: ModelSelection;
+  readonly sourceInstanceId: ProviderInstanceId;
+  readonly sourceDriver: ProviderDriverKind;
+  readonly sourceLabel: string;
+  /** The failover target the thread is leaving. */
+  readonly targetInstanceId: ProviderInstanceId;
+  readonly targetModel: string;
+  readonly targetLabel: string;
+  readonly failoverActivityId: string;
+  readonly resetsAtEpochMs: number | null;
+}
+
+function modelSelectionOptionsFromPayload(value: unknown): ModelSelection["options"] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const options: Array<{ readonly id: string; readonly value: string | boolean }> = [];
+  for (const entry of value) {
+    const record = asRecord(entry);
+    if (!record || typeof record.id !== "string") continue;
+    if (typeof record.value === "string" || typeof record.value === "boolean") {
+      options.push({ id: record.id, value: record.value });
+    }
+  }
+  return options.length > 0 ? options : undefined;
+}
+
+function activityOrder(activity: OrchestrationThreadActivity): number {
+  return activity.sequence ?? Number.NEGATIVE_INFINITY;
+}
+
+/** Whether `later` was recorded after `earlier`; sequence first, then time. */
+function activityIsAfter(
+  later: OrchestrationThreadActivity,
+  earlier: OrchestrationThreadActivity,
+): boolean {
+  const laterOrder = activityOrder(later);
+  const earlierOrder = activityOrder(earlier);
+  if (Number.isFinite(laterOrder) && Number.isFinite(earlierOrder) && laterOrder !== earlierOrder) {
+    return laterOrder > earlierOrder;
+  }
+  return later.createdAt >= earlier.createdAt;
+}
+
+/**
+ * Whether a thread that failed over on a usage limit should go back now.
+ *
+ * A failover is a stopgap, not a decision: the user picked Claude at max
+ * effort and the five-hour window closing under them is not a reason to keep
+ * the thread on Antigravity for the rest of the day. Yet that is what
+ * happened — the failover rewrote the thread's selection and nothing ever
+ * rewrote it back, so every thread that hit a limit stayed on whichever
+ * provider was next in the registry until the user noticed and switched by
+ * hand (2026-09-04: two threads to Antigravity at 22:38, two more at 23:19,
+ * each switched back manually, reported as the client "desyncing" after a
+ * mid-turn effort change).
+ *
+ * The restore is deliberately narrow. It only fires when the thread is still
+ * exactly where the failover left it — the same instance and model — so a
+ * user who chose something else since keeps their choice; only once the
+ * window the failover recorded has actually reset; only when the provider it
+ * would return to is enabled, authenticated, still lists the model, and is
+ * not reporting a fresh exhaustion of its own; and never twice for the same
+ * failover.
+ */
+export function resolveUsageLimitFailoverRestore(input: {
+  readonly failover: OrchestrationThreadActivity | null | undefined;
+  readonly restored: OrchestrationThreadActivity | null | undefined;
+  readonly currentSelection: ModelSelection;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly nowEpochMs: number;
+}): UsageLimitFailoverRestore | null {
+  const failover = input.failover;
+  if (!failover || failover.kind !== PROVIDER_FAILOVER_COMPLETED_ACTIVITY_KIND) return null;
+  if (input.restored && activityIsAfter(input.restored, failover)) return null;
+
+  const payload = asRecord(failover.payload);
+  if (!payload) return null;
+  const sourceInstanceId = payload.sourceInstanceId;
+  const sourceModel = payload.sourceModel;
+  const targetInstanceId = payload.targetInstanceId;
+  const targetModel = payload.targetModel;
+  if (
+    typeof sourceInstanceId !== "string" ||
+    typeof sourceModel !== "string" ||
+    typeof targetInstanceId !== "string" ||
+    typeof targetModel !== "string" ||
+    sourceInstanceId.length === 0 ||
+    sourceModel.length === 0
+  ) {
+    return null;
+  }
+  // A failover that stayed on the same instance (Fable → Opus) is a model
+  // downgrade the user may prefer to keep; only a provider change is undone.
+  if (sourceInstanceId === targetInstanceId) return null;
+  if (
+    String(input.currentSelection.instanceId) !== targetInstanceId ||
+    input.currentSelection.model !== targetModel
+  ) {
+    return null;
+  }
+
+  const resetsAtEpochMs = epochMilliseconds(payload.resetsAt);
+  if (resetsAtEpochMs === null || resetsAtEpochMs > input.nowEpochMs) return null;
+
+  const provider = input.providers.find(
+    (candidate) => String(candidate.instanceId) === sourceInstanceId,
+  );
+  if (!provider || !isEligibleTarget(provider)) return null;
+  if (isProviderAccountExhausted(provider, input.nowEpochMs)) return null;
+  if (!provider.models.some((model) => model.slug === sourceModel)) return null;
+  if (
+    String(provider.driver) === CLAUDE_DRIVER &&
+    isClaudeModelExhausted({
+      accountUsage: provider.accountUsage,
+      modelSlug: sourceModel,
+      nowEpochMs: input.nowEpochMs,
+    })
+  ) {
+    return null;
+  }
+
+  const options = modelSelectionOptionsFromPayload(payload.sourceOptions);
+  const targetProvider = input.providers.find(
+    (candidate) => String(candidate.instanceId) === targetInstanceId,
+  );
+  return {
+    modelSelection: {
+      instanceId: provider.instanceId,
+      model: sourceModel,
+      ...(options ? { options } : {}),
+    },
+    sourceInstanceId: provider.instanceId,
+    sourceDriver: provider.driver,
+    sourceLabel:
+      (typeof payload.sourceLabel === "string" && payload.sourceLabel.trim()) ||
+      provider.displayName?.trim() ||
+      String(provider.driver),
+    targetInstanceId: (targetProvider?.instanceId ??
+      input.currentSelection.instanceId) as ProviderInstanceId,
+    targetModel,
+    targetLabel:
+      (typeof payload.targetLabel === "string" && payload.targetLabel.trim()) ||
+      targetProvider?.displayName?.trim() ||
+      targetInstanceId,
+    failoverActivityId: String(failover.id),
+    resetsAtEpochMs,
+  };
 }

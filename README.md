@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/source/solla-code-gold-s-master.png" alt="Solla Code gold S logo" width="132" />
+  <img src="./apps/marketing/public/brand/solla-bolt.svg" alt="Solla Code gold S logo" width="132" />
 </p>
 
 <h1 align="center">Solla Code</h1>
@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sollaholla/t3code/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI status" src="https://github.com/sollaholla/t3code/actions/workflows/ci.yml/badge.svg?branch=main" /></a>
+  <a href="https://github.com/sollaholla/sollacode/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI status" src="https://github.com/sollaholla/sollacode/actions/workflows/ci.yml/badge.svg?branch=main" /></a>
   <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-C89B3C" /></a>
-  <a href="https://github.com/sollaholla/t3code/releases"><img alt="Published release" src="https://img.shields.io/github/v/release/sollaholla/t3code?display_name=tag&amp;include_prereleases" /></a>
+  <a href="https://github.com/sollaholla/sollacode/releases"><img alt="Published release" src="https://img.shields.io/github/v/release/sollaholla/sollacode?display_name=tag&amp;include_prereleases" /></a>
   <a href="#providers"><img alt="Five or more providers" src="https://img.shields.io/badge/providers-5%2B-18181B" /></a>
   <a href="#clients-and-remote-access"><img alt="Web, desktop, and mobile" src="https://img.shields.io/badge/surfaces-web%20%7C%20desktop%20%7C%20mobile-18181B" /></a>
   <a href="https://github.com/pingdotgg/t3code"><img alt="Built on T3 Code" src="https://img.shields.io/badge/built%20on-T3%20Code-6D5EF7" /></a>
@@ -26,13 +26,13 @@
 
 <p align="center">
   <a href="./docs/media/readme/solla-code-hero.png">
-    <img src="./docs/media/readme/solla-code-hero.png" alt="Reconstruction of the Solla Code desktop workspace: sidebar with agents and threads, and a streaming agent turn" width="1100" />
+    <img src="./docs/media/readme/solla-code-hero.png" alt="The Solla Code production client showing a custom workspace with agents, project threads, and a code conversation" width="1100" />
   </a>
 </p>
 
 Solla Code is an open source, bring-your-own-subscription workspace for running coding agents on a machine you control. One environment can serve a local desktop app, browsers on the network, and mobile clients, while durable threads keep the same work available across every connected surface.
 
-Solla Code is built on the open core of [T3 Code](https://github.com/pingdotgg/t3code) from T3 Tools. This fork preserves T3 Code's performance-focused architecture and expands it with voice orchestration, persistent terminal workspaces, custom agents, collaboration, portable artifacts, and provider reliability tools.
+Solla Code is an independently maintained fork of [T3 Code](https://github.com/pingdotgg/t3code) from T3 Tools. It builds on the upstream architecture with voice orchestration, persistent terminal workspaces, custom agents, collaboration, portable artifacts, and provider reliability tools.
 
 ## What Solla Code adds
 
@@ -49,39 +49,39 @@ Solla Code is built on the open core of [T3 Code](https://github.com/pingdotgg/t
 
 ## See it in action
 
-These are the capabilities this fork adds on top of [T3 Code](https://github.com/pingdotgg/t3code). Base T3 Code already gives you projects, threads, and a chat surface; everything below is new here.
+The examples below illustrate Solla Code workflows. Feature overlap with upstream can change as both projects evolve.
 
 <p align="center">
   <a href="./docs/media/readme/voice-orchestrator.gif">
-    <img src="./docs/media/readme/voice-orchestrator.gif" alt="Speaking to the Solla Code workspace orchestrator, which reads CI gates, creates a focused thread, and routes it to a provider" width="1100" />
+    <img src="./docs/media/readme/voice-orchestrator.gif" alt="The production Solla Code voice orchestrator naming the projects in a demonstration workspace" width="1100" />
   </a>
 </p>
 
-<p align="center"><sub><b>Voice orchestrator.</b> Speak to a workspace-level agent that inspects threads, creates focused threads, and routes work to a provider.</sub></p>
+<p align="center"><sub><b>Voice orchestrator.</b> Ask about your workspace and receive a live voice response. This recording uses a synthesized microphone prompt and a real provider response.</sub></p>
 
 <p align="center">
   <a href="./docs/media/readme/custom-agents.gif">
-    <img src="./docs/media/readme/custom-agents.gif" alt="Delegating to a named Solla Code agent, which asks a scoped question, receives an answer, and returns a result" width="1100" />
+    <img src="./docs/media/readme/custom-agents.gif" alt="Opening the Code Reviewer agent and its working instructions in the production client" width="1100" />
   </a>
 </p>
 
-<p align="center"><sub><b>Custom agents and bounded collaboration.</b> Named agents with their own durable conversation. A root agent delegates, the worker asks a scoped question, and the result comes back in the same thread.</sub></p>
+<p align="center"><sub><b>Custom agents.</b> Open a named agent and review the instructions that define its work. The demonstration workspace contains distinct Code Reviewer and Studio agents.</sub></p>
 
 <p align="center">
   <a href="./docs/media/readme/terminal-workspaces.gif">
-    <img src="./docs/media/readme/terminal-workspaces.gif" alt="A named four-pane Solla Code terminal layout running a dev server, the test suite, an agent CLI, and git" width="1100" />
+    <img src="./docs/media/readme/terminal-workspaces.gif" alt="Two actual Solla Code terminal panes showing the search implementation and five passing Node tests" width="1100" />
   </a>
 </p>
 
-<p align="center"><sub><b>Persistent terminal workspaces.</b> Named layouts with retained PTYs, so long-running work survives navigation and relaunch.</sub></p>
+<p align="center"><sub><b>Terminal workspaces.</b> Read the implementation beside a real test run. These two shell panes execute the demonstration project’s source and five search tests.</sub></p>
 
 <p align="center">
   <a href="./docs/media/readme/thread-artifacts.gif">
-    <img src="./docs/media/readme/thread-artifacts.gif" alt="Publishing a revisioned Solla Code thread artifact and opening it from desktop, LAN, and phone over Tailscale" width="1100" />
+    <img src="./docs/media/readme/thread-artifacts.gif" alt="Opening revision two of the Lumen dashboard artifact, maximizing it, and restoring the conversation beside it" width="1100" />
   </a>
 </p>
 
-<p align="center"><sub><b>Thread artifacts.</b> Publish revisioned bundles from an ordinary chat. A signed host URL reaches authorized local, LAN, relay, and Tailscale clients.</sub></p>
+<p align="center"><sub><b>Thread artifacts.</b> Open a dashboard revision beside its conversation, expand it for a closer look, and restore the panel.</sub></p>
 
 <p align="center">
   <a href="./docs/media/readme/provider-failover.gif">
@@ -89,9 +89,9 @@ These are the capabilities this fork adds on top of [T3 Code](https://github.com
   </a>
 </p>
 
-<p align="center"><sub><b>Provider reliability.</b> A typed usage-limit event fails over to a standby provider and resumes the queued turn instead of dropping it.</sub></p>
+<p align="center"><sub><b>Provider reliability.</b> The real server and client handle a controlled quota-exhaustion event, switch from Grok primary to Grok backup, and continue the thread. Provider responses are fixtures; this is not a recording of a customer account hitting its limit.</sub></p>
 
-<p align="center"><sub>These are interface reconstructions rendered for documentation, not screen recordings. Every state shown is one the product produces; the renderer lives in <a href="./tools/motion/README.md">tools/motion</a>.</sub></p>
+<p align="center"><sub>These are production-client recordings with illustrative project content and synchronized cursor overlays. The capture scripts, source footage, original film, and verification boundaries are documented in <a href="./tools/motion/README.md">tools/motion</a>.</sub></p>
 
 ## Providers
 
@@ -104,7 +104,10 @@ Solla Code controls provider software that is already installed and authenticate
 | [Cursor](https://cursor.com/cli)                      | Install Cursor CLI, then run `cursor-agent login`    | Agent sessions and model selection                                   |
 | [Grok Build](https://x.ai/cli)                        | Install Grok CLI, then run `grok login`              | Thought streaming, usage status, terminal session resume             |
 | [OpenCode](https://opencode.ai)                       | Install OpenCode, then run `opencode auth login`     | Agent sessions and model selection                                   |
+| [Antigravity](./docs/providers/antigravity.md)        | Install `agy` and sign in from a terminal            | Text sessions, streamed tools, model discovery, native resume        |
 | [MCP Provider Bridge](./docs/providers/mcp-bridge.md) | Configure an absolute path to a trusted local bridge | Versioned capability negotiation for external providers              |
+
+Antigravity has a built-in driver, model discovery, streamed tool activity, native conversation resume, and interruption. Its headless transport currently accepts text only and does not inject Solla's thread-scoped MCP tools. See the [provider guide](./docs/providers/README.md) for setup, limits, and verification status.
 
 Provider-specific features are enabled only when an adapter or bridge advertises support. For example, typed automatic usage-limit failover currently recognizes explicit limit events from Codex, Claude Code, and Grok. Cursor and OpenCode remain available as providers, but ordinary errors do not trigger automatic failover.
 
@@ -132,8 +135,8 @@ Use this route to run the current source in this repository.
 2. Clone the Solla repository and install dependencies.
 
 ```bash
-git clone https://github.com/sollaholla/t3code.git
-cd t3code
+git clone https://github.com/sollaholla/sollacode.git
+cd sollacode
 vp i
 ```
 
@@ -155,18 +158,13 @@ Open the complete `pairingUrl` printed by the runner. The token is required, so 
 
 ### Published Solla builds
 
-Installers published by this fork are available on [Solla Code Releases](https://github.com/sollaholla/t3code/releases). A release badge reports the newest tag that GitHub currently exposes; the repository source can be newer than that published build.
+Installers published by this fork are available on [Solla Code Releases](https://github.com/sollaholla/sollacode/releases). A release badge reports the newest tag that GitHub currently exposes; the repository source can be newer than that published build.
 
-### Official upstream T3 Code channels
+### Fork identity and compatibility
 
-The commands below install or run official upstream [T3 Code](https://github.com/pingdotgg/t3code) distributions. They are convenient for trying the upstream project, but they do not promise the current feature set of this Solla source tree.
+Use the source checkout or this fork's release assets to run Solla Code. `npx t3`, the `t3-code` Homebrew cask, and upstream hosted services belong to T3 Code; they do not install or host this fork.
 
-| Platform                  | Upstream command                |
-| ------------------------- | ------------------------------- |
-| Any platform with Node.js | `npx t3@latest`                 |
-| macOS with Homebrew       | `brew install --cask t3-code`   |
-| Windows with Winget       | `winget install T3Tools.T3Code` |
-| Arch Linux with AUR       | `yay -S t3code-bin`             |
+Internal identifiers such as `@t3tools/*`, `T3CODE_*`, `t3.json`, and the `t3` executable remain for compatibility. They do not indicate that Solla Code is an official T3 Tools distribution. See [Fork identity](./docs/reference/fork-identity.md) for distribution and state-directory details.
 
 ## Feature guide
 
@@ -248,8 +246,8 @@ During development, run the smallest focused proof for the behavior you changed:
 
 ```bash
 vp test run path/to/focused.test.ts
-vp lint --report-unused-disable-directives
-vp fmt --check
+vp lint path/to/changed.ts --report-unused-disable-directives
+vp fmt --check path/to/changed.ts
 ```
 
 Frontend changes should be verified on every affected surface. Provider-shaped changes need an explicit support decision for Codex, Claude Code, Cursor, Grok, OpenCode, and configured MCP bridges. Changes that cross the wire belong in `packages/contracts` and must be followed through server, web, desktop, and mobile consumers.
@@ -262,7 +260,7 @@ For the upstream project's community and support channels, visit [T3 Code](https
 
 ## Credits
 
-Solla Code is a downstream project built on [T3 Code](https://github.com/pingdotgg/t3code), created and maintained by [T3 Tools](https://t3.codes) and its contributors. The architecture, product principles, and substantial original implementation come from that open source project. Solla-specific work builds on that foundation with gratitude and preserves attribution in the repository history and license.
+Solla Code is a downstream project built on [T3 Code](https://github.com/pingdotgg/t3code). The upstream project was created by [T3 Tools](https://t3.codes) and its contributors. The architecture, product principles, and substantial original implementation come from that open source project. Solla-specific work builds on that foundation with gratitude and preserves attribution in the repository history and license.
 
 Thank you to the maintainers and contributors of T3 Code, Vite+, Effect, React, Electron, React Native, and the provider ecosystems that make this project possible.
 

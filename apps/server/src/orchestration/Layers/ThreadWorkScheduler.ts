@@ -34,6 +34,11 @@ import type {
 } from "../../provider/Services/RuntimeLeaseRegistry.ts";
 import { ThreadSubscriptionRegistry } from "../Services/ThreadSubscriptionRegistry.ts";
 import {
+  activeTurnMessageIdFromSourceTurnId,
+  isSyntheticAgentLoopUserMessage,
+  isVmAgentTaskPromptMessageId,
+} from "../agentModeContinuation.ts";
+import {
   ThreadWorkScheduler,
   type ThreadWorkExecutionOutcome,
   type ThreadWorkHandler,
@@ -131,6 +136,19 @@ const emptyAdmissionState = (): AdmissionState => ({
 // thread remains stuck on "Auto-resuming thread..." until one long task ends.
 // They still obey the normal global and per-provider concurrency caps.
 const recoveryKind = (kind: ThreadWorkKind): boolean => kind === "authentication-resume";
+
+// Explicit sends must not wait for unrelated, potentially hours-long turns.
+// They still own a per-thread lease and count toward capacity, so automatic
+// work cannot expand while the user is already keeping the provider busy.
+const isUserDelivery = (obligation: ThreadWorkObligation): boolean => {
+  if (obligation.kind !== "active-turn-recovery") return false;
+  const messageId = activeTurnMessageIdFromSourceTurnId(obligation.sourceTurnId);
+  return (
+    messageId !== null &&
+    !isVmAgentTaskPromptMessageId(messageId) &&
+    !isSyntheticAgentLoopUserMessage({ role: "user", id: messageId })
+  );
+};
 
 const runtimePhase = (kind: ThreadWorkKind) =>
   kind === "provider-retry" ? ("provider-retrying" as const) : ("provider-running" as const);
@@ -304,8 +322,8 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
         const activeRecoveryForProvider = current.activeRecoveryByProvider.get(providerKey) ?? 0;
         const recovery = recoveryKind(obligation.kind);
         if (
-          current.activeGlobal >= maxGlobal ||
-          activeForProvider >= maxPerProvider ||
+          (!isUserDelivery(obligation) &&
+            (current.activeGlobal >= maxGlobal || activeForProvider >= maxPerProvider)) ||
           (recovery && activeRecoveryForProvider >= maxRecoveryPerProvider) ||
           current.activeThreads.has(obligation.threadId)
         ) {

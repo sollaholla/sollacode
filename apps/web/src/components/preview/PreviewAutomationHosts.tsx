@@ -46,7 +46,11 @@ import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { runBrowserViewportMutation } from "~/browser/browserViewportActions";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
-import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
+import {
+  useEnvironmentHttpBaseUrl,
+  useEnvironments,
+  usePrimaryEnvironmentId,
+} from "~/state/environments";
 import { useThreadShells } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
 import { vmAgentEnvironment } from "~/state/vmAgents";
@@ -316,6 +320,14 @@ export function PreviewAutomationHosts() {
 }
 
 function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId }) {
+  // Navigation resolves localhost against the prepared connection. Own that
+  // subscription for the host's lifetime: Settings and background threads may
+  // have no chat/asset consumer keeping the lazy connection atom populated.
+  const httpBaseUrl = useEnvironmentHttpBaseUrl(props.environmentId);
+  return httpBaseUrl === null ? null : <ConnectedPreviewAutomationHost {...props} />;
+}
+
+function ConnectedPreviewAutomationHost(props: { readonly environmentId: EnvironmentId }) {
   const { environmentId } = props;
   const threadShells = useThreadShells();
   const browserProfiles = useMemo(

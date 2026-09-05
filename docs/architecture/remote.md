@@ -1,5 +1,7 @@
 # Remote Architecture
 
+This describes inherited transport capabilities as well as Solla local and remote connections. `app.t3.codes` and T3 Connect are upstream infrastructure, not services operated by this fork. The relay deployment subtree is absent; use a Solla-hosted client and explicitly configured endpoints. See [Fork identity](../reference/fork-identity.md).
+
 This document describes the target architecture for first-class remote environments in Solla Code.
 
 It is intentionally architecture-first. It does not define a complete implementation plan or user-facing rollout checklist. The goal is to establish the core model so remote support can be added without another broad rewrite.

@@ -60,7 +60,11 @@ import {
   useEnvironmentStageLabel,
 } from "../SidebarStageBackdrop";
 import { isElectron } from "../../env";
-import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
+import {
+  buildHostedChannelSelectionUrl,
+  configuredHostedAppUrl,
+  type HostedAppChannel,
+} from "../../hostedPairing";
 import { useTheme } from "../../hooks/useTheme";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -360,7 +364,8 @@ function AboutVersionTitle() {
 
 function AboutVersionSection() {
   const hasDesktopBridge = typeof window !== "undefined" && Boolean(window.desktopBridge);
-  const selectedHostedAppChannel = hasDesktopBridge ? null : HOSTED_APP_CHANNEL;
+  const selectedHostedAppChannel =
+    hasDesktopBridge || !configuredHostedAppUrl() ? null : HOSTED_APP_CHANNEL;
 
   return (
     <>
@@ -377,9 +382,8 @@ function AboutVersionSection() {
               value={selectedHostedAppChannel}
               onValueChange={(value) => {
                 if (value === selectedHostedAppChannel) return;
-                window.location.assign(
-                  buildHostedChannelSelectionUrl({ channel: value as HostedAppChannel }),
-                );
+                const url = buildHostedChannelSelectionUrl({ channel: value as HostedAppChannel });
+                if (url) window.location.assign(url);
               }}
             >
               <SelectTrigger className="w-full sm:w-40" aria-label="Update track">

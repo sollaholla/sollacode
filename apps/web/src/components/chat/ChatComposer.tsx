@@ -1035,7 +1035,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // identity even when the host no longer exposes the provider so every
     // client shows the same unavailable state instead of silently selecting a
     // different local provider and presenting a bogus "Apply changes" action.
-    if (authoritativeInstanceId) {
+    // A local draft only carries a preference from its source thread. It has
+    // no provider session to preserve and must remain selectable if that
+    // preferred account was disabled or removed.
+    if (_isServerThread && authoritativeInstanceId) {
       return authoritativeInstanceId;
     }
     const projectDefaultEntry = providerInstanceEntries.find(
@@ -1061,6 +1064,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       NO_PROVIDER_MODEL_SELECTION.instanceId
     );
   }, [
+    _isServerThread,
     activeProjectDefaultModelSelection?.instanceId,
     activeThread?.session?.providerInstanceId,
     activeThreadModelSelection?.instanceId,
@@ -3941,6 +3945,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     />
                   </>
                 )}
+                {composerFooterLayoutMode !== "full" && activeContextWindow ? (
+                  // Once the footer is too narrow for labels, the context
+                  // meter joins the secondary controls instead of sitting
+                  // between the two clusters. The right cluster cannot shrink
+                  // (send, mic, pending-settings actions), so a meter placed
+                  // there was the first thing wedged into the mode buttons in
+                  // a vertical split (reported 2026-09-04). Over here it
+                  // scrolls with its neighbours and never crowds a primary
+                  // action.
+                  <ContextWindowMeter
+                    align="start"
+                    usage={activeContextWindow}
+                    providerDisplayName={activeThreadProviderDisplayName}
+                    configurableAutoCompaction={activeThreadSupportsConfigurableAutoCompaction}
+                    autoCompactionThresholdPercentage={settings.autoCompactionThresholdPercentage}
+                    onAutoCompactionThresholdChange={onAutoCompactionThresholdChange}
+                    autoCompactionDisabledReason={
+                      isInterruptible ? "Finish the active turn to change this threshold." : null
+                    }
+                  />
+                ) : null}
               </div>
 
               {/* Right side: send / stop button */}
@@ -3956,7 +3981,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   providers={providerStatuses}
                   activeProviderInstanceId={selectedInstanceId}
                   activeProviderAccountSwitch={activeProviderAccountSwitch}
-                  activeContextWindow={activeContextWindow}
+                  activeContextWindow={
+                    composerFooterLayoutMode === "full" ? activeContextWindow : null
+                  }
                   activeThreadProviderDisplayName={activeThreadProviderDisplayName}
                   activeThreadSupportsConfigurableAutoCompaction={
                     activeThreadSupportsConfigurableAutoCompaction

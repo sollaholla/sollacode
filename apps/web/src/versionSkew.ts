@@ -57,11 +57,6 @@ export function resolveServerSelfUpdateCapability(
   return serverConfig?.environment.capabilities.serverSelfUpdate ?? null;
 }
 
-/** The command to hand users whose server cannot update itself. */
-export function manualServerUpdateCommand(targetVersion: string): string {
-  return `npx t3@${targetVersion}`;
-}
-
 /** Which side of a version mismatch is the stale one. */
 export type VersionSkewDirection = "client-behind" | "server-behind" | "unknown";
 

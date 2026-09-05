@@ -2446,7 +2446,18 @@ const make = Effect.gen(function* () {
             Option.isSome(pendingTurnStart)
           : false;
 
+      // A provider can flush ready/start/error events after Stop. Those events
+      // describe the cancelled process; only a new server-owned start may reopen it.
+      const stoppedWithoutPendingStart =
+        thread.session?.status === "stopped" && !hasPendingTurnStart;
+      const interruptedCurrentTurn =
+        thread.latestTurn?.state === "interrupted" &&
+        !hasPendingTurnStart &&
+        (activeTurnId === null || sameId(activeTurnId, thread.latestTurn.turnId));
+      const lifecycleWasStopped = stoppedWithoutPendingStart || interruptedCurrentTurn;
+
       const shouldApplyThreadLifecycle = (() => {
+        if (lifecycleWasStopped && event.type !== "session.exited") return false;
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
           return true;
         }
@@ -2507,7 +2518,7 @@ const make = Effect.gen(function* () {
         eventTurnId === undefined ||
         sameId(activeTurnId, eventTurnId) ||
         conflictingTurnStartIsPendingTurnStart;
-      if (runtimeObservation !== null && observationMatchesActiveTurn) {
+      if (runtimeObservation !== null && observationMatchesActiveTurn && !lifecycleWasStopped) {
         yield* threadWorkScheduler.observeRuntime({
           threadId: thread.id,
           ...runtimeObservation,
@@ -2906,7 +2917,10 @@ const make = Effect.gen(function* () {
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
           ? true
-          : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
+          : !lifecycleWasStopped &&
+            (activeTurnId === null ||
+              eventTurnId === undefined ||
+              sameId(activeTurnId, eventTurnId));
 
         if (shouldApplyRuntimeError) {
           yield* orchestrationEngine.dispatch({
@@ -3037,7 +3051,7 @@ const make = Effect.gen(function* () {
           accountUsage: event.payload.rateLimits,
           reportedAt: event.createdAt,
         });
-        yield* attemptProviderUsageLimitFailover(event);
+        if (!lifecycleWasStopped) yield* attemptProviderUsageLimitFailover(event);
       }
     });
 

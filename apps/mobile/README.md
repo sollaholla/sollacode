@@ -1,7 +1,6 @@
 # Solla Code Mobile
 
-> [!WARNING]
-> Solla Code Mobile is currently in development and is not distributed yet. If you want to try it out, you can build it from source.
+Build Solla Code Mobile from this checkout for development or internal preview distribution. The build variants and commands below describe this fork; upstream store listings do not distribute these source changes.
 
 ## Quickstart
 
@@ -128,3 +127,7 @@ vp run eas:android:dev
 vp run eas:android:preview:dev
 vp run eas:android:preview
 ```
+
+## Project notices
+
+Settings opens this fork's [project notices](../../docs/reference/project-notices.md) by default. Set `EXPO_PUBLIC_MARKETING_SITE_URL` only when building against a website operated for your Solla distribution; its `legal`, `privacy-policy`, `security-policy`, and `terms-of-service` routes must exist. The default does not use upstream T3 Tools policies.

@@ -1,5 +1,7 @@
 # Remote Access
 
+Solla Code clients should use the web client served by their Solla environment. A separately hosted client requires an operator-configured `VITE_HOSTED_APP_URL`; this fork has no default hosted service. Build this checkout before running the source-server commands below. See [Fork identity](../reference/fork-identity.md).
+
 Use this when you want to connect to a Solla Code server from another device such as a phone, tablet, or separate desktop app.
 
 ## Recommended Setup
@@ -63,15 +65,15 @@ endpoints are available. The default controls the QR code and connection link. T
 stored by endpoint type, so choosing the local LAN endpoint survives normal IP address changes when
 you move between networks.
 
-When no user default is saved, the app uses the built-in LAN endpoint for pairing links when
-available. You can set another endpoint as the default from the expanded endpoint list.
+A verified Tailscale HTTPS endpoint takes precedence for new QR codes and pairing links.
+Without one, the app uses the saved endpoint preference or an available default endpoint,
+usually LAN. This affects new pairing links, not addresses already saved by another client.
 
-- HTTPS/WSS-compatible endpoints work from `https://app.t3.codes`, but are not made the default
-  automatically.
+- HTTPS/WSS-compatible endpoints can be used from an HTTPS-hosted client.
 - Non-loopback HTTP endpoints are useful for direct LAN pairing.
 - Loopback-only endpoints are not useful for another device unless that device is the same machine.
 
-If the copied link points directly at `http://192.168.x.y:3773`, open it from a client that can reach that LAN address. If it points at `https://app.t3.codes/pair?...`, the hosted web app will save the environment and connect directly to the backend URL in the link.
+The copied link points directly at the selected environment. Open a LAN link from a client that can reach that LAN address, or select its HTTPS Tailscale endpoint for another device on the tailnet. Pairing credentials stay in the URL fragment.
 
 ### LAN Troubleshooting
 
@@ -119,7 +121,7 @@ internet. Local-network exposure is a separate setting.
 
 The Tailscale support is an endpoint provider add-on. The core remote model still works without Tailscale: LAN HTTP endpoints, custom HTTPS endpoints, future tunnels, and SSH-launched environments all use the same saved environment and pairing flow.
 
-For `https://app.t3.codes`, prefer an HTTPS Tailnet or other HTTPS endpoint. A plain `http://100.x.y.z:3773` endpoint can still work from a desktop client or another browser page served over HTTP, but it will not work from the hosted HTTPS app because of browser mixed-content rules.
+For a separately hosted HTTPS client, use an HTTPS Tailnet or other HTTPS endpoint. A plain `http://100.x.y.z:3773` endpoint can still work from a desktop client or another browser page served over HTTP, but it will not work from the hosted HTTPS app because of browser mixed-content rules.
 
 ### Option 2: Headless Server (CLI)
 
@@ -128,7 +130,7 @@ Use this when you want to run the server without a GUI, for example on a remote 
 Run the server with `t3 serve`.
 
 ```bash
-npx t3 serve --host "$(tailscale ip -4)"
+node apps/server/dist/bin.mjs serve --host "$(tailscale ip -4)"
 ```
 
 `t3 serve` starts the server without opening a browser and prints:
@@ -150,14 +152,14 @@ Use `t3 serve --help` for the full flag reference. It supports the same general 
 For hosted web pairing over Tailscale HTTPS, opt in to Tailscale Serve:
 
 ```bash
-npx t3 serve --tailscale-serve
+node apps/server/dist/bin.mjs serve --tailscale-serve
 ```
 
 By default this configures Tailscale Serve on HTTPS port 443 and advertises
 `https://machine.tailnet.ts.net/`. Advanced users can choose a different HTTPS port:
 
 ```bash
-npx t3 serve --tailscale-serve --tailscale-serve-port 8443
+node apps/server/dist/bin.mjs serve --tailscale-serve --tailscale-serve-port 8443
 ```
 
 > Note
@@ -173,7 +175,7 @@ Use this when you want the desktop app to start or reuse Solla Code on another m
 2. Under **Remote Environments**, choose **Add environment**.
 3. Select the SSH launch flow.
 4. Enter the SSH target, such as `user@example.com`.
-5. Confirm the launch. The desktop app probes the host, starts or reuses a remote T3 server, opens a local port forward, and saves the environment.
+5. Confirm the launch. The desktop app probes the host, starts or reuses a remote server, opens a local port forward, and saves the environment.
 
 After setup, the renderer connects to a local forwarded HTTP/WebSocket endpoint. The remote host still owns the actual T3 server, projects, files, git state, terminals, and provider sessions.
 
@@ -181,7 +183,7 @@ SSH launch is a desktop feature because it needs local process and SSH access. O
 
 #### SSH Launch Troubleshooting
 
-The desktop SSH launcher connects with a non-interactive `sh` session, writes a small launcher script under `~/.t3/ssh-launch/<host-key>/`, starts or reuses a remote T3 server, and forwards the remote loopback port back to your desktop.
+The desktop SSH launcher connects with a non-interactive `sh` session, writes a small launcher script under `~/.t3/ssh-launch/<host-key>/`, starts or reuses a remote server, and forwards the remote loopback port back to your desktop.
 
 The remote host must have a compatible Node.js runtime. Solla Code uses the server package's `engines.node` requirement:
 
@@ -243,10 +245,10 @@ After pairing, future access is session-based. You do not need to keep reusing t
 
 ## Hosted Web App Pairing
 
-The hosted web app at `https://app.t3.codes` can save a remote backend in browser local storage from a URL like:
+An operator can deploy a separate Solla web client with `VITE_HOSTED_APP_URL` set to its own origin. That client can save a remote backend from a URL like:
 
 ```text
-https://app.t3.codes/pair?host=https://backend.example.com:3773#token=PAIRCODE
+https://client.example.com/pair?host=https://backend.example.com:3773#token=PAIRCODE
 ```
 
 Use hosted pairing when the backend is reachable from the browser over HTTPS/WSS. This includes a backend behind a trusted HTTPS tunnel or another HTTPS endpoint you operate.
@@ -274,3 +276,13 @@ Use `t3 auth --help` and the nested subcommand help pages for the full reference
 - Anyone with a valid pairing credential can create a session until that credential expires or is revoked.
 - Hosted pairing links keep the credential in the URL hash so it is not sent to the hosted app server, but it can still be exposed through browser history, screenshots, logs, or copy/paste.
 - Use `t3 auth` to revoke credentials or sessions you no longer trust.
+
+## Repairing a saved connection
+
+A saved connection uses the address it was paired with. Installing or enabling Tailscale does not replace a saved LAN address automatically. Check **Settings → Connections** and reveal the saved address before changing firewall settings.
+
+For a Tailscale connection, use the remote computer's verified HTTPS address, such as `https://computer.example.ts.net/`, or its Tailscale IP with the Solla server port. Both devices must be connected to the same tailnet with access permitted between them. A working SSH connection alone does not prove the Solla HTTP/WebSocket port is reachable.
+
+In web and desktop, **Edit address** preserves the environment and existing pairing while replacing its HTTP/WebSocket address. Mobile's environment editor uses the same shared connection operation. The server's environment identity is checked before the saved credential is used. Older installed clients without the editor need to pair again using the correct address.
+
+Disconnected version information is cached: “last seen” is not proof of the version currently running remotely. Check the remote server's current descriptor or reconnect before diagnosing version drift.

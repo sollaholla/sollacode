@@ -55,7 +55,9 @@ import {
 } from "../components/KeybindingsUpdateToast.logic";
 import {
   attemptDynamicImportRecovery,
+  dynamicImportRecoveryCleanupDelayMs,
   dynamicImportRecoveryCleanupUrlAfterNavigation,
+  dynamicImportRecoveryCleanupUrlWhenStale,
   isDynamicImportFailure,
   reloadWithFreshAppShell,
   shouldAutoRecoverDynamicImportFailure,
@@ -127,6 +129,32 @@ function RootRouteView() {
     if (cleanUrl !== null) {
       window.history.replaceState(window.history.state, "", cleanUrl);
     }
+  }, [pathname]);
+
+  // A client that never navigates (a phone left on one thread) keeps the
+  // recovery marker forever. It stops guarding once it ages past the
+  // cooldown; drop it then so the address stays clean and a later release's
+  // recovery starts from an unmarked URL.
+  useEffect(() => {
+    const delay = dynamicImportRecoveryCleanupDelayMs({
+      href: window.location.href,
+      now: Date.now(),
+    });
+    if (delay === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const cleanUrl = dynamicImportRecoveryCleanupUrlWhenStale({
+        href: window.location.href,
+        now: Date.now(),
+      });
+      if (cleanUrl !== null) {
+        window.history.replaceState(window.history.state, "", cleanUrl);
+      }
+    }, delay);
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [pathname]);
 
   if (pathname === "/pair" || pathname === "/connect" || pathname.startsWith("/connect/")) {

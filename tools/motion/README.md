@@ -1,94 +1,162 @@
 # Solla motion
 
-A small deterministic frame renderer for the README media in
-`docs/media/readme/`. Compositions are ordinary React components; each is
-rendered once per frame with an explicit frame number, screenshotted in headless
-Chromium, and encoded to GIF with ffmpeg.
+The Solla product film and README GIFs combine **recordings of the production
+client** with original typography, cursor motion, the owner's gold S geometry,
+and an original electronic score. The earlier React interface reconstructions
+have been removed. The app screens in these assets are not reimplemented UI.
 
-## Why not Remotion
+`tools/motion` is an optional, standalone package outside the main workspace.
+It does not add rendering dependencies to the application.
 
-This started on Remotion and was rewritten off it. Remotion is source-available,
-not open source: free for individuals, non-profits, and for-profit organizations
-with up to three employees, and a paid Company License above that.
+## Render the checked-in recordings
 
-Solla Code is MIT and public. A README GIF is not worth pushing a licensing
-question onto everyone who clones the repository, so `src/motion` reimplements
-the small slice these compositions actually used — `useCurrentFrame`,
-`useVideoConfig`, `interpolate`, and `spring` — over MIT dependencies
-(`esbuild`, `playwright-core`, React).
+Install Node.js with TypeScript stripping support, FFmpeg, and Chromium. From this
+folder:
 
-`tools/` is deliberately outside the `packages:` globs in
-`pnpm-workspace.yaml`, so nothing here is installed, typechecked, or tested by
-the root scripts. Rendering is opt-in.
-
-## Rendering
-
-```bash
-cd tools/motion
+```sh
 pnpm install --ignore-workspace
+pnpm typecheck
 pnpm render
+pnpm render:gifs
 ```
 
-Requires `ffmpeg` on PATH and a Chromium-family browser. Browser resolution
-follows the same policy as the app's own browser VM provider: Playwright's
-managed Chromium if installed, then a system Chrome/Chromium/Edge.
+Set `SOLLA_CHROMIUM` to an explicit Chromium executable for captures and GIFs if
+Playwright's managed Chromium or system Chrome is unavailable. The film also
+checks system Chrome and Chromium on macOS.
 
-## How it works
+The film is 72 seconds, 1920 × 1080, 30 fps, H.264/AAC. Its nine chapters show the
+brand, threads, provider choice, split terminals, artifacts, custom agents, voice,
+the workspace, and pricing. It writes the movie, poster, and English captions to
+`apps/marketing/public/media/`. The five GIFs go to `docs/media/readme/`.
 
-1. **esbuild** bundles the compositions into one self-contained HTML page, with
-   fonts inlined as data URLs so no asset loads late and reflows a clip.
-2. **Chromium** loads it and drives `window.__motion.setFrame(n)`, which renders
-   through `flushSync` so the commit lands before the screenshot.
-3. **ffmpeg** encodes the PNG sequence in two passes: `palettegen` with
-   `stats_mode=diff`, then `paletteuse` with `diff_mode=rectangle`. Almost every
-   pixel is static chrome, so only changed rectangles need palette entries.
+For selected previews and clips:
 
-Nothing is time-driven and no CSS transitions are used, so frame N is a pure
-function of N and renders are reproducible.
+```sh
+pnpm render --preview --scene=artifacts
+pnpm render:gifs --scene=agents,terminals
+```
 
-### Two things worth knowing
+Film preview frames, intermediate videos, and source-digest manifests live in
+`out/`, which is ignored by Git. A full render assembles all nine chapters. Inspect
+previews before replacing finished assets.
 
-**No entrance animations on the window.** A GIF loops, so a frame-0 fade from
-`opacity: 0` renders one fully black frame that flashes on every loop. It also
-changes every pixel for the length of the fade, which defeats the frame-diff
-palette and roughly tripled file size. Reveal individual elements instead.
+## What each recording establishes
 
-**`spring` substeps.** Explicit Euler on a damped spring diverges once the
-timestep exceeds `2*mass/damping`. These configs use `damping: 200` at 30fps —
-`dt = 0.0333` against a limit of `0.01` — which does not merely lose accuracy, it
-explodes: entrance springs returned ~1e112 instead of a value in `[0, 1]`, so
-elements never appeared and clips flickered violently. The integrator derives its
-substep count from that stability condition.
+| Recording   | Observed behavior                                                                                | Limits                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `threads`   | Navigation among distinct Lumen, Fieldnotes, and Orbit API conversations                         | Conversation content is illustrative                                                            |
+| `providers` | The actual model picker, including Claude and Antigravity                                        | Browsing a model does not establish a successful provider turn                                  |
+| `terminals` | Two real shell panes, source inspection, five passing Node tests                                 | The commands run against a small demonstration project                                          |
+| `artifact`  | Revision two of a dashboard, maximize and restore                                                | Local authorized rendering; the clip does not demonstrate a remote device                       |
+| `agents`    | Code Reviewer conversation, tools menu, and working instructions                                 | It does not depict a completed delegated task                                                   |
+| `voice`     | Actual transcription, a live xAI response identifying the projects, and a successful Stop check  | Input comes from eSpeak NG formant synthesis; provider speech is excluded from the film's audio |
+| `failover`  | Actual quota-event ingestion, account handoff banner, and continuation on a second Grok instance | Both providers use the ACP fixture; the quota condition and responses are controlled            |
 
-## What these are, and are not
+The complete website film was played through its production build in Chromium:
+72 seconds, all nine caption cues, and no failed asset requests or playback errors.
+The soundtrack has a 48 kHz stereo master and measured peak headroom. Technical
+audio checks are not a claim of subjective listening approval.
 
-**Reconstructions built for documentation**, not screen recordings and not the
-shipped components. Nothing here imports from `apps/web`.
+## Capture a new production workspace
 
-They are built to be accurate rather than aspirational. Geometry was measured off
-a running client (255px sidebar, 36px thread rows at an 8px radius with 10px left
-padding, 32px orchestrator row), and `src/theme/tokens.css` carries the web
-client's own dark-theme token values — `oklch()` and `color-mix()` included,
-since Chromium resolves them exactly as the app does.
+Use the repository's `test-t3-app` workflow to prepare a **disposable** home and a
+production web build. Never point a demonstration server or fixture writer at
+`~/.solla-code` or `~/.t3`. Keep credentials outside this repository.
 
-Every state shown is one the product actually produces. If a scene starts
-claiming something the app does not do, fix the scene.
+The supplied script follows a particular demonstration workspace. It expects:
 
-Keep `src/theme/tokens.css` in sync with the dark block of
-`apps/web/src/index.css` when the palette changes.
+- A Lumen project with “Build a faster project search”, “Refine the dashboard
+  layout”, and “Review keyboard navigation” threads.
+- A Fieldnotes thread named “Design a calmer reading view”, plus distinct Orbit
+  API and other project threads.
+- Code Reviewer and Studio agents. Code Reviewer has saved working instructions.
+- A Lumen dashboard artifact at revision two. The illustrative HTML source is in
+  `demo/lumen-dashboard.html`.
+- `src/search.mjs` and `src/search.test.mjs` in Lumen, with five Node tests.
+- `showcase.json` in the disposable home, containing `threadIds`: the search
+  thread ID first and dashboard thread ID second. Use IDs from your own fixture.
 
-## Compositions
+From the repository root, build and run the production client against that home:
 
-Every composition shows something **this fork adds on top of T3 Code**. Projects,
-threads, and a chat surface are base T3 behaviour and belong in T3's README, not
-this one.
+```sh
+./node_modules/.bin/vp run --filter @t3tools/web build
+NODE_ENV=production node apps/server/src/bin.ts \
+  --base-dir /absolute/path/to/disposable-demo \
+  --port 13773 --host 127.0.0.1 --no-browser /absolute/path/to/demo-project
+```
 
-| Composition           | Capability                                                          |
-| --------------------- | ------------------------------------------------------------------- |
-| `voice-orchestrator`  | Workspace-level voice agent that inspects, creates, and routes work |
-| `custom-agents`       | Named agents and bounded delegation with scoped questions           |
-| `terminal-workspaces` | Named layouts with retained PTYs across navigation and relaunch     |
-| `thread-artifacts`    | Revisioned artifacts reachable over local, LAN, and Tailscale       |
-| `provider-failover`   | Typed usage-limit events that resume a queued turn elsewhere        |
+In another terminal:
 
-The hero still is the final frame of the first composition.
+```sh
+export SOLLA_DEMO_HOME=/absolute/path/to/disposable-demo
+export SOLLA_DEMO_ORIGIN=http://127.0.0.1:13773
+node tools/motion/src/film/captureApp.ts
+node tools/motion/src/film/captureApp.ts --scene=artifact
+node tools/motion/src/film/captureApp.ts --scene=terminals
+```
+
+The script creates and consumes a one-time pairing link through the supported
+`auth pairing create` CLI. It discovers the environment ID from the server,
+records lossless Chromium compositor frames, and logs actual pointer-event
+coordinates and timestamps. Frame timestamps determine pacing; scripted holds
+only provide time to read each shot. A failed recording does not replace an
+existing source capture.
+
+`captures/*-source.json` records dimensions, duration, actions, and client errors.
+The renderers overlay cursor motion at those action times. They do not replace
+screen contents or simulate app state. Capture diagnostics go to the ignored
+`output/playwright/` directory.
+
+The failover recording requires two disposable Grok instances named “Grok
+primary” and “Grok backup” running `apps/server/scripts/acp-mock-agent.ts` through
+a wrapper that answers `--version`. Set `T3_ACP_BILLING_EXHAUST_AFTER_PROMPT=1` only
+on the primary and give its billing period a future `T3_ACP_BILLING_PERIOD_END`.
+Use separate `T3_ACP_PROMPT_RESPONSE_TEXT` values and disable other providers in
+that disposable home so the fallback is deterministic. Restore its settings
+afterward. The fixture flag does not change a real provider's billing state.
+
+Voice capture additionally requires a configured voice provider and an explicit
+microphone WAV:
+
+```sh
+espeak-ng -s 145 -w /tmp/solla-demo-microphone.wav \
+  'Which projects are in this workspace? Keep it to one sentence.'
+SOLLA_DEMO_MICROPHONE=/tmp/solla-demo-microphone.wav \
+  node tools/motion/src/film/captureVoice.ts
+```
+
+It waits for real transcription and response text, then verifies Stop closes the
+voice session. Trim the resulting recording to the intended shot and update
+`voice-source.json` with the source offset and observed result.
+
+## Original graphics and music
+
+`apps/marketing/src/lib/boltRenderer.ts` renders the owner's exported Blender
+mesh. Its front surface is mirrored across the depth axis to form the back, with
+a joined boundary and matching materials. Lighting, Fresnel response, surface
+grain, and glints are mathematical; there are no image textures or ML artwork.
+`apps/marketing/public/brand/provenance.json` identifies the source object and
+file digest. The source Blender file is not overwritten.
+
+To export from the original model again, supply its path explicitly:
+
+```sh
+SOLLA_BRAND_SOURCE=/path/to/SollaCode_LowPoly_S.blend \
+  blender --background --python tools/motion/scripts/export_brand.py
+```
+
+Regenerate the 120 BPM score from oscillators and seeded noise with Python and
+NumPy:
+
+```sh
+python3 tools/motion/scripts/compose_score.py
+```
+
+No loops, samples, or generated model audio are used in the score. The master is
+normalized during film assembly. DM Sans is self-hosted with its Open Font
+License beside the font.
+
+The workflow uses Blender, FFmpeg, Chromium, esbuild, Playwright, and NumPy, not
+Remotion. Commercial use of these tools is permitted; retain their license
+obligations if distributing the tools themselves. Solla's source attribution and
+launch boundaries are documented in [commercial launch](../../docs/project/commercial-launch.md).

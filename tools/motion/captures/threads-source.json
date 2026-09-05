@@ -1,0 +1,29 @@
+{
+  "source": "Production client, lossless Chromium compositor frames",
+  "viewport": {
+    "width": 1314,
+    "height": 912
+  },
+  "duration": 11.066308975219727,
+  "actions": [
+    {
+      "at": 2.233308792114258,
+      "x": 143.5,
+      "y": 517,
+      "name": "Open keyboard navigation review"
+    },
+    {
+      "at": 4.552308797836304,
+      "x": 143.5,
+      "y": 683,
+      "name": "Open the Fieldnotes reading-view thread"
+    },
+    {
+      "at": 6.833308935165405,
+      "x": 143.5,
+      "y": 434,
+      "name": "Return to the Lumen dashboard thread"
+    }
+  ],
+  "errors": []
+}

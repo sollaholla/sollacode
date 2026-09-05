@@ -1,0 +1,29 @@
+{
+  "source": "Production client, lossless Chromium compositor frames",
+  "viewport": {
+    "width": 1314,
+    "height": 912
+  },
+  "duration": 8.973437070846558,
+  "actions": [
+    {
+      "at": 1.01043701171875,
+      "x": 143.5,
+      "y": 220,
+      "name": "Open your Code Reviewer agent"
+    },
+    {
+      "at": 2.2434370517730713,
+      "x": 414.6000061035156,
+      "y": 18,
+      "name": "Open agent tools"
+    },
+    {
+      "at": 2.958436965942383,
+      "x": 456,
+      "y": 107,
+      "name": "Review this agent’s working instructions"
+    }
+  ],
+  "errors": []
+}

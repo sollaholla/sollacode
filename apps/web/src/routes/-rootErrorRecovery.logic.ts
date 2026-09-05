@@ -73,6 +73,77 @@ export function hasDynamicImportRecoveryQuery(href: string): boolean {
   }
 }
 
+/**
+ * When the URL marker says the last automatic reload happened.
+ *
+ * The marker is the cache-busting query a recovery appends, and its value is
+ * the `now` of that attempt. A marker that is not a timestamp is treated as
+ * absent: it cannot age out, and a guard that never ages out is exactly the
+ * failure this exists to prevent.
+ */
+export function dynamicImportRecoveryAttemptedAtFromQuery(href: string): number | null {
+  let raw: string | null;
+  try {
+    raw = new URL(href).searchParams.get(DYNAMIC_IMPORT_RECOVERY_QUERY_KEY);
+  } catch {
+    return null;
+  }
+  if (raw === null || !/^\d+$/u.test(raw)) {
+    return null;
+  }
+  const attemptedAt = Number(raw);
+  return Number.isFinite(attemptedAt) ? attemptedAt : null;
+}
+
+/**
+ * Whether the URL marker still counts as "this reload already happened".
+ *
+ * The marker used to block automatic recovery for as long as it stayed in
+ * the URL — and nothing removed it until the user navigated somewhere else.
+ * A phone that recovered once and then sat on the same thread carried the
+ * marker into every later release, so each new asset swap landed on the
+ * "could not load part of the app" page instead of reloading (reported from
+ * mobile Safari on 2026-09-04, after a day of back-to-back releases). Only
+ * a marker younger than the cooldown is a guard; an older one is history.
+ */
+export function isDynamicImportRecoveryQueryFresh(href: string, now: number): boolean {
+  const attemptedAt = dynamicImportRecoveryAttemptedAtFromQuery(href);
+  return attemptedAt !== null && Math.abs(now - attemptedAt) < DYNAMIC_IMPORT_RECOVERY_COOLDOWN_MS;
+}
+
+/**
+ * Milliseconds until the URL marker stops guarding, or `null` without one.
+ * Zero means it is already stale and can be removed right away.
+ */
+export function dynamicImportRecoveryCleanupDelayMs(input: {
+  readonly href: string;
+  readonly now: number;
+}): number | null {
+  const attemptedAt = dynamicImportRecoveryAttemptedAtFromQuery(input.href);
+  if (attemptedAt === null) {
+    return null;
+  }
+  return Math.max(0, attemptedAt + DYNAMIC_IMPORT_RECOVERY_COOLDOWN_MS - input.now);
+}
+
+/**
+ * The URL without its marker once the marker has aged past the cooldown.
+ *
+ * Removing a fresh marker would reopen the reload loop that the marker guards
+ * against when session storage is unavailable, so this only ever strips a
+ * marker that has already stopped guarding.
+ */
+export function dynamicImportRecoveryCleanupUrlWhenStale(input: {
+  readonly href: string;
+  readonly now: number;
+}): string | null {
+  const delay = dynamicImportRecoveryCleanupDelayMs(input);
+  if (delay === null || delay > 0) {
+    return null;
+  }
+  return stripDynamicImportRecoveryQuery(input.href);
+}
+
 export function stripDynamicImportRecoveryQuery(href: string): string | null {
   const url = new URL(href);
   if (!url.searchParams.has(DYNAMIC_IMPORT_RECOVERY_QUERY_KEY)) {
@@ -132,8 +203,11 @@ export function attemptDynamicImportRecovery(input: {
   }
 
   // The URL marker survives a document reload even when sessionStorage does
-  // not. Treat it as the fallback one-shot guard before consulting storage.
-  if (hasDynamicImportRecoveryQuery(input.location.href)) {
+  // not. Treat it as the fallback one-shot guard before consulting storage —
+  // but only while it is fresh. The marker stays in the address bar until a
+  // later navigation, and a stale one must not stop the next release from
+  // recovering; the cache-busting URL simply replaces it with a new one.
+  if (isDynamicImportRecoveryQueryFresh(input.location.href, input.now)) {
     return "already-attempted";
   }
 

@@ -1,6 +1,6 @@
 # Release Checklist
 
-This document covers the unified release workflow for stable and nightly desktop releases.
+This document covers the checked-in workflow for Solla Code stable and nightly desktop releases. Workflow configuration is not proof that a release has been built or published.
 
 ## What the workflow does
 
@@ -20,7 +20,7 @@ This document covers the unified release workflow for stable and nightly desktop
   - Only plain stable `X.Y.Z` releases are marked as the repository's latest release.
   - Nightly runs are always GitHub prereleases and never marked latest.
   - Automatically generated release notes are pinned to the previous tag in the same channel, so stable compares to the previous stable tag and nightly compares to the previous nightly tag.
-- Publishes the CLI package (`apps/server`, npm package `t3`) with OIDC trusted publishing from the same workflow file:
+- Optionally publishes the CLI package with OIDC trusted publishing when `RELEASE_PUBLISH_CLI=true`. The retained package name `t3` belongs to upstream and must be migrated to a fork-owned package before enabling this stage:
   - stable releases publish npm dist-tag `latest`
   - nightly releases publish npm dist-tag `nightly`
 - Deploys the hosted web app to Vercel only after a release is published:
@@ -49,6 +49,11 @@ baked in.
 Restoring T3 Connect means restoring the `infra/relay` package, a Cloudflare
 account, and a Clerk tenant — not just setting a secret. Re-add the job from
 upstream if that ever happens.
+
+Signed macOS builds use Electron execution and microphone entitlements. This fork
+does not require a Clerk tenant, passkey relying-party domain, or passkey
+provisioning profile. Signing and notarization credentials are still required
+when publishing a signed release.
 
 ## Optional services
 
@@ -90,7 +95,7 @@ Optional GitHub Actions variables:
 - `T3CODE_WEB_LATEST_DOMAIN`: defaults to `latest.app.t3.codes`.
 - `T3CODE_WEB_NIGHTLY_DOMAIN`: defaults to `nightly.app.t3.codes`.
 
-Required Vercel domains:
+Inherited Vercel domain defaults (upstream-owned; configure fork-owned replacements before deploying):
 
 - `app.t3.codes`: the router domain users open, updated by stable releases.
 - `latest.app.t3.codes`: channel alias updated by stable releases.
@@ -114,12 +119,12 @@ updated before redirecting to the hosted app root.
 One-time Vercel dashboard setup:
 
 1. Confirm the web project root directory remains `apps/web`.
-2. Add the three domains above to the web project.
+2. Configure three domains owned by this fork and override all three `T3CODE_WEB_*` values above. Do not attempt to claim the upstream domains.
 3. Disable automatic Git deployments in the dashboard if desired; the committed
    `vercel.ts` setting is the source-of-truth, but disconnecting Git in the
    dashboard is also safe.
 4. Run one stable release deployment, or manually alias the current stable
-   deployment, so `app.t3.codes` points at a deployment containing the router
+   deployment, so the configured fork router domain points at a deployment containing the router
    rules in `apps/web/vercel.ts`. Future stable releases keep this alias current.
 
 ## Nightly builds
@@ -134,16 +139,18 @@ One-time Vercel dashboard setup:
   - release name includes the short commit SHA
   - `make_latest` is always `false`
 - Uses the next stable patch version as the nightly base. For example, `0.0.17` produces nightlies on `0.0.18-nightly.*`.
-- Publishes the CLI package (`apps/server`, npm package `t3`) to the `nightly` npm dist-tag using the same nightly version.
+- Publishes a CLI to the `nightly` npm dist-tag only when CLI publishing is enabled and package ownership has been configured.
 - Does not commit version bumps back to `main`.
 
 ## Server self-update release invariant
+
+This invariant applies only when an owned CLI distribution is enabled. The default fork release can skip `publish_cli`; it does not promise npm self-update support.
 
 Connected servers update to the client's exact version, not to an npm dist-tag. Every released
 desktop or hosted client version must therefore have a matching `t3@<version>` package available on
 npm before users can receive that client.
 
-The workflow enforces this ordering:
+When CLI publishing is enabled, the workflow uses this ordering:
 
 1. `publish_cli` publishes the exact stable or nightly version to npm.
 2. `release` depends on `publish_cli` before exposing desktop artifacts in GitHub Releases.
@@ -164,7 +171,7 @@ the package version to the release tag version.
 
 Checklist:
 
-1. Confirm npm org/user owns package `t3` (or rename package first if needed).
+1. Choose a fork-owned package name and update the package manifest, pinned-runtime installer, self-update detection, remote bootstrap, and client update commands together. The retained upstream `t3` name is not a Solla publishing target.
 2. In npm package settings, configure Trusted Publisher:
    - Provider: GitHub Actions
    - Repository: this repo
@@ -177,9 +184,9 @@ Checklist:
    - run `npm publish --access public --tag latest`
 5. Nightly runs from the same workflow file publish with `npm publish --access public --tag nightly`.
 
-## 1) Dry-run release without signing
+## 1) Unsigned test release (publishes externally)
 
-Use this first to validate the release pipeline.
+A test tag runs the publishing workflow; it is not a dry run. For local checks first, run `node scripts/release-smoke.ts` or create a desktop artifact without pushing a tag.
 
 1. Confirm no signing secrets are required for this test.
 2. Create a test tag:
@@ -268,7 +275,7 @@ Checklist:
 5. Verify workflow steps:
    - preflight passes
    - all matrix builds pass
-   - `publish_cli` publishes the exact release version before the release job
+   - `publish_cli` publishes the exact release version before the release job when enabled; otherwise it is explicitly skipped
    - release job uploads expected files
 6. Smoke test downloaded artifacts.
 

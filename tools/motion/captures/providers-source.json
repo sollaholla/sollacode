@@ -1,0 +1,23 @@
+{
+  "source": "Production client, lossless Chromium compositor frames",
+  "viewport": {
+    "width": 1314,
+    "height": 912
+  },
+  "duration": 8.021878957748413,
+  "actions": [
+    {
+      "at": 1.339878797531128,
+      "x": 453,
+      "y": 573,
+      "name": "Browse Claude models"
+    },
+    {
+      "at": 3.700878858566284,
+      "x": 453,
+      "y": 533,
+      "name": "Browse Antigravity models"
+    }
+  ],
+  "errors": []
+}

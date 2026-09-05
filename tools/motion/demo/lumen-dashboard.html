@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>Lumen — Project overview</title
+  ><style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: #f5f5ef;
+      color: #23342d;
+      font:
+        14px/1.5 system-ui,
+        sans-serif;
+      padding: 34px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #d9dfd5;
+      padding-bottom: 22px;
+      margin-bottom: 38px;
+    }
+    .brand {
+      font-weight: 700;
+      font-size: 20px;
+      letter-spacing: -0.7px;
+    }
+    .brand span {
+      font-size: 24px;
+      color: #598170;
+    }
+    nav {
+      display: flex;
+      gap: 22px;
+      font-size: 11px;
+      color: #7a857e;
+    }
+    .avatar {
+      border-radius: 50%;
+      background: #e0e7dc;
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      font-size: 10px;
+    }
+    .eyebrow {
+      font-size: 10px;
+      letter-spacing: 1px;
+      color: #758779;
+      text-transform: uppercase;
+    }
+    h1 {
+      font-size: 36px;
+      letter-spacing: -1.3px;
+      line-height: 1.15;
+      margin: 10px 0 13px;
+      font-weight: 600;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #7b897f;
+      margin-bottom: 28px;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .metric {
+      padding: 22px 17px;
+      background: #fff;
+      border: 1px solid #dfe5dc;
+      border-radius: 12px;
+    }
+    .metric p {
+      margin: 0;
+      font-size: 10px;
+      color: #7c8e81;
+    }
+    .metric b {
+      display: block;
+      font-size: 32px;
+      font-weight: 550;
+      letter-spacing: -1px;
+      margin-top: 7px;
+    }
+    .metric:first-child {
+      background: #e1eade;
+    }
+    .metric small {
+      font-size: 9px;
+      color: #6c8e76;
+    }
+    h2 {
+      font-size: 17px;
+      font-weight: 600;
+      margin: 34px 0 16px;
+      letter-spacing: -0.4px;
+    }
+    .projects {
+      border: 1px solid #dce2d8;
+      border-radius: 12px;
+      background: white;
+      padding: 0 18px;
+    }
+    .project {
+      display: grid;
+      grid-template-columns: 26px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 17px 0;
+      border-bottom: 1px solid #edf0e9;
+    }
+    .project:last-child {
+      border: 0;
+    }
+    .icon {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      font-size: 11px;
+      background: #edece3;
+    }
+    .project p {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 550;
+    }
+    .project small {
+      font-size: 9px;
+      color: #8a958b;
+    }
+    .badge {
+      font-size: 9px;
+      padding: 4px 9px;
+      border-radius: 12px;
+      background: #eaf1e6;
+      color: #67866c;
+    }
+    .bottom {
+      margin-top: 28px;
+      padding: 21px;
+      border-radius: 12px;
+      background: #263d33;
+      color: #dce7df;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .bottom p {
+      font-size: 12px;
+      margin: 0;
+    }
+    .bottom small {
+      color: #a7bead;
+      font-size: 10px;
+    }
+    .bottom span {
+      font-size: 21px;
+    }
+    @media (max-width: 450px) {
+      body {
+        padding: 24px;
+      }
+      h1 {
+        font-size: 30px;
+      }
+      .metrics {
+        gap: 7px;
+      }
+      .metric {
+        padding: 17px 12px;
+      }
+      .metric b {
+        font-size: 26px;
+      }
+      nav {
+        gap: 12px;
+      }
+    }
+  </style>
+  <header>
+    <div class="brand"><span>◈</span> lumen</div>
+    <nav><span>Overview</span><span>Projects</span></nav>
+    <div class="avatar">AM</div>
+  </header>
+  <div class="eyebrow">Friday, September 4</div>
+  <h1>A little clarity.<br />A lot of possibility.</h1>
+  <p class="subtitle">Good afternoon, Alex. Here’s what’s taking shape.</p>
+  <div class="metrics">
+    <div class="metric">
+      <p>ACTIVE PROJECTS</p>
+      <b>06</b><small>Across three workspaces</small>
+    </div>
+    <div class="metric">
+      <p>COMPLETED</p>
+      <b>24</b><small>This month</small>
+    </div>
+    <div class="metric">
+      <p>IN REVIEW</p>
+      <b>03</b><small>Ready for your thoughts</small>
+    </div>
+  </div>
+  <h2>Your projects</h2>
+  <div class="projects">
+    <div class="project">
+      <div class="icon">B</div>
+      <div>
+        <p>Brand refresh</p>
+        <small>Updated 12 minutes ago</small>
+      </div>
+      <span class="badge">In progress</span>
+    </div>
+    <div class="project">
+      <div class="icon">P</div>
+      <div>
+        <p>Product launch</p>
+        <small>Updated an hour ago</small>
+      </div>
+      <span class="badge">In review</span>
+    </div>
+    <div class="project">
+      <div class="icon">D</div>
+      <div>
+        <p>Design system</p>
+        <small>Updated yesterday</small>
+      </div>
+      <span class="badge">In progress</span>
+    </div>
+  </div>
+  <div class="bottom">
+    <div>
+      <p>Make space for your next idea.</p>
+      <small>Your workspace is ready when you are.</small>
+    </div>
+    <span>↗</span>
+  </div>
+</html>

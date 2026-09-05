@@ -196,6 +196,10 @@ const ThreadActivityLookupInput = Schema.Struct({
   threadId: ThreadId,
   activityId: EventId,
 });
+const ThreadActivityKindLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  kind: Schema.String,
+});
 const ThreadMessageLookupInput = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
@@ -1462,6 +1466,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sequence ASC,
           created_at ASC,
           activity_id ASC
+      `,
+  });
+
+  const getLatestThreadActivityRowByKind = SqlSchema.findOneOption({
+    Request: ThreadActivityKindLookupInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, kind }) =>
+      sql`
+        SELECT
+          activity_id AS "activityId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          tone,
+          kind,
+          summary,
+          payload_json AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind = ${kind}
+        ORDER BY created_at DESC, activity_id DESC
+        LIMIT 1
       `,
   });
 
@@ -3289,6 +3316,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
 
+  const getLatestThreadActivityByKind: NonNullable<
+    ProjectionSnapshotQueryShape["getLatestThreadActivityByKind"]
+  > = (threadId, kind) =>
+    getLatestThreadActivityRowByKind({ threadId, kind }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getLatestThreadActivityByKind:query",
+          "ProjectionSnapshotQuery.getLatestThreadActivityByKind:decodeRow",
+        ),
+      ),
+      Effect.map(Option.map(mapActivityRow)),
+    );
+
   return {
     getCommandReadModel,
     getSnapshot,
@@ -3310,6 +3350,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getActiveTurnDelegation,
     getThreadIngestionContext,
     getThreadAssetSource,
+    getLatestThreadActivityByKind,
     getThreadDetailById,
     getThreadDetailSnapshot,
     getThreadHistoryPage,

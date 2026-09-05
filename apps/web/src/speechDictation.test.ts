@@ -219,3 +219,159 @@ describe("startNativeSpeechDictation", () => {
     await expect(session.stop()).rejects.toThrow("network");
   });
 });
+
+/**
+ * Safari-shaped recogniser: `stop()` does NOT fire `end` on its own, so the
+ * test decides whether the browser ever reports the end of the session.
+ */
+function silentStopRecognition(): {
+  readonly recognition: SpeechRecognitionLike;
+  readonly emit: (value: SpeechRecognitionEventLike) => void;
+  readonly end: () => void;
+} {
+  const recognition: SpeechRecognitionLike = {
+    lang: "",
+    continuous: false,
+    interimResults: false,
+    start: vi.fn(),
+    stop: vi.fn(),
+    abort: vi.fn(),
+    onresult: null,
+    onerror: null,
+    onend: null,
+  };
+  return {
+    recognition,
+    emit: (value) => recognition.onresult?.(value),
+    end: () => recognition.onend?.(),
+  };
+}
+
+describe("startNativeSpeechDictation on Safari", () => {
+  it("delivers the interim tail when stop ends the session before it is finalised", async () => {
+    const fake = fakeRecognition();
+    const session = startNativeSpeechDictation({
+      create: () => fake.recognition,
+      lang: "en-US",
+    });
+    fake.emit(event(0, [{ text: "run the", isFinal: true }]));
+    fake.emit(
+      event(1, [
+        { text: "run the", isFinal: true },
+        { text: "tests please", isFinal: false },
+      ]),
+    );
+    await expect(session.stop()).resolves.toBe("run the tests please");
+  });
+
+  it("listens again when iOS ends the session while the button is still held", async () => {
+    const fake = fakeRecognition();
+    const session = startNativeSpeechDictation({
+      create: () => fake.recognition,
+      lang: "en-US",
+    });
+    fake.emit(event(0, [{ text: "first half", isFinal: true }]));
+    fake.end();
+    expect(fake.recognition.start).toHaveBeenCalledTimes(2);
+    // The new session numbers its results from zero again.
+    fake.emit(event(0, [{ text: "second half", isFinal: true }]));
+    await expect(session.stop()).resolves.toBe("first half second half");
+  });
+
+  it("commits interim text across an automatic restart", async () => {
+    const fake = fakeRecognition();
+    const session = startNativeSpeechDictation({
+      create: () => fake.recognition,
+      lang: "en-US",
+    });
+    fake.emit(event(0, [{ text: "hello there", isFinal: false }]));
+    fake.end();
+    fake.emit(event(0, [{ text: "again", isFinal: true }]));
+    await expect(session.stop()).resolves.toBe("hello there again");
+  });
+
+  it("stops re-opening after repeated silent sessions", async () => {
+    const fake = fakeRecognition();
+    const session = startNativeSpeechDictation({
+      create: () => fake.recognition,
+      lang: "en-US",
+      maxSilentRestarts: 2,
+    });
+    fake.end();
+    fake.end();
+    fake.end();
+    fake.end();
+    // Initial start plus two retries; the third silent end is final.
+    expect(fake.recognition.start).toHaveBeenCalledTimes(3);
+    await expect(session.stop()).resolves.toBe("");
+    expect(fake.stopped()).toBe(0);
+  });
+
+  it("does not listen again once stop was requested", async () => {
+    const fake = fakeRecognition();
+    const session = startNativeSpeechDictation({
+      create: () => fake.recognition,
+      lang: "en-US",
+    });
+    fake.emit(event(0, [{ text: "done", isFinal: true }]));
+    await expect(session.stop()).resolves.toBe("done");
+    expect(fake.recognition.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers what was heard when the recogniser never reports end after stop", async () => {
+    const fake = silentStopRecognition();
+    let pending: (() => void) | null = null;
+    const session = startNativeSpeechDictation({
+      create: () => fake.recognition,
+      lang: "en-US",
+      setTimeout: (callback) => {
+        pending = callback;
+        return "timer";
+      },
+      clearTimeout: () => {
+        pending = null;
+      },
+    });
+    fake.emit(event(0, [{ text: "still here", isFinal: true }]));
+    const stopped = session.stop();
+    expect(fake.recognition.stop).toHaveBeenCalledTimes(1);
+    expect(pending).not.toBeNull();
+    pending!();
+    await expect(stopped).resolves.toBe("still here");
+    expect(fake.recognition.abort).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels the stop timeout once the browser reports end", async () => {
+    const fake = silentStopRecognition();
+    const cleared: unknown[] = [];
+    const session = startNativeSpeechDictation({
+      create: () => fake.recognition,
+      lang: "en-US",
+      setTimeout: () => "timer",
+      clearTimeout: (handle) => {
+        cleared.push(handle);
+      },
+    });
+    fake.emit(event(0, [{ text: "prompt", isFinal: true }]));
+    const stopped = session.stop();
+    fake.end();
+    await expect(stopped).resolves.toBe("prompt");
+    expect(cleared).toEqual(["timer"]);
+  });
+
+  it("gives up on a restart the browser refuses without losing the transcript", async () => {
+    const fake = fakeRecognition();
+    let starts = 0;
+    fake.recognition.start = () => {
+      starts += 1;
+      if (starts > 1) throw new Error("not allowed");
+    };
+    const session = startNativeSpeechDictation({
+      create: () => fake.recognition,
+      lang: "en-US",
+    });
+    fake.emit(event(0, [{ text: "kept", isFinal: true }]));
+    fake.end();
+    await expect(session.stop()).resolves.toBe("kept");
+  });
+});

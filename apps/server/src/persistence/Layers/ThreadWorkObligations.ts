@@ -111,9 +111,9 @@ const make = Effect.gen(function* () {
     `,
   });
 
-  // Same insert, but a row for this key that ended `cancelled` is revived as
-  // a fresh pending obligation. `completed` and live rows still win the
-  // conflict, so a thread recovered once is not recovered twice.
+  // Retry recovery after transient cancellation, preserving deliberate Stop,
+  // deletion, settlement, and agent sign-off. Completed and live rows also
+  // win the conflict, so a thread recovered once is not recovered twice.
   const insertOrReviveRow = SqlSchema.findOneOption({
     Request: ThreadWorkObligation,
     Result: ReturnedId,
@@ -157,6 +157,12 @@ const make = Effect.gen(function* () {
         blocked_reason = NULL,
         updated_at = excluded.updated_at
       WHERE thread_work_obligations.state = 'cancelled'
+        AND COALESCE(thread_work_obligations.blocked_reason, '') NOT IN (
+          'thread.turn-interrupt-requested',
+          'thread.deleted',
+          'thread.settled',
+          'agent signed off with AGENT_STOP'
+        )
       RETURNING obligation_id AS "obligationId"
     `,
   });
@@ -649,10 +655,21 @@ const make = Effect.gen(function* () {
         blocked_reason = ${input.blockedReason},
         updated_at = ${iso(input.updatedAt)}
       WHERE thread_id = ${input.threadId}
-        AND state NOT IN ('completed', 'cancelled')
+        AND (
+          state NOT IN ('completed', 'cancelled')
+          -- Steering uses a completed row to reserve delivery without taking
+          -- the running turn's scheduler slot. Until acknowledged it is still
+          -- in flight: Stop must prevent a failed send from rearming it.
+          OR (
+            ${input.mode} IN ('user-stop', 'thread-terminal')
+            AND state = 'completed'
+            AND kind = 'active-turn-recovery'
+            AND blocked_reason = ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}
+          )
+        )
         AND (
           ${input.mode} = 'thread-terminal'
-          OR ${input.mode} = 'pending-start-interrupt'
+          OR ${input.mode} = 'user-stop'
           OR NOT (state = 'pending' AND kind = 'active-turn-recovery')
         )
         AND (

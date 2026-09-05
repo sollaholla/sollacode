@@ -131,3 +131,20 @@ cannot clear the lock. Retrying after a reload, restart, or ambiguous connection
 Solla Code reuses durable delivery evidence and asks Grok only about messages that remain
 unconfirmed. The action returns when a newer message enters the queue, including after a reload or
 reconnect. Web and mobile clients use the same separate queue, Stop, and draft-send actions.
+
+## Stop a chat
+
+**Stop** cancels the current turn, queued deliveries, and pending automatic continuation or recovery for that chat. It also releases a held-send action while leaving the unsent draft available to edit. Messages already in the conversation remain in its history.
+
+Solla first requests a provider interrupt, then closes the provider session. Late provider status events cannot restart the chat, and startup recovery must respect an explicit Stop. Send a new message when you want work to resume. If the provider cannot be stopped, Solla reports that failure in the conversation rather than silently claiming the process exited.
+
+## Queued sends and provider startup
+
+A saved message is queued until the server admits its delivery. Web and desktop show
+**Queued for Codex** (or the selected provider), then **Starting Codex** only when
+startup has been admitted. A scheduled retry says **Waiting to retry Codex**.
+
+Explicit user sends do not wait for unrelated threads to finish under the server's
+background concurrency limits. Sends within the same thread remain serialized.
+Automatic continuations, scheduled agent tasks, and recovery work keep their limits;
+provider-side rate limits and connection failures can still delay a response.

@@ -199,15 +199,15 @@ export const CancelThreadWorkByThreadInput = Schema.Struct({
    * - `thread-terminal` (delete/settle/auth-replacement): cancel everything —
    *   the thread is over or a replacement owner is inserted in the same
    *   transaction.
-   * - `turn-interrupt` (stop button, session stop, provider handoff): cancel
+   * - `turn-interrupt` (internal session stop, provider handoff): cancel
    *   current work but spare `active-turn-recovery` rows whose message has
    *   not started a provider turn — queued deliveries of real user messages
    *   the UI has marked "Sent". A queued delivery the scheduler had already
    *   claimed to supervise the blocking turn is handed back to `pending`
    *   rather than cancelled; either way they dispatch once the thread is
    *   idle.
-   * - `pending-start-interrupt` (stop before a provider turn exists): cancel
-   *   everything, including the pending delivery the user explicitly stopped.
+   * - `user-stop` (explicit Stop at any stage): cancel everything, including
+   *   queued deliveries, so nothing restarts until the user sends again.
    * - `user-supersede` (a newer user send): additionally spare `claimed` and
    *   `executing` rows of every kind. Those are live supervisors whose
    *   scheduler fiber holds the thread's runtime lease; cancelling the row
@@ -216,12 +216,7 @@ export const CancelThreadWorkByThreadInput = Schema.Struct({
    *   retries are still superseded: their failure was already surfaced, and
    *   the newer message replaces them.
    */
-  mode: Schema.Literals([
-    "thread-terminal",
-    "turn-interrupt",
-    "pending-start-interrupt",
-    "user-supersede",
-  ]),
+  mode: Schema.Literals(["thread-terminal", "turn-interrupt", "user-stop", "user-supersede"]),
 });
 export type CancelThreadWorkByThreadInput = typeof CancelThreadWorkByThreadInput.Type;
 
@@ -243,7 +238,7 @@ export interface ThreadWorkObligationRepositoryShape {
    *
    * With `reviveCancelled`, a row for the same key that ended `cancelled` is
    * reset to `pending` (attempt 0, no lease, no reason) and counts as
-   * inserted; a live or `completed` row is still left alone. The boot
+   * inserted; live, completed, and explicitly stopped work is left alone. The boot
    * backfill needs this: a thread whose earlier resume of the SAME turn gave
    * up ("Gave up after 11 failed attempts", thread 3112ffe4 2026-09-02
    * 16:27) was killed again by the next relaunch, and the plain insert's

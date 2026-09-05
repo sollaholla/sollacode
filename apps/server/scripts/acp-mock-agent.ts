@@ -50,6 +50,7 @@ const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "
 const emitGrokBackgroundTasks = process.env.T3_ACP_EMIT_GROK_BACKGROUND_TASKS;
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
+const exhaustBillingAfterPrompt = process.env.T3_ACP_BILLING_EXHAUST_AFTER_PROMPT === "1";
 const emitXAiQueueChanged = process.env.T3_ACP_EMIT_XAI_QUEUE_CHANGED === "1";
 const omitXAiQueueChangedPromptMessageId =
   process.env.T3_ACP_OMIT_XAI_QUEUE_CHANGED_PROMPT_MESSAGE_ID;
@@ -1106,18 +1107,18 @@ const program = Effect.gen(function* () {
     if (method === "_x.ai/billing" || method === "x.ai/billing") {
       return Effect.succeed({
         config: {
-          creditUsagePercent: 6,
+          creditUsagePercent: exhaustBillingAfterPrompt && promptCount > 0 ? 100 : 6,
           currentPeriod: {
             type: "USAGE_PERIOD_TYPE_WEEKLY",
             start: "2026-08-15T00:00:00+00:00",
-            end: "2026-08-22T00:00:00+00:00",
+            end: process.env.T3_ACP_BILLING_PERIOD_END ?? "2026-08-22T00:00:00+00:00",
           },
           onDemandCap: { val: 0 },
           onDemandUsed: { val: 0 },
           prepaidBalance: { val: 0 },
           isUnifiedBillingUser: true,
           billingPeriodStart: "2026-08-15T00:00:00+00:00",
-          billingPeriodEnd: "2026-08-22T00:00:00+00:00",
+          billingPeriodEnd: process.env.T3_ACP_BILLING_PERIOD_END ?? "2026-08-22T00:00:00+00:00",
         },
         subscription_tier: "SuperGrok Plus",
       });

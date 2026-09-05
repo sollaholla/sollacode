@@ -1,4 +1,4 @@
-import { ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
+import { MessageId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -16,6 +16,7 @@ import { ThreadWorkObligationRepositoryLive } from "../../persistence/Layers/Thr
 import { ThreadWorkObligationRepository } from "../../persistence/Services/ThreadWorkObligations.ts";
 import { RuntimeLeaseRegistryLive } from "../../provider/Layers/RuntimeLeaseRegistry.ts";
 import { RuntimeLeaseRegistry } from "../../provider/Services/RuntimeLeaseRegistry.ts";
+import { activeTurnWorkSourceId } from "../agentModeContinuation.ts";
 import { ThreadWorkScheduler } from "../Services/ThreadWorkScheduler.ts";
 import { ThreadSubscriptionRegistry } from "../Services/ThreadSubscriptionRegistry.ts";
 import { ThreadSubscriptionRegistryLive } from "./ThreadSubscriptionRegistry.ts";
@@ -940,5 +941,143 @@ cancellationLayer("ThreadWorkScheduler cancellation", (it) => {
         assert.strictEqual(row.blockedReason, "thread.deleted");
       }),
     ),
+  );
+});
+
+const userDeliveryLayer = it.layer(
+  makeThreadWorkSchedulerLive({ maxGlobal: 1, maxPerProvider: 1, pollIntervalMs: 60_000 }).pipe(
+    Layer.provideMerge(persistenceLayer),
+    Layer.provideMerge(RuntimeLeaseRegistryLive),
+    Layer.provideMerge(ThreadSubscriptionRegistryLive),
+  ),
+);
+
+userDeliveryLayer("ThreadWorkScheduler user delivery", (it) => {
+  it.effect(
+    "delivers user sends at capacity while keeping automatic work capped and each thread serial",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const repository = yield* ThreadWorkObligationRepository;
+          const scheduler = yield* ThreadWorkScheduler;
+          const backgroundStarted = yield* Deferred.make<void>();
+          const releaseBackground = yield* Deferred.make<void>();
+          const userStarted = yield* Deferred.make<void>();
+          const otherProviderStarted = yield* Deferred.make<void>();
+          const releaseUser = yield* Deferred.make<void>();
+          const nextUserStarted = yield* Deferred.make<void>();
+          const now = DateTime.formatIso(yield* DateTime.now);
+          const provider = ProviderInstanceId.make("codex");
+          const userThread = ThreadId.make("interactive-thread");
+          const insert = (
+            id: string,
+            threadId: ThreadId,
+            kind: "agent-continuation" | "active-turn-recovery",
+            sourceTurnId: TurnId,
+            providerInstanceId = provider,
+          ) =>
+            repository.insert({
+              obligationId: id,
+              threadId,
+              sourceTurnId,
+              kind,
+              state: "pending",
+              providerInstanceId,
+              attempt: 0,
+              nextAttemptAt: null,
+              claimedAt: null,
+              leaseExpiresAt: null,
+              blockedReason: null,
+              createdAt: now,
+              updatedAt: now,
+            });
+          yield* scheduler.registerHandler("agent-continuation", () =>
+            Deferred.succeed(backgroundStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseBackground)),
+              Effect.as({ state: "completed" as const }),
+            ),
+          );
+          yield* scheduler.registerHandler("active-turn-recovery", (work) =>
+            Deferred.succeed(
+              work.obligationId === "first-user"
+                ? userStarted
+                : work.obligationId === "other-provider-user"
+                  ? otherProviderStarted
+                  : nextUserStarted,
+              undefined,
+            ).pipe(
+              Effect.andThen(Deferred.await(releaseUser)),
+              Effect.as({ state: "completed" as const }),
+            ),
+          );
+          yield* insert(
+            "running-background",
+            ThreadId.make("background-thread"),
+            "agent-continuation",
+            TurnId.make("background-turn"),
+          );
+          yield* scheduler.start();
+          yield* Deferred.await(backgroundStarted);
+          yield* insert(
+            "waiting-background",
+            ThreadId.make("waiting-background-thread"),
+            "agent-continuation",
+            TurnId.make("next-background-turn"),
+          );
+          yield* insert(
+            "waiting-recovery",
+            ThreadId.make("recovery-thread"),
+            "active-turn-recovery",
+            TurnId.make("existing-provider-turn"),
+          );
+          yield* insert(
+            "waiting-scheduled-task",
+            ThreadId.make("scheduled-thread"),
+            "active-turn-recovery",
+            activeTurnWorkSourceId(MessageId.make("vm-task:scheduled")),
+          );
+          yield* insert(
+            "first-user",
+            userThread,
+            "active-turn-recovery",
+            activeTurnWorkSourceId(MessageId.make("user-1")),
+          );
+          yield* insert(
+            "other-provider-user",
+            ThreadId.make("other-provider-thread"),
+            "active-turn-recovery",
+            activeTurnWorkSourceId(MessageId.make("user-2")),
+            ProviderInstanceId.make("claudeAgent"),
+          );
+          yield* scheduler.wake();
+          yield* Deferred.await(userStarted);
+          yield* Deferred.await(otherProviderStarted);
+          yield* insert(
+            "second-user",
+            userThread,
+            "active-turn-recovery",
+            activeTurnWorkSourceId(MessageId.make("user-3")),
+          );
+          yield* scheduler.wake();
+          assert.strictEqual((yield* scheduler.snapshot).activeGlobal, 3);
+          for (const id of [
+            "waiting-background",
+            "waiting-recovery",
+            "waiting-scheduled-task",
+            "second-user",
+          ]) {
+            assert.strictEqual(Option.getOrThrow(yield* repository.getById(id)).state, "pending");
+          }
+          yield* Deferred.succeed(releaseUser, undefined);
+          yield* Deferred.await(nextUserStarted);
+          // The original background turn is still running when this thread's
+          // next user send starts; neither send waits for another thread to end.
+          assert.strictEqual(
+            Option.getOrThrow(yield* repository.getById("running-background")).state,
+            "executing",
+          );
+          yield* Deferred.succeed(releaseBackground, undefined);
+        }),
+      ),
   );
 });

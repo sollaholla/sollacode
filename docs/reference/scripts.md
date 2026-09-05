@@ -2,7 +2,7 @@
 
 - `vp run dev` - Starts contracts, server, and web in watch mode.
 - `vp run dev --share` - Also publishes the web port over HTTPS on this machine's tailnet. The startup pairing URL is built against the shared origin, and the mapping is removed on exit.
-- `vp run dev:server` - Starts just the WebSocket server. The server process runs on Bun (`@effect/platform-bun` + `BunPtyAdapter`), but task running uses `vp run`.
+- `vp run dev:server` - Starts just the WebSocket server. The server entrypoint uses Node.js and `@effect/platform-node`; task running uses `vp run`.
 - `vp run dev:web` - Starts just the Vite dev server for the web app.
 - Dev commands run from a linked **git worktree** default to that worktree's gitignored `.t3`, even when `T3CODE_HOME` is set, storing state in `<worktree>/.t3/userdata`. Pass `--home-dir <path>` to choose another isolated directory explicitly. Submodules are not worktrees and keep the normal precedence.
 - From the **main checkout**, dev commands implicitly use `~/.t3/dev`, keeping development state separate from `~/.t3/userdata`. An explicit `--home-dir <path>` stores state under `<path>/userdata`; the base directory remains available for caches, worktrees, and other shared data.
@@ -10,10 +10,10 @@
 - Pass dev-runner flags directly after the root task name, for example:
   `vp run dev --home-dir /tmp/t3code-dev`
 - `vp run start` - Runs the production server (serves built web app as static files).
-- `vp run build` - Builds contracts, web app, and server.
+- `vp run build` - Builds the application and package workspaces selected by the root `build` script.
 - `vp run typecheck` - Strict TypeScript checks for all packages.
 - `vp run test` - Runs workspace tests.
-- `node apps/server/scripts/t3-sqlite-state.ts <query|exec> --base-dir <path> ...` - Inspects or seeds an isolated T3 SQLite database; writes create a private backup first.
+- `node apps/server/scripts/t3-sqlite-state.ts <query|exec> --base-dir <path> ...` - Inspects or seeds an isolated Solla Code SQLite database; writes create a private backup first.
 - `vp run dist:desktop:artifact -- --platform <mac|linux|win> --target <target> --arch <arch>` - Builds a desktop artifact for a specific platform/target/arch.
 - `vp run dist:desktop:dmg` - Builds a shareable macOS `.dmg` into `./release`.
 - `vp run dist:desktop:dmg:x64` - Builds an Intel macOS `.dmg`.
@@ -72,7 +72,7 @@ JS on macOS 10.15+, and NSIS uninstaller generation takes its own PE-parsing pat
 not needed**. node-pty ships `win32-x64` and `win32-arm64` prebuilds, and `npmRebuild` is off for
 Windows, so nothing native is compiled for the app itself.
 
-Two things do not cross-compile, and both degrade rather than fail:
+Two native payloads require separate preparation:
 
 - **The resource monitor** is Rust built for `x86_64-pc-windows-msvc`, which needs the MSVC linker.
   Pass a binary built elsewhere instead of building it here:

@@ -285,6 +285,17 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<ProjectionThreadAssetSource, ProjectionRepositoryError>;
 
   /**
+   * The newest activity of one kind on a thread, read through the
+   * `(thread_id, kind)` index rather than the bounded detail window — a
+   * failover record can sit behind hundreds of tool rows by the time the
+   * next turn asks about it.
+   */
+  readonly getLatestThreadActivityByKind?: (
+    threadId: ThreadId,
+    kind: string,
+  ) => Effect.Effect<Option.Option<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
    * Read a single active thread detail snapshot by id.
    */
   readonly getThreadDetailById: (

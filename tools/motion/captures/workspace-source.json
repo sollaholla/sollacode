@@ -1,0 +1,10 @@
+{
+  "source": "Production client, lossless Chromium compositor frames",
+  "viewport": {
+    "width": 1314,
+    "height": 912
+  },
+  "duration": 10.999205112457275,
+  "actions": [],
+  "errors": []
+}

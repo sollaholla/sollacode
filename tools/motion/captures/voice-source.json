@@ -1,0 +1,18 @@
+{
+  "source": "Production web client with Chromium file microphone",
+  "viewport": {
+    "width": 880,
+    "height": 832
+  },
+  "sourceTrimStart": 17.5,
+  "duration": 8,
+  "verification": {
+    "elapsedMs": 24567,
+    "transcribedMs": 13297,
+    "text": "Listening\n\nAsk about your threads, or send work to one.\n\nWhich projects are in this workspace? Keep it to one sentence.\nOne moment.\nThis workspace contains four projects: Fieldnotes, Lumen, Orbit API, and Agents.\nStop listening",
+    "errors": [],
+    "input": "Which projects are in this workspace? Keep it to one sentence.",
+    "inputMethod": "eSpeak NG formant synthesis through Chromium's file microphone"
+  },
+  "audioInFilm": false
+}

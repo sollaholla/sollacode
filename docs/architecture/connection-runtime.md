@@ -95,20 +95,17 @@ connection policy.
 
 ## Source Boundaries
 
-The public package subpaths mirror the runtime layers:
+The exported subpaths are declared in [`packages/client-runtime/package.json`](../../packages/client-runtime/package.json):
 
-- `connection/core` contains state, catalog, retry policy, and connectivity.
-- `connection/transport` contains brokerage, authorization, attempts, and RPC
-  sessions.
-- `connection/platform` declares capabilities and persistence contracts.
-- `connection/services` contains environment-scoped data services.
-- `connection/application` assembles registries, discovery, and startup.
-- `connection/atoms` adapts shared services to application-owned Atom runtimes.
-- `connection/presentation` contains pure UI projections.
+- `connection` assembles registrations, discovery, the registry, and supervisors.
+- `connection/catalog` and `connection/model` define persisted profiles and connection state.
+- `authorization` prepares authentication; `rpc` owns sessions and RPC access.
+- `environment` exposes scoped data services; `operations` constructs commands.
+- `platform` declares platform capabilities and persistence contracts.
+- `state/*` provides domain atoms for connections, shell, threads, terminals, and other features.
+- `relay` supports relay discovery and connection preparation.
 
-Other reusable state lives in domain subpaths such as `shell`, `threads`,
-`terminal`, and `vcs`. Applications must import explicit package subpaths; the
-package intentionally has no root export.
+Import these explicit package subpaths. The package has no root export.
 
 ## Application Boundary
 
@@ -117,7 +114,7 @@ its own Atom runtime, and selects the domain atom factories required by that
 platform. Web and mobile may expose different hooks and features without
 changing connection ownership.
 
-Application code must not construct `WsTransport`, RPC clients, retry loops, or
+Application code must not construct RPC clients, retry loops, or
 raw orchestration commands. Persistence paths belong to the platform
 registration and cache stores, with explicit migration or invalidation policy.
 

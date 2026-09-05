@@ -3,6 +3,12 @@
 The Solla Code web or desktop app and the server it connects to work best when they use the same
 version. If they do not match, Solla Code shows a warning with the right update option for that server.
 
+## Distribution boundary
+
+Packaged Solla desktop updates come from this fork's release artifacts. A server built from this repository must be rebuilt from the corresponding Solla source revision. The inherited npm self-update and copied `npx t3@<version>` commands target upstream T3 Code, not Solla Code. Do not use those commands to update a Solla source server. See [Fork identity](../reference/fork-identity.md).
+
+The action table below describes the inherited capability UI; availability alone does not establish that a matching Solla package is published.
+
 ## Where to Find the Update
 
 You may see the warning in either of these places:
@@ -22,11 +28,11 @@ The update does not remove saved threads, settings, or project files.
 
 ## Choose the Action You See
 
-| Action                     | What to do                                                                                                                                                                                   |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Update server**          | Select the button and leave Solla Code open. It prepares the matching version, restarts the server, and reconnects automatically. This can take several minutes.                             |
-| **Update the desktop app** | Open the Solla Code desktop app on the machine that runs the server and install the app update there. The installer relaunches that same app bundle; you should not have to open it by hand. |
-| **Copy update command**    | Copy the command, open a terminal on the server machine, stop the current Solla Code server, and relaunch it with the copied command and any startup options you normally use.               |
+| Action                            | What to do                                                                                                                                                                                   |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Update server**                 | Select the button and leave Solla Code open. It prepares the matching version, restarts the server, and reconnects automatically. This can take several minutes.                             |
+| **Update the desktop app**        | Open the Solla Code desktop app on the machine that runs the server and install the app update there. The installer relaunches that same app bundle; you should not have to open it by hand. |
+| **Install or rebuild Solla Code** | Install the matching fork release, or rebuild the remote server from the corresponding Solla source revision. Preserve its existing startup options and state directory.                     |
 
 The available action depends on how that server was started. Solla Code does not update connected
 servers silently in the background.
@@ -49,14 +55,7 @@ The tool is available only from a desktop-managed server on macOS or Windows. Ve
 installer-launch failures leave the running installation unchanged. Installation diagnostics are
 written to `desktop-app-update.log` in the server logs directory.
 
-If the server uses the Solla Code background service, you can also update it directly on the host:
-
-```sh
-npx t3@latest service update
-```
-
-See [Running Solla Code in the Background](./background-service.md) for install, status, and removal
-commands.
+For source-hosted servers, build the matching Solla revision on the host and restart the same launch command with the same state directory and connection options. The inherited systemd installer currently fetches upstream packages; see [Background services](./background-service.md).
 
 ## After the Update
 
@@ -74,7 +73,6 @@ reconnect or open **Settings** → **Connections** again. If the warning remains
 
 1. Retry the offered action once.
 2. Make sure you updated the machine named in the warning, not only the device you are using.
-3. For a command-line server, relaunch it with `npx t3@<client-version>`, replacing
-   `<client-version>` with the client version shown in the warning.
+3. For a source-hosted Solla server, build the matching fork revision and restart its built entrypoint. Do not substitute an upstream npm package with a similar version number.
 
 For remote connection setup and access troubleshooting, see [Remote Access](./remote-access.md).

@@ -1,0 +1,207 @@
+<div class="bolt-view" data-bolt>
+  <img
+    src="/brand/solla-bolt-studio.png"
+    alt="Solla Code’s faceted gold S lightning bolt"
+    width="1400"
+    height="1400"
+    fetchpriority="high"
+  />
+  <canvas
+    aria-label="Interactive 3D gold S. Drag to turn the model."
+    tabindex="0"></canvas>
+  <button
+    class="rotate-bolt"
+    type="button"
+    hidden
+    aria-label="Rotate the gold S model"
+    >Rotate the S <span aria-hidden="true">↻</span></button
+  >
+</div>
+<script>
+  import { createBoltRenderer, type BoltMesh } from "../lib/boltRenderer";
+  for (const host of document.querySelectorAll<HTMLElement>("[data-bolt]")) {
+    const canvas = host.querySelector("canvas");
+    const button = host.querySelector("button");
+    const fallback = host.querySelector("img");
+    if (!canvas || !button || !fallback) continue;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let frame = 0,
+      rotation = 0.18,
+      tilt = -0.08,
+      visible = false,
+      played = false,
+      drag:
+        | { x: number; y: number; rotation: number; tilt: number }
+        | undefined;
+    try {
+      const response = await fetch("/brand/solla-bolt.mesh.json");
+      if (!response.ok) throw new Error("Model unavailable");
+      const renderer = createBoltRenderer(
+        canvas,
+        (await response.json()) as BoltMesh,
+      );
+      const draw = () => renderer.draw(tilt, rotation);
+      draw();
+      host.classList.add("model-ready");
+      button.hidden = false;
+      const stop = () => {
+        cancelAnimationFrame(frame);
+        frame = 0;
+        button.textContent = "Rotate the S ↻";
+        button.setAttribute("aria-label", "Rotate the gold S model");
+      };
+      const turn = () => {
+        stop();
+        if (reduced.matches) {
+          rotation += Math.PI / 4;
+          draw();
+          return;
+        }
+        const start = performance.now(),
+          from = rotation;
+        button.textContent = "Pause rotation Ⅱ";
+        button.setAttribute("aria-label", "Pause the gold S rotation");
+        const tick = (now: number) => {
+          const p = Math.min(1, (now - start) / 7000);
+          rotation = from + (1 - Math.pow(1 - p, 3)) * Math.PI * 2;
+          draw();
+          if (p < 1 && visible && !document.hidden)
+            frame = requestAnimationFrame(tick);
+          else stop();
+        };
+        frame = requestAnimationFrame(tick);
+      };
+      button.addEventListener("click", () => (frame ? stop() : turn()));
+      canvas.addEventListener("pointerdown", (event) => {
+        stop();
+        drag = { x: event.clientX, y: event.clientY, rotation, tilt };
+        canvas.setPointerCapture(event.pointerId);
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        if (!drag) return;
+        rotation = drag.rotation + (event.clientX - drag.x) * 0.012;
+        tilt = Math.max(
+          -1,
+          Math.min(1, drag.tilt + (event.clientY - drag.y) * 0.008),
+        );
+        draw();
+      });
+      canvas.addEventListener("pointerup", () => {
+        drag = undefined;
+      });
+      canvas.addEventListener("pointercancel", () => {
+        drag = undefined;
+      });
+      canvas.addEventListener("keydown", (event) => {
+        if (
+          !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
+            event.key,
+          )
+        )
+          return;
+        event.preventDefault();
+        stop();
+        if (event.key === "ArrowLeft") rotation -= 0.18;
+        else if (event.key === "ArrowRight") rotation += 0.18;
+        else
+          tilt = Math.max(
+            -1,
+            Math.min(1, tilt + (event.key === "ArrowUp" ? -0.12 : 0.12)),
+          );
+        draw();
+      });
+      const observer = new IntersectionObserver(
+        (entries) => {
+          visible = entries[0]?.isIntersecting ?? false;
+          if (!visible) stop();
+          else if (!played) {
+            played = true;
+            if (!reduced.matches) turn();
+          }
+        },
+        { threshold: 0.15 },
+      );
+      observer.observe(host);
+      const resize = new ResizeObserver(draw);
+      resize.observe(host);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) stop();
+      });
+      reduced.addEventListener("change", stop);
+      canvas.addEventListener("webglcontextlost", (event) => {
+        event.preventDefault();
+        stop();
+        host.classList.remove("model-ready");
+        button.hidden = true;
+      });
+      window.addEventListener(
+        "pagehide",
+        () => {
+          stop();
+          observer.disconnect();
+          resize.disconnect();
+          renderer.dispose();
+        },
+        { once: true },
+      );
+    } catch {
+      host.classList.remove("model-ready");
+      canvas.hidden = true;
+    }
+  }
+</script>
+<style>
+  .bolt-view {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+  .bolt-view > img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  .bolt-view canvas {
+    display: none;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    touch-action: pan-y;
+  }
+  .bolt-view canvas:active {
+    cursor: grabbing;
+  }
+  .model-ready canvas {
+    display: block;
+  }
+  .model-ready > img {
+    visibility: hidden;
+  }
+  .bolt-view canvas:focus-visible {
+    outline: 1px solid #e9bc6580;
+    outline-offset: -40px;
+    border-radius: 50%;
+  }
+  .rotate-bolt {
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    border: 1px solid #514633;
+    background: #17130dcc;
+    border-radius: 20px;
+    padding: 8px 15px;
+    font-size: 11px;
+    color: #d2bb92;
+    cursor: pointer;
+  }
+  .rotate-bolt:hover {
+    background: #282114;
+  }
+  .rotate-bolt[hidden] {
+    display: none;
+  }
+</style>

@@ -4,6 +4,8 @@ Solla Code can update a connected server to the exact version of the client that
 drift. This path exists primarily for remote environments, where the user may not have a terminal
 open on the server machine.
 
+**Fork limitation:** the implementation below retains upstream npm identity `t3`. It is not a Solla update channel. Desktop-managed Solla installations update through fork artifacts; source installations require a matching source build. An owned npm package and corresponding runtime changes are prerequisites for Solla CLI self-updates.
+
 The feature has three boundaries:
 
 - the server advertises whether and how it can be replaced;
@@ -37,7 +39,7 @@ The server resolves its capability once at startup and publishes it in the envir
 | `boot-service`    | Linux server running under the T3-managed systemd user service                                | Call the update RPC; the service unit is replaced and restarted.      |
 | `respawn`         | Published npm CLI running in the foreground on macOS or Linux                                 | Call the update RPC; the process hands off to a detached replacement. |
 | `desktop-managed` | Backend supervised by the desktop app                                                         | Tell the user to update the desktop app on the server machine.        |
-| absent            | Older server, development checkout, Windows foreground process, or an unrecognized supervisor | Offer the exact manual relaunch command.                              |
+| absent            | Older server, development checkout, Windows foreground process, or an unrecognized supervisor | Offer matching Solla release/source-build guidance.                   |
 
 Desktop ownership takes precedence over process-shape detection. A desktop-managed backend must
 never spawn a second CLI server beside the app-owned process. Likewise, a process launched by an
@@ -50,7 +52,7 @@ bring the old version back.
 flowchart TD
     A[Client detects different versions] --> B{Advertised update path}
     B -->|desktop-managed| C[Update desktop app on server machine]
-    B -->|missing| D[Copy exact manual relaunch command]
+    B -->|missing| D[Show Solla release or source-build guidance]
     B -->|boot-service or respawn| E[server.updateServer]
     E --> F[Install exact t3 version in pinned runtime]
     F --> G[Run version preflight]
@@ -80,7 +82,7 @@ preflight also removes the candidate runtime so retrying the same version perfor
 The systemd user service is a host lifecycle concern. The standalone
 `t3 service install`, `uninstall`, `update`, and `status` commands own it. Install and update both
 reconcile the unit through `BootService`; running `npx t3@latest service update` therefore pins and
-activates the latest CLI release without requiring a connected client.
+activates the latest upstream T3 Code CLI release without requiring a connected client.
 
 ## Process Handoff
 

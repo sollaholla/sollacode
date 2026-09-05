@@ -2,7 +2,9 @@
 
 Solla Code reads keybindings from:
 
-- `~/.t3/keybindings.json`
+- Packaged desktop: `~/.solla-code/userdata/keybindings.json`
+- Standalone source server: `~/.t3/userdata/keybindings.json`
+- Development: `<stateDir>/keybindings.json` (see [state directories](../reference/fork-identity.md#state-directories))
 
 The file must be a JSON array of rules:
 
@@ -101,7 +103,7 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 ### Available Commands
 
 - `terminal.toggle`: open/close terminal drawer
-- `terminal.split`: split terminal (in focused terminal context by default)
+- `terminal.splitVertical` and `terminal.splitHorizontal`: split the focused terminal vertically or horizontally
 - `terminal.new`: create new terminal (in focused terminal context by default)
 - `terminal.close`: close/kill the focused terminal (in focused terminal context by default)
 - `preview.toggle`: open/close the in-app browser preview panel (desktop app only)

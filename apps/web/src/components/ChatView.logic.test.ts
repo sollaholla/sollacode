@@ -1213,6 +1213,21 @@ describe("describePendingTurnStart", () => {
     since: "2026-09-01T19:49:15.000Z",
   } as const;
 
+  it.each([
+    ["pending", "Queued for Codex"],
+    ["sleeping", "Waiting to retry Codex"],
+  ] as const)("does not claim startup for %s work", (state, expected) => {
+    expect(
+      describePendingTurnStart({
+        pendingWork: { ...queued, state },
+        latestTurnState: "completed",
+        sessionProviderInstanceId: "codex",
+        requestedProviderInstanceId: "codex",
+        providerName: "Codex",
+      }),
+    ).toBe(expected);
+  });
+
   it("names the provider a queued send is starting", () => {
     expect(
       describePendingTurnStart({

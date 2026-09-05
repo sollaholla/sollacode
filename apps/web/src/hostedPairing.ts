@@ -1,6 +1,4 @@
-import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "./pairingUrl";
-
-const DEFAULT_HOSTED_APP_URL = "https://app.t3.codes";
+import { getPairingTokenFromUrl } from "./pairingUrl";
 
 export interface HostedPairingRequest {
   readonly host: string;
@@ -10,8 +8,8 @@ export interface HostedPairingRequest {
 
 export type HostedAppChannel = "latest" | "nightly";
 
-export function configuredHostedAppUrl(): string {
-  return import.meta.env.VITE_HOSTED_APP_URL?.trim() || DEFAULT_HOSTED_APP_URL;
+export function configuredHostedAppUrl(): string | null {
+  return import.meta.env.VITE_HOSTED_APP_URL?.trim() || null;
 }
 
 function configuredBackendUrl(): string {
@@ -40,7 +38,8 @@ export function isHostedStaticApp(url: URL = new URL(window.location.href)): boo
     return true;
   }
 
-  const hostedOrigin = originFromUrl(configuredHostedAppUrl());
+  const hostedUrl = configuredHostedAppUrl();
+  const hostedOrigin = hostedUrl === null ? null : originFromUrl(hostedUrl);
   return hostedOrigin !== null && url.origin === hostedOrigin;
 }
 
@@ -64,26 +63,12 @@ export function hasHostedPairingRequest(url: URL = new URL(window.location.href)
   return readHostedPairingRequest(url) !== null;
 }
 
-export function buildHostedPairingUrl(input: {
-  readonly host: string;
-  readonly token: string;
-  readonly label?: string | null;
-}): string {
-  const url = new URL("/pair", configuredHostedAppUrl());
-  url.searchParams.set("host", input.host);
-
-  const label = input.label?.trim();
-  if (label) {
-    url.searchParams.set("label", label);
-  }
-
-  return setPairingTokenOnUrl(url, input.token).toString();
-}
-
 export function buildHostedChannelSelectionUrl(input: {
   readonly channel: HostedAppChannel;
-}): string {
-  const url = new URL("/__t3code/channel", configuredHostedAppUrl());
+}): string | null {
+  const hostedUrl = configuredHostedAppUrl();
+  if (!hostedUrl) return null;
+  const url = new URL("/__t3code/channel", hostedUrl);
   url.searchParams.set("channel", input.channel);
   return url.toString();
 }

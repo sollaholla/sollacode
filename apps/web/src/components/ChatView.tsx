@@ -8640,8 +8640,9 @@ function ChatViewContent(props: ChatViewProps) {
   ]);
 
   const onInterrupt = async () => {
-    if (!activeThread || isInterrupting) return;
+    if (!activeThread || !activeThreadKey || isInterrupting) return;
     setInterruptRequestedThreadKey(activeThreadKey);
+    setHeldSendThreadKeys((current) => releaseComposerSendHold(current, activeThreadKey));
     // Stop is a hard cancel of this turn — clear a sticky provider error so a
     // fallback/unavailable banner cannot keep the thread looking broken while
     // the harness is being killed.
