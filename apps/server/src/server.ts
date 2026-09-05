@@ -318,13 +318,8 @@ const PreviewLayerLive = Layer.empty.pipe(
   Layer.provideMerge(
     PreviewManager.layer.pipe(
       // Tab durability: sessions are rehydrated from SQLite at boot so open
-      // tabs survive restarts. Agent identity scopes the one-blank-tab rule to
-      // browser-only named-agent chats.
-      Layer.provide(
-        Layer.mergeAll(PreviewSessionStoreLive, VmAgentStoreLive).pipe(
-          Layer.provide(PersistenceLayerLive),
-        ),
-      ),
+      // tabs survive restarts.
+      Layer.provide(PreviewSessionStoreLive.pipe(Layer.provide(PersistenceLayerLive))),
     ),
   ),
   Layer.provideMerge(PortScannerLayerLive),

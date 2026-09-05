@@ -5,9 +5,9 @@ import {
   ChevronDownIcon,
   ChevronLeftIcon,
   GitForkIcon,
-  GlobeIcon,
   LayoutDashboardIcon,
   ListTodoIcon,
+  PanelRightIcon,
   ScrollTextIcon,
 } from "lucide-react";
 import * as Option from "effect/Option";
@@ -15,7 +15,6 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useState } from "react";
 
 import { RemoteConnectionControl } from "../remoteControl/RemoteConnectionControl";
-import { useThreadPreviewState } from "../../previewStateStore";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { useRightPanelStore } from "../../rightPanelStore";
@@ -46,9 +45,9 @@ const VIEW_LABELS: Record<AgentWorkspaceView, string> = {
 
 /**
  * The full surface for one agent: its single-thread chat (the real {@link
- * ChatView} — model picker, effort, usage, everything). The agent's browser is
- * the chat's collaborative preview panel, so the chat IS the workspace;
- * contextual history and settings stay behind one compact tools menu.
+ * ChatView} — model picker, effort, usage, everything), with Browser, Terminal,
+ * and Side Chat in its right panel. Contextual history and settings stay behind
+ * one compact tools menu.
  */
 export function AgentWorkspace(props: {
   readonly agentId: string;
@@ -115,8 +114,7 @@ function AgentWorkspaceResolved(props: {
     () => resolveInlineAgentAttention(workspace?.blockers ?? [], inlineNotification),
     [inlineNotification, workspace?.blockers],
   );
-  // The agent's browser is the chat's right panel. Track whether it is open so
-  // the header's Browser button reads as a toggle.
+  // The header toggle opens the panel without changing the selected surface.
   const agentThreadId = agent?.threadId ?? null;
   const agentThreadRef = useMemo(
     () => (agentThreadId ? { environmentId, threadId: agentThreadId } : null),
@@ -137,31 +135,25 @@ function AgentWorkspaceResolved(props: {
       ),
     );
   }, [agentThreadRef, workspace]);
-  const previewState = useThreadPreviewState(agentThreadRef);
-  const browserPanelOpen = useRightPanelStore((state) =>
+  const panelOpen = useRightPanelStore((state) =>
     agentThreadId
       ? (state.byThreadKey[scopedThreadKey({ environmentId, threadId: agentThreadId })]?.isOpen ??
         false)
       : false,
   );
-  const browserAvailable = browserPanelOpen || Object.keys(previewState.sessions).length > 0;
   const dashboardAvailable = hasAgentDashboard(workspace);
-  const toggleBrowserPanel = () => {
+  const togglePanel = () => {
     if (!agentThreadId) return;
     const threadRef = { environmentId, threadId: agentThreadId };
     const store = useRightPanelStore.getState();
-    // From another view, always reveal the chat with the browser open; from
+    // From another view, always reveal the chat with the panel open; from
     // the chat, behave as a plain open/close toggle.
     if (view !== "chat") {
       setView("chat");
-      store.open(threadRef, "preview");
+      store.setOpen(threadRef, true);
       return;
     }
-    if (browserPanelOpen) {
-      store.setOpen(threadRef, false);
-      return;
-    }
-    store.open(threadRef, "preview");
+    store.setOpen(threadRef, !panelOpen);
   };
 
   if (registryUnavailable) {
@@ -190,7 +182,7 @@ function AgentWorkspaceResolved(props: {
           // collapsed-sidebar reserve is only wanted from `md` up.
           "max-md:mx-3 max-md:mt-2 max-md:rounded-[14px] max-md:border max-md:border-[var(--line)] max-md:bg-card max-md:p-3",
           "md:" + COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
-          // This header spans the window even when the browser panel is open,
+          // This header spans the window even when the right panel is open,
           // so unlike ChatHeader the reserve cannot ever drop to pr-0: on
           // Windows the native window controls overlay this row's right edge,
           // and with them the parked panel toggle. Container-level only from
@@ -293,24 +285,24 @@ function AgentWorkspaceResolved(props: {
             activeEnvironmentId={environmentId}
             className="h-7 rounded-full border-[var(--line)] bg-surface-row px-2.5 text-[12px] hover:bg-surface-hover"
           />
-          {browserAvailable ? (
+          {agentThreadId ? (
             <button
               type="button"
-              aria-label="Browser"
-              aria-pressed={view === "chat" && browserPanelOpen}
-              title="Browser"
-              onClick={toggleBrowserPanel}
+              aria-label="Panel"
+              aria-pressed={view === "chat" && panelOpen}
+              title="Browser, Terminal, and Side Chat"
+              onClick={togglePanel}
               className={cn(
                 "inline-flex h-7 cursor-pointer items-stretch overflow-hidden rounded-full border border-[var(--line)] text-xs font-medium outline-hidden transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                view === "chat" && browserPanelOpen
+                view === "chat" && panelOpen
                   ? "border-[var(--gold-line)] bg-[var(--gold-tint)] text-foreground"
                   : "bg-surface-row text-foreground/85 hover:bg-surface-hover hover:text-foreground",
               )}
             >
               <span className="flex items-center border-r border-[var(--line)] px-2">
-                <GlobeIcon className="size-3.5" aria-hidden />
+                <PanelRightIcon className="size-3.5" aria-hidden />
               </span>
-              <span className="flex items-center px-2.5">Browser</span>
+              <span className="flex items-center px-2.5">Panel</span>
             </button>
           ) : null}
         </div>

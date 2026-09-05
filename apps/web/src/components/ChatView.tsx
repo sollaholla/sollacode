@@ -209,10 +209,6 @@ import {
   shouldReleaseHeldComposerSend,
 } from "./chat/composerSendQueue";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
-import {
-  resolveBrowserOnlySurfaceTarget,
-  shouldEnsureBrowserOnlySurface,
-} from "./preview/browserOnlySurfaceInvariant";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { RightPanelAutoCollapseOnEmpty } from "./RightPanelAutoCollapseOnEmpty";
@@ -797,8 +793,8 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       embeddedSideChat?: boolean;
       hideWorkspaceHeader?: boolean;
-      /** Agent threads: the right panel offers only the Browser surface. */
-      browserOnlySurfaces?: boolean;
+      /** Agent threads: Browser, Terminal, and Side Chat live in the right panel. */
+      agentSurfaces?: boolean;
       /** Agent alert rendered at the live end of the real chat timeline. */
       inlineTimelineNotice?: { readonly id: string; readonly content: ReactNode } | null;
       threadSyncPhase?: ThreadSyncPhase | null;
@@ -814,7 +810,7 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       embeddedSideChat?: boolean;
       hideWorkspaceHeader?: boolean;
-      browserOnlySurfaces?: boolean;
+      agentSurfaces?: boolean;
       inlineTimelineNotice?: { readonly id: string; readonly content: ReactNode } | null;
       threadSyncPhase?: never;
       artifactId?: never;
@@ -1720,7 +1716,7 @@ function ChatViewContent(props: ChatViewProps) {
     forceExpandedMobileComposer = false,
     embeddedSideChat = false,
     hideWorkspaceHeader = false,
-    browserOnlySurfaces = false,
+    agentSurfaces = false,
     inlineTimelineNotice = null,
   } = props;
   const requestedArtifactId = routeKind === "server" ? (props.artifactId ?? null) : null;
@@ -2537,7 +2533,7 @@ function ChatViewContent(props: ChatViewProps) {
   const storeSetTerminalFullscreen = useTerminalUiStateStore(
     (state) => state.setTerminalFullscreen,
   );
-  const terminalMainSurfaceActive = terminalUiState.mainSurface === "terminal";
+  const terminalMainSurfaceActive = !agentSurfaces && terminalUiState.mainSurface === "terminal";
   const terminalFullscreen = terminalUiState.terminalFullscreen;
   const storeSplitTerminal = useTerminalUiStateStore((s) => s.splitTerminal);
   const storeSplitTerminalVertical = useTerminalUiStateStore((s) => s.splitTerminalVertical);
@@ -2878,31 +2874,16 @@ function ChatViewContent(props: ChatViewProps) {
     useRightPanelStore.getState().reconcileSideChatSurfaces(activeThreadRef, sideChatChildren);
   }, [activeThreadRef, sideChatChildren]);
 
-  /**
-   * How many surfaces the agent panel held last time the refill below looked.
-   *
-   * Distinguishes a panel that opened empty (fill it) from one the user just
-   * emptied (leave it closed). Reset per thread so switching agents cannot read
-   * as a deliberate close.
-   */
-  const browserOnlyPreviousSurfaceCountRef = useRef<number | null>(null);
-  const browserOnlyThreadKeyRef = useRef<string | null>(null);
-  const activeThreadKeyForBrowserOnly = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
-  if (browserOnlyThreadKeyRef.current !== activeThreadKeyForBrowserOnly) {
-    browserOnlyThreadKeyRef.current = activeThreadKeyForBrowserOnly;
-    browserOnlyPreviousSurfaceCountRef.current = null;
-  }
-
   useLayoutEffect(() => {
     const focus = resolveRightPanelThreadFocus(
       focusedRightPanelThreadKeyRef.current,
       activeThreadKey,
     );
     focusedRightPanelThreadKeyRef.current = focus.focusedThreadKey;
-    if (activeThreadRef && focus.shouldCloseEmptyPanel) {
+    if (activeThreadRef && focus.shouldCloseEmptyPanel && !agentSurfaces) {
       useRightPanelStore.getState().closeEmptyOnFocus(activeThreadRef);
     }
-  }, [activeThreadKey, activeThreadRef]);
+  }, [activeThreadKey, activeThreadRef, agentSurfaces]);
 
   useEffect(() => {
     const presentThreadIds = new Set(allSideChatChildren.map((thread) => thread.threadId));
@@ -2918,42 +2899,6 @@ function ChatViewContent(props: ChatViewProps) {
       sessions: activePreviewState.sessions,
     });
   }, [activePreviewState.serverEpoch, activePreviewState.sessions, activeThreadRef]);
-
-  useLayoutEffect(() => {
-    if (!activeThreadRef) return;
-    const currentPanel = selectThreadRightPanelState(
-      useRightPanelStore.getState().byThreadKey,
-      activeThreadRef,
-    );
-    const previousSurfaceCount = browserOnlyPreviousSurfaceCountRef.current;
-    browserOnlyPreviousSurfaceCountRef.current = currentPanel.surfaces.length;
-    if (
-      !shouldEnsureBrowserOnlySurface({
-        browserOnly: browserOnlySurfaces,
-        browserAvailable: isPreviewSupportedInRuntime(),
-        panelOpen: currentPanel.isOpen,
-        surfaceCount: currentPanel.surfaces.length,
-        previousSurfaceCount,
-      })
-    )
-      return;
-    // Agent chats own a browser-only sidebar, so the column always holds a real
-    // Browser tab rather than the general-purpose surface chooser. Refilling it
-    // must not invent a tab beside ones that already exist: when this thread
-    // still has host tabs, re-adopt the newest instead of stacking a blank.
-    const target = resolveBrowserOnlySurfaceTarget(activePreviewState.sessions);
-    if (target.kind === "existing") {
-      useRightPanelStore.getState().openBrowser(activeThreadRef, target.tabId);
-      return;
-    }
-    useRightPanelStore.getState().open(activeThreadRef, "preview");
-  }, [
-    activePreviewState.sessions,
-    activeThreadRef,
-    browserOnlySurfaces,
-    rightPanelState.isOpen,
-    rightPanelState.surfaces,
-  ]);
 
   useEffect(() => {
     if (!activeThreadRef || !activePreviewMiniPlayer) return;
@@ -3137,7 +3082,7 @@ function ChatViewContent(props: ChatViewProps) {
   persistLocalDraftThreadRef.current = persistLocalDraftThread;
   const handleMainSurfaceChange = useCallback(
     (surface: "chat" | "terminal") => {
-      if (!routeThreadRef) {
+      if (!routeThreadRef || agentSurfaces) {
         return;
       }
       // A thread with no terminals shows the launch pad instead of an
@@ -3147,7 +3092,7 @@ function ChatViewContent(props: ChatViewProps) {
         void persistLocalDraftThreadRef.current();
       }
     },
-    [routeThreadRef, storeSetMainSurface],
+    [agentSurfaces, routeThreadRef, storeSetMainSurface],
   );
   useEffect(() => {
     if (terminalMainSurfaceActive) {
@@ -5108,7 +5053,9 @@ function ChatViewContent(props: ChatViewProps) {
             env: runtimeEnv,
           };
 
-      if (shouldCreateNewTerminal) {
+      if (agentSurfaces) {
+        useRightPanelStore.getState().openTerminal(activeThreadRef, targetTerminalId);
+      } else if (shouldCreateNewTerminal) {
         storeNewTerminal(activeThreadRef, targetTerminalId);
       } else {
         storeSetActiveTerminal(activeThreadRef, targetTerminalId);
@@ -5162,6 +5109,7 @@ function ChatViewContent(props: ChatViewProps) {
       activeKnownTerminalIds,
       panelTerminalIds,
       runningTerminalIds,
+      agentSurfaces,
       terminalUiState.activeTerminalId,
       writeTerminal,
     ],
@@ -5427,19 +5375,21 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const addSideChatSurface = useCallback(() => {
     if (!activeThreadRef || !sideChatAvailable) return;
-    void forkThreadAction(activeThreadRef, { asSideChat: true }).then((result) => {
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to open side chat",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          }),
-        );
-      }
-    });
-  }, [activeThreadRef, forkThreadAction, sideChatAvailable]);
+    void forkThreadAction(activeThreadRef, { asSideChat: true, navigate: !agentSurfaces }).then(
+      (result) => {
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to open side chat",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        }
+      },
+    );
+  }, [activeThreadRef, agentSurfaces, forkThreadAction, sideChatAvailable]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -5614,12 +5564,30 @@ function ChatViewContent(props: ChatViewProps) {
   const openWorkingTerminal = useCallback(() => {
     if (!routeThreadRef) return;
     const terminalId = activeTerminalActivity?.terminalIds[0];
+    if (agentSurfaces) {
+      if (terminalId) {
+        const panel = useRightPanelStore.getState();
+        const surface = rightPanelState.surfaces.find(
+          (entry) => entry.kind === "terminal" && entry.terminalIds.includes(terminalId),
+        );
+        if (surface?.kind === "terminal") {
+          panel.activateTerminal(routeThreadRef, surface.id, terminalId);
+          panel.activateSurface(routeThreadRef, surface.id);
+        } else {
+          panel.openTerminal(routeThreadRef, terminalId);
+        }
+        setTerminalFocusRequestId((value) => value + 1);
+      }
+      return;
+    }
     storeSetMainSurface(routeThreadRef, "terminal");
     if (terminalId) {
       storeSetActiveTerminal(routeThreadRef, terminalId);
     }
   }, [
     activeTerminalActivity?.terminalIds,
+    agentSurfaces,
+    rightPanelState.surfaces,
     routeThreadRef,
     storeSetActiveTerminal,
     storeSetMainSurface,
@@ -6910,6 +6878,18 @@ function ChatViewContent(props: ChatViewProps) {
       if (command === "terminal.toggle") {
         event.preventDefault();
         event.stopPropagation();
+        if (agentSurfaces) {
+          if (rightPanelOpen && activeRightPanelSurface?.kind === "terminal") {
+            closePreviewPanel();
+          } else {
+            const terminal = rightPanelState.surfaces.find(
+              (surface) => surface.kind === "terminal",
+            );
+            if (terminal) activateRightPanelSurface(terminal);
+            else addTerminalSurface();
+          }
+          return;
+        }
         handleMainSurfaceChange(terminalMainSurfaceActive ? "chat" : "terminal");
         return;
       }
@@ -6926,8 +6906,9 @@ function ChatViewContent(props: ChatViewProps) {
       if (command === "terminal.split") {
         event.preventDefault();
         event.stopPropagation();
-        if (terminalFocusOwner === "right-panel") {
-          splitPanelTerminal();
+        if (terminalFocusOwner === "right-panel" || agentSurfaces) {
+          if (activeRightPanelSurface?.kind !== "terminal") addTerminalSurface();
+          else splitPanelTerminal();
           return;
         }
         showTerminalSurface();
@@ -6938,8 +6919,9 @@ function ChatViewContent(props: ChatViewProps) {
       if (command === "terminal.splitVertical") {
         event.preventDefault();
         event.stopPropagation();
-        if (terminalFocusOwner === "right-panel") {
-          splitPanelTerminal("vertical");
+        if (terminalFocusOwner === "right-panel" || agentSurfaces) {
+          if (activeRightPanelSurface?.kind !== "terminal") addTerminalSurface();
+          else splitPanelTerminal("vertical");
           return;
         }
         showTerminalSurface();
@@ -6962,7 +6944,7 @@ function ChatViewContent(props: ChatViewProps) {
       if (command === "terminal.new") {
         event.preventDefault();
         event.stopPropagation();
-        if (terminalFocusOwner === "right-panel") {
+        if (terminalFocusOwner === "right-panel" || agentSurfaces) {
           addTerminalSurface();
           return;
         }
@@ -6998,6 +6980,11 @@ function ChatViewContent(props: ChatViewProps) {
   }, [
     activeProject,
     activeRightPanelSurface,
+    activateRightPanelSurface,
+    agentSurfaces,
+    rightPanelOpen,
+    rightPanelState.surfaces,
+    closePreviewPanel,
     addTerminalSurface,
     terminalUiState.activeTerminalId,
     activeThreadId,
@@ -10334,9 +10321,9 @@ function ChatViewContent(props: ChatViewProps) {
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
           sideChatAvailable={sideChatAvailable}
-          browserOnly={browserOnlySurfaces}
-          artifactShelf={browserOnlySurfaces ? undefined : artifactShelf}
-          artifactMenu={browserOnlySurfaces ? undefined : artifactMenu}
+          agentSurfaces={agentSurfaces}
+          artifactShelf={agentSurfaces ? undefined : artifactShelf}
+          artifactMenu={agentSurfaces ? undefined : artifactMenu}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -10373,9 +10360,9 @@ function ChatViewContent(props: ChatViewProps) {
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
             sideChatAvailable={sideChatAvailable}
-            browserOnly={browserOnlySurfaces}
-            artifactShelf={browserOnlySurfaces ? undefined : artifactShelf}
-            artifactMenu={browserOnlySurfaces ? undefined : artifactMenu}
+            agentSurfaces={agentSurfaces}
+            artifactShelf={agentSurfaces ? undefined : artifactShelf}
+            artifactMenu={agentSurfaces ? undefined : artifactMenu}
           >
             {rightPanelContent}
           </RightPanelTabs>
@@ -10410,10 +10397,9 @@ function ChatViewContent(props: ChatViewProps) {
         />
       ) : null}
       {/* Keyed by thread so arriving at a thread with no tabs from one with
-          tabs does not read as a close. Browser-only chats are exempt: they
-          immediately reopen a blank Browser tab, so their count touches zero
-          in passing and would spend the one-shot on nothing. */}
-      {activeThreadRef && !browserOnlySurfaces ? (
+          tabs does not read as a close. Agent panels keep the empty chooser
+          available after the last tab closes. */}
+      {activeThreadRef && !agentSurfaces ? (
         <RightPanelAutoCollapseOnEmpty
           key={scopedThreadKey(activeThreadRef)}
           surfaceCount={rightPanelState.surfaces.length}

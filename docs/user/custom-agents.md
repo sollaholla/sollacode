@@ -49,12 +49,22 @@ mobile group agents by their connected host, so a phone connected over LAN, rela
 open the same named agent and its dedicated chat. An environment-qualified agent link never silently
 switches to an agent with the same id on another host.
 
+## Sidebar surfaces
+
+On web and desktop, an agent's right sidebar offers **Browser**, **Terminal**, and **Side Chat**.
+Use **Panel** in the agent header to open or close it. Use **+** beside the tabs to add a surface,
+then switch or close it from the tab strip. Terminal
+shortcuts and working-terminal indicators open terminals in this sidebar; the agent's main column
+stays on Chat. Side Chat requires a connected environment that supports side chats.
+
+The same choices appear in the panel sheet on narrow windows. Native mobile keeps its existing
+Chat and Browser navigation.
+
 ## Browser tab lifecycle
 
-An agent's browser sidebar always retains one tab. Closing the final page replaces it with a blank
-tab instead of showing the general surface picker, and that blank tab survives an app restart.
-Ordinary chats are not browser-only: closing their final browser tab returns to the complete surface
-picker for Browser, Terminal, Files, Diff, and Side Chat.
+An empty panel shows the Browser, Terminal, and Side Chat choices. Opening the panel or closing
+its last tab does not create a browser tab. Reopening the panel preserves its selected tab when
+one is available. Adding a Terminal or Side Chat keeps the other tabs available beside it.
 
 Links that explicitly target a new browser tab open as a sibling Solla Code browser tab in the same
 thread. The original page stays in place, and the new tab is persisted and selected like one opened

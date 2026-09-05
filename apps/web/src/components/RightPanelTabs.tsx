@@ -126,8 +126,8 @@ interface RightPanelTabsProps {
   diffAvailable: boolean;
   filesAvailable: boolean;
   sideChatAvailable: boolean;
-  /** Agent threads: offer only the Browser surface (no terminal/files/diff/side-chat/artifacts). */
-  browserOnly?: boolean;
+  /** Agent threads offer Browser, Terminal, and Side Chat surfaces. */
+  agentSurfaces?: boolean;
   /**
    * Sheet mode only: dismiss the full-window sheet. Rendered as an always
    * visible close button at the start of the tab strip, because the sheet has
@@ -321,11 +321,9 @@ export type RightPanelNewSurfaceKind =
 
 export function rightPanelNewSurfaceKinds(
   artifactMenuAvailable: boolean,
-  browserOnly = false,
+  agentSurfaces = false,
 ): readonly RightPanelNewSurfaceKind[] {
-  // Agent threads: the right panel is the agent's browser, nothing else — no
-  // terminal/files/diff/side-chat and no artifact submenu.
-  if (browserOnly) return ["browser"];
+  if (agentSurfaces) return ["browser", "terminal", "side-chat"];
   return [
     "browser",
     "terminal",
@@ -378,7 +376,7 @@ export function RightPanelEmptyState(props: {
   diffAvailable: boolean;
   filesAvailable: boolean;
   sideChatAvailable: boolean;
-  browserOnly?: boolean;
+  agentSurfaces?: boolean;
   artifactShelf?: ReactNode;
 }) {
   const allActions = [
@@ -423,8 +421,11 @@ export function RightPanelEmptyState(props: {
       onClick: props.onAddSideChat,
     },
   ] as const;
-  const actions = props.browserOnly
-    ? allActions.filter((action) => action.label === "Browser")
+  const actions = props.agentSurfaces
+    ? allActions.filter(
+        (action) =>
+          action.label === "Browser" || action.label === "Terminal" || action.label === "Side Chat",
+      )
     : allActions;
 
   return (
@@ -1094,7 +1095,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                 <MenuPopup align="start" side="bottom" sideOffset={6} className="min-w-44">
                   {rightPanelNewSurfaceKinds(
                     props.artifactMenu != null,
-                    props.browserOnly === true,
+                    props.agentSurfaces === true,
                   ).map((kind) => {
                     switch (kind) {
                       case "browser":
@@ -1183,7 +1184,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
             sideChatAvailable={props.sideChatAvailable}
-            browserOnly={props.browserOnly === true}
+            agentSurfaces={props.agentSurfaces === true}
             artifactShelf={
               shouldShowArtifactShelf(props.activeSurfaceId) ? props.artifactShelf : null
             }

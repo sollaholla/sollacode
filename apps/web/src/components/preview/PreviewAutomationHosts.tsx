@@ -53,7 +53,6 @@ import {
 } from "~/state/environments";
 import { useThreadShells } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
-import { vmAgentEnvironment } from "~/state/vmAgents";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
 
@@ -373,9 +372,6 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
     input: initialAutomationHost,
   });
   const listPreviews = useAtomQueryRunner(previewEnvironment.list, {
-    reportFailure: false,
-  });
-  const listAgents = useAtomQueryRunner(vmAgentEnvironment.agents, {
     reportFailure: false,
   });
   const open = useAtomCommand(previewEnvironment.open, {
@@ -808,29 +804,16 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
 
               if (closed.value === undefined) {
                 // An older server has committed the void-returning close. A
-                // best-effort list supplies its survivor set, and an empty set
-                // is repaired through the normal server open path. Refresh/open
-                // failure cannot turn the committed close into a destructive
-                // close retry.
+                // best-effort list supplies its survivor set. A failed refresh
+                // cannot turn the committed close into a destructive retry.
                 await runPreviewAutomationPostCloseRefresh(async () => {
-                  const agents = await listAgents({ environmentId, input: {} });
-                  const retainBlankTab =
-                    agents._tag === "Success" &&
-                    agents.value.type === "snapshot" &&
-                    agents.value.agents.some((agent) => agent.threadId === threadRef.threadId);
                   await reconcileLegacyPreviewClose({
                     closeResult: closed.value,
-                    retainBlankTab,
                     threadRef,
                     listPreviews: async () => {
                       registry.refresh(previewEnvironment.list(listTarget));
                       return await listPreviews(listTarget);
                     },
-                    openBlankPreview: async () =>
-                      await open({
-                        environmentId,
-                        input: { threadId: threadRef.threadId },
-                      }),
                   });
                 });
               }
@@ -846,11 +829,9 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
                 closedTabId: closeTabId,
                 tabId: nextTabId,
                 replacementCreated,
-                message: replacementCreated
-                  ? `Closed ${closeTabId}. A blank ${nextTabId} remains because the browser always keeps one tab.`
-                  : nextTabId
-                    ? `Closed ${closeTabId}. Active tab is ${nextTabId}.`
-                    : `Closed ${closeTabId}.`,
+                message: nextTabId
+                  ? `Closed ${closeTabId}. Active tab is ${nextTabId}.`
+                  : `Closed ${closeTabId}.`,
               } satisfies PreviewAutomationCloseResult;
             });
           }
@@ -1135,16 +1116,7 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
         });
       }
     },
-    [
-      browserProfiles,
-      closePreview,
-      environmentId,
-      listAgents,
-      listPreviews,
-      open,
-      registry,
-      resize,
-    ],
+    [browserProfiles, closePreview, environmentId, listPreviews, open, registry, resize],
   );
   const [requestHandlerAtom] = useState(() => Atom.make({ handle: handleRequest }));
   const setRequestHandler = useAtomSet(requestHandlerAtom);

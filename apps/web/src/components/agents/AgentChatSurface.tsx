@@ -37,7 +37,7 @@ export function AgentChatSurface(props: {
       routeKind="server"
       threadSyncPhase={threadSyncPhase}
       hideWorkspaceHeader
-      browserOnlySurfaces
+      agentSurfaces
       inlineTimelineNotice={props.inlineNotice ?? null}
     />
   );

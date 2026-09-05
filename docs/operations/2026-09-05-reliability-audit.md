@@ -60,3 +60,22 @@ historical payload decoding, credential renewal, and migration exclusions.
 Windows-to-Mac HTTP authentication and the actual agent WebSocket subscription
 provide the installed-runtime check. The user requested code and release
 checks only, so this audit does not claim visual client verification.
+
+## Mobile navigation and agent panel follow-up
+
+The mobile web header's redundant Settings shortcut is removed; Settings stays
+in the navigation sidebar. The agent header now calls the right sidebar
+**Panel**, and its toggle stays available with no browser tabs. Opening it
+preserves the selected surface or shows the empty chooser.
+
+Completed side-chat work restoring Terminal and Side Chat beside Browser had
+remained uncommitted and was excluded from the reliability-only packages. The
+follow-up integrates that work into both the inline panel and narrow-screen
+sheet. Agent terminal actions use the right panel and side-chat creation keeps
+the parent agent in view.
+
+Forced browser creation is removed from the empty-panel effect, server close
+operation, and legacy close reconciliation. Named-agent final-tab and batch
+closes emit only closure events and remain empty across a server restart.
+Existing tabs and browser profiles are preserved. Native mobile's separate
+navigation is unchanged.

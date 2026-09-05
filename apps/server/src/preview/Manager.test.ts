@@ -43,7 +43,7 @@ const insertAgentForThread = (threadId: ThreadId) =>
       vmAgentId: VmAgentId.make(`agent-${suffix}`),
       name: `Agent ${suffix}`,
       handle: `agent-${suffix}`,
-      purpose: "Browser-only test agent",
+      purpose: "Panel test agent",
       vmId: VmId.make(`vm-${suffix}`),
       threadId,
       status: "running",
@@ -334,7 +334,7 @@ it.layer(managerTestLayer)("PreviewManager", (it) => {
     }),
   );
 
-  it.effect("named-agent threads atomically replace their final tab with a distinct Idle tab", () =>
+  it.effect("named-agent threads close their final tab without opening a replacement", () =>
     Effect.gen(function* () {
       const threadId = freshThreadId();
       yield* insertAgentForThread(threadId);
@@ -342,21 +342,22 @@ it.layer(managerTestLayer)("PreviewManager", (it) => {
       const collector = yield* collectEvents;
 
       const opened = yield* manager.open({ threadId, url: "http://localhost:5173" });
-      yield* manager.close({ threadId, tabId: opened.tabId });
+      const closed = yield* manager.close({ threadId, tabId: opened.tabId });
 
       const result = yield* manager.list({ threadId });
-      expect(result.sessions).toHaveLength(1);
-      expect(result.sessions[0]?.tabId).not.toBe(opened.tabId);
-      expect(result.sessions[0]?.navStatus._tag).toBe("Idle");
+      expect(result.sessions).toEqual([]);
+      expect(closed?.sessions).toEqual([]);
+      expect(closed?.closedTabIds).toEqual([opened.tabId]);
 
       const events = yield* collector.drain;
-      expect(events.map((event) => event.type)).toEqual(["opened", "closed", "opened"]);
+      expect(events.map((event) => event.type)).toEqual(["opened", "closed"]);
     }),
   );
 
-  it.effect("gives every tab in a batch close its own monotonic revision", () =>
+  it.effect("closes every named-agent tab with monotonic revisions and no replacement", () =>
     Effect.gen(function* () {
       const threadId = freshThreadId();
+      yield* insertAgentForThread(threadId);
       const manager = yield* PreviewManager.PreviewManager;
       yield* manager.open({ threadId, url: "http://localhost:5173" });
       yield* manager.open({ threadId, url: "http://localhost:3000" });
@@ -492,8 +493,8 @@ it.effect("restores persisted Idle tabs across a restart", () =>
 
 // Three managers are built over ONE store layer inside a single provide,
 // modeling three server lifetimes over one database. Closing a persisted final
-// tab must forget that identity while retaining its blank replacement.
-it.effect("persists a distinct replacement when the final restored tab closes", () =>
+// tab must leave the next server lifetime empty too.
+it.effect("keeps a named agent's final restored tab closed across another restart", () =>
   Effect.gen(function* () {
     const threadId = freshThreadId();
     yield* insertAgentForThread(threadId);
@@ -522,22 +523,18 @@ it.effect("persists a distinct replacement when the final restored tab closes", 
     });
 
     const closeResult = yield* second.close({ threadId, tabId: opened.tabId });
-    const replaced = yield* second.list({ threadId });
+    const remaining = yield* second.list({ threadId });
     expect(closeResult).toBeDefined();
     if (!closeResult) return;
     expect(closeResult.closedTabIds).toEqual([opened.tabId]);
-    expect(closeResult.sessions).toEqual(replaced.sessions);
-    expect(closeResult.revision).toBe(replaced.revision);
-    expect(closeResult.serverEpoch).toBe(replaced.serverEpoch);
-    expect(replaced.sessions).toHaveLength(1);
-    expect(replaced.sessions[0]?.tabId).not.toBe(opened.tabId);
-    expect(replaced.sessions[0]?.navStatus._tag).toBe("Idle");
+    expect(closeResult.sessions).toEqual(remaining.sessions);
+    expect(closeResult.revision).toBe(remaining.revision);
+    expect(closeResult.serverEpoch).toBe(remaining.serverEpoch);
+    expect(remaining.sessions).toEqual([]);
 
     const third = yield* PreviewManager.make;
     const afterClose = yield* third.list({ threadId });
-    expect(afterClose.sessions).toHaveLength(1);
-    expect(afterClose.sessions[0]?.tabId).toBe(replaced.sessions[0]?.tabId);
-    expect(afterClose.sessions[0]?.navStatus._tag).toBe("Idle");
+    expect(afterClose.sessions).toEqual([]);
   }).pipe(Effect.provide(previewPersistenceTestLayer)),
 );
 
