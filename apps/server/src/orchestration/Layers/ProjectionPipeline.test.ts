@@ -7121,7 +7121,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       });
 
     it.effect(
-      "retires live synthetic resume owners after attachment-only or tool-only output",
+      "retires live synthetic resume owners without decoding unrelated historical payloads",
       () =>
         Effect.gen(function* () {
           const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -7152,6 +7152,27 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
                 : {}),
               pendingMessageId: resumeMessageId,
             });
+            // Historical payloads are irrelevant to this turn's completion.
+            // Invalid legacy JSON makes an accidental full-history decode fail.
+            yield* sql`
+              INSERT INTO projection_thread_activities (
+                activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+              ) VALUES (
+                ${`historical-${outputKind}-activity`}, ${threadId}, ${sourceTurnId},
+                'info', 'tool.completed', 'Historical tool output', '{legacy',
+                '2026-03-02T09:00:00.000Z'
+              )
+            `;
+            yield* sql`
+              INSERT INTO projection_thread_messages (
+                message_id, thread_id, turn_id, role, text, attachments_json,
+                is_streaming, created_at, updated_at
+              ) VALUES (
+                ${`historical-${outputKind}-message`}, ${threadId}, ${sourceTurnId},
+                'assistant', 'Historical reply', '{legacy', 0,
+                '2026-03-02T09:00:00.000Z', '2026-03-02T09:00:00.000Z'
+              )
+            `;
             yield* sql`
             INSERT INTO thread_work_obligations (
               obligation_id, thread_id, source_turn_id, kind, state,

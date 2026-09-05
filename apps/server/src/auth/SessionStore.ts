@@ -814,7 +814,10 @@ export const make = Effect.gen(function* () {
         kind: "random",
         subject: claims.sub,
         method: claims.method,
-        scopes: claims.scopes,
+        // A signed token proves identity; its grants can predate a migration
+        // or a restriction. Renewal must retain the same authoritative grants
+        // that verification and WebSocket tickets use.
+        scopes: row.value.scopes,
         client: toClientMetadata(row.value.client),
       });
     },

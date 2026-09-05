@@ -576,6 +576,7 @@ const make = Effect.gen(function* () {
                   AND NOT EXISTS (
                     SELECT 1
                     FROM orchestration_events AS absorbed
+                      INDEXED BY idx_orch_events_message_delivery
                     WHERE absorbed.aggregate_kind = 'thread'
                       AND absorbed.stream_id = later.stream_id
                       AND absorbed.event_type = 'thread.activity-appended'

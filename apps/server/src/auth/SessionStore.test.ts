@@ -291,6 +291,51 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
     }).pipe(Effect.provide(Layer.merge(makeSessionStoreLayer(), TestClock.layer()))),
   );
 
+  for (const scenario of [
+    { name: "migrated agent access", scopes: [...AuthStandardClientScopes] },
+    { name: "restricted access", scopes: ["orchestration:read"] as const },
+  ]) {
+    it.effect(`retains persisted ${scenario.name} when renewing an old token`, () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const repository = yield* AuthSessions.AuthSessionRepository;
+        const issued = yield* sessions.issue({
+          method: "bearer-access-token",
+          subject: "one-time-token",
+          scopes: [
+            "orchestration:read",
+            "orchestration:operate",
+            "terminal:operate",
+            "review:write",
+            "relay:read",
+          ],
+          ttl: Duration.seconds(1),
+          client: { label: "Nearby Solla Code: Windows", deviceType: "desktop", os: "Win32" },
+        });
+        const stored = yield* repository.getById({ sessionId: issued.sessionId });
+        if (Option.isNone(stored)) throw new Error("Expected issued session to be persisted.");
+        yield* repository.upsert({
+          sessionId: stored.value.sessionId,
+          subject: stored.value.subject,
+          scopes: scenario.scopes,
+          method: stored.value.method,
+          client: stored.value.client,
+          issuedAt: stored.value.issuedAt,
+          expiresAt: stored.value.expiresAt,
+        });
+
+        yield* TestClock.adjust(Duration.seconds(2));
+        const renewed = yield* sessions.renew(issued.token);
+        expect(renewed.scopes).toEqual(scenario.scopes);
+        const verified = yield* sessions.verify(renewed.token);
+        expect(verified.scopes).toEqual(scenario.scopes);
+        const ticket = yield* sessions.issueWebSocketToken(renewed.sessionId);
+        const websocket = yield* sessions.verifyWebSocketToken(ticket.token);
+        expect(websocket.scopes).toEqual(scenario.scopes);
+      }).pipe(Effect.provide(Layer.merge(makeSessionStoreLayer(), TestClock.layer()))),
+    );
+  }
+
   it.effect("refuses renewal of a revoked device credential", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;

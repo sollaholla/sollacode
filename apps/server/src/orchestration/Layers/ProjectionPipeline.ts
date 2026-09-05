@@ -302,17 +302,6 @@ function retainProjectionActivitiesAfterRevert(
   );
 }
 
-function isTurnOutputActivity(activity: Pick<ProjectionThreadActivity, "kind">): boolean {
-  return (
-    activity.kind.startsWith("tool.") ||
-    activity.kind.startsWith("task.") ||
-    activity.kind.startsWith("reasoning.") ||
-    activity.kind.startsWith("turn.plan.") ||
-    activity.kind.startsWith("approval.") ||
-    activity.kind.startsWith("user-input.")
-  );
-}
-
 function retainProjectionProposedPlansAfterRevert(
   proposedPlans: ReadonlyArray<ProjectionThreadProposedPlan>,
   turns: ReadonlyArray<ProjectionTurn>,
@@ -1557,25 +1546,48 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             : null;
       if (owner === null) return;
 
-      const [messages, activities] = yield* Effect.all([
-        projectionThreadMessageRepository.listByThreadId({
-          threadId: input.threadId,
-        }),
-        projectionThreadActivityRepository.listByThreadId({
-          threadId: input.threadId,
-        }),
-      ]);
-      const producedOutput =
-        messages.some(
-          (message) =>
-            message.role === "assistant" &&
-            message.turnId === input.turnId &&
-            !message.isStreaming &&
-            (message.text.trim().length > 0 || (message.attachments?.length ?? 0) > 0),
-        ) ||
-        activities.some(
-          (activity) => activity.turnId === input.turnId && isTurnOutputActivity(activity),
+      // Retirement only needs this turn's output. Loading and decoding a busy
+      // thread's entire activity history here blocks the projection transaction.
+      const messages = yield* sql<{
+        readonly text: string;
+        readonly attachmentCount: number | null;
+      }>`
+        SELECT text, json_array_length(attachments_json) AS "attachmentCount"
+        FROM projection_thread_messages
+        WHERE thread_id = ${input.threadId}
+          AND turn_id = ${input.turnId}
+          AND role = 'assistant'
+          AND is_streaming = 0
+      `.pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.completeResumeOwnerForTurn:messages"),
+        ),
+      );
+      let producedOutput = messages.some(
+        (message) => message.text.trim().length > 0 || (message.attachmentCount ?? 0) > 0,
+      );
+      if (!producedOutput) {
+        const activities = yield* sql`
+          SELECT 1
+          FROM projection_thread_activities
+          WHERE thread_id = ${input.threadId}
+            AND turn_id = ${input.turnId}
+            AND (
+              kind GLOB 'tool.*'
+              OR kind GLOB 'task.*'
+              OR kind GLOB 'reasoning.*'
+              OR kind GLOB 'turn.plan.*'
+              OR kind GLOB 'approval.*'
+              OR kind GLOB 'user-input.*'
+            )
+          LIMIT 1
+        `.pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.completeResumeOwnerForTurn:activities"),
+          ),
         );
+        producedOutput = activities.length > 0;
+      }
       if (!producedOutput) return;
 
       const obligation = yield* threadWorkObligationRepository.getByKey({

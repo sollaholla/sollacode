@@ -86,6 +86,8 @@ import Migration0070 from "./Migrations/070_ResetCompactionForAggregatedOutput.t
 import Migration0071 from "./Migrations/071_ProjectionActivityTurnIndex.ts";
 import Migration0072 from "./Migrations/072_TurnStartMessageIndex.ts";
 import Migration0073 from "./Migrations/073_VmAgentIcon.ts";
+import Migration0074 from "./Migrations/074_TurnRecoveryLookupIndexes.ts";
+import Migration0075 from "./Migrations/075_RepairRenewedNearbyAgentGrants.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -171,6 +173,8 @@ export const migrationEntries = [
   [71, "ProjectionActivityTurnIndex", Migration0071],
   [72, "TurnStartMessageIndex", Migration0072],
   [73, "VmAgentIcon", Migration0073],
+  [74, "TurnRecoveryLookupIndexes", Migration0074],
+  [75, "RepairRenewedNearbyAgentGrants", Migration0075],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
