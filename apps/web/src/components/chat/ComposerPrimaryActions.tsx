@@ -1,6 +1,9 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import {
   memo,
+  useCallback,
+  useEffect,
+  useRef,
   type KeyboardEventHandler,
   type MouseEventHandler,
   type PointerEventHandler,
@@ -12,6 +15,11 @@ import { readLocalApi } from "~/localApi";
 import { isElectron } from "../../env";
 import { getSpeechRecognitionConstructor } from "~/speechDictation";
 import { shouldOfferAppVoiceCapture } from "./appVoiceCaptureAvailability";
+import {
+  beginMicrophoneHold,
+  preventMicrophoneTouchDefault,
+  type MicrophoneHold,
+} from "./microphoneHold";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Spinner } from "../ui/spinner";
@@ -185,29 +193,44 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     pushToTalkAutoSend,
   );
   const settingsUpdateIconOnly = compact || isRunning;
+  const microphoneHoldRef = useRef<MicrophoneHold | null>(null);
+  const stopPushToTalkRef = useRef(onPushToTalkStop);
+  stopPushToTalkRef.current = onPushToTalkStop;
+  useEffect(() => () => microphoneHoldRef.current?.dispose(), []);
+  const microphoneButtonRef = useCallback((button: HTMLButtonElement | null) => {
+    if (!button) return;
+    button.addEventListener("touchstart", preventMicrophoneTouchDefault, { passive: false });
+    return () => {
+      button.removeEventListener("touchstart", preventMicrophoneTouchDefault);
+      microphoneHoldRef.current?.dispose();
+    };
+  }, []);
   const startPushToTalkOnKey: KeyboardEventHandler<HTMLButtonElement> = (event) => {
     if (microphoneDisabled || event.repeat || (event.key !== " " && event.key !== "Enter")) {
       return;
     }
     event.preventDefault();
+    if (microphoneHoldRef.current?.isHolding()) return;
+    microphoneHoldRef.current?.dispose();
+    microphoneHoldRef.current = beginMicrophoneHold(
+      event.currentTarget,
+      { kind: "key", key: event.key },
+      () => stopPushToTalkRef.current(),
+    );
     onPushToTalkStart();
-  };
-  const stopPushToTalkOnKey: KeyboardEventHandler<HTMLButtonElement> = (event) => {
-    if (event.key !== " " && event.key !== "Enter") return;
-    event.preventDefault();
-    onPushToTalkStop();
   };
   const startPushToTalkOnPointer: PointerEventHandler<HTMLButtonElement> = (event) => {
     if (microphoneDisabled || event.button !== 0) return;
-    if (preserveComposerFocusOnPointerDown) event.preventDefault();
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+    if (microphoneHoldRef.current?.isHolding()) return;
+    microphoneHoldRef.current?.dispose();
+    microphoneHoldRef.current = beginMicrophoneHold(
+      event.currentTarget,
+      { kind: "pointer", pointerId: event.pointerId },
+      () => stopPushToTalkRef.current(),
+    );
     onPushToTalkStart();
-  };
-  const stopPushToTalkOnPointer: PointerEventHandler<HTMLButtonElement> = (event) => {
-    onPushToTalkStop();
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
   };
   const showSettingsContextMenu: MouseEventHandler<HTMLButtonElement> = (event) => {
     event.preventDefault();
@@ -225,9 +248,10 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       <TooltipTrigger
         render={
           <button
+            ref={microphoneButtonRef}
             type="button"
             className={cn(
-              "flex h-9 w-9 items-center justify-center rounded-full border border-[var(--line)] text-foreground/80 transition-colors duration-150 enabled:cursor-pointer aria-disabled:cursor-not-allowed aria-disabled:opacity-30 sm:h-8 sm:w-8",
+              "flex h-9 w-9 touch-none select-none items-center justify-center rounded-full border border-[var(--line)] text-foreground/80 transition-colors duration-150 [-webkit-touch-callout:none] [-webkit-user-select:none] enabled:cursor-pointer aria-disabled:cursor-not-allowed aria-disabled:opacity-30 sm:h-8 sm:w-8",
               pushToTalkActive
                 ? "border-destructive/70 bg-destructive/15 text-destructive"
                 : "bg-surface-row hover:bg-surface-hover hover:text-foreground",
@@ -237,11 +261,8 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             aria-pressed={pushToTalkActive}
             title={pushToTalkLabel}
             onPointerDown={startPushToTalkOnPointer}
-            onPointerUp={stopPushToTalkOnPointer}
-            onPointerCancel={stopPushToTalkOnPointer}
-            onLostPointerCapture={() => onPushToTalkStop()}
+            onContextMenu={(event) => event.preventDefault()}
             onKeyDown={startPushToTalkOnKey}
-            onKeyUp={stopPushToTalkOnKey}
           />
         }
       >

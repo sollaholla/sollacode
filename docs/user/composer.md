@@ -88,6 +88,11 @@ retry the download.
 
 ## Voice transcription while away
 
+Hold the microphone to record. While it is held, text selection and other taps in the app are
+blocked, including additional fingers. Releasing the microphone ends recording; if another finger
+is still down, controls unlock after it lifts too. The release does not accidentally click another
+control. Switching away from the window or closing the composer also releases the hold.
+
 If dictation finishes after you leave the conversation, the stacked toast above the composer shows a
 preview of the transcript, lets you expand the full text, and includes **Send**. Returning to the
 conversation puts the transcript in the draft so you can edit it and send from the composer.

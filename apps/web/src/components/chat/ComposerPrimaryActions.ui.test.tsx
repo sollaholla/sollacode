@@ -81,6 +81,104 @@ afterEach(() => {
 });
 
 describe("composer push-to-talk action", () => {
+  it("owns the page during a mic hold across recording rerenders and releases to the latest callback", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const onStart = vi.fn();
+    const oldStop = vi.fn();
+    const currentStop = vi.fn();
+    const onSubmit = vi.fn();
+    const onOtherControl = vi.fn();
+    const render = (recording: boolean) => (
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <button type="button" aria-label="Other control" onClick={onOtherControl} />
+        {actions({
+          pushToTalkStatus: recording ? "recording" : null,
+          onPushToTalkStart: onStart,
+          onPushToTalkStop: recording ? currentStop : oldStop,
+        })}
+      </form>
+    );
+    try {
+      await act(async () => root.render(render(false)));
+      const mic = container.querySelector<HTMLButtonElement>(
+        'button[aria-label^="Unmute microphone"]',
+      );
+      expect(mic).not.toBeNull();
+      const down = new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 41,
+        pointerType: "touch",
+        button: 0,
+      });
+      await act(async () => mic?.dispatchEvent(down));
+      expect(down.defaultPrevented).toBe(true);
+      expect(onStart).toHaveBeenCalledTimes(1);
+      await act(async () => root.render(render(true)));
+      expect(oldStop).not.toHaveBeenCalled();
+      expect(currentStop).not.toHaveBeenCalled();
+      const select = new Event("selectstart", { bubbles: true, cancelable: true });
+      container.dispatchEvent(select);
+      expect(select.defaultPrevented).toBe(true);
+      const other = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Other control"]',
+      );
+      expect(other).not.toBeNull();
+      await act(async () => other?.click());
+      expect(onOtherControl).not.toHaveBeenCalled();
+      await act(async () =>
+        document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 41 })),
+      );
+      expect(currentStop).toHaveBeenCalledTimes(1);
+      expect(oldStop).not.toHaveBeenCalled();
+      await act(async () => root.render(render(false)));
+      const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+      expect(send).not.toBeNull();
+      await act(async () => send?.click());
+      expect(onSubmit).not.toHaveBeenCalled();
+      await act(async () => {
+        send?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 42 }));
+        send?.click();
+      });
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+    expect(document.documentElement.hasAttribute("data-microphone-hold")).toBe(false);
+    expect(currentStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases an active mic hold when the composer unmounts", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const onStop = vi.fn();
+    await act(async () => root.render(actions({ onPushToTalkStop: onStop })));
+    const mic = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Unmute microphone"]',
+    );
+    await act(async () =>
+      mic?.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, button: 0 }),
+      ),
+    );
+    expect(document.documentElement.hasAttribute("data-microphone-hold")).toBe(true);
+    await act(async () => root.unmount());
+    container.remove();
+    expect(document.documentElement.hasAttribute("data-microphone-hold")).toBe(false);
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
   it("renders the microphone immediately before the send button", () => {
     const markup = renderActions();
 
