@@ -4,6 +4,9 @@ Solla Code clients should use the web client served by their Solla environment. 
 
 Use this when you want to connect to a Solla Code server from another device such as a phone, tablet, or separate desktop app.
 
+On a phone, open the navigation sidebar and choose **Settings** at the bottom.
+The mobile web header contains the navigation button and Solla Code home link.
+
 ## Recommended Setup
 
 For devices on the same trusted Wi-Fi or Ethernet network, use the built-in LAN connection flow.
