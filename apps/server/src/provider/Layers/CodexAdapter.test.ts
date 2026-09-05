@@ -1599,10 +1599,13 @@ it.effect("does not publish the exit of a failed resume into its fresh replaceme
     );
   }).pipe(
     Effect.scoped,
-    Effect.provide(ServerConfig.layerTest(process.cwd(), process.cwd())),
-    Effect.provide(ServerSettingsService.layerTest()),
-    Effect.provide(providerSessionDirectoryTestLayer),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(
+      Layer.mergeAll(
+        ServerConfig.layerTest(process.cwd(), process.cwd()),
+        ServerSettingsService.layerTest(),
+        providerSessionDirectoryTestLayer,
+      ).pipe(Layer.provideMerge(NodeServices.layer)),
+    ),
   ),
 );
 
