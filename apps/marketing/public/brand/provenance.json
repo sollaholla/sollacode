@@ -1,0 +1,12 @@
+{
+  "source": "SollaCode_LowPoly_S.blend",
+  "sourceSha256": "735989e1566366c2c1d1d8a42a89610af9be7681713d54986fea707271086a98",
+  "object": "SM_SollaCode_Logo_01",
+  "method": "Blender solid geometry, numeric materials, area lights; no image overlay or image textures",
+  "triangles": 64,
+  "tools": {
+    "Blender": "5.1.2"
+  },
+  "mlGeneratedArtwork": false,
+  "backSurface": "Front geometry and materials mirrored across Z=0; boundary joined watertight"
+}

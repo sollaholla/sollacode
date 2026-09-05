@@ -1,141 +1,60 @@
 # Architecture
 
-Solla Code runs as a **Node.js WebSocket server** that wraps `codex app-server` (JSON-RPC over stdio) and serves a React web app.
-
-```
-┌─────────────────────────────────┐
-│  Browser (React + Vite)         │
-│  wsTransport (state machine)    │
-│  Typed push decode at boundary  │
-└──────────┬──────────────────────┘
-           │ ws://localhost:3773
-┌──────────▼──────────────────────┐
-│  apps/server (Node.js)          │
-│  WebSocket + HTTP static server │
-│  ServerPushBus (ordered pushes) │
-│  ServerReadiness (startup gate) │
-│  OrchestrationEngine            │
-│  ProviderService                │
-│  CheckpointReactor              │
-│  RuntimeReceiptBus              │
-└──────────┬──────────────────────┘
-           │ JSON-RPC over stdio
-┌──────────▼──────────────────────┐
-│  codex app-server               │
-└─────────────────────────────────┘
-```
-
-## Components
-
-- **Browser app**: The React app renders session state, owns the client-side WebSocket transport, and treats typed push events as the boundary between server runtime details and UI state.
-
-- **Server**: `apps/server` is the main coordinator. It serves the web app, accepts WebSocket requests, waits for startup readiness before welcoming clients, and sends all outbound pushes through a single ordered push path.
-
-- **Provider runtime**: `codex app-server` does the actual provider/session work. The server talks to it over JSON-RPC on stdio and translates those runtime events into the app's orchestration model.
-
-- **Background workers**: Long-running async flows such as runtime ingestion, command reaction, and checkpoint processing run as queue-backed workers. This keeps work ordered, reduces timing races, and gives tests a deterministic way to wait for the system to go idle.
-
-- **Runtime signals**: The server emits lightweight typed receipts when important async milestones finish, such as checkpoint capture, diff finalization, or a turn becoming fully quiescent. Tests and orchestration code wait on these signals instead of polling internal state.
-
-- **Server updates**: A connected environment advertises whether its server can replace itself. When client and server versions differ, the browser selects an automatic, desktop-managed, or manual update path without changing connection ownership. See [Server Update Architecture](./server-updates.md).
-
-Related design:
-
-- [Resource telemetry architecture](./resource-telemetry.md)
-
-## Event Lifecycle
-
-### Startup and client connect
+Solla Code is an independent fork of T3 Code. A Node.js server owns each environment's workspace access, provider processes, authentication, and durable conversation state. Web and Electron share the React client; the React Native mobile client connects through the same contracts and shared connection runtime.
 
 ```mermaid
-sequenceDiagram
-    participant Browser
-    participant Transport as WsTransport
-    participant Server as wsServer
-    participant Layers as serverLayers
-    participant Ready as ServerReadiness
-    participant Push as ServerPushBus
-
-    Browser->>Transport: Load app and open WebSocket
-    Transport->>Server: Connect
-    Server->>Layers: Start runtime services
-    Server->>Ready: Wait for startup barriers
-    Ready-->>Server: Ready
-    Server->>Push: Publish server.welcome
-    Push-->>Transport: Ordered welcome push
-    Transport-->>Browser: Hydrate initial state
+flowchart TD
+  Web[Web and Electron client] --> Client[Shared client runtime]
+  Mobile[React Native client] --> Client
+  Client -->|HTTP and authenticated WebSocket RPC| Server[Environment server]
+  Server --> Engine[Orchestration engine]
+  Engine --> Store[SQLite event log and projections]
+  Engine --> Workers[Provider command and checkpoint workers]
+  Workers --> Providers[Provider adapters and native runtimes]
+  Providers --> Ingestion[Runtime ingestion]
+  Ingestion --> Engine
+  Store -->|Snapshots and subscriptions| Client
 ```
 
-1. The browser boots `WsTransport` and registers typed listeners in `wsNativeApi`.
-2. The server accepts the connection in `wsServer` and brings up the runtime graph defined in `serverLayers`.
-3. `ServerReadiness` waits until the key startup barriers are complete.
-4. Once the server is ready, `wsServer` sends `server.welcome` from the contracts in `ws.ts` through `ServerPushBus`.
-5. The browser receives that ordered push through `WsTransport`, and `wsNativeApi` uses it to seed local client state.
+## Connection ownership
 
-### User turn flow
+The shared [connection runtime](./connection-runtime.md) owns environment registrations, authentication, retries, RPC sessions, and cached data. HTTP routes provide environment discovery, pairing, and history. Effect RPC provides typed operations and subscriptions over WebSocket. The contracts live in [`environmentHttp.ts`](../../packages/contracts/src/environmentHttp.ts) and [`rpc.ts`](../../packages/contracts/src/rpc.ts).
 
-```mermaid
-sequenceDiagram
-    participant Browser
-    participant Transport as WsTransport
-    participant Server as wsServer
-    participant Provider as ProviderService
-    participant Codex as codex app-server
-    participant Ingest as ProviderRuntimeIngestion
-    participant Engine as OrchestrationEngine
-    participant Push as ServerPushBus
+Each environment has its own connection and data scope. A connected socket does not imply that the shell or an individual thread has finished synchronizing. Clients keep those states separate and retain cached data while reconnecting. Desktop supplies platform integration and can host a bundled server; it can also connect to remote environments. See [remote architecture](./remote.md).
 
-    Browser->>Transport: Send user action
-    Transport->>Server: Typed WebSocket request
-    Server->>Provider: Route request
-    Provider->>Codex: JSON-RPC over stdio
-    Codex-->>Ingest: Provider runtime events
-    Ingest->>Engine: Normalize into orchestration events
-    Engine-->>Server: Domain events
-    Server->>Push: Publish orchestration.domainEvent
-    Push-->>Browser: Typed push
-```
+## Commands, events, and projections
 
-1. A user action in the browser becomes a typed request through `WsTransport` and the browser API layer in `nativeApi`.
-2. `wsServer` decodes that request using the shared WebSocket contracts in `ws.ts` and routes it to the right service.
-3. [`ProviderService`][8] starts or resumes a session and talks to `codex app-server` over JSON-RPC on stdio.
-4. Provider-native events are pulled back into the server by [`ProviderRuntimeIngestion`][9], which converts them into orchestration events.
-5. [`OrchestrationEngine`][10] persists those events, updates the read model, and exposes them as domain events.
-6. `wsServer` pushes those updates to the browser through `ServerPushBus` on channels defined in [`orchestration.ts`][11].
+1. A client operation constructs a typed orchestration command with a command ID.
+2. The [engine](../../apps/server/src/orchestration/Layers/OrchestrationEngine.ts) runs the [decider](../../apps/server/src/orchestration/decider.ts), persists domain events, and updates projections. Command receipts provide idempotency.
+3. The [provider command reactor](../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts) and durable work scheduler perform provider side effects.
+4. [ProviderService](../../apps/server/src/provider/Layers/ProviderService.ts) routes work to an enabled provider instance. Adapters translate between the shared runtime contract and each provider's native transport.
+5. [Runtime ingestion](../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts) translates provider events back into orchestration commands. Clients observe the resulting shell and thread projections.
 
-### Async completion flow
+The provider transport is separate from client RPC. Codex uses its app-server protocol; other adapters use their respective SDK, ACP, HTTP, or external bridge transports. Driver registration and supported operations are described in [provider architecture](./providers.md) and the [provider index](../providers/README.md).
 
-```mermaid
-sequenceDiagram
-    participant Server as wsServer
-    participant Worker as Queue-backed workers
-    participant Cmd as ProviderCommandReactor
-    participant Checkpoint as CheckpointReactor
-    participant Receipt as RuntimeReceiptBus
-    participant Push as ServerPushBus
-    participant Browser
+## Background work and Stop
 
-    Server->>Worker: Enqueue follow-up work
-    Worker->>Cmd: Process provider commands
-    Worker->>Checkpoint: Process checkpoint tasks
-    Checkpoint->>Receipt: Publish completion receipt
-    Cmd-->>Server: Produce orchestration changes
-    Checkpoint-->>Server: Produce orchestration changes
-    Server->>Push: Publish resulting state updates
-    Push-->>Browser: User-visible push
-```
+Durable work obligations record queued deliveries, continuation, and recovery. Workers use scoped resources, typed receipts, and drain boundaries so tests can wait for an actual milestone rather than a timer.
 
-1. Some work continues after the initial request returns, especially in [`ProviderRuntimeIngestion`][9], [`ProviderCommandReactor`][13], and [`CheckpointReactor`][14].
-2. These flows run as queue-backed workers using [`DrainableWorker`][16], which helps keep side effects ordered and test synchronization deterministic.
-3. When a milestone completes, the server emits a typed receipt on [`RuntimeReceiptBus`][15], such as checkpoint completion or turn quiescence.
-4. Tests and orchestration code wait on those receipts instead of polling git state, projections, or timers.
-5. Any user-visible state changes produced by that async work still go back through `wsServer` and `ServerPushBus`.
+Explicit Stop cancels outstanding deliveries and recovery for the thread, clears pending starts, interrupts the provider, and closes its session. The client also releases a held draft send. Late lifecycle events cannot reopen a stopped session. A new explicit send can start a fresh provider session using its persisted resume cursor. Internal provider handoffs retain their separate queued-message policy.
 
-[8]: ../../apps/server/src/provider/Layers/ProviderService.ts
-[9]: ../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
-[10]: ../../apps/server/src/orchestration/Layers/OrchestrationEngine.ts
-[11]: ../../packages/contracts/src/orchestration.ts
-[13]: ../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
-[14]: ../../apps/server/src/orchestration/Layers/CheckpointReactor.ts
-[15]: ../../apps/server/src/orchestration/Layers/RuntimeReceiptBus.ts
-[16]: ../../packages/shared/src/DrainableWorker.ts
+The [checkpoint reactor](../../apps/server/src/orchestration/Layers/CheckpointReactor.ts) records hidden Git checkpoints for diff and restore. A turn can finish producing text before checkpointing and other follow-up work finish; [runtime receipts](../../apps/server/src/orchestration/Layers/RuntimeReceiptBus.ts) distinguish these milestones.
+
+## Related systems
+
+- [Runtime and interaction modes](./runtime-modes.md)
+- [Custom-agent workspaces](./custom-agent-workspaces.md)
+- [Thread artifacts](./thread-artifacts.md)
+- [Resource telemetry](./resource-telemetry.md)
+- [Server updates and distribution ownership](./server-updates.md)
+- [Terminology and source links](../reference/encyclopedia.md)
+
+### User delivery admission
+
+The durable work scheduler limits automatic work to twelve active turns globally and
+six per provider by default, with a separate authentication recovery throttle. Explicit
+user-message deliveries bypass the global and provider caps, but still acquire the
+thread's exclusive runtime lease and contribute to the active counts. This prevents
+long-running turns in other threads from indefinitely delaying a user send while
+keeping automatic work from adding load when the provider is already busy. Scheduled
+VM-agent prompts and synthetic continuation prompts do not receive this exemption.

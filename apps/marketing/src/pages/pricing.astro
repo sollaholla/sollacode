@@ -1,0 +1,226 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { monthlyCheckout, annualCheckout } from "../lib/checkout";
+import { GITHUB_REPOSITORY_URL } from "../lib/site";
+const plans = [
+  {
+    name: "Monthly",
+    amount: "10",
+    period: "month",
+    terms: "$10 USD billed each month until canceled.",
+    href: monthlyCheckout,
+  },
+  {
+    name: "Annual",
+    amount: "120",
+    period: "year",
+    terms: "$120 USD billed each year until canceled.",
+    href: annualCheckout,
+  },
+];
+---
+
+<Layout
+  title="Pricing — Solla Code"
+  description="Solla Code is $10 per month or $120 per year. Connect your own coding provider accounts. View subscription availability and pricing details."
+>
+  <section class="section pricing">
+    <p class="eyebrow">Solla Code pricing</p><h1 class="section-title">
+      One workspace.<br /><span class="muted">Two ways to make it yours.</span>
+    </h1><p class="lead">
+      Choose the billing rhythm that works for you. Your coding provider
+      accounts and their usage charges stay separate.
+    </p>
+    {
+      (!monthlyCheckout || !annualCheckout) && (
+        <p class="launch-status">
+          <span aria-hidden="true" /> Subscriptions are preparing for launch. No
+          payment is collected on this page.
+        </p>
+      )
+    }
+    <div class="plans">
+      {
+        plans.map((plan) => (
+          <article class="plan">
+            <p class="terms">{plan.terms}</p>
+            {plan.href ? (
+              <a class="button" href={plan.href}>
+                Subscribe {plan.name.toLowerCase()}{" "}
+                <span aria-hidden="true">↗</span>
+              </a>
+            ) : (
+              <a
+                class="button secondary"
+                href={`${GITHUB_REPOSITORY_URL}/releases`}
+              >
+                Follow launch updates <span aria-hidden="true">↗</span>
+              </a>
+            )}
+            <p class="fine-print">
+              {plan.href
+                ? "Secure checkout through Stripe. Review the final total and terms before paying."
+                : "Checkout opens when the subscription is ready."}
+            </p>
+          </article>
+        ))
+      }
+    </div>
+    <p class="fine-print">
+      Prices are in USD. Twelve monthly payments and one annual payment both
+      total $120 before any applicable taxes. Provider subscriptions, API
+      credits, and third-party services are not included.
+    </p>
+  </section>
+  <section class="section questions hairline">
+    <p class="eyebrow">A few details</p><h2 class="section-title">
+      Good to know.
+    </h2><div class="faq">
+      <details>
+        <summary>Does this include AI model usage?</summary><p>
+          No. Connect the coding providers you use and authenticate with their
+          own accounts. Their billing, rate limits, and model access apply
+          separately.
+        </p>
+      </details><details>
+        <summary>Can I read and build the source?</summary><p>
+          Yes. Solla Code is an MIT-licensed fork of T3 Code. The source license
+          permits use, modification, and distribution subject to its notice
+          requirements. <a href={`${GITHUB_REPOSITORY_URL}/blob/main/LICENSE`}
+            >Read the license ↗</a
+          >.
+        </p>
+      </details><details>
+        <summary>Is the subscription available now?</summary><p>
+          {
+            monthlyCheckout && annualCheckout
+              ? "The checkout links above show the current subscription offer. Review Stripe’s checkout for the final price and renewal terms."
+              : "Not yet. The subscription offer is being prepared. You can explore the source and available releases now; this page will show checkout when it is ready."
+          }
+        </p>
+      </details><details>
+        <summary>How does remote access work?</summary><p>
+          Solla Code connects to an environment running on your machine. That
+          environment owns its projects, credentials, and provider processes.
+          Follow the connection setup guide to pair another client.
+        </p>
+      </details>
+    </div><a href="/guide" class="text-link">Get to know Solla Code →</a>
+  </section>
+</Layout>
+<style>
+  .pricing {
+    padding-top: 100px;
+  }
+  .pricing .lead {
+    max-width: 660px;
+  }
+  .launch-status {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-top: 32px;
+    font-size: 14px;
+    color: var(--fg-muted);
+  }
+  .launch-status > span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-top: 8px;
+    flex-shrink: 0;
+  }
+  .plans {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin: 48px 0 24px;
+  }
+  .plan {
+    border: 1px solid var(--border);
+    border-radius: 26px;
+    padding: 40px;
+    background: #111;
+  }
+  .plan-name {
+    font-size: 13px;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  .plan h2 {
+    font-size: 26px;
+    font-weight: 550;
+    letter-spacing: -0.03em;
+  }
+  .price {
+    font-size: 88px;
+    letter-spacing: -0.055em;
+    line-height: 1.3;
+    margin: 25px 0 12px;
+    font-weight: 550;
+  }
+  .currency {
+    font-size: 44px;
+    vertical-align: top;
+    position: relative;
+    top: 16px;
+    margin-right: 3px;
+  }
+  .period {
+    font-size: 17px;
+    letter-spacing: -0.01em;
+    color: var(--fg-muted);
+    font-weight: 400;
+  }
+  .terms {
+    font-size: 14px;
+    color: var(--fg-muted);
+    margin-bottom: 28px;
+  }
+  .plan .button {
+    width: 100%;
+  }
+  .plan .fine-print {
+    margin-top: 16px;
+    text-align: center;
+  }
+  .faq {
+    margin: 40px 0;
+  }
+  .faq details {
+    border-bottom: 1px solid var(--border);
+    padding: 23px 0;
+  }
+  .faq summary {
+    cursor: pointer;
+    font-size: 20px;
+    letter-spacing: -0.02em;
+  }
+  .faq p {
+    margin: 20px 0 5px;
+    max-width: 750px;
+    color: var(--fg-muted);
+    font-size: 17px;
+  }
+  .faq p a {
+    color: var(--accent);
+  }
+  @media (max-width: 700px) {
+    .pricing {
+      padding-top: 65px;
+    }
+    .plans {
+      grid-template-columns: 1fr;
+    }
+    .plan {
+      padding: 30px;
+    }
+    .price {
+      font-size: 80px;
+    }
+    .faq summary {
+      font-size: 18px;
+    }
+  }
+</style>

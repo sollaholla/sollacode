@@ -6,26 +6,40 @@ interface Props {
   readonly description: string;
   readonly heading: string;
   readonly lede: string;
-  readonly effectiveDate: string;
+  readonly effectiveDate?: string;
   readonly lastUpdated: string;
   readonly sections: ReadonlyArray<readonly [id: string, label: string]>;
 }
 
-const { title, description, heading, lede, effectiveDate, lastUpdated, sections } = Astro.props;
+const {
+  title,
+  description,
+  heading,
+  lede,
+  effectiveDate,
+  lastUpdated,
+  sections,
+} = Astro.props;
 ---
 
 <Layout title={title} description={description} pageClass="legal-document-page">
   <div class="legal-page">
-    <a class="legal-index-link" href="/legal"><span aria-hidden="true">&#8592;</span> All legal documents</a>
+    <a class="legal-index-link" href="/legal"
+      ><span aria-hidden="true">&#8592;</span> All project notices</a
+    >
     <header class="legal-hero">
-      <p class="eyebrow">T3 Tools, Inc. / Legal</p>
+      <p class="eyebrow">Solla Code / Project information</p>
       <h1>{heading}</h1>
       <p class="legal-lede">{lede}</p>
       <dl class="legal-dates" aria-label="Document dates">
-        <div>
-          <dt>Effective Date</dt>
-          <dd>{effectiveDate}</dd>
-        </div>
+        {
+          effectiveDate && (
+            <div>
+              <dt>Effective Date</dt>
+              <dd>{effectiveDate}</dd>
+            </div>
+          )
+        }
         <div>
           <dt>Last Updated</dt>
           <dd>{lastUpdated}</dd>
@@ -39,14 +53,16 @@ const { title, description, heading, lede, effectiveDate, lastUpdated, sections 
       <aside class="legal-nav" aria-label="On this page">
         <p class="legal-nav-label">On this page</p>
         <ol>
-          {sections.map(([id, label], index) => (
-            <li>
-              <a href={`#${id}`} data-legal-nav-link={id}>
-                <span>{String(index + 1).padStart(2, "0")}</span>
-                {label}
-              </a>
-            </li>
-          ))}
+          {
+            sections.map(([id, label], index) => (
+              <li>
+                <a href={`#${id}`} data-legal-nav-link={id}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  {label}
+                </a>
+              </li>
+            ))
+          }
         </ol>
       </aside>
 
@@ -67,7 +83,10 @@ const { title, description, heading, lede, effectiveDate, lastUpdated, sections 
       const section = id ? document.getElementById(id) : null;
       return section ? { link, section } : null;
     })
-    .filter((entry): entry is { link: HTMLAnchorElement; section: HTMLElement } => entry !== null);
+    .filter(
+      (entry): entry is { link: HTMLAnchorElement; section: HTMLElement } =>
+        entry !== null,
+    );
 
   let activeId = "";
   let frame = 0;
@@ -82,7 +101,10 @@ const { title, description, heading, lede, effectiveDate, lastUpdated, sections 
       active = entry;
     }
 
-    if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2) {
+    if (
+      window.scrollY + window.innerHeight >=
+      document.documentElement.scrollHeight - 2
+    ) {
       active = sections[sections.length - 1];
     }
 
@@ -173,7 +195,12 @@ const { title, description, heading, lede, effectiveDate, lastUpdated, sections 
   .legal-rule {
     height: 1px;
     margin: 72px 0;
-    background: linear-gradient(90deg, var(--border-strong), var(--border) 65%, transparent);
+    background: linear-gradient(
+      90deg,
+      var(--border-strong),
+      var(--border) 65%,
+      transparent
+    );
   }
 
   .legal-layout {

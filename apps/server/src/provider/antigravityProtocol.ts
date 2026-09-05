@@ -1,7 +1,7 @@
 /**
  * Antigravity CLI (`agy`) stream-json wire protocol.
  *
- * `agy --input-format stream-json --output-format stream-json -p=""` is a
+ * `agy --input-format stream-json --output-format stream-json -p=` is a
  * long-lived bidirectional session: one NDJSON object per line in on stdin,
  * one NDJSON event per line out on stdout, and closing stdin ends the session
  * with exit 0. That is the same shape the other CLI-backed drivers use, so it
@@ -18,8 +18,8 @@
  *      normal `result` event on **stdout** with `status: "ERROR"` — the docs
  *      say diagnostics go to stderr. In stream-json mode stderr stayed empty.
  *   3. `-p` takes the *next token* as its prompt, so `-p --input-format …`
- *      silently consumes the flag. The empty-value form `-p=""` is the only
- *      way to start a stdin-driven session. See `buildAntigravityStreamArgs`.
+ *      silently consumes the flag. Spawn argv must contain `-p=` without
+ *      literal quote characters. See `buildAntigravityStreamArgs`.
  *
  * @module provider/antigravityProtocol
  */

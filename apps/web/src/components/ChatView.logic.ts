@@ -462,6 +462,12 @@ export function describePendingTurnStart(input: {
   ) {
     return null;
   }
+  if (input.pendingWork.state === "pending") {
+    return `Queued for ${input.providerName}`;
+  }
+  if (input.pendingWork.state === "sleeping") {
+    return `Waiting to retry ${input.providerName}`;
+  }
   if (
     input.latestTurnState === "incomplete" ||
     input.latestTurnState === "interrupted" ||

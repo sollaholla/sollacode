@@ -1,19 +1,8 @@
 # Provider architecture
 
-The web app communicates with the server via WebSocket using a simple JSON-RPC-style protocol:
+Clients use the Effect RPC contracts in [`packages/contracts/src/rpc.ts`](../../packages/contracts/src/rpc.ts). User actions become orchestration commands through the shared client runtime. Clients do not call provider adapters directly. HTTP handles environment discovery, authentication, snapshots, and history; authenticated WebSocket RPC handles interactive operations and subscriptions. See [Connection runtime](./connection-runtime.md).
 
-- **Request/Response**: `{ id, method, params }` → `{ id, result }` or `{ id, error }`
-- **Push events**: typed envelopes with `channel`, `sequence` (monotonic per connection), and channel-specific `data`
-
-Push channels: `server.welcome`, `server.configUpdated`, `terminal.event`, `orchestration.domainEvent`. Payloads are schema-validated at the transport boundary (`wsTransport.ts`). Decode failures produce structured `WsDecodeDiagnostic` with `code`, `reason`, and path info.
-
-Methods mirror the `NativeApi` interface defined in `@t3tools/contracts`:
-
-- `providers.startSession`, `providers.sendTurn`, `providers.interruptTurn`
-- `providers.respondToRequest`, `providers.stopSession`
-- `shell.openInEditor`, `server.getConfig`
-
-Built-in drivers materialize scoped provider instances for Codex, Claude, Cursor, Grok, OpenCode, and the generic `mcpBridge` external-provider contract. The provider-instance registry owns each instance scope, so disabling, removing, or reconfiguring one instance releases only that instance’s processes and sessions.
+Built-in drivers materialize scoped provider instances for Codex, Claude, Cursor, Grok, OpenCode, Antigravity, and the generic `mcpBridge` external-provider contract. The provider-instance registry owns each instance scope, so disabling, removing, or reconfiguring one instance releases only that instance’s processes and sessions.
 
 Mid-turn human input is dispatched on a per-thread priority lane and carries the exact provider
 instance and active turn it was meant to steer. The service does not resume or replace a session for
@@ -48,7 +37,7 @@ The driver validates the external descriptor before use, maps and validates orde
 
 ## Client transport
 
-`wsTransport.ts` manages connection state: `connecting` → `open` → `reconnecting` → `closed` → `disposed`. Outbound requests are queued while disconnected and flushed on reconnect. Inbound pushes are decoded and validated at the boundary, then cached per channel. Subscribers can opt into `replayLatest` to receive the last push on subscribe.
+The shared `EnvironmentSupervisor` owns retries and the active session. `RpcSessionFactory` establishes one connection attempt, while shell and thread services own their subscriptions and caches. Transport readiness and data synchronization are separate states. See [Connection runtime](./connection-runtime.md) for ownership and failure behavior.
 
 ## Server-side orchestration layers
 
@@ -58,4 +47,10 @@ Provider runtime events flow through queue-based workers:
 2. **ProviderCommandReactor** - reacts to orchestration intent events, dispatches provider calls
 3. **CheckpointReactor** - captures git checkpoints on turn start/complete, publishes runtime receipts
 
-All three use `DrainableWorker` internally and expose `drain()` for deterministic test synchronization.
+The workers expose drain and receipt boundaries for deterministic test synchronization. Explicit Stop cancels pending work before provider teardown; late runtime notifications cannot reopen a stopped session.
+
+## Antigravity headless sessions
+
+The Antigravity driver discovers models through `agy models` and starts one scoped `agy` subprocess for each turn. The native conversation ID is retained as the resume cursor for subsequent turns. A pure mapper translates stream-JSON frames into provider runtime events. Assistant deltas include text on both ACTIVE and DONE frames; the final result does not duplicate streamed text.
+
+Interrupt marks the turn canceled before interrupting its fiber and closing the child process scope. A child that ignores graceful termination is forcibly terminated after two seconds. Late frames cannot override an interrupted terminal result. See [Antigravity](../providers/antigravity.md) for unsupported operations.

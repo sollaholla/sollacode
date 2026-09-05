@@ -1,4 +1,6 @@
-# TODO
+# Historical upstream TODO
+
+This imported list is retained as project history, not the current Solla Code backlog. Several entries, including queued messages and thread archiving, are already implemented. Use the current user guides and source for supported behavior.
 
 ## Small things
 

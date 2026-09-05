@@ -1,4 +1,5 @@
 import {
+  EventId,
   MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -18,6 +19,7 @@ import {
   PROVIDER_HANDOFF_MAX_SERIALIZED_CHARS,
   PROVIDER_HANDOFF_TURN_MAX_SERIALIZED_CHARS,
   providerFailoverModelKey,
+  resolveUsageLimitFailoverRestore,
   selectProviderFailoverTarget,
 } from "./ProviderUsageLimitFailover.ts";
 
@@ -907,5 +909,237 @@ describe("selectProviderFailoverTarget account-level exhaustion", () => {
       nowEpochMs: NOW,
     });
     expect(target?.instanceId).toBe("codex");
+  });
+});
+
+describe("resolveUsageLimitFailoverRestore", () => {
+  const claude = provider({
+    instanceId: "claudeAgent",
+    driver: "claudeAgent",
+    models: ["claude-fable-5-1", "claude-opus-5"],
+  });
+  const antigravity = provider({
+    instanceId: "antigravity",
+    driver: "antigravity",
+    model: "gemini-3.8-flash-high",
+  });
+  const providers = [claude, antigravity];
+  const resetsAtSeconds = 1_788_570_000;
+  const afterReset = resetsAtSeconds * 1_000 + 60_000;
+  const beforeReset = resetsAtSeconds * 1_000 - 60_000;
+  const onAntigravity = {
+    instanceId: ProviderInstanceId.make("antigravity"),
+    model: "gemini-3.8-flash-high",
+  };
+  function failoverActivity(overrides?: {
+    readonly payload?: Record<string, unknown>;
+    readonly sequence?: number;
+    readonly createdAt?: string;
+  }) {
+    return {
+      id: EventId.make("failover-1"),
+      tone: "info" as const,
+      kind: "provider.failover.completed",
+      summary: "claude-fable-5-1 usage exhausted · switched from Claude to Antigravity",
+      payload: {
+        sourceInstanceId: "claudeAgent",
+        sourceProvider: "claudeAgent",
+        sourceLabel: "Claude",
+        sourceModel: "claude-fable-5-1",
+        sourceOptions: [
+          { id: "effort", value: "max" },
+          { id: "contextWindow", value: "1m" },
+        ],
+        targetInstanceId: "antigravity",
+        targetProvider: "antigravity",
+        targetLabel: "Antigravity",
+        targetModel: "gemini-3.8-flash-high",
+        targetOptions: null,
+        reason: "rate_limit_rejected:five_hour",
+        resetsAt: resetsAtSeconds,
+        ...overrides?.payload,
+      },
+      turnId: null,
+      sequence: overrides?.sequence ?? 10,
+      createdAt: overrides?.createdAt ?? "2026-09-04T23:19:57.574Z",
+    };
+  }
+
+  it("returns the thread to the selection it had before the failover once the window resets", () => {
+    const restore = resolveUsageLimitFailoverRestore({
+      failover: failoverActivity(),
+      restored: null,
+      currentSelection: onAntigravity,
+      providers,
+      nowEpochMs: afterReset,
+    });
+    expect(restore).not.toBeNull();
+    expect(restore?.modelSelection).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-fable-5-1",
+      options: [
+        { id: "effort", value: "max" },
+        { id: "contextWindow", value: "1m" },
+      ],
+    });
+    expect(restore?.sourceLabel).toBe("Claude");
+    expect(restore?.targetLabel).toBe("Antigravity");
+    expect(restore?.targetModel).toBe("gemini-3.8-flash-high");
+    expect(restore?.resetsAtEpochMs).toBe(resetsAtSeconds * 1_000);
+  });
+
+  it("waits for the recorded window to reset", () => {
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity(),
+        restored: null,
+        currentSelection: onAntigravity,
+        providers,
+        nowEpochMs: beforeReset,
+      }),
+    ).toBeNull();
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity({ payload: { resetsAt: null } }),
+        restored: null,
+        currentSelection: onAntigravity,
+        providers,
+        nowEpochMs: afterReset,
+      }),
+    ).toBeNull();
+  });
+
+  it("reads reset timestamps in milliseconds as well as seconds", () => {
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity({ payload: { resetsAt: resetsAtSeconds * 1_000 } }),
+        restored: null,
+        currentSelection: onAntigravity,
+        providers,
+        nowEpochMs: afterReset,
+      })?.resetsAtEpochMs,
+    ).toBe(resetsAtSeconds * 1_000);
+  });
+
+  it("keeps a selection the user made after the failover", () => {
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity(),
+        restored: null,
+        currentSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        providers,
+        nowEpochMs: afterReset,
+      }),
+    ).toBeNull();
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity(),
+        restored: null,
+        currentSelection: { ...onAntigravity, model: "gemini-3.1-pro-high" },
+        providers,
+        nowEpochMs: afterReset,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not restore the same failover twice", () => {
+    const restored = {
+      ...failoverActivity({ sequence: 20, createdAt: "2026-09-05T01:05:00.000Z" }),
+      id: EventId.make("restored-1"),
+      kind: "provider.failover.restored",
+    };
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity(),
+        restored,
+        currentSelection: onAntigravity,
+        providers,
+        nowEpochMs: afterReset,
+      }),
+    ).toBeNull();
+    // A restore that predates this failover belongs to an earlier episode.
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity(),
+        restored: { ...restored, sequence: 5, createdAt: "2026-09-04T20:00:00.000Z" },
+        currentSelection: onAntigravity,
+        providers,
+        nowEpochMs: afterReset,
+      }),
+    ).not.toBeNull();
+  });
+
+  it("leaves a same-instance model downgrade alone", () => {
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity({
+          payload: {
+            targetInstanceId: "claudeAgent",
+            targetModel: "claude-opus-5",
+            targetLabel: "Claude",
+          },
+        }),
+        restored: null,
+        currentSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-5",
+        },
+        providers,
+        nowEpochMs: afterReset,
+      }),
+    ).toBeNull();
+  });
+
+  it("only goes back to a provider that can take the turn", () => {
+    const loggedOut = provider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      models: ["claude-fable-5-1"],
+      authStatus: "unauthenticated",
+    });
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity(),
+        restored: null,
+        currentSelection: onAntigravity,
+        providers: [loggedOut, antigravity],
+        nowEpochMs: afterReset,
+      }),
+    ).toBeNull();
+    const stillRejected = provider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      models: ["claude-fable-5-1"],
+      accountUsage: {
+        rate_limit_info: {
+          status: "rejected",
+          rateLimitType: "five_hour",
+          resetsAt: Math.floor(afterReset / 1_000) + 3_600,
+        },
+      },
+    });
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity(),
+        restored: null,
+        currentSelection: onAntigravity,
+        providers: [stillRejected, antigravity],
+        nowEpochMs: afterReset,
+      }),
+    ).toBeNull();
+    const modelGone = provider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      models: ["claude-opus-5"],
+    });
+    expect(
+      resolveUsageLimitFailoverRestore({
+        failover: failoverActivity(),
+        restored: null,
+        currentSelection: onAntigravity,
+        providers: [modelGone, antigravity],
+        nowEpochMs: afterReset,
+      }),
+    ).toBeNull();
   });
 });

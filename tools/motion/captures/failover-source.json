@@ -1,0 +1,17 @@
+{
+  "source": "Production client, lossless Chromium compositor frames",
+  "viewport": {
+    "width": 1314,
+    "height": 912
+  },
+  "duration": 23.760226011276245,
+  "actions": [
+    {
+      "at": 0.4112257957458496,
+      "x": 1156,
+      "y": 497,
+      "name": "Send the search review to Grok primary"
+    }
+  ],
+  "errors": []
+}

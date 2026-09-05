@@ -631,7 +631,7 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
 
       // Stop during provider startup targets the delivery itself. It must not
       // survive and immediately requeue after the user has stopped it.
-      const pendingStartThread = ThreadId.make("thread-work-mode-pending-start-interrupt");
+      const pendingStartThread = ThreadId.make("thread-work-mode-user-stop");
       yield* insertThread(pendingStartThread);
       yield* pendingDelivery(pendingStartThread);
       assert.strictEqual(
@@ -639,7 +639,7 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
           threadId: pendingStartThread,
           updatedAt: later,
           blockedReason: "thread.turn-interrupt-requested",
-          mode: "pending-start-interrupt",
+          mode: "user-stop",
         }),
         1,
       );
@@ -670,6 +670,73 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       );
       assert.strictEqual(yield* stateOf(`${terminalThread}:user-delivery`), "cancelled");
       assert.strictEqual(yield* stateOf(`${terminalThread}:supervisor`), "cancelled");
+    }),
+  );
+
+  it.effect("Stop prevents an unacknowledged steer from requeueing after delivery fails", () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadWorkObligationRepository;
+      for (const mode of ["user-stop", "thread-terminal", "turn-interrupt"] as const) {
+        const threadId = ThreadId.make(`thread-stop-unconfirmed-${mode}`);
+        yield* insertThread(threadId);
+        const row = {
+          threadId,
+          kind: "active-turn-recovery" as const,
+          state: "completed" as const,
+          providerInstanceId,
+          attempt: 1,
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const obligationId = `${threadId}:steering`;
+        yield* repository.insert({
+          ...row,
+          obligationId,
+          sourceTurnId: TurnId.make("turn-start:steering"),
+          blockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+        });
+        yield* repository.insert({
+          ...row,
+          obligationId: `${threadId}:delivered`,
+          sourceTurnId: TurnId.make("turn-start:delivered"),
+          blockedReason: null,
+        });
+
+        const cancelSteer = mode !== "turn-interrupt";
+        assert.strictEqual(
+          yield* repository.cancelByThread({
+            threadId,
+            updatedAt: later,
+            blockedReason: "thread.turn-interrupt-requested",
+            mode,
+          }),
+          cancelSteer ? 1 : 0,
+        );
+        // This is the delivery reactor's fallback after its native request
+        // fails. Stop must win this CAS; internal handoffs can still retry.
+        assert.strictEqual(
+          yield* repository.transition({
+            obligationId,
+            expectedState: "completed",
+            expectedAttempt: 1,
+            expectedBlockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+            state: "pending",
+            nextAttemptAt: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            blockedReason: null,
+            updatedAt: later,
+          }),
+          !cancelSteer,
+        );
+        assert.strictEqual(
+          Option.getOrThrow(yield* repository.getById(`${threadId}:delivered`)).state,
+          "completed",
+        );
+      }
     }),
   );
 

@@ -553,6 +553,8 @@ describe("ProviderCommandReactor", () => {
   async function createHarness(input?: {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
+    /** Extra registry entries beside the thread's own provider. */
+    readonly extraProviders?: ReadonlyArray<ServerProvider>;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
     readonly startReactor?: boolean;
     readonly serializeSessionLifecycle?: boolean;
@@ -838,6 +840,7 @@ describe("ProviderCommandReactor", () => {
         slashCommands: [],
         skills: [],
       },
+      ...(input?.extraProviders ?? []),
     ];
 
     const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
@@ -1253,6 +1256,192 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("returns a thread to its pre-failover provider once the usage window has reset", async () => {
+    // A usage-limit failover rewrites the thread's selection so the handoff
+    // turn can run, and nothing ever wrote it back (2026-09-04: four threads
+    // left on Antigravity until the user switched each one by hand). The next
+    // turn start on an idle thread undoes it once the window has reset.
+    const antigravity = ProviderInstanceId.make("antigravity");
+    const claudeAgent = ProviderInstanceId.make("claudeAgent");
+    const failoverTarget: ModelSelection = {
+      instanceId: antigravity,
+      model: "gemini-3.8-flash-high",
+    };
+    const originalSelection: ModelSelection = {
+      instanceId: claudeAgent,
+      model: "claude-fable-5-1",
+      options: [{ id: "effort", value: "max" }],
+    };
+    const harness = await createHarness({
+      threadModelSelection: failoverTarget,
+      extraProviders: [
+        {
+          instanceId: claudeAgent,
+          driver: ProviderDriverKind.make("claudeAgent"),
+          displayName: "Claude",
+          enabled: true,
+          installed: true,
+          version: "test",
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-01-01T00:00:00.000Z",
+          availability: "available",
+          models: [
+            {
+              slug: "claude-fable-5-1",
+              name: "Claude Fable 5.1",
+              isCustom: false,
+              isDefault: true,
+              capabilities: null,
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        },
+      ],
+    });
+    const threadId = ThreadId.make("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-failover-completed"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-failover-completed"),
+          tone: "info",
+          kind: "provider.failover.completed",
+          summary: "claude-fable-5-1 usage exhausted · switched from Claude to Antigravity",
+          payload: {
+            sourceInstanceId: "claudeAgent",
+            sourceProvider: "claudeAgent",
+            sourceLabel: "Claude",
+            sourceModel: "claude-fable-5-1",
+            sourceOptions: [{ id: "effort", value: "max" }],
+            targetInstanceId: "antigravity",
+            targetProvider: "antigravity",
+            targetLabel: "Antigravity",
+            targetModel: "gemini-3.8-flash-high",
+            targetOptions: null,
+            reason: "rate_limit_rejected:five_hour",
+            // Long past: the window has reset by the time the next turn starts.
+            resetsAt: 1_700_000_000,
+          },
+          turnId: null,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-after-failover"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-after-failover"),
+          role: "user",
+          text: "keep going",
+          attachments: [],
+        },
+        // The client sends the selection it can see: the failover target.
+        modelSelection: failoverTarget,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      providerInstanceId: claudeAgent,
+      modelSelection: originalSelection,
+    });
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.modelSelection.instanceId === claudeAgent &&
+        thread.activities.some((activity) => activity.kind === "provider.failover.restored")
+      );
+    });
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.modelSelection).toEqual(originalSelection);
+    const restored = thread?.activities.find(
+      (activity) => activity.kind === "provider.failover.restored",
+    );
+    expect(restored?.summary).toBe(
+      "Claude usage window reset · switched back from Antigravity to Claude",
+    );
+    expect(restored?.payload).toMatchObject({
+      failoverActivityId: "activity-failover-completed",
+      targetInstanceId: "claudeAgent",
+      reason: "usage_window_reset",
+    });
+  });
+
+  it("leaves a failed-over thread alone while its usage window is still closed", async () => {
+    const antigravity = ProviderInstanceId.make("antigravity");
+    const failoverTarget: ModelSelection = {
+      instanceId: antigravity,
+      model: "gemini-3.8-flash-high",
+    };
+    const harness = await createHarness({ threadModelSelection: failoverTarget });
+    const threadId = ThreadId.make("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-failover-completed-open"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-failover-completed-open"),
+          tone: "info",
+          kind: "provider.failover.completed",
+          summary: "claude-fable-5-1 usage exhausted · switched from Claude to Antigravity",
+          payload: {
+            sourceInstanceId: "claudeAgent",
+            sourceModel: "claude-fable-5-1",
+            targetInstanceId: "antigravity",
+            targetModel: "gemini-3.8-flash-high",
+            reason: "rate_limit_rejected:five_hour",
+            // Far in the future: the window is still closed.
+            resetsAt: 4_102_444_800,
+          },
+          turnId: null,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-window-open"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-window-open"),
+          role: "user",
+          text: "still here",
+          attachments: [],
+        },
+        modelSelection: failoverTarget,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      modelSelection: failoverTarget,
+    });
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.modelSelection).toEqual(failoverTarget);
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.failover.restored"),
+    ).toBe(false);
   });
 
   it("sends a message past the provider input ceiling instead of failing the turn", async () => {
@@ -6445,9 +6634,8 @@ describe("ProviderCommandReactor", () => {
     );
     await waitFor(async () => (await obligationState("steer-msg-3")) === "executing");
 
-    // Messages 4 and 5 arrive mid-turn 2 and both steers are refused. Stop must
-    // preserve the entire parked batch, then the scheduler must deliver it in
-    // original FIFO order rather than keeping only the newest correction.
+    // Messages 4 and 5 arrive mid-turn 2 and both steers are refused. Explicit
+    // Stop cancels the parked batch along with the running turn.
     refuseSteerFor.add("steer-msg-4");
     await dispatchTurn("cmd-steer-msg4", "steer-msg-4", "after stop", "2026-01-01T00:00:07.000Z");
     await waitFor(() => harness.sendTurn.mock.calls.length === 5); // refused steer attempt
@@ -6470,38 +6658,17 @@ describe("ProviderCommandReactor", () => {
         createdAt: "2026-01-01T00:00:08.000Z",
       }),
     );
-    expect(await obligationState("steer-msg-4")).toBe("pending");
-    expect(await obligationState("steer-msg-5")).toBe("pending");
-    const attemptsBeforeRelease = harness.sendTurn.mock.calls.length;
-    providerIdle();
-    await setSession("cmd-steer-idle-2", "ready", null, "2026-01-01T00:00:09.000Z");
-    await waitFor(() => harness.sendTurn.mock.calls.length === attemptsBeforeRelease + 1);
-    expect(deliveredMessageIds()[attemptsBeforeRelease]).toBe("steer-msg-4");
-
-    await setSession(
-      "cmd-steer-running-3",
-      "running",
-      asTurnId("turn-live-3"),
-      "2026-01-01T00:00:10.000Z",
-    );
-    providerIdle();
-    await setSession("cmd-steer-idle-3", "ready", null, "2026-01-01T00:00:11.000Z");
-    await waitFor(() => harness.sendTurn.mock.calls.length === attemptsBeforeRelease + 2);
-    expect(deliveredMessageIds()[attemptsBeforeRelease + 1]).toBe("steer-msg-5");
-
-    await setSession(
-      "cmd-steer-running-4",
-      "running",
-      asTurnId("turn-live-4"),
-      "2026-01-01T00:00:12.000Z",
-    );
-    providerIdle();
-    await setSession("cmd-steer-idle-4", "ready", null, "2026-01-01T00:00:13.000Z");
-    await waitFor(
-      async () =>
-        (await obligationState("steer-msg-4")) === "completed" &&
-        (await obligationState("steer-msg-5")) === "completed",
-    );
+    expect(await obligationState("steer-msg-4")).toBe("cancelled");
+    expect(await obligationState("steer-msg-5")).toBe("cancelled");
+    await harness.drain();
+    expect(deliveredMessageIds()).toEqual([
+      "steer-msg-1",
+      "steer-msg-2",
+      "steer-msg-3",
+      "steer-msg-3",
+      "steer-msg-4",
+      "steer-msg-5",
+    ]);
     // The steered message was consumed by the live turn — it must not be
     // re-delivered as its own turn afterwards.
     expect(deliveredMessageIds().filter((messageId) => messageId === "steer-msg-2")).toHaveLength(

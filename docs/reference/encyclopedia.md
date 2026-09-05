@@ -26,7 +26,7 @@ The root filesystem path for a project. In [the orchestration model][1], it is t
 
 #### Worktree
 
-A Git worktree used as an isolated workspace for a thread. If a thread has a `worktreePath` in [the contracts][1], it runs there instead of in the main working tree. Git operations live in [GitCore.ts][3].
+A Git worktree used as an isolated workspace for a thread. If a thread has a `worktreePath` in [the contracts][1], it runs there instead of in the main working tree. Git operations live in [GitManager.ts][3].
 
 ### Thread timeline
 
@@ -103,11 +103,11 @@ The live provider-backed runtime attached to a thread. Session shape is in [the 
 
 #### Runtime mode
 
-The safety/access mode for a thread or session. In [the contracts][1], the main values are `approval-required` and `full-access`. See [runtime-modes.md][18].
+The safety/access mode for a thread or session. In [the contracts][1], the values are `approval-required`, `auto-accept-edits`, `auto`, and `full-access`. See [runtime-modes.md][18].
 
 #### Interaction mode
 
-The agent interaction style for a thread. In [the contracts][1], the main values are `default` and `plan`. See [runtime-modes.md][18].
+The agent interaction style for a thread. In [the contracts][1], the values are `default`, `plan`, and `agent`. See [runtime-modes.md][18].
 
 #### Assistant delivery mode
 
@@ -222,33 +222,33 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 - [runtime-modes.md][18]
 - [workspace-layout.md][2]
 
-[1]: ../packages/contracts/src/orchestration.ts
+[1]: ../../packages/contracts/src/orchestration.ts
 [2]: ./workspace-layout.md
-[3]: ../apps/server/src/git/Layers/GitCore.ts
-[4]: ../apps/server/src/orchestration/projector.ts
-[5]: ../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
-[6]: ../apps/server/src/orchestration/Layers/CheckpointReactor.ts
-[7]: ../apps/server/src/orchestration/Layers/OrchestrationEngine.ts
-[8]: ../apps/server/src/orchestration/decider.ts
-[9]: ../apps/server/src/orchestration/commandInvariants.ts
-[10]: ../apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
-[11]: ../apps/server/src/orchestration/Layers/ProjectionPipeline.ts
-[12]: ../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
-[13]: ../apps/server/src/orchestration/Services/RuntimeReceiptBus.ts
-[14]: ../apps/server/src/provider/Layers/ProviderService.ts
-[15]: ../apps/server/src/provider/Services/ProviderAdapter.ts
-[16]: ./provider-architecture.md
-[17]: ../apps/server/src/provider/Layers/CodexAdapter.ts
-[18]: ./runtime-modes.md
-[19]: ../apps/server/src/checkpointing/CheckpointStore.ts
-[20]: ../apps/server/src/checkpointing/CheckpointDiffQuery.ts
-[21]: ../apps/server/src/persistence/Services/ProjectionCheckpoints.ts
-[22]: ../apps/server/src/checkpointing/Utils.ts
-[23]: ../apps/server/src/checkpointing/Diffs.ts
-[24]: ./architecture.md
-[25]: ../apps/server/src/orchestrator/OrchestratorCredentials.ts
-[26]: ../apps/web/src/orchestrator/realtimeSession.ts
-[27]: ../packages/contracts/src/orchestratorVoice.ts
+[3]: ../../apps/server/src/git/GitManager.ts
+[4]: ../../apps/server/src/orchestration/projector.ts
+[5]: ../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
+[6]: ../../apps/server/src/orchestration/Layers/CheckpointReactor.ts
+[7]: ../../apps/server/src/orchestration/Layers/OrchestrationEngine.ts
+[8]: ../../apps/server/src/orchestration/decider.ts
+[9]: ../../apps/server/src/orchestration/commandInvariants.ts
+[10]: ../../apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
+[11]: ../../apps/server/src/orchestration/Layers/ProjectionPipeline.ts
+[12]: ../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
+[13]: ../../apps/server/src/orchestration/Services/RuntimeReceiptBus.ts
+[14]: ../../apps/server/src/provider/Layers/ProviderService.ts
+[15]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
+[16]: ../architecture/providers.md
+[17]: ../../apps/server/src/provider/Layers/CodexAdapter.ts
+[18]: ../architecture/runtime-modes.md
+[19]: ../../apps/server/src/checkpointing/CheckpointStore.ts
+[20]: ../../apps/server/src/checkpointing/CheckpointDiffQuery.ts
+[21]: ../../apps/server/src/persistence/Services/ProjectionCheckpoints.ts
+[22]: ../../apps/server/src/checkpointing/Utils.ts
+[23]: ../../apps/server/src/checkpointing/Diffs.ts
+[24]: ../architecture/overview.md
+[25]: ../../apps/server/src/orchestrator/OrchestratorCredentials.ts
+[26]: ../../apps/web/src/orchestrator/realtimeSession.ts
+[27]: ../../packages/contracts/src/orchestratorVoice.ts
 [28]: ../integrations/orchestrator-grok-voice.md
-[29]: ../apps/server/src/provider/Layers/GrokAdapter.ts
-[30]: ../apps/server/src/provider/acp/AcpRuntimeModel.ts
+[29]: ../../apps/server/src/provider/Layers/GrokAdapter.ts
+[30]: ../../apps/server/src/provider/acp/AcpRuntimeModel.ts

@@ -103,6 +103,9 @@ import {
   buildProviderHandoffSummary,
   buildProviderHandoffTurnInput,
   deriveProviderHandoffContinuity,
+  PROVIDER_FAILOVER_COMPLETED_ACTIVITY_KIND,
+  PROVIDER_FAILOVER_RESTORED_ACTIVITY_KIND,
+  resolveUsageLimitFailoverRestore,
 } from "../ProviderUsageLimitFailover.ts";
 import {
   activeTurnMessageIdFromSourceTurnId,
@@ -1943,6 +1946,105 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             });
           }),
         );
+      },
+    );
+
+    /**
+     * Undo a usage-limit failover once the window that caused it has reset.
+     *
+     * The failover rewrites the thread's selection so the replacement turn
+     * can run, and until now nothing wrote it back: a thread that fell over
+     * to Antigravity at 22:38 was still on Antigravity at midnight unless the
+     * user noticed (2026-09-04, twice). This runs at the next turn start on an
+     * idle thread — a live turn is never yanked to another provider — and
+     * hands back the selection the turn should use. Everything about it is
+     * best-effort: a failed lookup or dispatch logs and the turn proceeds on
+     * the selection the client sent.
+     */
+    const restoreUsageLimitFailoverSelection = Effect.fn("restoreUsageLimitFailoverSelection")(
+      function* (input: {
+        readonly thread: OrchestrationThread;
+        readonly requestedModelSelection: ModelSelection | undefined;
+        readonly createdAt: string;
+      }) {
+        const lookup = projectionSnapshotQuery.getLatestThreadActivityByKind;
+        if (lookup === undefined) return null;
+        const threadId = input.thread.id;
+        if (input.thread.session?.status === "running") return null;
+        const liveSession = (yield* providerService.listSessions()).find(
+          (session) => session.threadId === threadId,
+        );
+        if (liveSession?.status === "running") return null;
+        const failover = yield* lookup(threadId, PROVIDER_FAILOVER_COMPLETED_ACTIVITY_KIND).pipe(
+          Effect.map(Option.getOrNull),
+        );
+        if (failover === null) return null;
+        const restored = yield* lookup(threadId, PROVIDER_FAILOVER_RESTORED_ACTIVITY_KIND).pipe(
+          Effect.map(Option.getOrNull),
+        );
+        const providers = yield* providerRegistry.getProviders;
+        const nowEpochMs = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
+        const restore = resolveUsageLimitFailoverRestore({
+          failover,
+          restored,
+          currentSelection: input.requestedModelSelection ?? input.thread.modelSelection,
+          providers,
+          nowEpochMs,
+        });
+        if (restore === null) return null;
+
+        const createdAt = input.createdAt;
+        threadModelSelections.set(threadId, restore.modelSelection);
+        yield* serverCommandId("provider-failover-restore-model-selection").pipe(
+          Effect.flatMap((commandId) =>
+            orchestrationEngine.dispatch({
+              type: "thread.meta.update",
+              commandId,
+              threadId,
+              modelSelection: restore.modelSelection,
+            }),
+          ),
+        );
+        yield* Effect.all({
+          commandId: serverCommandId("provider-failover-restored-activity"),
+          eventId: serverEventId(),
+        }).pipe(
+          Effect.flatMap(({ commandId, eventId }) =>
+            orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId,
+              threadId,
+              activity: {
+                id: eventId,
+                tone: "info",
+                kind: PROVIDER_FAILOVER_RESTORED_ACTIVITY_KIND,
+                summary: `${restore.sourceLabel} usage window reset · switched back from ${restore.targetLabel} to ${restore.sourceLabel}`,
+                payload: {
+                  detail: `${restore.targetLabel} / ${restore.targetModel} → ${restore.sourceLabel} / ${restore.modelSelection.model}`,
+                  sourceInstanceId: restore.targetInstanceId,
+                  sourceModel: restore.targetModel,
+                  targetInstanceId: restore.sourceInstanceId,
+                  targetProvider: restore.sourceDriver,
+                  targetModel: restore.modelSelection.model,
+                  targetOptions: restore.modelSelection.options ?? null,
+                  failoverActivityId: restore.failoverActivityId,
+                  reason: "usage_window_reset",
+                  resetsAt: restore.resetsAtEpochMs,
+                },
+                turnId: null,
+                createdAt,
+              },
+              createdAt,
+            }),
+          ),
+        );
+        yield* Effect.logInfo("provider.failover.restored", {
+          threadId,
+          from: restore.targetInstanceId,
+          to: restore.sourceInstanceId,
+          model: restore.modelSelection.model,
+        });
+        return restore;
       },
     );
 
@@ -4000,6 +4102,37 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             }
           : undefined;
 
+        // This is where an idle thread's turn is actually materialised — the
+        // persisted turn-start payload carries whatever selection the client
+        // could see, which after a usage-limit failover is the stopgap
+        // provider. Undo the failover here, once its window has reset, so the
+        // turn (and the thread) go back to what the user chose. Best-effort:
+        // a failure logs and the turn runs on the persisted selection.
+        const failoverRestore = sourceTurnAlreadyStarted
+          ? null
+          : yield* restoreUsageLimitFailoverSelection({
+              thread,
+              requestedModelSelection: context.payload.modelSelection,
+              createdAt: context.payload.createdAt,
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.failCause(cause)
+                  : Effect.logWarning("provider.failover.restore-failed", {
+                      threadId: obligation.threadId,
+                      cause: Cause.pretty(cause),
+                    }).pipe(Effect.as(null)),
+              ),
+            );
+        const dispatchThread =
+          failoverRestore === null
+            ? thread
+            : { ...thread, modelSelection: failoverRestore.modelSelection };
+        const dispatchContext =
+          failoverRestore === null
+            ? context.payload
+            : { ...context.payload, modelSelection: failoverRestore.modelSelection };
+
         yield* Effect.logDebug("thread-work.active-turn.dispatch", {
           obligationId: obligation.obligationId,
           threadId: obligation.threadId,
@@ -4025,9 +4158,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               Effect.flatMap((request) => providerService.sendTurn(request, resumeSendOptions)),
             )
           : yield* sendProjectedUserTurn({
-              thread,
+              thread: dispatchThread,
               message: sourceMessage,
-              context: context.payload,
+              context: dispatchContext,
               ...(resumeSendOptions === undefined ? {} : { sendOptions: resumeSendOptions }),
             });
 

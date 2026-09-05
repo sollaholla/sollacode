@@ -4772,8 +4772,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         },
       ]);
 
-      // An interrupt (the user's Stop button) ends current work — including
-      // any queued synthetic resume — but must not drop parked user messages.
+      // Explicit Stop cancels current work and queued deliveries together.
       yield* engine.dispatch({
         type: "thread.turn.interrupt",
         commandId: CommandId.make("cmd-thread-work-interrupt"),
@@ -4799,12 +4798,12 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         {
           sourceTurnId: "turn-start:message-thread-work-first",
           kind: "active-turn-recovery",
-          state: "pending",
+          state: "cancelled",
         },
         {
           sourceTurnId: "turn-start:message-thread-work-second",
           kind: "active-turn-recovery",
-          state: "pending",
+          state: "cancelled",
         },
         {
           sourceTurnId: "turn-incomplete-thread-work",
@@ -4814,7 +4813,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         {
           sourceTurnId: "turn-start:vm-task:run-thread-work",
           kind: "active-turn-recovery",
-          state: "pending",
+          state: "cancelled",
         },
       ]);
 
@@ -6956,7 +6955,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         { key: "deleted", deliverySurvives: false },
         { key: "settled", deliverySurvives: false },
         { key: "stopped", deliverySurvives: true },
-        { key: "interrupted", deliverySurvives: true },
+        { key: "interrupted", deliverySurvives: false },
         { key: "pending-interrupted", deliverySurvives: false },
       ] as const;
 

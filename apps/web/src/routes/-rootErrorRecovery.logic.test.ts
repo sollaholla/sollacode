@@ -4,7 +4,9 @@ import {
   attemptDynamicImportRecovery,
   buildDynamicImportRecoveryUrl,
   DYNAMIC_IMPORT_RECOVERY_COOLDOWN_MS,
+  dynamicImportRecoveryCleanupDelayMs,
   dynamicImportRecoveryCleanupUrlAfterNavigation,
+  dynamicImportRecoveryCleanupUrlWhenStale,
   dynamicImportRecoveryStorageKey,
   isDynamicImportFailure,
   shouldAutoRecoverDynamicImportFailure,
@@ -368,5 +370,93 @@ describe("root dynamic import recovery", () => {
         desktopBridgeAvailable: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("root dynamic import recovery marker ageing", () => {
+  const markedHref = (attemptedAt: number) =>
+    `https://solla.test/projects/example/threads/thread-1?panel=chat&solla_chunk_retry=${attemptedAt}#turn`;
+
+  it("recovers again when the URL marker is older than the cooldown", () => {
+    const attemptedAt = 1_000_000;
+    const now = attemptedAt + DYNAMIC_IMPORT_RECOVERY_COOLDOWN_MS;
+    const harness = createRecoveryHarness({ href: markedHref(attemptedAt) });
+
+    expect(
+      attemptDynamicImportRecovery({
+        appVersion: "0.1.426",
+        error: new TypeError("Importing a module script failed."),
+        getStorage: harness.getStorage,
+        location: harness.location,
+        now,
+      }),
+    ).toBe("reloading");
+    expect(harness.replacements).toHaveLength(1);
+    const recoveryUrl = new URL(harness.replacements[0]!);
+    expect(recoveryUrl.searchParams.get("solla_chunk_retry")).toBe(now.toString());
+    expect(recoveryUrl.searchParams.getAll("solla_chunk_retry")).toHaveLength(1);
+  });
+
+  it("keeps blocking while the URL marker is fresh, even without session storage", () => {
+    const attemptedAt = 1_000_000;
+    const harness = createRecoveryHarness({ href: markedHref(attemptedAt) });
+
+    expect(
+      attemptDynamicImportRecovery({
+        appVersion: "0.1.426",
+        error: new TypeError("Importing a module script failed."),
+        getStorage: () => {
+          throw new Error("storage disabled");
+        },
+        location: harness.location,
+        now: attemptedAt + DYNAMIC_IMPORT_RECOVERY_COOLDOWN_MS - 1,
+      }),
+    ).toBe("already-attempted");
+    expect(harness.replacements).toHaveLength(0);
+  });
+
+  it("does not let a marker that is not a timestamp block recovery forever", () => {
+    const harness = createRecoveryHarness({
+      href: "https://solla.test/thread/1?solla_chunk_retry=oops",
+      pathname: "/thread/1",
+    });
+
+    expect(
+      attemptDynamicImportRecovery({
+        appVersion: "0.1.426",
+        error: new TypeError("Importing a module script failed."),
+        getStorage: harness.getStorage,
+        location: harness.location,
+        now: 5,
+      }),
+    ).toBe("reloading");
+    expect(new URL(harness.replacements[0]!).searchParams.get("solla_chunk_retry")).toBe("5");
+  });
+
+  it("reports when the marker stops guarding", () => {
+    expect(dynamicImportRecoveryCleanupDelayMs({ href: markedHref(1_000), now: 1_000 })).toBe(
+      DYNAMIC_IMPORT_RECOVERY_COOLDOWN_MS,
+    );
+    expect(
+      dynamicImportRecoveryCleanupDelayMs({
+        href: markedHref(1_000),
+        now: 1_000 + DYNAMIC_IMPORT_RECOVERY_COOLDOWN_MS + 50,
+      }),
+    ).toBe(0);
+    expect(
+      dynamicImportRecoveryCleanupDelayMs({ href: "https://solla.test/thread/1", now: 1 }),
+    ).toBeNull();
+  });
+
+  it("strips only a stale marker without waiting for a navigation", () => {
+    expect(
+      dynamicImportRecoveryCleanupUrlWhenStale({ href: markedHref(1_000), now: 1_500 }),
+    ).toBeNull();
+    expect(
+      dynamicImportRecoveryCleanupUrlWhenStale({
+        href: markedHref(1_000),
+        now: 1_000 + DYNAMIC_IMPORT_RECOVERY_COOLDOWN_MS,
+      }),
+    ).toBe("https://solla.test/projects/example/threads/thread-1?panel=chat#turn");
   });
 });

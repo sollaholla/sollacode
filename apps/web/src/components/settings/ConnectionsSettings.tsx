@@ -114,6 +114,7 @@ import {
 import { authEnvironment } from "~/state/auth";
 import { environmentCatalog } from "~/connection/catalog";
 import {
+  updateBearerConnection,
   connectPairing as connectPairingAtom,
   connectSshEnvironment as connectSshEnvironmentAtom,
 } from "~/connection/onboarding";
@@ -1491,6 +1492,99 @@ function NetworkAccessDescription({
   );
 }
 
+function SavedBackendAddressEditor({
+  environment,
+  httpBaseUrl,
+}: {
+  environment: EnvironmentPresentation;
+  httpBaseUrl: string;
+}) {
+  const update = useAtomCommand(updateBearerConnection, { reportFailure: false });
+  const [open, setOpen] = useState(false);
+  const [address, setAddress] = useState(httpBaseUrl);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    const result = await update({
+      environmentId: environment.environmentId,
+      label: environment.label,
+      httpBaseUrl: address,
+    });
+    setSaving(false);
+    if (result._tag === "Success") {
+      setOpen(false);
+      toastManager.add({ type: "success", title: "Connection address saved" });
+    } else if (!isAtomCommandInterrupted(result)) {
+      const cause = squashAtomCommandFailure(result);
+      setError(cause instanceof Error ? cause.message : "Could not save the connection address.");
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (saving) return;
+        if (nextOpen) {
+          setAddress(httpBaseUrl);
+          setError(null);
+        }
+        setOpen(nextOpen);
+      }}
+    >
+      <DialogTrigger render={<Button size="xs" variant="outline" />}>Edit address</DialogTrigger>
+      <DialogPopup>
+        <DialogHeader>
+          <DialogTitle>Edit {environment.label} connection</DialogTitle>
+          <DialogDescription>
+            Enter this server's address. For Tailscale, use its HTTPS name or Tailscale IP. Your
+            existing pairing is kept.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <form
+            id={`connection-address-${environment.environmentId}`}
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!saving) void save();
+            }}
+          >
+            <label className="text-sm" htmlFor={`connection-url-${environment.environmentId}`}>
+              Server address
+            </label>
+            <Input
+              id={`connection-url-${environment.environmentId}`}
+              value={address}
+              onChange={(event) => setAddress(event.target.value)}
+              disabled={saving}
+              autoComplete="off"
+              placeholder="https://computer.example.ts.net"
+            />
+            {error ? (
+              <p role="alert" className="mt-2 text-xs text-destructive">
+                {error}
+              </p>
+            ) : null}
+          </form>
+        </DialogPanel>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" disabled={saving} />}>Cancel</DialogClose>
+          <Button
+            type="submit"
+            form={`connection-address-${environment.environmentId}`}
+            disabled={saving || !address.trim()}
+          >
+            {saving ? "Saving…" : "Save address"}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
 type SavedBackendListRowProps = {
   environment: EnvironmentPresentation;
   removingEnvironmentId: EnvironmentId | null;
@@ -1552,9 +1646,15 @@ function SavedBackendListRow({
     environment.entry.profile.value._tag === "SshConnectionProfile"
       ? environment.entry.profile.value.target
       : null;
-  const metadataBits = [sshTarget ? `SSH ${formatDesktopSshTarget(sshTarget)}` : null].filter(
-    (value): value is string => value !== null,
-  );
+  const bearerAddress =
+    environment.entry.target._tag === "BearerConnectionTarget" &&
+    Option.isSome(environment.entry.profile) &&
+    environment.entry.profile.value._tag === "BearerConnectionProfile"
+      ? environment.entry.profile.value.httpBaseUrl
+      : null;
+  const metadataBits = [
+    sshTarget ? `SSH ${formatDesktopSshTarget(sshTarget)}` : bearerAddress,
+  ].filter((value): value is string => value !== null);
 
   // The WSL backend is a desktop-managed local backend (it surfaces as a bearer
   // environment whose connection id is prefixed "local:"), not a remote
@@ -1591,15 +1691,17 @@ function SavedBackendListRow({
             <div className="flex flex-wrap items-center gap-2">
               <p className="flex items-center gap-1 text-warning text-xs">
                 <TriangleAlertIcon className="size-3.5 shrink-0" />
-                Version drift: client {versionMismatch.clientVersion}, server{" "}
-                {versionMismatch.serverVersion}.
+                {isConnected ? "Version drift" : "Last seen version drift"}: client{" "}
+                {versionMismatch.clientVersion}, server {versionMismatch.serverVersion}.
               </p>
-              <ServerUpdateAction
-                environmentId={environmentId}
-                serverLabel={`${environment.label} server`}
-                selfUpdate={resolveServerSelfUpdateCapability(environment.serverConfig)}
-                targetVersion={versionMismatch.clientVersion}
-              />
+              {isConnected ? (
+                <ServerUpdateAction
+                  environmentId={environmentId}
+                  serverLabel={`${environment.label} server`}
+                  selfUpdate={resolveServerSelfUpdateCapability(environment.serverConfig)}
+                  targetVersion={versionMismatch.clientVersion}
+                />
+              ) : null}
             </div>
           ) : null}
           {environment.connection.error ? (
@@ -1633,6 +1735,9 @@ function SavedBackendListRow({
             </Tooltip>
           ) : (
             <>
+              {bearerAddress ? (
+                <SavedBackendAddressEditor environment={environment} httpBaseUrl={bearerAddress} />
+              ) : null}
               {isConnected ? (
                 <Button size="xs" variant="outline" onClick={() => onRemoteControl(environment)}>
                   <MonitorUpIcon className="size-3.5" />

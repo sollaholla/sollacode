@@ -1,0 +1,137 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { GITHUB_REPOSITORY_URL } from "../lib/site";
+const docs = `${GITHUB_REPOSITORY_URL}/blob/main/docs`;
+---
+
+<Layout
+  title="Get started — Solla Code"
+  description="Install Solla Code, connect your coding provider, open a project, and start building in one workspace."
+>
+  <section class="section guide">
+    <p class="eyebrow">Get started</p><h1 class="section-title">
+      Your next project<br /><span class="muted">starts here.</span>
+    </h1><p class="lead">
+      A workspace on your machine. The coding providers you choose. A clear path
+      from setup to your first thread.
+    </p>
+    <ol class="steps">
+      <li>
+        <div class="step-number">01</div><div>
+          <h2>Get the app.</h2><p>
+            Choose an available release for your operating system. If you prefer
+            to build from source, the repository includes the setup and
+            development instructions.
+          </p><a href="/download" class="text-link">Browse downloads →</a>
+        </div>
+      </li><li>
+        <div class="step-number">02</div><div>
+          <h2>Connect your provider.</h2><p>
+            Install and sign in to a supported coding CLI, then select it in
+            Solla Code’s provider settings. Your provider account determines the
+            models and usage available to you.
+          </p><a href={`${docs}/providers/README.md`} class="text-link"
+            >Provider setup ↗</a>
+        </div>
+      </li><li>
+        <div class="step-number">03</div><div>
+          <h2>Open a project. Start a thread.</h2><p>
+            Select the folder you want to work in, choose a model, and describe
+            the change. Keep a terminal or preview alongside the conversation as
+            the work develops.
+          </p><a href={`${docs}/user/composer.md`} class="text-link"
+            >Working with the composer ↗</a>
+        </div>
+      </li><li>
+        <div class="step-number">04</div><div>
+          <h2>Make it your workspace.</h2><p>
+            Create agents for recurring work and connect additional environments
+            when you need another machine. Each environment keeps its own
+            projects and provider credentials.
+          </p><a href={`${docs}/user/remote-access.md`} class="text-link"
+            >Connect another environment ↗</a>
+        </div>
+      </li>
+    </ol>
+    <div class="help">
+      <h2>Something needs a closer look?</h2><p>
+        The documentation covers everyday use and troubleshooting. For a
+        reproducible issue, include your app version, operating system,
+        provider, and what happened.
+      </p><div class="actions">
+        <a
+          href={`${GITHUB_REPOSITORY_URL}/tree/main/docs`}
+          class="button secondary">Read the docs ↗</a
+        ><a href={`${GITHUB_REPOSITORY_URL}/issues`} class="text-link"
+          >Report an issue ↗</a>
+      </div>
+    </div>
+  </section>
+</Layout>
+<style>
+  .guide {
+    padding-top: 100px;
+  }
+  .steps {
+    list-style: none;
+    padding: 0;
+    margin: 70px 0;
+  }
+  .steps li {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 40px;
+    padding: 45px 0;
+    border-top: 1px solid var(--border);
+  }
+  .step-number {
+    font-size: 44px;
+    color: var(--accent);
+    font-weight: 400;
+    letter-spacing: -0.04em;
+  }
+  .steps h2,
+  .help h2 {
+    font-size: 30px;
+    font-weight: 550;
+    letter-spacing: -0.035em;
+  }
+  .steps p,
+  .help p {
+    font-size: 18px;
+    line-height: 1.6;
+    color: var(--fg-muted);
+    max-width: 720px;
+    margin: 18px 0 24px;
+  }
+  .help {
+    padding: 40px;
+    border-radius: 24px;
+    background: var(--bg-card);
+  }
+  @media (max-width: 640px) {
+    .guide {
+      padding-top: 65px;
+    }
+    .steps li {
+      grid-template-columns: 42px 1fr;
+      gap: 22px;
+      padding: 32px 0;
+    }
+    .step-number {
+      font-size: 30px;
+    }
+    .steps h2 {
+      font-size: 24px;
+    }
+    .steps p {
+      font-size: 16px;
+    }
+    .help {
+      padding: 28px;
+    }
+    .help h2 {
+      font-size: 26px;
+    }
+  }
+</style>

@@ -223,6 +223,77 @@ describe("ClaudeTokenOptimizerProxy", () => {
     expect(retries).toEqual([{ attempt: 1, status: null }]);
   });
 
+  it("passes an event stream through as it arrives instead of holding it until the upstream closes", async () => {
+    // Claude Code aborts a streaming request with "Request timed out" when no
+    // response headers arrive within its first-byte window (5 minutes against a
+    // local proxy). Holding the whole stream for replay meant every response
+    // slower than that was discarded at minute five, so the CLI must receive the
+    // head and the first event while the upstream is still producing.
+    let releaseUpstream: (() => void) | undefined;
+    const upstreamReleased = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+    let upstreamEnded = false;
+    const upstream = NodeHttp.createServer((_req, res) => {
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/event-stream; charset=utf-8");
+      res.write('event: message_start\ndata: {"type":"message_start"}\n\n');
+      void upstreamReleased.then(() => {
+        upstreamEnded = true;
+        res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+      });
+    });
+    const upstreamUrl = await listen(upstream);
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        ),
+    );
+
+    const proxy = await startClaudeTokenOptimizerProxy({
+      threadId: ThreadId.make("thread-stream-through"),
+      attachmentsDir: NodeOS.tmpdir(),
+      upstream: upstreamUrl,
+      state: { enabled: false, activeTurnId: TurnId.make("turn-stream-through") },
+      onApplied: () => undefined,
+    });
+    cleanup.push(() => proxy.close());
+
+    let sawFirstChunk: ((value: { status: number; chunk: string }) => void) | undefined;
+    const firstChunk = new Promise<{ status: number; chunk: string }>((resolve) => {
+      sawFirstChunk = resolve;
+    });
+    const fullBody = new Promise<string>((resolve, reject) => {
+      const req = NodeHttp.request(
+        new URL(`${proxy.baseUrl}/v1/messages`),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-api-key": "test-key" },
+        },
+        (res) => {
+          const chunks: string[] = [];
+          res.once("data", (chunk: Buffer | string) => {
+            sawFirstChunk?.({ status: res.statusCode ?? 0, chunk: String(chunk) });
+          });
+          res.on("data", (chunk: Buffer | string) => chunks.push(String(chunk)));
+          res.once("end", () => resolve(chunks.join("")));
+          res.once("error", reject);
+        },
+      );
+      req.once("error", reject);
+      req.end(JSON.stringify({ prompt: "stream me", stream: true }));
+    });
+
+    const first = await firstChunk;
+    expect(upstreamEnded).toBe(false);
+    expect(first.status).toBe(200);
+    expect(first.chunk).toContain("message_start");
+
+    releaseUpstream?.();
+    await expect(fullBody).resolves.toContain("message_stop");
+  });
+
   it("ends an otherwise infinite retry loop when the caller aborts", async () => {
     const upstream = NodeHttp.createServer((_req, res) => {
       res.statusCode = 502;

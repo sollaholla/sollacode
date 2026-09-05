@@ -1,0 +1,23 @@
+{
+  "source": "Production client, lossless Chromium compositor frames",
+  "viewport": {
+    "width": 1314,
+    "height": 912
+  },
+  "duration": 8.585006952285767,
+  "actions": [
+    {
+      "at": 1.0110068321228027,
+      "x": 943,
+      "y": 494,
+      "name": "Read the search implementation"
+    },
+    {
+      "at": 3.112006902694702,
+      "x": 509,
+      "y": 494,
+      "name": "Run the five search tests"
+    }
+  ],
+  "errors": []
+}

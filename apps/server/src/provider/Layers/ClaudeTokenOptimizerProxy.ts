@@ -82,10 +82,11 @@ export const FABLE_RENDER_FONT = "jetbrains-mono-12";
  */
 export const FABLE_RENDER_COLS = 160;
 const MAX_RENDERED_PAGE_BYTES = 10 * 1024 * 1024;
-// Keep ordinary Claude responses replayable until the upstream stream closes.
-// This prevents a mid-response ECONNRESET from committing a truncated response
-// to the CLI. The cap bounds aggregate memory when many side chats are active;
-// responses beyond it fall back to streaming once the buffer is full.
+// Keep ordinary (non-streaming) Claude responses replayable until the upstream
+// body closes. This prevents a mid-response ECONNRESET from committing a
+// truncated response to the CLI. The cap bounds aggregate memory when many side
+// chats are active; responses beyond it fall back to streaming once the buffer
+// is full. Event streams are never held — see writeFetchResponse for why.
 const MAX_RETRYABLE_RESPONSE_BUFFER_BYTES = 8 * 1024 * 1024;
 const DEFAULT_INITIAL_RETRY_DELAY_MS = 1_000;
 export const CLAUDE_UPSTREAM_RETRY_DELAY_CAP_MS = 15_000;
@@ -274,6 +275,10 @@ async function writeResponseChunk(res: NodeHttp.ServerResponse, chunk: Uint8Arra
   });
 }
 
+function isEventStreamResponse(response: Response): boolean {
+  return (response.headers.get("content-type") ?? "").toLowerCase().includes("text/event-stream");
+}
+
 async function writeFetchResponse(response: Response, res: NodeHttp.ServerResponse): Promise<void> {
   const body = response.body;
 
@@ -283,11 +288,36 @@ async function writeFetchResponse(response: Response, res: NodeHttp.ServerRespon
     return;
   }
 
+  // An event stream is the one response the CLI must see *while* it is being
+  // produced. Claude Code arms a first-byte deadline the moment it sends a
+  // streaming request — 5 minutes against anything that is not
+  // api.anthropic.com itself (CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS, floored at
+  // 300000) — and aborts with "Request timed out" when no response headers
+  // arrive inside it. Holding the stream for replay meant every response that
+  // took longer than that to generate (a max-effort turn over a 300k-token
+  // context, routinely 5–6 minutes) was thrown away at minute five, and with
+  // CLAUDE_CODE_MAX_RETRIES=0 that abort was the turn's final word. Commit the
+  // head at once and pass bytes through as they arrive; a reset mid-stream then
+  // reaches the CLI as the same connection drop it would see talking to the API
+  // directly, instead of a silently discarded five-minute generation.
+  const streamThrough = isEventStreamResponse(response);
   const reader = body.getReader();
   const bufferedChunks: Uint8Array[] = [];
   let bufferedBytes = 0;
   let streaming = false;
+  const beginStreaming = async () => {
+    writeFetchResponseHead(response, res);
+    res.flushHeaders();
+    streaming = true;
+    for (const bufferedChunk of bufferedChunks) {
+      await writeResponseChunk(res, bufferedChunk);
+    }
+    bufferedChunks.length = 0;
+  };
   try {
+    if (streamThrough) {
+      await beginStreaming();
+    }
     while (true) {
       const chunk = await reader.read();
       if (chunk.done) break;
@@ -302,12 +332,7 @@ async function writeFetchResponse(response: Response, res: NodeHttp.ServerRespon
       }
 
       if (!streaming) {
-        writeFetchResponseHead(response, res);
-        streaming = true;
-        for (const bufferedChunk of bufferedChunks) {
-          await writeResponseChunk(res, bufferedChunk);
-        }
-        bufferedChunks.length = 0;
+        await beginStreaming();
       }
       await writeResponseChunk(res, chunk.value);
     }

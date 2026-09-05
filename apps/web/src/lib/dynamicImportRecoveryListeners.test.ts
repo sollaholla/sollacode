@@ -124,11 +124,21 @@ describe("installDynamicImportRecoveryListeners", () => {
     expect(h.replaced).toHaveLength(1);
   });
 
-  it("does not reload a document already carrying the retry marker", () => {
-    const h = harness({ href: "https://solla.local/env/thread?solla_chunk_retry=123" });
+  it("does not reload a document that just recovered and still carries a fresh marker", () => {
+    const h = harness({ href: "https://solla.local/env/thread?solla_chunk_retry=999000" });
     h.target.dispatch("unhandledrejection", eventWith({ reason: new Error(SAFARI) }));
     expect(h.results).toEqual(["already-attempted"]);
     expect(h.replaced).toHaveLength(0);
+  });
+
+  // The marker outlives the release it recovered from: a phone parked on one
+  // thread carries it into the next asset swap, which must still reload.
+  it("reloads again when the retry marker is from an earlier recovery", () => {
+    const h = harness({ href: "https://solla.local/env/thread?solla_chunk_retry=123" });
+    h.target.dispatch("unhandledrejection", eventWith({ reason: new Error(SAFARI) }));
+    expect(h.results).toEqual(["reloading"]);
+    expect(h.replaced).toHaveLength(1);
+    expect(new URL(h.replaced[0]!).searchParams.get("solla_chunk_retry")).toBe("1000000");
   });
 
   // Desktop keeps the visible error surface; its assets are local.

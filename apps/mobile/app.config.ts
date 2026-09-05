@@ -159,7 +159,7 @@ const config: ExpoConfig = {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
     bundleIdentifier: iosBundleIdentifier,
-    // Pin official builds to the T3 Tools team, but leave Personal Team builds
+    // Pin release builds to the configured signing team, but leave Personal Team builds
     // unsigned until the user selects their own team in Xcode.
     ...(isIosPersonalTeamBuild ? {} : { appleTeamId: "ARK85ZXQ4Z" }),
     infoPlist: {

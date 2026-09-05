@@ -1983,15 +1983,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   Option.isSome(session) ? (session.value.activeTurnId ?? undefined) : undefined,
                 ),
               ));
-          if (interruptedTurnId === undefined) {
-            // No provider turn exists, so Stop targets the queued starts
-            // themselves. The work projector cancels every pending owner in
-            // the same event; clear the matching visible queue as one unit.
-            yield* projectionTurnRepository.deleteAllPendingTurnStartsByThreadId({
-              threadId: event.payload.threadId,
-            });
-            return;
-          }
+          // Clear every pending launch atomically with the Stop receipt.
+          yield* projectionTurnRepository.deleteAllPendingTurnStartsByThreadId({
+            threadId: event.payload.threadId,
+          });
+          if (interruptedTurnId === undefined) return;
           const existingTurn = yield* projectionTurnRepository.getByTurnId({
             threadId: event.payload.threadId,
             turnId: interruptedTurnId,
@@ -2414,33 +2410,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         event.type === "thread.session-stop-requested" ||
         event.type === "thread.turn-interrupt-requested"
       ) {
-        const interruptionTargetsRunningTurn =
-          event.type === "thread.turn-interrupt-requested"
-            ? event.payload.turnId !== undefined ||
-              (yield* projectionThreadSessionRepository
-                .getByThreadId({ threadId: event.payload.threadId })
-                .pipe(
-                  Effect.map(
-                    (session) =>
-                      Option.isSome(session) &&
-                      session.value.status === "running" &&
-                      session.value.activeTurnId !== null,
-                  ),
-                ))
-            : false;
         yield* threadWorkObligationRepository.cancelByThread({
           threadId: event.payload.threadId,
           updatedAt: event.occurredAt,
           blockedReason: event.type,
-          // Interrupting a running turn preserves later user messages parked
-          // behind it. When no provider turn exists, however, Stop refers to
-          // the pending delivery itself and must cancel it; otherwise the
-          // scheduler immediately starts the work again behind the user's back.
+          // Explicit Stop cancels every delivery already queued for this thread.
+          // Internal session stops still preserve queued user messages for handoff.
           mode:
             event.type === "thread.deleted" || event.type === "thread.settled"
               ? "thread-terminal"
-              : event.type === "thread.turn-interrupt-requested" && !interruptionTargetsRunningTurn
-                ? "pending-start-interrupt"
+              : event.type === "thread.turn-interrupt-requested"
+                ? "user-stop"
                 : "turn-interrupt",
         });
         return;

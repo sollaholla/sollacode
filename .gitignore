@@ -45,8 +45,7 @@ output/
 # (sollacode.wiki.git); keeping a second copy here would drift.
 wiki/
 
-# Remotion render scratch. tools/motion/scripts/render.sh writes finished
-# GIFs straight to docs/media/readme/ and cleans its own intermediates, but
-# a bare `remotion render`/`studio` still drops these.
+# Local frame-rendering scratch. Finished assets live in docs/media/readme
+# and apps/marketing/public/media.
 tools/*/out/
 .remotion/

@@ -102,6 +102,8 @@ export function ContextWindowMeter(props: {
   autoCompactionThresholdPercentage: AutoCompactionThresholdPercentage;
   onAutoCompactionThresholdChange: (value: AutoCompactionThresholdPercentage) => void;
   autoCompactionDisabledReason?: string | null;
+  /** Which edge of the trigger the popover lines up with; matches the cluster the meter sits in. */
+  align?: "start" | "end";
 }) {
   const {
     usage,
@@ -110,6 +112,7 @@ export function ContextWindowMeter(props: {
     autoCompactionThresholdPercentage,
     onAutoCompactionThresholdChange,
     autoCompactionDisabledReason,
+    align = "end",
   } = props;
   const usedPercentage = formatPercentage(usage.usedPercentage);
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0));
@@ -132,8 +135,9 @@ export function ContextWindowMeter(props: {
         render={
           <button
             type="button"
+            data-chat-composer-context-meter="true"
             className={cn(
-              "inline-flex size-8 cursor-pointer items-center justify-center rounded-full border border-transparent text-muted-foreground outline-none transition-colors",
+              "inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full border border-transparent text-muted-foreground outline-none transition-colors",
               "hover:bg-accent data-[pressed]:bg-accent",
               "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
             )}
@@ -177,7 +181,7 @@ export function ContextWindowMeter(props: {
       <PopoverPopup
         tooltipStyle
         side="top"
-        align="end"
+        align={align}
         className="dropdown-glass w-72 max-w-none border-0! bg-secondary! p-0 shadow-none! before:hidden"
       >
         <div className="flex flex-col gap-2 p-3">
