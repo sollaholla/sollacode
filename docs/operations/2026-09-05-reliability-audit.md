@@ -21,6 +21,14 @@ the change. Admission fell from about 1,010 ms to 0.13 ms. The completion check
 fell from about 1,092 ms to 4.3 ms and avoided retrieving 207 MB of payload JSON.
 These are fixture measurements, not a production latency guarantee.
 
+The installed database check exposed a planner difference that the fixture did
+not reproduce: despite the turn filter, SQLite chose the thread-sequence index
+for activity existence, taking 8.08 seconds. The follow-up explicitly selects
+the existing turn-kind index and tests that query plan. The read-only check on
+the same installed database then completed in 2.7 ms. Delivery admission
+and assistant-message checks measured 3.4 ms and 1.1 ms respectively on the live
+database; these checks did not dispatch work or change thread state.
+
 The original early-morning freeze predates the retained server trace window.
 Its exact cause cannot be established from those logs. The two stalls above
 were measured in the installed runtime and reproduced independently; the OS
