@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./claudeEnvironment": {
+      "types": "./src/claudeEnvironment.ts",
+      "import": "./src/claudeEnvironment.ts"
+    },
     "./projectFavicon": {
       "types": "./src/projectFavicon.ts",
       "import": "./src/projectFavicon.ts"

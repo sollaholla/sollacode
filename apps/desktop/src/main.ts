@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Electron from "electron";
 
 import * as NetService from "@t3tools/shared/Net";
+import { restoreInheritedClaudeEnvironment } from "@t3tools/shared/claudeEnvironment";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveRemoteT3CliPackageSpec } from "@t3tools/ssh/command";
 import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
@@ -61,6 +62,10 @@ import * as OrchestratorBubbleWindow from "./window/OrchestratorBubbleWindow.ts"
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopLanDiscovery from "./network/DesktopLanDiscovery.ts";
+
+// An agent can launch or update this app. Its session proxy dies with that
+// agent and must never become the API upstream for the next app/backend.
+restoreInheritedClaudeEnvironment(process.env);
 
 // This must happen synchronously during module initialization. Windows shell
 // environment discovery is asynchronous and can otherwise cross Electron's

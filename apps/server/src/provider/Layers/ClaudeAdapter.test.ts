@@ -487,6 +487,11 @@ describe("ClaudeAdapterLive", () => {
         createInput?.options.env?.ANTHROPIC_BASE_URL ?? "",
         /^http:\/\/127\.0\.0\.1:\d+$/u,
       );
+      assert.equal(
+        createInput?.options.env?.T3CODE_CLAUDE_PROXY_BASE_URL,
+        createInput?.options.env?.ANTHROPIC_BASE_URL,
+      );
+      assert.equal(createInput?.options.env?.T3CODE_CLAUDE_PROXY_UPSTREAM, "");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
