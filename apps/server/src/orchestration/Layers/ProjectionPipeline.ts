@@ -1570,6 +1570,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         const activities = yield* sql`
           SELECT 1
           FROM projection_thread_activities
+            INDEXED BY idx_projection_thread_activities_turn_kind
           WHERE thread_id = ${input.threadId}
             AND turn_id = ${input.turnId}
             AND (
