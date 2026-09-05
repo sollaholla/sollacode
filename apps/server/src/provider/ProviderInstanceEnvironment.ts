@@ -1,10 +1,12 @@
 import type { ProviderInstanceEnvironment } from "@t3tools/contracts";
+import { restoreInheritedClaudeEnvironment } from "@t3tools/shared/claudeEnvironment";
 
 export function mergeProviderInstanceEnvironment(
   environment: ProviderInstanceEnvironment | undefined,
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = { ...baseEnv };
+  restoreInheritedClaudeEnvironment(next);
   // Provider credentials are minted for each session. A desktop or terminal
   // ancestor can carry a revoked token belonging to an earlier runtime.
   delete next.T3_MCP_BEARER_TOKEN;

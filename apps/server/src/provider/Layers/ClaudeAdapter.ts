@@ -89,6 +89,7 @@ import {
   mapKnownProviderFailure,
 } from "../providerFailureMessage.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { claudeSessionProxyEnvironment } from "@t3tools/shared/claudeEnvironment";
 import { SOLLA_MCP_AGENT_CONTEXT } from "../sideChatContext.ts";
 import { isProcessShuttingDown, watchProcessShutdown } from "../processShutdown.ts";
 import {
@@ -4350,7 +4351,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           claudeEnvironment.CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS ??
           String(CLAUDE_PROXY_FIRST_BYTE_TIMEOUT_MS),
         API_TIMEOUT_MS: claudeEnvironment.API_TIMEOUT_MS ?? String(CLAUDE_PROXY_API_TIMEOUT_MS),
-        ANTHROPIC_BASE_URL: tokenOptimizerProxy.baseUrl,
+        ...claudeSessionProxyEnvironment(claudeEnvironment, tokenOptimizerProxy.baseUrl),
       };
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
