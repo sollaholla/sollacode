@@ -1497,11 +1497,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
+        let startAccepted = false;
         const eventFiber = yield* Stream.runForEach(
           runtime.events,
           (event) =>
             Effect.gen(function* () {
               yield* writeNativeEvent(event);
+              // A failed resume may close its temporary process before the
+              // fresh fallback starts. That exit is not a live thread exit.
+              if (
+                !startAccepted &&
+                (event.method === "session/closed" || event.method === "session/exited")
+              )
+                return;
               const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
               if (runtimeEvents.length === 0) {
                 yield* Effect.logDebug("ignoring unhandled Codex provider event", {
@@ -1562,6 +1570,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
+        startAccepted = true;
         sessions.set(input.threadId, {
           threadId: input.threadId,
           scope: sessionScope,

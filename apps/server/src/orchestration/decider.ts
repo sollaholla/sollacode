@@ -1228,6 +1228,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       if (
+        command.expectedSession !== undefined &&
+        (thread.session?.updatedAt !== command.expectedSession.updatedAt ||
+          thread.session.activeTurnId !== command.expectedSession.activeTurnId)
+      ) {
+        return [];
+      }
+      if (
         command.atomicFollowupTurn !== undefined &&
         (command.session.status !== "ready" || command.session.activeTurnId !== null)
       ) {

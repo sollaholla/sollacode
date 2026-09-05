@@ -638,6 +638,13 @@ const make = Effect.gen(function* () {
         AND kind = 'active-turn-recovery'
         AND state IN ('claimed', 'executing')
         AND blocked_reason = ${ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON}
+        AND source_turn_id IS NOT ${input.exceptSourceTurnId ?? null}
+        AND (${input.expectedSession?.updatedAt ?? null} IS NULL OR EXISTS (
+          SELECT 1 FROM projection_thread_sessions AS session
+          WHERE session.thread_id = ${input.threadId}
+            AND session.updated_at = ${input.expectedSession?.updatedAt ?? null}
+            AND session.active_turn_id IS ${input.expectedSession?.activeTurnId ?? null}
+        ))
       RETURNING obligation_id AS "obligationId"
     `,
   });
@@ -655,6 +662,13 @@ const make = Effect.gen(function* () {
         blocked_reason = ${input.blockedReason},
         updated_at = ${iso(input.updatedAt)}
       WHERE thread_id = ${input.threadId}
+        AND source_turn_id IS NOT ${input.exceptSourceTurnId ?? null}
+        AND (${input.expectedSession?.updatedAt ?? null} IS NULL OR EXISTS (
+          SELECT 1 FROM projection_thread_sessions AS session
+          WHERE session.thread_id = ${input.threadId}
+            AND session.updated_at = ${input.expectedSession?.updatedAt ?? null}
+            AND session.active_turn_id IS ${input.expectedSession?.activeTurnId ?? null}
+        ))
         AND (
           state NOT IN ('completed', 'cancelled')
           -- Steering uses a completed row to reserve delivery without taking

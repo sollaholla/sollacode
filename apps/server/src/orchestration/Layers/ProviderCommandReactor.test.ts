@@ -8226,6 +8226,10 @@ describe("ProviderCommandReactor", () => {
     });
     expect(harness.stopSession).toHaveBeenCalledWith({
       threadId: ThreadId.make("thread-1"),
+      expectedSession: {
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        createdAt: runtimeSession.createdAt,
+      },
     });
 
     // No provider session event follows on purpose. The source turn's own
@@ -8290,6 +8294,122 @@ describe("ProviderCommandReactor", () => {
         immediateRequirement: "second",
       }),
     });
+  });
+
+  it("keeps a successor connected when it starts during the outgoing handoff interrupt", async () => {
+    const interruptEntered = await Effect.runPromise(Deferred.make<void>());
+    const releaseInterrupt = await Effect.runPromise(Deferred.make<void>());
+    const harness = await createHarness({
+      interruptTurnEffect: () =>
+        Deferred.succeed(interruptEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseInterrupt)),
+        ),
+    });
+    const threadId = ThreadId.make("thread-1");
+    const originalTurnId = asTurnId("outgoing-turn");
+    const successorTurnId = asTurnId("successor-turn");
+    const now = "2026-01-01T00:00:00.000Z";
+    const successorTime = "2026-01-01T00:00:02.000Z";
+    harness.runtimeSessions.push({
+      threadId,
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      activeTurnId: originalTurnId,
+      runtimeMode: "full-access",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const originalProjection = {
+      threadId,
+      providerName: "codex",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running" as const,
+      activeTurnId: originalTurnId,
+      runtimeMode: "full-access" as const,
+      lastError: null,
+      updatedAt: now,
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("original-projection"),
+        threadId,
+        session: originalProjection,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("handoff-during-interrupt"),
+        threadId,
+        message: {
+          messageId: asMessageId("handoff-replacement"),
+          role: "user",
+          text: "Continue on Claude",
+          attachments: [],
+        },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-4-6",
+        },
+        runtimeMode: "full-access",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.await(interruptEntered));
+    // Reproduce the real ordering: the scheduler has already installed the
+    // replacement before the old provider's interrupt resolves.
+    harness.runtimeSessions[0] = {
+      ...harness.runtimeSessions[0]!,
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      activeTurnId: successorTurnId,
+      createdAt: successorTime,
+      updatedAt: successorTime,
+    };
+    const successorProjection = {
+      ...originalProjection,
+      providerName: "claudeAgent",
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      activeTurnId: successorTurnId,
+      updatedAt: successorTime,
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("successor-projection"),
+        threadId,
+        session: successorProjection,
+        createdAt: successorTime,
+      }),
+    );
+    // ProviderService's independently tested fence rejects this stale stop.
+    harness.stopSession.mockImplementation((input) =>
+      Effect.sync(() => {
+        expect(input).toEqual({
+          threadId,
+          expectedSession: { providerInstanceId: ProviderInstanceId.make("codex"), createdAt: now },
+        });
+      }),
+    );
+    await Effect.runPromise(Deferred.succeed(releaseInterrupt, undefined));
+    await harness.drain();
+    expect(harness.stopSession).toHaveBeenCalledTimes(1);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session).toMatchObject(successorProjection);
+    const replacement = Option.getOrThrow(
+      await Effect.runPromise(
+        harness.threadWorkObligations.getByKey({
+          threadId,
+          sourceTurnId: activeTurnWorkSourceId(asMessageId("handoff-replacement")),
+          kind: "active-turn-recovery",
+        }),
+      ),
+    );
+    expect(replacement.state).not.toBe("cancelled");
   });
 
   it("stops the live turn when a model switch on the same instance restarts the session", async () => {
@@ -8383,6 +8503,10 @@ describe("ProviderCommandReactor", () => {
     });
     expect(harness.stopSession).toHaveBeenCalledWith({
       threadId: ThreadId.make("thread-1"),
+      expectedSession: {
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        createdAt: runtimeSession.createdAt,
+      },
     });
   });
 
@@ -9081,6 +9205,59 @@ describe("ProviderCommandReactor", () => {
     expect(
       thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.failed"),
     ).toBe(true);
+  });
+
+  it("stops a live CLI even when the chat incorrectly projects an already-stopped session", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.runtimeSessions.push({
+      threadId,
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      activeTurnId: asTurnId("orphaned-cli-turn"),
+      runtimeMode: "full-access",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("stale-stopped-chat"),
+        threadId,
+        session: {
+          threadId,
+          status: "stopped",
+          providerName: "mcpBridge",
+          providerInstanceId: ProviderInstanceId.make("mcpBridge"),
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("stop-orphaned-cli"),
+        threadId,
+        createdAt: "2026-01-01T00:01:00.000Z",
+      }),
+    );
+    await harness.drain();
+    expect(harness.interruptTurn).toHaveBeenCalledWith({ threadId });
+    expect(harness.stopSession).toHaveBeenCalledWith({ threadId });
+    expect(harness.runtimeSessions).toHaveLength(0);
+    expect(
+      (await harness.readModel()).threads.find((entry) => entry.id === threadId)?.session,
+    ).toMatchObject({
+      status: "stopped",
+      activeTurnId: null,
+      updatedAt: "2026-01-01T00:01:00.000Z",
+    });
   });
 
   it("clears a session still claiming an active turn after the provider already stopped", async () => {

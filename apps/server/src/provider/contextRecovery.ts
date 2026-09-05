@@ -56,6 +56,7 @@ export function contextRecoveryReminder(reason: ContextRecoveryReason): string {
   return [
     REASON_PREAMBLE[reason],
     `The complete thread history is still stored and searchable — call the \`${CONTEXT_RECOVERY_TOOL_NAME}\` tool to read any earlier message, tool call, or decision verbatim.`,
+    "Earlier reports of missing tools, rejected credentials, or unavailable integrations describe that earlier session. Check the tools exposed in this session and make a fresh read-only call before treating an old failure as a current blocker. If the call fails, report the current error; do not assume access either way from the digest.",
     REASON_CLOSING[reason],
   ].join(" ");
 }

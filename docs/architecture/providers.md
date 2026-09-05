@@ -49,6 +49,13 @@ Provider runtime events flow through queue-based workers:
 
 The workers expose drain and receipt boundaries for deterministic test synchronization. Explicit Stop cancels pending work before provider teardown; late runtime notifications cannot reopen a stopped session.
 
+Provider handoffs fence teardown by the outgoing provider instance and session creation time. The
+outgoing control action conditionally releases only the projection it observed and preserves the
+replacement delivery. A replacement that starts during the interrupt therefore retains its working
+status, work obligation, and MCP credential. A failed native resume gets a new MCP credential before
+the fresh fallback is spawned. Explicit Stop also checks live adapters when the projected chat status
+is already stopped, so a disconnected chat cannot leave its CLI running unnoticed.
+
 ## Antigravity headless sessions
 
 The Antigravity driver discovers models through `agy models` and starts one scoped `agy` subprocess for each turn. The native conversation ID is retained as the resume cursor for subsequent turns. A pure mapper translates stream-JSON frames into provider runtime events. Assistant deltas include text on both ACTIVE and DONE frames; the final result does not duplicate streamed text.

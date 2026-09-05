@@ -1539,6 +1539,73 @@ scopedStartTimeoutLayer("CodexAdapterLive scoped startup timeout", (it) => {
   );
 });
 
+it.effect("does not publish the exit of a failed resume into its fresh replacement", () =>
+  Effect.gen(function* () {
+    const runtimes: FakeCodexRuntime[] = [];
+    const adapter = yield* makeCodexAdapter(decodeCodexSettings({}), {
+      makeRuntime: (options) => {
+        const runtime = new FakeCodexRuntime(options);
+        if (runtimes.length === 0) {
+          runtime.start = () =>
+            runtime
+              .emit({
+                id: asEventId("failed-resume-exit"),
+                kind: "session",
+                method: "session/closed",
+                threadId: options.threadId,
+                provider: ProviderDriverKind.make("codex"),
+                createdAt: "2026-01-01T00:00:00.000Z",
+              })
+              .pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new CodexErrors.CodexAppServerRequestTimeoutError({
+                      method: "thread/resume",
+                      requestId: "failed-resume",
+                      timeoutMillis: 90_000,
+                    }),
+                  ),
+                ),
+              );
+        }
+        runtimes.push(runtime);
+        return Effect.succeed(runtime);
+      },
+    });
+    const observed = yield* adapter.streamEvents.pipe(
+      Stream.takeUntil((event) => event.type === "session.started"),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+    const input = {
+      threadId: asThreadId("failed-resume-fresh"),
+      provider: ProviderDriverKind.make("codex"),
+      runtimeMode: "full-access" as const,
+    };
+    NodeAssert.equal((yield* adapter.startSession(input).pipe(Effect.result))._tag, "Failure");
+    yield* adapter.startSession(input);
+    yield* runtimes[1]!.emit({
+      id: asEventId("fresh-session-started"),
+      kind: "session",
+      method: "session/started",
+      threadId: input.threadId,
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    const events = yield* Fiber.join(observed);
+    NodeAssert.deepEqual(
+      events.map((event) => event.type),
+      ["session.started"],
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Effect.provide(ServerSettingsService.layerTest()),
+    Effect.provide(providerSessionDirectoryTestLayer),
+    Effect.provide(NodeServices.layer),
+  ),
+);
+
 it.effect("flushes managed native logs when the adapter layer shuts down", () =>
   Effect.gen(function* () {
     const tempDir = NodeFS.mkdtempSync(

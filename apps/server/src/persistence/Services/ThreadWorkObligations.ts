@@ -192,6 +192,15 @@ export const CancelThreadWorkByThreadInput = Schema.Struct({
   threadId: ThreadId,
   updatedAt: IsoDateTime,
   blockedReason: Schema.NullOr(Schema.String),
+  /** Handoffs preserve the replacement delivery even if it was already claimed. */
+  exceptSourceTurnId: Schema.optional(TurnId),
+  /** Cancel only while the observed outgoing session is still projected. */
+  expectedSession: Schema.optional(
+    Schema.Struct({
+      updatedAt: IsoDateTime,
+      activeTurnId: Schema.NullOr(TurnId),
+    }),
+  ),
   /**
    * Which rows the sweep may cancel. The policy lives here so no call site can
    * accidentally drop user work with a too-broad sweep.
