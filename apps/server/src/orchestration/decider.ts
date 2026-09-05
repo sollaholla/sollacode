@@ -1,6 +1,7 @@
 import {
   AGENT_BUILDER_THREAD_ID,
   EventId,
+  isAgentBuilderThreadId,
   isOrchestratorProjectId,
   isOrchestratorThreadId,
   type OrchestrationCommand,
@@ -596,6 +597,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (isOrchestratorThreadId(thread.id) || isAgentBuilderThreadId(thread.id)) {
+        return yield* Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `thread ${command.threadId} is a persistent control chat and cannot be settled`,
+          }),
+        );
+      }
       // Server-side twin of the client's canSettle session check: a stale
       // or raced client must not settle a thread whose session is coming
       // alive or working.
