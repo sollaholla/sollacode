@@ -1067,6 +1067,13 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  /** Server control actions may only settle the projection they observed. */
+  expectedSession: Schema.optional(
+    Schema.Struct({
+      updatedAt: IsoDateTime,
+      activeTurnId: Schema.NullOr(TurnId),
+    }),
+  ),
   /**
    * Server-owned follow-up that must become durable in the same transaction as
    * the session settlement. This prevents a newly-ready Agent thread from

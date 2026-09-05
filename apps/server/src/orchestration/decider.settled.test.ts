@@ -69,6 +69,34 @@ function makeSession(status: OrchestrationSession["status"]): OrchestrationSessi
 }
 
 it.layer(NodeServices.layer)("settled thread decider", (it) => {
+  it.effect("ignores a stale session write after a replacement session has started", () =>
+    Effect.gen(function* () {
+      const replacement = { ...makeSession("running"), updatedAt: "2026-01-01T00:00:01.000Z" };
+      const command = {
+        type: "thread.session.set" as const,
+        commandId: CommandId.make("cmd-stale-session-stop"),
+        threadId: ThreadId.make("thread-1"),
+        session: makeSession("stopped"),
+        expectedSession: { updatedAt: NOW, activeTurnId: null },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      };
+      expect(
+        yield* decideOrchestrationCommand({
+          command,
+          readModel: makeReadModel(null, null, replacement),
+        }),
+      ).toEqual([]);
+      const accepted = yield* decideOrchestrationCommand({
+        command,
+        readModel: makeReadModel(null, null, makeSession("running")),
+      });
+      expect(accepted).toMatchObject({
+        type: "thread.session-set",
+        payload: { session: { status: "stopped" } },
+      });
+    }),
+  );
+
   it.effect("settles active threads and re-emits idempotently for settled ones", () =>
     Effect.gen(function* () {
       const event = yield* decideOrchestrationCommand({

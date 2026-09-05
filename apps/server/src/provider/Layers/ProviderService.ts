@@ -798,8 +798,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
       }
 
-      const startRecoveredSession = (resumeCursor: unknown | undefined) =>
-        adapter
+      const startRecoveredSession = Effect.fn("startRecoveredSession")(function* (
+        resumeCursor: unknown | undefined,
+      ) {
+        // A failed resume revokes its credential. The fresh fallback is a new
+        // process and must receive a new credential before it is spawned.
+        yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+        return yield* adapter
           .startSession({
             threadId: input.binding.threadId,
             provider: input.binding.provider,
@@ -810,8 +815,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             runtimeMode: input.binding.runtimeMode ?? "full-access",
           })
           .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
-
-      yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      });
       const resumed = hasResumeCursor
         ? yield* startRecoveredSession(input.binding.resumeCursor).pipe(
             Effect.catchCause((cause) => {
@@ -1773,6 +1777,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             operation: "ProviderService.stopSession",
             allowRecovery: false,
           });
+          if (input.expectedSession !== undefined) {
+            const current = (yield* routed.adapter.listSessions()).find(
+              (session) => session.threadId === input.threadId,
+            );
+            if (
+              routed.instanceId !== input.expectedSession.providerInstanceId ||
+              current?.createdAt !== input.expectedSession.createdAt
+            ) {
+              yield* Effect.logInfo("provider.session.stale-stop-skipped", {
+                threadId: input.threadId,
+                providerInstanceId: routed.instanceId,
+              });
+              return;
+            }
+          }
           metricProvider = routed.adapter.provider;
           yield* Effect.annotateCurrentSpan({
             "provider.operation": "stop-session",

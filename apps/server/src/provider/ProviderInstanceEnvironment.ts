@@ -4,12 +4,13 @@ export function mergeProviderInstanceEnvironment(
   environment: ProviderInstanceEnvironment | undefined,
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  if (!environment || environment.length === 0) {
-    return baseEnv;
-  }
-
   const next: NodeJS.ProcessEnv = { ...baseEnv };
-  for (const variable of environment) {
+  // Provider credentials are minted for each session. A desktop or terminal
+  // ancestor can carry a revoked token belonging to an earlier runtime.
+  delete next.T3_MCP_BEARER_TOKEN;
+  delete next.SOLLA_TERMINAL_MCP_BEARER_TOKEN;
+  delete next.SOLLA_TERMINAL_MCP_ENDPOINT;
+  for (const variable of environment ?? []) {
     next[variable.name] = variable.value;
   }
   return next;

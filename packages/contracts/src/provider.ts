@@ -148,6 +148,13 @@ export type ProviderStopTaskInput = typeof ProviderStopTaskInput.Type;
 
 export const ProviderStopSessionInput = Schema.Struct({
   threadId: ThreadId,
+  /** Internal handoff fence. A delayed stop must not close a replacement process. */
+  expectedSession: Schema.optional(
+    Schema.Struct({
+      providerInstanceId: ProviderInstanceId,
+      createdAt: IsoDateTime,
+    }),
+  ),
 });
 export type ProviderStopSessionInput = typeof ProviderStopSessionInput.Type;
 

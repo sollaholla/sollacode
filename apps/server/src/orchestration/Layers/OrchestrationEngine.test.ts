@@ -89,6 +89,72 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("acknowledges stale conditional session writes without changing the replacement", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const threadId = ThreadId.make("thread-conditional-session");
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("conditional-project"),
+          projectId: asProjectId("conditional-project"),
+          title: "Conditional session",
+          workspaceRoot: "/tmp/conditional-session",
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("conditional-thread"),
+          threadId,
+          projectId: asProjectId("conditional-project"),
+          title: "Conditional session",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+      const session = {
+        threadId,
+        status: "running" as const,
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "full-access" as const,
+        activeTurnId: asTurnId("replacement-turn"),
+        lastError: null,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      };
+      const before = await system.run(
+        system.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("conditional-replacement"),
+          threadId,
+          session,
+          createdAt: session.updatedAt,
+        }),
+      );
+      const stale = {
+        type: "thread.session.set" as const,
+        commandId: CommandId.make("conditional-stale-stop"),
+        threadId,
+        session: { ...session, status: "stopped" as const, activeTurnId: null },
+        expectedSession: { updatedAt: now(), activeTurnId: asTurnId("outgoing-turn") },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      };
+      expect(await system.run(system.engine.dispatch(stale))).toEqual(before);
+      expect(await system.run(system.engine.dispatch(stale))).toEqual(before);
+      expect(
+        (await system.readModel()).threads.find((thread) => thread.id === threadId)?.session,
+      ).toEqual(session);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("bootstraps command handling from persisted projections without reading the full snapshot", async () => {
     let nextSequence = 8;
     const eventStore: OrchestrationEventStoreShape = {

@@ -184,6 +184,27 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
               const lastSavedEvent = committedEvents.at(-1) ?? null;
               if (lastSavedEvent === null) {
+                // Conditional lifecycle writes can lose to a newer session.
+                // Acknowledge that stale command without emitting a status
+                // event that would disconnect the replacement provider.
+                if (
+                  envelope.command.type === "thread.session.set" &&
+                  envelope.command.expectedSession !== undefined
+                ) {
+                  yield* commandReceiptRepository.upsert({
+                    commandId: envelope.command.commandId,
+                    ...aggregateRef,
+                    acceptedAt: envelope.command.createdAt,
+                    resultSequence: commandReadModel.snapshotSequence,
+                    status: "accepted",
+                    error: null,
+                  });
+                  return {
+                    committedEvents,
+                    lastSequence: commandReadModel.snapshotSequence,
+                    nextCommandReadModel,
+                  } as const;
+                }
                 return yield* new OrchestrationCommandInvariantError({
                   commandType: envelope.command.type,
                   detail: "Command produced no events.",

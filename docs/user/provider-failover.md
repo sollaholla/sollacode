@@ -66,3 +66,8 @@ mode, then sends the JSON as the replacement provider's first turn. The thread's
 and model are persisted only after that provider accepts the handoff turn. If sending the handoff
 fails after session startup, Solla Code attempts to restore the previous provider session from its
 saved resume cursor and records the failure in the work log.
+
+The replacement remains marked as working while it runs, including when the old provider takes
+longer to stop. Stop checks the running provider even if the chat's status has fallen out of sync.
+The handoff reminder asks the new agent to check its current tools before relying on an earlier
+session's report of missing tools or rejected credentials.

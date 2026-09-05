@@ -13,6 +13,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   EventId,
   MessageId,
   ProviderDriverKind,
@@ -37,6 +38,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { HttpServer } from "effect/unstable/http";
 
 import {
   ProviderAdapterRequestError,
@@ -65,6 +67,9 @@ import {
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
 
@@ -1489,6 +1494,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("starts a fresh session when persisted resume fails during sendTurn recovery", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
       const initial = yield* provider.startSession(asThreadId("thread-send-turn-resume-fail"), {
         provider: ProviderDriverKind.make("codex"),
         providerInstanceId: codexInstanceId,
@@ -1500,14 +1506,20 @@ routing.layer("ProviderServiceLive routing", (it) => {
       yield* routing.codex.stopAll();
       routing.codex.startSession.mockClear();
       routing.codex.sendTurn.mockClear();
+      let rejectedToken: string | undefined;
       routing.codex.startSession.mockImplementationOnce(() =>
-        Effect.fail(
-          new ProviderAdapterRequestError({
+        Effect.gen(function* () {
+          rejectedToken = McpProviderSession.readMcpProviderSession(
+            initial.threadId,
+          )?.authorizationHeader.replace(/^Bearer\s+/, "");
+          assert.isDefined(rejectedToken);
+          assert.equal((yield* registry.resolve(rejectedToken!))?.threadId, initial.threadId);
+          return yield* new ProviderAdapterRequestError({
             provider: String(CODEX_DRIVER),
             method: "session/load",
             detail: "unknown session",
-          }),
-        ),
+          });
+        }),
       );
 
       yield* provider.sendTurn({
@@ -1526,6 +1538,79 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(fresh.resumeCursor, undefined);
       assert.equal(fresh.cwd, "/tmp/project-send-turn-resume-fail");
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      const freshToken = McpProviderSession.readMcpProviderSession(
+        initial.threadId,
+      )?.authorizationHeader.replace(/^Bearer\s+/, "");
+      assert.isDefined(freshToken);
+      assert.notEqual(freshToken, rejectedToken);
+      assert.isUndefined(yield* registry.resolve(rejectedToken!));
+      assert.equal((yield* registry.resolve(freshToken!))?.threadId, initial.threadId);
+      yield* provider.stopSession({ threadId: initial.threadId });
+      assert.isUndefined(yield* registry.resolve(freshToken!));
+    }).pipe(
+      Effect.provide(
+        McpSessionRegistry.layer.pipe(
+          Layer.provide(
+            Layer.succeed(
+              HttpServer.HttpServer,
+              HttpServer.HttpServer.of({
+                address: { _tag: "TcpAddress", hostname: "127.0.0.1", port: 43123 },
+                serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
+              }),
+            ),
+          ),
+          Layer.provide(
+            Layer.succeed(ServerEnvironment.ServerEnvironment, {
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("recovery-test")),
+              getDescriptor: Effect.die("unused"),
+            }),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("a delayed handoff stop preserves a newer session on the same provider", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-stale-handoff-stop");
+      const input = {
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        cwd: "/tmp/project-stale-stop",
+        runtimeMode: "full-access" as const,
+      };
+      const original = yield* provider.startSession(threadId, input);
+      yield* provider.stopSession({ threadId });
+      yield* provider.startSession(threadId, input);
+      const successorCreatedAt = "2026-01-01T00:00:01.000Z";
+      routing.codex.updateSession(threadId, (session) => ({
+        ...session,
+        createdAt: successorCreatedAt,
+      }));
+      routing.codex.stopSession.mockClear();
+      yield* provider.stopSession({
+        threadId,
+        expectedSession: {
+          providerInstanceId: codexInstanceId,
+          createdAt: original.createdAt,
+        },
+      });
+      assert.equal(routing.codex.stopSession.mock.calls.length, 0);
+      assert.equal(
+        (yield* provider.listSessions()).find((s) => s.threadId === threadId)?.createdAt,
+        successorCreatedAt,
+      );
+      yield* provider.stopSession({
+        threadId,
+        expectedSession: {
+          providerInstanceId: codexInstanceId,
+          createdAt: successorCreatedAt,
+        },
+      });
+      assert.equal(routing.codex.stopSession.mock.calls.length, 1);
     }),
   );
 

@@ -789,6 +789,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       readonly threadId: ThreadId;
       readonly session: OrchestrationSession;
       readonly createdAt: string;
+      readonly expectedSession?: {
+        readonly updatedAt: string;
+        readonly activeTurnId: TurnId | null;
+      };
     }) =>
       serverCommandId("provider-session-set").pipe(
         Effect.flatMap((commandId) =>
@@ -797,6 +801,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             commandId,
             threadId: input.threadId,
             session: input.session,
+            ...(input.expectedSession === undefined
+              ? {}
+              : { expectedSession: input.expectedSession }),
             createdAt: input.createdAt,
           }),
         ),
@@ -1896,16 +1903,25 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       function* (input: {
         readonly threadId: ThreadId;
         readonly interruptedTurnId: TurnId;
+        readonly replacementMessageId: MessageId;
         readonly session: OrchestrationSession | null | undefined;
         readonly reason: string;
       }) {
         const releasedAt = yield* nowIso;
+        const session = input.session;
+        if (!session || (session.status === "stopped" && session.activeTurnId === null)) return;
+        const expectedSession = {
+          updatedAt: session.updatedAt,
+          activeTurnId: session.activeTurnId,
+        };
         yield* threadWorkObligations
           .cancelByThread({
             threadId: input.threadId,
             updatedAt: releasedAt,
             blockedReason: input.reason,
             mode: "turn-interrupt",
+            exceptSourceTurnId: activeTurnWorkSourceId(input.replacementMessageId),
+            expectedSession,
           })
           .pipe(
             Effect.tap((cancelled) =>
@@ -1923,10 +1939,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               });
             }),
           );
-        const session = input.session;
-        if (!session || (session.status === "stopped" && session.activeTurnId === null)) {
-          return;
-        }
         yield* setThreadSession({
           threadId: input.threadId,
           session: {
@@ -1937,6 +1949,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             updatedAt: releasedAt,
           },
           createdAt: releasedAt,
+          expectedSession,
         }).pipe(
           Effect.catchCause((cause) => {
             if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
@@ -2220,7 +2233,17 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               });
             }),
           );
-        yield* providerService.stopSession({ threadId: event.payload.threadId }).pipe(
+        yield* (
+          liveProviderSession === undefined
+            ? Effect.void
+            : providerService.stopSession({
+                threadId: event.payload.threadId,
+                expectedSession: {
+                  providerInstanceId: currentProviderInstanceId,
+                  createdAt: liveProviderSession.createdAt,
+                },
+              })
+        ).pipe(
           Effect.timeout("10 seconds"),
           Effect.catchCause((cause) => {
             if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
@@ -2246,6 +2269,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         yield* releaseInterruptedTurnOwnership({
           threadId: event.payload.threadId,
           interruptedTurnId,
+          replacementMessageId: event.payload.messageId,
           session: thread.session,
           reason: "thread.turn-replacement-requested",
         });
@@ -2560,13 +2584,20 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         return;
       }
       const session = thread.session;
-      if (!session) {
+      const liveSession = (yield* providerService
+        .listSessions()
+        .pipe(Effect.orElseSucceed(() => []))).find(
+        (candidate) =>
+          candidate.threadId === event.payload.threadId && candidate.status !== "closed",
+      );
+      if (!session && !liveSession) {
         // No session row at all, so nothing claims to be running and there is
         // nothing to release. `derivePhase(null)` is already "disconnected".
         return;
       }
       const interruptedAt = event.payload.createdAt;
-      const alreadyIdle = session.status === "stopped" && session.activeTurnId === null;
+      const alreadyIdle =
+        !liveSession && session?.status === "stopped" && session.activeTurnId === null;
 
       /**
        * Stop is authoritative over T3's own state, and only best-effort over the
@@ -2584,7 +2615,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
        * provider that refuses to die still gets its failure surfaced as an
        * activity, but it no longer holds the thread hostage.
        */
-      if (session.status === "stopped") {
+      if (session?.status === "stopped" && !liveSession) {
         // Nothing to kill upstream, but the row may still claim an active turn.
         // Fall through to the terminalization below rather than reporting a
         // failure the user cannot act on.
@@ -2633,7 +2664,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             ]
               .filter((entry): entry is string => entry !== null)
               .join("\n"),
-            turnId: event.payload.turnId ?? session.activeTurnId ?? null,
+            turnId:
+              event.payload.turnId ?? liveSession?.activeTurnId ?? session?.activeTurnId ?? null,
             createdAt: interruptedAt,
           });
         } else if (cooperativeInterruptFailure) {
@@ -2647,7 +2679,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         }
       }
 
-      if (alreadyIdle) return;
+      if (alreadyIdle || !session) return;
       yield* setThreadSession({
         threadId: event.payload.threadId,
         session: {
