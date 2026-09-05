@@ -71,6 +71,7 @@ import { useThreadActions } from "../../hooks/useThreadActions";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
+  selectAppModelWithHighEffort,
 } from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
@@ -1530,7 +1531,11 @@ export function GeneralSettingsPanel() {
                     textGenerationModelSelection: resolveAppModelSelectionState(
                       {
                         ...settings,
-                        textGenerationModelSelection: createModelSelection(instanceId, model),
+                        textGenerationModelSelection: selectAppModelWithHighEffort(
+                          textGenerationModelSelection,
+                          createModelSelection(instanceId, model),
+                          textGenerationCapableProviders,
+                        ),
                       },
                       textGenerationCapableProviders,
                     ),
@@ -1795,7 +1800,11 @@ export function GeneralSettingsPanel() {
                     const selection = resolveAppModelSelectionState(
                       {
                         ...settings,
-                        textGenerationModelSelection: createModelSelection(instanceId, model),
+                        textGenerationModelSelection: selectAppModelWithHighEffort(
+                          voiceCorrectionModelSelection,
+                          createModelSelection(instanceId, model),
+                          textGenerationCapableProviders,
+                        ),
                       },
                       textGenerationCapableProviders,
                     );

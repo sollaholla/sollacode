@@ -624,9 +624,8 @@ export const make = Effect.gen(function* () {
       };
     }
     const source = yield* requireAgent(sourceVmAgentId);
-    const parent = yield* store
-      .findActiveForTarget(sourceVmAgentId)
-      .pipe(Effect.mapError(operationError("checking delegation depth")));
+    const parent =
+      source.threadId === null ? Option.none() : yield* activeDelegationForThread(source.threadId);
     if (Option.isSome(parent)) {
       return yield* new VmAgentDelegationLimitError({
         limit: "depth",
@@ -689,7 +688,7 @@ export const make = Effect.gen(function* () {
       depth: 1,
       target: input.target,
       targetVmAgentId: targetAgent?.vmAgentId ?? null,
-      workerThreadId: null,
+      workerThreadId: ThreadId.make(`delegation-worker:${delegationId}`),
       rootAgentSnapshot: identitySnapshot(source),
       sourceAgentSnapshot: identitySnapshot(source),
       targetAgentSnapshot: targetAgent ? identitySnapshot(targetAgent) : null,
@@ -879,7 +878,20 @@ export const make = Effect.gen(function* () {
         const thread = yield* projections
           .getThreadShellById(threadId)
           .pipe(Effect.orElseSucceed(() => Option.none()));
-        const activeTurnId = Option.isSome(thread) ? thread.value.session?.activeTurnId : null;
+        let activeTurnId = Option.isSome(thread)
+          ? (thread.value.session?.activeTurnId ??
+            (thread.value.latestTurn?.state === "running" ? thread.value.latestTurn.turnId : null))
+          : null;
+        if (activeTurnId && delegation.workerThreadId === null) {
+          const ownedTurn =
+            projections.getActiveTurnDelegation === undefined
+              ? Option.none()
+              : yield* projections
+                  .getActiveTurnDelegation(threadId)
+                  .pipe(Effect.orElseSucceed(() => Option.none()));
+          if (Option.isNone(ownedTurn) || ownedTurn.value.delegationId !== delegationId)
+            activeTurnId = null;
+        }
         if (activeTurnId) {
           yield* engine
             .dispatch({
@@ -911,11 +923,27 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((worker) => {
         if (Option.isSome(worker) && activeStatuses.has(worker.value.status))
           return Effect.succeed(worker);
-        return agents.getByThreadId(threadId).pipe(
+        // Legacy named delegations can own a main-chat turn. Queued work or
+        // another worker using this agent's identity does not own that chat.
+        return (
+          projections.getActiveTurnDelegation?.(ThreadId.make(threadId)) ??
+          Effect.succeed(Option.none())
+        ).pipe(
           Effect.flatMap(
             Option.match({
               onNone: () => Effect.succeed(Option.none()),
-              onSome: (agent) => store.findActiveForTarget(agent.vmAgentId),
+              onSome: ({ delegationId }) =>
+                store
+                  .getById(delegationId)
+                  .pipe(
+                    Effect.map(
+                      Option.filter(
+                        (delegation) =>
+                          delegation.workerThreadId === null &&
+                          activeStatuses.has(delegation.status),
+                      ),
+                    ),
+                  ),
             }),
           ),
         );

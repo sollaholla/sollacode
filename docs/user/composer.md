@@ -140,6 +140,11 @@ Solla first requests a provider interrupt, then closes the provider session. Lat
 
 ## Queued sends and provider startup
 
+Choosing a different provider instance or model selects **High** reasoning immediately when that
+model supports it. This applies in the composer and model settings on web, desktop, and mobile.
+You can then select another effort, including Max; sending or reconnecting preserves that choice.
+Models without a High option keep their supported controls.
+
 A saved message is queued until the server admits its delivery. Web and desktop show
 **Queued for Codex** (or the selected provider), then **Starting Codex** only when
 startup has been admitted. A scheduled retry says **Waiting to retry Codex**.
@@ -148,3 +153,10 @@ Explicit user sends do not wait for unrelated threads to finish under the server
 background concurrency limits. Sends within the same thread remain serialized.
 Automatic continuations, scheduled agent tasks, and recovery work keep their limits;
 provider-side rate limits and connection failures can still delay a response.
+
+Claude API timeout diagnostics are failures, not completed assistant replies. Temporary upstream
+failures remain under automatic retry supervision, including failures that occur before streaming
+begins. Retry status stays visible, and Stop cancels recovery. Claude's local proxy allows up to ten
+minutes for upstream response headers; the CLI's default first-byte and request deadlines are longer
+so a large-context request can get past the old five-minute cutoff. Explicit environment overrides
+remain in effect. Authentication failures still require the account to be restored.

@@ -1,3 +1,7 @@
+import {
+  isSideChatSessionPreparing,
+  isThreadSessionWorking,
+} from "@t3tools/client-runtime/state/thread-activity";
 import * as React from "react";
 import {
   isAgentsProjectId,
@@ -448,7 +452,7 @@ type SidebarV2StatusInput = Pick<
   SidebarThreadSummary,
   "hasPendingApprovals" | "hasPendingUserInput" | "session"
 > &
-  Partial<Pick<SidebarThreadSummary, "latestTurn">> & {
+  Partial<Pick<SidebarThreadSummary, "latestTurn" | "isSideChat" | "pendingWork">> & {
     /**
      * The host is offline or reconnecting, so this row shows last-known state.
      */
@@ -471,7 +475,7 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (thread.session?.status === "running" || thread.session?.status === "starting") {
+  if (isThreadSessionWorking(thread)) {
     return "working";
   }
   if (thread.session?.status === "error") {
@@ -677,7 +681,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.session?.status === "starting") {
+  if (thread.session?.status === "starting" && !isSideChatSessionPreparing(thread)) {
     return {
       label: "Connecting",
       colorClass: "text-gold-600 dark:text-gold-300/80",

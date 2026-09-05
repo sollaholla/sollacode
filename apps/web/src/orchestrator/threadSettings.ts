@@ -167,25 +167,31 @@ export function resolveThreadSettings(input: {
   }
 
   // ── Thinking effort ──
-  let nextOptions: ReadonlyArray<ProviderOptionSelection> = current.options;
-  if (request.effort !== undefined && rejections.length === 0) {
-    const modelForOptions = resolvedModel ?? current.model;
-    const option = catalog.effortOption(targetInstance, modelForOptions);
+  const modelForOptions = resolvedModel ?? current.model;
+  const option = catalog.effortOption(targetInstance, modelForOptions);
+  const switchingModel = changes.some(
+    (entry) => entry.field === "model" || entry.field === "provider",
+  );
+  const requestedEffort =
+    request.effort ?? (switchingModel && option?.values.includes("high") ? "high" : undefined);
+  let nextOptions: ReadonlyArray<ProviderOptionSelection> =
+    targetInstance === current.instanceId ? current.options : [];
+  if (requestedEffort !== undefined && rejections.length === 0) {
     if (option === null) {
       rejections.push(`"${targetInstance}" does not expose a thinking-effort setting.`);
-    } else if (option.values.length > 0 && !option.values.includes(request.effort)) {
+    } else if (option.values.length > 0 && !option.values.includes(requestedEffort)) {
       rejections.push(
-        `"${request.effort}" is not a valid effort for ${modelForOptions}. Valid values: ${option.values.join(", ")}.`,
+        `"${requestedEffort}" is not a valid effort for ${modelForOptions}. Valid values: ${option.values.join(", ")}.`,
       );
     } else {
-      const before = current.options.find((entry) => entry.id === option.id);
+      const before = nextOptions.find((entry) => entry.id === option.id);
       const beforeValue = before === undefined ? "default" : String(before.value);
-      if (beforeValue !== request.effort) {
-        changes.push(change("effort", beforeValue, request.effort));
+      if (beforeValue !== requestedEffort) {
+        changes.push(change("effort", beforeValue, requestedEffort));
       }
       nextOptions = [
-        ...current.options.filter((entry) => entry.id !== option.id),
-        { id: option.id, value: request.effort },
+        ...nextOptions.filter((entry) => entry.id !== option.id),
+        { id: option.id, value: requestedEffort },
       ];
     }
   }

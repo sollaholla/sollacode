@@ -1,3 +1,4 @@
+import { isThreadSessionWorking } from "@t3tools/client-runtime/state/thread-activity";
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentProject,
@@ -321,7 +322,7 @@ export function useThreadOutboxDrain(): void {
         threadExists: thread !== undefined,
         shellStatus,
         environmentConnected: environment?.connectionState === "connected",
-        threadBusy: thread?.session?.status === "running" || thread?.session?.status === "starting",
+        threadBusy: isThreadSessionWorking(thread),
       });
       if (deliveryAction === "wait") {
         continue;

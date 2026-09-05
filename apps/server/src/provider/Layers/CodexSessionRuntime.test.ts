@@ -605,6 +605,53 @@ describe("openCodexThread", () => {
     }),
   );
 
+  for (const errorMessage of [
+    "failed to prepare paginated fork: thread-store internal error: thread history projection for source-thread expected ordinal 1345, got 1344",
+    "thread not found",
+    "authentication failed",
+  ]) {
+    it.effect(`handles failed native fork: ${errorMessage}`, () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const client = {
+          request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+            method: M,
+            _payload: CodexRpc.ClientRequestParamsByMethod[M],
+          ) => {
+            calls.push(method);
+            return method === "thread/fork"
+              ? Effect.fail(
+                  new CodexErrors.CodexAppServerRequestError({ code: -32603, errorMessage }),
+                )
+              : Effect.succeed(
+                  makeThreadOpenResponse(
+                    "fresh-child",
+                  ) as CodexRpc.ClientRequestResponsesByMethod[M],
+                );
+          },
+        };
+        const result = yield* openCodexThread({
+          client,
+          threadId: ThreadId.make("child"),
+          runtimeMode: "full-access",
+          cwd: "/tmp/project",
+          requestedModel: "gpt-5.3-codex",
+          serviceTier: undefined,
+          resumeThreadId: "source-thread",
+          forkThread: true,
+        }).pipe(Effect.result);
+        if (errorMessage === "authentication failed") {
+          NodeAssert.equal(result._tag, "Failure");
+          NodeAssert.deepStrictEqual(calls, ["thread/fork"]);
+        } else {
+          NodeAssert.equal(result._tag, "Success");
+          if (result._tag === "Success") NodeAssert.equal(result.success.thread.id, "fresh-child");
+          NodeAssert.deepStrictEqual(calls, ["thread/fork", "thread/start"]);
+        }
+      }),
+    );
+  }
+
   it.effect("forks a persisted Codex thread into an independent thread", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: string; payload: unknown }> = [];

@@ -10,12 +10,24 @@ import {
   VmAgentDelegationListItem,
   VmAgentId,
   VmAgentTaskId,
+  ThreadId,
+  TurnId,
+  type OrchestrationCommand,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeBuffer from "node:buffer";
 import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
+import { VmAgentCollaborationStore } from "../persistence/Services/VmAgentCollaborations.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 
 import {
+  VmAgentCollaboration,
+  VmAgentCollaborationLive,
   boundedCollaborationSnapshot,
   boundedDelegationPreview,
   boundedLegacyCollaborationSnapshot,
@@ -180,3 +192,84 @@ it("uses the 501st prioritized row as a truncation sentinel", () => {
   assert.strictEqual(page.rows[0], 0);
   assert.strictEqual(page.rows.at(-1), VM_AGENT_COLLABORATION_LIST_LIMIT - 1);
 });
+
+for (const ownership of ["worker", "legacy-owned", "legacy-unrelated"] as const) {
+  it.effect(
+    `cancels ${ownership} delegation without taking ownership of unrelated main-chat work`,
+    () => {
+      const mainThreadId = ThreadId.make("target-main");
+      const workerThreadId = ThreadId.make("isolated-worker");
+      const turnId = TurnId.make("target-active-turn");
+      let delegation: VmAgentDelegation = {
+        ...makeDelegation(),
+        status: "running",
+        completedAt: null,
+        target: { kind: "agent", vmAgentId: agentId },
+        targetVmAgentId: agentId,
+        workerThreadId: ownership === "worker" ? workerThreadId : null,
+      };
+      const commands: OrchestrationCommand[] = [];
+      const dependencies = Layer.mergeAll(
+        Layer.mock(VmAgentStore)({
+          getById: () => Effect.succeed(Option.some({ threadId: mainThreadId } as never)),
+        }),
+        Layer.mock(VmAgentCollaborationStore)({
+          getById: () => Effect.succeed(Option.some(delegation)),
+          getByWorkerThreadId: (id) =>
+            Effect.succeed(
+              id === delegation.workerThreadId ? Option.some(delegation) : Option.none(),
+            ),
+          cancel: () =>
+            Effect.sync(() => {
+              delegation = { ...delegation, status: "cancelled" };
+            }),
+        }),
+        Layer.mock(ProjectionSnapshotQuery)({
+          getThreadShellById: () =>
+            Effect.succeed(
+              Option.some({
+                session: { activeTurnId: turnId },
+                latestTurn: { state: "running", turnId },
+              } as never),
+            ),
+          getActiveTurnDelegation: () =>
+            Effect.succeed(
+              ownership === "legacy-owned"
+                ? Option.some({ delegationId: delegation.delegationId })
+                : Option.none(),
+            ),
+        }),
+        Layer.mock(OrchestrationEngineService)({
+          dispatch: (command) =>
+            Effect.sync(() => {
+              commands.push(command);
+              return { sequence: 1 };
+            }),
+        }),
+      );
+      return Effect.gen(function* () {
+        const service = yield* VmAgentCollaboration;
+        assert.strictEqual(
+          Option.isSome(yield* service.activeDelegationForThread(mainThreadId)),
+          ownership === "legacy-owned",
+        );
+        if (ownership === "worker") {
+          assert.isTrue(Option.isSome(yield* service.activeDelegationForThread(workerThreadId)));
+        }
+        yield* service.cancel({ kind: "user" }, delegation.delegationId);
+        assert.strictEqual(delegation.status, "cancelled");
+        assert.strictEqual(commands.length, ownership === "legacy-unrelated" ? 0 : 1);
+        if (ownership !== "legacy-unrelated") {
+          const command = commands[0];
+          assert.strictEqual(command?.type, "thread.turn.interrupt");
+          if (command?.type === "thread.turn.interrupt") {
+            assert.strictEqual(
+              command.threadId,
+              ownership === "worker" ? workerThreadId : mainThreadId,
+            );
+          }
+        }
+      }).pipe(Effect.provide(VmAgentCollaborationLive.pipe(Layer.provide(dependencies))));
+    },
+  );
+}

@@ -5,6 +5,12 @@ the provider conversation available at the moment the side chat is created, so l
 main thread is not replayed into the side chat. The main thread can keep running while the side chat
 is created and used.
 
+A blank side chat stays ready for your first message while its provider session is prepared.
+Session setup alone does not show **Working** or replace Send with Stop. If Codex cannot copy
+its native history because that history is unavailable or inconsistent, Solla starts an independent
+session and tells the agent to query the parent before relying on earlier decisions. Other startup
+failures show an error and leave the chat available for a new message.
+
 Side-chat agents receive private concurrency guidance. They know they are working beside a main
 conversation and avoid workspace changes that could interfere with it unless the user explicitly
 asks for those changes in the side chat.

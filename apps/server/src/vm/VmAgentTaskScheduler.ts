@@ -134,6 +134,8 @@ export const taskPrompt = (
     return [
       `[Delegated work: ${delegation.title}]`,
       "",
+      "This is a separate worker chat. Complete only this delegated task; the parent agent continues its own work independently.",
+      "",
       pendingMessage ?? delegation.task,
       "",
       "Completion criteria:",
@@ -344,7 +346,14 @@ export const make = Effect.gen(function* () {
 
   const canStart = Effect.fn("VmAgentTaskScheduler.canStart")(function* (run: VmAgentTaskRun) {
     const delegated = yield* collaboration.getByTaskId(run.taskId);
-    if (Option.isSome(delegated) && delegated.value.target.kind === "ephemeral") return true;
+    if (Option.isSome(delegated)) {
+      if (delegated.value.workerThreadId === null) return true;
+      const worker = yield* projections.getThreadShellById(delegated.value.workerThreadId);
+      return (
+        Option.isNone(worker) ||
+        (worker.value.latestTurn?.state !== "running" && worker.value.pendingWork == null)
+      );
+    }
     const agent = yield* agents.getById(run.vmAgentId);
     if (Option.isNone(agent) || agent.value.threadId === null) {
       return false;
@@ -378,9 +387,7 @@ export const make = Effect.gen(function* () {
       .getById(run.vmAgentId)
       .pipe(Effect.orElseSucceed(() => Option.none()));
     const threadId =
-      Option.isSome(delegation) &&
-      delegation.value.target.kind === "ephemeral" &&
-      delegation.value.workerThreadId !== null
+      Option.isSome(delegation) && delegation.value.workerThreadId !== null
         ? delegation.value.workerThreadId
         : Option.isSome(agent)
           ? agent.value.threadId
@@ -481,8 +488,11 @@ export const make = Effect.gen(function* () {
       let threadId = agent.value.threadId;
       let runtimeMode: RuntimeMode = "full-access";
       let interactionMode: ProviderInteractionMode = DEFAULT_PROVIDER_INTERACTION_MODE;
-      if (Option.isSome(delegated) && delegated.value.target.kind === "ephemeral") {
-        const source = yield* agents.getById(delegated.value.sourceVmAgentId);
+      if (Option.isSome(delegated)) {
+        const source =
+          delegated.value.target.kind === "agent"
+            ? agent
+            : yield* agents.getById(delegated.value.sourceVmAgentId);
         if (Option.isNone(source) || source.value.threadId === null) {
           yield* failRun(task, run, new Error("The source agent chat no longer exists."));
           return;
@@ -503,7 +513,10 @@ export const make = Effect.gen(function* () {
             commandId: CommandId.make(`delegation-fork:${delegated.value.delegationId}`),
             threadId,
             sourceThreadId: source.value.threadId,
-            title: delegated.value.target.label ?? `Worker: ${delegated.value.title}`,
+            title:
+              delegated.value.target.kind === "ephemeral"
+                ? (delegated.value.target.label ?? `Worker: ${delegated.value.title}`)
+                : `Delegated: ${delegated.value.title}`,
             ...delegationWorkerThreadProvenance({
               sourceThreadId: source.value.threadId,
               inheritedBrowserProfileThreadId: sourceThread.value.browserProfileThreadId,
@@ -624,6 +637,18 @@ export const make = Effect.gen(function* () {
       thread.value.session?.activeTurnId ??
       (thread.value.latestTurn?.state === "running" ? thread.value.latestTurn.turnId : null);
     if (activeTurnId === null) return;
+    // Older releases ran named delegations in the main chat. Only interrupt
+    // that chat when its active turn belongs to this exact delegated message.
+    if (delegation.workerThreadId === null) {
+      const ownedTurn =
+        projections.getActiveTurnDelegation === undefined
+          ? Option.none()
+          : yield* projections
+              .getActiveTurnDelegation(threadId)
+              .pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isNone(ownedTurn) || ownedTurn.value.delegationId !== delegation.delegationId)
+        return;
+    }
     yield* engine
       .dispatch({
         type: "thread.turn.interrupt",

@@ -12,12 +12,14 @@ import {
   normalizeCustomModelSlug,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
+import { selectModelWithHighEffort } from "@t3tools/client-runtime/state/model-selection";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import {
   getDefaultServerModel,
+  getProviderModelCapabilities,
   getProviderModels,
   resolveSelectableProvider,
 } from "./providerModels";
@@ -28,6 +30,20 @@ import { sortModelsForProviderInstance } from "./modelOrdering";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 const DEFAULT_TEXT_GENERATION_INSTANCE_ID = ProviderInstanceId.make("codex");
+
+/** Used by model pickers; hydration and sending keep the explicitly selected effort. */
+export function selectAppModelWithHighEffort(
+  previous: ModelSelection | null | undefined,
+  next: ModelSelection,
+  providers: ReadonlyArray<ServerProvider>,
+): ModelSelection {
+  const provider = providers.find((entry) => entry.instanceId === next.instanceId);
+  return selectModelWithHighEffort(
+    previous,
+    next,
+    provider ? getProviderModelCapabilities(provider.models, next.model, provider.driver) : null,
+  );
+}
 
 /**
  * Resolve the custom-model list for a given instance, preferring the

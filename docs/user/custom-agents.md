@@ -144,6 +144,9 @@ or result never stretches the surrounding app. New handoffs are requested natura
 than through a second composer.
 
 - A root agent can ask another named agent for help or create a short-lived ephemeral sub-agent.
+- Incoming delegated tasks run in separate worker chats, including tasks addressed to a named agent.
+  The named agent's main conversation keeps its own messages and active turn. Canceling or expiring
+  a delegation stops its worker; it does not stop unrelated work in the main conversation.
 - Delegation is requested through the root chat, so normal tools and approval policy remain in
   control. The UI does not create work behind the root agent's back.
 - Questions from a worker appear as **Waiting for your answer**. Replies, delivery state, completed

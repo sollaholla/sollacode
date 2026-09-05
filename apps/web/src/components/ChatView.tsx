@@ -1,3 +1,4 @@
+import { isSideChatSessionPreparing } from "@t3tools/client-runtime/state/thread-activity";
 import {
   type ApprovalRequestId,
   CommandId,
@@ -290,7 +291,10 @@ import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
 import { getClientSettings, useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import {
+  resolveAppModelSelectionForInstance,
+  selectAppModelWithHighEffort,
+} from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
@@ -3728,7 +3732,9 @@ function ChatViewContent(props: ChatViewProps) {
     selectedProvider,
     settings,
   ]);
-  const phase = derivePhase(activeThread?.session ?? null);
+  const phase = isSideChatSessionPreparing(activeThread)
+    ? "ready"
+    : derivePhase(activeThread?.session ?? null);
   const isThreadInterruptible = isThreadWorkInterruptible({
     phase,
     pendingWork: routeServerThreadShell?.pendingWork,
@@ -9219,10 +9225,23 @@ function ChatViewContent(props: ChatViewProps) {
         scheduleComposerFocus();
         return;
       }
-      const nextModelSelection: ModelSelection = {
-        instanceId,
-        model: resolvedModel,
-      };
+      const currentSelection =
+        composerRef.current?.getSendContext().selectedModelSelection ?? activeThread.modelSelection;
+      const savedSelection = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
+        ?.modelSelectionByProvider[instanceId];
+      const nextModelSelection = selectAppModelWithHighEffort(
+        currentSelection,
+        {
+          instanceId,
+          model: resolvedModel,
+          ...(savedSelection?.options
+            ? { options: savedSelection.options }
+            : currentSelection.instanceId === instanceId && currentSelection.options
+              ? { options: currentSelection.options }
+              : {}),
+        },
+        providerStatuses,
+      );
       const modelChanged =
         activeThread.modelSelection.instanceId !== nextModelSelection.instanceId ||
         activeThread.modelSelection.model !== nextModelSelection.model;
@@ -9233,10 +9252,9 @@ function ChatViewContent(props: ChatViewProps) {
         // gone instead of repopulating every time the user switches models.
         dismissProviderTasks(providerTasks.map((task) => task.taskId));
       }
-      setComposerDraftModelSelection(
-        scopeThreadRef(activeThread.environmentId, activeThread.id),
-        nextModelSelection,
-      );
+      setComposerDraftModelSelection(composerDraftTarget, nextModelSelection, {
+        replaceOptions: true,
+      });
       if (persistComposerModelDefaults) {
         setStickyComposerModelSelection(nextModelSelection);
       }
@@ -9244,6 +9262,7 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [
       activeThread,
+      composerDraftTarget,
       dismissProviderTasks,
       persistComposerModelDefaults,
       providerTasks,

@@ -85,6 +85,19 @@ const resolve = (
   });
 
 describe("effect timing", () => {
+  it("uses High on model selection while respecting an explicitly requested effort", () => {
+    const low = { current: { options: [{ id: "effort", value: "low" }] } };
+    expect(resolve({ model: "claude-sonnet-5" }, low).nextModelSelection?.options).toEqual([
+      { id: "effort", value: "high" },
+    ]);
+    expect(
+      resolve({ model: "claude-sonnet-5", effort: "max" }, low).nextModelSelection?.options,
+    ).toEqual([{ id: "effort", value: "max" }]);
+    expect(resolve({ effort: "low" }).nextModelSelection?.options).toEqual([
+      { id: "effort", value: "low" },
+    ]);
+  });
+
   it("reports access permissions as immediate and everything else as next-turn", () => {
     // Not a preference: a runtime-mode event restarts the live provider session
     // from its resume cursor, while a model change is only cached until the
@@ -184,7 +197,7 @@ describe("model selection assembly", () => {
   it("switches provider and takes that provider's default model", () => {
     const { plan, nextModelSelection } = resolve({ provider: "codex" });
     expect(nextModelSelection).toMatchObject({ instanceId: "codex", model: "gpt-5.6-sol" });
-    expect(plan.changes.map((c) => c.field)).toEqual(["provider", "model"]);
+    expect(plan.changes.map((c) => c.field)).toEqual(["provider", "model", "effort"]);
   });
 
   it("warns that a provider switch ends a running turn", () => {
@@ -231,7 +244,7 @@ describe("a model that lives on another provider", () => {
       instanceId: "claudeAgent",
       model: "claude-opus-5",
     });
-    expect(plan.changes.map((c) => c.field).sort()).toEqual(["model", "provider"]);
+    expect(plan.changes.map((c) => c.field).sort()).toEqual(["effort", "model", "provider"]);
   });
 
   it("asks which provider when the model exists on several", () => {

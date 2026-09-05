@@ -32,6 +32,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -48,6 +49,10 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { classifyClaudeStreamFailure } from "./ClaudeAdapter.ts";
+import {
+  CLAUDE_PROXY_FIRST_BYTE_TIMEOUT_MS,
+  CLAUDE_PROXY_API_TIMEOUT_MS,
+} from "./ClaudeTokenOptimizerProxy.ts";
 import { SOLLA_MCP_AGENT_CONTEXT } from "../sideChatContext.ts";
 import { markProcessShuttingDown, resetProcessShutdownForTesting } from "../processShutdown.ts";
 import {
@@ -473,6 +478,11 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.permissionMode, "bypassPermissions");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, true);
       assert.equal(createInput?.options.env?.CLAUDE_CODE_MAX_RETRIES, "0");
+      assert.equal(
+        createInput?.options.env?.CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS,
+        String(CLAUDE_PROXY_FIRST_BYTE_TIMEOUT_MS),
+      );
+      assert.equal(createInput?.options.env?.API_TIMEOUT_MS, String(CLAUDE_PROXY_API_TIMEOUT_MS));
       assert.match(
         createInput?.options.env?.ANTHROPIC_BASE_URL ?? "",
         /^http:\/\/127\.0\.0\.1:\d+$/u,
@@ -2983,6 +2993,76 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  for (const scenario of ["timeout", "authentication", "model-prose", "recovered"] as const) {
+    it.effect(`handles Claude synthetic API results: ${scenario}`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const finished = yield* Deferred.make<ProviderRuntimeEvent>();
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)).pipe(
+            Effect.andThen(
+              event.type === "turn.completed" ? Deferred.succeed(finished, event) : Effect.void,
+            ),
+          ),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "continue", attachments: [] });
+        const isFailure = scenario === "timeout" || scenario === "authentication";
+        harness.query.emit({
+          type: "assistant",
+          ...(scenario === "model-prose"
+            ? {}
+            : {
+                error: scenario === "authentication" ? "authentication_failed" : "server_error",
+              }),
+          message: { content: [{ type: "text", text: "Request timed out" }] },
+          parent_tool_use_id: null,
+          session_id: "session",
+          uuid: "timeout-message",
+        } as unknown as SDKMessage);
+        if (scenario === "recovered")
+          harness.query.emit({
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Recovered reply" }] },
+            parent_tool_use_id: null,
+            session_id: "session",
+            uuid: "recovered-message",
+          } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: isFailure,
+          result: isFailure ? "Request timed out" : "done",
+          session_id: "session",
+          uuid: "terminal-result",
+        } as unknown as SDKMessage);
+        const terminal = yield* Deferred.await(finished);
+        assert.equal(terminal.type, "turn.completed");
+        if (terminal.type === "turn.completed") {
+          assert.equal(terminal.payload.state, isFailure ? "failed" : "completed");
+          assert.equal(
+            terminal.payload.failureKind,
+            scenario === "timeout" ? "retryable-upstream" : undefined,
+          );
+        }
+        const textDeltas = events.filter((event) => event.type === "content.delta");
+        assert.equal(
+          textDeltas.some((event) => event.payload.delta.includes("Request timed out")),
+          scenario === "model-prose",
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
 
   it.effect("classifies exhausted structured upstream retries for durable recovery", () => {
     const harness = makeHarness();
