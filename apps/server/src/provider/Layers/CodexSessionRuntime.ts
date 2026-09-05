@@ -86,6 +86,7 @@ const CodexUserInputAnswerObject = Schema.Struct({
 });
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 const isCodexUserInputAnswerObject = Schema.is(CodexUserInputAnswerObject);
+const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 const isCodexAppServerRequestTimeoutError = Schema.is(
   CodexErrors.CodexAppServerRequestTimeoutError,
 );
@@ -696,7 +697,7 @@ export const openCodexThread = (input: {
         Effect.catchIf(
           (error) =>
             isRecoverableThreadResumeError(error) ||
-            (error instanceof CodexErrors.CodexAppServerRequestError &&
+            (isCodexAppServerRequestError(error) &&
               error.errorMessage.includes("failed to prepare paginated fork") &&
               error.errorMessage.includes("thread history projection")),
           (error) =>

@@ -78,6 +78,13 @@ Finite requests, durable subscriptions, and commands are separate APIs:
 The Promise bridge exists only at the React/Atom boundary. Runtime and business
 logic remain Effect-native.
 
+## Credential Renewal
+
+Signed device tokens establish the session identity. The host's persisted session
+row supplies the current authorization scopes for verification, WebSocket tickets,
+and renewal. Renewal must not copy embedded token scopes: they can predate an added
+standard capability or a deliberate restriction. Revocation remains authoritative.
+
 ## Platform Layers
 
 Web and mobile provide:

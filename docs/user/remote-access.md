@@ -19,6 +19,12 @@ For another computer already running Solla Code on the same private network, use
 Code** instead. Choose **Trust and add**, then approve the native trust prompt on the other
 computer. Both environments are added in parallel and can reconnect automatically.
 
+Nearby connections include access to the other computer's agents. Credential renewal
+preserves the permissions saved on the host. If an older renewal dropped agent access
+from a previously trusted Nearby connection, updating the host restores that grant
+automatically when the devices reconnect. Custom restricted connections and revoked
+credentials retain their restrictions.
+
 Use Tailscale or another trusted HTTPS/private-network endpoint when the devices are not on the
 same LAN or when you need a stable address across networks.
 
