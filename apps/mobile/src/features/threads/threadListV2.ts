@@ -1,3 +1,4 @@
+import { isThreadSessionWorking } from "@t3tools/client-runtime/state/thread-activity";
 import { effectiveSettled, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
@@ -42,7 +43,8 @@ export function resolveThreadListV2Enabled(input: {
 }
 
 export function resolveThreadListV2Status(
-  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "session">,
+  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "session"> &
+    Partial<Pick<EnvironmentThreadShell, "isSideChat" | "latestTurn" | "pendingWork">>,
 ): ThreadListV2Status {
   if (thread.hasPendingApprovals) {
     return "approval";
@@ -50,7 +52,7 @@ export function resolveThreadListV2Status(
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (thread.session?.status === "running" || thread.session?.status === "starting") {
+  if (isThreadSessionWorking(thread)) {
     return "working";
   }
   if (thread.session?.status === "error") {

@@ -294,6 +294,44 @@ describe("ClaudeTokenOptimizerProxy", () => {
     await expect(fullBody).resolves.toContain("message_stop");
   });
 
+  it("retries an upstream headers timeout and reports it before delivering the recovered response", async () => {
+    let attempts = 0;
+    const upstream = NodeHttp.createServer((_req, res) => {
+      attempts += 1;
+      if (attempts === 1) return; // Leave headers pending until the transport deadline.
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ recovered: true }));
+    });
+    const upstreamUrl = await listen(upstream);
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve) => {
+          upstream.close(() => resolve());
+          upstream.closeAllConnections();
+        }),
+    );
+    const retries: number[] = [];
+    const proxy = await startClaudeTokenOptimizerProxy({
+      threadId: ThreadId.make("thread-headers-timeout"),
+      attachmentsDir: NodeOS.tmpdir(),
+      upstream: upstreamUrl,
+      state: { enabled: false, activeTurnId: TurnId.make("turn-headers-timeout") },
+      onApplied: () => undefined,
+      onRetry: ({ status }) => {
+        retries.push(status ?? 0);
+      },
+      upstreamHeadersTimeoutMs: 50,
+      initialRetryDelayMs: 1,
+    });
+    cleanup.push(() => proxy.close());
+    await expect(postJson(`${proxy.baseUrl}/v1/messages`, { prompt: "recover" })).resolves.toEqual({
+      status: 200,
+      body: { recovered: true },
+    });
+    expect(attempts).toBe(2);
+    expect(retries).toEqual([504]);
+  });
+
   it("ends an otherwise infinite retry loop when the caller aborts", async () => {
     const upstream = NodeHttp.createServer((_req, res) => {
       res.statusCode = 502;

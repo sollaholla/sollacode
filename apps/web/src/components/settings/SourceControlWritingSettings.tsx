@@ -14,6 +14,7 @@ import {
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
+  selectAppModelWithHighEffort,
 } from "../../modelSelection";
 import { primaryServerProvidersAtom } from "../../state/server";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
@@ -194,7 +195,11 @@ export function SourceControlWritingSettingsSection() {
                 triggerAriaLabel="Source control writer model"
                 onInstanceModelChange={(instanceId, model) => {
                   updateSettings({
-                    sourceControlWriterModelSelection: createModelSelection(instanceId, model),
+                    sourceControlWriterModelSelection: selectAppModelWithHighEffort(
+                      activeSelection,
+                      createModelSelection(instanceId, model),
+                      textGenerationCapableProviders,
+                    ),
                   });
                 }}
               />

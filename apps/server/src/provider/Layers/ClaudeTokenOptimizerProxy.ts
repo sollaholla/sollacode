@@ -90,6 +90,11 @@ const MAX_RENDERED_PAGE_BYTES = 10 * 1024 * 1024;
 const MAX_RETRYABLE_RESPONSE_BUFFER_BYTES = 8 * 1024 * 1024;
 const DEFAULT_INITIAL_RETRY_DELAY_MS = 1_000;
 export const CLAUDE_UPSTREAM_RETRY_DELAY_CAP_MS = 15_000;
+// Large-context requests can need more than five minutes before upstream
+// headers. Keep the CLI's first-byte deadline outside this upstream budget.
+export const CLAUDE_UPSTREAM_HEADERS_TIMEOUT_MS = 10 * 60_000;
+export const CLAUDE_PROXY_FIRST_BYTE_TIMEOUT_MS = CLAUDE_UPSTREAM_HEADERS_TIMEOUT_MS + 60_000;
+export const CLAUDE_PROXY_API_TIMEOUT_MS = CLAUDE_PROXY_FIRST_BYTE_TIMEOUT_MS + 60_000;
 
 /**
  * Point the Fable profile at FABLE_RENDER_FONT via pxpipe's documented
@@ -260,18 +265,27 @@ function writeFetchResponseHead(response: Response, res: NodeHttp.ServerResponse
 }
 
 async function writeResponseChunk(res: NodeHttp.ServerResponse, chunk: Uint8Array): Promise<void> {
+  if (res.destroyed) throw new Error("Claude response connection closed");
   if (res.write(Buffer.from(chunk))) return;
   await new Promise<void>((resolve, reject) => {
-    const onDrain = () => {
+    const cleanup = () => {
       res.off("error", onError);
+      res.off("close", onClose);
+      res.off("drain", onDrain);
+    };
+    const onDrain = () => {
+      cleanup();
       resolve();
     };
     const onError = (cause: Error) => {
-      res.off("drain", onDrain);
+      cleanup();
       reject(cause);
     };
+    const onClose = () => onError(new Error("Claude response connection closed"));
     res.once("drain", onDrain);
     res.once("error", onError);
+    res.once("close", onClose);
+    if (res.destroyed) onClose();
   });
 }
 
@@ -428,10 +442,12 @@ export async function startClaudeTokenOptimizerProxy(input: {
   readonly onRetry?: ((event: ClaudeUpstreamRetryEvent) => void | Promise<void>) | undefined;
   readonly initialRetryDelayMs?: number | undefined;
   readonly maxRetryDelayMs?: number | undefined;
+  readonly upstreamHeadersTimeoutMs?: number | undefined;
 }): Promise<ClaudeTokenOptimizerProxy> {
   const reportedRequests = new Set<string>();
   const upstream = normalizeUpstream(input.upstream);
   const proxy = createProxy({
+    upstreamHeadersTimeoutMs: input.upstreamHeadersTimeoutMs ?? CLAUDE_UPSTREAM_HEADERS_TIMEOUT_MS,
     ...(upstream !== undefined ? { upstream } : {}),
     transform: () => ({
       compress: input.state.enabled,
@@ -528,7 +544,7 @@ export async function startClaudeTokenOptimizerProxy(input: {
           } catch (cause) {
             if (controller.signal.aborted) throw cause;
             if (res.headersSent) {
-              // Only oversized responses cross the bounded replay buffer. Once
+              // Event streams and oversized responses have been committed. Once
               // bytes have reached the CLI they cannot be safely replayed.
               // Terminate instead of appending a second response to the first.
               res.destroy(cause instanceof Error ? cause : undefined);

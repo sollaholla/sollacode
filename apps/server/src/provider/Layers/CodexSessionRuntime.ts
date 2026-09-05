@@ -686,11 +686,27 @@ export const openCodexThread = (input: {
 
   if (input.forkThread) {
     const { ephemeral, ...forkOverrides } = startParams;
-    return input.client.request("thread/fork", {
-      threadId: resumeThreadId,
-      ...forkOverrides,
-      ...(typeof ephemeral === "boolean" ? { ephemeral } : {}),
-    });
+    return input.client
+      .request("thread/fork", {
+        threadId: resumeThreadId,
+        ...forkOverrides,
+        ...(typeof ephemeral === "boolean" ? { ephemeral } : {}),
+      })
+      .pipe(
+        Effect.catchIf(
+          (error) =>
+            isRecoverableThreadResumeError(error) ||
+            (error instanceof CodexErrors.CodexAppServerRequestError &&
+              error.errorMessage.includes("failed to prepare paginated fork") &&
+              error.errorMessage.includes("thread history projection")),
+          (error) =>
+            Effect.logWarning("codex thread fork failed; starting independent thread", {
+              threadId: input.threadId,
+              resumeThreadId,
+              cause: error,
+            }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+        ),
+      );
   }
 
   return input.client

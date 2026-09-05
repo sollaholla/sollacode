@@ -1,4 +1,5 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
+import { selectModelWithHighEffort } from "@t3tools/client-runtime/state/model-selection";
 import type {
   EnvironmentId,
   MessageId,
@@ -704,7 +705,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     const modelKey = event.slice("model:".length);
     const option = modelOptions.find((o) => o.key === modelKey);
     if (option) {
-      props.onUpdateModelSelection(option.selection);
+      props.onUpdateModelSelection(
+        selectModelWithHighEffort(currentModelSelection, option.selection, option.capabilities),
+      );
     }
   }
 

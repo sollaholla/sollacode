@@ -116,6 +116,8 @@ import {
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
+  CLAUDE_PROXY_FIRST_BYTE_TIMEOUT_MS,
+  CLAUDE_PROXY_API_TIMEOUT_MS,
   shouldReportTokenOptimizerSummary,
   startClaudeTokenOptimizerProxy,
   type ClaudeTokenOptimizerProxy,
@@ -249,6 +251,7 @@ interface ClaudeSessionContext {
   lastKnownTotalProcessedTokens: number | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
+  lastApiError: { readonly message: string; readonly retryable: boolean } | undefined;
   lastOverloadRetry:
     | {
         readonly attempt: number;
@@ -1256,9 +1259,10 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
 });
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
-  if (result.subtype === "success") {
+  if (result.subtype === "success" && !result.is_error) {
     return "completed";
   }
+  if (result.subtype === "success") return "failed";
 
   const errors = resultErrorsText(result);
   if (isClaudeInterruptedResult(result)) {
@@ -2768,6 +2772,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // Claude emits API failures as synthetic assistant snapshots, including
+    // Request timed out. They are transport diagnostics, not model output.
+    if (message.error !== undefined) {
+      if (message.parent_tool_use_id == null) {
+        context.lastApiError = {
+          message:
+            message.message.content
+              .flatMap((block) => (block.type === "text" ? [block.text] : []))
+              .join("\n") || `Claude API error: ${message.error}`,
+          retryable: message.error === "server_error" || message.error === "overloaded",
+        };
+      }
+      return;
+    }
+    if (message.parent_tool_use_id == null) context.lastApiError = undefined;
+
     // Auto-start a synthetic turn for assistant messages that arrive without
     // an active turn (e.g., background agent/subagent responses between user prompts).
     if (!context.turnState) {
@@ -2858,9 +2878,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const status = turnStatusFromResult(message);
     const providerErrorMessage =
-      message.subtype === "success" || isClaudeUserAbortDiagnostic(message)
+      (message.subtype === "success" && !message.is_error) || isClaudeUserAbortDiagnostic(message)
         ? undefined
-        : message.errors[0];
+        : ((status === "failed" ? context.lastApiError?.message : undefined) ??
+          (message.subtype === "success" ? message.result : message.errors[0]));
     const overloadRetriesExhausted =
       status === "failed" &&
       context.lastOverloadRetry !== undefined &&
@@ -2868,7 +2889,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const errorMessage = overloadRetriesExhausted
       ? providerOverloadExhaustedMessage(providerErrorMessage)
       : providerErrorMessage;
-    const failureKind = overloadRetriesExhausted ? ("retryable-upstream" as const) : undefined;
+    const failureKind =
+      status === "failed" &&
+      (overloadRetriesExhausted ||
+        context.lastApiError?.retryable === true ||
+        (message.subtype === "success" && isRetryableUpstreamStatus(message.api_error_status)))
+        ? ("retryable-upstream" as const)
+        : undefined;
 
     if (status === "failed") {
       yield* emitRuntimeError(
@@ -4208,6 +4235,39 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                   ...failure,
                 }),
               ),
+            onRetry: (retry) =>
+              runPromise(
+                Effect.gen(function* () {
+                  const context = yield* Ref.get(contextRef);
+                  if (!context || context.stopped || !context.turnState) return;
+                  const stamp = yield* makeEventStamp();
+                  yield* offerRuntimeEvent({
+                    type: "session.state.changed",
+                    ...stamp,
+                    provider: PROVIDER,
+                    threadId,
+                    turnId: context.turnState.turnId,
+                    payload: {
+                      state: "running",
+                      reason: providerOverloadRetryReason({
+                        attempt: retry.attempt,
+                        delayMs: retry.delayMs,
+                      }),
+                      detail: {
+                        status: retry.status,
+                        attempt: retry.attempt,
+                        delayMs: retry.delayMs,
+                      },
+                    },
+                  });
+                  yield* Effect.logWarning("claude.transport-proxy.retrying", {
+                    threadId,
+                    attempt: retry.attempt,
+                    delayMs: retry.delayMs,
+                    status: retry.status,
+                  });
+                }),
+              ),
             onApplied: async (optimized) => {
               const context = await runPromise(Ref.get(contextRef));
               if (!context || context.stopped) return;
@@ -4286,6 +4346,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // Solla owns retries below the SDK. Disabling the CLI's bounded retry
         // batch prevents its 10-attempt exhaustion result from entering chat.
         CLAUDE_CODE_MAX_RETRIES: "0",
+        CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS:
+          claudeEnvironment.CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS ??
+          String(CLAUDE_PROXY_FIRST_BYTE_TIMEOUT_MS),
+        API_TIMEOUT_MS: claudeEnvironment.API_TIMEOUT_MS ?? String(CLAUDE_PROXY_API_TIMEOUT_MS),
         ANTHROPIC_BASE_URL: tokenOptimizerProxy.baseUrl,
       };
       const queryOptions: ClaudeQueryOptions = {
@@ -4466,6 +4530,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownTotalProcessedTokens: undefined,
         lastAssistantUuid: effectiveResumeSessionAt,
         lastThreadStartedId: undefined,
+        lastApiError: undefined,
         lastOverloadRetry: undefined,
         pendingContextRecovery: undefined,
         stopped: false,
@@ -4727,6 +4792,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const updatedAt = yield* nowIso;
       context.lastOverloadRetry = undefined;
+      context.lastApiError = undefined;
       context.turnState = turnState;
       context.session = {
         ...context.session,

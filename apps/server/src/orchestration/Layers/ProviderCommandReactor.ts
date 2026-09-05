@@ -3316,11 +3316,47 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         });
         return;
       }
-      const forkedSession = yield* providerService.forkSessionBinding({
-        sourceThreadId: event.payload.sourceThreadId,
-        targetThreadId: event.payload.threadId,
-        runtimeMode: event.payload.runtimeMode,
-      });
+      const forkedSession = yield* providerService
+        .forkSessionBinding({
+          sourceThreadId: event.payload.sourceThreadId,
+          targetThreadId: event.payload.threadId,
+          runtimeMode: event.payload.runtimeMode,
+        })
+        .pipe(
+          Effect.catchCause(
+            Effect.fn("recordForkSessionFailure")(function* (cause) {
+              const target = yield* resolveThread(event.payload.threadId);
+              const session = target?.session;
+              if (target && !session?.activeTurnId && (!session || session.status === "starting")) {
+                const now = yield* nowIso;
+                yield* setThreadSession({
+                  threadId: target.id,
+                  session: {
+                    threadId: target.id,
+                    status: "error",
+                    providerName:
+                      session?.providerName ?? sourceThread.session?.providerName ?? null,
+                    providerInstanceId: event.payload.modelSelection.instanceId,
+                    runtimeMode: event.payload.runtimeMode,
+                    activeTurnId: null,
+                    lastError: `Could not prepare the conversation fork. ${formatFailureDetail(cause)}`,
+                    updatedAt: now,
+                  },
+                  ...(session
+                    ? {
+                        expectedSession: {
+                          updatedAt: session.updatedAt,
+                          activeTurnId: session.activeTurnId,
+                        },
+                      }
+                    : {}),
+                  createdAt: now,
+                });
+              }
+              return yield* Effect.failCause(cause);
+            }),
+          ),
+        );
       if (!forkedSession) {
         yield* Effect.logWarning("thread fork has no forkable persisted provider session", {
           threadId: event.payload.threadId,
@@ -3685,6 +3721,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                 : `provider turn became ${awaitedTurn.state}`;
             if (isProviderAuthenticationFailure(detail)) {
               return { state: "blocked-authentication" as const, reason: detail };
+            }
+            if (
+              latestTurn?.turnId === input.turnId &&
+              shell.session?.failureKind === "retryable-upstream"
+            ) {
+              return yield* retryTransientUpstreamWork(detail, input.attempt);
             }
             return yield* retryFailureWork(detail, input.attempt);
           }
@@ -4213,7 +4255,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         // startup window and every terminal session status on its own.
         if (
           liveAfterSend === undefined ||
-          (liveAfterSend.status !== "running" && liveAfterSend.status !== "connecting")
+          (liveAfterSend.status !== "running" &&
+            liveAfterSend.status !== "connecting" &&
+            liveAfterSend.status !== "error" &&
+            // Claude returns its reusable session to ready even after an API
+            // failure. That fast terminal result still needs supervision.
+            !(liveAfterSend.status === "ready" && liveAfterSend.lastError !== undefined))
         ) {
           return isResumeWork
             ? yield* retryWorkAfter15Seconds(

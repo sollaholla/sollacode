@@ -6,6 +6,7 @@ import {
   getAppModelOptionsForInstance,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
+  selectAppModelWithHighEffort,
 } from "./modelSelection";
 
 function provider(input: {
@@ -55,6 +56,48 @@ function settingsWithProviderInstances(): UnifiedSettings {
 }
 
 describe("instance-scoped model selection", () => {
+  it("uses the selected custom instance's capabilities to replace saved Low immediately", () => {
+    const baseProvider = provider({ instanceId: "codex_secondary", models: ["second"] });
+    const selectedProvider: ServerProvider = {
+      ...baseProvider,
+      models: [
+        {
+          ...baseProvider.models[0]!,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "reasoningEffort",
+                label: "Reasoning",
+                type: "select",
+                currentValue: "low",
+                options: [
+                  { id: "low", label: "Low", isDefault: true },
+                  { id: "high", label: "High" },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const selected = selectAppModelWithHighEffort(
+      { instanceId: ProviderInstanceId.make("codex"), model: "first" },
+      {
+        instanceId: selectedProvider.instanceId,
+        model: "second",
+        options: [{ id: "reasoningEffort", value: "low" }],
+      },
+      [provider({ instanceId: "codex", models: ["second"] }), selectedProvider],
+    );
+    expect(selected.options).toEqual([{ id: "reasoningEffort", value: "high" }]);
+    expect(
+      resolveAppModelSelectionState(
+        { ...DEFAULT_UNIFIED_SETTINGS, textGenerationModelSelection: selected },
+        [selectedProvider],
+      ).options,
+    ).toEqual(selected.options);
+  });
+
   it("keeps custom models on the provider instance that declared them", () => {
     const providers = [
       provider({

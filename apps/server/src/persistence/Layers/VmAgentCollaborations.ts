@@ -693,7 +693,8 @@ const make = Effect.gen(function* () {
     sql<{ readonly found: number }>`SELECT EXISTS(SELECT 1
       FROM vm_agent_delegations AS delegation
       LEFT JOIN vm_agents AS target ON target.vm_agent_id = delegation.target_vm_agent_id
-      WHERE (delegation.worker_thread_id = ${threadId} OR target.thread_id = ${threadId})
+      WHERE (delegation.worker_thread_id = ${threadId}
+        OR (delegation.worker_thread_id IS NULL AND target.thread_id = ${threadId}))
       AND delegation.status IN ('pending-approval', 'queued', 'running', 'waiting-input')) AS found`.pipe(
       Effect.map((rows) => (rows[0]?.found ?? 0) === 1),
       mapError("hasActiveTargetThread"),

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { selectModelWithHighEffort } from "@t3tools/client-runtime/state/model-selection";
 
 import type {
   EnvironmentId,
@@ -408,10 +409,14 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         return;
       }
       updateComposerDraftSettings(selectedProjectDraftKey, {
-        modelSelection: option.selection,
+        modelSelection: selectModelWithHighEffort(
+          selectedModel,
+          option.selection,
+          option.capabilities,
+        ),
       });
     },
-    [modelOptions, selectedProjectDraftKey],
+    [modelOptions, selectedModel, selectedProjectDraftKey],
   );
   const setSelectedModelOptions = useCallback(
     (options: ReadonlyArray<ProviderOptionSelection> | undefined) => {

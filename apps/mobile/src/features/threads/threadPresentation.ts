@@ -1,3 +1,4 @@
+import { isSideChatSessionPreparing } from "@t3tools/client-runtime/state/thread-activity";
 import type { StatusTone } from "../../components/StatusPill";
 import type { OrchestrationLatestTurn, OrchestrationSession } from "@t3tools/contracts";
 import { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -85,7 +86,7 @@ export function resolveThreadStatus(
     };
   }
 
-  if (thread.session?.status === "starting") {
+  if (thread.session?.status === "starting" && !isSideChatSessionPreparing(thread)) {
     return {
       kind: "connecting",
       label: "Connecting",

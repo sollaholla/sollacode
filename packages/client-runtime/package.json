@@ -83,6 +83,10 @@
       "types": "./src/state/models.ts",
       "default": "./src/state/models.ts"
     },
+    "./state/model-selection": {
+      "types": "./src/state/modelSelection.ts",
+      "default": "./src/state/modelSelection.ts"
+    },
     "./state/orchestration": {
       "types": "./src/state/orchestration.ts",
       "default": "./src/state/orchestration.ts"
@@ -154,6 +158,10 @@
     "./state/thread-settled": {
       "types": "./src/state/threadSettled.ts",
       "default": "./src/state/threadSettled.ts"
+    },
+    "./state/thread-activity": {
+      "types": "./src/state/threadActivity.ts",
+      "default": "./src/state/threadActivity.ts"
     },
     "./state/queued-turn-promotion": {
       "types": "./src/state/queuedTurnPromotion.ts",

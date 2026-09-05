@@ -876,8 +876,8 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
           model,
           entry.driverKind,
         );
-        const descriptor = capabilities?.optionDescriptors?.find(
-          (option) => option.id === "effort" || option.id === "reasoningEffort",
+        const descriptor = capabilities?.optionDescriptors?.find((option) =>
+          ["effort", "reasoningEffort", "reasoning", "variant"].includes(option.id),
         );
         if (descriptor === undefined || descriptor.type !== "select") return null;
         return {

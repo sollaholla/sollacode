@@ -127,6 +127,42 @@ const makeDelegation = (
 };
 
 layer("VmAgentCollaborationStore", (it) => {
+  it.effect("binds named delegated work only to its separate worker thread", () =>
+    Effect.gen(function* () {
+      const collaboration = yield* VmAgentCollaborationStore;
+      const source = yield* insertAgent("isolated-source");
+      const target = yield* insertAgent("isolated-target");
+      const work = makeDelegation(source, "isolated-named", createdAt);
+      const workerThreadId = ThreadId.make("isolated-named-worker");
+      yield* collaboration.create({
+        ...work,
+        delegation: {
+          ...work.delegation,
+          workerThreadId,
+          target: { kind: "agent", vmAgentId: target.vmAgentId },
+          targetVmAgentId: target.vmAgentId,
+          targetAgentSnapshot: {
+            vmAgentId: target.vmAgentId,
+            name: target.name,
+            handle: target.handle,
+            purpose: target.purpose,
+          },
+        },
+        schedulerVmAgentId: target.vmAgentId,
+        idempotencyKey: "isolated-named",
+      });
+      assert.isFalse(yield* collaboration.hasActiveTargetThread(target.threadId!));
+      assert.isTrue(yield* collaboration.hasActiveTargetThread(workerThreadId));
+      assert.isTrue(Option.isSome(yield* collaboration.getByWorkerThreadId(workerThreadId)));
+      yield* collaboration.cancel({
+        delegationId: work.delegation.delegationId,
+        status: "cancelled",
+        detail: "Isolation assertion complete.",
+        completedAt: laterAt,
+      });
+    }),
+  );
+
   it.effect("returns a 501st truncation sentinel while prioritizing active work", () =>
     Effect.gen(function* () {
       const collaboration = yield* VmAgentCollaborationStore;

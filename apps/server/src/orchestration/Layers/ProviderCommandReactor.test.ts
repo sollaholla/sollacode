@@ -83,7 +83,7 @@ import {
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
-import { ThreadWorkScheduler } from "../Services/ThreadWorkScheduler.ts";
+import { ThreadWorkScheduler, type ThreadWorkHandler } from "../Services/ThreadWorkScheduler.ts";
 import { makeThreadWorkSchedulerLive } from "./ThreadWorkScheduler.ts";
 import {
   activeTurnWorkSourceId,
@@ -3969,6 +3969,66 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  for (const status of ["starting", "ready", "running", "stopped"] as const) {
+    it(`clears failed fork preparation without overwriting a ${status} successor`, async () => {
+      const harness = await createHarness();
+      const threadId = ThreadId.make(`failed-fork-${status}`);
+      const now = "2026-01-01T00:00:00.000Z";
+      harness.forkSessionBinding.mockImplementation(() =>
+        harness.engine
+          .dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`fork-state-${status}`),
+            threadId,
+            session: {
+              threadId,
+              status,
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              activeTurnId: status === "running" ? TurnId.make("successor-turn") : null,
+              lastError: null,
+              updatedAt: now,
+            },
+            createdAt: now,
+          })
+          .pipe(
+            Effect.orDie,
+            Effect.andThen(
+              Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: "codex",
+                  method: "thread/fork",
+                  detail: "failed to prepare paginated fork",
+                }),
+              ),
+            ),
+          ),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make(`failed-fork-${status}`),
+          threadId,
+          sourceThreadId: ThreadId.make("thread-1"),
+          title: "Blank side chat",
+          isSideChat: true,
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      expect(thread?.session?.status).toBe(status === "starting" ? "error" : status);
+      expect(thread?.session?.lastError).toBe(
+        status === "starting"
+          ? "Could not prepare the conversation fork. failed to prepare paginated fork"
+          : null,
+      );
+      expect(thread?.messages).toHaveLength(0);
+      expect(harness.stopSession).not.toHaveBeenCalled();
+    });
+  }
+
   it("starts cross-provider forks fresh instead of cloning an incompatible session id", async () => {
     const harness = await createHarness();
     const threadId = ThreadId.make("thread-cross-provider-side-chat");
@@ -4833,6 +4893,91 @@ describe("ProviderCommandReactor", () => {
     expect(cancelled?.blockedReason).not.toContain("Gave up after");
     expect(harness.sendTurn).not.toHaveBeenCalled();
   });
+
+  for (const runtimeStatus of ["running", "error", "ready"] as const) {
+    it(`retries a terminal API timeout beyond the cap with a ${runtimeStatus} runtime`, async () => {
+      const threadId = ThreadId.make("thread-1");
+      const turnId = TurnId.make("terminal-api-timeout");
+      const messageId = MessageId.make("timeout-user-message");
+      const now = "2026-01-01T00:00:01.000Z";
+      const harness = await createHarness({
+        startReactor: false,
+        sendTurnEffect: (_input, sessions) =>
+          Effect.gen(function* () {
+            for (const status of ["running", "error"] as const) {
+              yield* harness.engine
+                .dispatch({
+                  type: "thread.session.set",
+                  commandId: CommandId.make(`timeout-${status}`),
+                  threadId,
+                  session: {
+                    threadId,
+                    status,
+                    providerName: "codex",
+                    providerInstanceId: ProviderInstanceId.make("codex"),
+                    runtimeMode: "approval-required",
+                    activeTurnId: status === "running" ? turnId : null,
+                    lastError: status === "error" ? "Request timed out" : null,
+                    ...(status === "error" ? { failureKind: "retryable-upstream" as const } : {}),
+                    updatedAt: now,
+                  },
+                  createdAt: now,
+                })
+                .pipe(Effect.orDie);
+            }
+            const session = sessions.find((entry) => entry.threadId === threadId)!;
+            sessions.splice(sessions.indexOf(session), 1, {
+              ...session,
+              status: runtimeStatus,
+              activeTurnId: turnId,
+              lastError: "Request timed out",
+            });
+            return { threadId, turnId };
+          }),
+      });
+      const handlers = new Map<string, ThreadWorkHandler>();
+      vi.spyOn(harness.threadWorkScheduler, "registerHandler").mockImplementation((kind, handler) =>
+        Effect.sync(() => {
+          handlers.set(kind, handler);
+        }),
+      );
+      vi.spyOn(harness.threadWorkScheduler, "start").mockReturnValue(Effect.void);
+      await harness.startReactor();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("timeout-user-start"),
+          threadId,
+          message: { messageId, role: "user", text: "Finish my task", attachments: [] },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+      const obligation = Option.getOrThrow(
+        await Effect.runPromise(
+          harness.threadWorkObligations.getByKey({
+            threadId,
+            sourceTurnId: activeTurnWorkSourceId(messageId),
+            kind: "active-turn-recovery",
+          }),
+        ),
+      );
+      const outcome = await Effect.runPromise(
+        handlers.get("active-turn-recovery")!({ ...obligation, attempt: 12 }),
+      );
+      expect(outcome).toMatchObject({
+        state: "sleeping",
+        reason: "Request timed out",
+        retainedRuntimePhase: "provider-retrying",
+      });
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      expect(thread?.latestTurn?.state).toBe("error");
+      expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    });
+  }
 
   it("retries a structured upstream failure beyond the deterministic cap", async () => {
     const harness = await createHarness({

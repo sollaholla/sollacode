@@ -1,3 +1,4 @@
+import { isThreadSessionWorking } from "@t3tools/client-runtime/state/thread-activity";
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -294,9 +295,7 @@ export function useThreadComposerState() {
     );
   }, [selectedThreadDetail, selectedThreadSessionActivity, selectedThreadShell]);
 
-  const activeThreadBusy =
-    !!selectedThread &&
-    (selectedThread.session?.status === "running" || selectedThread.session?.status === "starting");
+  const activeThreadBusy = isThreadSessionWorking(selectedThread);
   const serverQueuedMessageIds = useMemo(
     () =>
       selectedThreadDetail
