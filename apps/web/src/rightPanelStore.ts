@@ -710,9 +710,8 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               .filter((tabId) => !knownIds.has(`browser:${tabId}`))
               .map((tabId) => browserSurface(tabId));
             // Keep a deliberately opened blank Browser surface until the
-            // server supplies its real tab. Without this, an authoritative
-            // empty list briefly turns an agent's browser-only panel into the
-            // generic "Open a surface" chooser.
+            // server supplies its real tab. An empty list must not cancel
+            // that pending open and return to the surface chooser.
             const blankBrowser =
               tabIds.length === 0
                 ? current.surfaces.find((surface) => surface.id === "browser:new")

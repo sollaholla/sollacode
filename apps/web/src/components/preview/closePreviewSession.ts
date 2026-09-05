@@ -9,7 +9,6 @@ import type {
 } from "@t3tools/contracts";
 
 import {
-  applyPreviewServerSnapshot,
   beginPreviewSessionClose,
   cancelPreviewSessionClose,
   reconcilePreviewServerSessions,
@@ -45,27 +44,19 @@ export async function closePreviewSession<E>(
   return result;
 }
 
-interface ReconcileLegacyPreviewCloseInput<ListError, OpenError> {
+interface ReconcileLegacyPreviewCloseInput<ListError> {
   readonly closeResult: PreviewCloseResult | undefined;
   readonly listPreviews: () => Promise<AtomCommandResult<PreviewListResult, ListError>>;
-  readonly openBlankPreview: () => Promise<AtomCommandResult<PreviewSessionSnapshot, OpenError>>;
-  readonly retainBlankTab: boolean;
   readonly threadRef: ScopedThreadRef;
 }
 
-/** Restores the agent-only one-tab invariant for servers whose close RPC still returns void. */
-export async function reconcileLegacyPreviewClose<ListError, OpenError>(
-  input: ReconcileLegacyPreviewCloseInput<ListError, OpenError>,
-): Promise<boolean> {
-  if (input.closeResult !== undefined) return false;
+/** Refreshes surviving tabs for servers whose close RPC still returns void. */
+export async function reconcileLegacyPreviewClose<ListError>(
+  input: ReconcileLegacyPreviewCloseInput<ListError>,
+): Promise<void> {
+  if (input.closeResult !== undefined) return;
 
   const listed = await input.listPreviews();
-  if (listed._tag === "Failure") return false;
+  if (listed._tag === "Failure") return;
   reconcilePreviewServerSessions(input.threadRef, listed.value);
-  if (!input.retainBlankTab || listed.value.sessions.length > 0) return false;
-
-  const opened = await input.openBlankPreview();
-  if (opened._tag === "Failure") return false;
-  applyPreviewServerSnapshot(input.threadRef, opened.value);
-  return true;
 }

@@ -158,6 +158,11 @@ describe("right-panel artifact access", () => {
     ]);
     expect(rightPanelNewSurfaceKinds(false)).not.toContain("artifact");
   });
+
+  it("offers Browser, Terminal, and Side Chat in an agent's new-surface menu", () => {
+    expect(rightPanelNewSurfaceKinds(false, true)).toEqual(["browser", "terminal", "side-chat"]);
+    expect(rightPanelNewSurfaceKinds(true, true)).toEqual(["browser", "terminal", "side-chat"]);
+  });
 });
 
 describe("right-panel tab naming", () => {
@@ -239,6 +244,38 @@ describe("floating browser tab indicator", () => {
 });
 
 describe("RightPanelEmptyState", () => {
+  it.each([true, false])(
+    "offers agent surfaces with side-chat availability %s",
+    (sideChatAvailable) => {
+      const markup = renderToStaticMarkup(
+        <RightPanelEmptyState
+          onAddBrowser={vi.fn()}
+          onAddTerminal={vi.fn()}
+          onAddFiles={vi.fn()}
+          onAddDiff={vi.fn()}
+          onAddSideChat={vi.fn()}
+          browserAvailable
+          diffAvailable
+          filesAvailable
+          sideChatAvailable={sideChatAvailable}
+          agentSurfaces
+        />,
+      );
+
+      expect(markup.match(/<button/g)).toHaveLength(3);
+      expect(markup).toContain("Browser");
+      expect(markup).toContain("Terminal");
+      expect(markup).toContain("Side Chat");
+      expect(markup).not.toContain("Browse and read workspace files.");
+      expect(markup).not.toContain("Review changes in this thread.");
+      const sideChatButton = markup
+        .match(/<button\b[^>]*>[\s\S]*?<\/button>/g)
+        ?.find((button) => button.includes("Side Chat"));
+      expect(sideChatButton).toBeDefined();
+      expect(sideChatButton?.includes('aria-disabled="true"')).toBe(!sideChatAvailable);
+    },
+  );
+
   it("offers Side Chat as the fifth right-panel surface", () => {
     const markup = renderToStaticMarkup(
       <RightPanelEmptyState

@@ -109,7 +109,7 @@ describe("closePreviewSession", () => {
     });
   });
 
-  it("opens a blank replacement when a legacy void close leaves no server tabs", async () => {
+  it("keeps the final tab closed when a legacy void close leaves no server tabs", async () => {
     applyPreviewServerSnapshot(threadRef, snapshot);
     const closeResult = await closePreviewSession({
       closePreview: async () => AsyncResult.success(undefined),
@@ -120,12 +120,6 @@ describe("closePreviewSession", () => {
     expect(closeResult).toEqual(AsyncResult.success(undefined));
     if (closeResult._tag === "Failure") throw new Error("Expected legacy close success");
 
-    const replacement: PreviewSessionSnapshot = {
-      ...snapshot,
-      tabId: "tab-legacy-replacement",
-      navStatus: { _tag: "Idle" },
-      updatedAt: "2026-06-18T19:02:00.000Z",
-    };
     const listPreviews = vi.fn(async () =>
       AsyncResult.success({
         sessions: [],
@@ -133,25 +127,19 @@ describe("closePreviewSession", () => {
         revision: 2,
       }),
     );
-    const openBlankPreview = vi.fn(async () => AsyncResult.success(replacement));
-
     await expect(
       reconcileLegacyPreviewClose({
         closeResult: closeResult.value,
         listPreviews,
-        openBlankPreview,
-        retainBlankTab: true,
         threadRef,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBeUndefined();
     expect(listPreviews).toHaveBeenCalledOnce();
-    expect(openBlankPreview).toHaveBeenCalledOnce();
-    expect(readThreadPreviewState(threadRef).sessions).toEqual({
-      [replacement.tabId]: replacement,
-    });
+    expect(readThreadPreviewState(threadRef).sessions).toEqual({});
+    expect(readThreadPreviewState(threadRef).snapshot).toBeNull();
   });
 
-  it("leaves an ordinary legacy thread empty after its final tab closes", async () => {
+  it("does not replace an authoritative close result with a legacy refresh", async () => {
     const listPreviews = vi.fn(async () =>
       AsyncResult.success({
         sessions: [],
@@ -159,19 +147,19 @@ describe("closePreviewSession", () => {
         revision: 2,
       }),
     );
-    const openBlankPreview = vi.fn(async () => AsyncResult.success(snapshot));
-
     await expect(
       reconcileLegacyPreviewClose({
-        closeResult: undefined,
+        closeResult: {
+          sessions: [],
+          closedTabIds: [snapshot.tabId],
+          serverEpoch: "epoch-1",
+          revision: 2,
+        },
         listPreviews,
-        openBlankPreview,
-        retainBlankTab: false,
         threadRef,
       }),
-    ).resolves.toBe(false);
-    expect(listPreviews).toHaveBeenCalledOnce();
-    expect(openBlankPreview).not.toHaveBeenCalled();
+    ).resolves.toBeUndefined();
+    expect(listPreviews).not.toHaveBeenCalled();
     expect(readThreadPreviewState(threadRef).sessions).toEqual({});
   });
 });
