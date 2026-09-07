@@ -2443,6 +2443,98 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("states each held message's queue status from its work obligation", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-held-queue-state");
+      const stillQueued = asMessageId("held-user-message:still-queued");
+      const delivered = asMessageId("held-user-message:already-delivered");
+      const cancelled = asMessageId("held-user-message:cancelled");
+      const pruned = asMessageId("held-user-message:obligation-pruned");
+      const ordinary = asMessageId("message-ordinary");
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM thread_work_obligations`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json,
+          scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-held-queue-state', 'Held Queue State', '/tmp/held-queue-state', NULL, '[]',
+          '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, latest_turn_id, latest_user_message_at, pending_approval_count,
+          pending_user_input_count, has_actionable_proposed_plan, created_at, updated_at, deleted_at
+        ) VALUES (
+          ${threadId}, 'project-held-queue-state', 'Held Queue State',
+          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+          NULL, NULL, NULL, NULL, 0, 0, 0,
+          '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z', NULL
+        )
+      `;
+      for (const [index, messageId] of [
+        stillQueued,
+        delivered,
+        cancelled,
+        pruned,
+        ordinary,
+      ].entries()) {
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+          ) VALUES (
+            ${messageId}, ${threadId}, NULL, 'user', ${`text ${index}`}, 0,
+            ${`2026-08-02T00:00:0${index}.000Z`}, ${`2026-08-02T00:00:0${index}.000Z`}
+          )
+        `;
+      }
+      // Only the first still owes a delivery. The receipt activities for the
+      // next two are long past the snapshot's activity window — the case that
+      // used to resurrect them in the queue panel forever, and hide the
+      // delivered one from the timeline. The fourth has no obligation left at
+      // all, as happens once terminal rows pass their retention.
+      for (const [messageId, state] of [
+        [stillQueued, "pending"],
+        [delivered, "completed"],
+        [cancelled, "cancelled"],
+      ] as const) {
+        yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state, provider_instance_id,
+            attempt, next_attempt_at, claimed_at, lease_expires_at, blocked_reason,
+            created_at, updated_at
+          ) VALUES (
+            ${`obligation-${messageId}`}, ${threadId}, ${`turn-start:${messageId}`},
+            'active-turn-recovery', ${state}, 'codex', 0, NULL, NULL, NULL, NULL,
+            '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z'
+          )
+        `;
+      }
+
+      const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(threadId);
+      assert.isTrue(Option.isSome(snapshot));
+      if (Option.isNone(snapshot)) return;
+      const byId = new Map(snapshot.value.thread.messages.map((message) => [message.id, message]));
+      assert.equal(byId.get(stillQueued)?.queueState, "queued");
+      assert.equal(byId.get(delivered)?.queueState, "delivered");
+      // Cancelled and delivered are both "done queueing" but belong in
+      // different places, so they cannot collapse into one flag.
+      assert.equal(byId.get(cancelled)?.queueState, "removed");
+      // Nothing known, so nothing claimed: the client keeps its receipt-based
+      // fallback rather than being told a guess.
+      assert.equal(byId.get(pruned)?.queueState, undefined);
+      assert.equal(byId.get(ordinary)?.queueState, undefined);
+    }),
+  );
+
   it.effect("preserves source-turn identity and ignores only synthetic resume intent", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -2575,6 +2667,22 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.isTrue(Option.isSome(afterRealUser));
       if (Option.isSome(afterRealUser)) {
         assert.isTrue(afterRealUser.value.hasLaterRealUserTurn);
+      }
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES (
+          'removed-later-user-intent', ${threadId}, NULL, 'info',
+          'queue.message-removed', 'Queued message removed',
+          ${encodeUnknownJson({ messageId: laterUserMessageId })},
+          '2026-08-25T23:34:01.000Z'
+        )
+      `;
+      const afterRemoval = yield* getThreadTurnStartContext(threadId, sourceMessageId);
+      assert.isTrue(Option.isSome(afterRemoval));
+      if (Option.isSome(afterRemoval)) {
+        assert.isFalse(afterRemoval.value.hasLaterRealUserTurn);
       }
 
       // A later message the provider absorbed into the source turn is not

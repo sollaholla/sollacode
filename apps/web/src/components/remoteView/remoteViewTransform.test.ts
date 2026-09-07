@@ -5,7 +5,10 @@ import {
   formatRemoteViewZoom,
   isRemoteViewIdentity,
   panRemoteView,
+  pinchRemoteView,
   REMOTE_VIEW_IDENTITY,
+  REMOTE_VIEW_MAX_ZOOM,
+  remoteViewPinchOf,
   remoteViewTransformStyle,
   zoomInRemoteView,
   zoomOutRemoteView,
@@ -102,6 +105,95 @@ describe("zoomOutRemoteView", () => {
     expect(zoomOutRemoteView({ view: REMOTE_VIEW_IDENTITY, pane: PANE })).toBe(
       REMOTE_VIEW_IDENTITY,
     );
+  });
+});
+
+describe("pinchRemoteView", () => {
+  const PINCH_PANE = { width: 200, height: 200 } as const;
+
+  it("magnifies by how far the fingers spread and keeps the picture under them", () => {
+    // Fingers 40px apart around (100, 100) spread to 80px: 2x. The centre
+    // of the picture was under the midpoint and must still be, so with a
+    // centred origin the pan stays zero.
+    const next = pinchRemoteView({
+      start: REMOTE_VIEW_IDENTITY,
+      from: remoteViewPinchOf({ x: 80, y: 100 }, { x: 120, y: 100 }),
+      to: remoteViewPinchOf({ x: 60, y: 100 }, { x: 140, y: 100 }),
+      pane: PINCH_PANE,
+    });
+    expect(next.zoom).toBe(2);
+    expect(next.pan).toEqual({ x: 0, y: 0 });
+  });
+
+  it("anchors on the fingers, not the centre", () => {
+    // Pinching open at the top-left quarter: the point at fraction 0.25 must
+    // stay under the fingers at (50, 50). At 2x about the centre it would
+    // render at 0.25*200*2 + 100*(1-2) = 0, so the pan has to be +50.
+    const next = pinchRemoteView({
+      start: REMOTE_VIEW_IDENTITY,
+      from: remoteViewPinchOf({ x: 40, y: 40 }, { x: 60, y: 60 }),
+      to: remoteViewPinchOf({ x: 30, y: 30 }, { x: 70, y: 70 }),
+      pane: PINCH_PANE,
+    });
+    expect(next.zoom).toBe(2);
+    expect(next.pan).toEqual({ x: 50, y: 50 });
+  });
+
+  it("pans when both fingers move together without spreading", () => {
+    const start = { zoom: 2, origin: { x: 50, y: 50 }, pan: { x: 0, y: 0 } };
+    const next = pinchRemoteView({
+      start,
+      from: remoteViewPinchOf({ x: 80, y: 100 }, { x: 120, y: 100 }),
+      to: remoteViewPinchOf({ x: 50, y: 90 }, { x: 90, y: 90 }),
+      pane: PINCH_PANE,
+    });
+    expect(next.zoom).toBe(2);
+    expect(next.pan).toEqual({ x: -30, y: -10 });
+  });
+
+  it("stays inside the pane however far the fingers travel", () => {
+    const start = { zoom: 2, origin: { x: 50, y: 50 }, pan: { x: 0, y: 0 } };
+    const next = pinchRemoteView({
+      start,
+      from: remoteViewPinchOf({ x: 80, y: 100 }, { x: 120, y: 100 }),
+      to: remoteViewPinchOf({ x: 980, y: 100 }, { x: 1020, y: 100 }),
+      pane: PINCH_PANE,
+    });
+    expect(next.pan.x).toBe(100);
+  });
+
+  it("snaps back to a clean fit when pinched almost closed", () => {
+    const start = { zoom: 1.5, origin: { x: 50, y: 50 }, pan: { x: 10, y: 0 } };
+    expect(
+      pinchRemoteView({
+        start,
+        from: remoteViewPinchOf({ x: 0, y: 0 }, { x: 150, y: 0 }),
+        to: remoteViewPinchOf({ x: 0, y: 0 }, { x: 101, y: 0 }),
+        pane: PINCH_PANE,
+      }),
+    ).toEqual(REMOTE_VIEW_IDENTITY);
+  });
+
+  it("stops at the maximum", () => {
+    expect(
+      pinchRemoteView({
+        start: REMOTE_VIEW_IDENTITY,
+        from: remoteViewPinchOf({ x: 0, y: 0 }, { x: 10, y: 0 }),
+        to: remoteViewPinchOf({ x: 0, y: 0 }, { x: 1000, y: 0 }),
+        pane: PINCH_PANE,
+      }).zoom,
+    ).toBe(REMOTE_VIEW_MAX_ZOOM);
+  });
+
+  it("refuses to guess before the pane has been measured", () => {
+    expect(
+      pinchRemoteView({
+        start: REMOTE_VIEW_IDENTITY,
+        from: remoteViewPinchOf({ x: 0, y: 0 }, { x: 10, y: 0 }),
+        to: remoteViewPinchOf({ x: 0, y: 0 }, { x: 20, y: 0 }),
+        pane: null,
+      }),
+    ).toBe(REMOTE_VIEW_IDENTITY);
   });
 });
 

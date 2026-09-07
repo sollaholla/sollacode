@@ -498,7 +498,7 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
             nextAttemptAt: null,
             claimedAt: claimed.claimedAt,
             leaseExpiresAt: initialLeaseExpiresAt,
-            blockedReason: null,
+            blockedReason: claimed.blockedReason,
             updatedAt: executingAtIso,
           });
           if (!transitioned) return;
@@ -997,6 +997,11 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
       const now = yield* DateTime.now;
       const nowIso = DateTime.formatIso(now);
       const nowMs = DateTime.toEpochMillis(now);
+      // Before choosing work, let the agent's own sleeping loop give its slot
+      // back to anything the person has queued. Without this a background task
+      // keeps a continuation sleeping in 15s hops forever, and the queued
+      // message is never a candidate.
+      yield* obligations.yieldSleepingWorkToQueuedUserMessages(nowIso);
       yield* maybeRefreshMetrics(now, nowIso);
       const hints = Array.from(yield* Ref.getAndSet(wakeHints, new Set())).map((value) =>
         ProviderInstanceId.make(value),

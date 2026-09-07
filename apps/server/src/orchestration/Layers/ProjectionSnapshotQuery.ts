@@ -38,6 +38,12 @@ import {
   toolCallIdOfToolActivityPayload,
   trimToolRawOutputInPayload,
 } from "../toolRawOutputTrim.ts";
+import {
+  ACTIVE_TURN_WORK_SOURCE_PREFIX,
+  activeTurnMessageIdFromSourceTurnId,
+} from "../agentModeContinuation.ts";
+import { HELD_MESSAGE_PREFIX, isHeldMessageId } from "@t3tools/shared/heldMessages";
+import { STOPPED_BEFORE_SEND_REASON } from "../../persistence/Services/ThreadWorkObligations.ts";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -167,6 +173,11 @@ const ThreadActivityWindowLookupInput = Schema.Struct({
 const ThreadMessageWindowLookupInput = Schema.Struct({
   threadId: ThreadId,
   limit: Schema.Int,
+});
+const HeldMessageObligationRow = Schema.Struct({
+  sourceTurnId: TurnId,
+  state: Schema.String,
+  blockedReason: Schema.NullOr(Schema.String),
 });
 const ThreadCheckpointWindowLookupInput = Schema.Struct({
   threadId: ThreadId,
@@ -429,6 +440,57 @@ function mapMessageRow(
   return row.attachments === null
     ? message
     : Object.assign(message, { attachments: row.attachments });
+}
+
+/**
+ * States each held message's queue status from the durable obligations.
+ *
+ * Only held ids are stamped, and only when an obligation actually says
+ * something: everything else is left untouched, so the field never has to mean
+ * anything for an ordinary message and an obligation pruned after its
+ * retention window leaves the client on its existing receipt-based fallback
+ * rather than on a guess.
+ */
+function stampHeldMessageQueueState(
+  messages: ReadonlyArray<OrchestrationMessage>,
+  queueStateByMessageId: ReadonlyMap<string, "queued" | "delivered" | "removed">,
+): ReadonlyArray<OrchestrationMessage> {
+  return messages.map((message) => {
+    if (!isHeldMessageId(message.id)) return message;
+    const queueState = queueStateByMessageId.get(message.id);
+    return queueState === undefined ? message : { ...message, queueState };
+  });
+}
+
+function heldMessageQueueStates(
+  rows: ReadonlyArray<{
+    readonly sourceTurnId: TurnId;
+    readonly state: string;
+    readonly blockedReason: string | null;
+  }>,
+): ReadonlyMap<string, "queued" | "delivered" | "removed"> {
+  const states = new Map<string, "queued" | "delivered" | "removed">();
+  for (const row of rows) {
+    const messageId = activeTurnMessageIdFromSourceTurnId(row.sourceTurnId);
+    if (messageId === null) continue;
+    // A row Stop parked is cancelled as scheduler work, but the message behind
+    // it was never sent and is still the person's to send. Reporting "removed"
+    // here would delete their words from the panel on their own Stop, which is
+    // the exact loss the park exists to prevent.
+    const parkedByStop =
+      row.state === "cancelled" && row.blockedReason === STOPPED_BEFORE_SEND_REASON;
+    states.set(
+      String(messageId),
+      parkedByStop
+        ? "queued"
+        : row.state === "cancelled"
+          ? "removed"
+          : row.state === "completed"
+            ? "delivered"
+            : "queued",
+    );
+  }
+  return states;
 }
 
 function mapActivityRow(
@@ -1254,6 +1316,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             WHERE later.aggregate_kind = 'thread'
               AND later.stream_id = events.stream_id
               AND later.event_type = 'thread.turn-start-requested'
+              -- Editing/removing a queued message withdraws that intent. Its
+              -- durable removal receipt must not suppress the active turn's resume.
+              AND NOT EXISTS (
+                SELECT 1 FROM projection_thread_activities AS removed
+                WHERE removed.thread_id = later.stream_id
+                  AND removed.kind = 'queue.message-removed'
+                  AND json_extract(removed.payload_json, '$.messageId') =
+                    json_extract(later.payload_json, '$.messageId')
+              )
               AND later.sequence > events.sequence
               -- Delivery receipts come from the activity projection, indexed by
               -- (thread, kind). The same test against the raw event stream walked
@@ -1393,6 +1464,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           LIMIT ${limit}
         ) AS recent_thread_messages
         ORDER BY created_at ASC, message_id ASC
+      `,
+  });
+
+  /**
+   * Where each of this thread's held (queued) user messages got to.
+   *
+   * The work obligation is the queue: a held message is queued while its
+   * `active-turn-recovery` row is unfinished, delivered once it completes, and
+   * gone once it is cancelled. Reading it here lets the snapshot state that
+   * outright instead of making the client infer it from receipt activities
+   * that fall out of the bounded activity window — which resurrected settled
+   * messages in the queue panel and hid delivered ones from the timeline.
+   */
+  const listHeldMessageObligationRows = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: HeldMessageObligationRow,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT source_turn_id AS "sourceTurnId", state, blocked_reason AS "blockedReason"
+        FROM thread_work_obligations
+        WHERE thread_id = ${threadId}
+          AND kind = 'active-turn-recovery'
+          AND source_turn_id LIKE ${`${ACTIVE_TURN_WORK_SOURCE_PREFIX}${HELD_MESSAGE_PREFIX}%`}
       `,
   });
 
@@ -3011,6 +3105,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         checkpointRows,
         latestTurnRow,
         sessionRow,
+        activeHeldRows,
       ] = yield* Effect.all([
         getActiveThreadRowById({ threadId }).pipe(
           Effect.mapError(
@@ -3086,6 +3181,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
+        listHeldMessageObligationRows({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailById:listActiveHeld:query",
+              "ProjectionSnapshotQuery.getThreadDetailById:listActiveHeld:decodeRows",
+            ),
+          ),
+        ),
       ]);
 
       if (Option.isNone(threadRow)) {
@@ -3119,7 +3222,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         snoozedAt: threadRow.value.snoozedAt,
         pendingWork: mapPendingWork(threadRow.value),
         deletedAt: null,
-        messages: messageRows.map(mapMessageRow),
+        messages: stampHeldMessageQueueState(
+          messageRows.map(mapMessageRow),
+          heldMessageQueueStates(activeHeldRows),
+        ),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
         activities:
           options?.dropSupersededToolUpdates === true
@@ -3241,7 +3347,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             input.beforeActivityCreatedAt !== undefined && input.beforeActivityId !== undefined
               ? { createdAt: input.beforeActivityCreatedAt, id: input.beforeActivityId }
               : null;
-          const [messageRows, activityRows, counts] = yield* Effect.all([
+          const [messageRows, activityRows, counts, activeHeldRows] = yield* Effect.all([
             messageCursor === null
               ? Effect.succeed([])
               : listOlderThreadMessageRows({
@@ -3280,6 +3386,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
             ),
+            listHeldMessageObligationRows({ threadId }).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getThreadHistoryPage:listActiveHeld:query",
+                  "ProjectionSnapshotQuery.getThreadHistoryPage:listActiveHeld:decodeRows",
+                ),
+              ),
+            ),
           ]);
 
           const selectedMessageRows = messageRows.slice(0, limit);
@@ -3287,7 +3401,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           const oldestMessage = selectedMessageRows[selectedMessageRows.length - 1];
           const oldestActivity = selectedActivityRows[selectedActivityRows.length - 1];
           return Option.some({
-            messages: selectedMessageRows.toReversed().map(mapMessageRow),
+            messages: stampHeldMessageQueueState(
+              selectedMessageRows.toReversed().map(mapMessageRow),
+              heldMessageQueueStates(activeHeldRows),
+            ),
             activities: trimSnapshotToolRawOutput(
               dropSupersededToolUpdates(selectedActivityRows.toReversed().map(mapActivityRow)),
             ),

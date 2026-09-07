@@ -16,6 +16,7 @@ import { ThreadPendingWorkSignal } from "../Services/ThreadPendingWorkSignal.ts"
 import {
   ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON,
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+  STOPPED_BEFORE_SEND_REASON,
   SYNTHETIC_DISPATCH_ADMITTED_REASON,
   ThreadWorkObligationRepository,
 } from "../Services/ThreadWorkObligations.ts";
@@ -28,6 +29,21 @@ const now = "2026-08-04T12:00:00.000Z";
 const later = "2026-08-04T12:01:00.000Z";
 const providerInstanceId = ProviderInstanceId.make("codex");
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+
+/** A turn this message actually started — the durable proof it reached the provider. */
+const insertStartedTurn = (threadId: ThreadId, messageId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO projection_turns (
+        thread_id, turn_id, pending_message_id, assistant_message_id, state,
+        requested_at, started_at, completed_at, checkpoint_files_json
+      ) VALUES (
+        ${threadId}, ${`turn-for-${messageId}`}, ${messageId}, NULL, 'incomplete',
+        '2026-09-07T00:00:00.000Z', '2026-09-07T00:00:00.000Z', NULL, '[]'
+      )
+    `;
+  });
 
 const insertThread = (threadId: ThreadId) =>
   Effect.gen(function* () {
@@ -74,6 +90,57 @@ const insertThread = (threadId: ThreadId) =>
   });
 
 repositoryLayer("ThreadWorkObligationRepository", (it) => {
+  for (const mode of ["user-stop", "user-supersede"] as const)
+    it.effect(`preserves a usage yield through recovery and claim, while ${mode} cancels it`, () =>
+      Effect.gen(function* () {
+        const repository = yield* ThreadWorkObligationRepository;
+        const threadId = ThreadId.make(`usage-yield-restart-${mode}`);
+        yield* insertThread(threadId);
+        yield* repository.insert({
+          obligationId: `usage-yield-owner-${mode}`,
+          threadId,
+          sourceTurnId: TurnId.make("turn-start:message"),
+          kind: "active-turn-recovery",
+          state: "sleeping",
+          providerInstanceId,
+          attempt: 2,
+          nextAttemptAt: later,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: "usage-guard-yield:provider-turn",
+          createdAt: now,
+          updatedAt: now,
+        });
+        yield* repository.recoverOrphanedClaims({ updatedAt: later, limit: 10 });
+        const claimed = yield* repository.claim({
+          obligationId: `usage-yield-owner-${mode}`,
+          now: later,
+          leaseExpiresAt: "2026-08-04T12:02:00.000Z",
+        });
+        assert.strictEqual(
+          Option.getOrNull(claimed)?.blockedReason,
+          "usage-guard-yield:provider-turn",
+        );
+        yield* repository.cancelByThread({
+          threadId,
+          updatedAt: later,
+          blockedReason: "thread.turn-interrupt-requested",
+          mode,
+        });
+        const stopped = yield* repository.getById(`usage-yield-owner-${mode}`);
+        assert.strictEqual(Option.getOrNull(stopped)?.state, "cancelled");
+        assert.isTrue(
+          Option.isNone(
+            yield* repository.claim({
+              obligationId: `usage-yield-owner-${mode}`,
+              now: later,
+              leaseExpiresAt: later,
+            }),
+          ),
+        );
+      }),
+    );
+
   it.effect("normalizes provider timestamps to the trigger's millisecond contract", () =>
     Effect.gen(function* () {
       // An external bridge stamps events at microsecond precision (27
@@ -446,6 +513,25 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       assert.strictEqual(yield* stateOf(`${supersedeThread}:supervisor`), "cancelled");
       assert.strictEqual(yield* stateOf(`${supersedeThread}:queued-continuation`), "cancelled");
 
+      const heldThread = ThreadId.make("thread-held-cooldown");
+      yield* insertThread(heldThread);
+      yield* repository.insert({
+        ...base(heldThread),
+        obligationId: `${heldThread}:held-delivery`,
+        sourceTurnId: TurnId.make("turn-start:held-user-message:first"),
+        kind: "active-turn-recovery",
+        state: "sleeping",
+        nextAttemptAt: later,
+        blockedReason: "usage guard cooldown",
+      });
+      yield* repository.cancelByThread({
+        threadId: heldThread,
+        updatedAt: later,
+        blockedReason: "superseded by user turn",
+        mode: "user-supersede",
+      });
+      assert.strictEqual(yield* stateOf(`${heldThread}:held-delivery`), "sleeping");
+
       // A user send may also land after the scheduler claimed a synthetic
       // resume but before its handler reached executing. Both continuation
       // kinds must lose that race; an executing supervisor remains protected.
@@ -568,10 +654,15 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       assert.isNull(requeued.blockedReason);
       assert.strictEqual(requeued.updatedAt, later);
 
-      // A claimed delivery without that marker is supervising its own started
-      // turn: it is the interrupted work and cancels like any supervisor.
+      // A delivery whose own turn already started is the interrupted work and
+      // cancels like any supervisor. What marks it is the turn it started —
+      // a projection_turns row keyed by its message — not the absence of a
+      // blocked_reason: the marker is best-effort and written on only one of
+      // the handler's two branches, so "no marker" also describes a message
+      // that never sent at all.
       const startedDeliveryThread = ThreadId.make("thread-work-mode-interrupt-started-delivery");
       yield* insertThread(startedDeliveryThread);
+      yield* insertStartedTurn(startedDeliveryThread, "running-message");
       yield* repository.insert({
         ...base(startedDeliveryThread),
         obligationId: `${startedDeliveryThread}:running-delivery`,
@@ -592,6 +683,93 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
         1,
       );
       assert.strictEqual(yield* stateOf(`${startedDeliveryThread}:running-delivery`), "cancelled");
+
+      // Stop is the button a person reaches for when queued messages are not
+      // going out, so it must not be the thing that destroys them. Observed
+      // 2026-09-07: four messages typed while a turn ran, none ever sent, all
+      // four cancelled by one Stop. `thread.turn-interrupt-requested` maps to
+      // `user-stop`, and the release path was gated on `turn-interrupt`, so
+      // the protection added for exactly this never ran for the real button.
+      const stopThread = ThreadId.make("thread-work-mode-user-stop-queue");
+      yield* insertThread(stopThread);
+      // Only one row may be active per thread (the partial unique index), so
+      // the queue behind a turn is two unclaimed messages plus the one the
+      // scheduler is working — exactly the shape that was lost.
+      for (const [suffix, state] of [
+        ["never-claimed", "pending"],
+        ["waiting-its-turn", "pending"],
+        ["supervising", "executing"],
+      ] as const) {
+        yield* repository.insert({
+          ...base(stopThread),
+          obligationId: `${stopThread}:${suffix}`,
+          sourceTurnId: TurnId.make(`turn-start:held-user-message:${suffix}`),
+          kind: "active-turn-recovery",
+          state,
+          ...(state === "executing" ? { claimedAt: now, leaseExpiresAt: later } : {}),
+        });
+      }
+      // All three are cancelled as scheduler work — parked, not destroyed.
+      assert.strictEqual(
+        yield* repository.cancelByThread({
+          threadId: stopThread,
+          updatedAt: later,
+          blockedReason: "thread.turn-interrupt-requested",
+          mode: "user-stop",
+        }),
+        3,
+      );
+      // Every message that never left the queue survives, whatever state the
+      // scheduler had it in — parked, not pending. `pending` is claimable the
+      // instant Stop idles the thread, so releasing here made Stop kill one
+      // turn and start the next a second later; the person pressing it saw a
+      // model that would not stop (observed 2026-09-07 on 0.1.469).
+      for (const suffix of ["never-claimed", "waiting-its-turn", "supervising"] as const) {
+        const parked = yield* repository.getById(`${stopThread}:${suffix}`);
+        assert.isTrue(Option.isSome(parked));
+        if (Option.isNone(parked)) continue;
+        assert.strictEqual(parked.value.state, "cancelled");
+        assert.strictEqual(parked.value.blockedReason, STOPPED_BEFORE_SEND_REASON);
+      }
+      // Nothing on the thread is claimable afterwards: that is the whole point.
+      const stopSql = yield* SqlClient.SqlClient;
+      const claimableAfterStop = yield* stopSql<{ readonly count: number }>`
+        SELECT COUNT(*) AS "count"
+        FROM thread_work_obligations
+        WHERE thread_id = ${stopThread}
+          AND state NOT IN ('completed', 'cancelled')
+      `;
+      assert.strictEqual(
+        claimableAfterStop[0]?.count,
+        0,
+        "Stop left a live obligation behind, so a new turn starts by itself",
+      );
+
+      // A queued message that DID reach the provider is the interrupted work
+      // itself, and Stop still ends it.
+      const stopSentThread = ThreadId.make("thread-work-mode-user-stop-sent");
+      yield* insertThread(stopSentThread);
+      yield* insertStartedTurn(stopSentThread, "held-user-message:sent");
+      yield* repository.insert({
+        ...base(stopSentThread),
+        obligationId: `${stopSentThread}:already-sent`,
+        sourceTurnId: TurnId.make("turn-start:held-user-message:sent"),
+        kind: "active-turn-recovery",
+        state: "executing",
+        attempt: 1,
+        claimedAt: now,
+        leaseExpiresAt: later,
+      });
+      assert.strictEqual(
+        yield* repository.cancelByThread({
+          threadId: stopSentThread,
+          updatedAt: later,
+          blockedReason: "thread.turn-interrupt-requested",
+          mode: "user-stop",
+        }),
+        1,
+      );
+      assert.strictEqual(yield* stateOf(`${stopSentThread}:already-sent`), "cancelled");
 
       // The marker only ever lands on an executing claim of the same attempt.
       const markerThread = ThreadId.make("thread-work-mode-marker");
@@ -1443,6 +1621,152 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
           ),
         );
       }
+    }),
+  );
+
+  it.effect("a sleeping agent loop yields its slot to a queued user message", () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadWorkObligationRepository;
+      const row = (input: {
+        readonly threadId: ThreadId;
+        readonly obligationId: string;
+        readonly sourceTurnId: string;
+        readonly kind: "agent-continuation" | "active-turn-recovery" | "provider-retry";
+        readonly state: "pending" | "executing" | "sleeping";
+      }) => ({
+        obligationId: input.obligationId,
+        threadId: input.threadId,
+        sourceTurnId: TurnId.make(input.sourceTurnId),
+        kind: input.kind,
+        state: input.state,
+        providerInstanceId,
+        attempt: input.state === "pending" ? 0 : 1,
+        nextAttemptAt: input.state === "sleeping" ? later : null,
+        claimedAt: input.state === "executing" ? now : null,
+        leaseExpiresAt: input.state === "executing" ? later : null,
+        blockedReason: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const stateOf = (obligationId: string) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const rows = yield* sql`
+            SELECT state FROM thread_work_obligations WHERE obligation_id = ${obligationId}
+          `;
+          return (rows[0] as { readonly state: string }).state;
+        });
+
+      // The reported bug. While a background task lives the continuation sleeps
+      // in short hops, and `sleeping` holds the thread's one active slot, so a
+      // message typed meanwhile was never a candidate and only went out when
+      // the user pressed Stop.
+      const held = ThreadId.make("thread-yield-held");
+      yield* insertThread(held);
+      yield* repository.insert(
+        row({
+          threadId: held,
+          obligationId: `${held}:continuation`,
+          sourceTurnId: "turn-continuation",
+          kind: "agent-continuation",
+          state: "sleeping",
+        }),
+      );
+      yield* repository.insert(
+        row({
+          threadId: held,
+          obligationId: `${held}:held`,
+          sourceTurnId: "turn-start:held-user-message:first",
+          kind: "active-turn-recovery",
+          state: "pending",
+        }),
+      );
+      assert.isTrue(
+        Option.isNone(
+          yield* repository.claim({ obligationId: `${held}:held`, now, leaseExpiresAt: later }),
+        ),
+      );
+
+      assert.strictEqual(yield* repository.yieldSleepingWorkToQueuedUserMessages(now), 1);
+      assert.strictEqual(yield* stateOf(`${held}:continuation`), "pending");
+
+      // The delivery outranks the loop it displaced, so it is the thread's one
+      // scheduled candidate and claims cleanly.
+      const due = yield* repository.listSchedulable({ providerInstanceId, now, limit: 256 });
+      const forThread = due.filter((entry) => entry.threadId === held);
+      assert.deepStrictEqual(
+        forThread.map((entry) => entry.obligationId),
+        [`${held}:held`],
+      );
+      assert.isTrue(
+        Option.isSome(
+          yield* repository.claim({ obligationId: `${held}:held`, now, leaseExpiresAt: later }),
+        ),
+      );
+
+      // A live turn is not demoted: the queued message waits for it to finish,
+      // which is the contract the queue panel states.
+      const running = ThreadId.make("thread-yield-running");
+      yield* insertThread(running);
+      yield* repository.insert(
+        row({
+          threadId: running,
+          obligationId: `${running}:continuation`,
+          sourceTurnId: "turn-continuation",
+          kind: "agent-continuation",
+          state: "executing",
+        }),
+      );
+      yield* repository.insert(
+        row({
+          threadId: running,
+          obligationId: `${running}:held`,
+          sourceTurnId: "turn-start:held-user-message:first",
+          kind: "active-turn-recovery",
+          state: "pending",
+        }),
+      );
+
+      // A sleeping retry keeps its backoff; re-running it early is what
+      // hammers a failing provider.
+      const retry = ThreadId.make("thread-yield-retry");
+      yield* insertThread(retry);
+      yield* repository.insert(
+        row({
+          threadId: retry,
+          obligationId: `${retry}:retry`,
+          sourceTurnId: "turn-retry",
+          kind: "provider-retry",
+          state: "sleeping",
+        }),
+      );
+      yield* repository.insert(
+        row({
+          threadId: retry,
+          obligationId: `${retry}:held`,
+          sourceTurnId: "turn-start:held-user-message:first",
+          kind: "active-turn-recovery",
+          state: "pending",
+        }),
+      );
+
+      // And a sleeping loop with nothing queued behind it stays asleep.
+      const quiet = ThreadId.make("thread-yield-quiet");
+      yield* insertThread(quiet);
+      yield* repository.insert(
+        row({
+          threadId: quiet,
+          obligationId: `${quiet}:continuation`,
+          sourceTurnId: "turn-continuation",
+          kind: "agent-continuation",
+          state: "sleeping",
+        }),
+      );
+
+      assert.strictEqual(yield* repository.yieldSleepingWorkToQueuedUserMessages(now), 0);
+      assert.strictEqual(yield* stateOf(`${running}:continuation`), "executing");
+      assert.strictEqual(yield* stateOf(`${retry}:retry`), "sleeping");
+      assert.strictEqual(yield* stateOf(`${quiet}:continuation`), "sleeping");
     }),
   );
 

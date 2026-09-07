@@ -73,6 +73,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as PreviewManager from "../../preview/Manager.ts";
+import { ProviderUsageGuardNoop } from "./ProviderUsageGuard.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -793,6 +794,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(previewLayer),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ProviderUsageGuardNoop),
       Layer.provideMerge(NodeServices.layer),
     );
     const managedRuntime = ManagedRuntime.make(layer);

@@ -342,6 +342,14 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => `${environmentId}:${input.instanceId}`,
       },
     }),
+    resumeUsageGuard: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:resume-usage-guard",
+      tag: WS_METHODS.serverResumeUsageGuard,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.threadId}`,
+      },
+    }),
     startProviderAccountSwitch: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:start-provider-account-switch",
       tag: WS_METHODS.serverStartProviderAccountSwitch,

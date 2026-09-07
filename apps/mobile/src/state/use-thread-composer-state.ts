@@ -1,3 +1,4 @@
+import { HELD_MESSAGE_PREFIX } from "@t3tools/shared/heldMessages";
 import { isThreadSessionWorking } from "@t3tools/client-runtime/state/thread-activity";
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -443,7 +444,11 @@ export function useThreadComposerState() {
     }
 
     const metadata = makeQueuedMessageMetadata();
-    const messageId = MessageId.make(metadata.messageId);
+    const messageId = MessageId.make(
+      selectedThreadShell.pendingWork?.state === "sleeping"
+        ? `${HELD_MESSAGE_PREFIX}${metadata.messageId}`
+        : metadata.messageId,
+    );
     try {
       await enqueueThreadOutboxMessage({
         environmentId: selectedThreadShell.environmentId,

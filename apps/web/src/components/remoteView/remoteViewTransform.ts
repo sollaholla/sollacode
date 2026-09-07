@@ -5,10 +5,10 @@
  * of someone else's screen, scaled to fit. On a phone that fit is small enough
  * that hitting a link or a menu item is guesswork, so the viewer needs to
  * magnify a corner and move around inside it - and moving around is the part
- * that cannot coexist with forwarding drags to the remote machine. Hence a
- * mode: while the view is being adjusted, drags pan the picture and nothing
- * reaches the host; leaving the mode locks the view in and gives the drags
- * back.
+ * that cannot coexist with forwarding drags to the remote machine. Hence the
+ * split by finger count: one finger belongs to the remote machine, two
+ * fingers belong to the picture (pinch to zoom, drag both to move), and
+ * nothing reaches the host while two are down.
  *
  * The transform is expressed as `translate(pan) scale(zoom)` about a percentage
  * origin. Panning is a pure screen-space translation, which keeps it
@@ -20,8 +20,15 @@
 
 export const REMOTE_VIEW_ZOOM_STEPS = [1, 1.5, 2, 3, 4] as const;
 
-export const REMOTE_VIEW_MAX_ZOOM: number =
-  REMOTE_VIEW_ZOOM_STEPS[REMOTE_VIEW_ZOOM_STEPS.length - 1] ?? 1;
+/**
+ * Where a pinch stops. Higher than the last button step: a pinch is
+ * continuous, so there is no "one more press" to worry about, and a phone
+ * reading a 4K desktop needs the extra reach to hit a menu item.
+ */
+export const REMOTE_VIEW_MAX_ZOOM = 6;
+
+/** Below this a pinch snaps back to a clean fit rather than a 1.02x with a pan. */
+const REMOTE_VIEW_SNAP_TO_FIT_ZOOM = 1.05;
 
 export type RemoteViewPoint = { readonly x: number; readonly y: number };
 
@@ -129,6 +136,68 @@ export function zoomOutRemoteView(input: {
       pane: input.pane,
     }),
   };
+}
+
+/** Two fingers on the pane: where they are between, and how far apart. */
+export type RemoteViewPinch = {
+  /** Midpoint in pane pixels, measured from the pane's top-left corner. */
+  readonly midpoint: RemoteViewPoint;
+  /** Distance between the fingers in pixels. */
+  readonly distance: number;
+};
+
+export function remoteViewPinchOf(a: RemoteViewPoint, b: RemoteViewPoint): RemoteViewPinch {
+  return {
+    midpoint: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+    distance: Math.hypot(b.x - a.x, b.y - a.y),
+  };
+}
+
+/**
+ * Follow a pinch from where it started.
+ *
+ * Everything is computed from the gesture's starting view rather than the
+ * previous sample, so a jittery pair of fingers cannot accumulate drift: the
+ * zoom is the start zoom scaled by how far the fingers have spread, and the
+ * pan is whatever keeps the picture that was under the fingers' first midpoint
+ * under their current midpoint. Fingers that move together without spreading
+ * are therefore a pure pan, which is what makes "hold both and drag" work
+ * without a separate mode.
+ *
+ * With the picture rendering a point at fraction `f` of itself at
+ * `f*size*zoom + origin*(1-zoom) + pan`, the fraction under the start midpoint
+ * is recovered from the start view, and the new pan is solved from the same
+ * equation at the new zoom and the new midpoint.
+ */
+export function pinchRemoteView(input: {
+  readonly start: RemoteViewTransform;
+  readonly from: RemoteViewPinch;
+  readonly to: RemoteViewPinch;
+  readonly pane: RemoteViewSize | null;
+}): RemoteViewTransform {
+  const pane = input.pane;
+  if (pane === null || pane.width <= 0 || pane.height <= 0) return input.start;
+  const ratio = input.from.distance > 0 ? input.to.distance / input.from.distance : 1;
+  const zoom = Math.min(REMOTE_VIEW_MAX_ZOOM, Math.max(1, input.start.zoom * ratio));
+  if (zoom < REMOTE_VIEW_SNAP_TO_FIT_ZOOM) return REMOTE_VIEW_IDENTITY;
+  const origin = input.start.origin;
+  const axis = (
+    startMid: number,
+    mid: number,
+    originPercent: number,
+    size: number,
+    startPan: number,
+  ): number => {
+    const originPx = (originPercent / 100) * size;
+    const fraction =
+      (startMid - originPx * (1 - input.start.zoom) - startPan) / (size * input.start.zoom);
+    return mid - fraction * size * zoom - originPx * (1 - zoom);
+  };
+  const pan = {
+    x: axis(input.from.midpoint.x, input.to.midpoint.x, origin.x, pane.width, input.start.pan.x),
+    y: axis(input.from.midpoint.y, input.to.midpoint.y, origin.y, pane.height, input.start.pan.y),
+  };
+  return { zoom, origin, pan: clampRemoteViewPan({ pan, zoom, origin, pane }) };
 }
 
 /** Move the picture by a screen-space drag, staying within the pane. */

@@ -271,6 +271,19 @@ public static class SollaRemoteInput {
   });
 });
 
+describe("macOS mouse-look", () => {
+  it("carries motion in the event's delta fields, not just its position", () => {
+    // A game that has captured the cursor reads NSEvent deltaX/deltaY, which
+    // come from the CGEvent's delta fields. CGEventCreateMouseEvent leaves
+    // them at zero, so the FPS look pad warped the hidden cursor around and
+    // turned the camera by nothing at all.
+    const source = remoteInputScriptSource("darwin");
+    assert.include(source, "CGEventSetIntegerValueField(event, kMouseEventDeltaX");
+    assert.include(source, "CGEventSetIntegerValueField(event, kMouseEventDeltaY");
+    assert.include(source, 'typeof input.dx === "number" ? input.dx : point.x - previous.x');
+  });
+});
+
 describe("macOS remote input script framework imports", () => {
   it("imports AppKit, because NSScreen is not in Foundation", () => {
     const source = remoteInputScriptSource("darwin");

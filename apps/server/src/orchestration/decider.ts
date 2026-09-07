@@ -1,3 +1,4 @@
+import { isHeldMessageId } from "@t3tools/shared/heldMessages";
 import {
   AGENT_BUILDER_THREAD_ID,
   EventId,
@@ -873,12 +874,81 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.queued-message.remove": {
+      const thread = yield* requireThreadNotDeleted({
+        command,
+        readModel,
+        threadId: command.threadId,
+      });
+      // Only a delivery that is actually in flight is off limits: an executing
+      // obligation on a thread whose provider session is running a turn. A
+      // usage-guard hold keeps the obligation "executing"/"claimed" for the
+      // whole wait with no turn running, and refusing there left queued
+      // messages that could not be cancelled until the hold lifted.
+      const delivering =
+        (thread.pendingWork?.state === "executing" || thread.pendingWork?.state === "claimed") &&
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId != null;
+      if (delivering) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Work is being delivered. Wait for it to settle before changing the queue.",
+        });
+      }
+      if (!isHeldMessageId(command.messageId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only a queued message can be removed from the queue.",
+        });
+      }
+      // Deliberately no "is it still queued?" check. The command read model
+      // boots with empty message lists and only learns messages from events
+      // seen since startup, so any held message created before the last
+      // restart looked absent and the remove produced no events — which the
+      // engine reports as an invariant failure. That is exactly the queued
+      // message a user goes back to cancel. Removing something already gone
+      // is a no-op downstream (the projection only cancels an obligation that
+      // is still live), so the honest behaviour is to accept it and record the
+      // removal, which is also what tells every client to drop the row.
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.activity-appended",
+        payload: {
+          threadId: command.threadId,
+          activity: {
+            id: EventId.make(`queue-remove:${command.commandId}`),
+            kind: "queue.message-removed",
+            tone: "info",
+            summary: "Queued message removed",
+            payload: { messageId: command.messageId },
+            turnId: null,
+            createdAt: command.createdAt,
+          },
+        },
+      };
+    }
+
     case "thread.turn.start": {
       const targetThread = yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const expectedResume = command.expectedResumeSource;
+      if (
+        expectedResume !== undefined &&
+        (targetThread.latestTurn?.turnId !== expectedResume.turnId ||
+          targetThread.session?.updatedAt !== expectedResume.sessionUpdatedAt ||
+          (targetThread.messages.findLast((message) => message.role === "user")?.id ?? null) !==
+            expectedResume.latestUserMessageId ||
+          targetThread.settledOverride === "settled")
+      )
+        return [];
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThreadNotDeleted({

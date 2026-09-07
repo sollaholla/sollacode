@@ -1,0 +1,40 @@
+import { afterEach, expect, it, vi } from "vite-plus/test";
+import { createTouchPressDelay, TOUCH_PRESS_DELAY_MS } from "./touchPressDelay";
+afterEach(() => vi.useRealTimers());
+it("cancels the first finger when the second arrives during the grace period", () => {
+  vi.useFakeTimers();
+  const delay = createTouchPressDelay();
+  const down = vi.fn();
+  const move = vi.fn();
+  delay.start(down);
+  vi.advanceTimersByTime(180);
+  delay.move(move);
+  delay.cancel();
+  vi.advanceTimersByTime(1000);
+  expect(down).not.toHaveBeenCalled();
+  expect(move).not.toHaveBeenCalled();
+});
+it("delivers a short tap on release without waiting out the delay", () => {
+  vi.useFakeTimers();
+  const delay = createTouchPressDelay();
+  const events: string[] = [];
+  delay.start(() => events.push("down"));
+  vi.advanceTimersByTime(50);
+  delay.flush();
+  events.push("up");
+  vi.advanceTimersByTime(1000);
+  expect(events).toEqual(["down", "up"]);
+});
+it("starts a held drag after the grace period and keeps only its latest buffered move", () => {
+  vi.useFakeTimers();
+  const delay = createTouchPressDelay();
+  const events: string[] = [];
+  delay.start(() => events.push("down"));
+  delay.move(() => events.push("old move"));
+  delay.move(() => events.push("latest move"));
+  vi.advanceTimersByTime(TOUCH_PRESS_DELAY_MS);
+  expect(events).toEqual(["down", "latest move"]);
+  expect(delay.move(() => {})).toBe(false);
+  delay.flush();
+  expect(events).toHaveLength(2);
+});

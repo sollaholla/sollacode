@@ -670,6 +670,18 @@ describe("resolveSidebarV2Status", () => {
 
   const idle = { hasPendingApprovals: false, hasPendingUserInput: false };
 
+  it("keeps cooled-down and queued work working without a live provider turn", () => {
+    for (const kind of ["startup-resume", "active-turn-recovery", "agent-continuation"]) {
+      expect(
+        resolveSidebarV2Status({
+          ...idle,
+          session: { ...session, status: "ready", activeTurnId: null },
+          pendingWork: { kind, state: "sleeping", since: "2026-09-06T17:00:00.000Z" },
+        }),
+      ).toBe("working");
+    }
+  });
+
   it("prioritizes approval over a running session", () => {
     expect(resolveSidebarV2Status({ ...idle, hasPendingApprovals: true, session })).toBe(
       "approval",

@@ -13,6 +13,7 @@ import type {
   ProviderUsageResetOutcome,
   ServerProvider,
   ServerProviderUpdateState,
+  ServerProviderUsageGuardState,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -88,6 +89,16 @@ export interface ProviderRegistryShape {
     readonly instanceId: ProviderInstanceId;
     readonly action: ProviderMaintenanceActionKind;
     readonly state: ServerProviderUpdateState | null;
+  }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  /**
+   * Project the usage guard's live reading onto one instance's snapshot.
+   * Volatile like the maintenance-action state above: never persisted, and
+   * re-published by the guard on every provider usage report.
+   */
+  readonly setProviderUsageGuardState: (input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly state: ServerProviderUsageGuardState | null;
   }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**

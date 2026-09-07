@@ -15,6 +15,7 @@ import { ThreadPendingWorkSignalLive } from "./ThreadPendingWorkSignal.ts";
 import {
   ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON,
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+  STOPPED_BEFORE_SEND_REASON,
   SYNTHETIC_DISPATCH_ADMITTED_REASON,
   CancelThreadWorkByThreadInput,
   MarkExecutingThreadWorkReasonInput,
@@ -41,6 +42,11 @@ class ThreadWorkHandoffConflict extends Schema.TaggedErrorClass<ThreadWorkHandof
 ) {}
 
 const ReturnedId = Schema.Struct({ obligationId: Schema.String });
+const ReturnedThreadRow = Schema.Struct({
+  obligationId: Schema.String,
+  threadId: Schema.String,
+});
+const YieldSleepingWorkInput = Schema.Struct({ now: Schema.String });
 const ReturnedThreadRef = Schema.Struct({ obligationId: Schema.String, threadId: Schema.String });
 const ReturnedProviderInstanceId = Schema.Struct({ providerInstanceId: ProviderInstanceId });
 const GetByIdInput = Schema.Struct({ obligationId: Schema.String });
@@ -433,7 +439,7 @@ const make = Effect.gen(function* () {
         next_attempt_at = NULL,
         claimed_at = ${isoOrNull(now)},
         lease_expires_at = ${isoOrNull(leaseExpiresAt)},
-        blocked_reason = NULL,
+        blocked_reason = CASE WHEN blocked_reason LIKE 'usage-guard-yield:%' THEN blocked_reason ELSE NULL END,
         updated_at = ${iso(now)}
       WHERE obligation_id = ${obligationId}
         AND (
@@ -564,6 +570,15 @@ const make = Effect.gen(function* () {
                 WHERE later.aggregate_kind = 'thread'
                   AND later.stream_id = source_event.stream_id
                   AND later.event_type = 'thread.turn-start-requested'
+                  -- Editing/removing a queued message withdraws that intent. Its
+                  -- durable removal receipt must not suppress the active turn's resume.
+                  AND NOT EXISTS (
+                    SELECT 1 FROM projection_thread_activities AS removed
+                    WHERE removed.thread_id = later.stream_id
+                      AND removed.kind = 'queue.message-removed'
+                      AND json_extract(removed.payload_json, '$.messageId') =
+                        json_extract(later.payload_json, '$.messageId')
+                  )
                   AND later.sequence > source_event.sequence
                   AND json_extract(later.payload_json, '$.messageId') NOT LIKE 'agent-auto-resume-message:%'
                   AND json_extract(later.payload_json, '$.messageId') NOT LIKE 'startup-auto-resume-message:%'
@@ -623,22 +638,54 @@ const make = Effect.gen(function* () {
    * already started carries no marker: it IS the interrupted work and still
    * cancels.
    */
-  const releaseUndeliveredQueuedDeliveries = SqlSchema.findAll({
+  /**
+   * Settles the queued messages a cancel found undelivered, sparing them from
+   * the sweep that follows. The two callers want opposite things from the same
+   * set of rows, so the target state is chosen here rather than in a second
+   * copy of this predicate:
+   *
+   * - `turn-interrupt` is the server replacing a turn (handoff, settings
+   *   change). Nobody asked for the thread to go quiet, so the message goes
+   *   back to `pending` and sends as soon as the thread is free.
+   * - `user-stop` is a person asking for silence. `pending` is re-claimed the
+   *   moment Stop idles the thread, so releasing here made Stop start a fresh
+   *   turn a second after killing one. The row is parked terminal instead and
+   *   the message survives in the queue panel — see STOPPED_BEFORE_SEND_REASON.
+   */
+  const settleUndeliveredQueuedDeliveries = SqlSchema.findAll({
     Request: CancelThreadWorkByThreadInput,
     Result: ReturnedId,
     execute: (input) => sql`
       UPDATE thread_work_obligations
       SET
-        state = 'pending',
+        state = CASE WHEN ${input.mode} = 'user-stop' THEN 'cancelled' ELSE 'pending' END,
         next_attempt_at = NULL,
         claimed_at = NULL,
         lease_expires_at = NULL,
-        blocked_reason = NULL,
+        blocked_reason = CASE
+          WHEN ${input.mode} = 'user-stop' THEN ${STOPPED_BEFORE_SEND_REASON}
+          ELSE NULL
+        END,
         updated_at = ${iso(input.updatedAt)}
       WHERE thread_id = ${input.threadId}
         AND kind = 'active-turn-recovery'
-        AND state IN ('claimed', 'executing')
-        AND blocked_reason = ${ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON}
+        AND state NOT IN ('completed', 'cancelled')
+        -- Was this message ever actually handed to the provider? A delivery
+        -- that started a turn owns a projection_turns row keyed by its
+        -- message id; one that never sent has none. That is durable state, so
+        -- unlike the in-memory marker it is true for EVERY undelivered queued
+        -- message rather than only the one row that happened to reach the
+        -- supervise branch and write it. Observed 2026-09-07: three messages a
+        -- person typed were destroyed by Stop, two of them never even claimed
+        -- (pending, so outside the old ('claimed','executing') filter) and
+        -- one looping in the steer retry, which returns before the marker is
+        -- written. None were spared; all three were lost.
+        AND NOT EXISTS (
+          SELECT 1 FROM projection_turns AS started
+          WHERE started.thread_id = thread_work_obligations.thread_id
+            AND started.pending_message_id =
+              substr(thread_work_obligations.source_turn_id, length('turn-start:') + 1)
+        )
         AND source_turn_id IS NOT ${input.exceptSourceTurnId ?? null}
         AND (${input.expectedSession?.updatedAt ?? null} IS NULL OR EXISTS (
           SELECT 1 FROM projection_thread_sessions AS session
@@ -664,6 +711,29 @@ const make = Effect.gen(function* () {
         updated_at = ${iso(input.updatedAt)}
       WHERE thread_id = ${input.threadId}
         AND source_turn_id IS NOT ${input.exceptSourceTurnId ?? null}
+        AND NOT (
+          ${input.mode} = 'user-supersede'
+          AND kind = 'active-turn-recovery'
+          AND source_turn_id LIKE 'turn-start:held-user-message:%'
+        )
+        -- Whatever settleUndeliveredQueuedDeliveries just parked or handed back to
+        -- pending in this same transaction must survive the sweep that runs
+        -- straight after it, or the release is undone the instant it happens.
+        -- Deliberately still cancels a queued message that DID start a turn:
+        -- that row is the interrupted work itself. completed is left alone
+        -- so the unacknowledged-steer rule below keeps its meaning.
+        AND NOT (
+          ${input.mode} IN ('user-stop', 'turn-interrupt')
+          AND kind = 'active-turn-recovery'
+          AND source_turn_id LIKE 'turn-start:held-user-message:%'
+          AND state NOT IN ('completed', 'cancelled')
+          AND NOT EXISTS (
+            SELECT 1 FROM projection_turns AS started
+            WHERE started.thread_id = thread_work_obligations.thread_id
+              AND started.pending_message_id =
+                substr(thread_work_obligations.source_turn_id, length('turn-start:') + 1)
+          )
+        )
         AND (${input.expectedSession?.updatedAt ?? null} IS NULL OR EXISTS (
           SELECT 1 FROM projection_thread_sessions AS session
           WHERE session.thread_id = ${input.threadId}
@@ -685,10 +755,12 @@ const make = Effect.gen(function* () {
         AND (
           ${input.mode} = 'thread-terminal'
           OR ${input.mode} = 'user-stop'
+          OR blocked_reason LIKE 'usage-guard-yield:%'
           OR NOT (state = 'pending' AND kind = 'active-turn-recovery')
         )
         AND (
           ${input.mode} <> 'user-supersede'
+          OR blocked_reason LIKE 'usage-guard-yield:%'
           OR state NOT IN ('claimed', 'executing')
           -- A claimed-but-not-yet-running synthetic resume is work a user
           -- reply must beat: the handler's own CAS to 'executing' fails on the
@@ -720,7 +792,7 @@ const make = Effect.gen(function* () {
         next_attempt_at = NULL,
         claimed_at = NULL,
         lease_expires_at = NULL,
-        blocked_reason = 'recovered after scheduler restart',
+        blocked_reason = CASE WHEN blocked_reason LIKE 'usage-guard-yield:%' THEN blocked_reason ELSE 'recovered after scheduler restart' END,
         updated_at = ${iso(updatedAt)}
       WHERE obligation_id IN (
         SELECT obligation_id
@@ -754,6 +826,41 @@ const make = Effect.gen(function* () {
         LIMIT ${Math.max(0, Math.min(256, limit))}
       )
       RETURNING obligation_id AS "obligationId"
+    `,
+  });
+
+  // An agent thread's continuation sleeps in short hops for as long as a
+  // background task lives, and `sleeping` holds the thread's one active slot
+  // (idx_thread_work_obligations_one_active_thread), so a message the person
+  // typed meanwhile could never be claimed and only went out when they pressed
+  // Stop. Demoting the sleeper back to `pending` hands the slot to the queued
+  // delivery, which outranks it in the scheduling order, and the sleeper is
+  // claimed again as soon as the message has gone out. Only the agent's own
+  // loop yields: provider retries and authentication resumes keep their
+  // backoff, because re-running those early is what hammers a failing provider.
+  const yieldSleepingWorkRows = SqlSchema.findAll({
+    Request: YieldSleepingWorkInput,
+    Result: ReturnedThreadRow,
+    execute: ({ now }) => sql`
+      UPDATE thread_work_obligations
+      SET
+        state = 'pending',
+        next_attempt_at = NULL,
+        claimed_at = NULL,
+        lease_expires_at = NULL,
+        updated_at = ${iso(now)}
+      WHERE state = 'sleeping'
+        AND kind IN ('agent-continuation', 'startup-resume')
+        AND EXISTS (
+          SELECT 1
+          FROM thread_work_obligations AS queued
+          WHERE queued.thread_id = thread_work_obligations.thread_id
+            AND queued.obligation_id <> thread_work_obligations.obligation_id
+            AND queued.state = 'pending'
+            AND queued.kind = 'active-turn-recovery'
+            AND queued.source_turn_id LIKE 'turn-start:held-user-message:%'
+        )
+      RETURNING obligation_id AS "obligationId", thread_id AS "threadId"
     `,
   });
 
@@ -1014,16 +1121,41 @@ const make = Effect.gen(function* () {
         mapError("tryAdmitSyntheticDispatch"),
         Effect.map(Option.isSome),
       ),
+    yieldSleepingWorkToQueuedUserMessages: (now) =>
+      yieldSleepingWorkRows({ now }).pipe(
+        mapError("yieldSleepingWorkToQueuedUserMessages"),
+        Effect.tap((rows) =>
+          Effect.forEach(
+            Array.from(new Set(rows.map(({ threadId }) => threadId))),
+            (threadId) => refreshPendingWork(threadId),
+            { concurrency: 1, discard: true },
+          ),
+        ),
+        Effect.map((rows) => rows.length),
+      ),
     cancelByThread: (input) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
-            const released =
-              input.mode === "turn-interrupt"
-                ? yield* releaseUndeliveredQueuedDeliveries(input)
+            // A person pressing Stop is ending the agent's turn, not
+            // un-typing the messages they have not sent yet. `user-stop` was
+            // excluded here, so the whole release path was dead for the only
+            // button that actually triggers it — the marker added for exactly
+            // this in 0.1.372 protected nothing. Terminal modes (delete,
+            // settle) still take everything with them.
+            const settled =
+              input.mode === "turn-interrupt" || input.mode === "user-stop"
+                ? yield* settleUndeliveredQueuedDeliveries(input)
                 : [];
-            const rows = yield* cancelRowsByThread(input);
-            if (rows.length === 0 && released.length === 0) {
+            // Under `user-stop` those rows were parked terminal, so they are
+            // cancelled work and belong with the sweep's: they are counted as
+            // cancelled and their pending turn start is cleared, or a launch
+            // already staged for the message fires anyway and Stop is undone.
+            // Under `turn-interrupt` the same rows went back to `pending` and
+            // are the opposite — live work that must keep its launch.
+            const parked = input.mode === "user-stop" ? settled : [];
+            const rows = [...(yield* cancelRowsByThread(input)), ...parked];
+            if (rows.length === 0 && settled.length === 0) {
               return { cancelled: rows, changed: false };
             }
             yield* Effect.forEach(

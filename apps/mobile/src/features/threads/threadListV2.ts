@@ -1,4 +1,7 @@
-import { isThreadSessionWorking } from "@t3tools/client-runtime/state/thread-activity";
+import {
+  isThreadSessionWorking,
+  hasPendingThreadWork,
+} from "@t3tools/client-runtime/state/thread-activity";
 import { effectiveSettled, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
@@ -52,7 +55,7 @@ export function resolveThreadListV2Status(
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (isThreadSessionWorking(thread)) {
+  if (isThreadSessionWorking(thread) || hasPendingThreadWork(thread)) {
     return "working";
   }
   if (thread.session?.status === "error") {

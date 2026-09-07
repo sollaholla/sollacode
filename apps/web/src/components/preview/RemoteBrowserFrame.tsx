@@ -24,11 +24,7 @@ import {
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
-import {
-  RemoteViewAdjustLayer,
-  RemoteViewZoomToggle,
-  useRemoteViewZoom,
-} from "../remoteView/RemoteViewZoom";
+import { RemoteViewZoomReadout, useRemoteViewZoom } from "../remoteView/RemoteViewZoom";
 
 const LIVE_FRAME_INTERVAL_MS = 2_500;
 const WHEEL_FLUSH_MS = 140;
@@ -91,14 +87,11 @@ export function RemoteBrowserFrame(props: {
   // at all, so the frame carries the same zoom control as the remote desktop.
   const imageRef = useRef<HTMLImageElement | null>(null);
   const zoomView = useRemoteViewZoom();
-  const zoomAdjustingRef = useRef(zoomView.adjusting);
-  zoomAdjustingRef.current = zoomView.adjusting;
-  useEffect(() => {
-    // The adjust layer swallows the pointer-up that would have completed it,
-    // so a gesture caught mid-flight has to be dropped here or it stays
-    // latched and blocks the next press after the view is locked in.
-    if (zoomView.adjusting) gestureRef.current = null;
-  }, [zoomView.adjusting]);
+  // Two fingers own the picture (pinch to zoom, drag both to move); one finger
+  // owns the page. Flipped synchronously in the pointer handlers so the gate
+  // closes on the sample that starts the pinch, not one render later.
+  const zoomAdjustingRef = useRef(zoomView.pinching);
+  zoomAdjustingRef.current = zoomView.pinching;
   const frameRef = useRef<PreviewRemoteSnapshotResult | null>(null);
   frameRef.current = frame;
   const gestureRef = useRef<ActiveGesture | null>(null);
@@ -189,20 +182,21 @@ export function RemoteBrowserFrame(props: {
   }, []);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (zoomView.onPointerDown(event)) {
+      // A second finger: the picture is being pinched. Nothing has reached
+      // the page yet - gestures are resolved on release - so the one in
+      // flight is simply abandoned rather than delivered as a tap.
+      zoomAdjustingRef.current = true;
+      gestureRef.current = null;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
     // Panning and dragging on the page are the same gesture; while the view is
-    // being adjusted, nothing is sent to the desktop tab.
+    // being pinched, nothing is sent to the desktop tab.
     if (zoomAdjustingRef.current) return;
     if (event.button !== 0 || gestureRef.current !== null) return;
     const geometry = contentGeometry();
     if (geometry === null) return;
-    // Remember where the last tap landed so the first zoom magnifies the link
-    // that was just missed rather than the middle of the page.
-    if (geometry.size.width > 0 && geometry.size.height > 0) {
-      zoomView.setAnchor({
-        x: (event.clientX - geometry.origin.x) / geometry.size.width,
-        y: (event.clientY - geometry.origin.y) / geometry.size.height,
-      });
-    }
     const start = {
       x: event.clientX - geometry.origin.x,
       y: event.clientY - geometry.origin.y,
@@ -231,8 +225,9 @@ export function RemoteBrowserFrame(props: {
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    // A drag already in flight when the mode was entered must not keep
-    // reporting; the gesture is finished by handlePointerCancel instead.
+    if (zoomView.onPointerMove(event)) return;
+    // A drag already in flight when the pinch began must not keep reporting;
+    // the gesture was abandoned when the second finger landed.
     if (zoomAdjustingRef.current) return;
     const gesture = gestureRef.current;
     if (gesture === null || gesture.pointerId !== event.pointerId) return;
@@ -251,8 +246,15 @@ export function RemoteBrowserFrame(props: {
   };
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (zoomView.onPointerUp(event)) {
+      zoomAdjustingRef.current = zoomView.pinchingRef.current;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
     if (zoomAdjustingRef.current) {
-      // Abandon a gesture that was in flight when the mode was entered rather
+      // Abandon a gesture that was in flight when the pinch began rather
       // than returning early and leaving it latched: gestureRef would stay set
       // and the next real press would be rejected as "already dragging".
       if (gestureRef.current?.pointerId === event.pointerId) gestureRef.current = null;
@@ -282,8 +284,23 @@ export function RemoteBrowserFrame(props: {
   };
 
   const handlePointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (zoomView.onPointerUp(event)) {
+      zoomAdjustingRef.current = zoomView.pinchingRef.current;
+      return;
+    }
     if (gestureRef.current?.pointerId === event.pointerId) gestureRef.current = null;
   };
+
+  // The container is both the wheel listener's element and the pane the
+  // picture fills at 1x, so it carries both refs.
+  const paneRef = zoomView.paneRef;
+  const containerRefCallback = useCallback(
+    (element: HTMLDivElement | null) => {
+      containerRef.current = element;
+      paneRef(element);
+    },
+    [paneRef],
+  );
 
   useEffect(() => {
     const element = containerRef.current;
@@ -344,7 +361,7 @@ export function RemoteBrowserFrame(props: {
   return (
     <div className={cn("flex min-h-0 flex-col bg-background", props.className)}>
       <div
-        ref={containerRef}
+        ref={containerRefCallback}
         aria-label={
           frame
             ? `Rendered browser tab ${frame.title || frame.url}. Touches are sent to the desktop tab.`
@@ -423,35 +440,11 @@ export function RemoteBrowserFrame(props: {
             {frameError}
           </div>
         ) : null}
-        {frame ? (
-          <div
-            className={`absolute right-3 z-40 flex items-center gap-2 ${
-              frameError ? "bottom-14" : "bottom-3"
-            }`}
-          >
-            <RemoteViewZoomToggle
-              adjusting={zoomView.adjusting}
-              view={zoomView.view}
-              onToggle={zoomView.toggleAdjusting}
-            />
-          </div>
-        ) : null}
-        {zoomView.adjusting ? (
-          <RemoteViewAdjustLayer
-            view={zoomView.view}
-            canZoomIn={zoomView.canZoomIn}
-            canZoomOut={zoomView.canZoomOut}
-            onZoomIn={zoomView.zoomIn}
-            onZoomOut={zoomView.zoomOut}
-            onReset={zoomView.reset}
-            onPanBy={zoomView.panBy}
-            onPaneResize={zoomView.setPane}
-            onDone={zoomView.stopAdjusting}
-            bottomOffset="3.5rem"
-          />
-        ) : null}
       </div>
+      {/* The controls live in this strip, in flow, so nothing floats over the
+          page: the picture is pinched, not buttoned. */}
       <div className="flex shrink-0 items-center gap-2 border-t border-border bg-background px-2 py-2">
+        <RemoteViewZoomReadout view={zoomView.view} onReset={zoomView.reset} />
         <input
           aria-label="Text to type into the desktop tab"
           autoCapitalize="none"

@@ -167,6 +167,56 @@ export const ServerProviderRuntimeCapabilities = Schema.Struct({
 });
 export type ServerProviderRuntimeCapabilities = typeof ServerProviderRuntimeCapabilities.Type;
 
+export const ServerProviderUsageGuardTier = Schema.Literals([
+  "none",
+  "optimize",
+  "extra-usage",
+  "pause",
+]);
+export type ServerProviderUsageGuardTier = typeof ServerProviderUsageGuardTier.Type;
+
+/**
+ * The usage guard's live reading for one provider instance: which window
+ * binds, how fast it is filling, whether the current pace overruns the reset,
+ * and what the guard is doing about it. Quota metadata only, never auth.
+ */
+export const ServerProviderUsageGuardState = Schema.Struct({
+  /** Both the global guard switch and this instance's own switch are on. */
+  enabled: Schema.Boolean,
+  tier: ServerProviderUsageGuardTier,
+  /** One sentence for the settings card and the thread notice. */
+  summary: Schema.String,
+  windowKey: Schema.NullOr(Schema.String),
+  windowLabel: Schema.NullOr(Schema.String),
+  /** Last figure the provider itself reported, before extrapolation. */
+  reportedPercent: Schema.NullOr(Schema.Number),
+  /** Reported figure plus the weighted tokens spent since, priced by the ratio. */
+  estimatedPercent: Schema.NullOr(Schema.Number),
+  /** Epoch milliseconds; null when the provider reports no reset time. */
+  resetsAt: Schema.NullOr(Schema.Number),
+  /** Percentage points per hour the binding window is filling at. */
+  burnPercentPerHour: Schema.NullOr(Schema.Number),
+  /** Where the window lands at reset if the current pace continues. */
+  projectedAtResetPercent: Schema.NullOr(Schema.Number),
+  /** What one more turn on the last-used model costs, in points of the window. */
+  turnCostPercent: Schema.NullOr(Schema.Number),
+  headroomPercent: Schema.Number,
+  /** Reasoning effort turns are lowered to while optimizing. */
+  effortTarget: Schema.NullOr(Schema.Literals(["medium", "low"])),
+  /** How many threads the pace budget can carry at once; null when unbounded. */
+  backgroundBudget: Schema.NullOr(Schema.Number),
+  activeThreads: Schema.Number,
+  holdingBackgroundWork: Schema.Boolean,
+  /** Spacing between background turns once the thread budget is spent; null when unmetered. */
+  backgroundCooldownMs: Schema.NullOr(Schema.Number),
+  tokensPerPercent: Schema.Number,
+  tokensPerPercentSource: Schema.Literals(["configured", "learned", "default"]),
+  learnedTokensPerPercent: Schema.NullOr(Schema.Number),
+  tokensSinceReport: Schema.Number,
+  updatedAt: IsoDateTime,
+});
+export type ServerProviderUsageGuardState = typeof ServerProviderUsageGuardState.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -209,6 +259,8 @@ export const ServerProvider = Schema.Struct({
   updateState: Schema.optionalKey(ServerProviderUpdateState),
   /** Present when a provider exposes an explicit runtime capability contract. */
   runtimeCapabilities: Schema.optionalKey(ServerProviderRuntimeCapabilities),
+  /** Live usage-guard reading. Absent until the provider reports its quota. */
+  usageGuard: Schema.optionalKey(ServerProviderUsageGuardState),
 });
 export type ServerProvider = typeof ServerProvider.Type;
 

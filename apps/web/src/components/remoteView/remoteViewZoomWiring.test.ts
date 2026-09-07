@@ -9,8 +9,8 @@ import { describe, expect, it } from "vite-plus/test";
 /**
  * The zoom is only as good as the two things each surface has to remember: put
  * the transform on the picture element, and stop forwarding input while the
- * view is being moved. Miss the first and the control does nothing; miss the
- * second and every pan drags on the remote machine instead.
+ * picture is being pinched. Miss the first and the gesture does nothing; miss
+ * the second and every pinch drags on the remote machine instead.
  *
  * The mirror has a third: its pointer mapping reads a bounding rect, and it
  * must read the element that actually carries the transform, or a zoomed tap
@@ -45,8 +45,23 @@ describe("remote view zoom wiring", () => {
       ).toMatch(/viewAdjusting|zoomAdjustingRef\.current/);
     });
 
-    it(`offers the toggle in the ${surface.name}`, () => {
-      expect(read(...surface.file)).toContain("<RemoteViewZoomToggle");
+    it(`hands every pointer to the pinch tracker in the ${surface.name}`, () => {
+      // The tracker can only own a second finger if it sees every pointer
+      // down, move, and up; a surface that forwards a move before asking
+      // turns half a pinch into a drag on the remote machine.
+      const source = read(...surface.file);
+      for (const hook of [
+        "zoomView.onPointerDown(event)",
+        "zoomView.onPointerMove(event)",
+        "zoomView.onPointerUp(event)",
+        "zoomView.paneRef",
+      ]) {
+        expect(source, `${hook} is not wired`).toContain(hook);
+      }
+    });
+
+    it(`offers a way back to fit in the ${surface.name}`, () => {
+      expect(read(...surface.file)).toContain("<RemoteViewZoomReadout");
     });
   }
 
@@ -125,12 +140,18 @@ describe("remote view zoom wiring", () => {
     }
   });
 
-  it("keeps the toggle reachable while the adjust layer is up", () => {
-    // "Press it again to lock it in" is the whole interaction; a layer stacked
-    // over the toggle would strand the viewer in the mode.
-    const layer = read("remoteView", "RemoteViewZoom.tsx");
-    const stack = layer.slice(layer.indexOf("data-remote-view-adjusting"));
-    expect(stack).toContain("z-[35]");
-    expect(stack).not.toContain("z-50");
+  it("keeps the desktop viewer's control row out of the picture", () => {
+    // The row used to float over the picture and sat straight across the
+    // remote taskbar on a phone held sideways. It has its own strip now, and
+    // must not drift back to being absolutely positioned over the pane.
+    const source = read("remoteControl", "RemoteControlViewerDialog.tsx");
+    const row = source.slice(source.indexOf("<RemoteViewZoomReadout"));
+    const rowStart = source.lastIndexOf(
+      "className={`flex shrink-0 items-center justify-between",
+      source.indexOf("<RemoteViewZoomReadout"),
+    );
+    expect(rowStart, "the control row is no longer an in-flow strip").toBeGreaterThan(-1);
+    expect(source.slice(rowStart, rowStart + 200)).not.toContain("absolute");
+    expect(row.length).toBeGreaterThan(0);
   });
 });

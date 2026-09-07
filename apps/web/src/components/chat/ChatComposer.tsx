@@ -1580,7 +1580,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
   );
   const sendWhileRunning = shouldSendComposerWhileProcessing({
-    isProcessing: phase === "running" || phase === "connecting",
+    isProcessing: isInterruptible || phase === "running" || phase === "connecting",
     hasCurrentEditorText: currentEditorHasText,
     hasPendingComposerContent: composerSendState.hasSendableContent,
   });

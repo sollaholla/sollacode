@@ -30,6 +30,7 @@ import {
   type ProviderUsageResetOutcome,
   type ServerProvider,
   type ServerProviderUpdateState,
+  type ServerProviderUsageGuardState,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -315,6 +316,9 @@ export const ProviderRegistryLive = Layer.effect(
     const maintenanceActionStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
     >(new Map());
+    const usageGuardStatesRef = yield* Ref.make<
+      ReadonlyMap<ProviderInstanceId, ServerProviderUsageGuardState>
+    >(new Map());
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
@@ -367,6 +371,28 @@ export const ProviderRegistryLive = Layer.effect(
       };
     });
 
+    /**
+     * Re-attach the guard reading after a refresh. Provider snapshots are
+     * rebuilt wholesale by health probes, so without this the guard's tier
+     * would blink off the UI every refresh interval.
+     */
+    const applyProviderUsageGuardState = Effect.fn("applyProviderUsageGuardState")(function* (
+      provider: ServerProvider,
+    ) {
+      const usageGuard = (yield* Ref.get(usageGuardStatesRef)).get(provider.instanceId);
+      if (!usageGuard) {
+        const { usageGuard: _usageGuard, ...providerWithoutUsageGuard } = provider;
+        return providerWithoutUsageGuard;
+      }
+      return { ...provider, usageGuard };
+    });
+
+    const applyVolatileProviderState = Effect.fn("applyVolatileProviderState")(function* (
+      provider: ServerProvider,
+    ) {
+      return yield* applyProviderUsageGuardState(yield* applyProviderUpdateState(provider));
+    });
+
     const upsertProviders = Effect.fn("upsertProviders")(function* (
       nextProviders: ReadonlyArray<ServerProvider>,
       options?: {
@@ -377,7 +403,7 @@ export const ProviderRegistryLive = Layer.effect(
     ) {
       const nextProvidersWithUpdateState = yield* Effect.forEach(
         nextProviders,
-        applyProviderUpdateState,
+        applyVolatileProviderState,
         {
           concurrency: "unbounded",
         },
@@ -471,6 +497,32 @@ export const ProviderRegistryLive = Layer.effect(
         });
       },
     );
+
+    const setProviderUsageGuardState = Effect.fn("setProviderUsageGuardState")(function* (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly state: ServerProviderUsageGuardState | null;
+    }) {
+      yield* Ref.update(usageGuardStatesRef, (previous) => {
+        const next = new Map(previous);
+        if (input.state === null) {
+          next.delete(input.instanceId);
+        } else {
+          next.set(input.instanceId, input.state);
+        }
+        return next;
+      });
+
+      const existingProviders = yield* Ref.get(providersRef);
+      const matchingProvider = existingProviders.find(
+        (candidate) => candidate.instanceId === input.instanceId,
+      );
+      if (!matchingProvider) {
+        return existingProviders;
+      }
+
+      const nextProvider = yield* applyVolatileProviderState(matchingProvider);
+      return yield* upsertProviders([nextProvider], { persist: false });
+    });
 
     const refreshOneSource = Effect.fn("refreshOneSource")(function* (
       providerSource: ProviderSnapshotSource,
@@ -793,6 +845,7 @@ export const ProviderRegistryLive = Layer.effect(
       recordAccountUsage,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
+      setProviderUsageGuardState,
       get streamChanges() {
         return Stream.fromPubSub(changesPubSub);
       },

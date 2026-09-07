@@ -470,7 +470,7 @@ export function agentLoopSignedOffSinceUserIntent(
     );
 }
 
-const ACTIVE_TURN_WORK_SOURCE_PREFIX = "turn-start:";
+export const ACTIVE_TURN_WORK_SOURCE_PREFIX = "turn-start:";
 
 /**
  * A provider turn id does not exist when a user message is first projected.

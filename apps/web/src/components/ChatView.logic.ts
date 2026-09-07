@@ -119,6 +119,51 @@ export function deriveQueuedGrokMessageIds(input: {
     .map((message) => message.id);
 }
 
+/**
+ * Whether a held (queued) message still owes a delivery.
+ *
+ * The two id sets come from thread activities, which arrive live and settle a
+ * message the moment it is removed or delivered — so a receipt, when there is
+ * one, is the freshest answer and wins. A snapshot only carries the newest 200
+ * activities though, so on a busy thread every `queue.message-removed` /
+ * `provider.queue.promoted` / `message.delivered` receipt ages out of it, and
+ * a message cancelled hours ago used to come back to the queue panel on the
+ * next reload with no way to dismiss it — server-side there was nothing left
+ * to cancel. `queued` is the server reading that answer off the durable work
+ * obligation, which does not age; absent, assume the message is still waiting.
+ */
+export function isHeldMessageStillQueued(input: {
+  readonly message: Pick<ChatMessage, "id" | "queueState">;
+  readonly removedMessageIds: ReadonlySet<string>;
+  readonly settledMessageIds: ReadonlySet<string>;
+}): boolean {
+  if (
+    input.removedMessageIds.has(input.message.id) ||
+    input.settledMessageIds.has(input.message.id)
+  ) {
+    return false;
+  }
+  return (input.message.queueState ?? "queued") === "queued";
+}
+
+/**
+ * Whether a held message actually reached the provider, and so belongs in the
+ * timeline like any other message.
+ *
+ * The counterpart to {@link isHeldMessageStillQueued}, and the reason the
+ * server sends three states rather than a flag: a cancelled message and a
+ * delivered one are both done queueing, but only one of them was ever sent.
+ * Reading "not queued" as "show it" would have put every cancelled message
+ * into the transcript as though it had gone out.
+ */
+export function wasHeldMessageDelivered(input: {
+  readonly message: Pick<ChatMessage, "id" | "queueState">;
+  readonly deliveredMessageIds: ReadonlySet<string>;
+}): boolean {
+  if (input.deliveredMessageIds.has(input.message.id)) return true;
+  return input.message.queueState === "delivered";
+}
+
 function setQueuedMessagePromotionPhase(input: {
   phasesRef: { current: QueuedMessagePromotionPhases };
   setPhases: (phases: QueuedMessagePromotionPhases) => void;
@@ -221,21 +266,49 @@ export function settleQueuedMessagePromotion(input: {
   return outcome;
 }
 
+/** Slack past the promised retry delay before the marker is considered dead. */
+const OVERLOAD_RETRY_SLACK_MS = 30_000;
+/** Marker lifetime when the heartbeat names no delay. */
+const OVERLOAD_RETRY_DEFAULT_TTL_MS = 90_000;
+
+/**
+ * Is the current turn actually waiting out a provider overload right now?
+ *
+ * The retry heartbeat re-appends one activity id, so its `createdAt` is the
+ * newest attempt. Recovery emits nothing that says "recovered" — output just
+ * resumes — so the marker also expires on its own once the delay it promised
+ * (plus slack) passes without another heartbeat. Without that, the label
+ * outlived the outage and sat on healthy turns until they ended.
+ */
 export function isProviderOverloadRetrying(input: {
   activities: Thread["activities"];
   latestTurn: Thread["latestTurn"];
   isWorking: boolean;
+  nowMs?: number;
 }): boolean {
   const startedAt = input.latestTurn?.startedAt;
   if (!input.isWorking || !startedAt) {
     return false;
   }
-  return input.activities.some(
-    (activity) =>
-      activity.kind === "provider.overload.retrying" &&
-      activity.createdAt >= startedAt &&
-      (activity.turnId === null || activity.turnId === input.latestTurn?.turnId),
-  );
+  const nowMs = input.nowMs ?? Date.now();
+  return input.activities.some((activity) => {
+    if (
+      activity.kind !== "provider.overload.retrying" ||
+      activity.createdAt < startedAt ||
+      (activity.turnId !== null && activity.turnId !== input.latestTurn?.turnId)
+    ) {
+      return false;
+    }
+    const heartbeatMs = Date.parse(activity.createdAt);
+    if (!Number.isFinite(heartbeatMs)) return false;
+    const reason = (activity.payload as { reason?: unknown } | undefined)?.reason;
+    const delayMs =
+      typeof reason === "string" ? Number(/delay_ms=(\d+)/.exec(reason)?.[1] ?? NaN) : NaN;
+    const ttlMs = Number.isFinite(delayMs)
+      ? delayMs + OVERLOAD_RETRY_SLACK_MS
+      : OVERLOAD_RETRY_DEFAULT_TTL_MS;
+    return nowMs - heartbeatMs <= ttlMs;
+  });
 }
 
 export function startNewThreadForProject(
@@ -871,6 +944,7 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   const session = input.session ?? null;
   const latestUserMessageChanged =
     input.localDispatch.latestUserMessageId !== input.latestUserMessageId;
+  if (latestUserMessageChanged) return true;
   const latestTurnChanged =
     input.localDispatch.latestTurnTurnId !== (latestTurn?.turnId ?? null) ||
     input.localDispatch.latestTurnRequestedAt !== (latestTurn?.requestedAt ?? null) ||

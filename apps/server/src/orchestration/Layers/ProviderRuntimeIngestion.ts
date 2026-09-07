@@ -1,3 +1,4 @@
+import { selectedUsageGuardEffort } from "../ProviderUsageGuard.ts";
 import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
@@ -54,6 +55,7 @@ import {
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { providerSessionWriteIsNews } from "../providerSessionWrites.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { BrowserTabCleanupStateStoreLive } from "../../persistence/Layers/BrowserTabCleanupState.ts";
@@ -68,6 +70,7 @@ import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
+import { ProviderUsageGuard } from "../Services/ProviderUsageGuard.ts";
 import { ThreadWorkScheduler } from "../Services/ThreadWorkScheduler.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
@@ -979,6 +982,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
   const threadWorkScheduler = yield* ThreadWorkScheduler;
+  const usageGuard = yield* ProviderUsageGuard;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const browserTabCleanupStateStore = yield* BrowserTabCleanupStateStore;
   const previewManager = yield* PreviewManager;
@@ -2606,32 +2610,62 @@ const make = Effect.gen(function* () {
             );
           }
 
-          const sessionSetCommandId =
-            browserTabCleanupPlan._tag === "SendReminder"
-              ? browserTabCleanupPlan.commandId
-              : yield* providerCommandId(event, "thread-session-set");
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: sessionSetCommandId,
-            threadId: thread.id,
-            session: {
-              threadId: thread.id,
+          const runtimeMode = thread.session?.runtimeMode ?? "full-access";
+          // A state change that resolves to the session the thread already
+          // has is a heartbeat, not news, and writing it pushes a fresh
+          // session object to every client for nothing. A reminder still
+          // dispatches unconditionally: it carries an atomic follow-up turn,
+          // which is not part of the session at all.
+          const sessionIsNews = providerSessionWriteIsNews(
+            thread.session === undefined || thread.session === null
+              ? undefined
+              : {
+                  status: thread.session.status,
+                  providerName: thread.session.providerName,
+                  providerInstanceId: thread.session.providerInstanceId,
+                  runtimeMode: thread.session.runtimeMode,
+                  activeTurnId: thread.session.activeTurnId,
+                  lastError: thread.session.lastError,
+                  failureKind: thread.session.failureKind,
+                },
+            {
               status,
               providerName: event.provider,
-              ...(event.providerInstanceId !== undefined
-                ? { providerInstanceId: event.providerInstanceId }
-                : {}),
-              runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              providerInstanceId: event.providerInstanceId,
+              runtimeMode,
               activeTurnId: nextActiveTurnId,
               lastError,
               failureKind,
-              updatedAt: now,
             },
-            ...(browserTabCleanupPlan._tag === "SendReminder"
-              ? { atomicFollowupTurn: browserTabCleanupPlan.atomicFollowupTurn }
-              : {}),
-            createdAt: now,
-          });
+          );
+          if (sessionIsNews || browserTabCleanupPlan._tag === "SendReminder") {
+            const sessionSetCommandId =
+              browserTabCleanupPlan._tag === "SendReminder"
+                ? browserTabCleanupPlan.commandId
+                : yield* providerCommandId(event, "thread-session-set");
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: sessionSetCommandId,
+              threadId: thread.id,
+              session: {
+                threadId: thread.id,
+                status,
+                providerName: event.provider,
+                ...(event.providerInstanceId !== undefined
+                  ? { providerInstanceId: event.providerInstanceId }
+                  : {}),
+                runtimeMode,
+                activeTurnId: nextActiveTurnId,
+                lastError,
+                failureKind,
+                updatedAt: now,
+              },
+              ...(browserTabCleanupPlan._tag === "SendReminder"
+                ? { atomicFollowupTurn: browserTabCleanupPlan.atomicFollowupTurn }
+                : {}),
+              createdAt: now,
+            });
+          }
           if (browserTabCleanupPlan._tag !== "None") {
             yield* browserTabCleanupStateStore
               .commitCompletion(browserTabCleanupPlan.completion)
@@ -3045,13 +3079,50 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "account.rate-limits.updated") {
+        const usageInstanceId =
+          event.providerInstanceId ?? defaultInstanceIdForDriver(event.provider);
         yield* providerRegistry.recordAccountUsage({
-          instanceId: event.providerInstanceId ?? defaultInstanceIdForDriver(event.provider),
+          instanceId: usageInstanceId,
           driver: event.provider,
           accountUsage: event.payload.rateLimits,
           reportedAt: event.createdAt,
         });
+        // The guard prices usage between reports, so it needs every report the
+        // provider sends — including ones that carry no exhaustion at all.
+        yield* usageGuard
+          .recordRateLimits({
+            instanceId: usageInstanceId,
+            driver: event.provider,
+            rateLimits: event.payload.rateLimits,
+            reportedAt: event.createdAt,
+          })
+          .pipe(Effect.ignore);
         if (!lifecycleWasStopped) yield* attemptProviderUsageLimitFailover(event);
+      }
+
+      if (event.type === "thread.token-usage.updated") {
+        // `usedTokens` is the full context of one provider call — the figure
+        // the tokens-per-percent ratio is measured against. The model matters:
+        // the guard weights tokens by how expensive the model is against the
+        // quota, and learns what a turn on each model costs.
+        const tokenThread = yield* resolveThreadShell(event.threadId).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        yield* usageGuard
+          .recordTokens({
+            instanceId: event.providerInstanceId ?? defaultInstanceIdForDriver(event.provider),
+            driver: event.provider,
+            tokens: event.payload.usage.usedTokens,
+            usage: event.payload.usage,
+            threadKey: String(event.threadId),
+            effort: selectedUsageGuardEffort(tokenThread?.modelSelection),
+            fast:
+              tokenThread?.modelSelection.options?.some(
+                (option) => option.id === "serviceTier" && option.value === "priority",
+              ) ?? false,
+            model: tokenThread?.modelSelection.model ?? null,
+          })
+          .pipe(Effect.ignore);
       }
     });
 

@@ -1,4 +1,5 @@
 import type {
+  EnvironmentId,
   ProjectScript,
   ProjectScriptIcon,
   ResolvedKeybindingsConfig,
@@ -23,6 +24,8 @@ import {
   ZapIcon,
 } from "lucide-react";
 import React, { type FormEvent, type KeyboardEvent, useCallback, useMemo, useState } from "react";
+
+import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 
 import {
   keybindingValueForCommand,
@@ -131,6 +134,25 @@ interface ProjectScriptsControlProps {
     input: NewProjectScriptInput,
   ) => Promise<ProjectScriptActionResult>;
   onDeleteScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
+}
+
+/** The same saved actions and t3.json imports in every workspace header. */
+export function ProjectScriptsControlForProject({
+  environmentId,
+  cwd,
+  ...props
+}: Omit<ProjectScriptsControlProps, "fileScripts" | "onRefreshFileScripts"> & {
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string | null;
+}) {
+  const fileScriptsQuery = useT3ProjectFileScripts(environmentId, cwd);
+  return (
+    <ProjectScriptsControl
+      {...props}
+      fileScripts={fileScriptsQuery.scripts}
+      onRefreshFileScripts={fileScriptsQuery.refresh}
+    />
+  );
 }
 
 export default function ProjectScriptsControl({

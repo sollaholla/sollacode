@@ -28,6 +28,8 @@ import {
   dismissBranchMismatchForSession,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
+  isHeldMessageStillQueued,
+  wasHeldMessageDelivered,
   isProviderOverloadRetrying,
   isThreadAlreadyExistsError,
   isThreadWorkInterruptible,
@@ -178,12 +180,14 @@ describe("isProviderOverloadRetrying", () => {
     turnId: latestTurn.turnId,
   };
 
+  const freshNowMs = Date.parse(activity.createdAt) + 1_000;
   it("shows only a retry activity for the current working turn", () => {
     expect(
       isProviderOverloadRetrying({
         activities: [activity],
         latestTurn,
         isWorking: true,
+        nowMs: freshNowMs,
       }),
     ).toBe(true);
     expect(
@@ -191,8 +195,24 @@ describe("isProviderOverloadRetrying", () => {
         activities: [activity],
         latestTurn,
         isWorking: false,
+        nowMs: freshNowMs,
       }),
     ).toBe(false);
+  });
+
+  it("expires once the promised retry delay passes without a new heartbeat", () => {
+    const heartbeat = {
+      ...activity,
+      payload: { reason: "provider_overloaded:retrying;attempt=2;delay_ms=20000" },
+    };
+    const heartbeatMs = Date.parse(heartbeat.createdAt);
+    const during = { activities: [heartbeat], latestTurn, isWorking: true };
+    expect(isProviderOverloadRetrying({ ...during, nowMs: heartbeatMs + 40_000 })).toBe(true);
+    expect(isProviderOverloadRetrying({ ...during, nowMs: heartbeatMs + 60_000 })).toBe(false);
+    // Without a stated delay the marker lives 90 seconds.
+    const bare = { activities: [activity], latestTurn, isWorking: true };
+    expect(isProviderOverloadRetrying({ ...bare, nowMs: heartbeatMs + 80_000 })).toBe(true);
+    expect(isProviderOverloadRetrying({ ...bare, nowMs: heartbeatMs + 100_000 })).toBe(false);
   });
 
   it("ignores stale retry activity from a previous turn", () => {
@@ -201,6 +221,7 @@ describe("isProviderOverloadRetrying", () => {
         activities: [{ ...activity, createdAt: "2026-07-29T14:59:59.000Z", turnId: null }],
         latestTurn,
         isWorking: true,
+        nowMs: freshNowMs,
       }),
     ).toBe(false);
   });
@@ -838,6 +859,23 @@ describe("startNewThreadForProject", () => {
 });
 
 describe("hasServerAcknowledgedLocalDispatch", () => {
+  it("acknowledges a queued message while the provider stays ready", () => {
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: completedTurn, session: readySession }),
+    );
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "ready",
+        latestTurn: completedTurn,
+        latestUserMessageId: MessageId.make("queued-new-message"),
+        session: readySession,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
+  });
   it("does not acknowledge unchanged server state", () => {
     const localDispatch = createLocalDispatchSnapshot(
       makeThread({ latestTurn: completedTurn, session: readySession }),
@@ -1279,5 +1317,119 @@ describe("describePendingTurnStart", () => {
     expect(
       describePendingTurnStart({ ...base, pendingWork: { ...queued, state: "waiting-approval" } }),
     ).toBeNull();
+  });
+});
+
+describe("isHeldMessageStillQueued", () => {
+  const cancelledLongAgo = {
+    id: MessageId.make("held-user-message:ghost"),
+    queueState: "removed" as const,
+  };
+  const stillWaiting = {
+    id: MessageId.make("held-user-message:waiting"),
+    queueState: "queued" as const,
+  };
+  const noAnswerYet = { id: MessageId.make("held-user-message:fresh") };
+  const empty: ReadonlySet<string> = new Set();
+
+  it("believes the server when the receipts have fallen out of the window", () => {
+    // The whole ghost: a message cancelled hours ago, whose queue.message-removed
+    // receipt is long past the newest 200 activities a snapshot carries.
+    expect(
+      isHeldMessageStillQueued({
+        message: cancelledLongAgo,
+        removedMessageIds: empty,
+        settledMessageIds: empty,
+      }),
+    ).toBe(false);
+    expect(
+      isHeldMessageStillQueued({
+        message: stillWaiting,
+        removedMessageIds: empty,
+        settledMessageIds: empty,
+      }),
+    ).toBe(true);
+  });
+
+  it("lets a live receipt settle a message the snapshot still called queued", () => {
+    // Cancelling one for real: the snapshot's `queued: true` is now stale, and
+    // only the removal activity says so. Preferring the flag here would have
+    // made every ordinary cancel leave its row on screen.
+    expect(
+      isHeldMessageStillQueued({
+        message: stillWaiting,
+        removedMessageIds: new Set([stillWaiting.id]),
+        settledMessageIds: empty,
+      }),
+    ).toBe(false);
+    expect(
+      isHeldMessageStillQueued({
+        message: stillWaiting,
+        removedMessageIds: empty,
+        settledMessageIds: new Set([stillWaiting.id]),
+      }),
+    ).toBe(false);
+  });
+
+  it("falls back to the receipts when the server did not answer", () => {
+    expect(
+      isHeldMessageStillQueued({
+        message: noAnswerYet,
+        removedMessageIds: empty,
+        settledMessageIds: empty,
+      }),
+    ).toBe(true);
+    expect(
+      isHeldMessageStillQueued({
+        message: noAnswerYet,
+        removedMessageIds: new Set([noAnswerYet.id]),
+        settledMessageIds: empty,
+      }),
+    ).toBe(false);
+    expect(
+      isHeldMessageStillQueued({
+        message: noAnswerYet,
+        removedMessageIds: empty,
+        settledMessageIds: new Set([noAnswerYet.id]),
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("wasHeldMessageDelivered", () => {
+  const empty: ReadonlySet<string> = new Set();
+  const delivered = {
+    id: MessageId.make("held-user-message:sent"),
+    queueState: "delivered" as const,
+  };
+  const cancelled = {
+    id: MessageId.make("held-user-message:cancelled"),
+    queueState: "removed" as const,
+  };
+
+  it("keeps a delivered message in the timeline after its receipt ages out", () => {
+    expect(wasHeldMessageDelivered({ message: delivered, deliveredMessageIds: empty })).toBe(true);
+  });
+
+  it("does not put a cancelled message into the transcript", () => {
+    // Both of these are done queueing. Reading that as "show it" would write
+    // every message the user ever cancelled into the conversation as though it
+    // had gone out — which is why the server sends three states, not a flag.
+    expect(wasHeldMessageDelivered({ message: cancelled, deliveredMessageIds: empty })).toBe(false);
+    expect(
+      isHeldMessageStillQueued({
+        message: cancelled,
+        removedMessageIds: empty,
+        settledMessageIds: empty,
+      }),
+    ).toBe(false);
+  });
+
+  it("believes a live receipt for a message the snapshot said nothing about", () => {
+    const unknown = { id: MessageId.make("held-user-message:fresh") };
+    expect(wasHeldMessageDelivered({ message: unknown, deliveredMessageIds: empty })).toBe(false);
+    expect(
+      wasHeldMessageDelivered({ message: unknown, deliveredMessageIds: new Set([unknown.id]) }),
+    ).toBe(true);
   });
 });
