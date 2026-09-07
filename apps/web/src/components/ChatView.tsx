@@ -372,10 +372,12 @@ import {
 } from "../sideChat";
 import { useStartupResumeStore } from "../startupResumeStore";
 import { isStartupAutoResumeStalled } from "./StartupResumeCoordinator.logic";
+import { ProviderAccountSwitchConfirmation } from "./chat/ProviderAccountSwitchConfirmation";
 import {
   isProviderAccountSwitchActive,
-  ProviderAccountSwitchOverlay,
-} from "./chat/ProviderAccountSwitchOverlay";
+  reconcileProviderAccountSwitch,
+} from "./chat/providerAccountSwitchState";
+import { ProviderAccountSwitchOverlay } from "./chat/ProviderAccountSwitchOverlay";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -460,7 +462,6 @@ import {
   describePendingTurnStart,
   isThreadWorkInterruptible,
   shouldShowBranchMismatchBanner,
-  shouldConfirmRemoteProviderAccountSwitch,
   shouldCreateServerThreadForTerminalStart,
   shouldPersistComposerModelDefaults,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -1831,10 +1832,9 @@ function ChatViewContent(props: ChatViewProps) {
   const [providerAccountSwitchCancelling, setProviderAccountSwitchCancelling] = useState(false);
   const [providerAccountSwitchSubmittingCode, setProviderAccountSwitchSubmittingCode] =
     useState(false);
-  const [
-    pendingRemoteProviderAccountSwitchInstanceId,
-    setPendingRemoteProviderAccountSwitchInstanceId,
-  ] = useState<ProviderInstanceId | null>(null);
+  const [pendingProviderAccountSwitchInstanceId, setPendingProviderAccountSwitchInstanceId] =
+    useState<ProviderInstanceId | null>(null);
+  const dismissedProviderAccountSwitchIdRef = useRef<string | null>(null);
   const providerUsageRefreshRpcRef = useRef<(instanceId: ProviderInstanceId) => Promise<void>>(
     async () => undefined,
   );
@@ -1846,6 +1846,7 @@ function ChatViewContent(props: ChatViewProps) {
 
   const beginProviderAccountSwitch = useCallback(
     async (instanceId: ProviderInstanceId) => {
+      dismissedProviderAccountSwitchIdRef.current = null;
       setProviderAccountSwitchCancelling(false);
       setProviderAccountSwitchSubmittingCode(false);
       const result = await startProviderAccountSwitch({
@@ -1866,27 +1867,16 @@ function ChatViewContent(props: ChatViewProps) {
     [environmentId, startProviderAccountSwitch],
   );
 
-  const requestProviderAccountSwitch = useCallback(
-    (instanceId: ProviderInstanceId) => {
-      if (
-        shouldConfirmRemoteProviderAccountSwitch({
-          activeEnvironmentId: environmentId,
-          primaryEnvironmentId: primaryEnvironment?.environmentId ?? null,
-        })
-      ) {
-        setPendingRemoteProviderAccountSwitchInstanceId(instanceId);
-        return;
-      }
-      void beginProviderAccountSwitch(instanceId);
-    },
-    [beginProviderAccountSwitch, environmentId, primaryEnvironment?.environmentId],
-  );
+  const requestProviderAccountSwitch = useCallback((instanceId: ProviderInstanceId) => {
+    setPendingProviderAccountSwitchInstanceId(instanceId);
+  }, []);
 
   const dismissProviderAccountSwitch = useCallback(() => {
+    dismissedProviderAccountSwitchIdRef.current = providerAccountSwitch?.id ?? null;
     setProviderAccountSwitch(null);
     setProviderAccountSwitchCancelling(false);
     setProviderAccountSwitchSubmittingCode(false);
-  }, []);
+  }, [providerAccountSwitch]);
 
   const cancelActiveProviderAccountSwitch = useCallback(async () => {
     if (!providerAccountSwitch || !isProviderAccountSwitchActive(providerAccountSwitch)) return;
@@ -1898,8 +1888,23 @@ function ChatViewContent(props: ChatViewProps) {
         switchId: providerAccountSwitch.id,
       },
     });
-    setProviderAccountSwitchCancelling(false);
     if (result._tag === "Failure") {
+      // A restarted host or a newer login can retire this flow before Cancel arrives.
+      // Read its exact identity before deciding whether cancellation really failed.
+      const refreshed = await getProviderAccountSwitch({
+        environmentId,
+        input: {
+          instanceId: providerAccountSwitch.instanceId,
+          switchId: providerAccountSwitch.id,
+        },
+      });
+      setProviderAccountSwitchCancelling(false);
+      if (refreshed._tag !== "Failure") {
+        setProviderAccountSwitch((current) =>
+          reconcileProviderAccountSwitch(current, providerAccountSwitch.id, refreshed.value),
+        );
+        if (refreshed.value === null || !isProviderAccountSwitchActive(refreshed.value)) return;
+      }
       const error = squashAtomCommandFailure(result);
       toastManager.add({
         type: "error",
@@ -1908,8 +1913,11 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return;
     }
-    setProviderAccountSwitch(result.value);
-  }, [cancelProviderAccountSwitch, environmentId, providerAccountSwitch]);
+    setProviderAccountSwitchCancelling(false);
+    setProviderAccountSwitch((current) =>
+      reconcileProviderAccountSwitch(current, providerAccountSwitch.id, result.value),
+    );
+  }, [cancelProviderAccountSwitch, environmentId, getProviderAccountSwitch, providerAccountSwitch]);
 
   const submitActiveProviderAuthenticationCode = useCallback(
     async (code: string): Promise<boolean> => {
@@ -1935,7 +1943,9 @@ function ChatViewContent(props: ChatViewProps) {
         });
         return false;
       }
-      setProviderAccountSwitch(result.value);
+      setProviderAccountSwitch((current) =>
+        reconcileProviderAccountSwitch(current, providerAccountSwitch.id, result.value),
+      );
       return true;
     },
     [environmentId, providerAccountSwitch, submitProviderAccountSwitchCode],
@@ -1988,8 +1998,10 @@ function ChatViewContent(props: ChatViewProps) {
         },
       });
       polling = false;
-      if (!disposed && result._tag !== "Failure" && result.value !== null) {
-        setProviderAccountSwitch(result.value);
+      if (!disposed && result._tag !== "Failure") {
+        setProviderAccountSwitch((current) =>
+          reconcileProviderAccountSwitch(current, activeProviderAccountSwitchId, result.value),
+        );
       }
       schedule();
     };
@@ -4686,6 +4698,7 @@ function ChatViewContent(props: ChatViewProps) {
       });
       polling = false;
       if (disposed || result._tag === "Failure" || result.value === null) return;
+      if (result.value.id === dismissedProviderAccountSwitchIdRef.current) return;
       setProviderAccountSwitch(result.value);
     };
     void discoverHostAccountSwitch();
@@ -9960,7 +9973,7 @@ function ChatViewContent(props: ChatViewProps) {
                 onRetry={() => {
                   const instanceId = providerAccountSwitch.instanceId;
                   setProviderAccountSwitch(null);
-                  void beginProviderAccountSwitch(instanceId);
+                  requestProviderAccountSwitch(instanceId);
                 }}
                 onSubmitAuthCode={submitActiveProviderAuthenticationCode}
               />
@@ -10515,40 +10528,17 @@ function ChatViewContent(props: ChatViewProps) {
               />
             ) : null}
 
-            <AlertDialog
-              open={pendingRemoteProviderAccountSwitchInstanceId !== null}
-              onOpenChange={(open) => {
-                if (!open) setPendingRemoteProviderAccountSwitchInstanceId(null);
+            <ProviderAccountSwitchConfirmation
+              open={pendingProviderAccountSwitchInstanceId !== null}
+              environmentLabel={activeEnvironment?.label ?? null}
+              authenticationPaused={activeProviderAuthenticationPaused}
+              onClose={() => setPendingProviderAccountSwitchInstanceId(null)}
+              onConfirm={() => {
+                const instanceId = pendingProviderAccountSwitchInstanceId;
+                setPendingProviderAccountSwitchInstanceId(null);
+                if (instanceId) void beginProviderAccountSwitch(instanceId);
               }}
-            >
-              <AlertDialogPopup>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Switch the account on the host machine?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Authentication will run on{" "}
-                    {activeEnvironment?.label ? `${activeEnvironment.label}, ` : "the host, "}
-                    not on this device. You’ll need access to that machine to complete its browser
-                    sign-in.{" "}
-                    {activeProviderAuthenticationPaused
-                      ? "This conversation is paused and will continue automatically once sign-in succeeds."
-                      : "The conversation can keep running while you switch accounts."}
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-                  <Button
-                    variant="default"
-                    onClick={() => {
-                      const instanceId = pendingRemoteProviderAccountSwitchInstanceId;
-                      setPendingRemoteProviderAccountSwitchInstanceId(null);
-                      if (instanceId) void beginProviderAccountSwitch(instanceId);
-                    }}
-                  >
-                    Continue on host
-                  </Button>
-                </AlertDialogFooter>
-              </AlertDialogPopup>
-            </AlertDialog>
+            />
 
             <AlertDialog
               open={pendingSideChatArchive !== null}

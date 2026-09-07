@@ -1,15 +1,16 @@
+// @vitest-environment happy-dom
 import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderAccountSwitchState,
 } from "@t3tools/contracts";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import {
-  isProviderAccountSwitchActive,
-  ProviderAccountSwitchOverlay,
-} from "./ProviderAccountSwitchOverlay";
+import { ProviderAccountSwitchOverlay } from "./ProviderAccountSwitchOverlay";
+import { isProviderAccountSwitchActive } from "./providerAccountSwitchState";
 
 const baseState: ProviderAccountSwitchState = {
   id: "switch-1",
@@ -103,4 +104,41 @@ describe("ProviderAccountSwitchOverlay", () => {
     expect(markup).toContain("new@example.com");
     expect(markup).not.toContain(">Cancel</button>");
   });
+});
+
+it("allows closing the panel even while cancellation is waiting on the host", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const dismiss = vi.fn();
+  const cancel = vi.fn();
+  try {
+    await act(async () =>
+      root.render(
+        <ProviderAccountSwitchOverlay
+          state={baseState}
+          provider={null}
+          cancelling
+          submittingCode={false}
+          onCancel={cancel}
+          onDismiss={dismiss}
+          onOpenAuthLink={vi.fn()}
+          onRetry={vi.fn()}
+          onSubmitAuthCode={vi.fn(async () => true)}
+        />,
+      ),
+    );
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.find((button) => button.textContent === "Cancelling…")?.disabled).toBe(true);
+    const close = buttons.find((button) => button.textContent === "Close")!;
+    expect(close.disabled).toBe(false);
+    await act(async () => close.click());
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(cancel).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
 });

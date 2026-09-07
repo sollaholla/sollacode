@@ -11,17 +11,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 
-const activeStatuses = new Set<ProviderAccountSwitchState["status"]>([
-  "logging_out",
-  "starting_login",
-  "waiting_for_authentication",
-  "waiting_for_code",
-  "refreshing_account",
-]);
-
-export function isProviderAccountSwitchActive(state: ProviderAccountSwitchState): boolean {
-  return activeStatuses.has(state.status);
-}
+import { isProviderAccountSwitchActive } from "./providerAccountSwitchState";
 
 function statusTitle(state: ProviderAccountSwitchState): string {
   switch (state.status) {
@@ -63,7 +53,7 @@ export const ProviderAccountSwitchOverlay = memo(function ProviderAccountSwitchO
 
   return (
     <div
-      className="absolute inset-0 z-[80] flex items-center justify-center bg-background/92 px-5 pt-safe pb-safe backdrop-blur-sm"
+      className="absolute inset-0 z-40 flex items-center justify-center bg-background/92 px-5 pt-safe pb-safe backdrop-blur-sm"
       data-provider-account-switch-overlay
       role={active ? "status" : "alert"}
       aria-live="assertive"
@@ -153,14 +143,24 @@ export const ProviderAccountSwitchOverlay = memo(function ProviderAccountSwitchO
 
         <div className="mt-5 flex justify-end gap-2">
           {active ? (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={props.cancelling}
-              onClick={props.onCancel}
-            >
-              {props.cancelling ? "Cancelling…" : "Cancel"}
-            </Button>
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                title="Close this panel while sign-in continues on the host"
+                onClick={props.onDismiss}
+              >
+                Close
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={props.cancelling}
+                onClick={props.onCancel}
+              >
+                {props.cancelling ? "Cancelling…" : "Cancel"}
+              </Button>
+            </>
           ) : props.state.status === "failed" ? (
             <>
               <Button type="button" variant="ghost" onClick={props.onDismiss}>

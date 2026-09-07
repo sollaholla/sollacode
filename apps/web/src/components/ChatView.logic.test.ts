@@ -45,7 +45,6 @@ import {
   startNewThreadForProject,
   shouldCreateServerThreadForTerminalStart,
   shouldShowBranchMismatchBanner,
-  shouldConfirmRemoteProviderAccountSwitch,
   shouldPersistComposerModelDefaults,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
@@ -142,24 +141,6 @@ const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const now = "2026-03-29T00:00:00.000Z";
-
-describe("shouldConfirmRemoteProviderAccountSwitch", () => {
-  it("warns only when authentication will run on another environment", () => {
-    const primaryEnvironmentId = EnvironmentId.make("environment-primary");
-    expect(
-      shouldConfirmRemoteProviderAccountSwitch({
-        activeEnvironmentId: EnvironmentId.make("environment-remote"),
-        primaryEnvironmentId,
-      }),
-    ).toBe(true);
-    expect(
-      shouldConfirmRemoteProviderAccountSwitch({
-        activeEnvironmentId: primaryEnvironmentId,
-        primaryEnvironmentId,
-      }),
-    ).toBe(false);
-  });
-});
 
 describe("isProviderOverloadRetrying", () => {
   const latestTurn = {
