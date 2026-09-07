@@ -1,0 +1,8 @@
+{
+  "version": "0.1.473.0",
+  "installedExecutableExists": true,
+  "runningProcessCount": 9,
+  "healthStatus": 200,
+  "checkedAt": "2026-09-07T17:40:01.407920+00:00",
+  "method": "Read-only SSH: executable ProductVersion, matching executable process count, local HTTP status"
+}

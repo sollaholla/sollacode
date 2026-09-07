@@ -1,0 +1,3064 @@
+{
+  "queriedAt": "2026-09-07T17:23:10.678352+00:00",
+  "declarations": [
+    {
+      "owner": ".",
+      "section": "devDependencies",
+      "name": "@babel/plugin-transform-react-jsx",
+      "specifier": "7.28.6",
+      "declared": "7.28.6",
+      "resolved": "7.28.6"
+    },
+    {
+      "owner": ".",
+      "section": "devDependencies",
+      "name": "@effect/tsgo",
+      "specifier": "catalog:",
+      "declared": "0.13.2",
+      "resolved": "0.13.2"
+    },
+    {
+      "owner": ".",
+      "section": "devDependencies",
+      "name": "@oxlint/plugins",
+      "specifier": "^1.63.0",
+      "declared": "^1.63.0",
+      "resolved": "1.68.0"
+    },
+    {
+      "owner": ".",
+      "section": "devDependencies",
+      "name": "@types/node",
+      "specifier": "24.12.4",
+      "declared": "24.12.4",
+      "resolved": "24.12.4"
+    },
+    {
+      "owner": ".",
+      "section": "devDependencies",
+      "name": "@typescript/native-preview",
+      "specifier": "catalog:",
+      "declared": "7.0.0-dev.20260604.1",
+      "resolved": "7.0.0-dev.20260604.1"
+    },
+    {
+      "owner": ".",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "dependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "dependencies",
+      "name": "electron",
+      "specifier": "41.5.0",
+      "declared": "41.5.0",
+      "resolved": "41.5.0"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "dependencies",
+      "name": "electron-store",
+      "specifier": "^8.2.0",
+      "declared": "^8.2.0",
+      "resolved": "8.2.0"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "dependencies",
+      "name": "playwright-core",
+      "specifier": "1.60.0",
+      "declared": "1.60.0",
+      "resolved": "1.60.0"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "dependencies",
+      "name": "react-grab",
+      "specifier": "^0.1.32",
+      "declared": "^0.1.32",
+      "resolved": "0.1.44"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "devDependencies",
+      "name": "@types/node",
+      "specifier": "24.12.4",
+      "declared": "24.12.4",
+      "resolved": "24.12.4"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "devDependencies",
+      "name": "cross-env",
+      "specifier": "^10.1.0",
+      "declared": "^10.1.0",
+      "resolved": "10.1.0"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "devDependencies",
+      "name": "electron-builder",
+      "specifier": "26.15.6",
+      "declared": "26.15.6",
+      "resolved": "26.15.6"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "devDependencies",
+      "name": "tailwindcss",
+      "specifier": "^4.0.0",
+      "declared": "^4.0.0",
+      "resolved": "4.3.0"
+    },
+    {
+      "owner": "apps/desktop",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "apps/marketing",
+      "section": "dependencies",
+      "name": "astro",
+      "specifier": "^7.0.3",
+      "declared": "^7.0.3",
+      "resolved": "7.0.3"
+    },
+    {
+      "owner": "apps/marketing",
+      "section": "devDependencies",
+      "name": "@astrojs/check",
+      "specifier": "^0.9.7",
+      "declared": "^0.9.7",
+      "resolved": "0.9.9"
+    },
+    {
+      "owner": "apps/marketing",
+      "section": "devDependencies",
+      "name": "@vercel/config",
+      "specifier": "^0.3.0",
+      "declared": "^0.3.0",
+      "resolved": "0.3.0"
+    },
+    {
+      "owner": "apps/marketing",
+      "section": "devDependencies",
+      "name": "typescript",
+      "specifier": "catalog:",
+      "declared": "~6.0.3",
+      "resolved": "6.0.3"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@callstack/liquid-glass",
+      "specifier": "^0.7.1",
+      "declared": "^0.7.1",
+      "resolved": "0.7.1"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@effect/atom-react",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@expo-google-fonts/dm-sans",
+      "specifier": "^0.4.2",
+      "declared": "^0.4.2",
+      "resolved": "0.4.2"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@expo/metro-runtime",
+      "specifier": "~56.0.15",
+      "declared": "~56.0.15",
+      "resolved": "56.0.15"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@expo/ui",
+      "specifier": "~56.0.18",
+      "declared": "~56.0.18",
+      "resolved": "56.0.18"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@legendapp/list",
+      "specifier": "3.2.0",
+      "declared": "3.2.0",
+      "resolved": "3.2.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@pierre/diffs",
+      "specifier": "catalog:",
+      "declared": "1.3.0-beta.10",
+      "resolved": "1.3.0-beta.10"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@react-native-menu/menu",
+      "specifier": "^2.0.0",
+      "declared": "^2.0.0",
+      "resolved": "2.0.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@react-navigation/elements",
+      "specifier": "2.9.26",
+      "declared": "2.9.26",
+      "resolved": "2.9.26"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@react-navigation/native",
+      "specifier": "7.3.4",
+      "declared": "7.3.4",
+      "resolved": "7.3.4"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@react-navigation/native-stack",
+      "specifier": "7.17.6",
+      "declared": "7.17.6",
+      "resolved": "7.17.6"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@shikijs/core",
+      "specifier": "4.2.0",
+      "declared": "4.2.0",
+      "resolved": "4.2.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@shikijs/engine-javascript",
+      "specifier": "4.2.0",
+      "declared": "4.2.0",
+      "resolved": "4.2.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@shikijs/langs",
+      "specifier": "4.2.0",
+      "declared": "4.2.0",
+      "resolved": "4.2.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@shikijs/themes",
+      "specifier": "4.2.0",
+      "declared": "4.2.0",
+      "resolved": "4.2.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "@tabler/icons-react-native",
+      "specifier": "^3.44.0",
+      "declared": "^3.44.0",
+      "resolved": "3.44.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "clsx",
+      "specifier": "^2.1.1",
+      "declared": "^2.1.1",
+      "resolved": "2.1.1"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "diff",
+      "specifier": "8.0.3",
+      "declared": "8.0.3",
+      "resolved": "8.0.3"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo",
+      "specifier": "~56.0.12",
+      "declared": "~56.0.12",
+      "resolved": "56.0.12"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-asset",
+      "specifier": "~56.0.17",
+      "declared": "~56.0.17",
+      "resolved": "56.0.17"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-blur",
+      "specifier": "~56.0.3",
+      "declared": "~56.0.3",
+      "resolved": "56.0.3"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-build-properties",
+      "specifier": "~56.0.19",
+      "declared": "~56.0.19",
+      "resolved": "56.0.19"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-camera",
+      "specifier": "~56.0.8",
+      "declared": "~56.0.8",
+      "resolved": "56.0.8"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-clipboard",
+      "specifier": "~56.0.4",
+      "declared": "~56.0.4",
+      "resolved": "56.0.4"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-constants",
+      "specifier": "~56.0.18",
+      "declared": "~56.0.18",
+      "resolved": "56.0.18"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-crypto",
+      "specifier": "~56.0.4",
+      "declared": "~56.0.4",
+      "resolved": "56.0.4"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-dev-client",
+      "specifier": "~56.0.20",
+      "declared": "~56.0.20",
+      "resolved": "56.0.20"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-file-system",
+      "specifier": "~56.0.8",
+      "declared": "~56.0.8",
+      "resolved": "56.0.8"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-font",
+      "specifier": "~56.0.7",
+      "declared": "~56.0.7",
+      "resolved": "56.0.7"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-glass-effect",
+      "specifier": "~56.0.4",
+      "declared": "~56.0.4",
+      "resolved": "56.0.4"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-haptics",
+      "specifier": "~56.0.3",
+      "declared": "~56.0.3",
+      "resolved": "56.0.3"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-image",
+      "specifier": "~56.0.11",
+      "declared": "~56.0.11",
+      "resolved": "56.0.11"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-image-picker",
+      "specifier": "~56.0.18",
+      "declared": "~56.0.18",
+      "resolved": "56.0.18"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-linking",
+      "specifier": "~56.0.14",
+      "declared": "~56.0.14",
+      "resolved": "56.0.14"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-network",
+      "specifier": "~56.0.5",
+      "declared": "~56.0.5",
+      "resolved": "56.0.5"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-paste-input",
+      "specifier": "^0.1.15",
+      "declared": "^0.1.15",
+      "resolved": "0.1.15"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-quick-actions",
+      "specifier": "^6.0.2",
+      "declared": "^6.0.2",
+      "resolved": "6.0.2"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-secure-store",
+      "specifier": "~56.0.4",
+      "declared": "~56.0.4",
+      "resolved": "56.0.4"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-sharing",
+      "specifier": "~56.0.18",
+      "declared": "~56.0.18",
+      "resolved": "56.0.18"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-splash-screen",
+      "specifier": "~56.0.10",
+      "declared": "~56.0.10",
+      "resolved": "56.0.10"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-sqlite",
+      "specifier": "~56.0.5",
+      "declared": "~56.0.5",
+      "resolved": "56.0.5"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-symbols",
+      "specifier": "~56.0.6",
+      "declared": "~56.0.6",
+      "resolved": "56.0.6"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "expo-updates",
+      "specifier": "~56.0.19",
+      "declared": "~56.0.19",
+      "resolved": "56.0.19"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "punycode",
+      "specifier": "^2.3.1",
+      "declared": "^2.3.1",
+      "resolved": "2.3.1"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react",
+      "specifier": "19.2.3",
+      "declared": "19.2.3",
+      "resolved": "19.2.3"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-dom",
+      "specifier": "19.2.3",
+      "declared": "19.2.3",
+      "resolved": "19.2.3"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native",
+      "specifier": "0.85.3",
+      "declared": "0.85.3",
+      "resolved": "0.85.3"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-gesture-handler",
+      "specifier": "~2.31.1",
+      "declared": "~2.31.1",
+      "resolved": "2.31.2"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-image-viewing",
+      "specifier": "^0.2.2",
+      "declared": "^0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-keyboard-controller",
+      "specifier": "1.21.13",
+      "declared": "1.21.13",
+      "resolved": "1.21.13"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-nitro-markdown",
+      "specifier": "^0.5.0",
+      "declared": "^0.5.0",
+      "resolved": "0.5.8"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-nitro-modules",
+      "specifier": "0.35.9",
+      "declared": "0.35.9",
+      "resolved": "0.35.9"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-reanimated",
+      "specifier": "4.3.1",
+      "declared": "4.3.1",
+      "resolved": "4.3.1"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-safe-area-context",
+      "specifier": "~5.7.0",
+      "declared": "~5.7.0",
+      "resolved": "5.7.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-screens",
+      "specifier": "4.25.2",
+      "declared": "4.25.2",
+      "resolved": "4.25.2"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-shiki-engine",
+      "specifier": "^0.3.12",
+      "declared": "^0.3.12",
+      "resolved": "0.3.12"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-svg",
+      "specifier": "15.15.4",
+      "declared": "15.15.4",
+      "resolved": "15.15.4"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-webview",
+      "specifier": "^13.16.1",
+      "declared": "^13.16.1",
+      "resolved": "13.16.1"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "react-native-worklets",
+      "specifier": "0.8.3",
+      "declared": "0.8.3",
+      "resolved": "0.8.3"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "shiki",
+      "specifier": "4.2.0",
+      "declared": "4.2.0",
+      "resolved": "4.2.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "tailwind-merge",
+      "specifier": "^3.5.0",
+      "declared": "^3.5.0",
+      "resolved": "3.6.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "dependencies",
+      "name": "uniwind",
+      "specifier": "^1.6.2",
+      "declared": "^1.6.2",
+      "resolved": "1.7.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "devDependencies",
+      "name": "@pierre/trees",
+      "specifier": "1.0.0-beta.4",
+      "declared": "1.0.0-beta.4",
+      "resolved": "1.0.0-beta.4"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "devDependencies",
+      "name": "@types/node",
+      "specifier": "24.12.4",
+      "declared": "24.12.4",
+      "resolved": "24.12.4"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "devDependencies",
+      "name": "@types/react",
+      "specifier": "~19.2.0",
+      "declared": "~19.2.0",
+      "resolved": "19.2.16"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "devDependencies",
+      "name": "babel-preset-expo",
+      "specifier": "~56.0.0",
+      "declared": "~56.0.0",
+      "resolved": "56.0.14"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "devDependencies",
+      "name": "tailwindcss",
+      "specifier": "^4.0.0",
+      "declared": "^4.0.0",
+      "resolved": "4.3.0"
+    },
+    {
+      "owner": "apps/mobile",
+      "section": "devDependencies",
+      "name": "typescript",
+      "specifier": "catalog:",
+      "declared": "~6.0.3",
+      "resolved": "6.0.3"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "@anthropic-ai/claude-agent-sdk",
+      "specifier": "^0.3.170",
+      "declared": "^0.3.170",
+      "resolved": "0.3.170"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "@effect/platform-bun",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "@effect/platform-node-shared",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "@effect/sql-sqlite-bun",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "@ff-labs/fff-node",
+      "specifier": "0.9.4",
+      "declared": "0.9.4",
+      "resolved": "0.9.4"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "@modelcontextprotocol/sdk",
+      "specifier": "^1.29.0",
+      "declared": "^1.29.0",
+      "resolved": "1.29.0"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "@opencode-ai/sdk",
+      "specifier": "^1.3.15",
+      "declared": "^1.3.15",
+      "resolved": "1.15.13"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "@pierre/diffs",
+      "specifier": "catalog:",
+      "declared": "1.3.0-beta.10",
+      "resolved": "1.3.0-beta.10"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "heic-convert",
+      "specifier": "2.1.0",
+      "declared": "2.1.0",
+      "resolved": "2.1.0"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "node-pty",
+      "specifier": "^1.1.0",
+      "declared": "^1.1.0",
+      "resolved": "1.1.0"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "pxpipe-proxy",
+      "specifier": "0.11.1",
+      "declared": "0.11.1",
+      "resolved": "0.11.1"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "saxes",
+      "specifier": "^6.0.0",
+      "declared": "^6.0.0",
+      "resolved": "6.0.0"
+    },
+    {
+      "owner": "apps/server",
+      "section": "dependencies",
+      "name": "yaml",
+      "specifier": "^2.9.0",
+      "declared": "^2.9.0",
+      "resolved": "2.9.0"
+    },
+    {
+      "owner": "apps/server",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/server",
+      "section": "devDependencies",
+      "name": "@types/bun",
+      "specifier": "1.3.14",
+      "declared": "1.3.14",
+      "resolved": "1.3.14"
+    },
+    {
+      "owner": "apps/server",
+      "section": "devDependencies",
+      "name": "@types/node",
+      "specifier": "24.12.4",
+      "declared": "24.12.4",
+      "resolved": "24.12.4"
+    },
+    {
+      "owner": "apps/server",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@base-ui/react",
+      "specifier": "^1.4.1",
+      "declared": "^1.4.1",
+      "resolved": "1.5.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@dnd-kit/core",
+      "specifier": "^6.3.1",
+      "declared": "^6.3.1",
+      "resolved": "6.3.1"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@dnd-kit/modifiers",
+      "specifier": "^9.0.0",
+      "declared": "^9.0.0",
+      "resolved": "9.0.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@dnd-kit/sortable",
+      "specifier": "^10.0.0",
+      "declared": "^10.0.0",
+      "resolved": "10.0.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@dnd-kit/utilities",
+      "specifier": "^3.2.2",
+      "declared": "^3.2.2",
+      "resolved": "3.2.2"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@effect/atom-react",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@fontsource-variable/dm-sans",
+      "specifier": "^5.2.8",
+      "declared": "^5.2.8",
+      "resolved": "5.2.8"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@fontsource/jetbrains-mono",
+      "specifier": "^5.2.8",
+      "declared": "^5.2.8",
+      "resolved": "5.2.8"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@formkit/auto-animate",
+      "specifier": "^0.9.0",
+      "declared": "^0.9.0",
+      "resolved": "0.9.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@huggingface/transformers",
+      "specifier": "^4.2.0",
+      "declared": "^4.2.0",
+      "resolved": "4.2.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@legendapp/list",
+      "specifier": "3.2.0",
+      "declared": "3.2.0",
+      "resolved": "3.2.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@lexical/react",
+      "specifier": "^0.41.0",
+      "declared": "^0.41.0",
+      "resolved": "0.41.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@pierre/diffs",
+      "specifier": "catalog:",
+      "declared": "1.3.0-beta.10",
+      "resolved": "1.3.0-beta.10"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@pierre/trees",
+      "specifier": "1.0.0-beta.4",
+      "declared": "1.0.0-beta.4",
+      "resolved": "1.0.0-beta.4"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@tanstack/react-pacer",
+      "specifier": "^0.19.4",
+      "declared": "^0.19.4",
+      "resolved": "0.19.4"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@tanstack/react-router",
+      "specifier": "^1.160.2",
+      "declared": "^1.160.2",
+      "resolved": "1.170.10"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@xterm/addon-fit",
+      "specifier": "^0.11.0",
+      "declared": "^0.11.0",
+      "resolved": "0.11.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@xterm/addon-webgl",
+      "specifier": "0.19.0",
+      "declared": "0.19.0",
+      "resolved": "0.19.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "@xterm/xterm",
+      "specifier": "^6.0.0",
+      "declared": "^6.0.0",
+      "resolved": "6.0.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "class-variance-authority",
+      "specifier": "^0.7.1",
+      "declared": "^0.7.1",
+      "resolved": "0.7.1"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "jose",
+      "specifier": "catalog:",
+      "declared": "6.2.2",
+      "resolved": "6.2.2"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "lexical",
+      "specifier": "^0.41.0",
+      "declared": "^0.41.0",
+      "resolved": "0.41.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "lucide-react",
+      "specifier": "^0.564.0",
+      "declared": "^0.564.0",
+      "resolved": "0.564.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "onnxruntime-web",
+      "specifier": "1.26.0-dev.20260416-b7804b056c",
+      "declared": "1.26.0-dev.20260416-b7804b056c",
+      "resolved": "1.26.0-dev.20260416-b7804b056c"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "react",
+      "specifier": "19.2.6",
+      "declared": "19.2.6",
+      "resolved": "19.2.6"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "react-dom",
+      "specifier": "19.2.6",
+      "declared": "19.2.6",
+      "resolved": "19.2.6"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "react-markdown",
+      "specifier": "^10.1.0",
+      "declared": "^10.1.0",
+      "resolved": "10.1.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "rehype-raw",
+      "specifier": "^7.0.0",
+      "declared": "^7.0.0",
+      "resolved": "7.0.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "rehype-sanitize",
+      "specifier": "^6.0.0",
+      "declared": "^6.0.0",
+      "resolved": "6.0.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "remark-breaks",
+      "specifier": "^4.0.0",
+      "declared": "^4.0.0",
+      "resolved": "4.0.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "remark-gfm",
+      "specifier": "^4.0.1",
+      "declared": "^4.0.1",
+      "resolved": "4.0.1"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "tailwind-merge",
+      "specifier": "^3.4.0",
+      "declared": "^3.4.0",
+      "resolved": "3.6.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "dependencies",
+      "name": "zustand",
+      "specifier": "^5.0.11",
+      "declared": "^5.0.11",
+      "resolved": "5.0.14"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@rolldown/plugin-babel",
+      "specifier": "^0.2.0",
+      "declared": "^0.2.0",
+      "resolved": "0.2.3"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@tailwindcss/vite",
+      "specifier": "^4.0.0",
+      "declared": "^4.0.0",
+      "resolved": "4.3.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@tanstack/router-plugin",
+      "specifier": "^1.161.0",
+      "declared": "^1.161.0",
+      "resolved": "1.168.13"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@types/babel__core",
+      "specifier": "^7.20.5",
+      "declared": "^7.20.5",
+      "resolved": "7.20.5"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@types/react",
+      "specifier": "~19.2.14",
+      "declared": "~19.2.14",
+      "resolved": "19.2.16"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@types/react-dom",
+      "specifier": "~19.2.3",
+      "declared": "~19.2.3",
+      "resolved": "19.2.3"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@vercel/config",
+      "specifier": "^0.3.0",
+      "declared": "^0.3.0",
+      "resolved": "0.3.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "@vitejs/plugin-react",
+      "specifier": "^6.0.0",
+      "declared": "^6.0.0",
+      "resolved": "6.0.2"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "babel-plugin-react-compiler",
+      "specifier": "1.0.0",
+      "declared": "1.0.0",
+      "resolved": "1.0.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "happy-dom",
+      "specifier": "^20.11.6",
+      "declared": "^20.11.6",
+      "resolved": "20.11.6"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "msw",
+      "specifier": "2.12.11",
+      "declared": "2.12.11",
+      "resolved": "2.12.11"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "tailwindcss",
+      "specifier": "^4.0.0",
+      "declared": "^4.0.0",
+      "resolved": "4.3.0"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "vite",
+      "specifier": "npm:@voidzero-dev/vite-plus-core@0.2.2",
+      "declared": "npm:@voidzero-dev/vite-plus-core@0.2.2",
+      "resolved": "@voidzero-dev/vite-plus-core@0.2.2"
+    },
+    {
+      "owner": "apps/web",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "oxlint-plugin-t3code",
+      "section": "dependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "oxlint-plugin-t3code",
+      "section": "dependencies",
+      "name": "@oxlint/plugins",
+      "specifier": "^1.63.0",
+      "declared": "^1.63.0",
+      "resolved": "1.68.0"
+    },
+    {
+      "owner": "oxlint-plugin-t3code",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "oxlint-plugin-t3code",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "oxlint-plugin-t3code",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "packages/client-runtime",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/client-runtime",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/client-runtime",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "packages/contracts",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/contracts",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/contracts",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "packages/effect-acp",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/effect-acp",
+      "section": "devDependencies",
+      "name": "@effect/openapi-generator",
+      "specifier": "catalog:",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/effect-acp",
+      "section": "devDependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/effect-acp",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/effect-acp",
+      "section": "devDependencies",
+      "name": "@types/node",
+      "specifier": "24.12.4",
+      "declared": "24.12.4",
+      "resolved": "24.12.4"
+    },
+    {
+      "owner": "packages/effect-acp",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "packages/effect-codex-app-server",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/effect-codex-app-server",
+      "section": "devDependencies",
+      "name": "@effect/openapi-generator",
+      "specifier": "catalog:",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/effect-codex-app-server",
+      "section": "devDependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/effect-codex-app-server",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/effect-codex-app-server",
+      "section": "devDependencies",
+      "name": "@types/node",
+      "specifier": "24.12.4",
+      "declared": "24.12.4",
+      "resolved": "24.12.4"
+    },
+    {
+      "owner": "packages/effect-codex-app-server",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "packages/shared",
+      "section": "dependencies",
+      "name": "@noble/curves",
+      "specifier": "catalog:",
+      "declared": "1.9.1",
+      "resolved": "1.9.1"
+    },
+    {
+      "owner": "packages/shared",
+      "section": "dependencies",
+      "name": "@noble/hashes",
+      "specifier": "catalog:",
+      "declared": "1.8.0",
+      "resolved": "1.8.0"
+    },
+    {
+      "owner": "packages/shared",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/shared",
+      "section": "dependencies",
+      "name": "jose",
+      "specifier": "catalog:",
+      "declared": "6.2.2",
+      "resolved": "6.2.2"
+    },
+    {
+      "owner": "packages/shared",
+      "section": "dependencies",
+      "name": "yaml",
+      "specifier": "^2.9.0",
+      "declared": "^2.9.0",
+      "resolved": "2.9.0"
+    },
+    {
+      "owner": "packages/shared",
+      "section": "devDependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/shared",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/shared",
+      "section": "devDependencies",
+      "name": "@types/node",
+      "specifier": "24.12.4",
+      "declared": "24.12.4",
+      "resolved": "24.12.4"
+    },
+    {
+      "owner": "packages/shared",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "packages/ssh",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/ssh",
+      "section": "devDependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/ssh",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/ssh",
+      "section": "devDependencies",
+      "name": "@types/node",
+      "specifier": "24.12.4",
+      "declared": "24.12.4",
+      "resolved": "24.12.4"
+    },
+    {
+      "owner": "packages/ssh",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "packages/tailscale",
+      "section": "dependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/tailscale",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/tailscale",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "packages/tailscale",
+      "section": "devDependencies",
+      "name": "@types/node",
+      "specifier": "24.12.4",
+      "declared": "24.12.4",
+      "resolved": "24.12.4"
+    },
+    {
+      "owner": "packages/tailscale",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    },
+    {
+      "owner": "scripts",
+      "section": "dependencies",
+      "name": "@effect/platform-node",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "scripts",
+      "section": "dependencies",
+      "name": "effect",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "scripts",
+      "section": "dependencies",
+      "name": "pngjs",
+      "specifier": "7.0.0",
+      "declared": "7.0.0",
+      "resolved": "7.0.0"
+    },
+    {
+      "owner": "scripts",
+      "section": "dependencies",
+      "name": "yaml",
+      "specifier": "^2.9.0",
+      "declared": "^2.9.0",
+      "resolved": "2.9.0"
+    },
+    {
+      "owner": "scripts",
+      "section": "devDependencies",
+      "name": "@effect/vitest",
+      "specifier": "4.0.0-beta.102",
+      "declared": "4.0.0-beta.102",
+      "resolved": "4.0.0-beta.102"
+    },
+    {
+      "owner": "scripts",
+      "section": "devDependencies",
+      "name": "@types/pngjs",
+      "specifier": "6.0.5",
+      "declared": "6.0.5",
+      "resolved": "6.0.5"
+    },
+    {
+      "owner": "scripts",
+      "section": "devDependencies",
+      "name": "vite-plus",
+      "specifier": "catalog:",
+      "declared": "0.2.2",
+      "resolved": "0.2.2"
+    }
+  ],
+  "registry": [
+    {
+      "name": "@anthropic-ai/claude-agent-sdk",
+      "latest": "0.3.263",
+      "engines": {
+        "node": ">=18.0.0"
+      },
+      "peerDependencies": {
+        "zod": "^4.0.0",
+        "@anthropic-ai/sdk": ">=0.93.0",
+        "@modelcontextprotocol/sdk": "^1.29.0"
+      },
+      "source": "https://registry.npmjs.org/%40anthropic-ai%2Fclaude-agent-sdk/latest"
+    },
+    {
+      "name": "@astrojs/check",
+      "latest": "0.9.10",
+      "engines": null,
+      "peerDependencies": {
+        "typescript": "^5.0.0 || ^6.0.0"
+      },
+      "source": "https://registry.npmjs.org/%40astrojs%2Fcheck/latest"
+    },
+    {
+      "name": "@babel/plugin-transform-react-jsx",
+      "latest": "8.0.1",
+      "engines": {
+        "node": "^22.18.0 || >=24.11.0"
+      },
+      "peerDependencies": {
+        "@babel/core": "^8.0.0"
+      },
+      "source": "https://registry.npmjs.org/%40babel%2Fplugin-transform-react-jsx/latest"
+    },
+    {
+      "name": "@base-ui/react",
+      "latest": "1.8.0",
+      "engines": {
+        "node": ">=14.0.0"
+      },
+      "peerDependencies": {
+        "react": "^17 || ^18 || ^19",
+        "date-fns": "^4.0.0",
+        "react-dom": "^17 || ^18 || ^19",
+        "@date-fns/tz": "^1.2.0",
+        "@types/react": "^17 || ^18 || ^19"
+      },
+      "source": "https://registry.npmjs.org/%40base-ui%2Freact/latest"
+    },
+    {
+      "name": "@callstack/liquid-glass",
+      "latest": "0.8.1",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/%40callstack%2Fliquid-glass/latest"
+    },
+    {
+      "name": "@dnd-kit/core",
+      "latest": "6.3.1",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">=16.8.0",
+        "react-dom": ">=16.8.0"
+      },
+      "source": "https://registry.npmjs.org/%40dnd-kit%2Fcore/latest"
+    },
+    {
+      "name": "@dnd-kit/modifiers",
+      "latest": "9.0.0",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">=16.8.0",
+        "@dnd-kit/core": "^6.3.0"
+      },
+      "source": "https://registry.npmjs.org/%40dnd-kit%2Fmodifiers/latest"
+    },
+    {
+      "name": "@dnd-kit/sortable",
+      "latest": "10.0.0",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">=16.8.0",
+        "@dnd-kit/core": "^6.3.0"
+      },
+      "source": "https://registry.npmjs.org/%40dnd-kit%2Fsortable/latest"
+    },
+    {
+      "name": "@dnd-kit/utilities",
+      "latest": "3.2.2",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">=16.8.0"
+      },
+      "source": "https://registry.npmjs.org/%40dnd-kit%2Futilities/latest"
+    },
+    {
+      "name": "@effect/atom-react",
+      "latest": "4.0.0-beta.107",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">=19.2.7 <20.0.0",
+        "effect": "^4.0.0-beta.107",
+        "scheduler": ">=0.27.0 <0.28.0"
+      },
+      "source": "https://registry.npmjs.org/%40effect%2Fatom-react/latest"
+    },
+    {
+      "name": "@effect/openapi-generator",
+      "latest": "4.0.0-beta.107",
+      "engines": null,
+      "peerDependencies": {
+        "effect": "^4.0.0-beta.107",
+        "@effect/platform-node": "^4.0.0-beta.107"
+      },
+      "source": "https://registry.npmjs.org/%40effect%2Fopenapi-generator/latest"
+    },
+    {
+      "name": "@effect/platform-bun",
+      "latest": "0.91.2",
+      "engines": null,
+      "peerDependencies": {
+        "effect": "^3.22.1",
+        "@effect/rpc": "^0.76.2",
+        "@effect/sql": "^0.52.1",
+        "@effect/cluster": "^0.60.2",
+        "@effect/platform": "^0.97.1"
+      },
+      "source": "https://registry.npmjs.org/%40effect%2Fplatform-bun/latest"
+    },
+    {
+      "name": "@effect/platform-node",
+      "latest": "0.108.1",
+      "engines": null,
+      "peerDependencies": {
+        "effect": "^3.22.1",
+        "@effect/rpc": "^0.76.2",
+        "@effect/sql": "^0.52.1",
+        "@effect/cluster": "^0.60.2",
+        "@effect/platform": "^0.97.1"
+      },
+      "source": "https://registry.npmjs.org/%40effect%2Fplatform-node/latest"
+    },
+    {
+      "name": "@effect/platform-node-shared",
+      "latest": "0.61.1",
+      "engines": null,
+      "peerDependencies": {
+        "effect": "^3.22.1",
+        "@effect/rpc": "^0.76.1",
+        "@effect/sql": "^0.52.1",
+        "@effect/cluster": "^0.60.1",
+        "@effect/platform": "^0.97.1"
+      },
+      "source": "https://registry.npmjs.org/%40effect%2Fplatform-node-shared/latest"
+    },
+    {
+      "name": "@effect/sql-sqlite-bun",
+      "latest": "0.53.0",
+      "engines": null,
+      "peerDependencies": {
+        "effect": "^3.22.0",
+        "@effect/sql": "^0.52.0",
+        "@effect/platform": "^0.97.0",
+        "@effect/experimental": "^0.61.0"
+      },
+      "source": "https://registry.npmjs.org/%40effect%2Fsql-sqlite-bun/latest"
+    },
+    {
+      "name": "@effect/tsgo",
+      "latest": "0.41.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40effect%2Ftsgo/latest"
+    },
+    {
+      "name": "@effect/vitest",
+      "latest": "0.30.0",
+      "engines": null,
+      "peerDependencies": {
+        "effect": "^3.22.0",
+        "vitest": "^3.2.0"
+      },
+      "source": "https://registry.npmjs.org/%40effect%2Fvitest/latest"
+    },
+    {
+      "name": "@expo-google-fonts/dm-sans",
+      "latest": "0.4.2",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40expo-google-fonts%2Fdm-sans/latest"
+    },
+    {
+      "name": "@expo/metro-runtime",
+      "latest": "57.0.15",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-dom": "*",
+        "react-native": "*",
+        "@expo/log-box": "^57.0.4"
+      },
+      "source": "https://registry.npmjs.org/%40expo%2Fmetro-runtime/latest"
+    },
+    {
+      "name": "@expo/ui",
+      "latest": "57.0.16",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-dom": "*",
+        "@babel/core": "*",
+        "react-native": "*",
+        "react-native-worklets": "*"
+      },
+      "source": "https://registry.npmjs.org/%40expo%2Fui/latest"
+    },
+    {
+      "name": "@ff-labs/fff-node",
+      "latest": "0.10.6",
+      "engines": {
+        "node": ">=18.0.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40ff-labs%2Ffff-node/latest"
+    },
+    {
+      "name": "@fontsource-variable/dm-sans",
+      "latest": "5.3.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40fontsource-variable%2Fdm-sans/latest"
+    },
+    {
+      "name": "@fontsource/jetbrains-mono",
+      "latest": "5.3.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40fontsource%2Fjetbrains-mono/latest"
+    },
+    {
+      "name": "@formkit/auto-animate",
+      "latest": "0.10.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40formkit%2Fauto-animate/latest"
+    },
+    {
+      "name": "@huggingface/transformers",
+      "latest": "4.2.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40huggingface%2Ftransformers/latest"
+    },
+    {
+      "name": "@legendapp/list",
+      "latest": "3.3.10",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*"
+      },
+      "source": "https://registry.npmjs.org/%40legendapp%2Flist/latest"
+    },
+    {
+      "name": "@lexical/react",
+      "latest": "0.50.0",
+      "engines": null,
+      "peerDependencies": {
+        "yjs": ">=13.5.37",
+        "react": ">=18.x",
+        "react-dom": ">=18.x",
+        "typescript": ">=5.2"
+      },
+      "source": "https://registry.npmjs.org/%40lexical%2Freact/latest"
+    },
+    {
+      "name": "@modelcontextprotocol/sdk",
+      "latest": "1.30.0",
+      "engines": {
+        "node": ">=18"
+      },
+      "peerDependencies": {
+        "zod": "^3.25 || ^4.0",
+        "@cfworker/json-schema": "^4.1.1"
+      },
+      "source": "https://registry.npmjs.org/%40modelcontextprotocol%2Fsdk/latest"
+    },
+    {
+      "name": "@noble/curves",
+      "latest": "2.4.0",
+      "engines": {
+        "node": ">= 20.19.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40noble%2Fcurves/latest"
+    },
+    {
+      "name": "@noble/hashes",
+      "latest": "2.4.0",
+      "engines": {
+        "node": ">= 20.19.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40noble%2Fhashes/latest"
+    },
+    {
+      "name": "@opencode-ai/sdk",
+      "latest": "1.18.29",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40opencode-ai%2Fsdk/latest"
+    },
+    {
+      "name": "@oxlint/plugins",
+      "latest": "1.82.0",
+      "engines": {
+        "node": "^12.22.0 || ^14.17.0 || >=16.0.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40oxlint%2Fplugins/latest"
+    },
+    {
+      "name": "@pierre/diffs",
+      "latest": "1.4.1",
+      "engines": null,
+      "peerDependencies": {
+        "react": "^18.3.1 || ^19.0.0",
+        "react-dom": "^18.3.1 || ^19.0.0"
+      },
+      "source": "https://registry.npmjs.org/%40pierre%2Fdiffs/latest"
+    },
+    {
+      "name": "@pierre/trees",
+      "latest": "1.0.0-beta.6",
+      "engines": null,
+      "peerDependencies": {
+        "react": "^18.3.1 || ^19.0.0",
+        "react-dom": "^18.3.1 || ^19.0.0"
+      },
+      "source": "https://registry.npmjs.org/%40pierre%2Ftrees/latest"
+    },
+    {
+      "name": "@react-native-menu/menu",
+      "latest": "2.0.0",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/%40react-native-menu%2Fmenu/latest"
+    },
+    {
+      "name": "@react-navigation/elements",
+      "latest": "2.9.40",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">= 18.2.0",
+        "react-native": "*",
+        "@react-navigation/native": "^7.3.18",
+        "react-native-safe-area-context": ">= 4.0.0",
+        "@react-native-masked-view/masked-view": ">= 0.2.0"
+      },
+      "source": "https://registry.npmjs.org/%40react-navigation%2Felements/latest"
+    },
+    {
+      "name": "@react-navigation/native",
+      "latest": "7.3.18",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">= 18.2.0",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/%40react-navigation%2Fnative/latest"
+    },
+    {
+      "name": "@react-navigation/native-stack",
+      "latest": "7.18.10",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">= 18.2.0",
+        "react-native": "*",
+        "react-native-screens": ">= 4.0.0",
+        "@react-navigation/native": "^7.3.18",
+        "react-native-safe-area-context": ">= 4.0.0"
+      },
+      "source": "https://registry.npmjs.org/%40react-navigation%2Fnative-stack/latest"
+    },
+    {
+      "name": "@rolldown/plugin-babel",
+      "latest": "0.2.4",
+      "engines": {
+        "node": ">=22.12.0 || ^24.0.0"
+      },
+      "peerDependencies": {
+        "vite": "^8.0.0",
+        "rolldown": "^1.0.0-rc.5",
+        "@babel/core": "^7.29.0 || ^8.0.0-rc.1",
+        "@babel/runtime": "^7.27.0 || ^8.0.0-rc.1",
+        "@babel/plugin-transform-runtime": "^7.29.0 || ^8.0.0-rc.1"
+      },
+      "source": "https://registry.npmjs.org/%40rolldown%2Fplugin-babel/latest"
+    },
+    {
+      "name": "@shikijs/core",
+      "latest": "4.4.3",
+      "engines": {
+        "node": ">=20"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40shikijs%2Fcore/latest"
+    },
+    {
+      "name": "@shikijs/engine-javascript",
+      "latest": "4.4.3",
+      "engines": {
+        "node": ">=20"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40shikijs%2Fengine-javascript/latest"
+    },
+    {
+      "name": "@shikijs/langs",
+      "latest": "4.4.3",
+      "engines": {
+        "node": ">=20"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40shikijs%2Flangs/latest"
+    },
+    {
+      "name": "@shikijs/themes",
+      "latest": "4.4.3",
+      "engines": {
+        "node": ">=20"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40shikijs%2Fthemes/latest"
+    },
+    {
+      "name": "@tabler/icons-react-native",
+      "latest": "3.46.0",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">= 16.5.1",
+        "react-native-svg": ">= 13.0.0"
+      },
+      "source": "https://registry.npmjs.org/%40tabler%2Ficons-react-native/latest"
+    },
+    {
+      "name": "@tailwindcss/vite",
+      "latest": "4.3.3",
+      "engines": null,
+      "peerDependencies": {
+        "vite": "^5.2.0 || ^6 || ^7 || ^8"
+      },
+      "source": "https://registry.npmjs.org/%40tailwindcss%2Fvite/latest"
+    },
+    {
+      "name": "@tanstack/react-pacer",
+      "latest": "0.23.0",
+      "engines": {
+        "node": ">=18"
+      },
+      "peerDependencies": {
+        "react": ">=16.8",
+        "react-dom": ">=16.8"
+      },
+      "source": "https://registry.npmjs.org/%40tanstack%2Freact-pacer/latest"
+    },
+    {
+      "name": "@tanstack/react-router",
+      "latest": "1.170.33",
+      "engines": {
+        "node": ">=20.19"
+      },
+      "peerDependencies": {
+        "react": ">=18.0.0 || >=19.0.0",
+        "react-dom": ">=18.0.0 || >=19.0.0"
+      },
+      "source": "https://registry.npmjs.org/%40tanstack%2Freact-router/latest"
+    },
+    {
+      "name": "@tanstack/router-plugin",
+      "latest": "1.168.36",
+      "engines": {
+        "node": ">=20.19"
+      },
+      "peerDependencies": {
+        "vite": ">=5.0.0 || >=6.0.0 || >=7.0.0 || >=8.0.0",
+        "webpack": ">=5.92.0",
+        "@rsbuild/core": ">=1.0.2 || ^2.0.0",
+        "vite-plugin-solid": "^2.11.10 || ^3.0.0-0",
+        "@tanstack/react-router": "^1.170.33"
+      },
+      "source": "https://registry.npmjs.org/%40tanstack%2Frouter-plugin/latest"
+    },
+    {
+      "name": "@types/babel__core",
+      "latest": "7.20.5",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40types%2Fbabel__core/latest"
+    },
+    {
+      "name": "@types/bun",
+      "latest": "1.4.1",
+      "engines": null,
+      "peerDependencies": {},
+      "source": "https://registry.npmjs.org/%40types%2Fbun/latest"
+    },
+    {
+      "name": "@types/node",
+      "latest": "26.5.0",
+      "engines": null,
+      "peerDependencies": {},
+      "source": "https://registry.npmjs.org/%40types%2Fnode/latest"
+    },
+    {
+      "name": "@types/pngjs",
+      "latest": "6.0.5",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40types%2Fpngjs/latest"
+    },
+    {
+      "name": "@types/react",
+      "latest": "19.2.18",
+      "engines": null,
+      "peerDependencies": {},
+      "source": "https://registry.npmjs.org/%40types%2Freact/latest"
+    },
+    {
+      "name": "@types/react-dom",
+      "latest": "19.2.7",
+      "engines": null,
+      "peerDependencies": {
+        "@types/react": "^19.2.0"
+      },
+      "source": "https://registry.npmjs.org/%40types%2Freact-dom/latest"
+    },
+    {
+      "name": "@typescript/native-preview",
+      "latest": "7.0.0-dev.20260707.2",
+      "engines": {
+        "node": ">=16.20.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40typescript%2Fnative-preview/latest"
+    },
+    {
+      "name": "@vercel/config",
+      "latest": "0.7.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40vercel%2Fconfig/latest"
+    },
+    {
+      "name": "@vitejs/plugin-react",
+      "latest": "6.1.1",
+      "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+      },
+      "peerDependencies": {
+        "vite": "^8.0.0",
+        "oxc-transform-react": "^0.145.0",
+        "@rolldown/plugin-babel": "^0.1.7 || ^0.2.0",
+        "babel-plugin-react-compiler": "^1.0.0"
+      },
+      "source": "https://registry.npmjs.org/%40vitejs%2Fplugin-react/latest"
+    },
+    {
+      "name": "@xterm/addon-fit",
+      "latest": "0.11.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40xterm%2Faddon-fit/latest"
+    },
+    {
+      "name": "@xterm/addon-webgl",
+      "latest": "0.19.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40xterm%2Faddon-webgl/latest"
+    },
+    {
+      "name": "@xterm/xterm",
+      "latest": "6.0.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/%40xterm%2Fxterm/latest"
+    },
+    {
+      "name": "astro",
+      "latest": "7.3.1",
+      "engines": {
+        "npm": ">=9.6.5",
+        "node": ">=22.12.0",
+        "pnpm": ">=7.1.0"
+      },
+      "peerDependencies": {
+        "@astrojs/markdown-remark": "^7.3.0"
+      },
+      "source": "https://registry.npmjs.org/astro/latest"
+    },
+    {
+      "name": "babel-plugin-react-compiler",
+      "latest": "1.0.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/babel-plugin-react-compiler/latest"
+    },
+    {
+      "name": "babel-preset-expo",
+      "latest": "57.0.10",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "expo-widgets": "^57.0.16",
+        "react-refresh": ">=0.14.0 <1.0.0",
+        "@babel/runtime": "^7.20.0"
+      },
+      "source": "https://registry.npmjs.org/babel-preset-expo/latest"
+    },
+    {
+      "name": "class-variance-authority",
+      "latest": "0.7.1",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/class-variance-authority/latest"
+    },
+    {
+      "name": "clsx",
+      "latest": "2.1.1",
+      "engines": {
+        "node": ">=6"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/clsx/latest"
+    },
+    {
+      "name": "cross-env",
+      "latest": "10.1.0",
+      "engines": {
+        "node": ">=20"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/cross-env/latest"
+    },
+    {
+      "name": "diff",
+      "latest": "9.0.0",
+      "engines": {
+        "node": ">=0.3.1"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/diff/latest"
+    },
+    {
+      "name": "effect",
+      "latest": "3.22.1",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/effect/latest"
+    },
+    {
+      "name": "electron",
+      "latest": "44.2.0",
+      "engines": {
+        "node": ">= 22.12.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/electron/latest"
+    },
+    {
+      "name": "electron-builder",
+      "latest": "26.15.3",
+      "engines": {
+        "node": ">=14.0.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/electron-builder/latest"
+    },
+    {
+      "name": "electron-store",
+      "latest": "11.0.2",
+      "engines": {
+        "node": ">=20"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/electron-store/latest"
+    },
+    {
+      "name": "expo",
+      "latest": "57.0.20",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-dom": "*",
+        "react-native": "*",
+        "react-native-web": "*",
+        "@expo/dom-webview": "*",
+        "@expo/metro-runtime": "*",
+        "react-native-webview": "*"
+      },
+      "source": "https://registry.npmjs.org/expo/latest"
+    },
+    {
+      "name": "expo-asset",
+      "latest": "57.0.16",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-asset/latest"
+    },
+    {
+      "name": "expo-blur",
+      "latest": "57.0.2",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-blur/latest"
+    },
+    {
+      "name": "expo-build-properties",
+      "latest": "57.0.17",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-build-properties/latest"
+    },
+    {
+      "name": "expo-camera",
+      "latest": "57.0.4",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*",
+        "react-native-web": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-camera/latest"
+    },
+    {
+      "name": "expo-clipboard",
+      "latest": "57.0.1",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-clipboard/latest"
+    },
+    {
+      "name": "expo-constants",
+      "latest": "57.0.17",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-constants/latest"
+    },
+    {
+      "name": "expo-crypto",
+      "latest": "57.0.2",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-crypto/latest"
+    },
+    {
+      "name": "expo-dev-client",
+      "latest": "57.0.18",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-dev-client/latest"
+    },
+    {
+      "name": "expo-file-system",
+      "latest": "57.0.6",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-file-system/latest"
+    },
+    {
+      "name": "expo-font",
+      "latest": "57.0.3",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-font/latest"
+    },
+    {
+      "name": "expo-glass-effect",
+      "latest": "57.0.1",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-glass-effect/latest"
+    },
+    {
+      "name": "expo-haptics",
+      "latest": "57.0.2",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-haptics/latest"
+    },
+    {
+      "name": "expo-image",
+      "latest": "57.0.4",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*",
+        "react-native-web": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-image/latest"
+    },
+    {
+      "name": "expo-image-picker",
+      "latest": "57.0.16",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-image-picker/latest"
+    },
+    {
+      "name": "expo-linking",
+      "latest": "57.0.9",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-linking/latest"
+    },
+    {
+      "name": "expo-network",
+      "latest": "57.0.1",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-network/latest"
+    },
+    {
+      "name": "expo-paste-input",
+      "latest": "0.2.2",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-paste-input/latest"
+    },
+    {
+      "name": "expo-quick-actions",
+      "latest": "6.0.2",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-quick-actions/latest"
+    },
+    {
+      "name": "expo-secure-store",
+      "latest": "57.0.3",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-secure-store/latest"
+    },
+    {
+      "name": "expo-sharing",
+      "latest": "57.0.18",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-sharing/latest"
+    },
+    {
+      "name": "expo-splash-screen",
+      "latest": "57.0.8",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-splash-screen/latest"
+    },
+    {
+      "name": "expo-sqlite",
+      "latest": "57.0.2",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-sqlite/latest"
+    },
+    {
+      "name": "expo-symbols",
+      "latest": "57.0.2",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "expo-font": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-symbols/latest"
+    },
+    {
+      "name": "expo-updates",
+      "latest": "57.0.21",
+      "engines": null,
+      "peerDependencies": {
+        "expo": "*",
+        "react": "*",
+        "react-native": "*",
+        "expo-dev-client": "*"
+      },
+      "source": "https://registry.npmjs.org/expo-updates/latest"
+    },
+    {
+      "name": "happy-dom",
+      "latest": "20.14.0",
+      "engines": {
+        "node": ">=20.0.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/happy-dom/latest"
+    },
+    {
+      "name": "heic-convert",
+      "latest": "2.1.0",
+      "engines": {
+        "node": ">=12.0.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/heic-convert/latest"
+    },
+    {
+      "name": "jose",
+      "latest": "6.2.12",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/jose/latest"
+    },
+    {
+      "name": "lexical",
+      "latest": "0.50.0",
+      "engines": null,
+      "peerDependencies": {
+        "typescript": ">=5.2"
+      },
+      "source": "https://registry.npmjs.org/lexical/latest"
+    },
+    {
+      "name": "lucide-react",
+      "latest": "1.42.0",
+      "engines": null,
+      "peerDependencies": {
+        "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0"
+      },
+      "source": "https://registry.npmjs.org/lucide-react/latest"
+    },
+    {
+      "name": "msw",
+      "latest": "2.15.0",
+      "engines": {
+        "node": ">=18"
+      },
+      "peerDependencies": {
+        "typescript": ">= 4.8.x"
+      },
+      "source": "https://registry.npmjs.org/msw/latest"
+    },
+    {
+      "name": "node-pty",
+      "latest": "1.1.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/node-pty/latest"
+    },
+    {
+      "name": "onnxruntime-web",
+      "latest": "1.29.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/onnxruntime-web/latest"
+    },
+    {
+      "name": "playwright-core",
+      "latest": "1.63.0",
+      "engines": {
+        "node": ">=20"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/playwright-core/latest"
+    },
+    {
+      "name": "pngjs",
+      "latest": "7.0.0",
+      "engines": {
+        "node": ">=14.19.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/pngjs/latest"
+    },
+    {
+      "name": "punycode",
+      "latest": "2.3.1",
+      "engines": {
+        "node": ">=6"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/punycode/latest"
+    },
+    {
+      "name": "pxpipe-proxy",
+      "latest": "0.13.2",
+      "engines": {
+        "node": ">=20.19"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/pxpipe-proxy/latest"
+    },
+    {
+      "name": "react",
+      "latest": "19.2.8",
+      "engines": {
+        "node": ">=0.10.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/react/latest"
+    },
+    {
+      "name": "react-dom",
+      "latest": "19.2.8",
+      "engines": null,
+      "peerDependencies": {
+        "react": "^19.2.8"
+      },
+      "source": "https://registry.npmjs.org/react-dom/latest"
+    },
+    {
+      "name": "react-grab",
+      "latest": "0.2.0",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">=17.0.0"
+      },
+      "source": "https://registry.npmjs.org/react-grab/latest"
+    },
+    {
+      "name": "react-markdown",
+      "latest": "10.1.0",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">=18",
+        "@types/react": ">=18"
+      },
+      "source": "https://registry.npmjs.org/react-markdown/latest"
+    },
+    {
+      "name": "react-native",
+      "latest": "0.87.1",
+      "engines": {
+        "node": "^22.13.0 || ^24.3.0 || >= 26.0.0"
+      },
+      "peerDependencies": {
+        "react": "^19.2.3",
+        "@types/react": "^19.1.1"
+      },
+      "source": "https://registry.npmjs.org/react-native/latest"
+    },
+    {
+      "name": "react-native-gesture-handler",
+      "latest": "3.2.1",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/react-native-gesture-handler/latest"
+    },
+    {
+      "name": "react-native-image-viewing",
+      "latest": "0.2.2",
+      "engines": null,
+      "peerDependencies": {
+        "react": ">=16.11.0",
+        "react-native": ">=0.61.3"
+      },
+      "source": "https://registry.npmjs.org/react-native-image-viewing/latest"
+    },
+    {
+      "name": "react-native-keyboard-controller",
+      "latest": "1.22.4",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*",
+        "react-native-reanimated": ">=3.0.0"
+      },
+      "source": "https://registry.npmjs.org/react-native-keyboard-controller/latest"
+    },
+    {
+      "name": "react-native-nitro-markdown",
+      "latest": "0.12.1",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": ">=0.75.0",
+        "ratex-react-native": ">=0.1.4",
+        "react-native-nitro-modules": ">=0.37.0 <0.38.0"
+      },
+      "source": "https://registry.npmjs.org/react-native-nitro-markdown/latest"
+    },
+    {
+      "name": "react-native-nitro-modules",
+      "latest": "0.37.1",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/react-native-nitro-modules/latest"
+    },
+    {
+      "name": "react-native-reanimated",
+      "latest": "4.6.0",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "0.83 - 0.87",
+        "react-native-worklets": "0.12.x"
+      },
+      "source": "https://registry.npmjs.org/react-native-reanimated/latest"
+    },
+    {
+      "name": "react-native-safe-area-context",
+      "latest": "5.9.1",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/react-native-safe-area-context/latest"
+    },
+    {
+      "name": "react-native-screens",
+      "latest": "4.27.0",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/react-native-screens/latest"
+    },
+    {
+      "name": "react-native-shiki-engine",
+      "latest": "0.3.12",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/react-native-shiki-engine/latest"
+    },
+    {
+      "name": "react-native-svg",
+      "latest": "15.15.5",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/react-native-svg/latest"
+    },
+    {
+      "name": "react-native-webview",
+      "latest": "14.0.1",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+      },
+      "source": "https://registry.npmjs.org/react-native-webview/latest"
+    },
+    {
+      "name": "react-native-worklets",
+      "latest": "0.12.1",
+      "engines": null,
+      "peerDependencies": {
+        "react": "*",
+        "@babel/core": "*",
+        "react-native": "0.83 - 0.87",
+        "@react-native/metro-config": "*"
+      },
+      "source": "https://registry.npmjs.org/react-native-worklets/latest"
+    },
+    {
+      "name": "rehype-raw",
+      "latest": "7.0.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/rehype-raw/latest"
+    },
+    {
+      "name": "rehype-sanitize",
+      "latest": "6.0.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/rehype-sanitize/latest"
+    },
+    {
+      "name": "remark-breaks",
+      "latest": "4.0.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/remark-breaks/latest"
+    },
+    {
+      "name": "remark-gfm",
+      "latest": "4.0.1",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/remark-gfm/latest"
+    },
+    {
+      "name": "saxes",
+      "latest": "6.0.0",
+      "engines": {
+        "node": ">=v12.22.7"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/saxes/latest"
+    },
+    {
+      "name": "shiki",
+      "latest": "4.4.3",
+      "engines": {
+        "node": ">=20"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/shiki/latest"
+    },
+    {
+      "name": "tailwind-merge",
+      "latest": "3.6.0",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/tailwind-merge/latest"
+    },
+    {
+      "name": "tailwindcss",
+      "latest": "4.3.3",
+      "engines": null,
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/tailwindcss/latest"
+    },
+    {
+      "name": "typescript",
+      "latest": "7.0.2",
+      "engines": {
+        "node": ">=16.20.0"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/typescript/latest"
+    },
+    {
+      "name": "uniwind",
+      "latest": "1.12.0",
+      "engines": null,
+      "peerDependencies": {
+        "metro": "*",
+        "react": ">=19.0.0",
+        "metro-cache": "*",
+        "tailwindcss": ">=4",
+        "react-native": ">=0.81.0",
+        "@expo/metro-config": "*",
+        "metro-transform-worker": "*"
+      },
+      "source": "https://registry.npmjs.org/uniwind/latest"
+    },
+    {
+      "name": "vite",
+      "latest": "8.2.2",
+      "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+      },
+      "peerDependencies": {
+        "tsx": "^4.8.1",
+        "jiti": ">=1.21.0",
+        "less": "^4.0.0",
+        "sass": "^1.70.0",
+        "yaml": "^2.4.2",
+        "stylus": ">=0.54.8",
+        "terser": "^5.16.0",
+        "esbuild": "^0.27.0 || ^0.28.0",
+        "sugarss": "^5.0.0",
+        "@types/node": "^20.19.0 || >=22.12.0",
+        "sass-embedded": "^1.70.0",
+        "@vitejs/devtools": "^0.4.0 || ^0.5.0"
+      },
+      "source": "https://registry.npmjs.org/vite/latest"
+    },
+    {
+      "name": "vite-plus",
+      "latest": "0.3.0",
+      "engines": {
+        "node": "^20.19.0 || ^22.18.0 || >=24.11.0"
+      },
+      "peerDependencies": {
+        "@vitest/browser-playwright": "4.1.11",
+        "@vitest/browser-webdriverio": "4.1.11"
+      },
+      "source": "https://registry.npmjs.org/vite-plus/latest"
+    },
+    {
+      "name": "yaml",
+      "latest": "2.9.0",
+      "engines": {
+        "node": ">= 14.6"
+      },
+      "peerDependencies": null,
+      "source": "https://registry.npmjs.org/yaml/latest"
+    },
+    {
+      "name": "zustand",
+      "latest": "5.0.15",
+      "engines": {
+        "node": ">=12.20.0"
+      },
+      "peerDependencies": {
+        "immer": ">=9.0.6",
+        "react": ">=18.0.0",
+        "@types/react": ">=18.0.0",
+        "use-sync-external-store": ">=1.2.0"
+      },
+      "source": "https://registry.npmjs.org/zustand/latest"
+    }
+  ]
+}

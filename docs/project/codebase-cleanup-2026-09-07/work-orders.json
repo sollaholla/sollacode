@@ -1,0 +1,312 @@
+{
+  "baseline": "1b6d64185",
+  "note": "Documentation task index only. Follow full work orders; dependencies do not authorize runtime or external actions. All implementation tasks are planned.",
+  "orders": [
+    {
+      "id": "01",
+      "title": "Establish the implementation baseline and task ledger",
+      "depends_on": [],
+      "state": "PLANNED"
+    },
+    {
+      "id": "02",
+      "title": "Remove the broken announcement script and stale dependency configuration",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "03",
+      "title": "Delete confirmed-unused web components, one leaf at a time",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "04",
+      "title": "Remove unused mobile facades and decide the old terminal panel",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "05",
+      "title": "Remove deprecated internal aliases and kind-only registry methods",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "06",
+      "title": "Document persisted compatibility and remove only dead writes",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "07",
+      "title": "Make the Codex collaboration-mode schema workaround reproducible",
+      "depends_on": ["01", "06"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "08",
+      "title": "Replace boundary casts with explicit narrow types",
+      "depends_on": ["01", "06"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "09",
+      "title": "Replace integration readiness sleeps with explicit subscription readiness",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "10",
+      "title": "Extract ChatView's terminal and side-panel composition first",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "11",
+      "title": "Extract ChatView's send/account controllers without changing queue ownership",
+      "depends_on": ["09", "10", "12", "18"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "12",
+      "title": "Share activity and usage derivation where semantics must match",
+      "depends_on": ["01", "06"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "13",
+      "title": "Split composer settings, draft attachments and suggestion menus",
+      "depends_on": ["10", "11", "12"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "14",
+      "title": "Consolidate sidebar behavior while retaining both active layouts",
+      "depends_on": ["12"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "15",
+      "title": "Remove continuous decorative repaint without changing status meaning",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "16",
+      "title": "Extract timeline row rendering from scroll and history coordination",
+      "depends_on": ["10", "11", "12", "13"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "17",
+      "title": "Split the provider command reactor by command family",
+      "depends_on": ["06", "09", "18"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "18",
+      "title": "Formalize queue, stop and usage-guard decisions as named pure policies",
+      "depends_on": ["06", "09", "12"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "19",
+      "title": "Separate projection query shapes from lifecycle updates",
+      "depends_on": ["06", "09", "18"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "20",
+      "title": "Separate normalized provider-event ingestion from lifecycle effects",
+      "depends_on": ["17", "18", "19"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "21",
+      "title": "Extract provider-specific parsers and build an adapter capability matrix",
+      "depends_on": ["05", "07", "20"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "22",
+      "title": "Split desktop preview operations without losing tab/profile ownership",
+      "depends_on": ["08"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "23",
+      "title": "Split terminal policy and buffering from process ownership",
+      "depends_on": ["08", "09"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "24",
+      "title": "Reduce web/mobile drift at the client-runtime boundary",
+      "depends_on": ["12", "14", "16"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "25",
+      "title": "Review connection, relay, SSH and Tailscale lifecycle boundaries",
+      "depends_on": ["01", "24"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "26",
+      "title": "Bound and isolate MCP history/query mechanics",
+      "depends_on": ["09", "19"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "27",
+      "title": "Keep telemetry bounded and extract only a useful native boundary",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "28",
+      "title": "Review VCS, source-control and agent scheduling for real duplication",
+      "depends_on": ["09", "18"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "29",
+      "title": "Make standalone distribution identity explicit without inventing a package",
+      "depends_on": ["02", "25"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "30",
+      "title": "Separate voice and remote-input lifecycle controllers",
+      "depends_on": ["08", "22"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "31",
+      "title": "Upgrade the Expo/native cohort with patch ownership",
+      "depends_on": ["04", "24", "32"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "32",
+      "title": "Split native review model/layout from view lifecycle",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "33",
+      "title": "Upgrade Electron and its preview/native dependency cohort",
+      "depends_on": ["08", "22", "30"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "34",
+      "title": "Upgrade protocol/SDK/toolchain families independently",
+      "depends_on": ["07", "21"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "35",
+      "title": "Maintain marketing/media tooling and actual asset reachability",
+      "depends_on": ["02", "29"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "36",
+      "title": "Make release inputs immutable and simplify build orchestration",
+      "depends_on": ["01"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "37",
+      "title": "Add narrow prevention checks and correct stale planning guidance",
+      "depends_on": ["02", "03", "04", "05", "06", "07", "08", "09"],
+      "state": "PLANNED"
+    },
+    {
+      "id": "38",
+      "title": "Close the audit across every inventoried file and deliver a clean handoff",
+      "depends_on": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "23",
+        "24",
+        "25",
+        "26",
+        "27",
+        "28",
+        "29",
+        "30",
+        "31",
+        "32",
+        "33",
+        "34",
+        "35",
+        "36",
+        "37"
+      ],
+      "state": "PLANNED"
+    }
+  ],
+  "suggested_serial_order": [
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "07",
+    "08",
+    "09",
+    "10",
+    "12",
+    "14",
+    "15",
+    "18",
+    "11",
+    "13",
+    "16",
+    "17",
+    "19",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "27",
+    "28",
+    "29",
+    "30",
+    "32",
+    "31",
+    "33",
+    "34",
+    "35",
+    "36",
+    "37",
+    "38"
+  ]
+}
