@@ -1,0 +1,4209 @@
+{
+  "captured_at": "2026-09-07T17:24:58.287407+00:00",
+  "head": "1b6d641858625f40d5af58dd4720fb552670f1cc",
+  "branch": "main",
+  "method": "git tracked plus nonignored untracked inventory; source suffix and textual pattern heuristics",
+  "flags": {
+    "suppression": [
+      {
+        "path": "apps/desktop/scripts/dev-electron.mjs",
+        "line": 55,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/scripts/electron-launcher.mjs",
+        "line": 31,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/scripts/ensure-electron-runtime.mjs",
+        "line": 8,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/scripts/ensure-electron-runtime.mjs",
+        "line": 10,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/backend/DesktopBackendConfiguration.test.ts",
+        "line": 884,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/backend/DesktopBackendConfiguration.test.ts",
+        "line": 908,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/metro.config.js",
+        "line": 47,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeProvider.ts",
+        "line": 818,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/CursorProvider.ts",
+        "line": 585,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/public/mockServiceWorker.js",
+        "line": 1,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/components/GitInitDialog.tsx",
+        "line": 71,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/MessagesTimeline.tsx",
+        "line": 1825,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/orchestrator/OrchestratorListeningOverlay.tsx",
+        "line": 105,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/hooks/useTheme.ts",
+        "line": 194,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/pushToTalk.worker.ts",
+        "line": 4,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 1,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routes/orchestrator.tsx",
+        "line": 120,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/terminalMouseReports.ts",
+        "line": 13,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/terminalMouseReports.ts",
+        "line": 24,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/terminalMouseReports.ts",
+        "line": 26,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/terminalMouseReports.ts",
+        "line": 28,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/effect-codex-app-server/test/fixtures/codex-app-server-mock-peer.ts",
+        "line": 39,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/shared/src/qrCode.ts",
+        "line": 1,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "scripts/build-install-desktop-release.ts",
+        "line": 232,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "scripts/build-install-desktop-release.ts",
+        "line": 257,
+        "test_path": false,
+        "generated_or_vendor": false
+      }
+    ],
+    "timer": [
+      {
+        "path": "apps/desktop/scripts/dev-electron.mjs",
+        "line": 167,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/scripts/dev-electron.mjs",
+        "line": 189,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/scripts/dev-electron.mjs",
+        "line": 247,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/scripts/smoke-test.mjs",
+        "line": 30,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/scripts/wait-for-resources.mjs",
+        "line": 42,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/scripts/wait-for-resources.mjs",
+        "line": 117,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/app/DesktopLifecycle.ts",
+        "line": 135,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/app/RemoteInput.ts",
+        "line": 1254,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/app/SystemAudioMute.ts",
+        "line": 34,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+        "line": 614,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/backend/DesktopBackendManager.ts",
+        "line": 1010,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronProtocol.ts",
+        "line": 327,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/network/DesktopLanDiscovery.ts",
+        "line": 408,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/network/DesktopLanDiscovery.ts",
+        "line": 642,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 2414,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 2791,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 4178,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 4418,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 5757,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 5825,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 5837,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 5981,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 5993,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 6026,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 6030,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 6269,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 6787,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 6866,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/PickPreload.ts",
+        "line": 475,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/telemetry/DesktopTelemetryPublisher.ts",
+        "line": 294,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/window/DesktopWindow.ts",
+        "line": 447,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/window/DesktopWindow.ts",
+        "line": 682,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/window/OrchestratorBubbleWindow.ts",
+        "line": 271,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/modules/t3-markdown-text/src/CopyTextButton.tsx",
+        "line": 48,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/components/CopyTextButton.tsx",
+        "line": 43,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/connection/ConnectionsNewRouteScreen.tsx",
+        "line": 111,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/diffs/nativeReviewDiffHighlighter.ts",
+        "line": 214,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/files/FileTreeBrowser.tsx",
+        "line": 204,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/files/sourceHighlightingState.test.ts",
+        "line": 91,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/home/HomeScreen.tsx",
+        "line": 587,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/home/thread-swipe-actions.tsx",
+        "line": 144,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/preview/ThreadBrowserRouteScreen.tsx",
+        "line": 125,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/review/shikiReviewHighlighter.ts",
+        "line": 240,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/review/useReviewDiffPrewarming.ts",
+        "line": 19,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/settings/SettingsEnvironmentsRouteScreen.tsx",
+        "line": 42,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/settings/SettingsRouteScreen.tsx",
+        "line": 195,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/showcase/ShowcaseCaptureCoordinator.tsx",
+        "line": 200,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/showcase/showcaseRetry.ts",
+        "line": 11,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/showcase/showcaseRetry.ts",
+        "line": 23,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/terminal/ThreadTerminalRouteScreen.tsx",
+        "line": 655,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/threads/ThreadComposer.tsx",
+        "line": 317,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/threads/ThreadFeed.tsx",
+        "line": 1729,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
+        "line": 507,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
+        "line": 789,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/threads/thread-inspector-content-stack.tsx",
+        "line": 61,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/state/queries.ts",
+        "line": 59,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/state/use-composer-drafts.ts",
+        "line": 218,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/state/use-thread-composer-state.ts",
+        "line": 418,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+        "line": 395,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/state/use-vcs-action-state.ts",
+        "line": 35,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/integration/OrchestrationEngineHarness.integration.ts",
+        "line": 452,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/integration/orchestrationEngine.integration.test.ts",
+        "line": 81,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/integration/providerService.integration.test.ts",
+        "line": 97,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/scripts/acp-mock-agent.ts",
+        "line": 459,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/scripts/acp-mock-agent.ts",
+        "line": 509,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/scripts/acp-mock-agent.ts",
+        "line": 592,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/scripts/acp-mock-agent.ts",
+        "line": 658,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/scripts/cursor-acp-model-mismatch-probe.ts",
+        "line": 122,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/scripts/cursor-acp-model-mismatch-probe.ts",
+        "line": 187,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/attachmentRetention.ts",
+        "line": 167,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/background/BackgroundPolicy.ts",
+        "line": 444,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/mcp/toolkits/consult/handlers.ts",
+        "line": 324,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/mcp/toolkits/history/ThreadHistoryQuery.ts",
+        "line": 404,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/modelImageCompatibility.ts",
+        "line": 117,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/observability/Metrics.test.ts",
+        "line": 136,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "line": 185,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ActivityPayloadCompaction.ts",
+        "line": 97,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ActivityPayloadCompaction.ts",
+        "line": 209,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ActivityPayloadCompaction.ts",
+        "line": 240,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts",
+        "line": 174,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts",
+        "line": 196,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts",
+        "line": 243,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts",
+        "line": 706,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts",
+        "line": 4328,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts",
+        "line": 5926,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts",
+        "line": 5932,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts",
+        "line": 6443,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts",
+        "line": 1938,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts",
+        "line": 3931,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts",
+        "line": 4055,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.test.ts",
+        "line": 654,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts",
+        "line": 1902,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts",
+        "line": 3151,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ThreadWorkScheduler.ts",
+        "line": 581,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeTokenOptimizerProxy.test.ts",
+        "line": 191,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeTokenOptimizerProxy.ts",
+        "line": 234,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/CodexProvider.ts",
+        "line": 621,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/CursorProvider.test.ts",
+        "line": 127,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/EventNdjsonLogger.ts",
+        "line": 603,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/GrokAdapter.test.ts",
+        "line": 96,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/GrokAdapter.test.ts",
+        "line": 644,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/GrokAdapter.test.ts",
+        "line": 960,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/GrokAdapter.test.ts",
+        "line": 1170,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/acp/AcpRuntimeModel.ts",
+        "line": 506,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/acp/AcpSessionRuntime.ts",
+        "line": 540,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/acp/AcpSessionRuntime.ts",
+        "line": 1083,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/makeManagedServerProvider.ts",
+        "line": 220,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeAdapter.test.ts",
+        "line": 125,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeAdapter.test.ts",
+        "line": 137,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeAdapter.test.ts",
+        "line": 1047,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeAdapter.test.ts",
+        "line": 1049,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeAdapter.ts",
+        "line": 847,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeConnection.test.ts",
+        "line": 183,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeConnection.ts",
+        "line": 183,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/opencodeRuntime.ts",
+        "line": 494,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/opencodeRuntime.ts",
+        "line": 681,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/providerAccountSwitch.ts",
+        "line": 241,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.ts",
+        "line": 538,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/resourceTelemetry/NativeTelemetryClient.ts",
+        "line": 718,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/server.test.ts",
+        "line": 335,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/server.test.ts",
+        "line": 4356,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/server.test.ts",
+        "line": 4403,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/server.test.ts",
+        "line": 4485,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/server.test.ts",
+        "line": 4895,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/service/selfUpdate.ts",
+        "line": 218,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/telemetry/AnalyticsService.ts",
+        "line": 175,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/Manager.test.ts",
+        "line": 1511,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/Manager.test.ts",
+        "line": 1750,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/Manager.test.ts",
+        "line": 1773,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/Manager.test.ts",
+        "line": 2049,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/Manager.ts",
+        "line": 1938,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/Manager.ts",
+        "line": 1994,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/Manager.ts",
+        "line": 2210,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/Manager.ts",
+        "line": 3292,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/Manager.ts",
+        "line": 3294,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/textGeneration/CursorTextGeneration.test.ts",
+        "line": 88,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/textGeneration/OpenCodeTextGeneration.ts",
+        "line": 241,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/vcs/GitVcsDriverCore.test.ts",
+        "line": 221,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/vcs/VcsProcess.test.ts",
+        "line": 261,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/vcs/VcsStatusBroadcaster.ts",
+        "line": 447,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/HostedBrowserWebview.tsx",
+        "line": 189,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/HostedBrowserWebview.tsx",
+        "line": 309,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/browserRecording.test.ts",
+        "line": 519,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/browserRecording.ts",
+        "line": 281,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/browserRecording.ts",
+        "line": 294,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/browserViewportActions.ts",
+        "line": 56,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/desktopTabLifetime.ts",
+        "line": 66,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/useBrowserViewportResize.ts",
+        "line": 149,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/AnimatedHeight.tsx",
+        "line": 16,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatMarkdown.tsx",
+        "line": 475,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatMarkdown.tsx",
+        "line": 675,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.logic.ts",
+        "line": 888,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.tsx",
+        "line": 1348,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.tsx",
+        "line": 1978,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.tsx",
+        "line": 2026,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.tsx",
+        "line": 3761,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.tsx",
+        "line": 4973,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.tsx",
+        "line": 6638,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.tsx",
+        "line": 6735,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.tsx",
+        "line": 7408,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ChatView.tsx",
+        "line": 8801,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ComposerPromptEditor.tsx",
+        "line": 1626,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/GitActionsControl.tsx",
+        "line": 1217,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/PlanSidebar.tsx",
+        "line": 126,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/PlanSidebar.tsx",
+        "line": 133,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ProviderUpdateEnvironmentRows.tsx",
+        "line": 251,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ProviderUpdateLaunchNotification.tsx",
+        "line": 105,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ServerUpdateAction.tsx",
+        "line": 76,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/Sidebar.tsx",
+        "line": 1491,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/SidebarV2.tsx",
+        "line": 1774,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 576,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 583,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 651,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 1137,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 1244,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 1360,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 1419,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 1434,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 1478,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 1825,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 1851,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+        "line": 2066,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/ChatComposer.tsx",
+        "line": 2447,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/ComposerBannerStack.tsx",
+        "line": 95,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+        "line": 114,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/MessagesTimeline.tsx",
+        "line": 561,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/ModelPickerContent.tsx",
+        "line": 149,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/microphoneHold.ts",
+        "line": 87,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/files/fileSaveCoordinator.ts",
+        "line": 36,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/AgentBrowserCursor.tsx",
+        "line": 64,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/PreviewAutomationHosts.tsx",
+        "line": 126,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/PreviewAutomationHosts.tsx",
+        "line": 148,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/PreviewAutomationHosts.tsx",
+        "line": 239,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/PreviewView.tsx",
+        "line": 403,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/PreviewView.tsx",
+        "line": 540,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/PreviewView.tsx",
+        "line": 560,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/RemoteBrowserFrame.tsx",
+        "line": 134,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/RemoteBrowserFrame.tsx",
+        "line": 332,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/ZoomIndicator.tsx",
+        "line": 29,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/previewAutomationRequestConsumer.ts",
+        "line": 76,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/previewHumanVerification.ts",
+        "line": 303,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/previewNavigationReadiness.ts",
+        "line": 77,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/useLoadingProgress.ts",
+        "line": 28,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/remoteControl/RemoteControlCoordinator.tsx",
+        "line": 523,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/remoteControl/RemoteControlCoordinator.tsx",
+        "line": 654,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/remoteControl/RemoteControlCoordinator.tsx",
+        "line": 666,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/remoteControl/RemoteControlCoordinator.tsx",
+        "line": 728,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/remoteControl/RemoteControlViewerDialog.tsx",
+        "line": 302,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/remoteControl/RemoteControlViewerDialog.tsx",
+        "line": 649,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/remoteControl/touchPressDelay.ts",
+        "line": 27,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/settings/OrchestratorSettings.tsx",
+        "line": 201,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/settings/ProviderAccentColorPicker.tsx",
+        "line": 278,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/settings/ProviderModelsSection.tsx",
+        "line": 152,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/settings/SettingsRouteLayout.tsx",
+        "line": 62,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/sidebar/SidebarProviderUpdatePill.tsx",
+        "line": 114,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ui/toast.tsx",
+        "line": 498,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/environments/primary/auth.ts",
+        "line": 331,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/hooks/useCopyToClipboard.ts",
+        "line": 86,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/hooks/useNowMinute.ts",
+        "line": 30,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/hooks/useTerminalLayoutSync.ts",
+        "line": 111,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/backgroundActivityReporterLayer.test.ts",
+        "line": 105,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.test.ts",
+        "line": 43,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 546,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 768,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 896,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 972,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1053,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1141,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1268,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1376,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1510,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1806,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1891,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1984,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/sessionLifecycleGuards.test.ts",
+        "line": 29,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/testing/liveProvider.ts",
+        "line": 115,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/useOrchestratorSession.ts",
+        "line": 288,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/useOrchestratorSession.ts",
+        "line": 1788,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/useOrchestratorSession.ts",
+        "line": 1935,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/useOrchestratorSession.ts",
+        "line": 2293,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/voiceCues.ts",
+        "line": 226,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/voiceCues.ts",
+        "line": 274,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/proposedPlan.ts",
+        "line": 119,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/pushToTalk.test.ts",
+        "line": 301,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/pushToTalk.ts",
+        "line": 199,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/routes/__root.tsx",
+        "line": 146,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/rpc/requestLatencyState.ts",
+        "line": 64,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/speechDictation.ts",
+        "line": 184,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/state/queries.ts",
+        "line": 69,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/state/retryInterruptedCommand.ts",
+        "line": 21,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/threadExportAction.ts",
+        "line": 23,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/threadExportAction.ts",
+        "line": 50,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/voiceTranscriptCorrection.test.ts",
+        "line": 160,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/voiceTranscriptCorrection.ts",
+        "line": 177,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/connection/health.test.ts",
+        "line": 15,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/connection/supervisor.ts",
+        "line": 438,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/connection/supervisor.ts",
+        "line": 531,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.ts",
+        "line": 278,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/threads.ts",
+        "line": 432,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vmAgents.ts",
+        "line": 243,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/shared/src/DrainableWorker.ts",
+        "line": 7,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/shared/src/Net.ts",
+        "line": 113,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/shared/src/observability.ts",
+        "line": 357,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/ssh/src/tunnel.ts",
+        "line": 282,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "scripts/mobile-showcase.ts",
+        "line": 465,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "scripts/mobile-showcase.ts",
+        "line": 492,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "scripts/windows-ssh-release.ts",
+        "line": 75,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "scripts/windows-ssh-release.ts",
+        "line": 117,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "scripts/windows-ssh-release.ts",
+        "line": 625,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "tools/motion/src/film/captureApp.ts",
+        "line": 48,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "tools/motion/src/film/captureApp.ts",
+        "line": 59,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "tools/motion/src/film/entry.ts",
+        "line": 58,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "tools/motion/src/film/gifEntry.ts",
+        "line": 54,
+        "test_path": false,
+        "generated_or_vendor": false
+      }
+    ],
+    "unsafe": [
+      {
+        "path": "apps/desktop/src/app/DesktopLifecycle.ts",
+        "line": 94,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/backend/DesktopLocalEnvironmentAuth.test.ts",
+        "line": 66,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/backend/DesktopServerExposure.test.ts",
+        "line": 53,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronApp.ts",
+        "line": 83,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronApp.ts",
+        "line": 87,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronMenu.test.ts",
+        "line": 38,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronPowerMonitor.ts",
+        "line": 34,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronPowerMonitor.ts",
+        "line": 38,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronWindow.test.ts",
+        "line": 38,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronWindow.test.ts",
+        "line": 233,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronWindow.test.ts",
+        "line": 261,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/electron/ElectronWindow.test.ts",
+        "line": 287,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 810,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 936,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1017,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1121,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1148,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1235,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1262,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1439,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1466,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1550,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1577,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 1670,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 3539,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.test.ts",
+        "line": 4300,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/preview/Manager.ts",
+        "line": 6241,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/window/DesktopWindow.test.ts",
+        "line": 111,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/wsl/DesktopWslEnvironment.ts",
+        "line": 197,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/wsl/DesktopWslEnvironment.ts",
+        "line": 600,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/wsl/DesktopWslEnvironment.ts",
+        "line": 672,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/wsl/DesktopWslEnvironment.ts",
+        "line": 709,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/desktop/src/wsl/DesktopWslEnvironment.ts",
+        "line": 748,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/Stack.tsx",
+        "line": 289,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/Stack.tsx",
+        "line": 309,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/diffs/nativeReviewDiffSurface.test.ts",
+        "line": 12,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/diffs/nativeReviewDiffSurface.test.ts",
+        "line": 23,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/diffs/nativeReviewDiffSurface.test.ts",
+        "line": 55,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/review/reviewModel.test.ts",
+        "line": 25,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/review/useReviewDiffPrewarming.ts",
+        "line": 22,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/shortcuts/appShortcuts.test.ts",
+        "line": 15,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/terminal/nativeTerminalModule.test.ts",
+        "line": 12,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/features/terminal/nativeTerminalModule.test.ts",
+        "line": 23,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/mobile/src/lib/modelOptions.test.ts",
+        "line": 41,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/integration/OrchestrationEngineHarness.integration.ts",
+        "line": 347,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/auth/EnvironmentAuth.test.ts",
+        "line": 49,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/mcp/toolkits/workspace/handlers.test.ts",
+        "line": 225,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/mcp/toolkits/workspace/handlers.test.ts",
+        "line": 247,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/mcp/toolkits/workspace/handlers.test.ts",
+        "line": 409,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/mcp/toolkits/workspace/handlers.test.ts",
+        "line": 427,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/mcp/toolkits/workspace/handlers.test.ts",
+        "line": 447,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts",
+        "line": 134,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts",
+        "line": 572,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts",
+        "line": 457,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts",
+        "line": 10032,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.test.ts",
+        "line": 5991,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/ProviderUsageGuard.test.ts",
+        "line": 1449,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/orchestration/planRefresh.test.ts",
+        "line": 18,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/persistence/NodeSqliteClient.ts",
+        "line": 169,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/persistence/NodeSqliteClient.ts",
+        "line": 171,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/persistence/NodeSqliteClient.ts",
+        "line": 172,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/persistence/NodeSqliteClient.ts",
+        "line": 200,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/persistence/NodeSqliteClient.ts",
+        "line": 204,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 79,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 91,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 104,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1314,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1329,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1340,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1359,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1370,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1381,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1390,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1508,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1517,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1621,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1839,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1856,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1871,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1882,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1899,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 1908,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2020,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2036,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2047,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2056,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2115,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2126,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2135,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2180,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2781,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2862,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2873,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2886,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2899,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 2967,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3034,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3042,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3050,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3102,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3110,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3162,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3232,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3296,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3352,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3373,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3434,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3449,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3458,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3527,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3542,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3553,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3568,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3583,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3594,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3603,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3689,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3698,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3762,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3777,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3788,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3808,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3819,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3836,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3851,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3866,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3877,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3886,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3984,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 3993,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 4058,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 4346,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 4360,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 4378,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 4467,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 4493,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 4752,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 4911,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 4965,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 5365,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.test.ts",
+        "line": 5374,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.ts",
+        "line": 485,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.ts",
+        "line": 1162,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.ts",
+        "line": 2970,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeAdapter.ts",
+        "line": 4370,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ClaudeMcpSdkProxy.ts",
+        "line": 60,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/CodexSessionRuntime.test.ts",
+        "line": 68,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/CodexSessionRuntime.test.ts",
+        "line": 81,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/EventNdjsonLogger.test.ts",
+        "line": 145,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/OpenCodeAdapter.test.ts",
+        "line": 225,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/OpenCodeProvider.test.ts",
+        "line": 87,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ProviderAdapterRegistry.test.ts",
+        "line": 122,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ProviderAdapterRegistry.test.ts",
+        "line": 123,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ProviderAdapterRegistry.test.ts",
+        "line": 127,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
+        "line": 194,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
+        "line": 214,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
+        "line": 236,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
+        "line": 1596,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
+        "line": 1811,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Layers/ProviderService.test.ts",
+        "line": 290,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/providerMaintenanceRunner.test.ts",
+        "line": 142,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/providerMaintenanceRunner.test.ts",
+        "line": 717,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/providerStatusCache.test.ts",
+        "line": 245,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/server.test.ts",
+        "line": 823,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/server.test.ts",
+        "line": 938,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/sourceControl/BitbucketApi.test.ts",
+        "line": 144,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/sourceControl/SourceControlProviderRegistry.test.ts",
+        "line": 61,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/sourceControl/SourceControlProviderRegistry.test.ts",
+        "line": 77,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/textGeneration/OpenCodeTextGeneration.test.ts",
+        "line": 101,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/textGeneration/TextGeneration.test.ts",
+        "line": 40,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/textGeneration/TextGeneration.test.ts",
+        "line": 42,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+        "line": 60,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+        "line": 74,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+        "line": 97,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+        "line": 136,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+        "line": 191,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+        "line": 267,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/authBootstrap.test.ts",
+        "line": 86,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/authBootstrap.test.ts",
+        "line": 160,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/authBootstrap.test.ts",
+        "line": 217,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/authBootstrap.test.ts",
+        "line": 425,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/HostedBrowserWebview.tsx",
+        "line": 75,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/browserRecording.test.ts",
+        "line": 150,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/browserRecording.test.ts",
+        "line": 164,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/browser/browserRecording.test.ts",
+        "line": 294,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ComposerPromptEditor.test.ts",
+        "line": 26,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/Sidebar.logic.test.ts",
+        "line": 337,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/Sidebar.logic.test.ts",
+        "line": 346,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/Sidebar.logic.test.ts",
+        "line": 354,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.test.ts",
+        "line": 107,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.test.ts",
+        "line": 108,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.test.ts",
+        "line": 129,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/ThreadTerminalDrawer.test.ts",
+        "line": 130,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/MessagesTimeline.workCard.test.ts",
+        "line": 14,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/mobileComposerTouchBoundary.test.ts",
+        "line": 7,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/mobileComposerTouchBoundary.test.ts",
+        "line": 11,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/chat/providerAuthPause.test.ts",
+        "line": 20,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/openTerminalLinkInPreview.test.ts",
+        "line": 59,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/openTerminalLinkInPreview.test.ts",
+        "line": 93,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/preview/openTerminalLinkInPreview.test.ts",
+        "line": 123,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/remoteControl/remoteControlEncoder.ts",
+        "line": 87,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/components/remoteControl/remoteControlPlayer.ts",
+        "line": 133,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerDraftStore.test.ts",
+        "line": 436,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerDraftStore.test.ts",
+        "line": 463,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerDraftStore.test.ts",
+        "line": 509,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerDraftStore.test.ts",
+        "line": 610,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerDraftStore.test.ts",
+        "line": 668,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerDraftStore.test.ts",
+        "line": 1077,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerDraftStore.test.ts",
+        "line": 1104,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerTransferClipboard.test.ts",
+        "line": 334,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerTransferClipboard.test.ts",
+        "line": 442,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerTransferClipboard.test.ts",
+        "line": 449,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerTransferClipboard.test.ts",
+        "line": 458,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerTransferClipboard.test.ts",
+        "line": 465,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerTransferClipboard.test.ts",
+        "line": 476,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerTransferClipboard.test.ts",
+        "line": 477,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerTransferClipboard.test.ts",
+        "line": 487,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/composerTransferClipboard.test.ts",
+        "line": 494,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/connection/platform.test.ts",
+        "line": 71,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/contextMenuFallback.test.ts",
+        "line": 148,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/environments/primary/desktopAuth.test.ts",
+        "line": 23,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/environments/primary/httpLayer.test.ts",
+        "line": 53,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/backgroundActivityReporterLayer.test.ts",
+        "line": 90,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/dynamicImportRecoveryListeners.test.ts",
+        "line": 36,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/dynamicImportRecoveryListeners.test.ts",
+        "line": 41,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/terminalFocus.test.ts",
+        "line": 48,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/terminalFocus.test.ts",
+        "line": 49,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/terminalFocus.test.ts",
+        "line": 61,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/terminalFocus.test.ts",
+        "line": 62,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/terminalFocus.test.ts",
+        "line": 75,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/lib/terminalFocus.test.ts",
+        "line": 76,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/localApi.test.ts",
+        "line": 39,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/localApi.test.ts",
+        "line": 113,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.test.ts",
+        "line": 71,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.test.ts",
+        "line": 111,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.test.ts",
+        "line": 1052,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.test.ts",
+        "line": 1086,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.test.ts",
+        "line": 1120,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.test.ts",
+        "line": 1163,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.test.ts",
+        "line": 1488,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.test.ts",
+        "line": 1780,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1804,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeSession.ts",
+        "line": 1980,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/realtimeVoiceAudit.test.ts",
+        "line": 22,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/testing/voiceHarness.ts",
+        "line": 275,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/orchestrator/testing/voiceScenario.ts",
+        "line": 78,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/providerTasks.test.ts",
+        "line": 24,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 3,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 38,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 43,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 48,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 52,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 57,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 62,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 67,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 72,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 77,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 82,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 87,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 92,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 97,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 102,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 107,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 112,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 117,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 122,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 127,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 133,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/routeTree.gen.ts",
+        "line": 139,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "apps/web/src/speechDictation.ts",
+        "line": 140,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/threadExport.test.ts",
+        "line": 65,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/threadExportAction.test.ts",
+        "line": 24,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/threadExportAction.test.ts",
+        "line": 40,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/uiStateStore.test.ts",
+        "line": 176,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/uiStateStore.test.ts",
+        "line": 194,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/uiStateStore.test.ts",
+        "line": 252,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/uiStateStore.test.ts",
+        "line": 444,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/connection/registry.test.ts",
+        "line": 350,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/operations/commands.test.ts",
+        "line": 81,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 92,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 134,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 168,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 171,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 203,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 209,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 254,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 260,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 290,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 315,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 321,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 369,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/client.test.ts",
+        "line": 415,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/rpc/session.test.ts",
+        "line": 161,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/assets.test.ts",
+        "line": 37,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/assets.test.ts",
+        "line": 84,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/server.test.ts",
+        "line": 39,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/server.test.ts",
+        "line": 120,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/server.test.ts",
+        "line": 121,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/server.test.ts",
+        "line": 122,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/server.test.ts",
+        "line": 151,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/server.test.ts",
+        "line": 212,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/shell-sync.test.ts",
+        "line": 66,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/shell-sync.test.ts",
+        "line": 200,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/shell-sync.test.ts",
+        "line": 277,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/shell-sync.test.ts",
+        "line": 344,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/shellReducer.test.ts",
+        "line": 181,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/sourceControl.test.ts",
+        "line": 84,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/sourceControl.test.ts",
+        "line": 100,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/threadCommands.test.ts",
+        "line": 82,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/threadReducer.test.ts",
+        "line": 68,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/threadReducer.test.ts",
+        "line": 789,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/threads-atoms.test.ts",
+        "line": 13,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/threads-sync.test.ts",
+        "line": 174,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcs.test.ts",
+        "line": 155,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcs.test.ts",
+        "line": 288,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcs.test.ts",
+        "line": 304,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcs.test.ts",
+        "line": 488,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcs.test.ts",
+        "line": 538,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcs.test.ts",
+        "line": 583,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcs.test.ts",
+        "line": 619,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcsAction.test.ts",
+        "line": 467,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcsAction.test.ts",
+        "line": 487,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcsAction.test.ts",
+        "line": 519,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcsAction.test.ts",
+        "line": 613,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/client-runtime/src/state/vcsAction.test.ts",
+        "line": 634,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/contracts/src/filesystem.ts",
+        "line": 65,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/contracts/src/project.ts",
+        "line": 163,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/contracts/src/project.ts",
+        "line": 194,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/contracts/src/project.ts",
+        "line": 216,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/contracts/src/project.ts",
+        "line": 287,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/contracts/src/project.ts",
+        "line": 324,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/contracts/src/providerInstance.ts",
+        "line": 118,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/effect-codex-app-server/src/protocolDrift.test.ts",
+        "line": 18,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/ssh/src/tunnel.ts",
+        "line": 867,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/tailscale/src/tailscale.test.ts",
+        "line": 114,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/tailscale/src/tailscale.test.ts",
+        "line": 217,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/tailscale/src/tailscale.test.ts",
+        "line": 247,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/tailscale/src/tailscale.test.ts",
+        "line": 265,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "scripts/build-desktop-artifact.test.ts",
+        "line": 70,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "scripts/sync-reference-repos.test.ts",
+        "line": 51,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "tools/motion/src/film/captureApp.ts",
+        "line": 82,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "tools/motion/src/film/captureApp.ts",
+        "line": 88,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "tools/motion/src/film/captureApp.ts",
+        "line": 117,
+        "test_path": false,
+        "generated_or_vendor": false
+      }
+    ],
+    "deprecated": [
+      {
+        "path": "apps/server/src/config.ts",
+        "line": 104,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/persistence/Layers/ProviderSessionRuntime.ts",
+        "line": 1,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Services/ProviderAdapterRegistry.ts",
+        "line": 71,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/Services/ProviderRegistry.ts",
+        "line": 41,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/providerStatusCache.ts",
+        "line": 112,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/serverSettings.ts",
+        "line": 154,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/textGeneration/TextGeneration.ts",
+        "line": 201,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/contracts/src/settings.ts",
+        "line": 838,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "packages/effect-codex-app-server/src/_generated/schema.gen.ts",
+        "line": 1648,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "packages/effect-codex-app-server/src/_generated/schema.gen.ts",
+        "line": 13244,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "packages/effect-codex-app-server/src/_generated/schema.gen.ts",
+        "line": 30591,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "packages/effect-codex-app-server/src/_generated/schema.gen.ts",
+        "line": 30625,
+        "test_path": false,
+        "generated_or_vendor": true
+      },
+      {
+        "path": "packages/effect-codex-app-server/src/_generated/schema.gen.ts",
+        "line": 49836,
+        "test_path": false,
+        "generated_or_vendor": true
+      }
+    ],
+    "todo": [
+      {
+        "path": "apps/server/src/provider/Layers/CodexSessionRuntime.ts",
+        "line": 230,
+        "test_path": false,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeAdapter.test.ts",
+        "line": 1383,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeAdapter.test.ts",
+        "line": 1386,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/provider/mcpBridge/McpBridgeAdapter.test.ts",
+        "line": 1434,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/markdown-links.test.ts",
+        "line": 269,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/web/src/markdown-links.ts",
+        "line": 210,
+        "test_path": false,
+        "generated_or_vendor": false
+      }
+    ],
+    "empty_catch": [
+      {
+        "path": "apps/server/src/provider/Layers/CursorAdapter.test.ts",
+        "line": 114,
+        "test_path": true,
+        "generated_or_vendor": false
+      },
+      {
+        "path": "apps/server/src/terminal/agentAwareness.ts",
+        "line": 113,
+        "test_path": false,
+        "generated_or_vendor": false
+      }
+    ]
+  },
+  "areas": {
+    "(root)": {
+      "files": 16,
+      "source_files": 1,
+      "source_lines": 132,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    ".agents": {
+      "files": 11,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    ".codex": {
+      "files": 1,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    ".cursor": {
+      "files": 2,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    ".devcontainer": {
+      "files": 1,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    ".github": {
+      "files": 14,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    ".macroscope": {
+      "files": 1,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    ".plans": {
+      "files": 31,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    ".vite-hooks": {
+      "files": 1,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    ".vscode": {
+      "files": 2,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    "apps/desktop": {
+      "files": 170,
+      "source_files": 165,
+      "source_lines": 54195,
+      "test_path_files": 68,
+      "generated_or_vendor_lines": 3
+    },
+    "apps/marketing": {
+      "files": 54,
+      "source_files": 21,
+      "source_lines": 3264,
+      "test_path_files": 2,
+      "generated_or_vendor_lines": 0
+    },
+    "apps/mobile": {
+      "files": 650,
+      "source_files": 467,
+      "source_lines": 77853,
+      "test_path_files": 92,
+      "generated_or_vendor_lines": 62
+    },
+    "apps/server": {
+      "files": 795,
+      "source_files": 793,
+      "source_lines": 296537,
+      "test_path_files": 315,
+      "generated_or_vendor_lines": 0
+    },
+    "apps/web": {
+      "files": 1048,
+      "source_files": 1037,
+      "source_lines": 244625,
+      "test_path_files": 383,
+      "generated_or_vendor_lines": 847
+    },
+    "assets": {
+      "files": 38,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    "docs": {
+      "files": 61,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    "experiments/messages-glass-lab": {
+      "files": 3,
+      "source_files": 2,
+      "source_lines": 396,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    "native/resource-monitor": {
+      "files": 3,
+      "source_files": 1,
+      "source_lines": 1160,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    "oxlint-plugin-t3code": {
+      "files": 13,
+      "source_files": 11,
+      "source_lines": 1058,
+      "test_path_files": 5,
+      "generated_or_vendor_lines": 0
+    },
+    "packages/client-runtime": {
+      "files": 150,
+      "source_files": 147,
+      "source_lines": 26279,
+      "test_path_files": 48,
+      "generated_or_vendor_lines": 0
+    },
+    "packages/contracts": {
+      "files": 57,
+      "source_files": 55,
+      "source_lines": 21211,
+      "test_path_files": 17,
+      "generated_or_vendor_lines": 0
+    },
+    "packages/effect-acp": {
+      "files": 21,
+      "source_files": 19,
+      "source_lines": 15229,
+      "test_path_files": 7,
+      "generated_or_vendor_lines": 10410
+    },
+    "packages/effect-codex-app-server": {
+      "files": 20,
+      "source_files": 18,
+      "source_lines": 54433,
+      "test_path_files": 7,
+      "generated_or_vendor_lines": 50985
+    },
+    "packages/shared": {
+      "files": 109,
+      "source_files": 107,
+      "source_lines": 15680,
+      "test_path_files": 47,
+      "generated_or_vendor_lines": 0
+    },
+    "packages/ssh": {
+      "files": 11,
+      "source_files": 9,
+      "source_lines": 3371,
+      "test_path_files": 4,
+      "generated_or_vendor_lines": 0
+    },
+    "packages/tailscale": {
+      "files": 5,
+      "source_files": 3,
+      "source_lines": 991,
+      "test_path_files": 1,
+      "generated_or_vendor_lines": 0
+    },
+    "patches": {
+      "files": 15,
+      "source_files": 0,
+      "source_lines": 0,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    },
+    "scripts": {
+      "files": 43,
+      "source_files": 41,
+      "source_lines": 14018,
+      "test_path_files": 17,
+      "generated_or_vendor_lines": 0
+    },
+    "tools/motion": {
+      "files": 39,
+      "source_files": 10,
+      "source_lines": 1672,
+      "test_path_files": 0,
+      "generated_or_vendor_lines": 0
+    }
+  },
+  "totals": {
+    "files": 3385,
+    "source_files": 2907,
+    "source_lines": 832104
+  }
+}

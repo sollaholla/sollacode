@@ -1,0 +1,11 @@
+{
+  "checkedAt": "2026-09-07T17:40:41.055075+00:00",
+  "installedVersion": "0.1.473",
+  "method": "Read-only Info.plist and installed app.asar marker inspection; no UI verification",
+  "markers": {
+    "Background tasks": true,
+    "reappear when it next reports": false,
+    "Hide this row": true,
+    "queued-messages": true
+  }
+}

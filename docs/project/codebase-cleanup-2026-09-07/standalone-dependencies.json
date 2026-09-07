@@ -1,0 +1,76 @@
+{
+  "queriedAt": "2026-09-07T17:37:21.141812+00:00",
+  "motionManifest": {
+    "name": "solla-motion",
+    "version": "0.0.0",
+    "private": true,
+    "description": "Production-client recordings, original code graphics, and a deterministic product-film renderer.",
+    "type": "module",
+    "scripts": {
+      "render": "node src/film/render.ts",
+      "render:gifs": "node src/film/renderGifs.ts",
+      "capture:app": "node src/film/captureApp.ts",
+      "capture:voice": "node src/film/captureVoice.ts",
+      "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+      "esbuild": "^0.28.1",
+      "playwright-core": "^1.60.0"
+    },
+    "devDependencies": {
+      "@types/node": "^24.0.0",
+      "typescript": "~6.0.3"
+    },
+    "pnpm": {
+      "onlyBuiltDependencies": ["esbuild"]
+    }
+  },
+  "rustManifest": "[package]\nname = \"t3-resource-monitor\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"MIT\"\npublish = false\n\n[dependencies]\nserde = { version = \"1.0.228\", features = [\"derive\"] }\nserde_json = \"1.0.150\"\nsysinfo = \"0.39.3\"\n\n[profile.release]\ncodegen-units = 1\nlto = \"thin\"\npanic = \"abort\"\nstrip = true\n",
+  "registry": [
+    {
+      "source": "https://registry.npmjs.org/esbuild/latest",
+      "name": "esbuild",
+      "latest": "0.28.2",
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    {
+      "source": "https://registry.npmjs.org/playwright-core/latest",
+      "name": "playwright-core",
+      "latest": "1.63.0",
+      "engines": {
+        "node": ">=20"
+      }
+    },
+    {
+      "source": "https://registry.npmjs.org/typescript/latest",
+      "name": "typescript",
+      "latest": "7.0.2",
+      "engines": {
+        "node": ">=16.20.0"
+      }
+    },
+    {
+      "source": "https://registry.npmjs.org/@types%2fnode/latest",
+      "name": "@types/node",
+      "latest": "26.5.0",
+      "engines": null
+    },
+    {
+      "source": "https://crates.io/api/v1/crates/serde",
+      "name": "serde",
+      "latest": "1.0.229"
+    },
+    {
+      "source": "https://crates.io/api/v1/crates/serde_json",
+      "name": "serde_json",
+      "latest": "1.0.151"
+    },
+    {
+      "source": "https://crates.io/api/v1/crates/sysinfo",
+      "name": "sysinfo",
+      "latest": "0.39.6"
+    }
+  ]
+}

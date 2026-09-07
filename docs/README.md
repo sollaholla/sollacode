@@ -54,4 +54,5 @@ Additional contributor references:
 - [Design notes](./project/redesign-gold-black.md) and [historical upstream backlog](./project/todo.md)
 
 - [September 2026 codebase audit and validation boundaries](./project/codebase-audit-2026-09-04.md)
+- [Detailed cleanup audit and implementation handoff, September 7](./project/codebase-cleanup-plan-2026-09-07.md)
 - [Commercial license, launch dependencies, and asset provenance](./project/commercial-launch.md)
