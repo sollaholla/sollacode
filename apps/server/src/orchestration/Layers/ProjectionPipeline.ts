@@ -1,3 +1,4 @@
+import { isUsageGuardYield } from "../usageGuardYield.ts";
 import {
   ApprovalRequestId,
   type ChatAttachment,
@@ -450,6 +451,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               WHERE later.aggregate_kind = 'thread'
                 AND later.stream_id = source.stream_id
                 AND later.event_type = 'thread.turn-start-requested'
+                -- Editing/removing a queued message withdraws that intent. Its
+                -- durable removal receipt must not suppress the active turn's resume.
+                AND NOT EXISTS (
+                  SELECT 1 FROM projection_thread_activities AS removed
+                  WHERE removed.thread_id = later.stream_id
+                    AND removed.kind = 'queue.message-removed'
+                    AND json_extract(removed.payload_json, '$.messageId') =
+                      json_extract(later.payload_json, '$.messageId')
+                )
                 AND later.sequence > source.sequence
                 AND json_extract(later.payload_json, '$.messageId') NOT LIKE
                   'agent-auto-resume-message:%'
@@ -1598,7 +1608,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       if (
         Option.isNone(obligation) ||
         obligation.value.state === "completed" ||
-        obligation.value.state === "cancelled"
+        obligation.value.state === "cancelled" ||
+        isUsageGuardYield(obligation.value.blockedReason)
       ) {
         return;
       }
@@ -1682,6 +1693,35 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
         case "thread.activity-appended": {
           const activity = event.payload.activity;
+          if (activity.kind === "queue.message-removed") {
+            const id =
+              typeof activity.payload === "object" && activity.payload !== null
+                ? (activity.payload as { messageId?: unknown }).messageId
+                : undefined;
+            if (typeof id !== "string") return;
+            const owner = yield* threadWorkObligationRepository.getByKey({
+              threadId: event.payload.threadId,
+              sourceTurnId: activeTurnWorkSourceId(MessageId.make(id)),
+              kind: "active-turn-recovery",
+            });
+            if (
+              Option.isSome(owner) &&
+              ["pending", "sleeping", "claimed"].includes(owner.value.state)
+            ) {
+              yield* threadWorkObligationRepository.transition({
+                obligationId: owner.value.obligationId,
+                expectedState: owner.value.state,
+                expectedAttempt: owner.value.attempt,
+                state: "cancelled",
+                nextAttemptAt: null,
+                claimedAt: null,
+                leaseExpiresAt: null,
+                blockedReason: "queued message removed",
+                updatedAt: activity.createdAt,
+              });
+            }
+            return;
+          }
           if (activity.kind !== "message.delivered") return;
           const payload = activity.payload;
           const rawMessageId =
@@ -2602,6 +2642,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
 
       if (
+        event.type === "thread.activity-appended" &&
+        event.payload.activity.kind === "queue.message-removed"
+      ) {
+        yield* maybeEnqueueAgentContinuation({
+          threadId: event.payload.threadId,
+          occurredAt: event.occurredAt,
+        });
+        return;
+      }
+
+      if (
         event.type === "thread.message-sent" &&
         event.payload.role === "assistant" &&
         event.payload.turnId !== null &&
@@ -2977,6 +3028,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             blocked_reason = NULL,
             updated_at = ${settledAt}
         WHERE work.kind = 'active-turn-recovery'
+          AND COALESCE(work.blocked_reason, '') NOT LIKE 'usage-guard-yield:%'
           AND work.state != 'cancelled'
           AND (
             work.state != 'completed'
@@ -3043,6 +3095,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 WHERE later.aggregate_kind = 'thread'
                   AND later.stream_id = work.thread_id
                   AND later.event_type = 'thread.turn-start-requested'
+                  -- Editing/removing a queued message withdraws that intent. Its
+                  -- durable removal receipt must not suppress the active turn's resume.
+                  AND NOT EXISTS (
+                    SELECT 1 FROM projection_thread_activities AS removed
+                    WHERE removed.thread_id = later.stream_id
+                      AND removed.kind = 'queue.message-removed'
+                      AND json_extract(removed.payload_json, '$.messageId') =
+                        json_extract(later.payload_json, '$.messageId')
+                  )
                   AND later.sequence > COALESCE(
                     (
                       SELECT start.sequence
@@ -3222,6 +3283,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             blocked_reason = NULL,
             updated_at = ${settledAt}
         WHERE kind IN ('startup-resume', 'agent-continuation')
+          AND COALESCE(blocked_reason, '') NOT LIKE 'usage-guard-yield:%'
           AND state NOT IN ('completed', 'cancelled')
           AND EXISTS (
             SELECT 1
@@ -3362,6 +3424,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             WHERE later.aggregate_kind = 'thread'
               AND later.stream_id = ${input.threadId}
               AND later.event_type = 'thread.turn-start-requested'
+              -- Editing/removing a queued message withdraws that intent. Its
+              -- durable removal receipt must not suppress the active turn's resume.
+              AND NOT EXISTS (
+                SELECT 1 FROM projection_thread_activities AS removed
+                WHERE removed.thread_id = later.stream_id
+                  AND removed.kind = 'queue.message-removed'
+                  AND json_extract(removed.payload_json, '$.messageId') =
+                    json_extract(later.payload_json, '$.messageId')
+              )
               AND later.sequence > (
                 SELECT MAX(source_start.sequence)
                 FROM orchestration_events AS source_start

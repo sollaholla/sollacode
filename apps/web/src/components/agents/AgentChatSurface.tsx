@@ -15,6 +15,7 @@ import { resolveThreadSyncPhase } from "../../threadSync";
 export function AgentChatSurface(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  readonly projectScriptsPortalTarget?: HTMLElement | null;
   readonly inlineNotice?: { readonly id: string; readonly content: ReactNode } | null;
 }) {
   const threadRef = useMemo(
@@ -37,6 +38,7 @@ export function AgentChatSurface(props: {
       routeKind="server"
       threadSyncPhase={threadSyncPhase}
       hideWorkspaceHeader
+      projectScriptsPortalTarget={props.projectScriptsPortalTarget ?? null}
       agentSurfaces
       inlineTimelineNotice={props.inlineNotice ?? null}
     />

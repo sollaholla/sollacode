@@ -751,6 +751,130 @@ export const OrchestratorSettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type OrchestratorSettings = typeof OrchestratorSettings.Type;
 
+// ── Usage guard ───────────────────────────────────────────────────
+
+/** Percentage points of a window kept free so a turn already in flight can finish. */
+export const UsageGuardHeadroomPercent = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 25 }),
+);
+export type UsageGuardHeadroomPercent = typeof UsageGuardHeadroomPercent.Type;
+
+export const UsageGuardTokensPerPercent = Schema.Number.check(
+  Schema.isBetween({ minimum: 1_000, maximum: 1_000_000_000 }),
+);
+
+/**
+ * What to do once the included quota is spent but the account can keep going
+ * on paid extra usage. `allow` keeps the model usable (the user pays for it,
+ * and the guard only slows the pace); `avoid` holds work instead.
+ */
+export const UsageGuardExtraUsagePolicy = Schema.Literals(["allow", "avoid"]);
+export type UsageGuardExtraUsagePolicy = typeof UsageGuardExtraUsagePolicy.Type;
+
+export const DEFAULT_USAGE_GUARD_HEADROOM_PERCENT = 3;
+
+/**
+ * Per-provider guard configuration. There are no percentage thresholds here
+ * on purpose: the guard works out when to slow down from the window's burn
+ * rate and time to reset, and when to hold from whether one more turn on the
+ * chosen model still fits. The switches say which levers it may pull.
+ */
+export const UsageGuardCooldownCurve = Schema.Literals(["linear", "bump", "late"]);
+export const UsageGuardEarlyOvershoot = Schema.Number.check(
+  Schema.isBetween({ minimum: 0, maximum: 50 }),
+);
+export const UsageGuardCurveStrength = Schema.Number.check(
+  Schema.isBetween({ minimum: 0.25, maximum: 4 }),
+);
+
+export const UsageGuardTokenCapTokens = Schema.Number.check(
+  Schema.isBetween({ minimum: 1_000, maximum: 10_000_000_000 }),
+);
+export const UsageGuardTokenCapHours = Schema.Number.check(
+  Schema.isBetween({ minimum: 0.25, maximum: 168 }),
+);
+
+export const UsageGuardProviderSettings = Schema.Struct({
+  creditBalanceScaleUsd: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 50 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(50)),
+  ),
+  creditsPerUsd: Schema.Number.check(Schema.isBetween({ minimum: 0.01, maximum: 10000 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(25)),
+  ),
+  cooldownCurve: UsageGuardCooldownCurve.pipe(
+    Schema.withDecodingDefault(Effect.succeed("bump" as const)),
+  ),
+  earlyOvershootPercent: UsageGuardEarlyOvershoot.pipe(
+    Schema.withDecodingDefault(Effect.succeed(10)),
+  ),
+  curveStrength: UsageGuardCurveStrength.pipe(Schema.withDecodingDefault(Effect.succeed(1))),
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  headroomPercent: UsageGuardHeadroomPercent.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_USAGE_GUARD_HEADROOM_PERCENT)),
+  ),
+  /** Lower reasoning effort when the current pace would overrun the window. */
+  reduceEffort: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Admit scheduled agent runs and auto-continuations only while the pace budget has room. */
+  holdBackgroundWork: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Hold new work once one more turn no longer fits in the window. */
+  pauseWhenExhausted: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  extraUsage: UsageGuardExtraUsagePolicy.pipe(
+    Schema.withDecodingDefault(Effect.succeed("allow" as const)),
+  ),
+  // `null` means the driver's fixed default ratio.
+  tokensPerPercent: Schema.NullOr(UsageGuardTokensPerPercent).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * A ceiling the person sets themselves, independent of the provider's own
+   * windows: at most this many weighted tokens in any rolling
+   * `tokenCapHours`. `null` is no cap, which is the default.
+   */
+  tokenCapTokens: Schema.NullOr(UsageGuardTokenCapTokens).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** The rolling window the cap is measured over. */
+  tokenCapHours: UsageGuardTokenCapHours.pipe(Schema.withDecodingDefault(Effect.succeed(24))),
+  /** @deprecated Ratio learning was removed 2026-09-06; kept so persisted settings still decode. Has no effect. */
+  autoCalibrate: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+});
+export type UsageGuardProviderSettings = typeof UsageGuardProviderSettings.Type;
+
+export const DEFAULT_USAGE_GUARD_PROVIDER_SETTINGS: UsageGuardProviderSettings = Schema.decodeSync(
+  UsageGuardProviderSettings,
+)({});
+
+export const UsageGuardSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  providers: Schema.Record(ProviderInstanceId, UsageGuardProviderSettings).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+}).pipe(Schema.withDecodingDefault(Effect.succeed({})));
+export type UsageGuardSettings = typeof UsageGuardSettings.Type;
+
+export const UsageGuardProviderSettingsPatch = Schema.Struct({
+  creditBalanceScaleUsd: Schema.optionalKey(
+    Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 50 })),
+  ),
+  creditsPerUsd: Schema.optionalKey(
+    Schema.Number.check(Schema.isBetween({ minimum: 0.01, maximum: 10000 })),
+  ),
+  cooldownCurve: Schema.optionalKey(UsageGuardCooldownCurve),
+  earlyOvershootPercent: Schema.optionalKey(UsageGuardEarlyOvershoot),
+  curveStrength: Schema.optionalKey(UsageGuardCurveStrength),
+  enabled: Schema.optionalKey(Schema.Boolean),
+  headroomPercent: Schema.optionalKey(UsageGuardHeadroomPercent),
+  reduceEffort: Schema.optionalKey(Schema.Boolean),
+  holdBackgroundWork: Schema.optionalKey(Schema.Boolean),
+  pauseWhenExhausted: Schema.optionalKey(Schema.Boolean),
+  extraUsage: Schema.optionalKey(UsageGuardExtraUsagePolicy),
+  tokensPerPercent: Schema.optionalKey(Schema.NullOr(UsageGuardTokensPerPercent)),
+  tokenCapTokens: Schema.optionalKey(Schema.NullOr(UsageGuardTokenCapTokens)),
+  tokenCapHours: Schema.optionalKey(UsageGuardTokenCapHours),
+  autoCalibrate: Schema.optionalKey(Schema.Boolean),
+});
+export type UsageGuardProviderSettingsPatch = typeof UsageGuardProviderSettingsPatch.Type;
+
 export const ServerSettings = Schema.Struct({
   attachmentRetentionHours: AttachmentRetentionHours.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ATTACHMENT_RETENTION_HOURS)),
@@ -824,6 +948,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  usageGuard: UsageGuardSettings,
   orchestrator: OrchestratorSettings,
 });
 export type ServerSettings = typeof ServerSettings.Type;
@@ -1014,6 +1139,14 @@ export const ServerSettingsPatch = Schema.Struct({
   // patches risk leaving driver-specific config in a half-merged state.
   // The web UI sends a fully-formed map every time it edits this field.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
+  usageGuard: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      providers: Schema.optionalKey(
+        Schema.Record(ProviderInstanceId, UsageGuardProviderSettingsPatch),
+      ),
+    }),
+  ),
   orchestrator: Schema.optionalKey(OrchestratorSettingsPatch),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;

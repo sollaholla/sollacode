@@ -27,3 +27,16 @@ export function isThreadSessionWorking(thread: ThreadSessionActivity | null | un
     (thread?.session?.status === "starting" && !isSideChatSessionPreparing(thread))
   );
 }
+
+/** Unfinished scheduler-owned work stays active while its provider is cooling down. */
+export function hasPendingThreadWork(
+  thread:
+    | { readonly pendingWork?: { readonly state: string } | null | undefined }
+    | null
+    | undefined,
+): boolean {
+  return (
+    thread?.pendingWork != null &&
+    ["pending", "claimed", "executing", "sleeping"].includes(thread.pendingWork.state)
+  );
+}

@@ -58,6 +58,10 @@ var keyCodes = {
 var pressedKeys = {};
 var pressedButtons = {};
 var lastPoint = $.CGPointMake(0, 0);
+// CGEventField: the per-event motion a mouse-look game reads (NSEvent
+// deltaX/deltaY come straight from these).
+var kMouseEventDeltaX = 4;
+var kMouseEventDeltaY = 5;
 
 // Synthetic CGEvents do not inherit modifier state from earlier synthetic
 // modifier key events the way physical keyboards do: every event carries its
@@ -150,9 +154,26 @@ function mouseEventType(action, name) {
 }
 
 function postPointer(input) {
+  var previous = lastPoint;
   var point = displayPoint(input);
   var button = mouseButton(input.button);
   var event = $.CGEventCreateMouseEvent(null, mouseEventType(input.action, input.button), point, button);
+  if (input.action === "move") {
+    // A game in mouse-look never looks at where the cursor is; it reads the
+    // motion fields of each event, which a synthetic event leaves at zero. So
+    // the cursor warped on every sample and the aim never moved. Explicit
+    // deltas from the controller win (the position is meaningless to a
+    // captured game, and the client clamps it at the screen edge); otherwise
+    // report the motion from the previous point, as real hardware would.
+    var dx = typeof input.dx === "number" ? input.dx : point.x - previous.x;
+    var dy = typeof input.dy === "number" ? input.dy : point.y - previous.y;
+    try {
+      $.CGEventSetIntegerValueField(event, kMouseEventDeltaX, Math.round(dx));
+      $.CGEventSetIntegerValueField(event, kMouseEventDeltaY, Math.round(dy));
+    } catch (error) {
+      // An older bridge without the setter still gets the positional move.
+    }
+  }
   // Shift-click, Cmd-click, Ctrl-click: pointer events carry modifiers too.
   $.CGEventSetFlags(event, heldModifierFlags());
   $.CGEventPost($.kCGHIDEventTap, event);

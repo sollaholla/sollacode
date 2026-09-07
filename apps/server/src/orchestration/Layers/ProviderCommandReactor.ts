@@ -1,9 +1,11 @@
+import { selectedUsageGuardEffort, userPinnedEffortDuringHold } from "../ProviderUsageGuard.ts";
+import { isHeldMessageId, removedHeldMessageIds } from "@t3tools/shared/heldMessages";
 import {
   type ChatAttachment,
   CommandId,
   EventId,
   MessageId,
-  type ModelSelection,
+  ModelSelection,
   type OrchestrationEvent,
   type OrchestrationThread,
   type OrchestrationThreadShell,
@@ -83,6 +85,18 @@ import {
 } from "../Services/ProjectionSnapshotQuery.ts";
 import { THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT } from "./ProjectionSnapshotQuery.ts";
 import {
+  USAGE_GUARD_PAUSED_ACTIVITY_KIND,
+  USAGE_GUARD_PAUSED_REASON,
+} from "../ProviderUsageGuard.ts";
+import { ProviderUsageGuard } from "../Services/ProviderUsageGuard.ts";
+import {
+  canResumeUsageGuardYield,
+  isUsageGuardYield,
+  shouldYieldUsageGuardTurn,
+  usageGuardYieldReason,
+  usageGuardWorkStartedAtMs,
+} from "../usageGuardYield.ts";
+import {
   ThreadWorkScheduler,
   type ThreadWorkExecutionOutcome,
   type ThreadWorkHandler,
@@ -114,6 +128,7 @@ import {
   agentContinuationShouldAwaitBackgroundTask,
   isAgentAutoResumeMessageId,
   isControlOnlyAgentTurn,
+  outstandingBackgroundTasks,
   agentLoopSignedOffSinceUserIntent,
   isVmAgentTaskPromptMessageId,
   shouldAutoContinueCompletedAgentTurn,
@@ -645,6 +660,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     const providerRegistry = yield* ProviderRegistry;
     const threadWorkObligations = yield* ThreadWorkObligationRepository;
     const threadWorkScheduler = yield* ThreadWorkScheduler;
+    const usageGuard = yield* ProviderUsageGuard;
     const gitWorkflow = yield* GitWorkflowService;
     const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
     const textGeneration = yield* TextGeneration;
@@ -1265,6 +1281,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       readonly liveSteerTarget?: ProviderLiveSteerTarget;
       /** Projected synthetic prompt to omit from a bounded recovery digest. */
       readonly historyMessageId?: MessageId;
+      /**
+       * The person chose this effort explicitly (usage-guard chip) while the
+       * work was held. The guard's optimizer must not lower it back to its own
+       * target, or Apply silently reverts on resume.
+       */
+      readonly honorRequestedEffort?: boolean;
       readonly createdAt: string;
     }) {
       const thread = yield* resolveThread(input.threadId);
@@ -1480,12 +1502,23 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       const { autoCompactionThresholdPercentage, claudeTokenOptimizerEnabled } =
         yield* serverSettingsService.getSettings;
 
+      // The usage guard never changes a turn's effort on its own. It paces
+      // (holds and waits) and *recommends* a cheaper effort on the hold card;
+      // the person applies it there or in the composer. Every silent
+      // downgrade here — the "gentle tier" optimizer that ran on each send —
+      // overwrote explicit choices (chip Apply, Settings-update messages) and
+      // read as "it forces low no matter what". `honorRequestedEffort` and the
+      // pinned-effort rule are kept for callers that still reason about them.
+      void input.honorRequestedEffort;
+      void userPinnedEffortDuringHold;
+      const guardedModelForTurn = modelForTurn;
+
       return {
         threadId: input.threadId,
         ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
         ...(normalizedInput ? { input: normalizedInput } : {}),
         ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
-        ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
+        ...(guardedModelForTurn !== undefined ? { modelSelection: guardedModelForTurn } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(input.liveSteerTarget !== undefined ? { liveSteerTarget: input.liveSteerTarget } : {}),
         ...(pendingContextRecovery !== undefined && input.liveSteerTarget === undefined
@@ -1634,6 +1667,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const candidate = thread.messages[index];
         if (candidate === undefined) break;
         if (candidate.role !== "user") continue;
+        if (removedHeldMessageIds(thread.activities).has(candidate.id)) continue;
         if (candidate.inputOrigin === "agent-loop") continue;
         if (candidate.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX)) continue;
         // A message steered into an already-running turn never starts its own
@@ -1645,6 +1679,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         // messages replaying in every post-restart batch, each replay
         // re-embedding their screenshots (~250KB per image per turn).
         if (deliveredMessageIds.has(String(candidate.id))) continue;
+        // Both sets above are read from `thread.activities`, which is bounded
+        // to the newest 200 rows — on a busy thread that is minutes, not the
+        // 45 the carry window spans, so the receipts that stop a replay can
+        // age out while the message is still carryable. For a held message
+        // the work obligation answers the same question and does not age.
+        if (candidate.queueState !== undefined && candidate.queueState !== "queued") continue;
         const candidateCreatedAt = Date.parse(candidate.createdAt);
         if (
           Number.isFinite(sourceCreatedAt) &&
@@ -1681,8 +1721,20 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         input.context.modelSelection?.instanceId ??
         input.thread.session?.providerInstanceId ??
         input.thread.modelSelection.instanceId;
-      const undeliveredPredecessors =
-        carryInstanceId === "claudeAgent"
+      const removedIds = removedHeldMessageIds(input.thread.activities);
+      const coveredIds = queuedPromotionCoveredMessageIds(input.thread.activities);
+      // A queued (held) message is released exactly as the person sent it: its
+      // own text and attachments as one ordinary turn. Earlier code combined
+      // every waiting held message into a single blob; the user's rule
+      // (2026-09-06) is that release means "actually sending a message like
+      // the user would" — the remaining held messages keep their own delivery
+      // obligations and follow one turn at a time, in order.
+      const held = isHeldMessageId(input.message.id);
+      const heldReleasable =
+        held && !removedIds.has(input.message.id) && !coveredIds.has(input.message.id);
+      const undeliveredPredecessors = held
+        ? []
+        : carryInstanceId === "claudeAgent"
           ? yield* collectUndeliveredPredecessors(input.thread, input.message)
           : [];
       const outgoingText =
@@ -1704,21 +1756,31 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           }),
         );
       }
+      const effortUpdate = input.thread.activities.findLast(
+        (activity) =>
+          activity.kind === "usage-guard.effort-selected" &&
+          activity.createdAt >= input.context.createdAt,
+      );
+      const effortPayload = effortUpdate?.payload as { modelSelection?: unknown } | undefined;
+      const appliedSelection =
+        effortPayload && Schema.is(ModelSelection)(effortPayload.modelSelection)
+          ? effortPayload.modelSelection
+          : input.context.modelSelection;
       const sendTurnRequest = yield* buildSendTurnRequestForThread({
         threadId: input.context.threadId,
         messageId: input.message.id,
         messageText: outgoingText,
         ...(carriedAttachments.length > 0 ? { attachments: carriedAttachments } : {}),
-        ...(input.context.modelSelection !== undefined
-          ? { modelSelection: input.context.modelSelection }
-          : {}),
+        ...(appliedSelection !== undefined ? { modelSelection: appliedSelection } : {}),
+        ...(effortUpdate !== undefined ? { honorRequestedEffort: true } : {}),
         // Agent mode is a server-owned turn loop; providers still receive the
         // normal interactive mode until the next continuation is scheduled.
         interactionMode: providerInteractionMode(input.context.interactionMode),
         createdAt: input.context.createdAt,
       });
 
-      const requestedModelSelection = input.context.modelSelection;
+      const requestedModelSelection =
+        sendTurnRequest.modelSelection ?? input.context.modelSelection;
       const sourceInstanceId =
         input.thread.session?.providerInstanceId ?? input.thread.modelSelection.instanceId;
       const providerSwitched =
@@ -1726,12 +1788,28 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         requestedModelSelection.instanceId !== sourceInstanceId;
       const settingsUpdateRequested = input.message.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX);
       return yield* providerService.sendTurn(sendTurnRequest, input.sendOptions).pipe(
+        Effect.tap((turn) =>
+          !heldReleasable
+            ? Effect.void
+            : appendQueuedTurnPromotionActivity({
+                threadId: input.thread.id,
+                turnId: turn.turnId,
+                messageIds: [input.message.id],
+                requestId: input.message.id,
+                createdAt: input.context.createdAt,
+              }),
+        ),
         Effect.flatMap((turn) => {
           if (requestedModelSelection === undefined) {
             return Effect.succeed(turn);
           }
           return Effect.gen(function* () {
-            if (modelSelectionStillRequested(input.thread.id, requestedModelSelection)) {
+            if (
+              modelSelectionStillRequested(
+                input.thread.id,
+                appliedSelection ?? input.thread.modelSelection,
+              )
+            ) {
               yield* orchestrationEngine.dispatch({
                 type: "thread.meta.update",
                 commandId: yield* serverCommandId("provider-selection-accepted"),
@@ -2129,6 +2207,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         }
       }
 
+      if (
+        isHeldMessageId(event.payload.messageId) &&
+        outstandingBackgroundTasks(thread.activities).length > 0
+      )
+        return;
+
       const liveProviderSession = (yield* providerService.listSessions()).find(
         (session) => session.threadId === event.payload.threadId,
       );
@@ -2420,6 +2504,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             ),
           );
           if (!steerAccepted) return;
+          if (isHeldMessageId(message.id)) {
+            yield* appendQueuedTurnPromotionActivity({
+              threadId: thread.id,
+              turnId: activeTurnId,
+              messageIds: [message.id],
+              requestId: message.id,
+              createdAt: yield* nowIso,
+            });
+          }
 
           const acceptedOwner = yield* threadWorkObligations.getByKey(steerObligationKey);
           if (
@@ -2583,6 +2676,14 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       if (!thread) {
         return;
       }
+      // Nothing is announced as cancelled here any more. Stop used to discard
+      // every queued message on the thread, and this told the clients so; it
+      // no longer does — an undelivered message goes back to `pending` and
+      // sends once the thread is free (see `releaseUndeliveredQueuedDeliveries`).
+      // Announcing it now would be the worse of the two failures: the ids in
+      // this activity feed `removedHeldMessageIds`, so every client would hide
+      // a message that is still queued and about to go out, and the person
+      // would watch their own words disappear and assume they were lost.
       const session = thread.session;
       const liveSession = (yield* providerService
         .listSessions()
@@ -3668,7 +3769,21 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
        * obligation for a resume that never happened.
        */
       readonly requireTurnOutput?: boolean;
+      readonly obligation: ThreadWorkObligation;
     }) {
+      let lastGuardCheckAtMs = 0;
+      const guardRunStartedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
+      let startingTokens: number | undefined;
+      let yieldedReason = canResumeUsageGuardYield(
+        input.obligation.blockedReason,
+        String(input.turnId),
+      )
+        ? input.obligation.blockedReason!
+        : undefined;
+      let yieldedWakeAt =
+        yieldedReason === undefined
+          ? undefined
+          : DateTime.formatIso(DateTime.add(yield* DateTime.now, { minutes: 1 }));
       let lastShellFingerprint = "";
       let lastShellChangeAtMs = Number.NaN;
       // Whether this wait has handed its provider slot back while a person
@@ -3696,6 +3811,13 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                 Effect.map(Option.getOrUndefined),
               );
         if (awaitedTurn !== undefined) {
+          if (yieldedReason && yieldedWakeAt && awaitedTurn.state !== "running") {
+            return {
+              state: "sleeping" as const,
+              nextAttemptAt: yieldedWakeAt,
+              reason: yieldedReason,
+            };
+          }
           if (awaitedTurn.state === "completed") {
             if (input.requireTurnOutput === true) {
               // Runs once, when the turn settles — not on every 100ms poll.
@@ -3710,6 +3832,13 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             return { state: "completed" as const };
           }
           if (awaitedTurn.state === "interrupted") {
+            if (yieldedReason && yieldedWakeAt) {
+              return {
+                state: "sleeping" as const,
+                nextAttemptAt: yieldedWakeAt,
+                reason: yieldedReason,
+              };
+            }
             return { state: "cancelled" as const, reason: "turn was interrupted" };
           }
           if (awaitedTurn.state === "incomplete" || awaitedTurn.state === "error") {
@@ -3804,6 +3933,81 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         }
         const midTurn =
           shell.session?.status === "running" && shell.session.activeTurnId === input.turnId;
+        if (midTurn && yieldedReason === undefined && nowMs - lastGuardCheckAtMs >= 1_000) {
+          lastGuardCheckAtMs = nowMs;
+          const decision = yield* usageGuard.evaluate({
+            instanceId: shell.modelSelection.instanceId,
+            threadId: input.threadId,
+            purpose: "running",
+            model: shell.modelSelection.model,
+            effort: selectedUsageGuardEffort(shell.modelSelection),
+            fast:
+              shell.modelSelection.options?.some(
+                (option) => option.id === "serviceTier" && option.value === "priority",
+              ) ?? false,
+          });
+          const observedTokens = decision.evaluation.observedTokens ?? 0;
+          startingTokens ??= observedTokens;
+          const runtime = (yield* threadWorkScheduler.snapshot).runtimeByThread[
+            String(input.threadId)
+          ];
+          if (
+            shouldYieldUsageGuardTurn({
+              action: decision.action,
+              phase: runtime?.phase,
+              awaitingHuman,
+              observedTokens,
+              startingTokens,
+              elapsedMs:
+                nowMs -
+                usageGuardWorkStartedAtMs({
+                  supervisorStartedAtMs: guardRunStartedAtMs,
+                  turnStartedAt: latestTurn?.startedAt,
+                  turnRequestedAt: latestTurn?.requestedAt,
+                  sessionUpdatedAt: shell.session?.updatedAt,
+                }),
+            })
+          ) {
+            const reason = usageGuardYieldReason(String(input.turnId));
+            // Persist before interrupting: a restart must never turn a pacing
+            // yield into a user's Stop or lose the obligation to resume.
+            const marked = yield* threadWorkObligations.markExecutingReason({
+              obligationId: input.obligation.obligationId,
+              expectedAttempt: input.obligation.attempt,
+              blockedReason: reason,
+              updatedAt: yield* nowIso,
+            });
+            if (marked) {
+              yieldedReason = reason;
+              yieldedWakeAt = decision.wakeAtIso;
+              yield* providerService.interruptTurn({
+                threadId: input.threadId,
+                turnId: input.turnId,
+              });
+              yield* orchestrationEngine.dispatch({
+                type: "thread.activity.append",
+                commandId: CommandId.make(`usage-guard-yield:${input.threadId}:${input.turnId}`),
+                threadId: input.threadId,
+                activity: {
+                  id: EventId.make(`usage-guard-yield:${input.threadId}:${input.turnId}`),
+                  tone: "info",
+                  kind: USAGE_GUARD_PAUSED_ACTIVITY_KIND,
+                  summary: "Cooling down · work resumes automatically",
+                  payload: {
+                    effortEstimates: decision.effortEstimates,
+                    detail: decision.evaluation.summary,
+                    instanceId: shell.modelSelection.instanceId,
+                    resumeAt: decision.wakeAtIso,
+                    reportedAt: decision.reportedAt,
+                  },
+                  turnId: input.turnId,
+                  createdAt: yield* nowIso,
+                },
+                createdAt: yield* nowIso,
+              });
+            }
+          }
+        }
         const silenceRestartMs = midTurn
           ? PROVIDER_MID_TURN_SILENCE_RESTART_MS
           : PROVIDER_SILENCE_RESTART_MS;
@@ -4075,6 +4279,83 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           // keeps queued deliveries unclaimed while a supervisor row is active,
           // so this branch is a backstop for supervisor-less running turns.
           if (!sourceTurnAlreadyStarted) {
+            if (isHeldMessageId(messageId)) {
+              // Deliver into the live turn the way a mid-turn send would: the
+              // person typed this while work was running and expects the model
+              // to see it now, not when the agent loop eventually goes idle —
+              // in an agent chat that is effectively never ("I literally
+              // cannot send anything"). Fail closed back to waiting when the
+              // provider cannot join the turn.
+              const heldMessage = thread.messages.find((entry) => entry.id === messageId);
+              const steered =
+                heldMessage === undefined
+                  ? null
+                  : yield* buildSendTurnRequestForThread({
+                      threadId: obligation.threadId,
+                      messageId,
+                      messageText: heldMessage.text,
+                      ...(heldMessage.attachments !== undefined &&
+                      heldMessage.attachments.length > 0
+                        ? { attachments: heldMessage.attachments }
+                        : {}),
+                      interactionMode: providerInteractionMode(context.payload.interactionMode),
+                      liveSteerTarget: {
+                        providerInstanceId:
+                          runningBeforeSend.providerInstanceId ?? thread.modelSelection.instanceId,
+                        activeTurnId: runningBeforeSend.activeTurnId,
+                      },
+                      createdAt: context.payload.createdAt,
+                    }).pipe(
+                      Effect.flatMap((request) => providerService.sendTurn(request)),
+                      // Say why it failed. This swallowed the cause silently and
+                      // then retried every 15s forever, so a thread whose steer
+                      // could never be accepted looked identical to one merely
+                      // waiting its turn — 14 attempts over 3m36s on 2026-09-07
+                      // with not one line explaining any of them, and the person
+                      // gave up and pressed Stop.
+                      Effect.tapCause((cause) =>
+                        Cause.hasInterruptsOnly(cause)
+                          ? Effect.void
+                          : Effect.logWarning("thread-work.active-turn.steer-failed", {
+                              threadId: obligation.threadId,
+                              messageId,
+                              attempt: obligation.attempt,
+                              activeTurnId: runningBeforeSend.activeTurnId,
+                              providerInstanceId:
+                                runningBeforeSend.providerInstanceId ??
+                                thread.modelSelection.instanceId,
+                              cause: Cause.pretty(cause),
+                            }),
+                      ),
+                      Effect.orElseSucceed(() => null),
+                    );
+              if (heldMessage === undefined) {
+                yield* Effect.logWarning("thread-work.active-turn.steer-message-missing", {
+                  threadId: obligation.threadId,
+                  messageId,
+                  attempt: obligation.attempt,
+                });
+              }
+              if (steered !== null) {
+                yield* appendQueuedTurnPromotionActivity({
+                  threadId: obligation.threadId,
+                  turnId: steered.turnId,
+                  messageIds: [messageId],
+                  requestId: messageId,
+                  createdAt: yield* nowIso,
+                });
+                return { state: "completed" as const };
+              }
+              // Steering failed. Fall through to supervising the blocking turn
+              // rather than returning into a bare 15-second re-poll: that poll
+              // only ever retried the same steer, so a thread whose steer can
+              // never be accepted retried forever and the message was never
+              // delivered at all — 14 attempts over 3m36s on 2026-09-07, ended
+              // only by the person pressing Stop. Supervising waits for the
+              // turn that is actually in the way and then re-attempts the
+              // delivery, which is what the composer already promises: "sends
+              // together when background work finishes".
+            }
             // Supervise the blocking turn instead of blind-polling behind it.
             // A bare 15-second re-poll has no silence detection, so a provider
             // that wedges mid-turn parks this delivery forever: the loop below
@@ -4106,6 +4387,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                 ),
               );
             const blocking = yield* waitForProviderTurnTerminal({
+              obligation,
               threadId: obligation.threadId,
               turnId: runningBeforeSend.activeTurnId,
               attempt: obligation.attempt,
@@ -4135,6 +4417,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             );
           }
           return yield* waitForProviderTurnTerminal({
+            obligation,
             threadId: obligation.threadId,
             turnId: runningBeforeSend.activeTurnId,
             attempt: obligation.attempt,
@@ -4269,6 +4552,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             : { state: "completed" as const };
         }
         return yield* waitForProviderTurnTerminal({
+          obligation,
           threadId: obligation.threadId,
           turnId: liveAfterSend.activeTurnId ?? providerTurn.turnId,
           attempt: obligation.attempt,
@@ -4657,6 +4941,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const active = sessions.find((session) => session.threadId === obligation.threadId);
         if (active?.status === "running" && active.activeTurnId !== undefined) {
           return yield* waitForProviderTurnTerminal({
+            obligation,
             threadId: obligation.threadId,
             turnId: active.activeTurnId,
             attempt: obligation.attempt,
@@ -4750,6 +5035,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           return yield* retryWorkAfter15Seconds("running provider session has no active turn id");
         }
         return yield* waitForProviderTurnTerminal({
+          obligation,
           threadId: obligation.threadId,
           turnId: activeTurnId,
           attempt: obligation.attempt,
@@ -4841,6 +5127,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         if (thread.interactionMode !== "agent" || threadShell.interactionMode !== "agent") {
           if (deliveryTurn?.state === "running") {
             return yield* waitForProviderTurnTerminal({
+              obligation,
               threadId: obligation.threadId,
               turnId: deliveryTurn.turnId,
               attempt: obligation.attempt,
@@ -4898,6 +5185,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         });
         if (disposition === "supervise" && activeDeliveryTurnId !== undefined) {
           return yield* waitForProviderTurnTerminal({
+            obligation,
             threadId: obligation.threadId,
             turnId: activeDeliveryTurnId,
             attempt: obligation.attempt,
@@ -4982,6 +5270,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           return yield* retryWorkAfter15Seconds("running provider session has no active turn id");
         }
         return yield* waitForProviderTurnTerminal({
+          obligation,
           threadId: obligation.threadId,
           turnId: activeTurnId,
           attempt: obligation.attempt,
@@ -5341,13 +5630,253 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     );
     const domainEventsSeen = yield* TxRef.make(0);
 
+    /**
+     * Threads already told about the hold they are under, keyed by the hold
+     * episode (instance + window + reset). Held work is re-checked every few
+     * minutes; without this the feed would collect one identical notice per
+     * re-check.
+     */
+    const usageGuardNoticesByThread = new Map<string, string>();
+    const MAX_USAGE_GUARD_NOTICES = 512;
+
+    /**
+     * Admit background work through the usage guard. When the guard says
+     * hold, the obligation sleeps briefly — the durable queue keeps it, the
+     * guard releases it the moment a report or an idle thread makes room,
+     * and the thread shows a notice whose Resume button lifts the hold by
+     * hand (`ProviderUsageGuard.resumeThread`).
+     */
+    const withUsageGuard =
+      (handler: ThreadWorkHandler): ThreadWorkHandler =>
+      (obligation) =>
+        Effect.gen(function* () {
+          const thread = yield* resolveThread(obligation.threadId).pipe(
+            Effect.orElseSucceed(() => undefined),
+          );
+          const heldSourceId = activeTurnMessageIdFromSourceTurnId(obligation.sourceTurnId);
+          if (heldSourceId && isHeldMessageId(heldSourceId) && thread) {
+            if (
+              removedHeldMessageIds(thread.activities).has(heldSourceId) ||
+              queuedPromotionCoveredMessageIds(thread.activities).has(heldSourceId)
+            ) {
+              return { state: "completed" as const };
+            }
+            // No background-task deferral here: that gate exists so agent
+            // CONTINUATIONS do not wake the agent early out of a wait it chose.
+            // A queued message the person typed is the opposite case — they are
+            // waiting on us — and steering into a live turn does not stop tasks.
+          }
+          const live = (yield* providerService.listSessions()).find(
+            (session) =>
+              session.threadId === obligation.threadId &&
+              session.status === "running" &&
+              session.activeTurnId !== undefined,
+          );
+          if (live) return yield* handler(obligation);
+          const autonomousResume =
+            obligation.kind === "agent-continuation" ||
+            obligation.kind === "startup-resume" ||
+            (isUsageGuardYield(obligation.blockedReason) &&
+              !(heldSourceId && isHeldMessageId(heldSourceId)));
+          if (thread && autonomousResume && agentLoopSignedOffSinceUserIntent(thread.messages)) {
+            return { state: "cancelled" as const, reason: "agent already signed off" };
+          }
+
+          // Holds re-check on a timer with no turn running, and turns are what
+          // report usage. Refresh a stale reading first so the re-check — and
+          // the notice it writes — reflect the account now, not at the last turn.
+          // The turn runs on the thread's *current* provider. A hold created
+          // under one provider must be judged against the provider the person
+          // has since switched to, or it waits on a window that no longer applies.
+          const guardInstanceId =
+            thread?.modelSelection.instanceId ?? obligation.providerInstanceId;
+          yield* usageGuard.refreshUsage({ instanceId: guardInstanceId }).pipe(Effect.ignore);
+          const decision = yield* usageGuard
+            .evaluate({
+              instanceId: guardInstanceId,
+              threadId: obligation.threadId,
+              // A queued message the person typed is user work: it sends as
+              // soon as the thread is free, never paced like background work.
+              // Only agent continuations and yields answer to the pace budget.
+              purpose: isUsageGuardYield(obligation.blockedReason)
+                ? "running"
+                : heldSourceId && isHeldMessageId(heldSourceId)
+                  ? "user-turn"
+                  : "background",
+              model: thread?.modelSelection.model ?? null,
+              effort: selectedUsageGuardEffort(thread?.modelSelection),
+              fast:
+                thread?.modelSelection.options?.some(
+                  (option) => option.id === "serviceTier" && option.value === "priority",
+                ) ?? false,
+            })
+            .pipe(Effect.orElseSucceed(() => null));
+          if (decision === null || decision.action !== "pause") {
+            if (
+              isUsageGuardYield(obligation.blockedReason) &&
+              !(heldSourceId && isHeldMessageId(heldSourceId))
+            ) {
+              const fresh = yield* resolveThread(obligation.threadId);
+              const sourceTurnId = fresh?.latestTurn?.turnId;
+              if (
+                !fresh ||
+                !fresh.session ||
+                !sourceTurnId ||
+                !canResumeUsageGuardYield(obligation.blockedReason, String(sourceTurnId)) ||
+                fresh.settledOverride === "settled" ||
+                agentLoopSignedOffSinceUserIntent(fresh.messages)
+              ) {
+                return {
+                  state: "cancelled" as const,
+                  reason: "cooldown work was stopped or superseded",
+                };
+              }
+              const sourceTurn = yield* getPersistedProviderTurnById(
+                obligation.threadId,
+                sourceTurnId,
+              );
+              if (Option.isSome(sourceTurn) && sourceTurn.value.sourceMessageId) {
+                const sourceContext = yield* getPersistedTurnStartContext(
+                  obligation.threadId,
+                  sourceTurn.value.sourceMessageId,
+                );
+                if (Option.isSome(sourceContext) && sourceContext.value.hasLaterRealUserTurn) {
+                  return {
+                    state: "cancelled" as const,
+                    reason: "newer user work superseded this cooldown",
+                  };
+                }
+              }
+              const owner = yield* threadWorkObligations.getById(obligation.obligationId);
+              if (
+                Option.isNone(owner) ||
+                owner.value.state !== "executing" ||
+                owner.value.attempt !== obligation.attempt
+              ) {
+                return {
+                  state: "cancelled" as const,
+                  reason: "cooldown resume no longer owns this work",
+                };
+              }
+              const createdAt = yield* nowIso;
+              const resumeIds = startupAutoResumeIds({
+                threadId: obligation.threadId,
+                incompleteTurnId: sourceTurnId,
+              });
+              yield* orchestrationEngine.dispatch({
+                type: "thread.turn.start",
+                commandId: CommandId.make(`${resumeIds.commandId}:${fresh.session.updatedAt}`),
+                threadId: obligation.threadId,
+                expectedResumeSource: {
+                  turnId: sourceTurnId,
+                  latestUserMessageId:
+                    fresh.messages.findLast((message) => message.role === "user")?.id ?? null,
+                  sessionUpdatedAt: fresh.session.updatedAt,
+                },
+                message: {
+                  messageId: resumeIds.messageId,
+                  role: "user",
+                  text: RESUME_PROMPT,
+                  inputOrigin: "agent-loop",
+                  attachments: [],
+                },
+                modelSelection: fresh.modelSelection,
+                runtimeMode: fresh.runtimeMode,
+                interactionMode: fresh.interactionMode,
+                createdAt,
+              });
+              const confirmed = yield* resolveThread(obligation.threadId);
+              if (!confirmed?.messages.some((message) => message.id === resumeIds.messageId)) {
+                return {
+                  state: "sleeping" as const,
+                  nextAttemptAt: decision?.wakeAtIso ?? createdAt,
+                  reason: obligation.blockedReason,
+                };
+              }
+              return { state: "completed" as const };
+            }
+            return yield* handler(obligation);
+          }
+
+          const threadKey = String(obligation.threadId);
+          const episode = `${String(obligation.providerInstanceId)}:${decision.evaluation.windowKey ?? "-"}:${decision.evaluation.resetsAtMs ?? "-"}:${decision.wakeAtIso.slice(0, 16)}:${thread?.modelSelection.model}:${selectedUsageGuardEffort(thread?.modelSelection)}`;
+          if (usageGuardNoticesByThread.get(threadKey) !== episode) {
+            if (usageGuardNoticesByThread.size >= MAX_USAGE_GUARD_NOTICES) {
+              const oldest = usageGuardNoticesByThread.keys().next().value;
+              if (oldest !== undefined) usageGuardNoticesByThread.delete(oldest);
+            }
+            usageGuardNoticesByThread.set(threadKey, episode);
+            const [commandId, eventId, createdAt] = yield* Effect.all([
+              serverCommandId("usage-guard-paused"),
+              serverEventId(),
+              DateTime.now.pipe(Effect.map(DateTime.formatIso)),
+            ]).pipe(Effect.orDie);
+            const tier = decision.evaluation.tier;
+            yield* orchestrationEngine
+              .dispatch({
+                type: "thread.activity.append",
+                commandId,
+                threadId: obligation.threadId,
+                activity: {
+                  id: eventId,
+                  tone: "info",
+                  kind: USAGE_GUARD_PAUSED_ACTIVITY_KIND,
+                  summary:
+                    tier === "pause"
+                      ? `Held · ${decision.providerLabel} usage guard`
+                      : `Waiting for room · ${decision.providerLabel} usage guard`,
+                  payload: {
+                    effortEstimates: decision.effortEstimates,
+                    detail: decision.evaluation.summary,
+                    providerLabel: decision.providerLabel,
+                    instanceId: guardInstanceId,
+                    workKind: obligation.kind,
+                    tier,
+                    model: decision.evaluation.model,
+                    estimatedPercent: decision.evaluation.estimatedPercent,
+                    reportedPercent: decision.evaluation.reportedPercent,
+                    windowLabel: decision.evaluation.windowLabel,
+                    resetsAt: decision.evaluation.resetsAtMs,
+                    headroomPercent: decision.evaluation.headroomPercent,
+                    turnCostPercent: decision.evaluation.turnCostPercent,
+                    backgroundBudget: decision.evaluation.backgroundBudget,
+                    activeThreads: decision.evaluation.activeThreads,
+                    retryAt: decision.wakeAtIso,
+                    reportedAt: decision.reportedAt,
+                  },
+                  turnId: null,
+                  createdAt,
+                },
+                createdAt,
+              })
+              .pipe(Effect.ignore);
+          }
+
+          return {
+            state: "sleeping" as const,
+            nextAttemptAt: decision.wakeAtIso,
+            reason: isUsageGuardYield(obligation.blockedReason)
+              ? obligation.blockedReason
+              : USAGE_GUARD_PAUSED_REASON,
+          };
+        }).pipe(Effect.catchCause((cause) => recoverThreadWorkFailure(cause, obligation.attempt)));
+
     const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
-      yield* threadWorkScheduler.registerHandler("active-turn-recovery", executeActiveTurnRecovery);
-      yield* threadWorkScheduler.registerHandler("startup-resume", executeStartupResume);
-      yield* threadWorkScheduler.registerHandler("agent-continuation", executeAgentContinuation);
+      yield* threadWorkScheduler.registerHandler(
+        "active-turn-recovery",
+        withUsageGuard(executeActiveTurnRecovery),
+      );
+      yield* threadWorkScheduler.registerHandler(
+        "startup-resume",
+        withUsageGuard(executeStartupResume),
+      );
+      yield* threadWorkScheduler.registerHandler(
+        "agent-continuation",
+        withUsageGuard(executeAgentContinuation),
+      );
       yield* threadWorkScheduler.registerHandler(
         "authentication-resume",
-        executeAuthenticationResume,
+        withUsageGuard(executeAuthenticationResume),
       );
       yield* Effect.addFinalizer(() =>
         Effect.all([
@@ -5365,6 +5894,30 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           // Wake receipt waiters on durable state changes rather than polling;
           // they re-read the exact receipt.
           yield* wakeDeliveryStateWaiters(event.payload.threadId);
+        }
+        if (
+          (event.type === "thread.activity-appended" &&
+            event.payload.activity.kind === "task.completed") ||
+          (event.type === "thread.session-set" &&
+            event.payload.session.status === "running" &&
+            event.payload.session.activeTurnId !== null)
+        ) {
+          const thread = yield* resolveThread(event.payload.threadId);
+          if (thread && outstandingBackgroundTasks(thread.activities).length === 0) {
+            // Reuse the normal steer admission/CAS path: a running resume
+            // keeps its supervisor slot, while each queued message can join it.
+            for (const message of thread.messages) {
+              if (!isHeldMessageId(message.id) || message.queueState !== "queued") continue;
+              const context = yield* getPersistedTurnStartContext(thread.id, message.id);
+              if (Option.isNone(context)) continue;
+              yield* steerDispatcher.enqueue({
+                ...event,
+                type: "thread.turn-start-requested",
+                commandId: CommandId.make(`release-held:${event.eventId}:${message.id}`),
+                payload: context.value.payload,
+              });
+            }
+          }
         }
         if (event.type === "thread.queued-turn-promote-requested") {
           return yield* promotionDispatcher.enqueue(event);

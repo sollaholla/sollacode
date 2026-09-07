@@ -92,16 +92,17 @@ function detectCodexExhaustion(rateLimits: unknown): ProviderUsageLimitExhaustio
   const secondary = asRecord(snapshot.secondary);
   const rateLimitReachedType =
     typeof snapshot.rateLimitReachedType === "string" ? snapshot.rateLimitReachedType : undefined;
-  const primaryUsedPercent = finiteNumber(primary?.usedPercent);
-  const secondaryUsedPercent = finiteNumber(secondary?.usedPercent);
   const spendControlReached = snapshot.spendControlReached === true;
 
-  if (
-    rateLimitReachedType === undefined &&
-    !spendControlReached &&
-    (primaryUsedPercent === undefined || primaryUsedPercent < 100) &&
-    (secondaryUsedPercent === undefined || secondaryUsedPercent < 100)
-  ) {
+  // A window reading 100% is not a refusal. An account with credits — or
+  // flexible/extra usage on top of the included quota — keeps serving past
+  // the end of its window, and moving that thread to another model would take
+  // away usage the user has already paid for. Codex says a limit actually
+  // stopped a request with `rateLimitReachedType`, and `spendControlReached`
+  // is a real hard stop; those two are the only signals allowed to switch a
+  // thread off its chosen model. (Claude is rejection-driven for the same
+  // reason — see `detectClaudeExhaustion`.)
+  if (rateLimitReachedType === undefined && !spendControlReached) {
     return null;
   }
 

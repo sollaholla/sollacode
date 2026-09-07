@@ -68,6 +68,7 @@ import { ThreadWorkSchedulerLive } from "./orchestration/Layers/ThreadWorkSchedu
 import { ThreadSubscriptionRegistryLive } from "./orchestration/Layers/ThreadSubscriptionRegistry.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
+import { ProviderUsageGuardLive } from "./orchestration/Layers/ProviderUsageGuard.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -225,6 +226,10 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive.pipe(Layer.provide(ThreadArtifactLayerLive))),
   Layer.provideMerge(RuntimeReceiptBusLive),
+  // Provided last so both the runtime ingestion (which feeds it usage reports
+  // and token counts) and the command reactor (which gates work on it) resolve
+  // the same guard instance.
+  Layer.provideMerge(ProviderUsageGuardLive),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(

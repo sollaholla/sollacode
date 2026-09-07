@@ -257,6 +257,25 @@ export const OrchestrationMessage = Schema.Struct({
   // growth breaks old clients' decode of the whole thread, an optional key is
   // silently dropped by them.
   voiceTranscript: Schema.optional(Schema.Boolean),
+  /**
+   * Held (queued) user messages only: where the delivery got to.
+   *
+   * Clients used to infer this from `provider.queue.promoted` /
+   * `message.delivered` / `queue.message-removed` activities, but a thread
+   * snapshot carries only the newest 200 activities, so every receipt older
+   * than that window aged out — the message came back to the queue panel
+   * forever AND vanished from the timeline, because the same receipts gate
+   * both. Read from the durable work obligation instead, so it does not age.
+   *
+   * Three states, not a boolean: "removed" and "delivered" are both "no longer
+   * queued" but belong in different places — a cancelled message appears
+   * nowhere, a delivered one belongs in the timeline like any other.
+   *
+   * Absent when the server could not resolve it (live event fanout, an
+   * obligation pruned after its 7-day retention, older servers) — treat
+   * `undefined` as "fall back to the activity receipts".
+   */
+  queueState: Schema.optional(Schema.Literals(["queued", "delivered", "removed"])),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
@@ -861,6 +880,14 @@ export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
+  /** Server-owned resumes may only continue the exact intent and session observed. */
+  expectedResumeSource: Schema.optional(
+    Schema.Struct({
+      turnId: TurnId,
+      latestUserMessageId: Schema.NullOr(MessageId),
+      sessionUpdatedAt: IsoDateTime,
+    }),
+  ),
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
@@ -897,6 +924,14 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  createdAt: IsoDateTime,
+});
+
+const ThreadQueuedMessageRemoveCommand = Schema.Struct({
+  type: Schema.Literal("thread.queued-message.remove"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
   createdAt: IsoDateTime,
 });
 
@@ -1022,6 +1057,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadQueuedTurnPromoteCommand,
+  ThreadQueuedMessageRemoveCommand,
   ThreadTaskStopCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1052,6 +1088,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadQueuedTurnPromoteCommand,
+  ThreadQueuedMessageRemoveCommand,
   ThreadTaskStopCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,

@@ -49,6 +49,10 @@ mobile group agents by their connected host, so a phone connected over LAN, rela
 open the same named agent and its dedicated chat. An environment-qualified agent link never silently
 switches to an agent with the same id on another host.
 
+On web and desktop, **Actions** in the agent's Chat header offers the same project scripts as
+ordinary threads. Run build, test, or other saved commands, add or edit actions, and import scripts
+from the project's `t3.json`. Commands open in the agent's Terminal sidebar on its connected host.
+
 ## Sidebar surfaces
 
 On web and desktop, an agent's right sidebar offers **Browser**, **Terminal**, and **Side Chat**.

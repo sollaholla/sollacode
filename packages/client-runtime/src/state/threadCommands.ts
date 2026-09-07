@@ -1,3 +1,4 @@
+import { removeQueuedMessage, type RemoveQueuedMessageInput } from "../operations/commands.ts";
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -176,6 +177,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     setInteractionMode: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:set-interaction-mode",
       execute: (input: SetThreadInteractionModeInput) => setThreadInteractionMode(input),
+      scheduler,
+      concurrency,
+    }),
+    removeQueuedMessage: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:remove-queued-message",
+      execute: (input: RemoveQueuedMessageInput) => removeQueuedMessage(input),
       scheduler,
       concurrency,
     }),

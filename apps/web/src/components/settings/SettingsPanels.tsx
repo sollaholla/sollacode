@@ -109,6 +109,7 @@ import {
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { ThreadListSettingsSection } from "./ThreadListSettings";
+import { ProviderUsageGuardControls, UsageGuardMasterRow } from "./UsageGuardSettings";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
@@ -2457,22 +2458,30 @@ export function ProviderSettingsPanel() {
               usage={
                 row.instance.enabled !== false &&
                 shouldShowProviderSettingsUsage(row.driver, providerUsageSummary) ? (
-                  <ProviderSettingsUsage
-                    displayName={providerDisplayName}
-                    driverKind={row.driver}
-                    provider={liveProvider}
-                    summary={providerUsageSummary}
-                    refreshState={providerUsageRefreshState}
-                    onRefresh={
-                      liveProvider ? () => requestProviderUsageRefresh(liveProvider) : undefined
-                    }
-                    {...(liveProvider
-                      ? {
-                          onUseReset: (creditId: string | undefined, idempotencyKey: string) =>
-                            redeemProviderUsageReset(liveProvider, creditId, idempotencyKey),
-                        }
-                      : {})}
-                  />
+                  <>
+                    <ProviderSettingsUsage
+                      displayName={providerDisplayName}
+                      driverKind={row.driver}
+                      provider={liveProvider}
+                      summary={providerUsageSummary}
+                      refreshState={providerUsageRefreshState}
+                      onRefresh={
+                        liveProvider ? () => requestProviderUsageRefresh(liveProvider) : undefined
+                      }
+                      {...(liveProvider
+                        ? {
+                            onUseReset: (creditId: string | undefined, idempotencyKey: string) =>
+                              redeemProviderUsageReset(liveProvider, creditId, idempotencyKey),
+                          }
+                        : {})}
+                    />
+                    {liveProvider ? (
+                      <ProviderUsageGuardControls
+                        provider={liveProvider}
+                        displayName={providerDisplayName}
+                      />
+                    ) : null}
+                  </>
                 ) : undefined
               }
             />
@@ -2543,6 +2552,7 @@ export function ProviderSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection title="Provider preferences">
+        <UsageGuardMasterRow />
         <SettingsRow
           title="Provider usage bar"
           description="Show provider-reported usage windows and quotas at the bottom of chat. Unsupported or not-yet-reported usage stays labeled as unavailable."

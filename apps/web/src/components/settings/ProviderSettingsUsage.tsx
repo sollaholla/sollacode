@@ -15,6 +15,7 @@ import {
   type UsageTotals,
 } from "../../providerUsageLedger";
 import { useProviderUsageLedgerStore } from "../../providerUsageLedgerStore";
+import { UsageCalendar } from "./UsageCalendar";
 import { useProviderUsageStore } from "../../providerUsageStore";
 import {
   ProviderUsageDetails,
@@ -480,6 +481,7 @@ export function ProviderSettingsUsage(props: {
               <StatCard label="30 days" totals={digest.last30Days} />
               <StatCard label="All time" totals={digest.allTime} />
             </div>
+            <UsageCalendar byDay={digest.byDay} nowMs={nowMs} label={displayName} />
             <DailyChart days={digest.recentDays} />
             <DailyTable days={digest.recentDays} />
             <p className="text-[11px] leading-relaxed text-muted-foreground">

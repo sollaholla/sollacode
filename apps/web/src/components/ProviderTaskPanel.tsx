@@ -183,19 +183,28 @@ export function ProviderTaskPanel(props: {
                       <CircleStop aria-hidden className="size-3.5" />
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    onClick={() => dismissTasks([task.taskId])}
-                    aria-label={`Dismiss ${task.title}`}
-                    title={
-                      task.status === "running"
-                        ? "Hide this row. If the task is still alive it will reappear when it next reports."
-                        : "Hide this row."
-                    }
-                    className="rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
-                  >
-                    <X aria-hidden className="size-3.5" />
-                  </button>
+                  {/*
+                   * Never offered for running work, matching bulk Clear. Hiding a
+                   * live task made the panel read as empty while that task still
+                   * held the turn with the user's messages queued behind it, so
+                   * the user concluded nothing was running. The row was supposed
+                   * to return "when it next reports", but a task that reports
+                   * nothing until it exits stays invisible for its whole life.
+                   * A dead runtime is still reachable: silence past
+                   * PROVIDER_TASK_STALE_AFTER_MS downgrades it to `stale`, and
+                   * stale rows are dismissable here and by Clear.
+                   */}
+                  {task.status !== "running" ? (
+                    <button
+                      type="button"
+                      onClick={() => dismissTasks([task.taskId])}
+                      aria-label={`Dismiss ${task.title}`}
+                      title="Hide this row."
+                      className="rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
+                    >
+                      <X aria-hidden className="size-3.5" />
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </li>

@@ -43,6 +43,22 @@ export const ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON =
   "steer delivery outcome unknown after restart";
 
 /**
+ * A queued message that Stop found undelivered. It is terminal on purpose:
+ * `pending` would be re-claimed the instant Stop idles the thread, so the
+ * turn the person just killed is replaced by another one a second later and
+ * Stop appears not to work at all (observed 2026-09-07 on 0.1.469, which
+ * released these rows to `pending`). Every non-terminal state that would
+ * survive instead — `sleeping`, `waiting-*` — holds the thread's one active
+ * obligation slot and starves everything behind it.
+ *
+ * So the row ends here and the MESSAGE is what survives: the snapshot reads
+ * this reason as "still queued", so it stays in the queue panel, keeps its
+ * text and attachments, and goes out when the person asks for it. Stop ends
+ * the turn, not the sentence they were writing.
+ */
+export const STOPPED_BEFORE_SEND_REASON = "queued message stopped before it was sent";
+
+/**
  * Durable admission marker for synthetic prompts that won the race against a
  * later real user turn. A user-supersede sweep may cancel an executing
  * synthetic obligation until this marker is written, but never after it.
@@ -278,6 +294,19 @@ export interface ThreadWorkObligationRepositoryShape {
   readonly listSchedulableProviderIds: (
     input: ListSchedulableProviderIdsInput,
   ) => Effect.Effect<ReadonlyArray<ProviderInstanceId>, ProjectionRepositoryError>;
+
+  /**
+   * Free a thread's single active slot for a message the person already typed.
+   *
+   * An agent thread's continuation sleeps in short hops for as long as a
+   * background task lives, and `sleeping` counts as active, so a queued user
+   * delivery could never be claimed — it waited for a Stop instead. Demoting
+   * the sleeper to `pending` hands the slot to the delivery, which outranks it.
+   * Returns how many rows yielded.
+   */
+  readonly yieldSleepingWorkToQueuedUserMessages: (
+    now: IsoDateTime,
+  ) => Effect.Effect<number, ProjectionRepositoryError>;
 
   /** Keyset page used by authentication wakeups, recovery, and local metrics. */
   readonly listByState: (

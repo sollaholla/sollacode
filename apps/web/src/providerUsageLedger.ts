@@ -137,6 +137,8 @@ export interface ProviderUsageDigest {
   readonly allTime: UsageTotals;
   /** Every calendar day of the last two weeks, newest first, zero-filled. */
   readonly recentDays: ReadonlyArray<UsageDayBucket>;
+  /** Every day this driver has activity on, keyed by local `YYYY-MM-DD`. */
+  readonly byDay: ReadonlyMap<string, UsageTotals>;
 }
 
 const EMPTY_TOTALS: UsageTotals = {
@@ -154,7 +156,7 @@ export function totalTokens(totals: UsageTotals): number {
   );
 }
 
-function localDayKey(ms: number): string {
+export function localDayKey(ms: number): string {
   const date = new Date(ms);
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   const day = `${date.getDate()}`.padStart(2, "0");
@@ -203,5 +205,5 @@ export function digestProviderUsage(
     const day = localDayKey(nowMs - offset * DAY_MS);
     recentDays.push({ day, ...(byDay.get(day) ?? EMPTY_TOTALS) });
   }
-  return { today, last7Days, last30Days, allTime, recentDays };
+  return { today, last7Days, last30Days, allTime, recentDays, byDay };
 }

@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type OrchestrationReadModel,
   type OrchestrationSession,
   type OrchestrationThread,
@@ -126,6 +127,60 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         type: "thread.session-set",
         payload: { session: { status: "stopped" } },
       });
+    }),
+  );
+
+  it.effect("accepts a cooldown resume only while its exact source is unchanged", () =>
+    Effect.gen(function* () {
+      const base = makeReadModel(null, null, makeSession("ready"));
+      const turnId = TurnId.make("yielded-turn");
+      const model = {
+        ...base,
+        threads: base.threads.map((thread) => ({
+          ...thread,
+          latestTurn: {
+            turnId,
+            state: "interrupted" as const,
+            requestedAt: NOW,
+            startedAt: NOW,
+            completedAt: NOW,
+            assistantMessageId: null,
+            sourceMessageId: null,
+          },
+        })),
+      };
+      const command = {
+        type: "thread.turn.start" as const,
+        commandId: CommandId.make("cooldown-resume"),
+        threadId: ThreadId.make("thread-1"),
+        expectedResumeSource: { turnId, latestUserMessageId: null, sessionUpdatedAt: NOW },
+        message: {
+          messageId: MessageId.make("resume-message"),
+          role: "user" as const,
+          text: "Resume",
+          attachments: [],
+        },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        createdAt: NOW,
+      };
+      const accepted = yield* decideOrchestrationCommand({ command, readModel: model });
+      expect(accepted).not.toEqual([]);
+      for (const expectedResumeSource of [
+        { ...command.expectedResumeSource, turnId: TurnId.make("different-turn") },
+        {
+          ...command.expectedResumeSource,
+          latestUserMessageId: MessageId.make("new-user-message"),
+        },
+        { ...command.expectedResumeSource, sessionUpdatedAt: "2026-01-01T00:00:01.000Z" },
+      ]) {
+        expect(
+          yield* decideOrchestrationCommand({
+            command: { ...command, expectedResumeSource },
+            readModel: model,
+          }),
+        ).toEqual([]);
+      }
     }),
   );
 

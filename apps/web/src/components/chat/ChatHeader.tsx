@@ -12,13 +12,13 @@ import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import ProjectScriptsControl, {
+import {
+  ProjectScriptsControlForProject,
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../state/environments";
-import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { cn } from "~/lib/utils";
 import { RemoteConnectionControl } from "../remoteControl/RemoteConnectionControl";
@@ -109,10 +109,6 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const fileScriptsQuery = useT3ProjectFileScripts(
-    activeThreadEnvironmentId,
-    activeProjectScripts ? activeProjectCwd : null,
-  );
   const showOpenInPicker = shouldShowOpenInPicker({
     activeProjectName,
     activeThreadEnvironmentId,
@@ -227,12 +223,12 @@ export const ChatHeader = memo(function ChatHeader({
           </Tooltip>
         ) : null}
         {activeProjectScripts && (
-          <ProjectScriptsControl
+          <ProjectScriptsControlForProject
+            environmentId={activeThreadEnvironmentId}
+            cwd={activeProjectCwd}
             scripts={activeProjectScripts}
-            fileScripts={fileScriptsQuery.scripts}
             keybindings={keybindings}
             preferredScriptId={preferredScriptId}
-            onRefreshFileScripts={fileScriptsQuery.refresh}
             onRunScript={onRunProjectScript}
             onAddScript={onAddProjectScript}
             onUpdateScript={onUpdateProjectScript}

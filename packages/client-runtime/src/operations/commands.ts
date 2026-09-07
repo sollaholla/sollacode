@@ -262,6 +262,14 @@ export const setThreadInteractionMode: (input: SetThreadInteractionModeInput) =>
     });
   });
 
+export type RemoveQueuedMessageInput = CommandInput<"thread.queued-message.remove">;
+export const removeQueuedMessage: (input: RemoveQueuedMessageInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.removeQueuedMessage",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({ ...input, ...metadata, type: "thread.queued-message.remove" });
+});
+
 export const startThreadTurn: (input: StartThreadTurnInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.startThreadTurn",
 )(function* (input) {

@@ -1,6 +1,7 @@
 import {
   isSideChatSessionPreparing,
   isThreadSessionWorking,
+  hasPendingThreadWork,
 } from "@t3tools/client-runtime/state/thread-activity";
 import * as React from "react";
 import {
@@ -475,7 +476,7 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (isThreadSessionWorking(thread)) {
+  if (isThreadSessionWorking(thread) || hasPendingThreadWork(thread)) {
     return "working";
   }
   if (thread.session?.status === "error") {
@@ -632,13 +633,14 @@ export function sortSettledThreadsForSidebarV2<
     last transition when the turn projection lags behind. Malformed
     timestamps fall through to the next candidate, not just missing ones. */
 export function resolveWorkingStartedAt(
-  thread: Pick<SidebarThreadSummary, "latestTurn" | "session">,
+  thread: Pick<SidebarThreadSummary, "latestTurn" | "session"> &
+    Partial<Pick<SidebarThreadSummary, "pendingWork">>,
 ): string | null {
   const turn = thread.latestTurn;
   if (turn && turn.completedAt === null) {
     return firstValidTimestamp(turn.startedAt, turn.requestedAt, thread.session?.updatedAt);
   }
-  return firstValidTimestamp(thread.session?.updatedAt);
+  return firstValidTimestamp(thread.pendingWork?.since, thread.session?.updatedAt);
 }
 
 export function formatWorkingDurationLabel(elapsedMs: number): string {

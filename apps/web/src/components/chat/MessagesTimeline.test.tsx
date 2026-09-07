@@ -673,7 +673,10 @@ describe("MessagesTimeline", () => {
     expect(resolveTimelineDrawDistance(false)).toBe(4_000);
     expect(resolveTimelineDrawDistance(true)).toBe(6_000);
 
-    expect(resolveTimelineMinimapHeightStyle(5)).toBe("min(32px, calc(100vh - 18rem))");
+    expect(resolveTimelineMinimapHeightStyle(500)).toContain("240px");
+    expect(resolveTimelineMinimapHeightStyle(5)).toBe(
+      "min(32px, min(240px, max(32px, calc(100dvh - 18rem))))",
+    );
     expect(resolveTimelineMinimapTopPercent(2, 5)).toBe(50);
     expect(
       resolveTimelineMinimapIndexFromPointer({

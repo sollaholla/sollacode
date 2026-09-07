@@ -1,5 +1,7 @@
 "use client";
 
+import { createTouchPressDelay } from "./touchPressDelay";
+
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
@@ -44,11 +46,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Spinner } from "../ui/spinner";
-import {
-  RemoteViewAdjustLayer,
-  RemoteViewZoomToggle,
-  useRemoteViewZoom,
-} from "../remoteView/RemoteViewZoom";
+import { RemoteViewZoomReadout, useRemoteViewZoom } from "../remoteView/RemoteViewZoom";
 import {
   controllerPlatform,
   objectContainContentRect,
@@ -163,13 +161,16 @@ export function RemoteControlViewerDialog(props: {
    * instead, which is what the user was asking for either way.
    */
   const [pseudoFullScreen, setPseudoFullScreen] = useState(false);
-  // Zoom and pan are one mode, not two buttons: while it is on, drags move the
-  // picture and nothing reaches the remote machine. See `RemoteViewZoom`.
+  // Two fingers own the picture (pinch to zoom, drag both to move) and one
+  // finger owns the remote machine; nothing reaches the host while two are
+  // down. See `RemoteViewZoom`.
   const zoomView = useRemoteViewZoom();
-  // Read inside event handlers that are not re-created per render.
-  const zoomViewAdjustingRef = useRef(zoomView.adjusting);
-  zoomViewAdjustingRef.current = zoomView.adjusting;
-  const zoomAdjusting = zoomView.adjusting;
+  // Read inside event handlers that are not re-created per render. Flipped
+  // synchronously by the pointer handlers as well: the gate must close on
+  // the very sample that starts the pinch, not one render later.
+  const zoomViewAdjustingRef = useRef(zoomView.pinching);
+  zoomViewAdjustingRef.current = zoomView.pinching;
+  const zoomAdjusting = zoomView.pinching;
   // Touch devices have no hardware keyboard to capture; this summons the
   // on-screen one via a hidden input and forwards its text natively.
   const [virtualKeyboardOpen, setVirtualKeyboardOpen] = useState(false);
@@ -182,6 +183,7 @@ export function RemoteControlViewerDialog(props: {
   sessionRef.current = session;
   const inputSequenceRef = useRef(0);
   const pressedKeysRef = useRef(new Map<string, string>());
+  const [touchPressDelay] = useState(createTouchPressDelay);
   const pressedPointerButtonRef = useRef<RemoteControlPointerButton | null>(null);
   const lastPointerPointRef = useRef({ x: 0.5, y: 0.5 });
   const platform = useMemo(() => controllerPlatform(navigator.userAgent), []);
@@ -443,6 +445,7 @@ export function RemoteControlViewerDialog(props: {
   }, [enqueueInput, videoUnavailable]);
 
   const releasePressedInputs = useCallback(() => {
+    touchPressDelay.cancel();
     for (const [code, key] of pressedKeysRef.current) {
       enqueueInput({ type: "key", action: "up", code, key, repeat: false });
     }
@@ -457,7 +460,7 @@ export function RemoteControlViewerDialog(props: {
       });
     }
     pressedPointerButtonRef.current = null;
-  }, [enqueueInput]);
+  }, [enqueueInput, touchPressDelay]);
 
   const releaseInputCapture = useCallback(() => {
     inputCapturedRef.current = false;
@@ -538,10 +541,11 @@ export function RemoteControlViewerDialog(props: {
     () => () => {
       inputCapturedRef.current = false;
       inputScheduler.clear();
+      touchPressDelay.cancel();
       pressedKeysRef.current.clear();
       pressedPointerButtonRef.current = null;
     },
-    [inputScheduler],
+    [inputScheduler, touchPressDelay],
   );
 
   const close = async () => {
@@ -577,6 +581,9 @@ export function RemoteControlViewerDialog(props: {
   const canPointer = isApproved && session?.grantedCapabilities.includes("pointer") === true;
   const canKeyboard = isApproved && session?.grantedCapabilities.includes("keyboard") === true;
   const canControl = canPointer || canKeyboard;
+  useEffect(() => {
+    if (!canPointer) releasePressedInputs();
+  }, [canPointer, releasePressedInputs]);
   const surface = resolveRemoteControlSurface({
     isApproved,
     videoMimeType,
@@ -728,8 +735,27 @@ export function RemoteControlViewerDialog(props: {
     }
   }, [open]);
 
+  const pointerSample = (event: ReactPointerEvent<HTMLDivElement>) => ({
+    button: event.button,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    movementX: event.movementX,
+    movementY: event.movementY,
+    currentTarget: event.currentTarget,
+    preventDefault: () => {},
+  });
+
   const sendPointer = (
-    event: ReactPointerEvent<HTMLDivElement>,
+    event: Pick<
+      ReactPointerEvent<HTMLDivElement>,
+      | "button"
+      | "clientX"
+      | "clientY"
+      | "movementX"
+      | "movementY"
+      | "currentTarget"
+      | "preventDefault"
+    >,
     action: "move" | "down" | "up",
     button = remotePointerButton(event.button),
   ) => {
@@ -870,20 +896,22 @@ export function RemoteControlViewerDialog(props: {
     if (real || pseudo) toggleFullScreen();
   }, [fpsWantsFullScreen, toggleFullScreen]);
 
-  // Entering the adjust mode stops forwarding, which would otherwise strand a
-  // key or mouse button that was down at that instant - the remote machine
-  // would sit on a stuck W or a held left-click for as long as the viewer
-  // spent panning. Release them on the way in.
+  // A pinch stops forwarding, which would otherwise strand a key or mouse
+  // button that was down at that instant - the remote machine would sit on a
+  // stuck W or a held left-click for as long as the viewer spent zooming.
+  // The pointer handler releases the press that started it synchronously;
+  // this catches anything else that was held.
   useEffect(() => {
     if (zoomAdjusting) releasePressedInputs();
   }, [zoomAdjusting, releasePressedInputs]);
 
-  // Two modes that both want the whole surface. The controller wins - it is
-  // raised above the adjust layer anyway, so leaving both on would show a pad
-  // whose drags silently pan the picture behind it.
+  // The controller takes the whole surface and swallows every touch, so no
+  // pinch can happen under it; a picture left magnified from before would sit
+  // behind the pad with no way to move it. Start the game at fit.
+  const resetZoomView = zoomView.reset;
   useEffect(() => {
-    if (fpsActive) zoomView.stopAdjusting();
-  }, [fpsActive, zoomView]);
+    if (fpsActive) resetZoomView();
+  }, [fpsActive, resetZoomView]);
 
   const sendFpsKey = useCallback(
     (code: string, key: string, action: "down" | "up") => {
@@ -1159,13 +1187,11 @@ export function RemoteControlViewerDialog(props: {
                   pointerGranted: canPointer,
                 }),
               }}
-              // The control row floats over the picture: free real estate
-              // in a tall window, and straight across the remote taskbar in
-              // a short landscape one - a phone on its side, where the
-              // bottom of the remote screen is exactly what you are
-              // reaching for. Under ~34rem of height the picture gives the
-              // row its own strip instead of sharing.
-              className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-none bg-black outline-hidden overscroll-none [@media(orientation:landscape)_and_(max-height:34rem)]:pb-12 ${
+              // A column: the picture, then the control row in its own strip.
+              // The row used to float over the picture, which put it straight
+              // across the remote taskbar - exactly what a phone on its side
+              // is reaching for. Now the picture is never under a button.
+              className={`relative flex size-full flex-col touch-none select-none overflow-hidden rounded-none bg-black outline-hidden overscroll-none ${
                 inputCaptured
                   ? "ring-2 ring-primary ring-offset-2 ring-offset-background"
                   : "focus-visible:ring-2 focus-visible:ring-ring"
@@ -1197,6 +1223,13 @@ export function RemoteControlViewerDialog(props: {
               }}
               onPointerDown={(event) => {
                 if (!canControl) return;
+                if (zoomView.onPointerDown(event)) {
+                  // Cancel the pending first-finger press before starting the pinch.
+                  zoomViewAdjustingRef.current = true;
+                  releasePressedInputs();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  return;
+                }
                 captureInput();
                 event.currentTarget.focus({ preventScroll: true });
                 if (!canPointer) return;
@@ -1208,21 +1241,37 @@ export function RemoteControlViewerDialog(props: {
                   engagePointerLock();
                 }
                 event.currentTarget.setPointerCapture(event.pointerId);
-                const surfaceRect = event.currentTarget.getBoundingClientRect();
-                if (surfaceRect.width > 0 && surfaceRect.height > 0) {
-                  zoomView.setAnchor({
-                    x: (event.clientX - surfaceRect.left) / surfaceRect.width,
-                    y: (event.clientY - surfaceRect.top) / surfaceRect.height,
-                  });
-                }
                 const button = remotePointerButton(event.button);
-                pressedPointerButtonRef.current = button;
-                sendPointer(event, "down", button);
+                event.preventDefault();
+                const sample = pointerSample(event);
+                const press = () => {
+                  pressedPointerButtonRef.current = button;
+                  sendPointer(sample, "down", button);
+                };
+                if (event.pointerType === "touch") touchPressDelay.start(press);
+                else press();
               }}
-              onPointerMove={(event) =>
-                sendPointer(event, "move", pressedPointerButtonRef.current ?? "left")
-              }
+              onPointerMove={(event) => {
+                if (zoomView.onPointerMove(event)) return;
+                const sample = pointerSample(event);
+                if (
+                  event.pointerType === "touch" &&
+                  touchPressDelay.move(() =>
+                    sendPointer(sample, "move", pressedPointerButtonRef.current ?? "left"),
+                  )
+                )
+                  return;
+                sendPointer(event, "move", pressedPointerButtonRef.current ?? "left");
+              }}
               onPointerUp={(event) => {
+                if (zoomView.onPointerUp(event)) {
+                  zoomViewAdjustingRef.current = zoomView.pinchingRef.current;
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  return;
+                }
+                if (event.pointerType === "touch") touchPressDelay.flush();
                 sendPointer(
                   event,
                   "up",
@@ -1234,165 +1283,174 @@ export function RemoteControlViewerDialog(props: {
                 }
               }}
               onPointerCancel={(event) => {
-                sendPointer(event, "up", pressedPointerButtonRef.current ?? "left");
+                touchPressDelay.cancel();
+                if (zoomView.onPointerUp(event)) {
+                  zoomViewAdjustingRef.current = zoomView.pinchingRef.current;
+                  return;
+                }
+                if (pressedPointerButtonRef.current !== null)
+                  sendPointer(event, "up", pressedPointerButtonRef.current);
                 pressedPointerButtonRef.current = null;
               }}
               onWheel={sendWheel}
             >
-              {surface.media === "video" ? (
-                <video
-                  ref={frameVideoRef}
-                  aria-label={`Live desktop view from ${environmentLabel}`}
-                  autoPlay
-                  muted
-                  playsInline
-                  // `loadeddata` is the first moment a frame is actually
-                  // decoded, which is also what the 5s watchdog is waiting to
-                  // hear about — marking it here spares the fallback.
-                  onLoadedData={() => {
-                    decodedRef.current = true;
-                    setHasRenderedFrame(true);
-                  }}
-                  onPlaying={() => setHasRenderedFrame(true)}
-                  // Transform rather than layout: pointer math reads the
-                  // element's bounding rect, which already reflects it, so
-                  // clicks keep landing where the user aimed while zoomed.
-                  style={zoomView.style}
-                  className="pointer-events-none size-full touch-none select-none object-contain"
-                />
-              ) : surface.media === "image" ? (
-                <img
-                  ref={frameImageRef}
-                  src={frameData ?? undefined}
-                  alt={`Live desktop view from ${environmentLabel}`}
-                  draggable={false}
-                  // Receiving bytes is not the same as painting them. Keep the
-                  // loading overlay up until the browser has decoded the first
-                  // JPEG, otherwise a slow image decode still exposes black.
-                  onLoad={() => setHasRenderedFrame(true)}
-                  // Transform rather than layout: pointer math reads the
-                  // element's bounding rect, which already reflects it, so
-                  // clicks keep landing where the user aimed while zoomed.
-                  style={zoomView.style}
-                  className="pointer-events-none size-full touch-none select-none object-contain"
-                />
-              ) : null}
-              {surface.showLoadingOverlay ? (
-                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 text-center">
-                  <Spinner className="size-8 text-white" />
-                  <p className="text-sm text-white/80">Starting the live desktop stream…</p>
-                  {firstFrameSlow ? (
-                    <p className="max-w-sm text-xs text-white/60">
-                      This is taking longer than usual. If {environmentLabel} is a Mac, it may need
-                      System Settings → Privacy &amp; Security → Screen Recording enabled for Solla
-                      Code.
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-              {touchClient && canKeyboard ? (
-                <input
-                  ref={virtualKeyboardInputRef}
-                  // Always mounted, never visible: it exists to summon the
-                  // on-screen keyboard and receive its text. It must already
-                  // be in the DOM when the Keyboard button is tapped — mobile
-                  // browsers only raise the keyboard for a focus() issued
-                  // synchronously inside the tap gesture, so mounting it on
-                  // demand (focus deferred a frame) read as a dead click.
-                  // Characters are forwarded as native text injection
-                  // (layout-independent); Enter and Backspace arrive as key
-                  // edits of the field and are mapped back to key taps. Keys
-                  // that carry a real `code` are handled by the window-level
-                  // capture listener before they reach here.
-                  // 16px is not cosmetic on a 1px invisible input: iOS Safari
-                  // zooms the whole page whenever it focuses a field whose
-                  // computed font-size is under 16px, so raising the keyboard
-                  // magnified the UI and left the user pinching back out every
-                  // single time.
-                  className="absolute bottom-0 left-0 size-px text-[16px] opacity-0"
-                  aria-label="Remote keyboard input"
-                  tabIndex={-1}
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  autoComplete="off"
-                  spellCheck={false}
-                  onFocus={() => setVirtualKeyboardOpen(true)}
-                  onBlur={() => setVirtualKeyboardOpen(false)}
-                  onBeforeInput={(event) => {
-                    // The gate lives on the surface's own handlers, and this
-                    // input is not one of them - without this, typing while the
-                    // view is being adjusted still reaches the host and makes a
-                    // liar of the "nothing is sent" notice on screen.
-                    if (zoomViewAdjustingRef.current) {
-                      event.preventDefault();
-                      return;
-                    }
-                    const native = event.nativeEvent as InputEvent;
-                    if (
-                      native.inputType === "insertText" ||
-                      native.inputType === "insertFromPaste" ||
-                      native.inputType === "insertCompositionText"
-                    ) {
-                      event.preventDefault();
-                      const text = native.data;
-                      if (text) enqueueInput({ type: "text", text: text.slice(0, 256) });
-                      return;
-                    }
-                    if (native.inputType === "insertLineBreak") {
-                      event.preventDefault();
-                      enqueueInput({
-                        type: "key",
-                        action: "down",
-                        code: "Enter",
-                        key: "Enter",
-                        repeat: false,
-                      });
-                      enqueueInput({
-                        type: "key",
-                        action: "up",
-                        code: "Enter",
-                        key: "Enter",
-                        repeat: false,
-                      });
-                      return;
-                    }
-                    if (native.inputType === "deleteContentBackward") {
-                      event.preventDefault();
-                      enqueueInput({
-                        type: "key",
-                        action: "down",
-                        code: "Backspace",
-                        key: "Backspace",
-                        repeat: false,
-                      });
-                      enqueueInput({
-                        type: "key",
-                        action: "up",
-                        code: "Backspace",
-                        key: "Backspace",
-                        repeat: false,
-                      });
-                    }
-                  }}
-                />
-              ) : null}
-              {/* One row, not two absolutely-positioned corners: the pill and
+              <div
+                ref={zoomView.paneRef}
+                className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden"
+              >
+                {surface.media === "video" ? (
+                  <video
+                    ref={frameVideoRef}
+                    aria-label={`Live desktop view from ${environmentLabel}`}
+                    autoPlay
+                    muted
+                    playsInline
+                    // `loadeddata` is the first moment a frame is actually
+                    // decoded, which is also what the 5s watchdog is waiting to
+                    // hear about — marking it here spares the fallback.
+                    onLoadedData={() => {
+                      decodedRef.current = true;
+                      setHasRenderedFrame(true);
+                    }}
+                    onPlaying={() => setHasRenderedFrame(true)}
+                    // Transform rather than layout: pointer math reads the
+                    // element's bounding rect, which already reflects it, so
+                    // clicks keep landing where the user aimed while zoomed.
+                    style={zoomView.style}
+                    className="pointer-events-none absolute inset-0 size-full touch-none select-none object-contain"
+                  />
+                ) : surface.media === "image" ? (
+                  <img
+                    ref={frameImageRef}
+                    src={frameData ?? undefined}
+                    alt={`Live desktop view from ${environmentLabel}`}
+                    draggable={false}
+                    // Receiving bytes is not the same as painting them. Keep the
+                    // loading overlay up until the browser has decoded the first
+                    // JPEG, otherwise a slow image decode still exposes black.
+                    onLoad={() => setHasRenderedFrame(true)}
+                    // Transform rather than layout: pointer math reads the
+                    // element's bounding rect, which already reflects it, so
+                    // clicks keep landing where the user aimed while zoomed.
+                    style={zoomView.style}
+                    className="pointer-events-none absolute inset-0 size-full touch-none select-none object-contain"
+                  />
+                ) : null}
+                {surface.showLoadingOverlay ? (
+                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 text-center">
+                    <Spinner className="size-8 text-white" />
+                    <p className="text-sm text-white/80">Starting the live desktop stream…</p>
+                    {firstFrameSlow ? (
+                      <p className="max-w-sm text-xs text-white/60">
+                        This is taking longer than usual. If {environmentLabel} is a Mac, it may
+                        need System Settings → Privacy &amp; Security → Screen Recording enabled for
+                        Solla Code.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {touchClient && canKeyboard ? (
+                  <input
+                    ref={virtualKeyboardInputRef}
+                    // Always mounted, never visible: it exists to summon the
+                    // on-screen keyboard and receive its text. It must already
+                    // be in the DOM when the Keyboard button is tapped — mobile
+                    // browsers only raise the keyboard for a focus() issued
+                    // synchronously inside the tap gesture, so mounting it on
+                    // demand (focus deferred a frame) read as a dead click.
+                    // Characters are forwarded as native text injection
+                    // (layout-independent); Enter and Backspace arrive as key
+                    // edits of the field and are mapped back to key taps. Keys
+                    // that carry a real `code` are handled by the window-level
+                    // capture listener before they reach here.
+                    // 16px is not cosmetic on a 1px invisible input: iOS Safari
+                    // zooms the whole page whenever it focuses a field whose
+                    // computed font-size is under 16px, so raising the keyboard
+                    // magnified the UI and left the user pinching back out every
+                    // single time.
+                    className="absolute bottom-0 left-0 size-px text-[16px] opacity-0"
+                    aria-label="Remote keyboard input"
+                    tabIndex={-1}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    autoComplete="off"
+                    spellCheck={false}
+                    onFocus={() => setVirtualKeyboardOpen(true)}
+                    onBlur={() => setVirtualKeyboardOpen(false)}
+                    onBeforeInput={(event) => {
+                      // The gate lives on the surface's own handlers, and this
+                      // input is not one of them - without this, typing while the
+                      // view is being adjusted still reaches the host and makes a
+                      // liar of the "nothing is sent" notice on screen.
+                      if (zoomViewAdjustingRef.current) {
+                        event.preventDefault();
+                        return;
+                      }
+                      const native = event.nativeEvent as InputEvent;
+                      if (
+                        native.inputType === "insertText" ||
+                        native.inputType === "insertFromPaste" ||
+                        native.inputType === "insertCompositionText"
+                      ) {
+                        event.preventDefault();
+                        const text = native.data;
+                        if (text) enqueueInput({ type: "text", text: text.slice(0, 256) });
+                        return;
+                      }
+                      if (native.inputType === "insertLineBreak") {
+                        event.preventDefault();
+                        enqueueInput({
+                          type: "key",
+                          action: "down",
+                          code: "Enter",
+                          key: "Enter",
+                          repeat: false,
+                        });
+                        enqueueInput({
+                          type: "key",
+                          action: "up",
+                          code: "Enter",
+                          key: "Enter",
+                          repeat: false,
+                        });
+                        return;
+                      }
+                      if (native.inputType === "deleteContentBackward") {
+                        event.preventDefault();
+                        enqueueInput({
+                          type: "key",
+                          action: "down",
+                          code: "Backspace",
+                          key: "Backspace",
+                          repeat: false,
+                        });
+                        enqueueInput({
+                          type: "key",
+                          action: "up",
+                          code: "Backspace",
+                          key: "Backspace",
+                          repeat: false,
+                        });
+                      }
+                    }}
+                  />
+                ) : null}
+                {/* One row, not two absolutely-positioned corners: the pill and
                   the buttons used to be independent and could run into each
                   other, and the clearance needed differed per breakpoint
                   because the buttons reveal their labels at `sm`. Here the
                   pill simply truncates against whatever the buttons take. */}
+              </div>
               <div
-                // Hidden under the FPS controller: this row lies straight
-                // across its action buttons and fire cluster, so a player
-                // reaching for "reload" got "full screen" instead. The
-                // controller carries its own Exit.
-                className={`absolute inset-x-3 z-40 flex items-center justify-between gap-2 ${
+                // Hidden under the FPS controller, which takes the whole
+                // surface and carries its own Exit; the picture grows into
+                // the strip.
+                className={`flex shrink-0 items-center justify-between gap-2 px-3 pt-2 ${
                   fpsActive ? "hidden" : ""
                 }`}
-                // The surface always reaches the bottom edge now, so the row
-                // always has to clear the home indicator and browser chrome; a
-                // plain bottom-3 sat under both.
-                style={{ bottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}
+                // The surface reaches the bottom edge, so the strip has to
+                // clear the home indicator and browser chrome itself.
+                style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom, 0px))" }}
               >
                 <div className="flex min-w-0 items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
                   <span
@@ -1485,11 +1543,7 @@ export function RemoteControlViewerDialog(props: {
                       <span className="sr-only sm:not-sr-only">Windows</span>
                     </button>
                   ) : null}
-                  <RemoteViewZoomToggle
-                    adjusting={zoomView.adjusting}
-                    view={zoomView.view}
-                    onToggle={zoomView.toggleAdjusting}
-                  />
+                  <RemoteViewZoomReadout view={zoomView.view} onReset={zoomView.reset} />
                   <button
                     type="button"
                     aria-label={
@@ -1517,19 +1571,6 @@ export function RemoteControlViewerDialog(props: {
                   </button>
                 </div>
               </div>
-              {zoomView.adjusting ? (
-                <RemoteViewAdjustLayer
-                  view={zoomView.view}
-                  canZoomIn={zoomView.canZoomIn}
-                  canZoomOut={zoomView.canZoomOut}
-                  onZoomIn={zoomView.zoomIn}
-                  onZoomOut={zoomView.zoomOut}
-                  onReset={zoomView.reset}
-                  onPanBy={zoomView.panBy}
-                  onPaneResize={zoomView.setPane}
-                  onDone={zoomView.stopAdjusting}
-                />
-              ) : null}
               {fpsActive ? (
                 <RemoteControlFpsOverlay
                   onMovementKey={sendFpsMovementKey}

@@ -1,3 +1,10 @@
+import { QueuedMessageCountdown } from "./chat/QueuedMessageCountdown";
+import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
+import {
+  HELD_MESSAGE_PREFIX,
+  isHeldMessageId,
+  removedHeldMessageIds,
+} from "@t3tools/shared/heldMessages";
 import { isSideChatSessionPreparing } from "@t3tools/client-runtime/state/thread-activity";
 import {
   type ApprovalRequestId,
@@ -46,7 +53,6 @@ import {
 } from "@t3tools/shared/model";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { truncate } from "@t3tools/shared/String";
-import { isProviderAuthenticationFailure } from "@t3tools/shared/agentMode";
 import { buildSettingsUpdatePrompt } from "@t3tools/shared/settingsPrompt";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { providerDriverLaunchCommand } from "@t3tools/shared/terminalProvider";
@@ -65,7 +71,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { useNavigate } from "@tanstack/react-router";
 import {
   isAtomCommandInterrupted,
@@ -201,13 +207,9 @@ import {
   useThreadPreviewState,
   type DesktopPreviewOverlay,
 } from "../previewStateStore";
-import {
-  holdComposerSend,
-  releaseComposerSendHold,
-  sendWouldStopBackgroundWork,
-  shouldHoldComposerSend,
-  shouldReleaseHeldComposerSend,
-} from "./chat/composerSendQueue";
+import { sendWouldStopBackgroundWork, shouldHoldComposerSend } from "./chat/composerSendQueue";
+import { heldMessageQueue } from "./chat/heldMessageQueue";
+import { watchHeldMessageThread } from "./chat/watchHeldMessageThread";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
@@ -270,7 +272,10 @@ import {
   useWaitingOnYouAttachment,
 } from "./agents/waitingOnYouAttachment";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
-import { type NewProjectScriptInput } from "./ProjectScriptsControl";
+import {
+  ProjectScriptsControlForProject,
+  type NewProjectScriptInput,
+} from "./ProjectScriptsControl";
 import {
   buildProjectScript,
   commandForProjectScript,
@@ -400,6 +405,17 @@ import { isHostRepairEligibleThreadError, ThreadErrorBanner } from "./chat/Threa
 import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import { ProjectFolderMissingBanner } from "./chat/ProjectFolderMissingBanner";
+import { UsageGuardPausedBanner } from "./chat/UsageGuardPausedBanner";
+import { ProviderFailoverBanner } from "./chat/ProviderFailoverBanner";
+import {
+  findProviderFailoverNotice,
+  isProviderFailoverActive,
+} from "./chat/providerFailoverNotice";
+import { findUsageGuardPauseNotice, isUsageGuardPauseActive } from "./chat/usageGuardPause";
+import {
+  isProviderAuthenticationPauseActive,
+  resolveThreadProviderAuthStatus,
+} from "./chat/providerAuthPause";
 import { ThreadSyncOverlay } from "./chat/ThreadSyncStatusPill";
 import {
   deriveProviderUsageReports,
@@ -430,6 +446,8 @@ import {
   deriveActiveSessionProviderDriver,
   deriveComposerSendState,
   deriveQueuedGrokMessageIds,
+  isHeldMessageStillQueued,
+  wasHeldMessageDelivered,
   expireStaleQueuedMessagePromotion,
   nextQueuedMessageToPromote,
   queuedMessageAutoPromoteDelayMs,
@@ -793,6 +811,7 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       embeddedSideChat?: boolean;
       hideWorkspaceHeader?: boolean;
+      projectScriptsPortalTarget?: HTMLElement | null;
       /** Agent threads: Browser, Terminal, and Side Chat live in the right panel. */
       agentSurfaces?: boolean;
       /** Agent alert rendered at the live end of the real chat timeline. */
@@ -810,6 +829,7 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       embeddedSideChat?: boolean;
       hideWorkspaceHeader?: boolean;
+      projectScriptsPortalTarget?: HTMLElement | null;
       agentSurfaces?: boolean;
       inlineTimelineNotice?: { readonly id: string; readonly content: ReactNode } | null;
       threadSyncPhase?: never;
@@ -1716,6 +1736,7 @@ function ChatViewContent(props: ChatViewProps) {
     forceExpandedMobileComposer = false,
     embeddedSideChat = false,
     hideWorkspaceHeader = false,
+    projectScriptsPortalTarget = null,
     agentSurfaces = false,
     inlineTimelineNotice = null,
   } = props;
@@ -1779,6 +1800,9 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const consumeProviderUsageReset = useAtomCommand(serverEnvironment.consumeProviderUsageReset, {
+    reportFailure: false,
+  });
+  const resumeUsageGuard = useAtomCommand(serverEnvironment.resumeUsageGuard, {
     reportFailure: false,
   });
   const startProviderAccountSwitch = useAtomCommand(serverEnvironment.startProviderAccountSwitch, {
@@ -2022,6 +2046,9 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const setThreadInteractionMode = useAtomCommand(threadEnvironment.setInteractionMode, {
+    reportFailure: false,
+  });
+  const removeQueuedMessage = useAtomCommand(threadEnvironment.removeQueuedMessage, {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
@@ -2615,13 +2642,28 @@ function ChatViewContent(props: ChatViewProps) {
       chatViewMountedRef.current = false;
     };
   }, []);
+
   const activeQueuedMessagePromotionState = activeThreadKey
     ? queuedMessagePromotionPhases[activeThreadKey]
     : undefined;
   const queuedMessagePromotionInFlight = activeQueuedMessagePromotionState !== undefined;
-  const activeProviderAuthenticationPaused =
-    activeThread?.session?.status === "error" &&
-    isProviderAuthenticationFailure(activeThread.session.lastError ?? "");
+  // Same lookup `activeEnvironment` makes further down; the pause is derived
+  // here because `threadError` below already depends on it.
+  const activeThreadEnvironmentProviders =
+    (activeThread == null
+      ? undefined
+      : environmentById.get(activeThread.environmentId)?.serverConfig?.providers) ??
+    EMPTY_PROVIDERS;
+  const activeThreadProviderAuthStatus = resolveThreadProviderAuthStatus({
+    instanceId:
+      activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection.instanceId ?? null,
+    providers: activeThreadEnvironmentProviders,
+  });
+  const activeProviderAuthenticationPaused = isProviderAuthenticationPauseActive({
+    sessionStatus: activeThread?.session?.status,
+    sessionLastError: activeThread?.session?.lastError,
+    providerAuthStatus: activeThreadProviderAuthStatus,
+  });
   const threadError = activeProviderAuthenticationPaused
     ? null
     : isServerThread
@@ -3931,10 +3973,44 @@ function ChatViewContent(props: ChatViewProps) {
     isSendBusy ||
     isConnecting ||
     isRevertingCheckpoint;
+  const providerFailoverNotice = useMemo(
+    () => findProviderFailoverNotice(threadActivities),
+    [threadActivities],
+  );
+  const providerFailoverActive = isProviderFailoverActive({
+    notice: providerFailoverNotice,
+    currentModel: activeServerThread?.modelSelection.model ?? null,
+  });
+  const usageGuardPauseNotice = useMemo(
+    () => findUsageGuardPauseNotice(threadActivities),
+    [threadActivities],
+  );
+  const usageGuardPaused = isUsageGuardPauseActive({
+    notice: usageGuardPauseNotice,
+    pendingWork: routeServerThreadShell?.pendingWork,
+    isWorking,
+  });
+  const [usageGuardResuming, setUsageGuardResuming] = useState(false);
+  const usageGuardEffortSelection =
+    activeServerThread?.modelSelection ?? activeThread?.modelSelection ?? null;
+
+  // Ticks only while a retry marker could be showing, so the label clears on
+  // its own once the promised retry delay lapses with no new heartbeat.
+  const [overloadNowMs, setOverloadNowMs] = useState(() => Date.now());
+  const hasOverloadMarker = threadActivities.some(
+    (activity) => activity.kind === "provider.overload.retrying",
+  );
+  useEffect(() => {
+    if (!hasOverloadMarker) return;
+    setOverloadNowMs(Date.now());
+    const timer = setInterval(() => setOverloadNowMs(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, [hasOverloadMarker]);
   const activeProviderOverloadRetrying = isProviderOverloadRetrying({
     activities: threadActivities,
     latestTurn: activeLatestTurn,
     isWorking,
+    nowMs: overloadNowMs,
   });
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
@@ -4032,19 +4108,36 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const displayServerMessages = useMemo<ReadonlyArray<ChatMessage>>(() => {
     if (!serverMessages) return [];
-    return serverMessages.map((message) => {
-      if (!message.attachments || message.attachments.length === 0) {
-        return message;
-      }
-      return {
-        ...message,
-        attachments: message.attachments.map((attachment) => {
-          const previewUrl = serverAttachmentUrlById.get(attachment.id);
-          return previewUrl ? { ...attachment, previewUrl } : attachment;
-        }),
-      };
-    });
-  }, [serverAttachmentUrlById, serverMessages]);
+    // A held (queued) message lives in the queue panel until its delivery is
+    // receipted or promoted into a turn; rendering it in the timeline too made
+    // it read as sent twice. Cancelled ones never reach the timeline at all.
+    const deliveredHeld = new Set([
+      ...receiptedMessageIds,
+      ...derivePromotedQueuedMessageIds(threadActivities),
+    ]);
+    return serverMessages
+      .filter(
+        (message) =>
+          !isHeldMessageId(message.id) ||
+          // A delivered held message belongs in the timeline like any other.
+          // When this only consulted the receipt sets, one whose receipt aged
+          // out of the activity window was shown in neither place and simply
+          // vanished from the conversation.
+          wasHeldMessageDelivered({ message, deliveredMessageIds: deliveredHeld }),
+      )
+      .map((message) => {
+        if (!message.attachments || message.attachments.length === 0) {
+          return message;
+        }
+        return {
+          ...message,
+          attachments: message.attachments.map((attachment) => {
+            const previewUrl = serverAttachmentUrlById.get(attachment.id);
+            return previewUrl ? { ...attachment, previewUrl } : attachment;
+          }),
+        };
+      });
+  }, [serverAttachmentUrlById, serverMessages, receiptedMessageIds, threadActivities]);
   const voiceTranscriptConversationContext = useMemo(
     () => buildVoiceTranscriptConversationContext(serverMessages ?? []),
     [serverMessages],
@@ -4228,7 +4321,10 @@ function ChatViewContent(props: ChatViewProps) {
   // waiting, not the work on screen, and backdates the elapsed clock to when
   // the resume was queued rather than when this turn began.
   const visibleStartupAutoResumePending =
-    startupAutoResumePending && !activeProviderAuthenticationPaused && !isWorking;
+    startupAutoResumePending &&
+    !activeProviderAuthenticationPaused &&
+    !usageGuardPaused &&
+    !isWorking;
   // A backgrounded task keeps running after the turn that launched it ends —
   // that is the point of backgrounding one — and the harness re-invokes the
   // agent when it exits. The server knows this and parks the continuation
@@ -4247,66 +4343,145 @@ function ChatViewContent(props: ChatViewProps) {
     turnRunning: phase === "running",
     providerDriver: activeSessionProviderDriver,
   });
-  /**
-   * Threads whose composer draft is waiting for background work to finish.
-   *
-   * Sending while background tasks run stops them, so the send is held instead
-   * of dispatched. What is held is only this flag: the message itself never
-   * leaves the composer, so switching threads, reloading, or a send refused
-   * downstream cannot lose it. Keyed by thread because a hold placed in one
-   * conversation must never fire into whichever one is on screen later.
-   */
-  const [heldSendThreadKeys, setHeldSendThreadKeys] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
+  const heldMessages = heldMessageQueue.store((state) => state.messages);
+  const removedQueueIds = removedHeldMessageIds(threadActivities);
+  const sentQueueIds = new Set([
+    ...receiptedMessageIds,
+    ...derivePromotedQueuedMessageIds(threadActivities),
+  ]);
+  const serverHeldMessages = (serverMessages ?? []).filter(
+    (message) =>
+      isHeldMessageId(message.id) &&
+      isHeldMessageStillQueued({
+        message,
+        removedMessageIds: removedQueueIds,
+        settledMessageIds: sentQueueIds,
+      }),
   );
-  const sendIsHeld = activeThreadKey !== null && heldSendThreadKeys.has(activeThreadKey);
-  /**
-   * Says out loud that the message is waiting rather than sent.
-   *
-   * Silence here was the whole problem: the composer emptied, nothing was
-   * dispatched, and the chat read as broken. It stays typed and this explains
-   * why, with both ways out - send over the tasks, or stop waiting and keep
-   * editing.
-   */
-  const heldSendPanel = !sendIsHeld ? null : (
-    <div className="mx-auto w-full max-w-3xl px-2 pb-2">
-      <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-        <span className="text-xs text-foreground/80">
-          {runningBackgroundTasks.length === 1
-            ? "Waiting for this turn to end so it does not cancel 1 running background task — sends automatically."
-            : `Waiting for this turn to end so it does not cancel ${runningBackgroundTasks.length} running background tasks — sends automatically.`}
-        </span>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => {
-              if (activeThreadKey !== null) {
-                setHeldSendThreadKeys((current) =>
-                  releaseComposerSendHold(current, activeThreadKey),
-                );
-              }
-              void onSendRef.current(undefined, undefined, { sendNow: true });
-            }}
+  const threadHeldMessages = [
+    ...heldMessages.filter((message) => message.threadKey === activeThreadKey),
+    ...serverHeldMessages.map((message) => ({
+      id: message.id,
+      text: message.text,
+      attachmentCount: message.attachments?.length ?? 0,
+      status: "queued" as const,
+      error: undefined,
+    })),
+  ];
+  const removeHeldMessage = async (id: string, edit = false) => {
+    const message = serverHeldMessages.find((entry) => entry.id === id);
+    if (!message) return edit ? heldMessageQueue.edit(id) : heldMessageQueue.remove(id);
+    try {
+      if (edit && activeThreadRef) {
+        const images = await Promise.all(
+          (message.attachments ?? []).map(async (attachment) => {
+            const url = serverAttachmentUrlById.get(attachment.id);
+            if (!url) throw new Error("Attachment is still loading. Please try again.");
+            const response = await fetch(url);
+            if (!response.ok)
+              throw new Error("Could not restore attachment. The queued message is still saved.");
+            const blob = await response.blob();
+            return {
+              ...attachment,
+              previewUrl: URL.createObjectURL(blob),
+              file: new File([blob], attachment.name, { type: attachment.mimeType }),
+            };
+          }),
+        );
+        const current = useComposerDraftStore.getState().getComposerDraft(activeThreadRef);
+        setComposerDraftPrompt(
+          activeThreadRef,
+          [current?.prompt, message.text].filter(Boolean).join("\n\n"),
+        );
+        addComposerDraftImages(activeThreadRef, images);
+      }
+      const result = await removeQueuedMessage({
+        environmentId,
+        input: { threadId, messageId: message.id },
+      });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      // A cancel that worked retires whatever the last one said, so a failure
+      // from before this one succeeded stops sitting on the thread.
+      setThreadError(threadId, null);
+    } catch (error) {
+      setThreadError(
+        threadId,
+        error instanceof Error ? error.message : "Could not update queued message.",
+      );
+    }
+  };
+  const heldSendPanel =
+    activeThreadKey === null || threadHeldMessages.length === 0 ? null : (
+      <QueuedMessagesPanel
+        key={activeThreadKey}
+        threadKey={activeThreadKey}
+        count={threadHeldMessages.length}
+        failedCount={threadHeldMessages.filter((message) => message.status === "failed").length}
+        status={
+          usageGuardPaused
+            ? "Waiting for usage budget"
+            : "Sends together when background work finishes"
+        }
+      >
+        {usageGuardPaused && usageGuardPauseNotice && (
+          <QueuedMessageCountdown notice={usageGuardPauseNotice} />
+        )}
+        {threadHeldMessages.map((message, index) => (
+          <div
+            key={message.id}
+            className="group flex items-start gap-3 border-t border-border/50 px-1 py-3"
+            role="status"
           >
-            Send now
-          </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => {
-              if (activeThreadKey === null) return;
-              setHeldSendThreadKeys((current) => releaseComposerSendHold(current, activeThreadKey));
-            }}
-          >
-            Keep editing
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
+            <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md bg-muted text-[10px] tabular-nums text-muted-foreground">
+              {index + 1}
+            </span>
+            <span className="sr-only">
+              {message.status === "sending"
+                ? "Sending"
+                : message.status === "failed"
+                  ? "Send failed"
+                  : usageGuardPaused
+                    ? "Queued · waiting for credits"
+                    : "Queued"}
+            </span>
+            <span
+              className="min-w-0 flex-1 whitespace-pre-wrap break-words text-xs leading-relaxed line-clamp-3"
+              title={message.error ?? message.text}
+            >
+              {message.error ?? (message.text || "Attachment")}
+            </span>
+            {message.attachmentCount > 0 && (
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {message.attachmentCount} attachment{message.attachmentCount === 1 ? "" : "s"}
+              </span>
+            )}
+            {message.status === "failed" && (
+              <Button variant="ghost" size="xs" onClick={() => heldMessageQueue.retry(message.id)}>
+                Retry
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={message.status === "sending"}
+              onClick={() => void removeHeldMessage(message.id, true)}
+            >
+              Edit
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={message.status === "sending"}
+              onClick={() => void removeHeldMessage(message.id)}
+            >
+              Cancel
+            </Button>
+          </div>
+        ))}
+      </QueuedMessagesPanel>
+    );
   const visibleAgentAutoResumePending = shouldAnnounceAgentAutoResume({
-    pending: agentAutoResumePending,
+    pending: agentAutoResumePending && !usageGuardPaused,
     isWorking,
     hasRunningBackgroundTask,
   });
@@ -4669,6 +4844,99 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeServerThread, draftId, routeThreadKey, routeThreadRef],
   );
+  const onResumeUsageGuard = useCallback(
+    async (selection?: ModelSelection) => {
+      const threadId = activeServerThread?.id;
+      if (threadId === undefined || usageGuardResuming) return;
+      setUsageGuardResuming(true);
+      try {
+        const result = await resumeUsageGuard({
+          environmentId,
+          input: { threadId, ...(selection ? { modelSelection: selection } : {}) },
+        });
+        if (result._tag === "Failure") {
+          setThreadError(threadId, "Could not resume queued work. Please try again.");
+          return;
+        }
+        if (!result.value.resumed && result.value.reason) {
+          setThreadError(threadId, result.value.reason);
+          return;
+        }
+        if (selection)
+          setComposerDraftModelSelection(composerDraftTarget, selection, { replaceOptions: true });
+      } catch {
+        setThreadError(threadId, "Could not resume queued work. Please try again.");
+      } finally {
+        setUsageGuardResuming(false);
+      }
+    },
+    [
+      activeServerThread?.id,
+      usageGuardResuming,
+      environmentId,
+      resumeUsageGuard,
+      setThreadError,
+      setComposerDraftModelSelection,
+      composerDraftTarget,
+    ],
+  );
+
+  const [usageGuardRefreshing, setUsageGuardRefreshing] = useState(false);
+  const onRefreshUsageGuardReading = useCallback(async () => {
+    const provider = providerStatuses.find(
+      (entry) => entry.instanceId === usageGuardEffortSelection?.instanceId,
+    );
+    if (!provider || usageGuardRefreshing) return;
+    setUsageGuardRefreshing(true);
+    try {
+      await refreshProviderUsage(provider);
+    } finally {
+      setUsageGuardRefreshing(false);
+    }
+  }, [
+    providerStatuses,
+    usageGuardEffortSelection?.instanceId,
+    usageGuardRefreshing,
+    refreshProviderUsage,
+  ]);
+
+  const onApplyUsageGuardEffort = useCallback(
+    async (selection: ModelSelection) => {
+      if (!activeServerThread || usageGuardResuming) return;
+      setUsageGuardResuming(true);
+      try {
+        const result = await resumeUsageGuard({
+          environmentId,
+          input: { threadId: activeServerThread.id, recheckOnly: true, modelSelection: selection },
+        });
+        if (result._tag === "Failure") {
+          setThreadError(
+            activeServerThread.id,
+            "Could not apply the thinking effort. Please try again.",
+          );
+          return;
+        }
+        setComposerDraftModelSelection(composerDraftTarget, selection, { replaceOptions: true });
+      } catch {
+        setThreadError(
+          activeServerThread.id,
+          "Could not apply the thinking effort. Please try again.",
+        );
+      } finally {
+        setUsageGuardResuming(false);
+      }
+    },
+    [
+      activeServerThread,
+      usageGuardResuming,
+      resumeUsageGuard,
+      environmentId,
+      composerDraftTarget,
+      setComposerDraftModelSelection,
+      setThreadError,
+    ],
+  );
+
   useEffect(() => {
     if (
       !activeThread ||
@@ -7237,39 +7505,6 @@ function ChatViewContent(props: ChatViewProps) {
       await promoteQueuedMessagesNow();
       return;
     }
-    // Sending interrupts the turn that owns any background work, so those tasks
-    // die with it. Confirm before destroying work the user can see running,
-    // then stop them explicitly rather than letting them disappear silently.
-    // Captured here, not read later: by the time the message is built these
-    // tasks have been stopped and are gone from the list.
-    // Wait rather than destroy: the default for a send made while background
-    // work is running is to hold until it finishes, not to kill it. The
-    // message stays in the composer - nothing is copied out, so nothing can be
-    // dropped between here and the release. `sendNow` is the explicit override
-    // behind the send-anyway control, which still confirms below before
-    // stopping anything.
-    if (
-      activeThreadKey !== null &&
-      shouldHoldComposerSend({
-        backgroundTasksRunning: sendWouldStopBackgroundTasks,
-        hasSendableContent: !composerIsEmpty,
-        sendNow: sendOptions?.sendNow === true,
-      })
-    ) {
-      setHeldSendThreadKeys((current) => holdComposerSend(current, activeThreadKey));
-      return;
-    }
-    let interruptedTaskTitles: ReadonlyArray<string> = [];
-    if (sendWouldStopBackgroundTasks) {
-      if (!confirmDestructiveSend(describeSendOverRunningTasks(runningBackgroundTasks.length)))
-        return;
-      interruptedTaskTitles = runningBackgroundTasks.map(
-        (task) => task.title || task.taskType || "Background task",
-      );
-      for (const task of runningBackgroundTasks) {
-        onStopProviderTask(task.taskId);
-      }
-    }
     const {
       images: composerImages,
       terminalContexts: composerTerminalContexts,
@@ -7377,6 +7612,101 @@ function ChatViewContent(props: ChatViewProps) {
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
+    }
+
+    if (
+      activeThreadKey !== null &&
+      isServerThread &&
+      shouldHoldComposerSend({
+        backgroundTasksRunning:
+          usageGuardPaused || hasRunningBackgroundTask || threadHeldMessages.length > 0,
+        hasSendableContent,
+        sendNow: sendOptions?.sendNow === true,
+      })
+    ) {
+      const images = composerImages.map(cloneComposerImageForRetry);
+      const terminals = [...sendableComposerTerminalContexts];
+      const elements = [...composerElementContexts];
+      const annotations = [...composerPreviewAnnotations];
+      const reviews = [...composerReviewComments];
+      const answeredRequest = getWaitingOnYouAttachment(activeThreadKey);
+      const contextText = appendReviewCommentsToPrompt(
+        annotations.reduce(
+          (text, annotation) => appendPreviewAnnotationPrompt(text, annotation),
+          appendElementContextsToPrompt(
+            appendTerminalContextsToPrompt(promptForSend, terminals),
+            elements,
+          ),
+        ),
+        reviews,
+      );
+      const outgoingText = formatOutgoingPrompt({
+        provider: ctxSelectedProvider,
+        model: ctxSelectedModel,
+        models: ctxSelectedProviderModels,
+        effort: ctxSelectedPromptEffort,
+        text:
+          (answeredRequest
+            ? prependWaitingOnYouReply(contextText, answeredRequest.title)
+            : contextText) || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+      });
+      const messageId = MessageId.make(`${HELD_MESSAGE_PREFIX}${newMessageId()}`);
+      sendInFlightRef.current = true;
+      beginLocalDispatch({ preparingWorktree: false });
+      try {
+        const attachments = await prepareImageAttachmentsForSend(images);
+        const result = await startThreadTurn({
+          environmentId,
+          input: {
+            commandId: CommandId.make(`queue:${messageId}`),
+            threadId: threadIdForSend,
+            message: {
+              messageId,
+              role: "user",
+              text: outgoingText,
+              ...(inputOrigin !== undefined ? { inputOrigin } : {}),
+              attachments: attachments.map((image) => ({
+                type: "image" as const,
+                name: image.name,
+                mimeType: image.mimeType,
+                sizeBytes: image.sizeBytes,
+                dataUrl: image.dataUrl,
+              })),
+            },
+            modelSelection: ctxSelectedModelSelection,
+            runtimeMode,
+            interactionMode,
+            createdAt: new Date().toISOString(),
+          },
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      } catch (error) {
+        setThreadError(
+          threadIdForSend,
+          error instanceof Error
+            ? error.message
+            : "Could not save queued message. Your draft is unchanged.",
+        );
+        return;
+      } finally {
+        sendInFlightRef.current = false;
+        resetLocalDispatch();
+        for (const image of images) revokeBlobPreviewUrl(image.previewUrl);
+      }
+      if (answeredRequest) detachWaitingOnYou(activeThreadKey);
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      return;
+    }
+    let interruptedTaskTitles: ReadonlyArray<string> = [];
+    if (sendWouldStopBackgroundTasks) {
+      if (!confirmDestructiveSend(describeSendOverRunningTasks(runningBackgroundTasks.length)))
+        return;
+      interruptedTaskTitles = runningBackgroundTasks.map(
+        (task) => task.title || task.taskType || "Background task",
+      );
+      for (const task of runningBackgroundTasks) onStopProviderTask(task.taskId);
     }
 
     sendInFlightRef.current = true;
@@ -7626,7 +7956,19 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     if (failure !== null) {
+      // An interrupt is not a failed send, and must not roll the send back.
+      // The request is written to the socket when the command runs; only the
+      // *response* is awaited. A client that stops waiting - switching threads
+      // tears down the thread-scoped command - therefore learns nothing about
+      // whether the turn was accepted, and the server almost certainly has it.
+      // Undoing the send here is what put an already-queued message back into
+      // the composer and took it out of the transcript when the user switched
+      // away. The message id is generated on this client and sent with the
+      // turn, so an accepted message reconciles its optimistic row against the
+      // server echo by itself (see the reconcile effect above); there is
+      // nothing for this branch to repair.
       if (
+        !isAtomCommandInterrupted(failure) &&
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0 &&
@@ -7683,6 +8025,7 @@ function ChatViewContent(props: ChatViewProps) {
       });
     }
     sendInFlightRef.current = false;
+    resetLocalDispatch();
     if (!turnStartSucceeded) {
       setDockedDraftHeroThreadKey((currentThreadKey) =>
         currentThreadKey === activeThreadKey ? null : currentThreadKey,
@@ -7692,39 +8035,6 @@ function ChatViewContent(props: ChatViewProps) {
   };
 
   const onSendRef = useRef(onSend);
-  /**
-   * Send the held message once the background work it was waiting on is done.
-   *
-   * The hold is cleared before the send, not after: leaving it set across an
-   * await would re-enter here on the next render and send the same draft
-   * twice, and the draft is still in the composer either way, so a send that
-   * is refused downstream leaves the user their words rather than nothing.
-   */
-  const releasingHeldSendRef = useRef(false);
-  useEffect(() => {
-    if (releasingHeldSendRef.current) return;
-    const releasedThreadKey = activeThreadKey;
-    if (
-      releasedThreadKey === null ||
-      !shouldReleaseHeldComposerSend({
-        heldThreadKeys: heldSendThreadKeys,
-        activeThreadKey: releasedThreadKey,
-        backgroundTasksRunning: sendWouldStopBackgroundTasks,
-      })
-    ) {
-      return;
-    }
-    releasingHeldSendRef.current = true;
-    setHeldSendThreadKeys((current) => releaseComposerSendHold(current, releasedThreadKey));
-    void (async () => {
-      try {
-        // sendNow so the release cannot be held by its own condition.
-        await onSendRef.current(undefined, undefined, { sendNow: true });
-      } finally {
-        releasingHeldSendRef.current = false;
-      }
-    })();
-  }, [activeThreadKey, heldSendThreadKeys, sendWouldStopBackgroundTasks]);
   onSendRef.current = onSend;
   // Reports whether the send actually started. The caller closes the
   // "Transcription ready" card on the strength of that: closing over a send
@@ -8635,7 +8945,6 @@ function ChatViewContent(props: ChatViewProps) {
   const onInterrupt = async () => {
     if (!activeThread || !activeThreadKey || isInterrupting) return;
     setInterruptRequestedThreadKey(activeThreadKey);
-    setHeldSendThreadKeys((current) => releaseComposerSendHold(current, activeThreadKey));
     // Stop is a hard cancel of this turn — clear a sticky provider error so a
     // fallback/unavailable banner cannot keep the thread looking broken while
     // the harness is being killed.
@@ -9556,6 +9865,23 @@ function ChatViewContent(props: ChatViewProps) {
         )}
         data-chat-column-maximized-away={rightPanelMaximized ? "true" : "false"}
       >
+        {projectScriptsPortalTarget && activeProject
+          ? createPortal(
+              <ProjectScriptsControlForProject
+                key={activeThreadKey}
+                environmentId={activeThread.environmentId}
+                cwd={activeProject.workspaceRoot}
+                scripts={activeProject.scripts}
+                keybindings={keybindings}
+                preferredScriptId={lastInvokedScriptByProjectId[activeProject.id] ?? null}
+                onRunScript={runProjectScript}
+                onAddScript={saveProjectScript}
+                onUpdateScript={updateProjectScript}
+                onDeleteScript={deleteProjectScript}
+              />,
+              projectScriptsPortalTarget,
+            )
+          : null}
         {/* Top bar */}
         {showWorkspaceHeader ? (
           <header
@@ -9731,37 +10057,39 @@ function ChatViewContent(props: ChatViewProps) {
                   visibleAgentAutoResumePending || visibleStartupAutoResumePending
                 }
                 workingStatusLabel={
-                  activeProviderOverloadRetrying
-                    ? "Provider unavailable — retrying shortly"
-                    : compactionOperationStage === "compacting"
-                      ? "Compacting context"
-                      : compactionOperationStage === "continuing"
-                        ? "Continuing conversation"
-                        : visibleStartupAutoResumePending
-                          ? "Auto-resuming thread"
-                          : visibleAgentAutoResumePending
-                            ? "Agent auto-resuming"
-                            : !timelineIsWorking && isThreadInterruptible
-                              ? // Reached only via the branch above: nothing is
-                                // streaming, but a queued send is being started
-                                // or an interrupted turn recovered. "Working for
-                                // X" would be wrong — no work is going out — so
-                                // say what it is.
-                                (describePendingTurnStart({
-                                  pendingWork: serverPendingWork,
-                                  latestTurnState: activeLatestTurn?.state ?? null,
-                                  sessionProviderInstanceId:
-                                    activeThread.session?.providerInstanceId ?? null,
-                                  requestedProviderInstanceId:
-                                    activeThread.modelSelection.instanceId,
-                                  providerName: deliveryProvider.requestedName,
-                                }) ?? "Recovering the interrupted response")
-                              : // A turn that happens to have compacted earlier is just a
-                                // turn; labelling the rest of it "Continuing after
-                                // compaction" pins an implementation detail to the status
-                                // line long after it stopped being what is happening. The
-                                // default elapsed "Working for X" is the honest read.
-                                null
+                  usageGuardPaused
+                    ? "Waiting for credits"
+                    : activeProviderOverloadRetrying
+                      ? "Provider unavailable — retrying shortly"
+                      : compactionOperationStage === "compacting"
+                        ? "Compacting context"
+                        : compactionOperationStage === "continuing"
+                          ? "Continuing conversation"
+                          : visibleStartupAutoResumePending
+                            ? "Auto-resuming thread"
+                            : visibleAgentAutoResumePending
+                              ? "Agent auto-resuming"
+                              : !timelineIsWorking && isThreadInterruptible
+                                ? // Reached only via the branch above: nothing is
+                                  // streaming, but a queued send is being started
+                                  // or an interrupted turn recovered. "Working for
+                                  // X" would be wrong — no work is going out — so
+                                  // say what it is.
+                                  (describePendingTurnStart({
+                                    pendingWork: serverPendingWork,
+                                    latestTurnState: activeLatestTurn?.state ?? null,
+                                    sessionProviderInstanceId:
+                                      activeThread.session?.providerInstanceId ?? null,
+                                    requestedProviderInstanceId:
+                                      activeThread.modelSelection.instanceId,
+                                    providerName: deliveryProvider.requestedName,
+                                  }) ?? "Recovering the interrupted response")
+                                : // A turn that happens to have compacted earlier is just a
+                                  // turn; labelling the rest of it "Continuing after
+                                  // compaction" pins an implementation detail to the status
+                                  // line long after it stopped being what is happening. The
+                                  // default elapsed "Working for X" is the honest read.
+                                  null
                 }
                 activeTurnInProgress={timelineIsWorking || !latestTurnSettled}
                 activeTurnStartedAt={timelineWorkStartedAt}
@@ -9975,6 +10303,28 @@ function ChatViewContent(props: ChatViewProps) {
                     <ProjectFolderMissingBanner
                       environmentId={activeProject.environmentId}
                       project={activeProject}
+                    />
+                  ) : null}
+                  {providerFailoverActive && providerFailoverNotice ? (
+                    <ProviderFailoverBanner notice={providerFailoverNotice} />
+                  ) : null}
+                  {usageGuardPaused && usageGuardPauseNotice ? (
+                    <UsageGuardPausedBanner
+                      notice={usageGuardPauseNotice}
+                      onResume={onResumeUsageGuard}
+                      onCancel={() => {
+                        void onInterrupt();
+                      }}
+                      onRefresh={() => {
+                        void onRefreshUsageGuardReading();
+                      }}
+                      refreshing={usageGuardRefreshing}
+                      resuming={usageGuardResuming}
+                      selection={usageGuardEffortSelection}
+                      provider={providerStatuses.find(
+                        (provider) => provider.instanceId === usageGuardEffortSelection?.instanceId,
+                      )}
+                      onApplyEffort={onApplyUsageGuardEffort}
                     />
                   ) : null}
                   {waitingOnYouAttachment && activeThreadKey ? (

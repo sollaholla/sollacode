@@ -18,6 +18,7 @@ import { RemoteConnectionControl } from "../remoteControl/RemoteConnectionContro
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { useRightPanelStore } from "../../rightPanelStore";
+import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { Button } from "../ui/button";
@@ -67,6 +68,8 @@ function AgentWorkspaceResolved(props: {
 }) {
   const { environmentId } = props;
   const [view, setView] = useState<AgentWorkspaceView>("chat");
+  const [projectScriptsPortalTarget, setProjectScriptsPortalTarget] =
+    useState<HTMLDivElement | null>(null);
 
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId, input: {} }),
@@ -191,6 +194,15 @@ function AgentWorkspaceResolved(props: {
           // header pushed the actions row ~3.5rem off the right edge for
           // nothing, which read as a broken gap under the title.
           "md:pr-[var(--workspace-titlebar-content-right)]",
+          // This row is the desktop title bar, so it has to drag the window
+          // like every other header that owns that band. Unprefixed on
+          // purpose: `.drag-region` is a plain rule in index.css, not a
+          // Tailwind utility, so `md:drag-region` would compile to nothing at
+          // all. Gating on Electron is what keeps it off touch web, where the
+          // header is a card in a scroll container. `.drag-region` already
+          // exempts nested buttons and inputs, so the tools menu, the power
+          // toggle and Panel keep their clicks.
+          isElectron && "drag-region",
         )}
       >
         <div className="flex min-w-0 items-center gap-3 pr-[var(--workspace-titlebar-content-right)] md:flex-1 md:pr-0">
@@ -267,7 +279,10 @@ function AgentWorkspaceResolved(props: {
                 ) : null}
               </MenuPopup>
             </Menu>
-            <p className="truncate text-xs leading-4 text-muted-foreground">
+            {/* Not selectable: it is one line of chrome in a drag region, and
+                a click-drag across it selected the text instead of moving the
+                window. */}
+            <p className="truncate text-xs leading-4 text-muted-foreground select-none">
               {view !== "chat"
                 ? VIEW_LABELS[view]
                 : agent.status === "stopped"
@@ -277,6 +292,9 @@ function AgentWorkspaceResolved(props: {
           </div>
         </div>
         <div className="flex min-w-0 items-center justify-end gap-2 md:shrink-0">
+          {view === "chat" && agentThreadId ? (
+            <div ref={setProjectScriptsPortalTarget} className="flex shrink-0 items-center" />
+          ) : null}
           <AgentPowerToggle agent={agent} environmentId={environmentId} />
           {/* Agent threads reach the same remote machines as ordinary threads,
               so the control that connects to one belongs here too — a device
@@ -315,6 +333,7 @@ function AgentWorkspaceResolved(props: {
               <AgentChatSurface
                 environmentId={environmentId}
                 threadId={agent.threadId}
+                projectScriptsPortalTarget={projectScriptsPortalTarget}
                 inlineNotice={
                   inlineAttention.items.length === 0
                     ? null

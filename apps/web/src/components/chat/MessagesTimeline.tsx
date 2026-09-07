@@ -1509,6 +1509,16 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         inCard && drawsTop ? "rounded-t-[14px] border-t pt-3" : null,
         inCard && drawsBottom ? "mb-4 rounded-b-[14px] border-b pb-3" : null,
         inCard && !drawsBottom ? "pb-2" : null,
+        // Bridge the seam to the next row of the same card. Rows are laid out
+        // by the virtualized list at whatever offsets measurement produces, so
+        // two stacked rows can land a subpixel apart - and because the card is
+        // painted row by row, that hairline shows through as a break in both
+        // the side borders and the card fill. This paints the missing 1px
+        // strip, side borders included, from a pseudo-element so it costs no
+        // layout and cannot drift the list's height measurements.
+        inCard && !drawsBottom
+          ? "relative after:pointer-events-none after:absolute after:inset-x-[-1px] after:top-full after:h-px after:border-x after:border-[var(--line)] after:bg-[var(--card)] after:content-['']"
+          : null,
         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
       )}
       data-timeline-row-id={row.id}
@@ -2207,7 +2217,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
         ))}
       </div>
       {showsResumableRuntimeError ? (
-        <div className="ms-7 pt-1">
+        <div className="pt-1">
           <Button
             type="button"
             variant="outline"
@@ -3216,7 +3226,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       {expanded && canExpand && expandedBody ? (
         <div
           className="mt-1 ms-7 cursor-default border-s border-border ps-3 pt-0.5"
-          onClick={stopRowToggle}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (window.getSelection()?.isCollapsed === false) return;
+            if (event.target instanceof Element && event.target.closest("button, a, input")) return;
+            setExpanded(false);
+          }}
           onPointerDown={stopRowToggle}
         >
           <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground select-text">

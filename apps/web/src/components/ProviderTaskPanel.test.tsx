@@ -35,12 +35,36 @@ describe("ProviderTaskPanel", () => {
     expect(markup).not.toContain('aria-label="Task pages"');
   });
 
-  it("always exposes Dismiss even when the provider can also Stop a running task", () => {
+  it("offers Stop but never Dismiss for a running task", () => {
     const markup = renderToStaticMarkup(
       <ProviderTaskPanel tasks={[task]} driverKind="claudeAgent" onStopTask={() => undefined} />,
     );
     expect(markup).toContain(`aria-label="Stop ${task.title}"`);
+    // Dismissing live work hid the row while the task still held the turn, so
+    // the panel read as empty and the user's messages stayed queued behind it.
+    expect(markup).not.toContain(`aria-label="Dismiss ${task.title}"`);
+  });
+
+  it("withholds Dismiss from a running task even when no Stop channel is wired", () => {
+    const markup = renderToStaticMarkup(<ProviderTaskPanel tasks={[task]} />);
+
+    expect(markup).not.toContain(`aria-label="Stop ${task.title}"`);
+    expect(markup).not.toContain(`aria-label="Dismiss ${task.title}"`);
+  });
+
+  it("offers Dismiss once a task has gone stale", () => {
+    // A dead runtime is still reachable: silence past PROVIDER_TASK_STALE_AFTER_MS
+    // downgrades the task to `stale`, which is what makes the row hideable again.
+    const markup = renderToStaticMarkup(
+      <ProviderTaskPanel
+        tasks={[{ ...task, status: "stale" }]}
+        driverKind="claudeAgent"
+        onStopTask={() => undefined}
+      />,
+    );
+
     expect(markup).toContain(`aria-label="Dismiss ${task.title}"`);
+    expect(markup).not.toContain(`aria-label="Stop ${task.title}"`);
   });
 
   it("starts collapsed when it is bound to a thread", () => {
