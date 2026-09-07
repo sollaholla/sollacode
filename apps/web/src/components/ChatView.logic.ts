@@ -44,15 +44,6 @@ export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 
-export function shouldConfirmRemoteProviderAccountSwitch(input: {
-  readonly activeEnvironmentId: EnvironmentId;
-  readonly primaryEnvironmentId: EnvironmentId | null;
-}): boolean {
-  return (
-    input.primaryEnvironmentId !== null && input.activeEnvironmentId !== input.primaryEnvironmentId
-  );
-}
-
 export function canQueueLocalMessageDuringReconnect(input: {
   readonly targetKind: ConnectionTargetKind | null;
   readonly phase: EnvironmentConnectionPhase;
