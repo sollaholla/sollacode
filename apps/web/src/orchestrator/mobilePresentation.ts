@@ -158,13 +158,11 @@ export function shouldShowVoiceOverlay(
 /**
  * Orb diameter as a share of the smaller screen edge.
  *
- * A phone held at arm's length while walking is a much worse target than a
- * mouse pointer, so the orb is deliberately enormous — it is the only control
- * on the screen and should be hittable without looking.
+ * Keep the galaxy compact while retaining a generous touch target on phones.
  */
-export const MOBILE_ORB_VIEWPORT_FRACTION = 0.5;
-export const MOBILE_ORB_MIN_PX = 180;
-export const MOBILE_ORB_MAX_PX = 320;
+export const MOBILE_ORB_VIEWPORT_FRACTION = 0.36;
+export const MOBILE_ORB_MIN_PX = 128;
+export const MOBILE_ORB_MAX_PX = 184;
 
 export function computeMobileOrbDiameter(shorterEdgePx: number): number {
   const target = Math.round(shorterEdgePx * MOBILE_ORB_VIEWPORT_FRACTION);

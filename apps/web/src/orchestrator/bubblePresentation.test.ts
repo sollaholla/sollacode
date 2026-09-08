@@ -2,12 +2,16 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   BUBBLE_MAX_SCALE,
+  BUBBLE_MAX_DRAWN_DIAMETER,
   computeBubbleGlow,
   computeBubbleScale,
   smoothBubbleScale,
 } from "./bubblePresentation";
 
 describe("computeBubbleScale", () => {
+  it("keeps the complete floating glow under 90 pixels at full voice", () => {
+    expect(BUBBLE_MAX_DRAWN_DIAMETER).toBeLessThanOrEqual(90);
+  });
   it("rests at base size when idle or errored, whatever the levels claim", () => {
     expect(computeBubbleScale({ status: "idle", micLevel: 1, assistantLevel: 1 })).toBe(1);
     expect(computeBubbleScale({ status: "error", micLevel: 1, assistantLevel: 1 })).toBe(1);

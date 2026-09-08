@@ -728,9 +728,16 @@ Two things it deliberately does **not** treat as a drop:
 
 ## The floating bubble
 
-**Settings → Orchestrator → Floating bubble** puts an always-on-top orb on screen. It grows when you
-speak and when the orchestrator speaks, and can be dragged anywhere. Tapping it starts or stops
-recording; the small button in its corner opens the orchestrator thread.
+**Settings → Orchestrator → Floating bubble** puts a compact galactic glass sphere on screen, with
+violet nebula clouds, blue starlight, and a soft rim. It rests at 56 pixels and swells gently with
+speech; even at full voice, its glow stays under 90 pixels. Gold highlights indicate your voice,
+violet the orchestrator's, and cyan a pending response. Clouds drift and fold independently, stars shimmer, and a reflection travels along the rim.
+Motion becomes livelier during voice and pauses for reduced-motion preferences. The voice overlay, phone view, and Settings preview share the same design.
+
+Drag the orb anywhere. Tapping it starts or stops recording; the small button in its corner opens
+the orchestrator thread. A brief hover hint replaces the native HTML tooltip. It closes when you
+leave, press, drag, switch windows, or press Escape, and expires after two seconds even if the OS
+misses the pointer leaving. Canceling a drag does not toggle the microphone.
 
 While a session is live the sidebar collapses on its own, and the app dims behind a full-screen
 listening surface - an open microphone should not be a 56-pixel dot you have to look for. The

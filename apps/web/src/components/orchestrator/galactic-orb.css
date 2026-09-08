@@ -1,0 +1,207 @@
+.galactic-orb {
+  position: relative;
+  width: var(--orb-size);
+  height: var(--orb-size);
+  flex-shrink: 0;
+  isolation: isolate;
+  border-radius: 50%;
+  transform-origin: center;
+}
+
+.galactic-orb__halo {
+  position: absolute;
+  inset: -12%;
+  pointer-events: none;
+  border-radius: 50%;
+  background: radial-gradient(circle, transparent 44%, var(--orb-edge) 58%, transparent 71%);
+  opacity: calc(0.24 + var(--orb-intensity) * 0.3);
+}
+
+.galactic-orb__sphere {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 50%;
+  /* A circular clip also contains the SVG's softened nebula on WebKit. */
+  clip-path: circle(50%);
+  background: radial-gradient(ellipse at 35% 28%, #252453, #10102e 55%, #040716);
+  pointer-events: none;
+  box-shadow: 0 2px 7px #02031555;
+}
+
+.galactic-orb__cosmos,
+.galactic-orb__stars {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.galactic-orb__aurora,
+.galactic-orb__wisp,
+.galactic-orb__reflection {
+  position: absolute;
+  inset: -10%;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.galactic-orb__aurora {
+  background:
+    radial-gradient(ellipse at 67% 33%, var(--orb-core), transparent 42%),
+    radial-gradient(ellipse at 30% 68%, var(--orb-edge), transparent 40%);
+  opacity: 0.4;
+  mask: radial-gradient(ellipse at center, transparent 20%, #000 47%, transparent 70%);
+}
+
+.galactic-orb__wisp {
+  background:
+    radial-gradient(ellipse 28% 14% at 30% 65%, var(--orb-light), transparent),
+    radial-gradient(ellipse 18% 28% at 72% 33%, var(--orb-core), transparent);
+  opacity: 0.25;
+}
+
+.galactic-orb__reflection {
+  background: radial-gradient(ellipse 40% 14% at 50% 10%, #d6e6ff85, transparent);
+  opacity: 0.6;
+}
+
+/* Each whole layer is rasterized once. Motion changes only transform/opacity,
+   leaving the texture and SVG filters out of the per-frame paint path. */
+.galactic-orb[data-orb-animated] .galactic-orb__cosmos {
+  animation: galactic-orb-flow 16s ease-in-out infinite;
+  will-change: transform;
+}
+.galactic-orb[data-orb-animated] .galactic-orb__aurora {
+  animation: galactic-orb-fold 11s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+.galactic-orb[data-orb-animated] .galactic-orb__wisp {
+  animation: galactic-orb-wisp 9s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+.galactic-orb[data-orb-animated] .galactic-orb__stars--0 {
+  animation: galactic-orb-shimmer 5s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+.galactic-orb[data-orb-animated] .galactic-orb__stars--1 {
+  animation: galactic-orb-shimmer 7s -3s ease-in-out infinite alternate-reverse;
+  will-change: transform, opacity;
+}
+.galactic-orb[data-orb-animated] .galactic-orb__reflection {
+  animation: galactic-orb-reflect 13s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+.galactic-orb[data-orb-moving] .galactic-orb__cosmos {
+  animation-duration: 9s;
+}
+.galactic-orb[data-orb-moving] .galactic-orb__aurora {
+  animation-duration: 6s;
+}
+.galactic-orb[data-orb-moving] .galactic-orb__wisp {
+  animation-duration: 5s;
+}
+
+.galactic-orb__glass {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    radial-gradient(ellipse at 30% 14%, #e1eaff57, transparent 33%),
+    radial-gradient(ellipse at 50% 10%, transparent 43%, #03061680 90%),
+    radial-gradient(ellipse at 74% 91%, #627cff6b, transparent 33%);
+  box-shadow:
+    inset 1px 1px 2px #e1e6ff45,
+    inset -1px -2px 4px #070825a6;
+}
+
+.galactic-orb__rim {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid transparent;
+  background: linear-gradient(135deg, #e3efffa6, #878aff24 37%, #a572ec7a 68%, #70e5ffab) border-box;
+  mask:
+    linear-gradient(#000 0 0) padding-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+.galactic-orb__glyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: #f4f1ff;
+  filter: drop-shadow(0 1px 3px #030418);
+}
+
+@keyframes galactic-orb-flow {
+  0%,
+  100% {
+    transform: rotate(-10deg) scale(1.05) translate(0, 0);
+  }
+  35% {
+    transform: rotate(9deg) scale(1.16, 1.06) translate(-3%, 2%);
+  }
+  70% {
+    transform: rotate(-4deg) scale(1.04, 1.14) translate(3%, -2%);
+  }
+}
+@keyframes galactic-orb-fold {
+  0% {
+    transform: translate(-5%, 4%) rotate(-20deg) scale(0.85, 1.1);
+    opacity: 0.22;
+  }
+  50% {
+    opacity: 0.48;
+  }
+  100% {
+    transform: translate(6%, -4%) rotate(30deg) scale(1.2, 0.85);
+    opacity: 0.32;
+  }
+}
+@keyframes galactic-orb-wisp {
+  0% {
+    transform: translate(5%, -3%) rotate(12deg) scale(0.9);
+    opacity: 0.18;
+  }
+  100% {
+    transform: translate(-5%, 5%) rotate(-18deg) scale(1.18);
+    opacity: 0.42;
+  }
+}
+@keyframes galactic-orb-shimmer {
+  0% {
+    opacity: 0.4;
+    transform: translate(-0.5%, 0.5%) scale(0.98);
+  }
+  60% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0.65;
+    transform: translate(0.5%, -0.5%) scale(1.035);
+  }
+}
+@keyframes galactic-orb-reflect {
+  0%,
+  100% {
+    transform: rotate(-45deg);
+    opacity: 0.3;
+  }
+  50% {
+    transform: rotate(40deg);
+    opacity: 0.72;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .galactic-orb[data-orb-animated] .galactic-orb__sphere > * {
+    animation: none;
+    will-change: auto;
+  }
+}

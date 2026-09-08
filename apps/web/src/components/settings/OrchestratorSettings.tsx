@@ -15,7 +15,7 @@ import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSet
 import { useOrchestratorSessionContext } from "../../orchestrator/OrchestratorSessionProvider";
 import { isEchoProneDevice } from "../../orchestrator/echoProneDevice";
 import { OrchestratorUsageView } from "./OrchestratorUsageView";
-import { BlackHoleOrb } from "../orchestrator/BlackHoleOrb";
+import { GalacticOrb } from "../orchestrator/GalacticOrb";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { Button } from "../ui/button";
@@ -452,7 +452,7 @@ export function OrchestratorSettingsPanel() {
                 className="mr-4 flex size-14 items-center justify-center"
                 aria-hidden
               >
-                <BlackHoleOrb size={44} tint="user" intensity={0.4} />
+                <GalacticOrb size={44} tint="user" intensity={0.4} />
               </span>
               <Switch
                 checked={orchestrator.floatingBubble}

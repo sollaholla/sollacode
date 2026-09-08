@@ -29,15 +29,12 @@ import { makeComponentLogger } from "../app/DesktopObservability.ts";
  */
 
 /**
- * The window is far larger than the orb on purpose. The orb swells with the
- * voice (up to BUBBLE_MAX_SCALE) and its canvas is 2.4x the sphere so the
- * lensed star field has somewhere to live, so at full voice it draws roughly
- * 269px across. At the old 128px the window rectangle sliced that into square
- * corners. The surplus is transparent and click-through (see setInteractive),
- * so the larger window costs the user nothing.
+ * Keep the transparent window's existing dimensions so saved positions do not
+ * move during the visual redesign. The compact galaxy occupies under 90px,
+ * and the remaining click-through space holds its short-lived hover hint.
  */
 const BUBBLE_WINDOW_SIZE = 288;
-/** Half the orb's widest drawn sphere: 56px base at 2.0x scale. */
+/** Conservative edge clearance, including the galaxy's glow and thread control. */
 const BUBBLE_ORB_MAX_RADIUS = 56;
 const BUBBLE_SCREEN_MARGIN = 24;
 const DEV_LOAD_RETRY_DELAY_MS = 1_500;

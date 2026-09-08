@@ -1,9 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
-import { BlackHoleOrb, resolveVoiceOrbTint } from "../components/orchestrator/BlackHoleOrb";
+import { GalacticOrb, resolveVoiceOrbTint } from "../components/orchestrator/GalacticOrb";
 import { useOrchestratorSessionContext } from "../orchestrator/OrchestratorSessionProvider";
-import type { VoiceSessionState } from "../orchestrator/realtimeSession";
 import {
   computeMobileOrbDiameter,
   computeMobileOrbScale,
@@ -90,7 +89,7 @@ function OrchestratorFullScreenView() {
           }}
           className="flex items-center justify-center rounded-full outline-hidden transition-transform duration-200 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background"
         >
-          <BlackHoleOrb
+          <GalacticOrb
             size={orbDiameter}
             tint={resolveVoiceOrbTint(session.state, session.working, presentation.live)}
             spinning={presentation.live}
@@ -98,7 +97,7 @@ function OrchestratorFullScreenView() {
             intensity={presentation.live ? 0.6 : 0}
           >
             <span className="text-2xl font-medium">{presentation.live ? "Stop" : "Talk"}</span>
-          </BlackHoleOrb>
+          </GalacticOrb>
         </button>
 
         <div className="text-center">

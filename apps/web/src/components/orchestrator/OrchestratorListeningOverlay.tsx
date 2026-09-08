@@ -12,7 +12,7 @@ import {
   type VoiceSpeaker,
 } from "../../orchestrator/mobilePresentation";
 import type { VoiceSessionState } from "../../orchestrator/realtimeSession";
-import { BlackHoleOrb } from "./BlackHoleOrb";
+import { GalacticOrb } from "./GalacticOrb";
 
 /**
  * A full-screen surface over the app while the orchestrator has the microphone.
@@ -223,31 +223,32 @@ export function VoiceOrb({
   return (
     <div className="relative flex size-56 items-center justify-center">
       {/* The orb scales with the voice through the ref (see the loop above);
-          the black hole itself is drawn by `BlackHoleOrb`, shared with the
+          the galaxy itself is drawn by `GalacticOrb`, shared with the
           desktop bubble and the phone route so all three surfaces are one
           object at three sizes. */}
-      <BlackHoleOrb
+      <GalacticOrb
         ref={orbRef}
-        size={150}
+        size={112}
         tint={speaker}
+        spinning={speaker !== "idle"}
         breathing={speaker === "waiting" || speaker === "connecting"}
         className="transition-opacity duration-300"
         style={{ willChange: "transform, opacity" }}
       >
         <span data-voice-speaker={speaker} className="flex items-center justify-center">
           {speaker === "assistant" ? (
-            <AudioLinesIcon size={40} strokeWidth={1.9} />
+            <AudioLinesIcon size={28} strokeWidth={1.9} />
           ) : speaker === "waiting" || speaker === "connecting" ? (
             <LoaderIcon
-              size={40}
+              size={28}
               strokeWidth={1.9}
               className="animate-[orchestrator-orb-spin_1.2s_linear_infinite]"
             />
           ) : (
-            <MicIcon size={40} strokeWidth={1.9} />
+            <MicIcon size={28} strokeWidth={1.9} />
           )}
         </span>
-      </BlackHoleOrb>
+      </GalacticOrb>
       <style>{`
         @keyframes orchestrator-orb-spin {
           from { transform: rotate(0deg); }
