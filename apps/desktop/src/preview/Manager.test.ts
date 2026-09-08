@@ -2849,6 +2849,12 @@ describe("PreviewManager", () => {
         let popupClosed: (() => void) | undefined;
         let popupDestroyed = false;
         let popupHumanInput: ((_event: unknown, signal: unknown) => void) | undefined;
+        let popupHeadersReceived:
+          | ((
+              details: Electron.OnHeadersReceivedListenerDetails,
+              callback: (response: Electron.HeadersReceivedResponse) => void,
+            ) => void)
+          | undefined;
         let popupWindowToOpen: Electron.BrowserWindow | undefined;
         const sourceSendCommand = vi.fn(
           async (method: string, params?: Record<string, unknown>) => {
@@ -2898,6 +2904,15 @@ describe("PreviewManager", () => {
         const popupSendCommand = vi.fn(async () => undefined);
         const popupWebContents = {
           id: 43,
+          session: {
+            webRequest: {
+              onHeadersReceived: vi.fn(
+                (_filter: Electron.WebRequestFilter, listener: typeof popupHeadersReceived) => {
+                  popupHeadersReceived = listener;
+                },
+              ),
+            },
+          },
           isDestroyed: () => popupDestroyed,
           getType: () => "window",
           getURL: () => "https://accounts.google.com/gsi/select",
@@ -2950,6 +2965,25 @@ describe("PreviewManager", () => {
         yield* TestClock.adjust(200);
         yield* Fiber.join(openPopup);
 
+        const preserveHeaders = vi.fn();
+        popupHeadersReceived?.(
+          {
+            resourceType: "mainFrame",
+            webContentsId: 43,
+            responseHeaders: {
+              "Cross-Origin-Opener-Policy": ["same-origin"],
+              "Content-Type": ["text/html"],
+            },
+          } as unknown as Electron.OnHeadersReceivedListenerDetails,
+          preserveHeaders,
+        );
+        expect(preserveHeaders).toHaveBeenCalledWith({
+          responseHeaders: {
+            "Cross-Origin-Opener-Policy": ["unsafe-none"],
+            "Content-Type": ["text/html"],
+          },
+        });
+
         expect(yield* manager.automationStatus("runtime-oauth")).toMatchObject({
           available: true,
           url: "https://accounts.google.com/gsi/select",
@@ -2974,6 +3008,16 @@ describe("PreviewManager", () => {
           title: "Pinterest",
           viewport: { width: 1280, height: 800 },
         });
+        const detachedHeaders = vi.fn();
+        popupHeadersReceived?.(
+          {
+            resourceType: "mainFrame",
+            webContentsId: 43,
+            responseHeaders: { "Cross-Origin-Opener-Policy": ["same-origin"] },
+          } as unknown as Electron.OnHeadersReceivedListenerDetails,
+          detachedHeaders,
+        );
+        expect(detachedHeaders).toHaveBeenCalledWith({});
       }),
     ),
   );

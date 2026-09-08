@@ -81,6 +81,7 @@ import {
 import { PreviewActivityConsumer, PreviewActivityLeases } from "./ActivityLeases.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import { classifyPreviewNetworkResponse } from "./CloudflareChallenge.ts";
+import { preservePopupOpenerHeaders } from "./CrossOriginOpenerPolicy.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
   ANNOTATION_THEME_CHANNEL,
@@ -888,6 +889,43 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * screenshots and input follow the page the user can currently see.
    */
   const popupWindowsByTab = new Map<string, ReadonlyArray<PopupWindowSession>>();
+  const openerPolicyPopupIdsBySession = new WeakMap<Session, Set<number>>();
+
+  const trackPopupOpenerPolicy = (popup: Electron.WebContents): (() => void) => {
+    const electronSession = popup.session;
+    let popupIds = openerPolicyPopupIdsBySession.get(electronSession);
+    if (!popupIds) {
+      popupIds = new Set<number>();
+      openerPolicyPopupIdsBySession.set(electronSession, popupIds);
+      electronSession.webRequest.onHeadersReceived(
+        { urls: ["http://*/*", "https://*/*"] },
+        (details, callback) => {
+          if (
+            details.resourceType !== "mainFrame" ||
+            details.webContentsId === undefined ||
+            !popupIds?.has(details.webContentsId) ||
+            !details.responseHeaders
+          ) {
+            callback({});
+            return;
+          }
+          const preserved = preservePopupOpenerHeaders(details.responseHeaders);
+          if (!preserved.changed) {
+            callback({});
+            return;
+          }
+          runFork(
+            Effect.logInfo("Preserved the opener for a preview OAuth child navigation.", {
+              webContentsId: details.webContentsId,
+            }),
+          );
+          callback({ responseHeaders: preserved.responseHeaders });
+        },
+      );
+    }
+    popupIds.add(popup.id);
+    return () => popupIds?.delete(popup.id);
+  };
   const popupTabByWebContentsId = new Map<number, string>();
   const listenersRef = yield* Ref.make<ReadonlySet<Listener>>(new Set());
   const pointerEventListenersRef = yield* Ref.make<ReadonlySet<PointerEventListener>>(new Set());
@@ -2288,10 +2326,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
     const scope = yield* Scope.fork(parentScope, "sequential");
     const unavailable = yield* Deferred.make<void>();
+    const untrackPopupOpenerPolicy = trackPopupOpenerPolicy(popupWebContents);
     let active = true;
     let humanInputGeneration = 0;
     const closed = (): void => {
-      if (active) runFork(detachPopupWindow(tabId, popupWebContents.id));
+      if (active) {
+        untrackPopupOpenerPolicy();
+        runFork(detachPopupWindow(tabId, popupWebContents.id));
+      }
     };
     const handleHumanInput = Effect.fn("PreviewManager.handlePopupHumanInput")(function* (
       rawSignal?: unknown,
@@ -2341,6 +2383,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         { operation: "detachPopupWindowListeners", tabId, webContentsId: popupWebContents.id },
         () => {
           active = false;
+          untrackPopupOpenerPolicy();
           window.off("closed", closed);
           if (!popupWebContents.isDestroyed()) {
             popupWebContents.off("destroyed", closed);
