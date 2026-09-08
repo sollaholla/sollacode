@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  AGENT_CONTINUE_PROMPT,
   appendAgentStreamText,
   consumeAgentStopStreamDelta,
   containsAgentStopToken,
@@ -12,6 +13,14 @@ import {
   sessionNeedsProviderReset,
   shouldAgentContinueAfterReply,
 } from "./agentMode.ts";
+
+describe("AGENT_CONTINUE_PROMPT", () => {
+  it("allows a clean stop while a configured scheduled task owns the remaining work", () => {
+    expect(AGENT_CONTINUE_PROMPT).toContain("active scheduled task");
+    expect(AGENT_CONTINUE_PROMPT).toContain("start a fresh turn automatically");
+    expect(AGENT_CONTINUE_PROMPT).toContain("instead of sending repeated waiting updates");
+  });
+});
 
 describe("consumeAgentStopStreamDelta", () => {
   it("turns a concatenated stop token into an immediate stream boundary", () => {
