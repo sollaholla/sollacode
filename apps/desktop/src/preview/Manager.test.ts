@@ -2782,6 +2782,35 @@ describe("PreviewManager", () => {
         });
         expect(requests).toHaveLength(1);
 
+        // Chromium can classify featureless script-created windows as a
+        // foreground tab. The explicit frame target is what distinguishes the
+        // synchronous WindowProxy contract from a browser-style new tab.
+        expect(
+          openHandler?.({
+            url: "https://accounts.example.com/oauth",
+            disposition: "foreground-tab",
+            features: "",
+            frameName: "_blank",
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+        });
+        expect(requests).toHaveLength(1);
+
+        expect(
+          openHandler?.({
+            url: "about:blank",
+            disposition: "foreground-tab",
+            features: "",
+            frameName: "oauth-login",
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+        });
+        expect(requests).toHaveLength(1);
+
         // Scripted OAuth clients often use an unnamed/_blank child without
         // popup-shaped features. It still needs a synchronous WindowProxy.
         expect(
