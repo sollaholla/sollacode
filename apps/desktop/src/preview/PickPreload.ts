@@ -80,20 +80,32 @@ const applyAnnotationTheme = (
 
 const reportHumanPointerInput = (event: PointerEvent): void => {
   if (!event.isTrusted) return;
+  const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+  const target = anchor?.getAttribute("target")?.trim().toLowerCase() ?? "";
+  const opensNewTab =
+    anchor instanceof HTMLAnchorElement &&
+    (target === "_blank" || event.metaKey || event.ctrlKey || event.button === 1);
   ipcRenderer.send(HUMAN_INPUT_CHANNEL, {
     kind: "pointer",
     x: event.clientX,
     y: event.clientY,
     button: event.button,
+    directNewTabUrl: opensNewTab ? anchor.href : null,
   });
 };
 
 const reportHumanKeyInput = (event: KeyboardEvent): void => {
   if (!event.isTrusted) return;
+  const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+  const target = anchor?.getAttribute("target")?.trim().toLowerCase() ?? "";
   ipcRenderer.send(HUMAN_INPUT_CHANNEL, {
     kind: "key",
     key: event.key,
     code: event.code,
+    directNewTabUrl:
+      event.key === "Enter" && anchor instanceof HTMLAnchorElement && target === "_blank"
+        ? anchor.href
+        : null,
   });
 };
 
