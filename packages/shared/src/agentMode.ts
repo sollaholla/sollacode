@@ -19,8 +19,11 @@ export const AGENT_CONTINUE_PROMPT =
   "iteration, phase, or milestone ended; because further work has diminishing returns; because " +
   "you want feedback; or because context, time, or token budget is inconvenient. If any requested " +
   "work, known defect, failed check, unverified claim, or planned step remains, keep working on the " +
-  "next concrete action. Only when all requested work is fully finished and verified, or a concrete " +
-  "blocker truly requires user input after you have exhausted safe alternatives, summarize the final state " +
+  "next concrete action. Stop only when all requested work is fully finished and verified; a concrete " +
+  "blocker truly requires user input after you have exhausted safe alternatives; or every remaining item " +
+  "is assigned to an active scheduled task whose next run is already configured to start a fresh turn " +
+  "automatically and there is no useful work to do before it runs. In that scheduled case, state what is " +
+  "scheduled and when instead of sending repeated waiting updates. Before stopping, summarize the final state " +
   `and end your message with \`${AGENT_STOP_TOKEN}\` on a new line by itself. Otherwise continue, and do not stop to ask ` +
   "questions you can resolve yourself. The app honors that stop signal immediately, so never emit it until " +
   "this completion check is genuinely satisfied.";
