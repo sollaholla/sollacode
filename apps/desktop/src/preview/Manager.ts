@@ -1277,6 +1277,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const isCurrentWebContentsForTab = (tab: PreviewTabState, webContentsId: number): boolean =>
     currentWebContentsForTab(tab)?.id === webContentsId;
 
+  const isCurrentOrPopupOpenerWebContentsForTab = (
+    tab: PreviewTabState,
+    webContentsId: number,
+  ): boolean => {
+    if (isCurrentWebContentsForTab(tab, webContentsId)) return true;
+    // window.open() can synchronously promote the new child before the input
+    // command that opened it resolves. The command already landed on the live
+    // opener; treating that successful handoff as a vanished target makes an
+    // OAuth click report failure and invites an unsafe retry.
+    return currentPopupForTab(tab.tabId)?.sourceWebContentsId === webContentsId;
+  };
+
   /** Newest-first, and short: this is a notice, not a download history. */
   const TAB_DOWNLOAD_LIMIT = 5;
   /** Short enough to feel immediate once the user answers. */
@@ -1363,7 +1375,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (!tab || (yield* Ref.get(closingTabIdsRef)).has(tabId)) {
       return yield* new PreviewTabNotFoundError({ tabId });
     }
-    if (!isCurrentWebContentsForTab(tab, webContentsId) || wc.isDestroyed()) {
+    if (!isCurrentOrPopupOpenerWebContentsForTab(tab, webContentsId) || wc.isDestroyed()) {
       return yield* new PreviewWebContentsNotFoundError({ tabId, webContentsId });
     }
   });
@@ -2277,8 +2289,50 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const scope = yield* Scope.fork(parentScope, "sequential");
     const unavailable = yield* Deferred.make<void>();
     let active = true;
+    let humanInputGeneration = 0;
     const closed = (): void => {
       if (active) runFork(detachPopupWindow(tabId, popupWebContents.id));
+    };
+    const handleHumanInput = Effect.fn("PreviewManager.handlePopupHumanInput")(function* (
+      rawSignal?: unknown,
+    ) {
+      if (!active || currentPopupForTab(tabId)?.webContents.id !== popupWebContents.id) return;
+      if (isPreviewInputSignal(rawSignal) && rawSignal.kind === "editor-focus") {
+        if (rawSignal.focused) {
+          guestEditorFocusedTabs.add(tabId);
+          userFocusIntent = { kind: "guest", tabId };
+        } else {
+          guestEditorFocusedTabs.delete(tabId);
+        }
+        return;
+      }
+      if (isPreviewInputSignal(rawSignal) && (yield* consumeExpectedAgentInput(tabId, rawSignal))) {
+        return;
+      }
+      lastUserInputAtMs = yield* currentMillis;
+      if (isPreviewInputSignal(rawSignal) && rawSignal.kind === "pointer") {
+        userFocusIntent = { kind: "guest", tabId };
+      }
+      const generation = ++humanInputGeneration;
+      yield* Ref.update(controlEpochRef, (epochs) =>
+        replaceMap(epochs, (copy) => {
+          copy.set(tabId, (epochs.get(tabId) ?? 0) + 1);
+        }),
+      );
+      yield* update(tabId, { controller: "human" });
+      yield* Effect.sleep(750);
+      if (
+        !active ||
+        humanInputGeneration !== generation ||
+        currentPopupForTab(tabId)?.webContents.id !== popupWebContents.id
+      ) {
+        return;
+      }
+      const latest = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (latest?.controller === "human") yield* update(tabId, { controller: "none" });
+    });
+    const humanInput = (_event: unknown, rawSignal?: unknown): void => {
+      if (active) runFork(handleHumanInput(rawSignal));
     };
     yield* Scope.addFinalizer(scope, Deferred.succeed(unavailable, undefined).pipe(Effect.asVoid));
     yield* Scope.addFinalizer(
@@ -2288,7 +2342,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         () => {
           active = false;
           window.off("closed", closed);
-          if (!popupWebContents.isDestroyed()) popupWebContents.off("destroyed", closed);
+          if (!popupWebContents.isDestroyed()) {
+            popupWebContents.off("destroyed", closed);
+            popupWebContents.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
+          }
         },
       ).pipe(Effect.ignore),
     );
@@ -2297,6 +2354,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       () => {
         window.on("closed", closed);
         popupWebContents.on("destroyed", closed);
+        popupWebContents.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
       },
     ).pipe(Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)));
 

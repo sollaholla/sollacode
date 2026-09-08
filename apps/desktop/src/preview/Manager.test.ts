@@ -2844,9 +2844,29 @@ describe("PreviewManager", () => {
   effectIt.effect("routes automation through an OAuth child until that window closes", () =>
     withManager((manager) =>
       Effect.gen(function* () {
+        const states: PreviewManager.PreviewTabState[] = [];
         let didCreateWindow: ((window: Electron.BrowserWindow) => void) | undefined;
         let popupClosed: (() => void) | undefined;
         let popupDestroyed = false;
+        let popupHumanInput: ((_event: unknown, signal: unknown) => void) | undefined;
+        let popupWindowToOpen: Electron.BrowserWindow | undefined;
+        const sourceSendCommand = vi.fn(
+          async (method: string, params?: Record<string, unknown>) => {
+            if (method === "Runtime.evaluate") {
+              return { result: { value: { width: 1280, height: 800 } } };
+            }
+            if (
+              method === "Input.dispatchMouseEvent" &&
+              params?.type === "mouseReleased" &&
+              popupWindowToOpen
+            ) {
+              const popup = popupWindowToOpen;
+              popupWindowToOpen = undefined;
+              didCreateWindow?.(popup);
+            }
+            return undefined;
+          },
+        );
         const source = {
           id: 42,
           isDestroyed: () => false,
@@ -2854,6 +2874,7 @@ describe("PreviewManager", () => {
           getURL: () => "https://www.pinterest.com/login/",
           getTitle: () => "Pinterest",
           isLoading: () => false,
+          isDevToolsOpened: () => false,
           getZoomFactor: () => 1,
           setZoomFactor: vi.fn(),
           executeJavaScript: vi.fn(async () => ({ width: 1280, height: 800 })),
@@ -2869,7 +2890,7 @@ describe("PreviewManager", () => {
             isAttached: () => false,
             attach: vi.fn(),
             detach: vi.fn(),
-            sendCommand: vi.fn(async () => undefined),
+            sendCommand: sourceSendCommand,
             on: vi.fn(),
             off: vi.fn(),
           },
@@ -2887,6 +2908,12 @@ describe("PreviewManager", () => {
           executeJavaScript: vi.fn(async () => ({ width: 500, height: 600 })),
           on: vi.fn(),
           off: vi.fn(),
+          ipc: {
+            on: vi.fn((channel: string, listener: typeof popupHumanInput) => {
+              if (channel === "preview:human-input") popupHumanInput = listener;
+            }),
+            off: vi.fn(),
+          },
           debugger: {
             isAttached: () => false,
             attach: vi.fn(),
@@ -2909,10 +2936,19 @@ describe("PreviewManager", () => {
           id === 42 ? source : id === 43 ? popupWebContents : null,
         );
 
+        yield* manager.subscribeStateChanges((_tabId, state) =>
+          Effect.sync(() => {
+            states.push(state);
+          }),
+        );
         yield* manager.createTab("runtime-oauth");
         yield* manager.registerWebview("runtime-oauth", 42);
-        didCreateWindow?.(popupWindow);
-        yield* Effect.yieldNow;
+        popupWindowToOpen = popupWindow;
+        const openPopup = yield* manager
+          .automationClick("runtime-oauth", { x: 120, y: 80 })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* TestClock.adjust(200);
+        yield* Fiber.join(openPopup);
 
         expect(yield* manager.automationStatus("runtime-oauth")).toMatchObject({
           available: true,
@@ -2925,6 +2961,9 @@ describe("PreviewManager", () => {
           "Input.dispatchKeyEvent",
           expect.objectContaining({ type: "keyDown", key: "Enter" }),
         );
+        popupHumanInput?.({}, { kind: "pointer", x: 20, y: 30, button: 0 });
+        yield* Effect.yieldNow;
+        expect(states.at(-1)?.controller).toBe("human");
 
         popupDestroyed = true;
         popupClosed?.();

@@ -20,6 +20,10 @@ import {
   resolveFillCssViewport,
   resolveFittedBrowserViewport,
 } from "./browserViewportLayout";
+import {
+  refineBrowserViewportHostScale,
+  type BrowserViewportHostScale,
+} from "./browserViewportCompensation";
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
 import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
 import { acquireDesktopTab, type AcquiredDesktopTab } from "./desktopTabLifetime";
@@ -418,6 +422,69 @@ export function HostedBrowserWebview(props: {
     deviceToolbarVisible,
     aspectRatio: lockedAspectRatio,
   });
+  const effectiveViewportKey = browserViewportSettingKey(effectiveViewport);
+  const [viewportHostScale, setViewportHostScale] = useState<
+    (BrowserViewportHostScale & { readonly sourceKey: string }) | null
+  >(null);
+  const activeViewportHostScale =
+    viewportHostScale?.sourceKey === effectiveViewportKey
+      ? viewportHostScale
+      : { width: 1, height: 1 };
+
+  useLayoutEffect(() => {
+    const webview = webviewRef.current;
+    if (!webview || effectiveViewport._tag === "fill") {
+      setViewportHostScale(null);
+      return;
+    }
+    let cancelled = false;
+    let scale: BrowserViewportHostScale = { width: 1, height: 1 };
+    const expected = { width: effectiveViewport.width, height: effectiveViewport.height };
+    // Let Electron consume the React layout before measuring. Repeating a few
+    // bounded refinements handles fractional page zoom and pixel rounding
+    // without leaving a timer or animation running after the resize settles.
+    const calibrate = async () => {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        if (cancelled) return;
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 32));
+        if (cancelled || webviewRef.current !== webview) return;
+        const value = await webview
+          .executeJavaScript("({ width: window.innerWidth, height: window.innerHeight })")
+          .catch(() => null);
+        if (typeof value !== "object" || value === null) continue;
+        const rendered = value as { readonly width?: unknown; readonly height?: unknown };
+        if (
+          typeof rendered.width !== "number" ||
+          !Number.isInteger(rendered.width) ||
+          rendered.width <= 0 ||
+          typeof rendered.height !== "number" ||
+          !Number.isInteger(rendered.height) ||
+          rendered.height <= 0
+        ) {
+          continue;
+        }
+        const refined = refineBrowserViewportHostScale({
+          current: scale,
+          expected,
+          rendered: { width: rendered.width, height: rendered.height },
+        });
+        if (!refined) return;
+        scale = refined;
+        setViewportHostScale({ sourceKey: effectiveViewportKey, ...scale });
+      }
+    };
+    void calibrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    effectiveViewport._tag,
+    effectiveViewportKey,
+    hostSize.height,
+    hostSize.width,
+    webviewGeneration,
+    zoomFactor,
+  ]);
   const scaleFillCssIntoSlot =
     fillCssViewport !== null &&
     lastRect !== null &&
@@ -437,6 +504,10 @@ export function HostedBrowserWebview(props: {
     fittedSourceViewport && lastRect
       ? resolveBrowserViewportLayout(lastRect, fittedSourceViewport, normalizedZoomFactor)
       : viewportLayout;
+  const hostedViewportWidth =
+    (layout.viewportWidth / layout.viewportScale) * activeViewportHostScale.width;
+  const hostedViewportHeight =
+    (layout.viewportHeight / layout.viewportScale) * activeViewportHostScale.height;
 
   const syncContentPresentation = useCallback(() => {
     const wrapper = wrapperRef.current;
@@ -470,7 +541,10 @@ export function HostedBrowserWebview(props: {
     snapshotStaged,
     cornerRadius: presentation.cornerRadius,
     rect: lastRect,
-    hiddenSize,
+    hiddenSize: {
+      width: hiddenSize.width * activeViewportHostScale.width,
+      height: hiddenSize.height * activeViewportHostScale.height,
+    },
     hostSize,
     interactive: presentation.interactive,
     warming,
@@ -536,8 +610,8 @@ export function HostedBrowserWebview(props: {
           style={{
             left: layout.viewportX,
             top: layout.viewportY,
-            width: layout.viewportWidth / layout.viewportScale,
-            height: layout.viewportHeight / layout.viewportScale,
+            width: hostedViewportWidth,
+            height: hostedViewportHeight,
             transform: layout.viewportScale < 1 ? `scale(${layout.viewportScale})` : undefined,
             transformOrigin: "top left",
           }}
