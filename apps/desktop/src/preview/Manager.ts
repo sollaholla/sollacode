@@ -3337,17 +3337,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           // the request and creating a sibling preview later breaks both
           // contracts and turns the sign-in button into an apparent no-op.
           //
-          // Window features are the third signal, and the one that matters in
-          // practice: a `target="_blank"` link never carries them, while an
-          // OAuth popup always sizes itself (`width=…,height=…`). Chromium does
-          // not always report those opens as `new-window`, so keying only on
-          // disposition denied them — and a denied `window.open()` hands the
-          // page a null WindowProxy, which Google Identity Services reports as
-          // "Failed to open popup window … Maybe blocked by the browser?" while
-          // the user just sees a dead Sign in button.
+          // Chromium does not always report script-created windows as
+          // `new-window`. A frame target is the reliable signal for featureless
+          // `window.open(url, "_blank")` and named OAuth windows: denying either
+          // request hands the page a null WindowProxy even though we later open
+          // the URL in a sibling preview tab. Google then reports a popup
+          // blocker because its opener contract was broken. Browser-style new
+          // tabs have no frame target and continue through the sibling-tab path.
           const hasWindowFeatures = features.trim().length > 0;
+          const hasFrameTarget = frameName.trim().length > 0;
           const isChildWindow =
-            disposition === "new-window" || postBody !== undefined || hasWindowFeatures;
+            disposition === "new-window" ||
+            postBody !== undefined ||
+            hasWindowFeatures ||
+            hasFrameTarget;
           runFork(
             Effect.logInfo("Desktop preview handled a guest window-open request.", {
               tabId,
