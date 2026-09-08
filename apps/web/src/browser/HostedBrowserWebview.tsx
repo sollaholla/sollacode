@@ -431,18 +431,55 @@ export function HostedBrowserWebview(props: {
       ? viewportHostScale
       : { width: 1, height: 1 };
 
+  const scaleFillCssIntoSlot =
+    fillCssViewport !== null &&
+    lastRect !== null &&
+    (presentation.fitSourceContent ||
+      fillCssViewport.width * normalizedZoomFactor > lastRect.width ||
+      fillCssViewport.height * normalizedZoomFactor > lastRect.height);
+  const fittedSourceViewport = scaleFillCssIntoSlot
+    ? fillCssViewport
+    : presentation.fitSourceContent && lastRect
+      ? resolveFittedBrowserViewport(
+          viewport,
+          presentation.fittedSourceContent,
+          normalizedZoomFactor,
+        )
+      : null;
+  const layout =
+    fittedSourceViewport && lastRect
+      ? resolveBrowserViewportLayout(lastRect, fittedSourceViewport, normalizedZoomFactor)
+      : viewportLayout;
+  const hostedViewportWidth =
+    (layout.viewportWidth / layout.viewportScale) * activeViewportHostScale.width;
+  const hostedViewportHeight =
+    (layout.viewportHeight / layout.viewportScale) * activeViewportHostScale.height;
+  const declaredViewportWidth = fittedSourceViewport
+    ? fittedSourceViewport.width
+    : fillCssViewport
+      ? fillCssViewport.width
+      : effectiveViewport._tag === "fill"
+        ? Math.max(1, Math.round(layout.viewportWidth / normalizedZoomFactor))
+        : effectiveViewport.width;
+  const declaredViewportHeight = fittedSourceViewport
+    ? fittedSourceViewport.height
+    : fillCssViewport
+      ? fillCssViewport.height
+      : effectiveViewport._tag === "fill"
+        ? Math.max(1, Math.round(layout.viewportHeight / normalizedZoomFactor))
+        : effectiveViewport.height;
+
   useLayoutEffect(() => {
     const webview = webviewRef.current;
-    if (!webview || effectiveViewport._tag === "fill") {
-      setViewportHostScale(null);
-      return;
-    }
+    if (!webview) return;
     let cancelled = false;
     let scale: BrowserViewportHostScale = { width: 1, height: 1 };
-    const expected = { width: effectiveViewport.width, height: effectiveViewport.height };
+    const expected = { width: declaredViewportWidth, height: declaredViewportHeight };
     // Let Electron consume the React layout before measuring. Repeating a few
     // bounded refinements handles fractional page zoom and pixel rounding
     // without leaving a timer or animation running after the resize settles.
+    // Fill needs the same calibration as device presets: switching modes resets
+    // the host scale, while Electron's inherited app zoom remains in the guest.
     const calibrate = async () => {
       for (let attempt = 0; attempt < 4; attempt += 1) {
         if (cancelled) return;
@@ -478,36 +515,14 @@ export function HostedBrowserWebview(props: {
       cancelled = true;
     };
   }, [
-    effectiveViewport._tag,
+    declaredViewportHeight,
+    declaredViewportWidth,
     effectiveViewportKey,
     hostSize.height,
     hostSize.width,
     webviewGeneration,
     zoomFactor,
   ]);
-  const scaleFillCssIntoSlot =
-    fillCssViewport !== null &&
-    lastRect !== null &&
-    (presentation.fitSourceContent ||
-      fillCssViewport.width * normalizedZoomFactor > lastRect.width ||
-      fillCssViewport.height * normalizedZoomFactor > lastRect.height);
-  const fittedSourceViewport = scaleFillCssIntoSlot
-    ? fillCssViewport
-    : presentation.fitSourceContent && lastRect
-      ? resolveFittedBrowserViewport(
-          viewport,
-          presentation.fittedSourceContent,
-          normalizedZoomFactor,
-        )
-      : null;
-  const layout =
-    fittedSourceViewport && lastRect
-      ? resolveBrowserViewportLayout(lastRect, fittedSourceViewport, normalizedZoomFactor)
-      : viewportLayout;
-  const hostedViewportWidth =
-    (layout.viewportWidth / layout.viewportScale) * activeViewportHostScale.width;
-  const hostedViewportHeight =
-    (layout.viewportHeight / layout.viewportScale) * activeViewportHostScale.height;
 
   const syncContentPresentation = useCallback(() => {
     const wrapper = wrapperRef.current;
@@ -585,24 +600,8 @@ export function HostedBrowserWebview(props: {
           data-preview-viewport-mode={effectiveViewport._tag}
           data-preview-viewport-key={browserViewportSettingKey(effectiveViewport)}
           tabIndex={resolveHostedBrowserWebviewTabIndex(guestInteractive)}
-          data-preview-css-width={
-            fittedSourceViewport
-              ? fittedSourceViewport.width
-              : fillCssViewport
-                ? fillCssViewport.width
-                : effectiveViewport._tag === "fill"
-                  ? Math.max(1, Math.round(layout.viewportWidth / normalizedZoomFactor))
-                  : effectiveViewport.width
-          }
-          data-preview-css-height={
-            fittedSourceViewport
-              ? fittedSourceViewport.height
-              : fillCssViewport
-                ? fillCssViewport.height
-                : effectiveViewport._tag === "fill"
-                  ? Math.max(1, Math.round(layout.viewportHeight / normalizedZoomFactor))
-                  : effectiveViewport.height
-          }
+          data-preview-css-width={declaredViewportWidth}
+          data-preview-css-height={declaredViewportHeight}
           className={cn(
             "absolute flex overflow-hidden bg-background",
             active && !layout.fillsPanel && "ring-1 ring-border/70 shadow-sm",
