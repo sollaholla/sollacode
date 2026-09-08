@@ -2,12 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DesktopOrchestratorBubbleState } from "@t3tools/contracts";
 import { AudioLinesIcon, LoaderIcon, MessageSquareIcon, MicIcon, MicOffIcon } from "lucide-react";
 
-import {
-  BUBBLE_BASE_DIAMETER,
-  computeBubbleGlow,
-  computeBubbleScale,
-  smoothBubbleScale,
-} from "./bubblePresentation";
+import { BUBBLE_BASE_DIAMETER, computeBubbleGlow, computeBubbleScale } from "./bubblePresentation";
 import { GalacticOrb, type OrbTint } from "../components/orchestrator/GalacticOrb";
 
 /**
@@ -45,10 +40,9 @@ const STATUS_TINTS: Record<DesktopOrchestratorBubbleState["status"], OrbTint> = 
 
 export function OrchestratorBubbleApp() {
   const [state, setState] = useState<DesktopOrchestratorBubbleState>(IDLE_STATE);
-  const stateRef = useRef(state);
-  stateRef.current = state;
-
-  const [displayScale, setDisplayScale] = useState(1);
+  const orbRef = useRef<HTMLDivElement>(null);
+  const scaleRef = useRef(1);
+  const glowRef = useRef(0);
 
   // The window itself is transparent; the page must be too or the orb sits on
   // an opaque 128px square.
@@ -60,44 +54,25 @@ export function OrchestratorBubbleApp() {
   useEffect(() => {
     const bridge = window.desktopBridge?.orchestratorBubble;
     if (bridge === undefined) return;
-    return bridge.onState(setState);
-  }, []);
-
-  // Survives the effect re-running when the status changes, so the orb eases
-  // from wherever it currently is rather than snapping back to rest.
-  const scaleRef = useRef(1);
-
-  // Animation loop: chase the target scale with asymmetric smoothing so the
-  // orb swells with speech and eases back down.
-  //
-  // It stops once there is nothing left to animate. This window is transparent,
-  // always-on-top, and deliberately exempt from background throttling, so an
-  // unconditional 60fps loop keeps the compositor busy around the clock — it
-  // measured ~30% of WindowServer with the orb merely sitting there idle.
-  useEffect(() => {
-    const animating = state.status !== "idle" && state.status !== "error";
-    let frame: number | null = null;
-
-    const tick = () => {
-      const target = computeBubbleScale(stateRef.current);
-      const next = smoothBubbleScale(scaleRef.current, target);
-      scaleRef.current = next;
-      setDisplayScale((previous) => (Math.abs(previous - next) < 0.002 ? previous : next));
-
-      // At rest and settled: nothing changes again until the next state push,
-      // which re-arms this effect.
-      if (!animating && Math.abs(next - target) < 0.002) {
-        frame = null;
-        return;
+    return bridge.onState((next) => {
+      const nextScale = computeBubbleScale(next);
+      const nextGlow = computeBubbleGlow(next);
+      const orb = orbRef.current;
+      if (orb !== null) {
+        // Audio arrives over IPC about 12 times a second. Mutate the two
+        // compositor-facing values directly so every sample does not
+        // reconcile the 64-star SVG tree. CSS transitions fill the gaps.
+        orb.style.transitionDuration = nextScale > scaleRef.current ? "70ms" : "180ms";
+        orb.style.transform = `scale(${nextScale})`;
+        orb.style.setProperty("--orb-intensity", String(nextGlow));
       }
-      frame = requestAnimationFrame(tick);
-    };
-
-    frame = requestAnimationFrame(tick);
-    return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
-    };
-  }, [state.status]);
+      scaleRef.current = nextScale;
+      glowRef.current = nextGlow;
+      // Status changes swap the icon and palette. Level-only updates do not
+      // need React at all.
+      setState((current) => (current.status === next.status ? current : next));
+    });
+  }, []);
 
   const threadButtonRef = useRef<HTMLButtonElement>(null);
   const [hintTarget, setHintTarget] = useState<"voice" | "thread" | null>(null);
@@ -267,7 +242,6 @@ export function OrchestratorBubbleApp() {
   };
 
   const tint = STATUS_TINTS[state.status];
-  const glow = computeBubbleGlow(state);
   const speaking = state.status === "speaking";
   const listening = state.status === "listening";
   // The assistant is between sentences with a tool call in flight. The user
@@ -317,11 +291,14 @@ export function OrchestratorBubbleApp() {
         }}
       >
         <GalacticOrb
+          ref={orbRef}
           size={BUBBLE_BASE_DIAMETER}
           tint={tint}
-          scale={displayScale}
-          intensity={glow}
-          // Live speech increases the galaxy's motion; idle keeps a gentler drift.
+          scale={scaleRef.current}
+          intensity={glowRef.current}
+          // The resting always-on-top renderer is still. A live voice session
+          // gets the complete flowing-cloud, star and reflection animation.
+          animated={state.status !== "idle" && state.status !== "error"}
           spinning={state.status !== "idle" && state.status !== "error"}
           breathing={state.status === "connecting"}
         >
