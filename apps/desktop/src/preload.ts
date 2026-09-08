@@ -275,6 +275,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     clearCache: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL),
     forgetDownloadDomains: () =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_FORGET_DOWNLOAD_DOMAINS_CHANNEL),
+    credentials: {
+      list: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CREDENTIAL_LIST_CHANNEL),
+      save: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_CREDENTIAL_SAVE_CHANNEL, input),
+      remove: (id) => ipcRenderer.invoke(IpcChannels.PREVIEW_CREDENTIAL_REMOVE_CHANNEL, { id }),
+      listForTab: (tabId) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_CREDENTIAL_LIST_FOR_TAB_CHANNEL, { tabId }),
+      fill: (tabId, input, expiresAt) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_CREDENTIAL_FILL_CHANNEL, {
+          tabId,
+          input,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+        }),
+    },
     getPreviewConfig: (environmentId, threadId, browserProfileThreadId) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_GET_CONFIG_CHANNEL, {
         environmentId,

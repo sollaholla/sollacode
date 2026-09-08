@@ -22,6 +22,10 @@ import {
   PreviewAutomationStatus,
   PreviewAutomationTabTargetInput,
   PreviewAutomationTypeInput,
+  PreviewAutomationCredentialFillInput,
+  PreviewAutomationCredentialFillResult,
+  PreviewAutomationCredentialListInput,
+  PreviewAutomationCredentialListResult,
   PreviewAutomationSelectOptionInput,
   PreviewAutomationSelectOptionResult,
   PreviewAutomationUploadInput,
@@ -168,6 +172,28 @@ export const PreviewTypeTool = browserTool(
   }).annotate(Tool.Title, "Type into preview page"),
 );
 
+export const PreviewCredentialsTool = readonlyBrowserTool(
+  Tool.make("preview_credentials", {
+    description:
+      "List OS-encrypted credentials whose saved origin exactly matches the active tab. Returns labels and opaque IDs only; passwords never enter the tool response, server, WebSocket, or logs.",
+    parameters: PreviewAutomationCredentialListInput,
+    success: PreviewAutomationCredentialListResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "List saved browser credentials"),
+);
+
+export const PreviewFillCredentialTool = browserTool(
+  Tool.make("preview_fill_credential", {
+    description:
+      "Fill one password field with a credential selected by opaque credentialId. The desktop verifies the tab's exact origin and decrypts directly into trusted keyboard input; the password never crosses the server or appears in tool arguments, output, or logs. Use preview_credentials first. Prefer a snapshot-derived locator; set clear=true to replace the field.",
+    parameters: PreviewAutomationCredentialFillInput,
+    success: PreviewAutomationCredentialFillResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "Fill saved browser credential"),
+);
+
 export const PreviewUploadTool = browserTool(
   Tool.make("preview_upload", {
     description:
@@ -277,6 +303,8 @@ export const PreviewToolkit = Toolkit.make(
   PreviewClickTool,
   PreviewDragTool,
   PreviewTypeTool,
+  PreviewCredentialsTool,
+  PreviewFillCredentialTool,
   PreviewUploadTool,
   PreviewSelectOptionTool,
   PreviewPressTool,
@@ -298,6 +326,8 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewClickTool,
   PreviewDragTool,
   PreviewTypeTool,
+  PreviewCredentialsTool,
+  PreviewFillCredentialTool,
   PreviewUploadTool,
   PreviewSelectOptionTool,
   PreviewPressTool,

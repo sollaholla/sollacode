@@ -34,7 +34,7 @@ Interacting with the frame:
 | Tap                                        | A click at that spot                                         |
 | Swipe                                      | Scrolling, in natural touch direction                        |
 | Hold ~⅓s, then move                        | A drag (sliders, drag-and-drop)                              |
-| Text row + **Type**                        | Text typed into the focused element — tap a field first      |
+| Text row + **Type**                        | Trusted keyboard text sent to the last field you tapped      |
 | ⏎ / ⌫ buttons                              | Enter / Backspace key presses                                |
 | Mouse drag (desktop browsers)              | A drag; use the scroll wheel to scroll                       |
 | Keyboard (desktop browsers, frame focused) | Letters, arrows, Enter, Tab, Escape forwarded as key presses |
@@ -42,8 +42,11 @@ Interacting with the frame:
 The frame refreshes about every 2.5 seconds, plus immediately after each input you send. Taps in
 the black letterbox bars around the frame are ignored rather than mapped to a page edge.
 Inputs are delivered in gesture order, even over a slow relay, and changing tabs immediately starts
-a fresh input lane. Older captures are discarded when a newer capture finishes first. If typing
-fails, the text remains in the row so it can be retried instead of being lost.
+a fresh input lane. Text submission re-hit-tests the last tapped position in the same trusted input
+turn, so a framework replacing the field's DOM node between the tap and the keys does not redirect
+the text. Older captures are discarded when a newer capture finishes first. If typing fails, the
+text remains in the row so it can be retried instead of being lost. A failed follow-up frame capture
+does not rewrite a successful key delivery as an input failure.
 
 OAuth and other real popup windows become the active remote frame until they close, then the frame
 returns to the opener. A held download appears as an approval card with Allow once, Allow always,
@@ -69,6 +72,20 @@ a pure JavaScript change, so an over-the-air update or Metro reload is enough.
 - The desktop always keeps rendering its own guest. Remote viewers are only viewers plus input
   senders — nothing about host selection, rendering, or navigation semantics changes when a
   remote device connects.
+
+## Saved passwords for agents
+
+Use the desktop preview's **More > Saved passwords…** menu to add or remove a browser password.
+Solla Code normalizes the saved website to an exact origin and accepts HTTPS sites (plus localhost
+for development). The operating system encrypts the password before an atomic, owner-only vault
+file is written.
+
+An agent first calls `preview_credentials`, which returns matching labels, usernames, and opaque
+IDs for the active tab's exact origin. It can then call `preview_fill_credential` with an ID and a
+field target. Electron checks the live tab origin again, decrypts in the main process, and sends the
+password directly as trusted keyboard input. The secret is absent from the tool arguments and
+result, server and WebSocket traffic, activity receipts, and logs. Password management is a
+local desktop action; a remote client cannot read or provision the vault.
 
 ## Limitations
 

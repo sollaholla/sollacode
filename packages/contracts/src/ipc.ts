@@ -79,6 +79,10 @@ import {
   PreviewAutomationStatus,
   PreviewAutomationStreamEvent,
   PreviewAutomationTypeInput,
+  PreviewAutomationCredentialFillInput,
+  PreviewAutomationCredentialFillResult,
+  PreviewCredentialId,
+  PreviewCredentialSummary,
   PreviewAutomationSelectOptionInput,
   PreviewAutomationSelectOptionResult,
   PreviewAutomationUploadInput,
@@ -1104,6 +1108,32 @@ export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
   ...DesktopPreviewAutomationExpiryFields,
 });
 
+export const DesktopPreviewCredentialSaveInputSchema = Schema.Struct({
+  id: Schema.optional(PreviewCredentialId),
+  label: Schema.String.check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(128)),
+  origin: Schema.String.check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(2048)),
+  username: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+  secret: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(4096)),
+});
+
+export const DesktopPreviewCredentialRemoveInputSchema = Schema.Struct({
+  id: PreviewCredentialId,
+});
+
+export const DesktopPreviewCredentialListForTabInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+});
+
+export const DesktopPreviewCredentialFillInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  input: PreviewAutomationCredentialFillInput,
+  ...DesktopPreviewAutomationExpiryFields,
+});
+
 export const DesktopPreviewAutomationUploadInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationUploadInput,
@@ -1463,6 +1493,24 @@ export interface DesktopPreviewBridge {
    * next download from each of them asks again.
    */
   forgetDownloadDomains: () => Promise<void>;
+  credentials: {
+    /** Metadata only. Passwords remain encrypted in the Electron main process. */
+    list: () => Promise<readonly PreviewCredentialSummary[]>;
+    save: (input: {
+      id?: PreviewCredentialId;
+      label: string;
+      origin: string;
+      username?: string;
+      secret: string;
+    }) => Promise<PreviewCredentialSummary>;
+    remove: (id: PreviewCredentialId) => Promise<void>;
+    listForTab: (tabId: string) => Promise<readonly PreviewCredentialSummary[]>;
+    fill: (
+      tabId: string,
+      input: PreviewAutomationCredentialFillInput,
+      expiresAt?: number,
+    ) => Promise<PreviewAutomationCredentialFillResult>;
+  };
   /**
    * One-shot config for mounting a preview `<webview>`. Replaces three
    * earlier round-trip calls (`getBrowserPartition`, `getWebviewPreferences`,

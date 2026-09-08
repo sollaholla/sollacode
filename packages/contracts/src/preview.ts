@@ -280,6 +280,7 @@ export const PreviewRemoteInputAction = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("type"),
     text: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(4096)),
+    position: Schema.optional(PreviewRemoteFramePoint),
   }),
   // Answering a held download is the one approval a remote client must be able
   // to give: the file is staged on the desktop and the browser blocks until

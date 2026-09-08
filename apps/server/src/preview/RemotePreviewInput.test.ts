@@ -114,6 +114,22 @@ describe("dispatchRemotePreviewInput", () => {
     }),
   );
 
+  it.effect("re-hit-tests the last remote tap while typing", () =>
+    Effect.gen(function* () {
+      const { effect, requests } = run({
+        kind: "type",
+        text: "stable text",
+        position: { x: 0.25, y: 0.5 },
+      });
+      yield* effect;
+
+      expect(requests.map((request) => request.operation)).toEqual(["status", "type"]);
+      expect(requests[1]).toMatchObject({
+        input: { text: "stable text", x: 320, y: 400 },
+      });
+    }),
+  );
+
   it.effect("forwards key presses without a status round-trip", () =>
     Effect.gen(function* () {
       const { effect, requests } = run({ kind: "press", key: "Enter" });

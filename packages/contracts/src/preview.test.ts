@@ -15,6 +15,7 @@ import {
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationCloseInput,
   PreviewAutomationCloseResult,
+  PreviewAutomationCredentialFillInput,
   PreviewAutomationDragInput,
   PreviewAutomationHost,
   PreviewAutomationError,
@@ -23,6 +24,7 @@ import {
   PreviewAutomationResizeInput,
   PreviewAutomationResizeResult,
   PreviewAutomationStatus,
+  PreviewAutomationTypeInput,
   PreviewAutomationUploadInput,
   PreviewAutomationWaitForDownloadResult,
 } from "./previewAutomation.ts";
@@ -37,6 +39,8 @@ const decodeServer = Schema.decodeUnknownSync(DiscoveredLocalServer);
 const decodeViewport = Schema.decodeUnknownSync(PreviewViewportSetting);
 const decodeResizeInput = Schema.decodeUnknownSync(PreviewAutomationResizeInput);
 const decodeDragInput = Schema.decodeUnknownSync(PreviewAutomationDragInput);
+const decodeTypeInput = Schema.decodeUnknownSync(PreviewAutomationTypeInput);
+const decodeCredentialFillInput = Schema.decodeUnknownSync(PreviewAutomationCredentialFillInput);
 const decodeOpenInput = Schema.decodeUnknownSync(PreviewAutomationOpenInput);
 const decodeOpenResult = Schema.decodeUnknownSync(PreviewAutomationOpenResult);
 const decodeCloseInput = Schema.decodeUnknownSync(PreviewAutomationCloseInput);
@@ -363,6 +367,33 @@ describe("PreviewAutomationDragInput", () => {
     expect(
       decodeDragInput({ tabId: "tab-canvas", from: { x: 1, y: 1 }, to: { x: 2, y: 2 } }),
     ).toMatchObject({ tabId: "tab-canvas" });
+  });
+});
+
+describe("preview text targets", () => {
+  it("accepts a coordinate-bound key target and requires paired coordinates", () => {
+    expect(decodeTypeInput({ text: "hello", x: 120, y: 80 })).toEqual({
+      text: "hello",
+      x: 120,
+      y: 80,
+    });
+    expect(() => decodeTypeInput({ text: "hello", x: 120 })).toThrow();
+    expect(() =>
+      decodeTypeInput({ text: "hello", x: 120, y: 80, selector: "#password" }),
+    ).toThrow();
+  });
+
+  it("accepts only an opaque credential ID and field target", () => {
+    expect(
+      decodeCredentialFillInput({ credentialId: "credential-1", locator: "#password" }),
+    ).toEqual({ credentialId: "credential-1", locator: "#password" });
+    expect(() =>
+      decodeCredentialFillInput({
+        credentialId: "credential-1",
+        locator: "#password",
+        selector: "input[type=password]",
+      }),
+    ).toThrow();
   });
 });
 

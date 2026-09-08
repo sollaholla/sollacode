@@ -6391,6 +6391,15 @@ describe("PreviewManager", () => {
           yield* manager.createTab("tab_input");
           yield* manager.registerWebview("tab_input", 42);
           yield* manager.automationType("tab_input", { text: "hello", clear: true });
+          const coordinateType = yield* manager
+            .automationType("tab_input", {
+              text: "coordinate text",
+              x: 120,
+              y: 80,
+            })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(200);
+          yield* Fiber.join(coordinateType);
           yield* manager.automationType("tab_input", { text: "", clear: true });
           yield* manager.automationPress("tab_input", { key: "x" });
 
@@ -6418,7 +6427,10 @@ describe("PreviewManager", () => {
               method === "Emulation.setFocusEmulationEnabled" && params?.["enabled"] === false,
           );
           const insertTextIndex = calls.findIndex(
-            ([method, params]) => method === "Input.insertText" && params?.["text"] === "hello",
+            ([method, params]) =>
+              method === "Input.dispatchKeyEvent" &&
+              params?.["type"] === "char" &&
+              params?.["text"] === "hello",
           );
           const backspaceDownIndex = calls.findIndex(
             ([method, params]) =>
@@ -6444,7 +6456,23 @@ describe("PreviewManager", () => {
               ].some((legacy) => (params["expression"] as string).includes(legacy)),
           );
           expect(legacyTypingExpressions).toEqual([]);
-          expect(sendCommand).toHaveBeenCalledWith("Input.insertText", { text: "hello" });
+          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
+            type: "char",
+            text: "hello",
+            unmodifiedText: "hello",
+          });
+          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
+            type: "mousePressed",
+            x: 120,
+            y: 80,
+            button: "left",
+            clickCount: 1,
+          });
+          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
+            type: "char",
+            text: "coordinate text",
+            unmodifiedText: "coordinate text",
+          });
           expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
             type: "rawKeyDown",
             key: "Backspace",
@@ -6455,11 +6483,11 @@ describe("PreviewManager", () => {
             isKeypad: false,
           });
           expect(enableIndex).toBeGreaterThanOrEqual(0);
-          // Focus emulation alone does not deliver `Input.insertText` to a
+          // Focus emulation alone does not deliver native keyboard text to a
           // hidden guest, so the guest must really be focused for the dispatch
           // and handed back afterwards.
-          expect(focus).toHaveBeenCalledTimes(3);
-          expect(restoreFocus).toHaveBeenCalledTimes(3);
+          expect(focus).toHaveBeenCalledTimes(4);
+          expect(restoreFocus).toHaveBeenCalledTimes(4);
           expect(methods).toContain("Page.bringToFront");
           expect(enableIndex).toBeLessThan(focusOnIndex);
           expect(focusOnIndex).toBeLessThan(insertTextIndex);
@@ -6505,7 +6533,7 @@ describe("PreviewManager", () => {
           expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
             enabled: false,
           });
-          expect(restoreFocus).toHaveBeenCalledTimes(4);
+          expect(restoreFocus).toHaveBeenCalledTimes(5);
           expect(
             sendCommand.mock.calls.filter(
               ([method, params]) =>
@@ -6527,7 +6555,7 @@ describe("PreviewManager", () => {
             text: "!",
             unmodifiedText: "!",
           });
-          expect(restoreFocus).toHaveBeenCalledTimes(5);
+          expect(restoreFocus).toHaveBeenCalledTimes(6);
         }),
       ),
   );

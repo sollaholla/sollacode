@@ -8,6 +8,10 @@ import {
   DesktopPreviewAutomationScrollInputSchema,
   DesktopPreviewAutomationStatusSchema,
   DesktopPreviewAutomationTypeInputSchema,
+  DesktopPreviewCredentialFillInputSchema,
+  DesktopPreviewCredentialListForTabInputSchema,
+  DesktopPreviewCredentialRemoveInputSchema,
+  DesktopPreviewCredentialSaveInputSchema,
   DesktopPreviewAutomationSelectOptionInputSchema,
   DesktopPreviewAutomationUploadInputSchema,
   DesktopPreviewAutomationWaitForDownloadInputSchema,
@@ -26,6 +30,8 @@ import {
   PreviewAnnotationPayloadSchema,
   PreviewAutomationWaitForDownloadResult,
   PreviewAutomationSnapshot,
+  PreviewAutomationCredentialFillResult,
+  PreviewCredentialSummary,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -35,6 +41,7 @@ import * as NodeURL from "node:url";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import { previewBrowserProfileScope } from "../../preview/browserProfileScope.ts";
 import * as PreviewManager from "../../preview/Manager.ts";
+import * as BrowserCredentialVault from "../../preview/BrowserCredentialVault.ts";
 import { PREVIEW_WEBVIEW_PREFERENCES } from "../../preview/WebviewPreferences.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
@@ -398,7 +405,7 @@ export const automationSnapshot = DesktopIpc.makeIpcMethod({
  * push-to-talk could time out remotely and still click or type after release.
  */
 const runAutomationInputBeforeExpiry = <A, E, R>(input: {
-  readonly operation: "click" | "drag" | "type" | "press";
+  readonly operation: "click" | "drag" | "type" | "press" | "credentialFill";
   readonly tabId: string;
   readonly expiresAt: number | undefined;
   readonly effect: Effect.Effect<A, E, R>;
@@ -478,6 +485,94 @@ export const automationType = DesktopIpc.makeIpcMethod({
       expiresAt,
       effect: manager.automationType(tabId, input, { expiresAt }),
     });
+  }),
+});
+
+export const listCredentials = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CREDENTIAL_LIST_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Array(PreviewCredentialSummary),
+  handler: Effect.fn("desktop.ipc.preview.listCredentials")(function* () {
+    return yield* (yield* BrowserCredentialVault.BrowserCredentialVault).list;
+  }),
+});
+
+export const saveCredential = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CREDENTIAL_SAVE_CHANNEL,
+  payload: DesktopPreviewCredentialSaveInputSchema,
+  result: PreviewCredentialSummary,
+  handler: Effect.fn("desktop.ipc.preview.saveCredential")(function* (input) {
+    return yield* (yield* BrowserCredentialVault.BrowserCredentialVault).save({
+      label: input.label,
+      origin: input.origin,
+      secret: input.secret,
+      ...(input.id === undefined ? {} : { id: input.id }),
+      ...(input.username === undefined ? {} : { username: input.username }),
+    });
+  }),
+});
+
+export const removeCredential = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CREDENTIAL_REMOVE_CHANNEL,
+  payload: DesktopPreviewCredentialRemoveInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.removeCredential")(function* ({ id }) {
+    yield* (yield* BrowserCredentialVault.BrowserCredentialVault).remove(id);
+  }),
+});
+
+export const listCredentialsForTab = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CREDENTIAL_LIST_FOR_TAB_CHANNEL,
+  payload: DesktopPreviewCredentialListForTabInputSchema,
+  result: Schema.Array(PreviewCredentialSummary),
+  handler: Effect.fn("desktop.ipc.preview.listCredentialsForTab")(function* ({ tabId }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    const status = yield* manager.automationStatus(tabId);
+    if (status.url === null) {
+      return yield* new BrowserCredentialVault.BrowserCredentialOriginError({
+        reason: "The browser tab has no active website origin.",
+      });
+    }
+    return yield* (yield* BrowserCredentialVault.BrowserCredentialVault).listForUrl(status.url);
+  }),
+});
+
+export const fillCredential = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_CREDENTIAL_FILL_CHANNEL,
+  payload: DesktopPreviewCredentialFillInputSchema,
+  result: PreviewAutomationCredentialFillResult,
+  handler: Effect.fn("desktop.ipc.preview.fillCredential")(function* ({ tabId, input, expiresAt }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    const vault = yield* BrowserCredentialVault.BrowserCredentialVault;
+    const status = yield* manager.automationStatus(tabId);
+    if (status.url === null) {
+      return yield* new BrowserCredentialVault.BrowserCredentialOriginError({
+        reason: "The browser tab has no active website origin.",
+      });
+    }
+    const resolved = yield* vault.resolveForUrl(input.credentialId, status.url);
+    yield* runAutomationInputBeforeExpiry({
+      operation: "credentialFill",
+      tabId,
+      expiresAt,
+      effect: manager.automationType(
+        tabId,
+        {
+          text: resolved.secret,
+          ...(input.selector === undefined ? {} : { selector: input.selector }),
+          ...(input.locator === undefined ? {} : { locator: input.locator }),
+          ...(input.x === undefined ? {} : { x: input.x }),
+          ...(input.y === undefined ? {} : { y: input.y }),
+          clear: input.clear ?? true,
+        },
+        { expiresAt },
+      ),
+    });
+    return {
+      credentialId: resolved.summary.id,
+      label: resolved.summary.label,
+      origin: resolved.summary.origin,
+    };
   }),
 });
 
@@ -613,6 +708,11 @@ export const methods = [
   automationClick,
   automationDrag,
   automationType,
+  listCredentials,
+  saveCredential,
+  removeCredential,
+  listCredentialsForTab,
+  fillCredential,
   automationUpload,
   automationSelectOption,
   automationPress,
