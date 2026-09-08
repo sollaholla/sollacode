@@ -201,6 +201,28 @@ function describeNavigationLoadFailure(cause: unknown): {
 }
 
 /**
+ * OAuth authorization codes are one-time values. When an auth child crosses
+ * back from the provider to its callback, prepare a fresh compiled-script
+ * cache before that first callback request instead of trying to repair a
+ * blank page by reloading an already-consumed code.
+ */
+export function isPopupOauthCallbackNavigation(currentUrl: string, nextUrl: string): boolean {
+  try {
+    const current = new URL(currentUrl);
+    const next = new URL(nextUrl);
+    return (
+      current.protocol === "https:" &&
+      next.protocol === "https:" &&
+      current.origin !== next.origin &&
+      next.searchParams.has("code") &&
+      next.searchParams.has("state")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * A screenshot and its semantic metadata are one observation. If the live
  * guest changes while Chromium is producing the image, pairing the old pixels
  * with the new DOM is worse than returning no image at all: authentication
@@ -2290,6 +2312,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const unavailable = yield* Deferred.make<void>();
     let active = true;
     let humanInputGeneration = 0;
+    let oauthCallbackPrepared = false;
     const closed = (): void => {
       if (active) {
         runFork(detachPopupWindow(tabId, popupWebContents.id));
@@ -2336,6 +2359,73 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const humanInput = (_event: unknown, rawSignal?: unknown): void => {
       if (active) runFork(handleHumanInput(rawSignal));
     };
+    const willNavigate = (
+      event: Electron.Event & { readonly isMainFrame: boolean; readonly url: string },
+    ): void => {
+      if (
+        !active ||
+        oauthCallbackPrepared ||
+        !event.isMainFrame ||
+        !isPopupOauthCallbackNavigation(popupWebContents.getURL(), event.url)
+      ) {
+        return;
+      }
+
+      // A stale V8 code-cache entry can leave a script-rendered callback as a
+      // permanent white window. The URL carries a one-use authorization code,
+      // so reloading after the failure is inherently unreliable. Hold the
+      // original navigation, clear generated code only (cookies and site data
+      // stay intact), then dispatch that exact URL for its first request.
+      event.preventDefault();
+      oauthCallbackPrepared = true;
+      const callbackUrl = event.url;
+      runFork(
+        Effect.gen(function* () {
+          const cleared = yield* Effect.exit(
+            attemptPromiseWithin(
+              {
+                operation: "preparePopupOauthCallback.clearCodeCaches",
+                tabId,
+                webContentsId: popupWebContents.id,
+              },
+              () => popupWebContents.session.clearCodeCaches({ urls: [] }),
+              2_000,
+            ),
+          );
+          if (Exit.isFailure(cleared)) {
+            yield* Effect.logWarning("Could not clear the preview OAuth callback code cache.", {
+              tabId,
+              webContentsId: popupWebContents.id,
+            });
+          }
+          if (!active || popupWebContents.isDestroyed()) return;
+          yield* attemptPromise(
+            {
+              operation: "preparePopupOauthCallback.loadURL",
+              tabId,
+              webContentsId: popupWebContents.id,
+            },
+            () => popupWebContents.loadURL(callbackUrl),
+          );
+        }).pipe(
+          Effect.catchCause(() =>
+            Effect.sync(() => {
+              // The provider can retry from the page that stayed visible. Do
+              // not log the callback error: Chromium commonly embeds the full
+              // one-time URL, including its authorization code, in that text.
+              oauthCallbackPrepared = false;
+            }).pipe(
+              Effect.andThen(
+                Effect.logWarning("Could not continue the preview OAuth callback.", {
+                  tabId,
+                  webContentsId: popupWebContents.id,
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+    };
     yield* Scope.addFinalizer(scope, Deferred.succeed(unavailable, undefined).pipe(Effect.asVoid));
     yield* Scope.addFinalizer(
       scope,
@@ -2346,6 +2436,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           window.off("closed", closed);
           if (!popupWebContents.isDestroyed()) {
             popupWebContents.off("destroyed", closed);
+            popupWebContents.off("will-navigate", willNavigate);
             popupWebContents.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
           }
         },
@@ -2356,6 +2447,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       () => {
         window.on("closed", closed);
         popupWebContents.on("destroyed", closed);
+        popupWebContents.on("will-navigate", willNavigate);
         popupWebContents.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
       },
     ).pipe(Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)));
