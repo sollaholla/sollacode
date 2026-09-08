@@ -684,6 +684,52 @@ describe("provider usage summaries", () => {
     });
   });
 
+  it("does not replace account usage with a model-specific Codex limit", () => {
+    const resetAt = Date.parse("2026-09-15T01:26:12.000Z");
+    const provider = {
+      ...makeProvider("codex", "codex-work", "work@example.com"),
+      accountUsage: {
+        rateLimits: {
+          limitId: "codex",
+          planType: "pro",
+          primary: {
+            usedPercent: 61,
+            windowDurationMins: 10_080,
+            resetsAt: resetAt / 1_000,
+          },
+        },
+      },
+      accountUsageReportedAt: "2026-09-08T17:53:03.019Z",
+    } satisfies ServerProvider;
+
+    const reports = deriveProviderUsageReports(
+      [provider],
+      [
+        usageActivity("model-limit", "codex", "codex-work", {
+          rateLimits: {
+            limitId: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            primary: {
+              usedPercent: 0,
+              windowDurationMins: 300,
+              resetsAt: Date.parse("2026-09-08T23:01:54.000Z") / 1_000,
+            },
+            secondary: {
+              usedPercent: 0,
+              windowDurationMins: 10_080,
+              resetsAt: Date.parse("2026-09-15T18:01:54.000Z") / 1_000,
+            },
+          },
+        }),
+      ],
+    );
+
+    expect(reports[providerUsageAccountKey(provider)!]).toMatchObject({
+      reportedAt: "2026-09-08T17:53:03.019Z",
+      windows: [expect.objectContaining({ key: "weekly", usedPercent: 61, resetAt })],
+    });
+  });
+
   it("ignores a transient Codex zero within the same weekly reset cycle", () => {
     const provider = makeProvider("codex", "codex-work", "work@example.com");
     const accountKey = providerUsageAccountKey(provider)!;
@@ -862,7 +908,7 @@ describe("provider usage summaries", () => {
     ]);
   });
 
-  it("accepts an out-of-band Codex reset that starts a new weekly window immediately", () => {
+  it("accepts an out-of-band Codex reset after its fixed boundary is confirmed", () => {
     const provider = makeProvider("codex", "codex-work", "work@example.com");
     const accountKey = providerUsageAccountKey(provider)!;
     const previous = mergeProviderUsageEntry(
@@ -882,7 +928,7 @@ describe("provider usage summaries", () => {
         ],
       },
     );
-    const reset = mergeProviderUsageEntry(previous, {
+    const candidate = mergeProviderUsageEntry(previous, {
       accountKey,
       driver: provider.driver,
       reportedAt: "2026-08-13T14:48:36.619Z",
@@ -896,12 +942,87 @@ describe("provider usage summaries", () => {
         },
       ],
     });
+    const reset = mergeProviderUsageEntry(candidate, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-08-13T14:49:02.000Z",
+      windows: [
+        {
+          key: "weekly",
+          label: "Weekly",
+          usedPercent: 0,
+          resetAt: Date.parse("2026-08-20T10:31:33.000-04:00"),
+          windowDurationMs: 7 * 24 * 60 * 60_000,
+        },
+      ],
+    });
 
+    expect(candidate[accountKey]?.windows).toEqual([
+      expect.objectContaining({ key: "weekly", usedPercent: 100 }),
+    ]);
     expect(reset[accountKey]?.windows).toEqual([
       expect.objectContaining({
         key: "weekly",
         usedPercent: 0,
         resetAt: Date.parse("2026-08-20T10:31:33.000-04:00"),
+      }),
+    ]);
+  });
+
+  it("rejects repeated Codex zeros whose alleged reset boundary keeps moving", () => {
+    const provider = makeProvider("codex", "codex-work", "work@example.com");
+    const accountKey = providerUsageAccountKey(provider)!;
+    const previous = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: provider.driver,
+        reportedAt: "2026-09-08T17:53:03.019Z",
+        windows: [
+          {
+            key: "weekly",
+            label: "Weekly",
+            usedPercent: 61,
+            resetAt: Date.parse("2026-09-15T01:26:12.000Z"),
+            windowDurationMs: 7 * 24 * 60 * 60_000,
+          },
+        ],
+      },
+    );
+    const firstZero = mergeProviderUsageEntry(previous, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-09-08T17:55:30.704Z",
+      windows: [
+        {
+          key: "weekly",
+          label: "Weekly",
+          usedPercent: 0,
+          resetAt: Date.parse("2026-09-15T17:55:03.000Z"),
+          windowDurationMs: 7 * 24 * 60 * 60_000,
+        },
+      ],
+    });
+    const movingZero = mergeProviderUsageEntry(firstZero, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-09-08T17:55:54.490Z",
+      windows: [
+        {
+          key: "weekly",
+          label: "Weekly",
+          usedPercent: 0,
+          resetAt: Date.parse("2026-09-15T17:55:32.000Z"),
+          windowDurationMs: 7 * 24 * 60 * 60_000,
+        },
+      ],
+    });
+
+    expect(movingZero[accountKey]?.windows).toEqual([
+      expect.objectContaining({
+        key: "weekly",
+        usedPercent: 61,
+        resetAt: Date.parse("2026-09-15T01:26:12.000Z"),
       }),
     ]);
   });

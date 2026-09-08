@@ -7,12 +7,13 @@ it does not reopen when focus returns to the pill. Touch stays tap-to-toggle.
 Refresh acts on the selected provider instance, so separate work and personal accounts keep their
 own usage state.
 
-Codex readings are stabilized before display. Usage within one reset cycle cannot move backward
-from a single report: Solla Code accepts the lower value immediately when the reset timestamp proves
-a new cycle, or after a second consistent lower report when reset metadata is incomplete. This keeps
-transient 0% responses from replacing real usage while still showing a genuine scheduled or
-out-of-band reset promptly. The freshness window includes scheduling headroom beyond battery-saver
-mode's refresh cadence, so a healthy provider does not become stale between normal checks.
+Codex readings are stabilized before display. Account-wide quota and model-specific quota buckets
+remain separate, so selecting a model with an unused quota cannot replace the account's Weekly row
+with 0%. Usage within one reset cycle cannot move backward from a single report: Solla Code accepts
+a scheduled reset immediately after the previous boundary passes, and accepts an earlier reset after
+a second report confirms the same new boundary. A reset timestamp that keeps moving forward with the
+clock is ignored. The freshness window includes scheduling headroom beyond battery-saver mode's
+refresh cadence, so a healthy provider does not become stale between normal checks.
 
 If an authenticated provider check briefly fails with a network, socket, or server error, Solla Code
 keeps the last confirmed account and usage for up to two minutes and retries every 30 seconds. This
