@@ -5,6 +5,7 @@ import {
   isPreviewableUrl,
   normalizePreviewUrl,
   PreviewUrlNormalizationError,
+  restartSafePreviewUrl,
 } from "./preview.ts";
 
 describe("isLoopbackHost", () => {
@@ -97,5 +98,36 @@ describe("normalizePreviewUrl", () => {
         /user|password|access_token|secret|fragment/,
       );
     }
+  });
+});
+
+describe("restartSafePreviewUrl", () => {
+  it("restarts an OAuth authorization at the relying site's stable origin", () => {
+    expect(
+      restartSafePreviewUrl(
+        "https://login.squarespace.com/api/1/login/oauth/provider/authorize" +
+          "?client_id=client&state=one-time&redirect_uri=" +
+          encodeURIComponent("https://account.squarespace.com/oauth-connect"),
+      ),
+    ).toBe("https://account.squarespace.com/");
+  });
+
+  it.each([
+    "https://login.example.com/oauth/callback?code=secret&state=one-time",
+    "https://login.example.com/saml/callback?SAMLResponse=secret&RelayState=one-time",
+  ])("strips a completed auth transaction instead of replaying %s", (url) => {
+    expect(restartSafePreviewUrl(url)).toBe("https://login.example.com/");
+  });
+
+  it("does not rewrite ordinary application state", () => {
+    const url = "https://example.com/projects?state=active&scope=team";
+    expect(restartSafePreviewUrl(url)).toBe(url);
+  });
+
+  it("leaves malformed and unsupported URLs unchanged", () => {
+    expect(restartSafePreviewUrl("not a URL")).toBe("not a URL");
+    expect(restartSafePreviewUrl("file:///tmp/callback?code=secret")).toBe(
+      "file:///tmp/callback?code=secret",
+    );
   });
 });

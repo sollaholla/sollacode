@@ -77,9 +77,9 @@ can communicate with and return to their opener; popup permission is present whe
 the guest rather than being added after its first navigation. The child stays above its Solla Code
 window, and preview status, snapshots, and input follow the child until it closes. Remote viewers
 therefore see and control the current sign-in step instead of continuing to show the opener behind it.
-For top-level responses inside that child only, the desktop preserves the opener relationship when a
-cross-origin isolation header would otherwise strand the successful callback in a blank window. The
-policy does not change subresources, ordinary browser tabs, or pages outside the native child.
+One-time OAuth and SAML transaction URLs are never replayed after Solla Code restarts. Their durable
+session entry points at the stable site origin instead, so a restored login starts a fresh transaction
+and never persists an authorization code or state value in browser-tab state.
 
 The desktop guest uses the native user agent produced by its bundled Electron and Chromium runtime,
 along with the real platform, languages, cookies, cache, and storage. Solla Code does not rewrite

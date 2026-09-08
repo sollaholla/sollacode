@@ -26,7 +26,11 @@ import {
   PreviewSessionLookupError,
   type PreviewSessionSnapshot,
 } from "@t3tools/contracts";
-import { isPreviewUrlNormalizationError, normalizePreviewUrl } from "@t3tools/shared/preview";
+import {
+  isPreviewUrlNormalizationError,
+  normalizePreviewUrl,
+  restartSafePreviewUrl,
+} from "@t3tools/shared/preview";
 import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -150,6 +154,18 @@ const buildIdleSnapshot = (input: {
   updatedAt: input.updatedAt,
 });
 
+const durablePreviewSnapshot = (snapshot: PreviewSessionSnapshot): PreviewSessionSnapshot => {
+  if (snapshot.navStatus._tag === "Idle") return snapshot;
+  const url = restartSafePreviewUrl(snapshot.navStatus.url);
+  if (url === snapshot.navStatus.url) return snapshot;
+  return {
+    ...snapshot,
+    navStatus: { ...snapshot.navStatus, url, title: "" },
+    canGoBack: false,
+    canGoForward: false,
+  };
+};
+
 export const make = Effect.gen(function* PreviewManagerMake() {
   const serverEpoch = NodeCrypto.randomUUID();
   const sessionStore = yield* PreviewSessionStore;
@@ -165,9 +181,33 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         Effect.logWarning("preview.session-restore-failed", { cause }).pipe(Effect.as([])),
       ),
     );
+  const restartSafeSessions = restoredSessions.map((session) => {
+    const snapshot = durablePreviewSnapshot(session.snapshot);
+    return {
+      changed: snapshot !== session.snapshot,
+      session: { ...session, snapshot },
+    };
+  });
+  // Rows created by older versions can still contain an expired transaction.
+  // Repair them before exposing restored state so the first upgraded restart
+  // cannot replay the same dead authorization page again.
+  yield* Effect.forEach(
+    restartSafeSessions,
+    ({ changed, session }) =>
+      changed
+        ? sessionStore
+            .upsert(session)
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("preview.session-repair-failed", { cause }),
+              ),
+            )
+        : Effect.void,
+    { discard: true },
+  );
   const restoredState: ManagerState = {
     sessions: new Map(
-      restoredSessions.map((session) => [
+      restartSafeSessions.map(({ session }) => [
         compositeKey(session.threadId, session.tabId),
         {
           threadId: session.threadId,
@@ -206,7 +246,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
       .upsert({
         threadId: snapshot.threadId,
         tabId: snapshot.tabId,
-        snapshot,
+        snapshot: durablePreviewSnapshot(snapshot),
         updatedAt: snapshot.updatedAt,
       })
       .pipe(
