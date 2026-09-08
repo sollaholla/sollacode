@@ -70,7 +70,13 @@ export function dispatchRemotePreviewInput(input: {
   const toCss = (
     viewport: PreviewRenderedViewportSize,
     point: { readonly x: number; readonly y: number },
-  ) => ({ x: point.x * viewport.width, y: point.y * viewport.height });
+  ) => ({
+    // Fractions include 1 so a touch on the visible bottom/right edge survives
+    // validation. CSS coordinates equal to innerWidth/innerHeight sit just
+    // outside the final pixel, so keep that endpoint half a pixel in bounds.
+    x: Math.min(point.x * viewport.width, Math.max(0, viewport.width - 0.5)),
+    y: Math.min(point.y * viewport.height, Math.max(0, viewport.height - 0.5)),
+  });
 
   const action = input.request.action;
   const dispatch = Effect.gen(function* () {

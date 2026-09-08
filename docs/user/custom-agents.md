@@ -74,7 +74,9 @@ Links that explicitly target a new browser tab open as a sibling Solla Code brow
 thread. The original page stays in place, and the new tab is persisted and selected like one opened
 with the Browser `+` control. OAuth-style popup windows remain real child windows so sign-in flows
 can communicate with and return to their opener; popup permission is present when Electron creates
-the guest rather than being added after its first navigation.
+the guest rather than being added after its first navigation. The child stays above its Solla Code
+window, and preview status, snapshots, and input follow the child until it closes. Remote viewers
+therefore see and control the current sign-in step instead of continuing to show the opener behind it.
 
 The desktop guest uses the native user agent produced by its bundled Electron and Chromium runtime,
 along with the real platform, languages, cookies, cache, and storage. Solla Code does not rewrite
@@ -91,6 +93,10 @@ opacity, so a newly opened page starts loading before its thread or tab is selec
 clipped, resized, or stacked over chat and files. A native snapshot fallback briefly raises the
 same geometry into the compositor; selecting a tab changes only its presentation, and
 automation preserves the fill-the-panel viewport unless the user or tool explicitly resizes it.
+`preview_resize` completes only after both the saved viewport setting and the guest's measured CSS
+viewport agree. The desktop host supplies that measurement when Electron temporarily rejects a
+renderer-side webview read, so a successfully rendered phone or freeform viewport does not time out
+and roll itself back to Fill.
 When preview automation connects or begins an MCP operation, Solla Code makes every registered
 preview tab foreground-equivalent before running that operation and renews the fleet-wide lease
 throughout long-running operations. The lease is released one minute after the last operation

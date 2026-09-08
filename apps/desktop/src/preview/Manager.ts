@@ -739,6 +739,12 @@ interface ManagedListeners {
   readonly unavailable: Deferred.Deferred<void>;
 }
 
+interface PopupWindowSession {
+  readonly window: BrowserWindow;
+  readonly webContents: Electron.WebContents;
+  readonly sourceWebContentsId: number;
+}
+
 type FrameCaptureConsumer = "picture-in-picture" | "recording";
 
 interface FrameCaptureSession {
@@ -871,8 +877,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const annotationThemeRef = yield* Ref.make(DEFAULT_ANNOTATION_THEME);
   const mainWindowRef = yield* Ref.make<Option.Option<BrowserWindow>>(Option.none());
+  // Window-open handlers are synchronous, so keep a synchronous mirror of the
+  // Effect Ref for parenting OAuth children to the app window.
+  let mainWindowForPopups: BrowserWindow | null = null;
   const tabsRef = yield* SynchronizedRef.make<ReadonlyMap<string, PreviewTabState>>(new Map());
   const attachedRef = yield* Ref.make<ReadonlyMap<number, ManagedListeners>>(new Map());
+  /**
+   * OAuth SDKs need a real child BrowserWindow and its synchronous WindowProxy.
+   * Keep that native child associated with the durable preview tab so remote
+   * screenshots and input follow the page the user can currently see.
+   */
+  const popupWindowsByTab = new Map<string, ReadonlyArray<PopupWindowSession>>();
+  const popupTabByWebContentsId = new Map<number, string>();
   const listenersRef = yield* Ref.make<ReadonlySet<Listener>>(new Set());
   const pointerEventListenersRef = yield* Ref.make<ReadonlySet<PointerEventListener>>(new Set());
   const newTabRequestListenersRef = yield* Ref.make<ReadonlySet<NewTabRequestListener>>(new Set());
@@ -1238,6 +1254,29 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
   });
 
+  const currentPopupForTab = (tabId: string): PopupWindowSession | null => {
+    const sessions = popupWindowsByTab.get(tabId);
+    if (!sessions) return null;
+    for (let index = sessions.length - 1; index >= 0; index -= 1) {
+      const session = sessions[index];
+      if (session && !session.window.isDestroyed() && !session.webContents.isDestroyed()) {
+        return session;
+      }
+    }
+    return null;
+  };
+
+  const currentWebContentsForTab = (tab: PreviewTabState): Electron.WebContents | null => {
+    const popup = currentPopupForTab(tab.tabId);
+    if (popup) return popup.webContents;
+    if (tab.webContentsId === null) return null;
+    const wc = webContents.fromId(tab.webContentsId);
+    return wc && !wc.isDestroyed() ? wc : null;
+  };
+
+  const isCurrentWebContentsForTab = (tab: PreviewTabState, webContentsId: number): boolean =>
+    currentWebContentsForTab(tab)?.id === webContentsId;
+
   /** Newest-first, and short: this is a notice, not a download history. */
   const TAB_DOWNLOAD_LIMIT = 5;
   /** Short enough to feel immediate once the user answers. */
@@ -1248,8 +1287,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const tabs = yield* SynchronizedRef.get(tabsRef);
         // The guest that started it owns the notice, so it appears on the tab
         // that fetched the file rather than wherever the user happens to be.
-        const entry = [...tabs.entries()].find(([, tab]) => tab.webContentsId === webContentsId);
-        if (!entry) return;
+        const popupTabId = popupTabByWebContentsId.get(webContentsId);
+        const entry = popupTabId
+          ? ([popupTabId, tabs.get(popupTabId)] as const)
+          : [...tabs.entries()].find(([, tab]) => tab.webContentsId === webContentsId);
+        if (!entry?.[1]) return;
         const [tabId, tab] = entry;
         yield* update(tabId, {
           downloads: [download, ...tab.downloads].slice(0, TAB_DOWNLOAD_LIMIT),
@@ -1265,8 +1307,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         if (event.kind === "pending") {
           // The guest that asked for the file owns the question, so the card
           // appears on that tab rather than wherever the user happens to be.
-          const entry = [...tabs.entries()].find(([, tab]) => tab.webContentsId === webContentsId);
-          if (!entry) return;
+          const popupTabId = popupTabByWebContentsId.get(webContentsId);
+          const entry = popupTabId
+            ? ([popupTabId, tabs.get(popupTabId)] as const)
+            : [...tabs.entries()].find(([, tab]) => tab.webContentsId === webContentsId);
+          if (!entry?.[1]) return;
           const [tabId, tab] = entry;
           yield* update(tabId, {
             pendingDownloadApprovals: [...tab.pendingDownloadApprovals, event.approval],
@@ -1299,8 +1344,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (tab.webContentsId == null) {
       return yield* new PreviewWebviewNotInitializedError({ tabId });
     }
-    const wc = webContents.fromId(tab.webContentsId);
-    if (!wc || wc.isDestroyed()) {
+    const wc = currentWebContentsForTab(tab);
+    if (!wc) {
       return yield* new PreviewWebContentsNotFoundError({
         tabId,
         webContentsId: tab.webContentsId,
@@ -1318,7 +1363,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (!tab || (yield* Ref.get(closingTabIdsRef)).has(tabId)) {
       return yield* new PreviewTabNotFoundError({ tabId });
     }
-    if (tab.webContentsId !== webContentsId || wc.isDestroyed()) {
+    if (!isCurrentWebContentsForTab(tab, webContentsId) || wc.isDestroyed()) {
       return yield* new PreviewWebContentsNotFoundError({ tabId, webContentsId });
     }
   });
@@ -1378,6 +1423,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
 
   const tabIdForWebContents = Effect.fnUntraced(function* (webContentsId: number) {
+    const popupTabId = popupTabByWebContentsId.get(webContentsId);
+    if (popupTabId) return popupTabId;
     const tabs = yield* SynchronizedRef.get(tabsRef);
     return (
       Array.from(tabs.entries()).find(([, tab]) => tab.webContentsId === webContentsId)?.[0] ?? null
@@ -1547,7 +1594,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     function* (tabId: string, webContentsId: number) {
       if (hasControlActivity(tabId)) return;
       const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-      if (tab?.webContentsId !== webContentsId || tab.colorScheme !== "system") return;
+      if (!tab || !isCurrentWebContentsForTab(tab, webContentsId) || tab.colorScheme !== "system") {
+        return;
+      }
       yield* detachControlSession(webContentsId);
     },
   );
@@ -1954,7 +2003,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         Effect.gen(function* () {
           activityLeases.release(tabId, actionEvent.id);
           yield* recordActivityLeaseMetrics();
-          yield* detachControlSessionIfIdle(tabId, wc.id);
+          if (
+            !hasControlActivity(tabId) &&
+            (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.colorScheme === "system"
+          ) {
+            yield* detachControlSession(wc.id);
+          }
         }),
       ),
     );
@@ -2097,6 +2151,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const handleWebContentsDestroyed = Effect.fn("PreviewManager.handleWebContentsDestroyed")(
     function* (tabId: string, webContentsId: number) {
+      const currentTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (currentTab?.webContentsId === webContentsId) {
+        yield* closePopupWindowsForTab(tabId);
+      }
       // Wake any action blocked on Chromium before closing its debugger/listener
       // scopes. This prevents teardown from leaving an in-flight Promise holding
       // the dead Electron wrapper until a command timeout fires.
@@ -2141,6 +2199,133 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (Option.isSome(next)) yield* emit(tabId, next.value);
     },
   );
+
+  const detachPopupWindow = Effect.fn("PreviewManager.detachPopupWindow")(function* (
+    tabId: string,
+    webContentsId: number,
+  ) {
+    const sessions = popupWindowsByTab.get(tabId) ?? [];
+    const session = sessions.find((candidate) => candidate.webContents.id === webContentsId);
+    if (!session) return;
+
+    const remaining = sessions.filter((candidate) => candidate.webContents.id !== webContentsId);
+    if (remaining.length > 0) popupWindowsByTab.set(tabId, remaining);
+    else popupWindowsByTab.delete(tabId);
+    popupTabByWebContentsId.delete(webContentsId);
+    invalidatePlaywrightExecutionContext(tabId, webContentsId);
+    automationForegroundWebContentsIds.delete(webContentsId);
+    yield* markWebContentsUnavailable(webContentsId);
+    yield* Effect.all(
+      [
+        detachControlSession(webContentsId),
+        detachListeners(webContentsId),
+        clearWebContentsDiagnostics(webContentsId),
+      ],
+      { concurrency: 3, discard: true },
+    );
+    if ((yield* SynchronizedRef.get(tabsRef)).has(tabId)) {
+      // The remote frame switches back to the opener as soon as the child
+      // closes. Emit even though the persisted tab fields did not change so
+      // every client refreshes that surface promptly.
+      yield* update(tabId, {});
+    }
+  });
+
+  const closePopupWindowsForTab = Effect.fn("PreviewManager.closePopupWindowsForTab")(function* (
+    tabId: string,
+  ) {
+    const sessions = [...(popupWindowsByTab.get(tabId) ?? [])];
+    for (const session of sessions) {
+      yield* detachPopupWindow(tabId, session.webContents.id);
+      yield* attempt(
+        {
+          operation: "closePopupWindow",
+          tabId,
+          webContentsId: session.webContents.id,
+        },
+        () => {
+          if (!session.window.isDestroyed()) session.window.close();
+        },
+      ).pipe(Effect.ignore);
+    }
+  });
+
+  const attachPopupWindow = Effect.fn("PreviewManager.attachPopupWindow")(function* (
+    tabId: string,
+    sourceWebContentsId: number,
+    window: BrowserWindow,
+  ) {
+    const popupWebContents = window.webContents;
+    if (window.isDestroyed() || popupWebContents.isDestroyed()) return;
+    const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+    if (
+      !tab ||
+      (yield* Ref.get(closingTabIdsRef)).has(tabId) ||
+      (currentPopupForTab(tabId)?.webContents.id !== sourceWebContentsId &&
+        tab.webContentsId !== sourceWebContentsId)
+    ) {
+      yield* attempt(
+        { operation: "closeOrphanedPopupWindow", tabId, webContentsId: popupWebContents.id },
+        () => {
+          if (!window.isDestroyed()) window.close();
+        },
+      ).pipe(Effect.ignore);
+      return;
+    }
+    if (popupTabByWebContentsId.has(popupWebContents.id)) return;
+
+    const scope = yield* Scope.fork(parentScope, "sequential");
+    const unavailable = yield* Deferred.make<void>();
+    let active = true;
+    const closed = (): void => {
+      if (active) runFork(detachPopupWindow(tabId, popupWebContents.id));
+    };
+    yield* Scope.addFinalizer(scope, Deferred.succeed(unavailable, undefined).pipe(Effect.asVoid));
+    yield* Scope.addFinalizer(
+      scope,
+      attempt(
+        { operation: "detachPopupWindowListeners", tabId, webContentsId: popupWebContents.id },
+        () => {
+          active = false;
+          window.off("closed", closed);
+          if (!popupWebContents.isDestroyed()) popupWebContents.off("destroyed", closed);
+        },
+      ).pipe(Effect.ignore),
+    );
+    yield* attempt(
+      { operation: "attachPopupWindowListeners", tabId, webContentsId: popupWebContents.id },
+      () => {
+        window.on("closed", closed);
+        popupWebContents.on("destroyed", closed);
+      },
+    ).pipe(Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)));
+
+    const sessions = popupWindowsByTab.get(tabId) ?? [];
+    popupWindowsByTab.set(tabId, [
+      ...sessions,
+      { window, webContents: popupWebContents, sourceWebContentsId },
+    ]);
+    popupTabByWebContentsId.set(popupWebContents.id, tabId);
+    yield* Ref.update(attachedRef, (attached) =>
+      replaceMap(attached, (copy) => {
+        copy.set(popupWebContents.id, { scope, unavailable });
+      }),
+    );
+    invalidatePlaywrightExecutionContext(tabId);
+    yield* update(tabId, {});
+    // A popup can appear while an agent's one-minute foreground lease is
+    // active. Bring the new target into that same lease immediately so the
+    // very next snapshot or phone tap sees a ready auth page.
+    yield* activateAutomationForegroundIfActiveForTab(tabId, popupWebContents).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not foreground a preview popup window.", {
+          tabId,
+          webContentsId: popupWebContents.id,
+          cause,
+        }),
+      ),
+    );
+  });
 
   const isAppShortcutPress = (input: Electron.Input): boolean =>
     input.type === "keyDown" &&
@@ -2955,6 +3140,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (!listenersActive) return;
       runFork(showGuestContextMenu(tabId, wc, params));
     };
+    const didCreateWindow = (window: BrowserWindow): void => {
+      if (listenersActive) runFork(attachPopupWindow(tabId, wc.id, window));
+    };
     yield* Scope.addFinalizer(scope, Deferred.succeed(unavailable, undefined).pipe(Effect.asVoid));
     yield* Scope.addFinalizer(
       scope,
@@ -2970,6 +3158,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.off("did-fail-load", failed as never);
         wc.off("before-input-event", beforeInput);
         wc.off("context-menu", contextMenu);
+        wc.off("did-create-window", didCreateWindow);
         wc.off("destroyed", destroyed);
         wc.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
         guestEditorFocusedTabs.delete(tabId);
@@ -2985,6 +3174,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.on("did-stop-loading", sync);
         wc.on("did-fail-load", failed as never);
         wc.on("destroyed", destroyed);
+        wc.on("did-create-window", didCreateWindow);
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         wc.setWindowOpenHandler(({ url, disposition, features, frameName, postBody }) => {
           if (!listenersActive) return { action: "deny" };
@@ -3023,6 +3213,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             }),
           );
           if (isChildWindow) {
+            const parent =
+              mainWindowForPopups && !mainWindowForPopups.isDestroyed()
+                ? mainWindowForPopups
+                : undefined;
             return {
               action: "allow",
               // Centred on the app rather than wherever the OS would drop it.
@@ -3031,7 +3225,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               // window opening off to one side is easy to miss entirely, and
               // is invisible to anyone watching this machine through the
               // browser panel from another device.
-              overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+              overrideBrowserWindowOptions: {
+                autoHideMenuBar: true,
+                center: true,
+                ...(parent ? { parent, modal: false } : {}),
+              },
             };
           }
           // Browser-style new-tab requests become durable sibling preview
@@ -3057,6 +3255,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     window: BrowserWindow,
   ) {
     yield* Ref.set(mainWindowRef, Option.some(window));
+    mainWindowForPopups = window;
     mainWindowFocused = typeof window.isFocused !== "function" || window.isFocused();
     const mainWebContents = window.webContents;
     const mainRendererIpc = mainWebContents.ipc;
@@ -3157,6 +3356,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
       window.off("blur", stopPushToTalkForWindowDeparture);
       window.off("focus", refreshPresentedGuests);
+      if (mainWindowForPopups === window) mainWindowForPopups = null;
       mainWindowFocused = false;
       forwardedPushToTalkActive = false;
       pushToTalkInputActive = false;
@@ -3232,10 +3432,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       [
         cancelPickElement(tabId),
         closePictureInPicture(tabId),
+        closePopupWindowsForTab(tabId),
         stopFrameCapture(tabId, "recording"),
       ],
       {
-        concurrency: 3,
+        concurrency: 4,
         discard: true,
       },
     );
@@ -3354,6 +3555,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
     const replacedWebContentsId =
       tab.webContentsId != null && tab.webContentsId !== webContentsId ? tab.webContentsId : null;
+    if (replacedWebContentsId !== null) {
+      // A child belongs to its opener. If React replaces that opener after a
+      // renderer crash or remount, keeping the old child would leave a visible
+      // but disconnected authentication window and route remote input into it.
+      yield* closePopupWindowsForTab(tabId);
+    }
     const currentTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
     if (
       !currentTab ||
@@ -3924,11 +4131,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const restoreControlSession = (tabId: string, wc: Electron.WebContents) =>
     Effect.gen(function* () {
       const beforeAttach = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-      if (beforeAttach?.webContentsId !== wc.id) return;
+      if (!beforeAttach || !isCurrentWebContentsForTab(beforeAttach, wc.id)) return;
       if (beforeAttach.colorScheme === "system" && !hasControlActivity(tabId)) return;
       yield* ensureControlSession(tabId, wc);
       const afterAttach = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-      if (afterAttach?.webContentsId !== wc.id) {
+      if (!afterAttach || !isCurrentWebContentsForTab(afterAttach, wc.id)) {
         yield* detachControlSession(wc.id);
         return;
       }
@@ -4080,9 +4287,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const results = yield* Effect.forEach(
       tabs.values(),
       (tab) => {
-        if (tab.webContentsId === null) return Effect.succeed(null);
-        const wc = webContents.fromId(tab.webContentsId);
-        if (!wc || wc.isDestroyed()) return Effect.succeed(null);
+        const wc = currentWebContentsForTab(tab);
+        if (!wc) return Effect.succeed(null);
         return Effect.exit(activateAutomationForegroundForTab(tab.tabId, wc)).pipe(
           Effect.map((exit) => ({ tabId: tab.tabId, webContentsId: wc.id, exit })),
         );
@@ -4105,21 +4311,27 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     "PreviewManager.releaseAutomationForegroundFleet",
   )(function* () {
     automationForegroundActive = false;
+    const foregroundWebContentsIds = [...automationForegroundWebContentsIds];
     automationForegroundWebContentsIds.clear();
     const tabs = yield* SynchronizedRef.get(tabsRef);
+    for (const tab of tabs.values()) {
+      activityLeases.release(tab.tabId, AUTOMATION_FOREGROUND_LEASE_ID);
+    }
     yield* Effect.forEach(
-      tabs.values(),
-      (tab) =>
+      foregroundWebContentsIds,
+      (webContentsId) =>
         Effect.gen(function* () {
-          activityLeases.release(tab.tabId, AUTOMATION_FOREGROUND_LEASE_ID);
-          if (tab.webContentsId === null) return;
-          const wc = webContents.fromId(tab.webContentsId);
+          const tabId =
+            popupTabByWebContentsId.get(webContentsId) ??
+            [...tabs.entries()].find(([, tab]) => tab.webContentsId === webContentsId)?.[0];
+          if (!tabId) return;
+          const wc = webContents.fromId(webContentsId);
           if (!wc || wc.isDestroyed()) return;
 
           // A request that itself outlives the fleet lease still owns its own
           // Automation activity lease. Let that action keep focus emulation;
           // its normal cleanup disables it when the action actually finishes.
-          if (!activityLeases.has(tab.tabId, PreviewActivityConsumer.Automation)) {
+          if (!activityLeases.has(tabId, PreviewActivityConsumer.Automation)) {
             // Symmetry for the setBackgroundThrottling(false) that acquiring
             // this lease performed. Without it a tab stayed unthrottled for
             // the rest of the app's life after a single automated action, so
@@ -4128,7 +4340,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             yield* attempt(
               {
                 operation: "automationForeground.restoreBackgroundThrottling",
-                tabId: tab.tabId,
+                tabId,
                 webContentsId: wc.id,
               },
               () => wc.setBackgroundThrottling(true),
@@ -4140,7 +4352,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   attemptPromiseWithin(
                     {
                       operation: "automationForeground.disableFocusEmulation",
-                      tabId: tab.tabId,
+                      tabId,
                       webContentsId: wc.id,
                     },
                     () =>
@@ -4153,7 +4365,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 .pipe(Effect.timeout(AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS), Effect.ignore);
             }
           }
-          yield* detachControlSessionIfIdle(tab.tabId, wc.id);
+          yield* detachControlSessionIfIdle(tabId, wc.id);
         }),
       { concurrency: "unbounded", discard: true },
     );
@@ -4822,10 +5034,35 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ...(downloadApprovalRequired ? { downloadApprovalRequired: true } : {}),
       };
     }
-    const wc = webContents.fromId(tab.webContentsId);
+    const popupActive = currentPopupForTab(tabId) !== null;
+    const wc = currentWebContentsForTab(tab);
     const foregroundReady =
-      !automationForegroundActive || automationForegroundWebContentsIds.has(tab.webContentsId);
-    if (tab.navStatus.kind === "LoadFailed") {
+      !automationForegroundActive || Boolean(wc && automationForegroundWebContentsIds.has(wc.id));
+    const viewport = wc
+      ? yield* attemptPromise(
+          { operation: "automationStatus.viewport", tabId, webContentsId: wc.id },
+          () =>
+            wc.executeJavaScript(
+              "({ width: Math.round(window.innerWidth), height: Math.round(window.innerHeight) })",
+            ),
+        ).pipe(
+          Effect.map((value) => {
+            if (typeof value !== "object" || value === null) return null;
+            const measured = value as { readonly width?: unknown; readonly height?: unknown };
+            return typeof measured.width === "number" &&
+              Number.isInteger(measured.width) &&
+              measured.width > 0 &&
+              typeof measured.height === "number" &&
+              Number.isInteger(measured.height) &&
+              measured.height > 0
+              ? { width: measured.width, height: measured.height }
+              : null;
+          }),
+          Effect.orElseSucceed(() => null),
+        )
+      : null;
+    const viewportStatus = viewport ? { viewport } : {};
+    if (!popupActive && tab.navStatus.kind === "LoadFailed") {
       return {
         available: Boolean(wc && !wc.isDestroyed() && foregroundReady),
         visible: true,
@@ -4837,10 +5074,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           code: tab.navStatus.code,
           description: tab.navStatus.description,
         },
+        ...viewportStatus,
         ...(downloadApprovalRequired ? { downloadApprovalRequired: true } : {}),
       };
     }
-    if (wc && !wc.isDestroyed() && tab.navStatus.kind === "Loading") {
+    if (!popupActive && wc && !wc.isDestroyed() && tab.navStatus.kind === "Loading") {
       // loadURL can remain pending before a background renderer emits its
       // first navigation event. During that gap Electron still exposes the
       // previous page as idle; reporting it as ready lets automation capture
@@ -4852,6 +5090,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         url: tab.navStatus.url,
         title: tab.navStatus.title || null,
         loading: true,
+        ...viewportStatus,
         ...(downloadApprovalRequired ? { downloadApprovalRequired: true } : {}),
       };
     }
@@ -4872,6 +5111,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           url: wc.getURL() || null,
           title: wc.getTitle() || null,
           loading: wc.isLoading(),
+          ...viewportStatus,
           ...(downloadApprovalRequired ? { downloadApprovalRequired: true } : {}),
         };
   });
@@ -5567,8 +5807,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // retrying capturePage alone against a stale guest.
       const wc = yield* requireWebContents(tabId);
       return yield* withControlSession(tabId, wc, "snapshot", () => {
+        const popupVisible = currentPopupForTab(tabId)?.webContents.id === wc.id;
         const stageSnapshotSurface: StageSnapshotSurface | null =
-          mainWindowFocused && activityLeases.has(tabId, PreviewActivityConsumer.Ui)
+          popupVisible ||
+          (mainWindowFocused && activityLeases.has(tabId, PreviewActivityConsumer.Ui))
             ? null
             : (capture) => withStagedSnapshotSurface(tabId, wc, capture);
         return captureAutomationSnapshot(tabId, wc, stageSnapshotSurface);
@@ -5793,6 +6035,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
     input: PreviewAutomationClickInput,
     send: SendCommand,
+    sendCleanup: SendCommand,
   ) {
     yield* prepareAutomationInput(send, true);
     const point = yield* resolveClickPoint(tabId, send, input);
@@ -5839,23 +6082,38 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     // emitted while no expectation and no window existed, so it was always
     // attributed to the human.
     yield* expectAgentInput(tabId, { kind: "pointer", ...point, button: 0 });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      ...point,
-      button: "none",
+    let mouseDown = false;
+    const releaseMouse = Effect.gen(function* () {
+      if (!mouseDown) return;
+      mouseDown = false;
+      yield* sendCleanup("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...point,
+        button: "left",
+        clickCount: 1,
+      }).pipe(Effect.ignore);
     });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      ...point,
-      button: "left",
-      clickCount: 1,
-    });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      ...point,
-      button: "left",
-      clickCount: 1,
-    });
+    yield* Effect.gen(function* () {
+      yield* send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        ...point,
+        button: "none",
+      });
+      yield* send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        ...point,
+        button: "left",
+        clickCount: 1,
+      });
+      mouseDown = true;
+      yield* send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...point,
+        button: "left",
+        clickCount: 1,
+      });
+      mouseDown = false;
+    }).pipe(Effect.ensuring(releaseMouse));
   });
 
   const automationClickUnlocked = Effect.fn("PreviewManager.automationClickUnlocked")(function* (
@@ -5872,8 +6130,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { operation: "automationClick.getFocusedWebContents", tabId, webContentsId: wc.id },
       () => webContents.getFocusedWebContents(),
     ).pipe(Effect.catch(() => Effect.succeed(null)));
-    yield* withControlSession(tabId, wc, "click", (send) =>
-      performAutomationClick(tabId, input, send),
+    yield* withControlSession(tabId, wc, "click", (send, sendCleanup) =>
+      performAutomationClick(tabId, input, send, sendCleanup),
     );
     if (previouslyFocused && previouslyFocused.id !== wc.id && !previouslyFocused.isDestroyed()) {
       // Only if the click is what moved focus. If the user clicked into the
@@ -5927,6 +6185,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
     input: PreviewAutomationDragInput,
     send: SendCommand,
+    sendCleanup: SendCommand,
   ) {
     yield* prepareAutomationInput(send, true);
     const vertices =
@@ -5991,51 +6250,71 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       createdAt: pressCreatedAt,
     });
     yield* Effect.sleep(AGENT_CURSOR_CLICK_LEAD_MS);
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      ...start,
-      button: "none",
-    });
-    yield* expectAgentInput(tabId, { kind: "pointer", ...start, button: DRAG_BUTTON_CODE[button] });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      ...start,
-      button,
-      buttons: buttonMask,
-      clickCount: 1,
-    });
+    let mouseDown = false;
     let last = start;
-    for (const move of moves) {
-      const dragSequence = yield* nextCounter(pointerSequenceRef);
-      const dragCreatedAt = yield* currentIso;
-      yield* emitPointerEvent({
-        tabId,
-        phase: "move",
-        ...move,
-        viewportWidth: viewport.width,
-        viewportHeight: viewport.height,
-        sequence: dragSequence,
-        createdAt: dragCreatedAt,
-      });
+    const releaseMouse = Effect.gen(function* () {
+      if (!mouseDown) return;
+      mouseDown = false;
+      yield* sendCleanup("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...last,
+        button,
+        buttons: 0,
+        clickCount: 1,
+      }).pipe(Effect.ignore);
+    });
+    yield* Effect.gen(function* () {
       yield* send("Input.dispatchMouseEvent", {
         type: "mouseMoved",
-        ...move,
+        ...start,
+        button: "none",
+      });
+      yield* expectAgentInput(tabId, {
+        kind: "pointer",
+        ...start,
+        button: DRAG_BUTTON_CODE[button],
+      });
+      yield* send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        ...start,
         button,
         buttons: buttonMask,
+        clickCount: 1,
       });
-      yield* Effect.sleep(AGENT_DRAG_STEP_MS);
-      last = move;
-    }
-    if (input.holdMs !== undefined && input.holdMs > 0) {
-      yield* Effect.sleep(input.holdMs);
-    }
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      ...last,
-      button,
-      buttons: 0,
-      clickCount: 1,
-    });
+      mouseDown = true;
+      for (const move of moves) {
+        const dragSequence = yield* nextCounter(pointerSequenceRef);
+        const dragCreatedAt = yield* currentIso;
+        yield* emitPointerEvent({
+          tabId,
+          phase: "move",
+          ...move,
+          viewportWidth: viewport.width,
+          viewportHeight: viewport.height,
+          sequence: dragSequence,
+          createdAt: dragCreatedAt,
+        });
+        yield* send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          ...move,
+          button,
+          buttons: buttonMask,
+        });
+        last = move;
+        yield* Effect.sleep(AGENT_DRAG_STEP_MS);
+      }
+      if (input.holdMs !== undefined && input.holdMs > 0) {
+        yield* Effect.sleep(input.holdMs);
+      }
+      yield* send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...last,
+        button,
+        buttons: 0,
+        clickCount: 1,
+      });
+      mouseDown = false;
+    }).pipe(Effect.ensuring(releaseMouse));
   });
 
   const automationDragUnlocked = Effect.fn("PreviewManager.automationDragUnlocked")(function* (
@@ -6050,8 +6329,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { operation: "automationDrag.getFocusedWebContents", tabId, webContentsId: wc.id },
       () => webContents.getFocusedWebContents(),
     ).pipe(Effect.catch(() => Effect.succeed(null)));
-    yield* withControlSession(tabId, wc, "drag", (send) =>
-      performAutomationDrag(tabId, input, send),
+    yield* withControlSession(tabId, wc, "drag", (send, sendCleanup) =>
+      performAutomationDrag(tabId, input, send, sendCleanup),
     );
     if (previouslyFocused && previouslyFocused.id !== wc.id && !previouslyFocused.isDestroyed()) {
       // Only if the drag is what moved focus. If the user clicked into the

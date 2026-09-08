@@ -1,4 +1,5 @@
 import { useFocusEffect, type StaticScreenProps } from "@react-navigation/native";
+import { RemotePreviewCommandCoordinator } from "@t3tools/client-runtime/preview/remote-command-coordinator";
 import {
   EnvironmentId,
   ThreadId,
@@ -73,7 +74,10 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
   const [frame, setFrame] = useState<PreviewRemoteSnapshotResult | null>(null);
   const [frameError, setFrameError] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const typingSequenceRef = useRef(0);
   const selectedTabIdRef = useRef<string | null>(null);
+  const coordinatorRef = useRef(new RemotePreviewCommandCoordinator());
   const captureRemoteSnapshot = useAtomCommand(previewEnvironment.remoteSnapshot, {
     reportFailure: false,
   });
@@ -89,31 +93,48 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
   const [frameInteracting, setFrameInteracting] = useState(false);
   const [keyboardText, setKeyboardText] = useState("");
 
+  const selectTab = useCallback((next: string | null) => {
+    if (selectedTabIdRef.current !== next) {
+      coordinatorRef.current.reset();
+      setFrameError(null);
+      typingSequenceRef.current += 1;
+      setTyping(false);
+      gestureRef.current = null;
+    }
+    selectedTabIdRef.current = next;
+    setSelectedTabId(next);
+    setFrame((current) => (current?.tabId === next ? current : null));
+  }, []);
+
   useEffect(() => {
     const next = sessions.some((session) => session.tabId === selectedTabId)
       ? selectedTabId
       : (sessions[0]?.tabId ?? null);
-    selectedTabIdRef.current = next;
-    setSelectedTabId(next);
-    setFrame((current) => (current?.tabId === next ? current : null));
-  }, [selectedTabId, sessions]);
+    selectTab(next);
+  }, [selectTab, selectedTabId, sessions]);
 
-  const capture = useCallback(async () => {
+  useEffect(() => () => coordinatorRef.current.reset(), []);
+
+  const capture = useCallback(async (): Promise<boolean> => {
     const tabId = selectedTabIdRef.current;
-    if (tabId === null) return;
-    const result = await captureRemoteSnapshot({
-      environmentId,
-      input: { threadId, tabId },
-    });
-    if (selectedTabIdRef.current !== tabId) return;
+    if (tabId === null) return false;
+    const coordinated = await coordinatorRef.current.latestCapture(() =>
+      captureRemoteSnapshot({
+        environmentId,
+        input: { threadId, tabId },
+      }),
+    );
+    if (coordinated.status === "stale") return false;
+    const result = coordinated.value;
     if (result._tag === "Failure") {
       setFrameError(
         commandError(result.cause, "The desktop browser host did not return a rendered frame."),
       );
-      return;
+      return false;
     }
     setFrame(result.value);
     setFrameError(null);
+    return true;
   }, [captureRemoteSnapshot, environmentId, threadId]);
 
   useFocusEffect(
@@ -133,20 +154,25 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
   );
 
   const dispatchInput = useCallback(
-    async (action: PreviewRemoteInputAction) => {
+    async (action: PreviewRemoteInputAction): Promise<boolean> => {
       const tabId = selectedTabIdRef.current;
-      if (tabId === null) return;
-      const result = await sendRemoteInput({
-        environmentId,
-        input: { threadId, tabId, action },
-      });
+      if (tabId === null) return false;
+      const coordinated = await coordinatorRef.current.queueInput(() =>
+        sendRemoteInput({
+          environmentId,
+          input: { threadId, tabId, action },
+        }),
+      );
+      if (coordinated.status === "stale") return false;
+      const result = coordinated.value;
       if (result._tag === "Failure") {
         setFrameError(commandError(result.cause, "The desktop browser did not accept the input."));
-        return;
+        return false;
       }
       setFrameError(null);
       // Show the gesture's effect right away instead of waiting for the poll.
       await capture();
+      return true;
     },
     [capture, environmentId, sendRemoteInput, threadId],
   );
@@ -210,44 +236,55 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
 
   const sendKeyboardText = async () => {
     const text = keyboardText;
-    if (text.length === 0) return;
-    setKeyboardText("");
-    await dispatchInput({ kind: "type", text });
+    if (text.length === 0 || typing) return;
+    const sequence = ++typingSequenceRef.current;
+    setTyping(true);
+    try {
+      const delivered = await dispatchInput({ kind: "type", text });
+      if (delivered) {
+        setKeyboardText((current) => (current === text ? "" : current));
+      }
+    } finally {
+      if (typingSequenceRef.current === sequence) setTyping(false);
+    }
   };
 
   const addTab = async () => {
     if (mutating) return;
     setMutating(true);
-    await openRemoteBrowserTab({
-      environmentId,
-      threadId,
-      open: openPreview,
-      onOpened: (tabId) => {
-        selectedTabIdRef.current = tabId;
-        setSelectedTabId(tabId);
-      },
-      onFailure: (cause) =>
-        setFrameError(commandError(cause, "A browser tab could not be opened.")),
-      refresh: previews.refresh,
-    });
-    setMutating(false);
+    try {
+      await openRemoteBrowserTab({
+        environmentId,
+        threadId,
+        open: openPreview,
+        onOpened: selectTab,
+        onFailure: (cause) =>
+          setFrameError(commandError(cause, "A browser tab could not be opened.")),
+        refresh: previews.refresh,
+      });
+    } finally {
+      setMutating(false);
+    }
   };
 
   const closeTab = async () => {
     const tabId = selectedTabIdRef.current;
     if (tabId === null || mutating) return;
     setMutating(true);
-    await closeRemoteBrowserTab({
-      environmentId,
-      threadId,
-      tabId,
-      close: closePreview,
-      onClosed: () => setFrame(null),
-      onFailure: (cause) =>
-        setFrameError(commandError(cause, "The browser tab could not be closed.")),
-      refresh: previews.refresh,
-    });
-    setMutating(false);
+    try {
+      await closeRemoteBrowserTab({
+        environmentId,
+        threadId,
+        tabId,
+        close: closePreview,
+        onClosed: () => setFrame(null),
+        onFailure: (cause) =>
+          setFrameError(commandError(cause, "The browser tab could not be closed.")),
+        refresh: previews.refresh,
+      });
+    } finally {
+      setMutating(false);
+    }
   };
 
   if (previews.isPending && previews.data === null) {
@@ -316,12 +353,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
                   className={`min-h-11 max-w-64 justify-center rounded-xl border px-4 ${
                     selected ? "border-primary bg-primary/10" : "border-border bg-sheet"
                   }`}
-                  onPress={() => {
-                    selectedTabIdRef.current = session.tabId;
-                    setSelectedTabId(session.tabId);
-                    setFrame(null);
-                    setFrameError(null);
-                  }}
+                  onPress={() => selectTab(session.tabId)}
                 >
                   <Text className="font-t3-bold text-foreground" numberOfLines={1}>
                     {snapshotTitle(session)}
@@ -365,6 +397,45 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
             )}
           </View>
 
+          {frame?.pendingDownloadApprovals?.map((approval) => (
+            <View
+              key={approval.id}
+              className="min-w-0 gap-2 rounded-2xl border border-amber-500/40 bg-amber-950 p-4"
+            >
+              <Text className="font-t3-bold text-amber-100">
+                Allow download from {approval.domain}?
+              </Text>
+              <Text className="text-sm text-amber-200" selectable>
+                {approval.fileName}
+              </Text>
+              <View className="flex-row flex-wrap gap-2">
+                {(
+                  [
+                    ["Allow always", "allow-domain"],
+                    ["Allow once", "allow-once"],
+                    ["Deny", "deny"],
+                  ] as const
+                ).map(([label, decision]) => (
+                  <Pressable
+                    key={decision}
+                    accessibilityLabel={`${label} for ${approval.fileName}`}
+                    accessibilityRole="button"
+                    className="min-h-11 items-center justify-center rounded-xl border border-amber-400/40 px-4"
+                    onPress={() =>
+                      void dispatchInput({
+                        kind: "answerDownloadApproval",
+                        approvalId: approval.id,
+                        decision,
+                      })
+                    }
+                  >
+                    <Text className="font-t3-bold text-amber-100">{label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ))}
+
           {frame ? (
             <View className="min-w-0 gap-2 rounded-2xl border border-border bg-sheet p-3">
               <Text className="text-xs text-foreground-muted">
@@ -381,15 +452,18 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
                   value={keyboardText}
                   onChangeText={setKeyboardText}
                   onSubmitEditing={() => void sendKeyboardText()}
+                  editable={!typing}
                 />
                 <Pressable
                   accessibilityLabel="Send text to the desktop tab"
                   accessibilityRole="button"
                   className="min-h-11 items-center justify-center rounded-xl bg-primary px-4 disabled:opacity-50"
-                  disabled={keyboardText.length === 0}
+                  disabled={keyboardText.length === 0 || typing}
                   onPress={() => void sendKeyboardText()}
                 >
-                  <Text className="font-t3-bold text-primary-foreground">Type</Text>
+                  <Text className="font-t3-bold text-primary-foreground">
+                    {typing ? "Sending…" : "Type"}
+                  </Text>
                 </Pressable>
               </View>
               <View className="min-w-0 flex-row flex-wrap gap-2">

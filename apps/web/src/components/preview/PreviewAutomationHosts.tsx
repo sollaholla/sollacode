@@ -220,7 +220,17 @@ const waitForRenderedViewport = async (
       const webview = findPreviewWebview(runtimeTabId);
       const appliedSettingKey = webview?.getAttribute("data-preview-viewport-key") ?? null;
       const declaredViewport = readDeclaredViewport(webview);
-      const renderedViewport = webview ? await readWebviewViewport(webview) : null;
+      // Reading through the webview DOM element is fast when the renderer owns
+      // a live element, but Electron can transiently reject that call while it
+      // reparents or backgrounds the guest. The main-process bridge addresses
+      // the same WebContents directly and is the authoritative fallback. This
+      // also covers real OAuth child windows, which intentionally have no
+      // renderer-side <webview> element of their own.
+      const renderedViewport =
+        (webview ? await readWebviewViewport(webview).catch(() => null) : null) ??
+        (previewBridge
+          ? ((await previewBridge.automation.status(runtimeTabId)).viewport ?? null)
+          : null);
       if (
         renderedViewport &&
         isPreviewViewportReady({
@@ -265,12 +275,16 @@ const currentStatus = async (
   };
   if (runtimeTabId && tabId && previewBridge && state.desktopByTabId[tabId]) {
     const status = await previewBridge.automation.status(runtimeTabId);
+    const measuredViewport = status.viewport ?? viewport;
     return {
       ...status,
       tabId,
       visible,
       tabs,
-      ...viewportStatus,
+      ...(viewportSetting === undefined ? {} : { viewportSetting }),
+      ...(measuredViewport === null || measuredViewport === undefined
+        ? {}
+        : { viewport: measuredViewport }),
       humanVerification: getPreviewHumanVerification(runtimeTabId),
     };
   }

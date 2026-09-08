@@ -87,7 +87,7 @@ describe("dispatchRemotePreviewInput", () => {
 
       expect(requests[1]).toMatchObject({
         operation: "drag",
-        input: { from: { x: 0, y: 200 }, to: { x: 1280, y: 600 } },
+        input: { from: { x: 0, y: 200 }, to: { x: 1279.5, y: 600 } },
       });
     }),
   );

@@ -12,6 +12,7 @@ import {
   type FramePoint,
   type FrameSize,
 } from "@t3tools/shared/remoteFrameGestures";
+import { RemotePreviewCommandCoordinator } from "@t3tools/client-runtime/preview/remote-command-coordinator";
 import * as Cause from "effect/Cause";
 import {
   useCallback,
@@ -81,7 +82,10 @@ export function RemoteBrowserFrame(props: {
   const [frame, setFrame] = useState<PreviewRemoteSnapshotResult | null>(null);
   const [frameError, setFrameError] = useState<string | null>(null);
   const [keyboardText, setKeyboardText] = useState("");
+  const [typing, setTyping] = useState(false);
+  const typingSequenceRef = useRef(0);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const coordinatorRef = useRef(new RemotePreviewCommandCoordinator());
   // A phone renders the whole desktop page a few inches wide, where a link is
   // smaller than a fingertip. Magnifying it is what makes the mirror clickable
   // at all, so the frame carries the same zoom control as the remote desktop.
@@ -105,25 +109,37 @@ export function RemoteBrowserFrame(props: {
     reportFailure: false,
   });
 
-  const capture = useCallback(async () => {
-    const result = await captureRemoteSnapshot({
-      environmentId: threadRef.environmentId,
-      input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId) },
-    });
+  const capture = useCallback(async (): Promise<boolean> => {
+    const coordinated = await coordinatorRef.current.latestCapture(() =>
+      captureRemoteSnapshot({
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId) },
+      }),
+    );
+    if (coordinated.status === "stale") return false;
+    const result = coordinated.value;
     if (result._tag === "Failure") {
       setFrameError(
         commandError(result.cause, "The desktop browser host did not return a rendered frame."),
       );
-      return;
+      return false;
     }
     setFrame(result.value);
     setFrameError(null);
+    return true;
   }, [captureRemoteSnapshot, threadRef.environmentId, threadRef.threadId, tabId]);
 
   useEffect(() => {
+    coordinatorRef.current.reset();
     setFrame(null);
     setFrameError(null);
-  }, [tabId]);
+    typingSequenceRef.current += 1;
+    setTyping(false);
+    gestureRef.current = null;
+    wheelAccumulatorRef.current = { x: 0, y: 0 };
+  }, [tabId, threadRef.environmentId, threadRef.threadId]);
+
+  useEffect(() => () => coordinatorRef.current.reset(), []);
 
   useEffect(() => {
     if (!visible) return;
@@ -141,18 +157,23 @@ export function RemoteBrowserFrame(props: {
   }, [capture, visible]);
 
   const dispatchInput = useCallback(
-    async (action: PreviewRemoteInputAction) => {
-      const result = await sendRemoteInput({
-        environmentId: threadRef.environmentId,
-        input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId), action },
-      });
+    async (action: PreviewRemoteInputAction): Promise<boolean> => {
+      const coordinated = await coordinatorRef.current.queueInput(() =>
+        sendRemoteInput({
+          environmentId: threadRef.environmentId,
+          input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId), action },
+        }),
+      );
+      if (coordinated.status === "stale") return false;
+      const result = coordinated.value;
       if (result._tag === "Failure") {
         setFrameError(commandError(result.cause, "The desktop browser did not accept the input."));
-        return;
+        return false;
       }
       setFrameError(null);
       // Show the gesture's effect right away instead of waiting for the poll.
       await capture();
+      return true;
     },
     [capture, sendRemoteInput, threadRef.environmentId, threadRef.threadId, tabId],
   );
@@ -258,11 +279,17 @@ export function RemoteBrowserFrame(props: {
       // than returning early and leaving it latched: gestureRef would stay set
       // and the next real press would be rejected as "already dragging".
       if (gestureRef.current?.pointerId === event.pointerId) gestureRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
       return;
     }
     const gesture = gestureRef.current;
     if (gesture === null || gesture.pointerId !== event.pointerId) return;
     gestureRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
     const sample = {
       startedAt: gesture.startedAt,
       start: gesture.start,
@@ -286,9 +313,15 @@ export function RemoteBrowserFrame(props: {
   const handlePointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (zoomView.onPointerUp(event)) {
       zoomAdjustingRef.current = zoomView.pinchingRef.current;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
       return;
     }
     if (gestureRef.current?.pointerId === event.pointerId) gestureRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   // The container is both the wheel listener's element and the pane the
@@ -353,9 +386,18 @@ export function RemoteBrowserFrame(props: {
 
   const sendKeyboardText = async () => {
     const text = keyboardText;
-    if (text.length === 0) return;
-    setKeyboardText("");
-    await dispatchInput({ kind: "type", text });
+    if (text.length === 0 || typing) return;
+    const sequence = ++typingSequenceRef.current;
+    setTyping(true);
+    try {
+      const delivered = await dispatchInput({ kind: "type", text });
+      if (delivered) {
+        // Preserve edits made while a slow remote relay was in flight.
+        setKeyboardText((current) => (current === text ? "" : current));
+      }
+    } finally {
+      if (typingSequenceRef.current === sequence) setTyping(false);
+    }
   };
 
   return (
@@ -413,17 +455,10 @@ export function RemoteBrowserFrame(props: {
                       type="button"
                       className="rounded-md border border-amber-400/40 px-2 py-1 font-medium text-amber-50"
                       onClick={() => {
-                        void sendRemoteInput({
-                          environmentId: threadRef.environmentId,
-                          input: {
-                            threadId: threadRef.threadId,
-                            tabId: PreviewTabId.make(tabId),
-                            action: {
-                              kind: "answerDownloadApproval",
-                              approvalId: approval.id,
-                              decision,
-                            },
-                          },
+                        void dispatchInput({
+                          kind: "answerDownloadApproval",
+                          approvalId: approval.id,
+                          decision,
                         });
                       }}
                     >
@@ -464,11 +499,11 @@ export function RemoteBrowserFrame(props: {
         <button
           aria-label="Send text to the desktop tab"
           className="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
-          disabled={keyboardText.length === 0}
+          disabled={keyboardText.length === 0 || typing}
           type="button"
           onClick={() => void sendKeyboardText()}
         >
-          Type
+          {typing ? "Sending…" : "Type"}
         </button>
         <button
           aria-label="Press Enter in the desktop tab"

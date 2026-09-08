@@ -47,6 +47,10 @@
       "types": "./src/platform/storageDocument.ts",
       "default": "./src/platform/storageDocument.ts"
     },
+    "./preview/remote-command-coordinator": {
+      "types": "./src/preview/remoteCommandCoordinator.ts",
+      "default": "./src/preview/remoteCommandCoordinator.ts"
+    },
     "./relay": {
       "types": "./src/relay/index.ts",
       "default": "./src/relay/index.ts"
