@@ -129,27 +129,29 @@ function mergeUsageWindow(
     Number.isFinite(reportedAtMs) &&
     reportedAtMs >= previous.resetAt - CODEX_RESET_TIME_JITTER_MS;
 
-  const windowDurationMs = next.windowDurationMs ?? previous.windowDurationMs;
-  const nextCycleHasStarted =
-    next.resetAt !== null &&
-    windowDurationMs !== null &&
-    windowDurationMs !== undefined &&
-    Number.isFinite(windowDurationMs) &&
-    Number.isFinite(reportedAtMs) &&
-    reportedAtMs >= next.resetAt - windowDurationMs - CODEX_RESET_TIME_JITTER_MS;
-
-  // Ignore a transient zero unless the provider advances the reset timestamp
-  // to a cycle that has really begun. Ordinarily that means the old cycle
-  // elapsed. OpenAI can also grant an out-of-band reset, which starts a new
-  // full-duration window immediately while the old reset was still in the
-  // future; its reported reset minus duration proves that new cycle has begun.
-  if (nextCycleIsLater && (previousCycleElapsed || nextCycleHasStarted)) {
+  // A scheduled reset is authoritative as soon as the previous boundary has
+  // elapsed. Before that boundary, `resetAt - duration ~= now` is not proof of
+  // an out-of-band reset: model-scoped empty buckets use that exact rolling
+  // shape and used to make the UI drop to 0%. Early resets are confirmed below
+  // only after a second, newer report repeats the same fixed boundary.
+  if (nextCycleIsLater && previousCycleElapsed) {
     return withoutDecreaseCandidate(next);
   }
 
   const candidate = previous.decreaseCandidate;
   const candidateMatchesCycle = candidate?.resetAt === next.resetAt;
-  if (candidateMatchesCycle && next.usedPercent <= previous.usedPercent) {
+  const isNewerConfirmation =
+    candidate !== undefined &&
+    Number.isFinite(Date.parse(candidate.firstSeenAt)) &&
+    Number.isFinite(reportedAtMs) &&
+    reportedAtMs > Date.parse(candidate.firstSeenAt);
+  const confirmsEarlyReset = nextCycleIsLater && candidateMatchesCycle;
+  const confirmsNonZeroCorrection =
+    !nextCycleIsLater &&
+    next.usedPercent > 0 &&
+    candidate !== undefined &&
+    next.usedPercent >= candidate.usedPercent;
+  if (isNewerConfirmation && (confirmsEarlyReset || confirmsNonZeroCorrection)) {
     return withoutDecreaseCandidate(next);
   }
   return {

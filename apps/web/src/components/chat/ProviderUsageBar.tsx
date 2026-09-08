@@ -154,6 +154,14 @@ function codexWindows(raw: unknown): ProviderUsageWindow[] {
   const snapshot = asRecord(envelope?.rateLimits) ?? envelope;
   if (!snapshot) return [];
 
+  // Notifications for model-specific limits share the same primary/secondary
+  // shape as the account-wide Codex quota. They are separate buckets, though,
+  // and must not replace the account's Weekly row. In particular, an unused
+  // model bucket commonly reports 0% with a rolling `now + duration` reset.
+  // The account-wide snapshot is identified by `codex`; payloads without an id
+  // remain supported for older app-server versions.
+  if (typeof snapshot.limitId === "string" && snapshot.limitId !== "codex") return [];
+
   const windows: ProviderUsageWindow[] = [];
   for (const [key, fallback] of [
     ["primary", "Primary"],

@@ -997,6 +997,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 accountUsageReportedAt: reportedAt,
               },
             ]);
+            yield* registry.recordAccountUsage({
+              instanceId: codexInstanceId,
+              driver: codexDriver,
+              accountUsage: {
+                rateLimits: {
+                  limitId: "codex_bengalfox",
+                  limitName: "GPT-5.3-Codex-Spark",
+                  primary: { usedPercent: 0, windowDurationMins: 300 },
+                  secondary: { usedPercent: 0, windowDurationMins: 10_080 },
+                },
+              },
+              reportedAt: "2026-06-10T00:02:00.000Z",
+            });
+            assert.deepStrictEqual(yield* registry.getProviders, [
+              {
+                ...initialProvider,
+                accountUsage,
+                accountUsageReportedAt: reportedAt,
+              },
+            ]);
           }).pipe(Effect.provide(runtimeServices));
         }),
       );

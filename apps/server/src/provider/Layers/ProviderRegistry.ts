@@ -98,6 +98,19 @@ const shouldRetainMissingProviderModels = (provider: ServerProvider): boolean =>
   return isPendingInitialProbe || didInstalledProviderProbeFail;
 };
 
+const isCodexModelScopedUsage = (accountUsage: unknown): boolean => {
+  if (accountUsage === null || typeof accountUsage !== "object" || Array.isArray(accountUsage)) {
+    return false;
+  }
+  const envelope = accountUsage as Record<string, unknown>;
+  const rawSnapshot = envelope.rateLimits;
+  if (rawSnapshot === null || typeof rawSnapshot !== "object" || Array.isArray(rawSnapshot)) {
+    return false;
+  }
+  const limitId = (rawSnapshot as Record<string, unknown>).limitId;
+  return typeof limitId === "string" && limitId !== "codex";
+};
+
 const mergeProviderModels = (
   provider: ServerProvider,
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
@@ -615,6 +628,18 @@ export const ProviderRegistryLive = Layer.effect(
       const providers = yield* Ref.get(providersRef);
       const provider = providers.find((candidate) => candidate.instanceId === input.instanceId);
       if (!provider || provider.driver !== input.driver) {
+        return providers;
+      }
+
+      // Codex emits both account-wide and model-specific rate-limit events.
+      // The provider card is account-wide state; recording a model bucket here
+      // overwrites that state until the next health refresh and makes usage
+      // appear to reset. The usage guard still receives every raw event from
+      // ProviderRuntimeIngestion, so model-specific enforcement is preserved.
+      if (
+        input.driver === ProviderDriverKind.make("codex") &&
+        isCodexModelScopedUsage(input.accountUsage)
+      ) {
         return providers;
       }
 
