@@ -69,4 +69,15 @@ describe("isPreviewViewportReady", () => {
       }),
     ).toBe(false);
   });
+
+  it("accepts the measured Fill viewport when app zoom differs from host CSS pixels", () => {
+    expect(
+      isPreviewViewportReady({
+        setting: { _tag: "fill" },
+        appliedSettingKey: "fill",
+        declaredViewport: { width: 1280, height: 800 },
+        renderedViewport: { width: 1164, height: 727 },
+      }),
+    ).toBe(true);
+  });
 });

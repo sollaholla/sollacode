@@ -471,15 +471,16 @@ export function HostedBrowserWebview(props: {
 
   useLayoutEffect(() => {
     const webview = webviewRef.current;
-    if (!webview) return;
+    if (!webview || effectiveViewport._tag === "fill") {
+      setViewportHostScale(null);
+      return;
+    }
     let cancelled = false;
     let scale: BrowserViewportHostScale = { width: 1, height: 1 };
     const expected = { width: declaredViewportWidth, height: declaredViewportHeight };
     // Let Electron consume the React layout before measuring. Repeating a few
     // bounded refinements handles fractional page zoom and pixel rounding
     // without leaving a timer or animation running after the resize settles.
-    // Fill needs the same calibration as device presets: switching modes resets
-    // the host scale, while Electron's inherited app zoom remains in the guest.
     const calibrate = async () => {
       for (let attempt = 0; attempt < 4; attempt += 1) {
         if (cancelled) return;
@@ -518,6 +519,7 @@ export function HostedBrowserWebview(props: {
     declaredViewportHeight,
     declaredViewportWidth,
     effectiveViewportKey,
+    effectiveViewport._tag,
     hostSize.height,
     hostSize.width,
     webviewGeneration,
