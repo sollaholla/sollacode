@@ -108,9 +108,20 @@ export function dispatchRemotePreviewInput(input: {
         return;
       }
       case "type": {
-        // No locator: the host types into the currently focused element, which
-        // a preceding click gesture selected — same contract agents rely on.
-        yield* invoke("type", { text: action.text }, ACTION_TIMEOUT_MS);
+        const position = action.position;
+        if (position === undefined) {
+          yield* invoke("type", { text: action.text }, ACTION_TIMEOUT_MS);
+          return;
+        }
+        // Re-hit-test the field in the same trusted input turn as the keys.
+        // The page may replace the focused node between the phone tap and the
+        // user's text submission; a coordinate survives that DOM churn.
+        const viewport = yield* measuredViewport;
+        yield* invoke(
+          "type",
+          { text: action.text, ...toCss(viewport, position) },
+          ACTION_TIMEOUT_MS,
+        );
         return;
       }
       case "press": {

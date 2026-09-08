@@ -84,6 +84,7 @@ export function RemoteBrowserFrame(props: {
   const [keyboardText, setKeyboardText] = useState("");
   const [typing, setTyping] = useState(false);
   const typingSequenceRef = useRef(0);
+  const lastTapRef = useRef<(PreviewRemoteInputAction & { readonly kind: "click" }) | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const coordinatorRef = useRef(new RemotePreviewCommandCoordinator());
   // A phone renders the whole desktop page a few inches wide, where a link is
@@ -109,25 +110,30 @@ export function RemoteBrowserFrame(props: {
     reportFailure: false,
   });
 
-  const capture = useCallback(async (): Promise<boolean> => {
-    const coordinated = await coordinatorRef.current.latestCapture(() =>
-      captureRemoteSnapshot({
-        environmentId: threadRef.environmentId,
-        input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId) },
-      }),
-    );
-    if (coordinated.status === "stale") return false;
-    const result = coordinated.value;
-    if (result._tag === "Failure") {
-      setFrameError(
-        commandError(result.cause, "The desktop browser host did not return a rendered frame."),
+  const capture = useCallback(
+    async (reportError = true): Promise<boolean> => {
+      const coordinated = await coordinatorRef.current.latestCapture(() =>
+        captureRemoteSnapshot({
+          environmentId: threadRef.environmentId,
+          input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId) },
+        }),
       );
-      return false;
-    }
-    setFrame(result.value);
-    setFrameError(null);
-    return true;
-  }, [captureRemoteSnapshot, threadRef.environmentId, threadRef.threadId, tabId]);
+      if (coordinated.status === "stale") return false;
+      const result = coordinated.value;
+      if (result._tag === "Failure") {
+        if (reportError) {
+          setFrameError(
+            commandError(result.cause, "The desktop browser host did not return a rendered frame."),
+          );
+        }
+        return false;
+      }
+      setFrame(result.value);
+      setFrameError(null);
+      return true;
+    },
+    [captureRemoteSnapshot, threadRef.environmentId, threadRef.threadId, tabId],
+  );
 
   useEffect(() => {
     coordinatorRef.current.reset();
@@ -136,6 +142,7 @@ export function RemoteBrowserFrame(props: {
     typingSequenceRef.current += 1;
     setTyping(false);
     gestureRef.current = null;
+    lastTapRef.current = null;
     wheelAccumulatorRef.current = { x: 0, y: 0 };
   }, [tabId, threadRef.environmentId, threadRef.threadId]);
 
@@ -172,7 +179,7 @@ export function RemoteBrowserFrame(props: {
       }
       setFrameError(null);
       // Show the gesture's effect right away instead of waiting for the poll.
-      await capture();
+      await capture(false);
       return true;
     },
     [capture, sendRemoteInput, threadRef.environmentId, threadRef.threadId, tabId],
@@ -307,7 +314,10 @@ export function RemoteBrowserFrame(props: {
     } else {
       action = resolveFrameGesture(gesture.contentSize, sample);
     }
-    if (action !== null) void dispatchInputRef.current(action);
+    if (action !== null) {
+      if (action.kind === "click") lastTapRef.current = action;
+      void dispatchInputRef.current(action);
+    }
   };
 
   const handlePointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -390,7 +400,11 @@ export function RemoteBrowserFrame(props: {
     const sequence = ++typingSequenceRef.current;
     setTyping(true);
     try {
-      const delivered = await dispatchInput({ kind: "type", text });
+      const delivered = await dispatchInput({
+        kind: "type",
+        text,
+        ...(lastTapRef.current ? { position: lastTapRef.current.position } : {}),
+      });
       if (delivered) {
         // Preserve edits made while a slow remote relay was in flight.
         setKeyboardText((current) => (current === text ? "" : current));

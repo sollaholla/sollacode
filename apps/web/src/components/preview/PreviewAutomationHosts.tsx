@@ -1009,6 +1009,22 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
             await inspectAfterAction(ready);
             return result;
           }
+          case "credentialList": {
+            const ready = await requireReadyTab();
+            return {
+              credentials: await ready.bridge.credentials.listForTab(ready.runtimeTabId),
+            };
+          }
+          case "credentialFill": {
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.credentials.fill(
+              ready.runtimeTabId,
+              request.input as Parameters<typeof ready.bridge.credentials.fill>[1],
+              request.expiresAt,
+            );
+            await inspectAfterAction(ready);
+            return result;
+          }
           case "upload": {
             const ready = await requireAutomatableTab();
             const result = await ready.bridge.automation.upload(

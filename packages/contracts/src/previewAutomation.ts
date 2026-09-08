@@ -52,6 +52,8 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "selectOption",
   "drag",
   "answerDownloadApproval",
+  "credentialList",
+  "credentialFill",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -689,6 +691,16 @@ export const PreviewAutomationTypeInput = Schema.Struct({
     description:
       "Playwright selector for the input, for example role=textbox[name='Message'] or textarea[placeholder*='Message'].",
   }),
+  x: Schema.optional(
+    Schema.Finite.annotate({
+      description: "Viewport-relative X coordinate in CSS pixels. Must be paired with y.",
+    }),
+  ),
+  y: Schema.optional(
+    Schema.Finite.annotate({
+      description: "Viewport-relative Y coordinate in CSS pixels. Must be paired with x.",
+    }),
+  ),
   clear: Schema.optional(
     Schema.Boolean.annotate({
       description: "Clear the existing input value before inserting text. Defaults to false.",
@@ -697,17 +709,106 @@ export const PreviewAutomationTypeInput = Schema.Struct({
   timeoutMs: OptionalTimeoutMs,
 })
   .check(
-    Schema.makeFilter(
-      (input) =>
-        !(input.selector !== undefined && input.locator !== undefined) ||
-        "Provide at most one of selector or locator.",
-    ),
+    Schema.makeFilter((input) => {
+      const selectorModes =
+        Number(input.selector !== undefined) + Number(input.locator !== undefined);
+      const hasX = input.x !== undefined;
+      const hasY = input.y !== undefined;
+      if (hasX !== hasY) return "Coordinates require both x and y.";
+      const coordinateModes = hasX && hasY ? 1 : 0;
+      return selectorModes + coordinateModes <= 1 || "Provide at most one type target.";
+    }),
   )
   .annotate({
     description:
-      "Types into locator/selector, or into the currently focused element when neither target is provided.",
+      "Types into locator/selector, a coordinate-selected field, or the currently focused element when no target is provided.",
   });
 export type PreviewAutomationTypeInput = typeof PreviewAutomationTypeInput.Type;
+
+export const PreviewCredentialId = TrimmedNonEmptyString.check(Schema.isMaxLength(128)).annotate({
+  description: "Opaque ID returned by preview_credentials for the active website origin.",
+});
+export type PreviewCredentialId = typeof PreviewCredentialId.Type;
+
+export const PreviewCredentialSummary = Schema.Struct({
+  id: PreviewCredentialId,
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  origin: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
+  username: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+});
+export type PreviewCredentialSummary = typeof PreviewCredentialSummary.Type;
+
+export const PreviewAutomationCredentialListInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+}).annotate({
+  description:
+    "Lists saved credential labels that exactly match the active tab origin. Secrets are never returned.",
+});
+export type PreviewAutomationCredentialListInput = typeof PreviewAutomationCredentialListInput.Type;
+
+export const PreviewAutomationCredentialListResult = Schema.Struct({
+  credentials: Schema.Array(PreviewCredentialSummary),
+});
+export type PreviewAutomationCredentialListResult =
+  typeof PreviewAutomationCredentialListResult.Type;
+
+export const PreviewAutomationCredentialFillInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  credentialId: Schema.String.annotate({
+    description: "Opaque ID returned by preview_credentials for the active website origin.",
+  })
+    .check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(128)),
+  selector: Schema.optional(LegacySelector).annotate({
+    description: "Legacy CSS selector for the password field. Prefer locator.",
+  }),
+  locator: Schema.optional(Locator).annotate({
+    description:
+      "Playwright selector for the password field, for example role=textbox[name='Password'].",
+  }),
+  x: Schema.optional(
+    Schema.Finite.annotate({
+      description: "Viewport-relative X coordinate in CSS pixels. Must be paired with y.",
+    }),
+  ),
+  y: Schema.optional(
+    Schema.Finite.annotate({
+      description: "Viewport-relative Y coordinate in CSS pixels. Must be paired with x.",
+    }),
+  ),
+  clear: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "Replace the existing field value. Defaults to true.",
+    }),
+  ),
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(
+    Schema.makeFilter((input) => {
+      const selectorModes =
+        Number(input.selector !== undefined) + Number(input.locator !== undefined);
+      const hasX = input.x !== undefined;
+      const hasY = input.y !== undefined;
+      if (hasX !== hasY) return "Coordinates require both x and y.";
+      return selectorModes + (hasX && hasY ? 1 : 0) <= 1 || "Provide at most one fill target.";
+    }),
+  )
+  .annotate({
+    description:
+      "Fills one password field from OS-encrypted desktop storage without sending its secret through the server or tool call.",
+  });
+export type PreviewAutomationCredentialFillInput = typeof PreviewAutomationCredentialFillInput.Type;
+
+export const PreviewAutomationCredentialFillResult = Schema.Struct({
+  credentialId: PreviewCredentialId,
+  label: TrimmedNonEmptyString,
+  origin: TrimmedNonEmptyString,
+});
+export type PreviewAutomationCredentialFillResult =
+  typeof PreviewAutomationCredentialFillResult.Type;
 
 const LocalUploadPath = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty({ description: "Absolute local path to an existing file." }))

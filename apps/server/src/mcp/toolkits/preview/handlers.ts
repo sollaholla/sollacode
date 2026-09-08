@@ -1,6 +1,8 @@
 import * as Effect from "effect/Effect";
 import type {
   PreviewAutomationCloseResult,
+  PreviewAutomationCredentialFillResult,
+  PreviewAutomationCredentialListResult,
   PreviewAutomationOperation,
   PreviewAutomationOpenInput,
   PreviewAutomationOpenResult,
@@ -102,6 +104,10 @@ const handlers = {
     invokeTargeted<void>("click", input, input.timeoutMs).pipe(Effect.as({})),
   preview_drag: (input) => invokeTargeted<void>("drag", input, input.timeoutMs).pipe(Effect.as({})),
   preview_type: (input) => invokeTargeted<void>("type", input, input.timeoutMs).pipe(Effect.as({})),
+  preview_credentials: (input) =>
+    invokeTargeted<PreviewAutomationCredentialListResult>("credentialList", input ?? {}),
+  preview_fill_credential: (input) =>
+    invokeTargeted<PreviewAutomationCredentialFillResult>("credentialFill", input, input.timeoutMs),
   preview_upload: (input) =>
     invokeTargeted<PreviewAutomationUploadResult>("upload", input, input.timeoutMs),
   preview_select_option: (input) =>

@@ -362,7 +362,7 @@ export function isDeliberateUserInputEvent(type: string | undefined): boolean {
  * Two normalisations, both load-bearing for rich-text editors:
  *
  * - `innerText`, not `textContent`, for anything that is not an `<input>` or
- *   `<textarea>`. `Input.insertText` turns a newline into DOM structure — a
+ *   `<textarea>`. Native keyboard text turns a newline into DOM structure — a
  *   `<br>` or a block split — so `textContent` reports `line oneline two` for
  *   text typed as `line one\nline two` and the match fails on text that did
  *   land. `innerText` renders that structure back as newlines.
@@ -6554,7 +6554,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
     // Native CDP input only reaches a hidden/background guest after Chromium has
     // activated that WebContents. `setFocusEmulationEnabled` alone is NOT enough
-    // — dropping the `focus()` call was tried and `Input.insertText` silently did
+    // — dropping the `focus()` call was tried and native keyboard text silently did
     // nothing against a hidden guest, so agent typing never reached the page.
     // Focus it without surfacing its thread, emulate renderer focus for the
     // dispatch, then hand focus back below.
@@ -6571,7 +6571,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // focused — the chat composer — so the agent's text lands in the user's
       // conversation instead of the page. Only editable targets reach here, so
       // the press cannot activate a control.
-      if (automationLocator(input)) {
+      if (automationLocator(input) || (input.x !== undefined && input.y !== undefined)) {
         const focusPoint = yield* resolveClickPoint(
           tabId,
           send,
@@ -6607,8 +6607,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
       yield* typeIntoAutomationTarget(tabId, send, input);
       if (input.text.length > 0) {
-        yield* send("Input.insertText", { text: input.text });
-        // `Input.insertText` is delivered to whichever widget Chromium considers
+        yield* expectAgentInput(tabId, { kind: "key", key: input.text, code: "" });
+        yield* send("Input.dispatchKeyEvent", {
+          type: "char",
+          text: input.text,
+          unmodifiedText: input.text,
+        });
+        // The trusted key event is delivered to whichever widget Chromium considers
         // focused, which is not necessarily this guest: focusing a `<webview>`'s
         // WebContents does not move the embedder's focus into it, so the text can
         // land in the app's own chat composer while this call still reports
@@ -6945,7 +6950,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     // Focus the guest WebContents itself, not its containing BrowserWindow. This
     // activates native keyboard behavior for hidden/background previews without
     // changing which thread is mounted in the UI. Focus emulation alone does not
-    // substitute for it: without this call `Input.insertText` lands nowhere.
+    // substitute for it: without this call native keyboard input lands nowhere.
     // Focus is handed back after the dispatch.
     yield* Effect.gen(function* () {
       yield* attempt(
