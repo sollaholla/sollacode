@@ -491,6 +491,89 @@ it.effect("restores persisted Idle tabs across a restart", () =>
   }).pipe(Effect.provide(previewPersistenceTestLayer)),
 );
 
+it.effect("keeps live OAuth state exact but restores a fresh stable entry point", () =>
+  Effect.gen(function* () {
+    const threadId = freshThreadId();
+    const first = yield* PreviewManager.make;
+    const opened = yield* first.open({ threadId, url: "https://account.squarespace.com/" });
+    const transactionUrl =
+      "https://login.squarespace.com/api/1/login/oauth/provider/authorize" +
+      "?client_id=client&state=one-time&redirect_uri=" +
+      encodeURIComponent("https://account.squarespace.com/oauth-connect");
+
+    yield* first.reportStatus({
+      threadId,
+      tabId: opened.tabId,
+      navStatus: { _tag: "Success", url: transactionUrl, title: "Squarespace Login" },
+      canGoBack: true,
+      canGoForward: true,
+    });
+
+    const live = yield* first.list({ threadId });
+    expect(live.sessions[0]?.navStatus).toEqual({
+      _tag: "Success",
+      url: transactionUrl,
+      title: "Squarespace Login",
+    });
+
+    const second = yield* PreviewManager.make;
+    const restored = yield* second.list({ threadId });
+    expect(restored.sessions[0]).toMatchObject({
+      tabId: opened.tabId,
+      navStatus: {
+        _tag: "Success",
+        url: "https://account.squarespace.com/",
+        title: "",
+      },
+      canGoBack: false,
+      canGoForward: false,
+    });
+  }).pipe(Effect.provide(previewPersistenceTestLayer)),
+);
+
+it.effect("repairs OAuth transactions persisted by an older server", () =>
+  Effect.gen(function* () {
+    const threadId = freshThreadId();
+    const tabId = "tab_legacy-oauth";
+    const updatedAt = "2026-09-08T00:00:00.000Z";
+    const store = yield* PreviewSessionStore;
+    yield* store.upsert({
+      threadId,
+      tabId,
+      updatedAt,
+      snapshot: {
+        threadId,
+        tabId,
+        navStatus: {
+          _tag: "Success",
+          url: "https://login.example.com/oauth/callback?code=secret&state=one-time",
+          title: "",
+        },
+        canGoBack: true,
+        canGoForward: false,
+        viewport: { _tag: "fill" },
+        updatedAt,
+      },
+    });
+
+    const manager = yield* PreviewManager.make;
+    const restored = yield* manager.list({ threadId });
+    expect(restored.sessions[0]?.navStatus).toEqual({
+      _tag: "Success",
+      url: "https://login.example.com/",
+      title: "",
+    });
+
+    const repairedRows = yield* store.listAll();
+    const repaired = repairedRows.find((session) => session.tabId === tabId);
+    expect(repaired?.snapshot.navStatus).toEqual({
+      _tag: "Success",
+      url: "https://login.example.com/",
+      title: "",
+    });
+  }).pipe(Effect.provide(previewPersistenceTestLayer)),
+);
+
 // Three managers are built over ONE store layer inside a single provide,
 // modeling three server lifetimes over one database. Closing a persisted final
 // tab must leave the next server lifetime empty too.
