@@ -181,4 +181,34 @@ describe("ComposerPromptEditor placeholder", () => {
     expect(markup).toContain("absolute inset-x-0 top-0");
     expect(markup).not.toContain("absolute inset-0");
   });
+
+  it("renders a Safari-owned textarea on iOS instead of a contenteditable", async () => {
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Version/18.6 Safari/604.1",
+      platform: "iPhone",
+      maxTouchPoints: 5,
+    });
+    const { ComposerPromptEditor } = await import("./ComposerPromptEditor");
+    const markup = renderToStaticMarkup(
+      createElement(ComposerPromptEditor, {
+        value: "dictated text",
+        cursor: 13,
+        terminalContexts: [],
+        skills: [],
+        disabled: false,
+        placeholder: "Ask anything",
+        onRemoveTerminalContext: () => {},
+        onChange: () => {},
+        onPaste: () => {},
+        editorRef: createRef<ComposerPromptEditorHandle | null>(),
+      }),
+    );
+
+    expect(markup).toContain('data-native-ios-editor="true"');
+    expect(markup).toContain("<textarea");
+    expect(markup).toContain("touch-auto");
+    expect(markup).not.toContain('contenteditable="true"');
+    expect(markup).not.toContain('data-testid="composer-placeholder"');
+  });
 });

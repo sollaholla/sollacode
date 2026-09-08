@@ -67,6 +67,8 @@ import {
 } from "~/composer-editor-mentions";
 import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
+  formatTerminalContextLabel,
+  isTerminalContextExpired,
   type TerminalContextDraft,
 } from "~/lib/terminalContext";
 import { cn, isMacPlatform } from "~/lib/utils";
@@ -92,6 +94,13 @@ import {
   resolveComposerBeforeInput,
   resolveComposerDictationFlush,
 } from "./composerDictationSync";
+import {
+  composerPromptToNativeText,
+  mergeNativeComposerText,
+  nativeComposerOffsetToPromptOffset,
+  promptOffsetToNativeComposerOffset,
+  shouldUseNativeIOSComposer,
+} from "./composerNativeInput";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
 const SURROUND_SYMBOLS: [string, string][] = [
@@ -911,6 +920,280 @@ interface ComposerPromptEditorProps {
   ) => boolean;
   onPaste: React.ClipboardEventHandler<HTMLElement>;
   editorRef: React.RefObject<ComposerPromptEditorHandle | null>;
+}
+
+const NATIVE_COMPOSER_MIN_HEIGHT_PX = 70;
+const NATIVE_COMPOSER_MAX_HEIGHT_PX = 200;
+
+function currentBrowserNeedsNativeComposer(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return shouldUseNativeIOSComposer({
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    maxTouchPoints: navigator.maxTouchPoints,
+  });
+}
+
+/**
+ * Mobile WebKit does not expose iOS keyboard dictation as a composition and
+ * Lexical's contenteditable event interception also takes ownership away from
+ * Safari's native selection gestures. Keep this input DOM-owned: React never
+ * writes a controlled `value` during typing, dictation, autocorrect, selection,
+ * long-press paste, or caret dragging.
+ */
+function NativeIOSComposerPromptEditor(props: ComposerPromptEditorProps) {
+  const {
+    value,
+    cursor,
+    terminalContexts,
+    disabled,
+    placeholder,
+    className,
+    onRemoveTerminalContext,
+    onChange,
+    onTextPresenceChange,
+    onCommandKeyDown,
+    onPaste,
+    editorRef,
+  } = props;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const onChangeRef = useRef(onChange);
+  const emittedEchoesRef = useRef<readonly ComposerEmittedEcho[]>([]);
+  const snapshotRef = useRef({
+    value,
+    cursor: clampCollapsedComposerCursor(value, cursor),
+    expandedCursor: expandCollapsedComposerCursor(
+      value,
+      clampCollapsedComposerCursor(value, cursor),
+    ),
+    terminalContextIds: terminalContexts.map((context) => context.id),
+  });
+  const terminalContextsSignature = terminalContextSignature(terminalContexts);
+  const terminalContextsSignatureRef = useRef(terminalContextsSignature);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  const resizeTextarea = useCallback((element: HTMLTextAreaElement) => {
+    element.style.height = "auto";
+    const nextHeight = Math.max(
+      NATIVE_COMPOSER_MIN_HEIGHT_PX,
+      Math.min(element.scrollHeight, NATIVE_COMPOSER_MAX_HEIGHT_PX),
+    );
+    element.style.height = `${String(nextHeight)}px`;
+    element.style.overflowY =
+      element.scrollHeight > NATIVE_COMPOSER_MAX_HEIGHT_PX ? "auto" : "hidden";
+  }, []);
+
+  const readSelectionExpandedOffset = useCallback(
+    (element: HTMLTextAreaElement, prompt: string): number => {
+      const nativeOffset =
+        element.selectionDirection === "backward"
+          ? (element.selectionStart ?? 0)
+          : (element.selectionEnd ?? element.value.length);
+      return nativeComposerOffsetToPromptOffset(prompt, nativeOffset);
+    },
+    [],
+  );
+
+  const emitTextareaSnapshot = useCallback(
+    (element: HTMLTextAreaElement, textChanged: boolean) => {
+      const previous = snapshotRef.current;
+      const nextValue = textChanged
+        ? mergeNativeComposerText(previous.value, element.value)
+        : previous.value;
+      const nextExpandedCursor = readSelectionExpandedOffset(element, nextValue);
+      const nextCursor = collapseExpandedComposerCursor(nextValue, nextExpandedCursor);
+      const terminalContextIds = terminalContexts.map((context) => context.id);
+      if (
+        previous.value === nextValue &&
+        previous.cursor === nextCursor &&
+        previous.expandedCursor === nextExpandedCursor &&
+        previous.terminalContextIds.length === terminalContextIds.length &&
+        previous.terminalContextIds.every((id, index) => id === terminalContextIds[index])
+      ) {
+        return;
+      }
+      snapshotRef.current = {
+        value: nextValue,
+        cursor: nextCursor,
+        expandedCursor: nextExpandedCursor,
+        terminalContextIds,
+      };
+      if (textChanged) {
+        emittedEchoesRef.current = rememberComposerEmittedValue(
+          emittedEchoesRef.current,
+          nextValue,
+          performance.now(),
+        );
+      }
+      onTextPresenceChange?.(element.value.trim().length > 0);
+      const cursorAdjacentToMention =
+        isCollapsedCursorAdjacentToInlineToken(nextValue, nextCursor, "left") ||
+        isCollapsedCursorAdjacentToInlineToken(nextValue, nextCursor, "right");
+      onChangeRef.current(
+        nextValue,
+        nextCursor,
+        nextExpandedCursor,
+        cursorAdjacentToMention,
+        terminalContextIds,
+      );
+    },
+    [onTextPresenceChange, readSelectionExpandedOffset, terminalContexts],
+  );
+
+  useLayoutEffect(() => {
+    const element = textareaRef.current;
+    if (!element) return;
+    const previous = snapshotRef.current;
+    const normalizedCursor = clampCollapsedComposerCursor(value, cursor);
+    const contextsChanged = terminalContextsSignatureRef.current !== terminalContextsSignature;
+    const staleEcho = isComposerStaleEcho({
+      history: emittedEchoesRef.current,
+      incomingValue: value,
+      snapshotValue: previous.value,
+      now: performance.now(),
+    });
+
+    if (staleEcho && !contextsChanged) return;
+
+    const nextExpandedCursor = expandCollapsedComposerCursor(value, normalizedCursor);
+    const nextNativeText = composerPromptToNativeText(value);
+    const visibleTextChanged = element.value !== nextNativeText;
+    snapshotRef.current = {
+      value,
+      cursor: normalizedCursor,
+      expandedCursor: nextExpandedCursor,
+      terminalContextIds: terminalContexts.map((context) => context.id),
+    };
+    terminalContextsSignatureRef.current = terminalContextsSignature;
+
+    if (visibleTextChanged) {
+      element.value = nextNativeText;
+      const nativeCursor = promptOffsetToNativeComposerOffset(value, nextExpandedCursor);
+      element.setSelectionRange(nativeCursor, nativeCursor);
+    }
+    onTextPresenceChange?.(nextNativeText.trim().length > 0);
+    resizeTextarea(element);
+  }, [
+    cursor,
+    onTextPresenceChange,
+    resizeTextarea,
+    terminalContexts,
+    terminalContextsSignature,
+    value,
+  ]);
+
+  const focusAt = useCallback((nextCursor: number) => {
+    const element = textareaRef.current;
+    if (!element) return;
+    const snapshot = snapshotRef.current;
+    const boundedCursor = clampCollapsedComposerCursor(snapshot.value, nextCursor);
+    const expandedCursor = expandCollapsedComposerCursor(snapshot.value, boundedCursor);
+    const nativeCursor = promptOffsetToNativeComposerOffset(snapshot.value, expandedCursor);
+    element.focus({ preventScroll: true });
+    element.setSelectionRange(nativeCursor, nativeCursor);
+    snapshotRef.current = { ...snapshot, cursor: boundedCursor, expandedCursor };
+  }, []);
+
+  const readSnapshot = useCallback(() => {
+    const element = textareaRef.current;
+    if (!element) return snapshotRef.current;
+    const snapshot = snapshotRef.current;
+    const nextValue = mergeNativeComposerText(snapshot.value, element.value);
+    const expandedCursor = readSelectionExpandedOffset(element, nextValue);
+    const nextSnapshot = {
+      value: nextValue,
+      cursor: collapseExpandedComposerCursor(nextValue, expandedCursor),
+      expandedCursor,
+      terminalContextIds: terminalContexts.map((context) => context.id),
+    };
+    snapshotRef.current = nextSnapshot;
+    return nextSnapshot;
+  }, [readSelectionExpandedOffset, terminalContexts]);
+
+  useImperativeHandle(
+    editorRef,
+    () => ({
+      blur: () => textareaRef.current?.blur(),
+      focus: () => focusAt(snapshotRef.current.cursor),
+      focusAt,
+      focusAtEnd: () => {
+        const snapshot = snapshotRef.current;
+        focusAt(collapseExpandedComposerCursor(snapshot.value, snapshot.value.length));
+      },
+      readSnapshot,
+    }),
+    [focusAt, readSnapshot],
+  );
+
+  return (
+    <div className="relative" data-composer-prompt-editor="true" data-native-ios-editor="true">
+      {terminalContexts.length > 0 ? (
+        <div className="mb-2 flex flex-wrap gap-1.5" data-native-composer-contexts="true">
+          {terminalContexts.map((context) => (
+            <span
+              key={context.id}
+              className={cn(
+                "inline-flex max-w-full items-center gap-1 rounded-md border border-border/70 bg-accent/40 px-1.5 py-0.5 text-[12px] font-medium leading-tight text-foreground",
+                isTerminalContextExpired(context) &&
+                  "border-destructive/35 bg-destructive/8 text-destructive",
+              )}
+            >
+              <span className="truncate">{formatTerminalContextLabel(context)}</span>
+              <button
+                type="button"
+                className="inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground"
+                aria-label={`Remove ${formatTerminalContextLabel(context)}`}
+                onClick={() => onRemoveTerminalContext(context.id)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <textarea
+        ref={textareaRef}
+        defaultValue={composerPromptToNativeText(value)}
+        disabled={disabled}
+        placeholder={terminalContexts.length > 0 ? "" : placeholder}
+        aria-label={placeholder}
+        data-chat-composer-scroll-container="true"
+        data-testid="composer-editor"
+        autoCapitalize="sentences"
+        autoCorrect="on"
+        spellCheck
+        rows={1}
+        className={cn(
+          "block min-h-17.5 w-full resize-none overflow-y-hidden overscroll-y-contain whitespace-pre-wrap bg-transparent text-[16px] leading-relaxed text-foreground outline-none touch-auto",
+          className,
+        )}
+        onInput={(event) => {
+          resizeTextarea(event.currentTarget);
+          emitTextareaSnapshot(event.currentTarget, true);
+        }}
+        onSelect={(event) => emitTextareaSnapshot(event.currentTarget, false)}
+        onKeyDown={(event) => {
+          if (
+            event.key !== "ArrowDown" &&
+            event.key !== "ArrowUp" &&
+            event.key !== "Enter" &&
+            event.key !== "Tab"
+          ) {
+            return;
+          }
+          if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+          if (onCommandKeyDown?.(event.key, event.nativeEvent)) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
+        onPaste={onPaste}
+      />
+    </div>
+  );
 }
 
 function ComposerCommandKeyPlugin(props: {
@@ -1993,7 +2276,7 @@ function ComposerPromptEditorInner({
   );
 }
 
-export function ComposerPromptEditor({
+function LexicalComposerPromptEditor({
   value,
   cursor,
   terminalContexts,
@@ -2048,5 +2331,13 @@ export function ComposerPromptEditor({
         {...(className ? { className } : {})}
       />
     </LexicalComposer>
+  );
+}
+
+export function ComposerPromptEditor(props: ComposerPromptEditorProps) {
+  return currentBrowserNeedsNativeComposer() ? (
+    <NativeIOSComposerPromptEditor {...props} />
+  ) : (
+    <LexicalComposerPromptEditor {...props} />
   );
 }
