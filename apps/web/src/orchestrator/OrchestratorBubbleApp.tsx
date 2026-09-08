@@ -8,7 +8,7 @@ import {
   computeBubbleScale,
   smoothBubbleScale,
 } from "./bubblePresentation";
-import { BlackHoleOrb, type OrbTint } from "../components/orchestrator/BlackHoleOrb";
+import { GalacticOrb, type OrbTint } from "../components/orchestrator/GalacticOrb";
 
 /**
  * The entire renderer of the floating always-on-top bubble window.
@@ -17,7 +17,7 @@ import { BlackHoleOrb, type OrbTint } from "../components/orchestrator/BlackHole
  * `#/orchestrator-bubble` (see `main.tsx`). It holds no environment
  * connections and no voice session — the main window streams voice state over
  * the desktop bridge, and every interaction routes back through it:
- * click → open the orchestrator thread; drag → move this window.
+ * click → toggle voice; secondary button → open the thread; drag → move this window.
  */
 
 const IDLE_STATE: DesktopOrchestratorBubbleState = {
@@ -30,7 +30,7 @@ const IDLE_STATE: DesktopOrchestratorBubbleState = {
 const CLICK_MOVEMENT_THRESHOLD_PX = 5;
 
 /**
- * Which tint the black hole wears per status. Listening is the user's colour
+ * Which tint the galaxy wears per status. Listening is the user's colour
  * even before they speak: the microphone is theirs, and the orb has always
  * gone quiet-purple then, which read as "the assistant is doing something".
  */
@@ -100,6 +100,22 @@ export function OrchestratorBubbleApp() {
   }, [state.status]);
 
   const threadButtonRef = useRef<HTMLButtonElement>(null);
+  const [hintTarget, setHintTarget] = useState<"voice" | "thread" | null>(null);
+  const [hintVisible, setHintVisible] = useState(false);
+
+  // Native title popups can outlive a click-through Electron window's hover.
+  // This hint belongs to the renderer and has a hard expiry even if the OS
+  // never delivers pointerleave when it starts forwarding clicks again.
+  useEffect(() => {
+    setHintVisible(false);
+    if (hintTarget === null) return;
+    const show = window.setTimeout(() => setHintVisible(true), 500);
+    const expire = window.setTimeout(() => setHintVisible(false), 2_500);
+    return () => {
+      window.clearTimeout(show);
+      window.clearTimeout(expire);
+    };
+  }, [hintTarget]);
 
   // The bubble window is much wider than the orb so the orb can swell without
   // being clipped by the window rectangle. That surplus is transparent, and a
@@ -109,17 +125,16 @@ export function OrchestratorBubbleApp() {
   useEffect(() => {
     const bridge = window.desktopBridge?.orchestratorBubble;
     const setInteractive = bridge?.setInteractive;
-    if (setInteractive === undefined) return;
     let interactive = true;
     const apply = (next: boolean) => {
       if (next === interactive) return;
       interactive = next;
-      void setInteractive(next).catch(() => undefined);
+      void setInteractive?.(next).catch(() => undefined);
     };
-    const isOverControls = (x: number, y: number) => {
+    const controlAt = (x: number, y: number): "voice" | "thread" | null => {
       // Never hand the clicks back mid-drag: the cursor routinely leaves the
       // orb while dragging, and going click-through would drop the gesture.
-      if (dragRef.current !== null) return true;
+      if (dragRef.current !== null) return "voice";
       const button = threadButtonRef.current?.getBoundingClientRect();
       if (
         button !== undefined &&
@@ -128,21 +143,47 @@ export function OrchestratorBubbleApp() {
         y >= button.top &&
         y <= button.bottom
       ) {
-        return true;
+        return "thread";
       }
       // The orb is centred in the window and scales about its middle, so its
       // drawn radius follows the live scale rather than the layout box.
       const centerX = window.innerWidth / 2;
       const centerY = window.innerHeight / 2;
       const radius = (BUBBLE_BASE_DIAMETER / 2) * scaleRef.current + 2;
-      return Math.hypot(x - centerX, y - centerY) <= radius;
+      return Math.hypot(x - centerX, y - centerY) <= radius ? "voice" : null;
     };
-    const onMove = (event: MouseEvent) => apply(isOverControls(event.clientX, event.clientY));
+    let hovered: "voice" | "thread" | null = null;
+    const onMove = (event: MouseEvent) => {
+      const target = controlAt(event.clientX, event.clientY);
+      apply(target !== null);
+      if (dragRef.current !== null || target === hovered) return;
+      hovered = target;
+      setHintTarget(target);
+    };
+    const clearHover = () => {
+      hovered = null;
+      setHintTarget(null);
+      if (dragRef.current === null) apply(false);
+    };
+    const onVisibility = () => {
+      if (document.hidden) clearHover();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clearHover();
+    };
     window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseleave", clearHover);
+    window.addEventListener("blur", clearHover);
+    window.addEventListener("keydown", onKeyDown);
+    document.addEventListener("visibilitychange", onVisibility);
     apply(false);
     return () => {
       window.removeEventListener("mousemove", onMove);
-      void setInteractive(true).catch(() => undefined);
+      window.removeEventListener("mouseleave", clearHover);
+      window.removeEventListener("blur", clearHover);
+      window.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("visibilitychange", onVisibility);
+      void setInteractive?.(true).catch(() => undefined);
     };
   }, []);
 
@@ -157,6 +198,7 @@ export function OrchestratorBubbleApp() {
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
+    setHintTarget(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
       pointerId: event.pointerId,
@@ -195,6 +237,9 @@ export function OrchestratorBubbleApp() {
     const drag = dragRef.current;
     if (drag === null || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
     const bridge = window.desktopBridge?.orchestratorBubble;
     if (bridge === undefined) return;
     if (drag.moved) {
@@ -206,10 +251,18 @@ export function OrchestratorBubbleApp() {
     }
   };
 
+  const handlePointerCancel = () => {
+    if (dragRef.current === null) return;
+    dragRef.current = null;
+    setHintTarget(null);
+    void window.desktopBridge?.orchestratorBubble?.dragEnd().catch(() => undefined);
+  };
+
   const handleOpenThread = (event: React.PointerEvent<HTMLButtonElement>) => {
     // Keep the press off the drag surface underneath, or opening the thread
     // would also arm a drag and toggle the microphone on release.
     event.stopPropagation();
+    setHintTarget(null);
     void window.desktopBridge?.orchestratorBubble?.open().catch(() => undefined);
   };
 
@@ -227,7 +280,8 @@ export function OrchestratorBubbleApp() {
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
+      onLostPointerCapture={handlePointerCancel}
       style={{
         width: "100vw",
         height: "100vh",
@@ -240,12 +294,10 @@ export function OrchestratorBubbleApp() {
         overflow: "hidden",
         background: "transparent",
       }}
-      title={
-        working
-          ? "Working — wait for the reply · click to stop · drag to move"
-          : listening || speaking
-            ? "Click to stop talking · drag to move"
-            : "Click to start talking · drag to move"
+      aria-label={
+        listening || speaking || working
+          ? "Stop talking to the orchestrator"
+          : "Talk to the orchestrator"
       }
     >
       {/*
@@ -264,13 +316,12 @@ export function OrchestratorBubbleApp() {
           justifyContent: "center",
         }}
       >
-        <BlackHoleOrb
+        <GalacticOrb
           size={BUBBLE_BASE_DIAMETER}
           tint={tint}
           scale={displayScale}
           intensity={glow}
-          // Still at rest: a disk spinning in the corner of the screen all day
-          // is the kind of thing that gets the bubble switched off.
+          // Live speech increases the galaxy's motion; idle keeps a gentler drift.
           spinning={state.status !== "idle" && state.status !== "error"}
           breathing={state.status === "connecting"}
         >
@@ -292,14 +343,13 @@ export function OrchestratorBubbleApp() {
             // off rather than one that is listening to everything.
             <MicOffIcon size={20} color="rgba(255,255,255,0.62)" strokeWidth={2.2} />
           )}
-        </BlackHoleOrb>
+        </GalacticOrb>
 
         <button
           type="button"
           data-testid="orchestrator-bubble-open-thread"
           ref={threadButtonRef}
           onPointerDown={handleOpenThread}
-          title="Open the orchestrator thread"
           aria-label="Open the orchestrator thread"
           style={{
             position: "absolute",
@@ -310,8 +360,8 @@ export function OrchestratorBubbleApp() {
             width: 22,
             height: 22,
             borderRadius: "50%",
-            border: "1px solid rgba(255,255,255,0.16)",
-            background: "rgba(28,28,32,0.92)",
+            border: "1px solid rgba(170,180,255,0.35)",
+            background: "rgba(18,17,43,0.96)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -323,10 +373,41 @@ export function OrchestratorBubbleApp() {
           <MessageSquareIcon size={12} color="rgba(255,255,255,0.82)" strokeWidth={2.4} />
         </button>
       </div>
+      {hintVisible && hintTarget !== null ? (
+        <div
+          role="tooltip"
+          style={{
+            position: "absolute",
+            top: "calc(50% + 48px)",
+            left: "50%",
+            transform: "translateX(-50%)",
+            maxWidth: 244,
+            padding: "5px 9px",
+            border: "1px solid rgba(176,182,255,0.22)",
+            borderRadius: 8,
+            background: "rgba(15,14,34,0.96)",
+            color: "#e7e5ff",
+            fontSize: 11,
+            lineHeight: "16px",
+            textAlign: "center",
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+          }}
+        >
+          {hintTarget === "thread"
+            ? "Open orchestrator thread"
+            : listening || speaking || working
+              ? "Click to stop · drag to move"
+              : "Click to talk · drag to move"}
+        </div>
+      ) : null}
       <style>{`
         @keyframes orchestrator-bubble-spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          [data-testid="orchestrator-bubble"] svg { animation: none !important; }
         }
       `}</style>
     </div>

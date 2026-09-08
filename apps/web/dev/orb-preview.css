@@ -1,0 +1,149 @@
+* {
+  box-sizing: border-box;
+}
+html {
+  background: #070811;
+  color: #eae9f6;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+body {
+  margin: 0;
+  background: radial-gradient(ellipse at 50% 32%, #18132f 0%, transparent 48%);
+}
+main {
+  max-width: 940px;
+  margin: auto;
+  padding: 30px 40px;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.wordmark {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 3px;
+  color: #d0c3ed;
+}
+.eyebrow {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: #77758d;
+}
+.intro {
+  text-align: center;
+  margin-top: 72px;
+}
+.intro h1 {
+  font-size: clamp(32px, 6vw, 52px);
+  letter-spacing: -2px;
+  font-weight: 480;
+  margin: 18px 0;
+}
+.intro > p:last-child,
+.details p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: #9693ac;
+}
+.stage {
+  min-height: 235px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+}
+.caption {
+  font-size: 12px;
+  color: #c0b5d7;
+}
+.states {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+button {
+  font: inherit;
+  cursor: pointer;
+}
+.states button,
+.motion {
+  font-size: 12px;
+  border: 1px solid #272439;
+  color: #9d98b7;
+  background: transparent;
+  padding: 9px 13px;
+  border-radius: 20px;
+}
+.states button[aria-pressed="true"] {
+  color: #e9dcff;
+  background: #28203f;
+  border-color: #78608f;
+}
+.motion {
+  display: block;
+  margin: 20px auto 0;
+  border: 0;
+  color: #b69ecf;
+}
+.details {
+  margin-top: 48px;
+  border-top: 1px solid #262034;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  gap: 24px;
+}
+.details h2 {
+  font-size: 27px;
+  font-weight: 480;
+  letter-spacing: -0.7px;
+  line-height: 1.2;
+}
+.details .fine {
+  font-size: 11px;
+  color: #68637e;
+}
+.details iframe {
+  border: 0;
+  flex-shrink: 0;
+  border-radius: 24px;
+  background: radial-gradient(circle, #21183044, transparent 70%);
+}
+footer {
+  text-align: center;
+  border-top: 1px solid #262034;
+  padding-top: 24px;
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: #625d77;
+}
+@media (max-width: 600px) {
+  main {
+    padding: 24px;
+  }
+  .intro {
+    margin-top: 50px;
+  }
+  .details {
+    flex-direction: column;
+    padding-top: 28px;
+    text-align: center;
+    gap: 0;
+  }
+  .details iframe {
+    margin-top: -35px;
+  }
+  .stage {
+    min-height: 230px;
+  }
+  header .eyebrow {
+    display: none;
+  }
+}

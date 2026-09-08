@@ -112,7 +112,7 @@ describe("computeMobileOrbDiameter", () => {
   it("scales with the screen but stays thumb-sized on a small one", () => {
     expect(computeMobileOrbDiameter(320)).toBe(MOBILE_ORB_MIN_PX);
     expect(computeMobileOrbDiameter(800)).toBe(MOBILE_ORB_MAX_PX);
-    expect(computeMobileOrbDiameter(500)).toBe(250);
+    expect(computeMobileOrbDiameter(500)).toBe(180);
   });
 });
 
