@@ -97,6 +97,15 @@ If dictation finishes after you leave the conversation, the stacked toast above 
 preview of the transcript, lets you expand the full text, and includes **Send**. Returning to the
 conversation puts the transcript in the draft so you can edit it and send from the composer.
 
+## iPhone and iPad keyboard dictation
+
+The web composer uses Safari's native text field on iPhone and iPad, including when Solla Code is
+opened through Tailscale. The iOS keyboard therefore owns dictation corrections, autocorrect,
+double-tap word selection, drag-to-move-cursor, and the long-press copy/paste menu. Dictated text is
+committed to the same per-thread draft as desktop input. A delayed draft update cannot replace the
+newer text still held by Safari, and attached terminal contexts remain visible above the field while
+you edit.
+
 ## Responsive controls
 
 The composer footer has three responsive layouts. Wide composers show icons and labels. Medium
