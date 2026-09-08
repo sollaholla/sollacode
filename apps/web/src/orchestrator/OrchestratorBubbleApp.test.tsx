@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
+import type { DesktopOrchestratorBubbleState } from "@t3tools/contracts";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -7,8 +8,12 @@ import { OrchestratorBubbleApp } from "./OrchestratorBubbleApp";
 
 let container: HTMLDivElement;
 let root: Root;
+let stateListener: ((state: DesktopOrchestratorBubbleState) => void) | null = null;
 const bridge = {
-  onState: vi.fn(() => () => undefined),
+  onState: vi.fn((listener: (state: DesktopOrchestratorBubbleState) => void) => {
+    stateListener = listener;
+    return () => undefined;
+  }),
   setInteractive: vi.fn(async () => undefined),
   beginDrag: vi.fn(async () => undefined),
   move: vi.fn(async () => undefined),
@@ -20,6 +25,7 @@ const bridge = {
 beforeEach(async () => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  stateListener = null;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("innerWidth", 288);
   vi.stubGlobal("innerHeight", 288);
@@ -67,6 +73,30 @@ const pointer = async (type: string) => {
     ),
   );
 };
+
+const publishState = async (state: DesktopOrchestratorBubbleState) => {
+  expect(stateListener).toBeTypeOf("function");
+  await act(async () => stateListener?.(state));
+};
+
+describe("floating orb rendering cost", () => {
+  it("stops idle motion and applies level-only updates without a frame loop", async () => {
+    const initialOrb = container.querySelector<HTMLElement>(".galactic-orb")!;
+    expect(initialOrb.hasAttribute("data-orb-animated")).toBe(false);
+
+    await publishState({ status: "listening", micLevel: 0.5, assistantLevel: 0 });
+    const activeOrb = container.querySelector<HTMLElement>(".galactic-orb")!;
+    expect(activeOrb).toBe(initialOrb);
+    expect(activeOrb.hasAttribute("data-orb-animated")).toBe(true);
+    expect(activeOrb.style.transform).toBe("scale(1.13)");
+    expect(activeOrb.style.getPropertyValue("--orb-intensity")).toBe("0.5");
+
+    await publishState({ status: "listening", micLevel: 1, assistantLevel: 0 });
+    expect(container.querySelector(".galactic-orb")).toBe(activeOrb);
+    expect(activeOrb.style.transform).toBe("scale(1.26)");
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+  });
+});
 
 describe("floating orb hint", () => {
   it("uses a delayed renderer hint with no native title popup", async () => {

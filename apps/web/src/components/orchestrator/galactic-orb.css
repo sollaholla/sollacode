@@ -6,6 +6,8 @@
   isolation: isolate;
   border-radius: 50%;
   transform-origin: center;
+  transition-property: transform;
+  transition-timing-function: cubic-bezier(0.2, 0.75, 0.25, 1);
 }
 
 .galactic-orb__halo {
@@ -15,6 +17,7 @@
   border-radius: 50%;
   background: radial-gradient(circle, transparent 44%, var(--orb-edge) 58%, transparent 71%);
   opacity: calc(0.24 + var(--orb-intensity) * 0.3);
+  transition: opacity 140ms ease-out;
 }
 
 .galactic-orb__sphere {
