@@ -746,8 +746,19 @@ type RecordingFrameListener = (frame: DesktopPreviewRecordingFrame) => Effect.Ef
 type NewTabRequestListener = (request: DesktopPreviewNewTabRequest) => Effect.Effect<void>;
 
 type PreviewInputSignal =
-  | { readonly kind: "pointer"; readonly x: number; readonly y: number; readonly button: number }
-  | { readonly kind: "key"; readonly key: string; readonly code: string }
+  | {
+      readonly kind: "pointer";
+      readonly x: number;
+      readonly y: number;
+      readonly button: number;
+      readonly directNewTabUrl?: string | null;
+    }
+  | {
+      readonly kind: "key";
+      readonly key: string;
+      readonly code: string;
+      readonly directNewTabUrl?: string | null;
+    }
   /**
    * The guest's own editor (the annotation comment box the pick preload
    * draws) gained or lost focus. While it holds focus every key belongs to
@@ -2905,6 +2916,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const webContentsId = wc.id;
     let listenersActive = true;
     let humanInputGeneration = 0;
+    let directNewTabIntent: string | null = null;
+    let directNewTabIntentGeneration = 0;
     const updateCurrentWebContents = Effect.fn("PreviewManager.updateCurrentWebContents")(
       function* (
         patch: Partial<PreviewTabState>,
@@ -3133,7 +3146,26 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
     });
     const humanInput = (_event: unknown, rawSignal?: unknown): void => {
-      if (listenersActive) runFork(handleHumanInput(rawSignal));
+      if (!listenersActive) return;
+      if (
+        isPreviewInputSignal(rawSignal) &&
+        (rawSignal.kind === "pointer" || rawSignal.kind === "key")
+      ) {
+        const generation = ++directNewTabIntentGeneration;
+        directNewTabIntent = rawSignal.directNewTabUrl ?? null;
+        if (directNewTabIntent !== null) {
+          runFork(
+            Effect.sleep("2 seconds").pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  if (directNewTabIntentGeneration === generation) directNewTabIntent = null;
+                }),
+              ),
+            ),
+          );
+        }
+      }
+      runFork(handleHumanInput(rawSignal));
     };
     const forwardShortcut = Effect.fn("PreviewManager.forwardShortcut")(function* (
       input: Electron.Input,
@@ -3337,26 +3369,31 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           // the request and creating a sibling preview later breaks both
           // contracts and turns the sign-in button into an apparent no-op.
           //
-          // Chromium does not always report script-created windows as
-          // `new-window`. A frame target is the reliable signal for featureless
-          // `window.open(url, "_blank")` and named OAuth windows: denying either
-          // request hands the page a null WindowProxy even though we later open
-          // the URL in a sibling preview tab. Google then reports a popup
-          // blocker because its opener contract was broken. Browser-style new
-          // tabs have no frame target and continue through the sibling-tab path.
+          // Chromium reports both a direct `<a target="_blank">` click and a
+          // featureless `window.open(url, "_blank")` as a foreground tab with
+          // an empty frame name. The preload records the direct-link URL before
+          // this synchronous callback. Keep that explicit tab request on the
+          // sibling-preview path; every other foreground request needs a real
+          // child and WindowProxy or Google reports a false popup blocker.
+          const requestedDirectTab = directNewTabIntent === url;
+          directNewTabIntent = null;
+          directNewTabIntentGeneration += 1;
           const hasWindowFeatures = features.trim().length > 0;
           const hasFrameTarget = frameName.trim().length > 0;
           const isChildWindow =
-            disposition === "new-window" ||
-            postBody !== undefined ||
-            hasWindowFeatures ||
-            hasFrameTarget;
+            !requestedDirectTab &&
+            (disposition === "foreground-tab" ||
+              disposition === "new-window" ||
+              postBody !== undefined ||
+              hasWindowFeatures ||
+              hasFrameTarget);
           runFork(
             Effect.logInfo("Desktop preview handled a guest window-open request.", {
               tabId,
               webContentsId: wc.id,
               disposition,
               decision: isChildWindow ? "child-window" : "preview-tab",
+              requestedDirectTab,
               hasPostBody: postBody !== undefined,
               hasFeatures: hasWindowFeatures,
               frameTarget:

@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import { HUMAN_INPUT_CHANNEL } from "./GuestProtocol.ts";
 import * as PreviewManager from "./Manager.ts";
 
 describe("fitPictureInPictureContentSize", () => {
@@ -2714,6 +2715,18 @@ describe("PreviewManager", () => {
               readonly postBody?: { readonly data: ReadonlyArray<unknown> };
             }) => unknown)
           | undefined;
+        let humanInput:
+          | ((
+              _event: unknown,
+              signal: {
+                readonly kind: "pointer";
+                readonly x: number;
+                readonly y: number;
+                readonly button: number;
+                readonly directNewTabUrl: string | null;
+              },
+            ) => void)
+          | undefined;
         fromId.mockReturnValue({
           id: 42,
           isDestroyed: () => false,
@@ -2726,7 +2739,12 @@ describe("PreviewManager", () => {
           loadURL,
           on: vi.fn(),
           off: vi.fn(),
-          ipc: { on: vi.fn(), off: vi.fn() },
+          ipc: {
+            on: vi.fn((channel, listener) => {
+              if (channel === HUMAN_INPUT_CHANNEL) humanInput = listener;
+            }),
+            off: vi.fn(),
+          },
           send: webviewSend,
           navigationHistory: { canGoBack: () => false, canGoForward: () => false },
           setWindowOpenHandler: vi.fn((handler) => {
@@ -2750,6 +2768,16 @@ describe("PreviewManager", () => {
         yield* manager.createTab("runtime-source");
         yield* manager.registerWebview("runtime-source", 42);
 
+        humanInput?.(
+          {},
+          {
+            kind: "pointer",
+            x: 10,
+            y: 10,
+            button: 0,
+            directNewTabUrl: "https://example.com/next",
+          },
+        );
         expect(
           openHandler?.({
             url: "https://example.com/next",
@@ -2764,6 +2792,22 @@ describe("PreviewManager", () => {
           { sourceTabId: "runtime-source", url: "https://example.com/next" },
         ]);
         expect(loadURL).not.toHaveBeenCalled();
+
+        // A featureless script-created window has the same Electron details as
+        // the direct link above after Chromium normalizes `_blank`. With no
+        // direct-link intent from the preload, preserve the real WindowProxy.
+        expect(
+          openHandler?.({
+            url: "https://example.com/scripted",
+            disposition: "foreground-tab",
+            features: "",
+            frameName: "",
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+        });
+        expect(requests).toHaveLength(1);
 
         // The regression this exists for: Google Identity Services opens a
         // sized popup that Chromium does not report as `new-window`. Denying it
