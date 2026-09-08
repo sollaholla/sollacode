@@ -38,7 +38,10 @@ it("persists custom curve fields through settings patches and supplies defaults"
       providers: { [id]: { cooldownCurve: "late", curveStrength: 2, earlyOvershootPercent: 12 } },
     },
   });
-  const restored = decodeGuard(updated.usageGuard.providers[id]);
+  const persisted = updated.usageGuard.providers[id];
+  expect(persisted).toBeDefined();
+  if (persisted === undefined) throw new Error("usage guard provider settings were not persisted");
+  const restored = decodeGuard(persisted);
   expect(restored.cooldownCurve).toBe("late");
   expect(restored.curveStrength).toBe(2);
   expect(restored.earlyOvershootPercent).toBe(12);
