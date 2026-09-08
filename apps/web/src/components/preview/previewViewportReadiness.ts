@@ -17,12 +17,17 @@ export function isPreviewViewportReady(input: {
     return false;
   }
 
-  const expectedViewport =
-    setting._tag === "fill" ? declaredViewport : { width: setting.width, height: setting.height };
+  // Fill owns the available host rectangle, so the guest's measured viewport
+  // is authoritative. Electron app zoom may make it differ from the renderer's
+  // declared host size; forcing those values to match expands the webview past
+  // its panel and clips the page. A matching applied key plus a live measured
+  // viewport is sufficient to prove that Fill has landed.
+  if (setting._tag === "fill") return true;
+
+  const expectedViewport = { width: setting.width, height: setting.height };
   if (
-    setting._tag !== "fill" &&
-    (declaredViewport.width !== expectedViewport.width ||
-      declaredViewport.height !== expectedViewport.height)
+    declaredViewport.width !== expectedViewport.width ||
+    declaredViewport.height !== expectedViewport.height
   ) {
     return false;
   }
