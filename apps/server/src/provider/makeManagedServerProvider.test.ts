@@ -19,7 +19,10 @@ import { TestClock } from "effect/testing";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { makeManagedServerProvider } from "./makeManagedServerProvider.ts";
+import {
+  makeManagedServerProvider,
+  stabilizeProviderSnapshot,
+} from "./makeManagedServerProvider.ts";
 
 const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
@@ -150,6 +153,59 @@ const enrichedSnapshotSecond: ServerProvider = {
 };
 
 describe("makeManagedServerProvider", () => {
+  it("keeps the last authenticated snapshot through a brief health-check outage", () => {
+    const failedAt = "2026-04-10T00:05:00.000Z";
+    const failed: ServerProvider = {
+      ...refreshedSnapshot,
+      checkedAt: failedAt,
+      status: "error",
+      auth: { status: "unknown" },
+      message: "Codex app-server provider probe failed: HTTP 500.",
+      accountUsage: undefined,
+      accountUsageReportedAt: undefined,
+      models: [],
+    };
+    const previous: ServerProvider = {
+      ...refreshedSnapshot,
+      accountUsage: { rateLimits: { primary: { usedPercent: 42 } } },
+      accountUsageReportedAt: refreshedSnapshot.checkedAt,
+    };
+
+    const first = stabilizeProviderSnapshot({
+      previous,
+      next: failed,
+      transientFailureSince: null,
+    });
+    assert.strictEqual(first.snapshot.status, "warning");
+    assert.strictEqual(first.snapshot.auth.status, "authenticated");
+    assert.deepStrictEqual(first.snapshot.accountUsage, previous.accountUsage);
+    assert.match(first.snapshot.message ?? "", /^Reconnecting to /);
+
+    const expired = stabilizeProviderSnapshot({
+      previous: first.snapshot,
+      next: { ...failed, checkedAt: "2026-04-10T00:07:00.000Z" },
+      transientFailureSince: first.transientFailureSince,
+    });
+    assert.strictEqual(expired.snapshot.status, "error");
+    assert.strictEqual(expired.snapshot.auth.status, "unknown");
+    assert.strictEqual(expired.transientFailureSince, null);
+  });
+
+  it("publishes explicit logout immediately instead of smoothing it", () => {
+    const result = stabilizeProviderSnapshot({
+      previous: refreshedSnapshot,
+      next: {
+        ...refreshedSnapshot,
+        status: "error",
+        auth: { status: "unauthenticated" },
+        message: "Sign in required.",
+      },
+      transientFailureSince: null,
+    });
+
+    assert.strictEqual(result.snapshot.auth.status, "unauthenticated");
+    assert.strictEqual(result.snapshot.status, "error");
+  });
   it.effect(
     "runs the initial provider check in the background and streams the refreshed snapshot",
     () =>

@@ -22,6 +22,64 @@ import type { ServerProviderShape } from "./Services/ServerProvider.ts";
 interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
   readonly enrichmentGeneration: number;
+  readonly transientFailureSince: number | null;
+}
+
+export const PROVIDER_TRANSIENT_FAILURE_GRACE_MS = 2 * 60_000;
+const PROVIDER_TRANSIENT_FAILURE_RETRY = Duration.seconds(30);
+
+export function stabilizeProviderSnapshot(input: {
+  readonly previous: ServerProvider;
+  readonly next: ServerProvider;
+  readonly transientFailureSince: number | null;
+}): { readonly snapshot: ServerProvider; readonly transientFailureSince: number | null } {
+  const { previous, next } = input;
+  const isTransientFailure =
+    previous.instanceId === next.instanceId &&
+    previous.enabled &&
+    previous.installed &&
+    previous.auth.status === "authenticated" &&
+    next.enabled &&
+    next.installed &&
+    next.auth.status === "unknown" &&
+    (next.status === "warning" || next.status === "error") &&
+    next.availability !== "unavailable";
+  if (!isTransientFailure) {
+    return { snapshot: next, transientFailureSince: null };
+  }
+
+  const checkedAt = Date.parse(next.checkedAt);
+  const failureSince = input.transientFailureSince ?? checkedAt;
+  if (
+    !Number.isFinite(checkedAt) ||
+    !Number.isFinite(failureSince) ||
+    checkedAt - failureSince >= PROVIDER_TRANSIENT_FAILURE_GRACE_MS
+  ) {
+    return { snapshot: next, transientFailureSince: null };
+  }
+
+  const providerName = next.displayName?.trim() || next.driver;
+  return {
+    transientFailureSince: failureSince,
+    snapshot: {
+      ...next,
+      status: "warning",
+      auth: previous.auth,
+      version: next.version ?? previous.version,
+      message: `Reconnecting to ${providerName}. Showing the last confirmed account status while Solla Code retries.`,
+      ...(previous.accountUsage !== undefined
+        ? {
+            accountUsage: previous.accountUsage,
+            ...(previous.accountUsageReportedAt
+              ? { accountUsageReportedAt: previous.accountUsageReportedAt }
+              : {}),
+          }
+        : {}),
+      models: next.models.length > 0 ? next.models : previous.models,
+      slashCommands: next.slashCommands.length > 0 ? next.slashCommands : previous.slashCommands,
+      skills: next.skills.length > 0 ? next.skills : previous.skills,
+    },
+  };
 }
 
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
@@ -57,6 +115,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const snapshotStateRef = yield* Ref.make<ProviderSnapshotState>({
     snapshot: initialSnapshot,
     enrichmentGeneration: 0,
+    transientFailureSince: null,
   });
   const settingsRef = yield* Ref.make(initialSettings);
   const enrichmentFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
@@ -121,23 +180,29 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       return yield* Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
     }
 
-    const nextSnapshot = yield* input.checkProvider;
-    const nextGeneration = yield* Ref.modify(snapshotStateRef, (state) => {
+    const checkedSnapshot = yield* input.checkProvider;
+    const applied = yield* Ref.modify(snapshotStateRef, (state) => {
+      const stabilized = stabilizeProviderSnapshot({
+        previous: state.snapshot,
+        next: checkedSnapshot,
+        transientFailureSince: state.transientFailureSince,
+      });
       const generation = input.enrichSnapshot
         ? state.enrichmentGeneration + 1
         : state.enrichmentGeneration;
       return [
-        generation,
+        { generation, snapshot: stabilized.snapshot },
         {
-          snapshot: nextSnapshot,
+          snapshot: stabilized.snapshot,
           enrichmentGeneration: generation,
+          transientFailureSince: stabilized.transientFailureSince,
         },
       ] as const;
     });
     yield* Ref.set(settingsRef, nextSettings);
-    yield* PubSub.publish(changesPubSub, nextSnapshot);
-    yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
-    return nextSnapshot;
+    yield* PubSub.publish(changesPubSub, applied.snapshot);
+    yield* restartSnapshotEnrichment(nextSettings, applied.snapshot, applied.generation);
+    return applied.snapshot;
   });
   const applySnapshot = (nextSettings: Settings, options?: { readonly forceRefresh?: boolean }) =>
     refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));
@@ -210,12 +275,17 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         Effect.gen(function* () {
           const configuredMs = Duration.toMillis(Duration.fromInputUnsafe(refreshInterval));
           const refreshOwed = yield* Ref.get(refreshOwedRef);
+          const transientFailure =
+            (yield* Ref.get(snapshotStateRef)).transientFailureSince !== null;
           const sleepFor =
             configuredMs <= 0
               ? Duration.seconds(60)
-              : refreshOwed && Duration.toMillis(DEFERRED_REFRESH_RECHECK) < configuredMs
-                ? DEFERRED_REFRESH_RECHECK
-                : Duration.fromInputUnsafe(refreshInterval);
+              : transientFailure &&
+                  Duration.toMillis(PROVIDER_TRANSIENT_FAILURE_RETRY) < configuredMs
+                ? PROVIDER_TRANSIENT_FAILURE_RETRY
+                : refreshOwed && Duration.toMillis(DEFERRED_REFRESH_RECHECK) < configuredMs
+                  ? DEFERRED_REFRESH_RECHECK
+                  : Duration.fromInputUnsafe(refreshInterval);
           const intervalElapsed = yield* Effect.raceFirst(
             Effect.sleep(sleepFor).pipe(Effect.as(true)),
             Queue.take(refreshIntervalChanges).pipe(Effect.as(false)),

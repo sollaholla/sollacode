@@ -12,10 +12,13 @@ const TRANSIENT_CODEX_STATUS_MESSAGES = new Set([
 
 export function isTransientProviderStatusCheck(status: ServerProvider | null): boolean {
   return (
-    status?.driver === "codex" &&
-    status.status === "warning" &&
-    status.auth.status === "unknown" &&
-    TRANSIENT_CODEX_STATUS_MESSAGES.has(status.message ?? "")
+    (status?.driver === "codex" &&
+      status.status === "warning" &&
+      status.auth.status === "unknown" &&
+      TRANSIENT_CODEX_STATUS_MESSAGES.has(status.message ?? "")) ||
+    (status?.status === "warning" &&
+      status.auth.status === "authenticated" &&
+      status.message?.startsWith("Reconnecting to ") === true)
   );
 }
 

@@ -1320,7 +1320,9 @@ export function ProviderUsageBadgeDetails(props: {
     try {
       await onRefreshProvider(provider);
     } catch {
-      setRefreshError("Usage refresh failed. Try again shortly.");
+      setRefreshError(
+        "Couldn’t refresh right now. Showing the last confirmed usage while Solla Code retries.",
+      );
     } finally {
       refreshInFlightRef.current = false;
       setIsRefreshing(false);

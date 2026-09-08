@@ -80,6 +80,17 @@ describe("ProviderStatusBanner", () => {
     expect(shouldShowProviderStatusBanner(status, null)).toBe(false);
   });
 
+  it("keeps a reconnect retry subtle while the last authenticated state is retained", () => {
+    const status = {
+      ...warningProvider(),
+      message:
+        "Reconnecting to Codex. Showing the last confirmed account status while Solla Code retries.",
+    };
+
+    expect(isTransientProviderStatusCheck(status)).toBe(true);
+    expect(shouldShowProviderStatusBanner(status, null)).toBe(false);
+  });
+
   it("labels error dismiss controls with the correct severity", () => {
     const markup = renderToStaticMarkup(
       <ProviderStatusBanner
