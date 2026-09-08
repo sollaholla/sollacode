@@ -83,6 +83,41 @@ describe("interpolateDragMoves", () => {
   });
 });
 
+describe("isPopupOauthCallbackNavigation", () => {
+  it("recognizes a cross-origin authorization-code callback", () => {
+    expect(
+      PreviewManager.isPopupOauthCallbackNavigation(
+        "https://accounts.example.com/choose",
+        "https://app.example.net/oauth/connect?state=opaque&code=opaque",
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores ordinary, same-origin, insecure, and malformed navigations", () => {
+    expect(
+      PreviewManager.isPopupOauthCallbackNavigation(
+        "https://accounts.example.com/choose",
+        "https://app.example.net/oauth/connect?state=opaque",
+      ),
+    ).toBe(false);
+    expect(
+      PreviewManager.isPopupOauthCallbackNavigation(
+        "https://app.example.net/choose",
+        "https://app.example.net/oauth/connect?state=opaque&code=opaque",
+      ),
+    ).toBe(false);
+    expect(
+      PreviewManager.isPopupOauthCallbackNavigation(
+        "https://accounts.example.com/choose",
+        "http://app.example.net/oauth/connect?state=opaque&code=opaque",
+      ),
+    ).toBe(false);
+    expect(PreviewManager.isPopupOauthCallbackNavigation("not a url", "still not a url")).toBe(
+      false,
+    );
+  });
+});
+
 const {
   browserWindowConstructor,
   createFromBuffer,
@@ -2849,6 +2884,13 @@ describe("PreviewManager", () => {
         let popupClosed: (() => void) | undefined;
         let popupDestroyed = false;
         let popupHumanInput: ((_event: unknown, signal: unknown) => void) | undefined;
+        let popupWillNavigate:
+          | ((event: {
+              readonly isMainFrame: boolean;
+              readonly url: string;
+              preventDefault: () => void;
+            }) => void)
+          | undefined;
         let popupWindowToOpen: Electron.BrowserWindow | undefined;
         const sourceSendCommand = vi.fn(
           async (method: string, params?: Record<string, unknown>) => {
@@ -2896,6 +2938,14 @@ describe("PreviewManager", () => {
           },
         } as never;
         const popupSendCommand = vi.fn(async () => undefined);
+        const popupNavigationSteps: string[] = [];
+        const popupClearCodeCaches = vi.fn(async () => {
+          popupNavigationSteps.push("clear-code-cache");
+        });
+        const popupLoadURL = vi.fn(async (url: string) => {
+          const parsed = new URL(url);
+          popupNavigationSteps.push(`load:${parsed.origin}${parsed.pathname}`);
+        });
         const popupWebContents = {
           id: 43,
           isDestroyed: () => popupDestroyed,
@@ -2906,7 +2956,11 @@ describe("PreviewManager", () => {
           isDevToolsOpened: () => false,
           focus: vi.fn(),
           executeJavaScript: vi.fn(async () => ({ width: 500, height: 600 })),
-          on: vi.fn(),
+          loadURL: popupLoadURL,
+          session: { clearCodeCaches: popupClearCodeCaches },
+          on: vi.fn((event: string, listener: typeof popupWillNavigate) => {
+            if (event === "will-navigate") popupWillNavigate = listener;
+          }),
           off: vi.fn(),
           ipc: {
             on: vi.fn((channel: string, listener: typeof popupHumanInput) => {
@@ -2961,6 +3015,20 @@ describe("PreviewManager", () => {
           "Input.dispatchKeyEvent",
           expect.objectContaining({ type: "keyDown", key: "Enter" }),
         );
+        const preventOauthCallback = vi.fn();
+        popupWillNavigate?.({
+          isMainFrame: true,
+          url: "https://login.example.net/oauth/connect?state=opaque&code=opaque",
+          preventDefault: preventOauthCallback,
+        });
+        yield* Effect.yieldNow;
+        yield* Effect.yieldNow;
+        expect(preventOauthCallback).toHaveBeenCalledOnce();
+        expect(popupClearCodeCaches).toHaveBeenCalledWith({ urls: [] });
+        expect(popupNavigationSteps).toEqual([
+          "clear-code-cache",
+          "load:https://login.example.net/oauth/connect",
+        ]);
         popupHumanInput?.({}, { kind: "pointer", x: 20, y: 30, button: 0 });
         yield* Effect.yieldNow;
         expect(states.at(-1)?.controller).toBe("human");
