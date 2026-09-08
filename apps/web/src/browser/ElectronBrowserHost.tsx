@@ -18,6 +18,7 @@ import { isElectron } from "~/env";
 import { useTheme } from "~/hooks/useTheme";
 import { useActivePreviewSessions } from "~/previewStateStore";
 import { useThreadShells } from "~/state/entities";
+import { useEnvironments } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { previewEnvironment } from "~/state/preview";
 
@@ -26,6 +27,7 @@ import { useBrowserPointerStore } from "./browserPointerStore";
 import { resolveHostedBrowserProfileBinding } from "./hostedBrowserProfileBinding";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
+import { isDesktopOwnedConnectionTarget } from "~/connection/desktopLocal";
 
 interface HostedBrowserProfileShell {
   readonly threadId: ThreadId;
@@ -74,6 +76,7 @@ export function ElectronBrowserHost() {
   const { resolvedTheme } = useTheme();
   const previewByThreadKey = useActivePreviewSessions();
   const threadShells = useThreadShells();
+  const { environments } = useEnvironments();
   const openPreview = useAtomCommand(previewEnvironment.open);
   const [hostSize, setHostSize] = useState(() => ({
     width: typeof window === "undefined" ? 1280 : window.innerWidth,
@@ -101,7 +104,10 @@ export function ElectronBrowserHost() {
     () =>
       Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
         const threadRef = parseScopedThreadKey(threadKey);
-        return threadRef
+        const environment = threadRef
+          ? environments.find((candidate) => candidate.environmentId === threadRef.environmentId)
+          : undefined;
+        return threadRef && environment && isDesktopOwnedConnectionTarget(environment.entry.target)
           ? Object.values(previewState.hostedSessions).map((snapshot) => ({
               threadRef,
               profileShell: profileShellByThreadKey.get(threadKey),
@@ -116,7 +122,7 @@ export function ElectronBrowserHost() {
             }))
           : [];
       }),
-    [previewByThreadKey, profileShellByThreadKey],
+    [environments, previewByThreadKey, profileShellByThreadKey],
   );
 
   useEffect(() => {

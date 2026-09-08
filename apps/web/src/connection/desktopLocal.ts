@@ -32,6 +32,18 @@ export function isDesktopLocalConnectionTarget(
   );
 }
 
+/**
+ * Whether this Electron runtime owns the machine that serves an environment.
+ *
+ * A desktop must never instantiate a guest for a saved remote/SSH environment:
+ * doing so reproduces the URL with this machine's cookies and DOM state. The
+ * environment owner's desktop renders that guest; remote clients consume its
+ * frame and forward input.
+ */
+export function isDesktopOwnedConnectionTarget(target: ConnectionTarget): boolean {
+  return target._tag === "PrimaryConnectionTarget" || isDesktopLocalConnectionTarget(target);
+}
+
 export function desktopLocalBackendId(target: ConnectionTarget): string | null {
   return isDesktopLocalConnectionTarget(target)
     ? target.connectionId.slice(DESKTOP_LOCAL_CONNECTION_ID_PREFIX.length)

@@ -46,6 +46,7 @@ import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { isElectron } from "~/env";
+import { isDesktopOwnedConnectionTarget } from "~/connection/desktopLocal";
 import { RemoteBrowserFrame } from "./RemoteBrowserFrame";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { useLoadingProgress } from "./useLoadingProgress";
@@ -95,6 +96,9 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
   const environment = useEnvironment(threadRef.environmentId);
+  const locallyHosted =
+    isElectron && environment !== null && isDesktopOwnedConnectionTarget(environment.entry.target);
+  const localPreviewBridge = locallyHosted ? previewBridge : undefined;
   const thread = useThreadShell(threadRef);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
   const open = useAtomCommand(previewEnvironment.open);
@@ -113,7 +117,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const runtimeTabId = tabId
     ? previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId)
     : null;
-  const humanVerification = usePreviewHumanVerification(runtimeTabId);
+  const humanVerification = usePreviewHumanVerification(locallyHosted ? runtimeTabId : null);
   const recordingRuntimeTabId =
     tabId && runtimeTabId
       ? activeRecordingTabIds.has(runtimeTabId)
@@ -121,7 +125,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         : findActiveBrowserRecordingRuntimeTabId(threadRef, tabId)
       : null;
   const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
-  const desktopOverlay = tabId ? (previewState.desktopByTabId[tabId] ?? null) : null;
+  const desktopOverlay =
+    locallyHosted && tabId ? (previewState.desktopByTabId[tabId] ?? null) : null;
   const navStatus = snapshot?.navStatus ?? { _tag: "Idle" as const };
   const url = navStatus._tag === "Idle" ? "" : navStatus.url;
   const loading = desktopOverlay?.loading ?? navStatus._tag === "Loading";
@@ -144,13 +149,25 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const panelRect = useBrowserSurfaceStore((state) =>
     runtimeTabId ? (state.byTabId[runtimeTabId]?.rect ?? null) : null,
   );
+  const remoteInput = useAtomCommand(previewEnvironment.remoteInput, { reportFailure: false });
 
   const navigateToResolvedUrl = useCallback(
     async (resolvedUrl: string) => {
-      if (runtimeTabId && previewBridge) {
+      if (runtimeTabId && localPreviewBridge) {
         // Drive the webview imperatively; `usePreviewBridge` mirrors the
         // resolved URL back to the server so other clients stay in sync.
-        await previewBridge.navigate(runtimeTabId, resolvedUrl);
+        await localPreviewBridge.navigate(runtimeTabId, resolvedUrl);
+        rememberPreviewUrl(threadRef, resolvedUrl);
+      } else if (tabId) {
+        const result = await remoteInput({
+          environmentId: threadRef.environmentId,
+          input: {
+            threadId: threadRef.threadId,
+            tabId: PreviewTabId.make(tabId),
+            action: { kind: "navigate", url: resolvedUrl },
+          },
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
         rememberPreviewUrl(threadRef, resolvedUrl);
       } else {
         await openPreviewSession({
@@ -160,7 +177,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         });
       }
     },
-    [open, runtimeTabId, threadRef],
+    [localPreviewBridge, open, remoteInput, runtimeTabId, tabId, threadRef],
   );
 
   const handleSubmitUrl = useCallback(
@@ -185,9 +202,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     [navigateToResolvedUrl, threadRef.environmentId],
   );
 
-  const remoteInput = useAtomCommand(previewEnvironment.remoteInput, { reportFailure: false });
-  // Non-Electron clients have no bridge; back/forward/reload travel to the
-  // desktop host through the same remote-input path as taps in the frame.
+  // Clients without the environment's local guest send browser commands to
+  // the owning desktop through the same path as taps in the mirrored frame.
   const dispatchRemoteHistory = useCallback(
     (action: "back" | "forward" | "reload") => {
       if (!tabId) return;
@@ -205,15 +221,15 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
 
   const handleRefresh = useCallback(() => {
     if (humanVerification) return;
-    if (previewBridge && runtimeTabId) {
-      void previewBridge.refresh(runtimeTabId);
+    if (localPreviewBridge && runtimeTabId) {
+      void localPreviewBridge.refresh(runtimeTabId);
       return;
     }
     dispatchRemoteHistory("reload");
-  }, [dispatchRemoteHistory, humanVerification, runtimeTabId]);
+  }, [dispatchRemoteHistory, humanVerification, localPreviewBridge, runtimeTabId]);
 
   const handleCheckHumanVerification = useCallback(async () => {
-    const bridge = previewBridge;
+    const bridge = localPreviewBridge;
     if (!bridge || !runtimeTabId) return;
     setCheckingVerification(true);
     try {
@@ -249,7 +265,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     } finally {
       setCheckingVerification(false);
     }
-  }, [runtimeTabId]);
+  }, [localPreviewBridge, runtimeTabId]);
 
   const handleOpenVerificationResource = useCallback(
     async (resourceUrl: string) => {
@@ -270,16 +286,16 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   );
 
   const handleZoomIn = useCallback(() => {
-    if (previewBridge && runtimeTabId) void previewBridge.zoomIn(runtimeTabId);
-  }, [runtimeTabId]);
+    if (localPreviewBridge && runtimeTabId) void localPreviewBridge.zoomIn(runtimeTabId);
+  }, [localPreviewBridge, runtimeTabId]);
 
   const handleZoomOut = useCallback(() => {
-    if (previewBridge && runtimeTabId) void previewBridge.zoomOut(runtimeTabId);
-  }, [runtimeTabId]);
+    if (localPreviewBridge && runtimeTabId) void localPreviewBridge.zoomOut(runtimeTabId);
+  }, [localPreviewBridge, runtimeTabId]);
 
   const handleResetZoom = useCallback(() => {
-    if (previewBridge && runtimeTabId) void previewBridge.resetZoom(runtimeTabId);
-  }, [runtimeTabId]);
+    if (localPreviewBridge && runtimeTabId) void localPreviewBridge.resetZoom(runtimeTabId);
+  }, [localPreviewBridge, runtimeTabId]);
 
   const handleViewportChange = useCallback(
     async (nextViewport: PreviewViewportSetting) => {
@@ -327,20 +343,20 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   }, [handleViewportChange, runtimeTabId]);
 
   const handleBack = useCallback(() => {
-    if (previewBridge && runtimeTabId) {
-      void previewBridge.goBack(runtimeTabId);
+    if (localPreviewBridge && runtimeTabId) {
+      void localPreviewBridge.goBack(runtimeTabId);
       return;
     }
     dispatchRemoteHistory("back");
-  }, [dispatchRemoteHistory, runtimeTabId]);
+  }, [dispatchRemoteHistory, localPreviewBridge, runtimeTabId]);
 
   const handleForward = useCallback(() => {
-    if (previewBridge && runtimeTabId) {
-      void previewBridge.goForward(runtimeTabId);
+    if (localPreviewBridge && runtimeTabId) {
+      void localPreviewBridge.goForward(runtimeTabId);
       return;
     }
     dispatchRemoteHistory("forward");
-  }, [dispatchRemoteHistory, runtimeTabId]);
+  }, [dispatchRemoteHistory, localPreviewBridge, runtimeTabId]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!localApi || !url) return;
@@ -358,10 +374,10 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   }, [miniPlayer?.tabId, tabId, threadRef]);
 
   const handleNativePictureInPicture = useCallback(() => {
-    if (!previewBridge || !runtimeTabId) return;
+    if (!localPreviewBridge || !runtimeTabId) return;
     const operation = desktopOverlay?.pictureInPicture
-      ? previewBridge.pictureInPicture.close
-      : previewBridge.pictureInPicture.open;
+      ? localPreviewBridge.pictureInPicture.close
+      : localPreviewBridge.pictureInPicture.open;
     void operation(runtimeTabId).catch((error) => {
       toastManager.add({
         type: "error",
@@ -369,12 +385,12 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     });
-  }, [desktopOverlay?.pictureInPicture, runtimeTabId]);
+  }, [desktopOverlay?.pictureInPicture, localPreviewBridge, runtimeTabId]);
 
   const handleCapture = useCallback(
     (record: boolean) => {
-      if (!previewBridge || !runtimeTabId || !tabId) return;
-      const bridge = previewBridge;
+      if (!localPreviewBridge || !runtimeTabId || !tabId) return;
+      const bridge = localPreviewBridge;
       if (recordingRuntimeTabId) {
         void stopBrowserRecording(recordingRuntimeTabId).then(
           (artifact) => {
@@ -607,13 +623,13 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         },
       );
     },
-    [recordingRuntimeTabId, runtimeTabId, tabId, threadRef],
+    [localPreviewBridge, recordingRuntimeTabId, runtimeTabId, tabId, threadRef],
   );
 
   const handlePickElement = useCallback(() => {
-    if (!previewBridge || !runtimeTabId) return;
+    if (!localPreviewBridge || !runtimeTabId) return;
     if (pickActiveRef.current) {
-      void previewBridge.cancelPickElement(runtimeTabId).catch(() => undefined);
+      void localPreviewBridge.cancelPickElement(runtimeTabId).catch(() => undefined);
       return;
     }
     // Snapshot whatever the user was focused on (typically the chat
@@ -627,7 +643,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     setPickActive(true);
     void (async () => {
       try {
-        const annotation = await previewBridge.pickElement(runtimeTabId);
+        const annotation = await localPreviewBridge.pickElement(runtimeTabId);
         if (!annotation) return;
         addPreviewAnnotation(threadRef, annotation);
         const screenshotFile = await previewAnnotationScreenshotFile(annotation);
@@ -665,7 +681,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         }
       }
     })();
-  }, [addImage, addPreviewAnnotation, runtimeTabId, threadRef]);
+  }, [addImage, addPreviewAnnotation, localPreviewBridge, runtimeTabId, threadRef]);
 
   // If the active tab changes mid-pick (close, thread switch, hot restart),
   // tell main to tear down the in-flight session AND reset our local toggle
@@ -674,12 +690,12 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     return () => {
       if (!pickActiveRef.current) return;
       pickActiveRef.current = false;
-      if (previewBridge && runtimeTabId) {
-        void previewBridge.cancelPickElement(runtimeTabId).catch(() => undefined);
+      if (localPreviewBridge && runtimeTabId) {
+        void localPreviewBridge.cancelPickElement(runtimeTabId).catch(() => undefined);
       }
       if (isMountedRef.current) setPickActive(false);
     };
-  }, [runtimeTabId]);
+  }, [localPreviewBridge, runtimeTabId]);
 
   // Subscribe only while visible; `toggle-panel` is owned by ChatView's
   // URL-aware handler regardless of whether the panel is currently mounted.
@@ -728,13 +744,13 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         onRefresh={handleRefresh}
         onSubmit={(next) => void handleSubmitUrl(next)}
         onOpenInBrowser={tabId ? handleOpenInBrowser : undefined}
-        onCapture={previewBridge && tabId ? handleCapture : undefined}
+        onCapture={localPreviewBridge && tabId ? handleCapture : undefined}
         captureDisabled={!desktopOverlay || isUnreachable}
         recording={recordingRuntimeTabId !== null}
-        onPictureInPicture={previewBridge && tabId ? handlePictureInPicture : undefined}
+        onPictureInPicture={localPreviewBridge && tabId ? handlePictureInPicture : undefined}
         pictureInPicture={miniPlayer?.tabId === tabId}
         pictureInPictureDisabled={!desktopOverlay?.hasWebContents || isUnreachable}
-        onPickElement={previewBridge && tabId ? handlePickElement : undefined}
+        onPickElement={localPreviewBridge && tabId ? handlePickElement : undefined}
         pickActive={pickActive}
         // Disable when there's no tab (nothing to pick on) OR the page
         // failed to load (a React overlay covers the webview, so the
@@ -744,7 +760,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
           isUnreachable ? "Page didn't load — pick unavailable until the page renders" : undefined
         }
         trailingActions={
-          previewBridge ? (
+          localPreviewBridge ? (
             <PreviewMoreMenu
               tabId={runtimeTabId}
               hasWebContents={desktopOverlay?.hasWebContents ?? false}
@@ -761,7 +777,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {runtimeTabId && snapshot && !showEmptyState ? (
-          isElectron ? (
+          locallyHosted ? (
             <BrowserSurfaceSlot
               key={runtimeTabId}
               tabId={runtimeTabId}

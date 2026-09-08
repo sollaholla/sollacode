@@ -6,6 +6,8 @@ import { type PointerEvent as ReactPointerEvent, useLayoutEffect, useRef } from 
 
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { isElectron } from "~/env";
+import { isDesktopOwnedConnectionTarget } from "~/connection/desktopLocal";
+import { useEnvironment } from "~/state/environments";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { Button } from "~/components/ui/button";
 import { toastManager } from "~/components/ui/toast";
@@ -62,6 +64,9 @@ export function ThreadPreviewMiniPlayer({
     selectThreadPreviewMiniPlayer(state.byThreadKey, threadRef),
   );
   const previewState = useThreadPreviewState(threadRef);
+  const environment = useEnvironment(threadRef.environmentId);
+  const locallyHosted =
+    isElectron && environment !== null && isDesktopOwnedConnectionTarget(environment.entry.target);
   const snapshot = previewState.sessions[tabId] ?? null;
   const runtimeTabId = previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId);
   const desktopOverlay = previewState.desktopByTabId[tabId] ?? null;
@@ -233,7 +238,7 @@ export function ThreadPreviewMiniPlayer({
   // the effect that clears that redundant mini-player state.
   // Non-Electron clients have no local guest to float; their browser lives in
   // the panel's RemoteBrowserFrame, so a thumbnail would just be a black box.
-  if (!isElectron || !snapshot || miniPlayer?.tabId !== tabId || activePanelTabId === tabId) {
+  if (!locallyHosted || !snapshot || miniPlayer?.tabId !== tabId || activePanelTabId === tabId) {
     return null;
   }
 

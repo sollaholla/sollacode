@@ -10,6 +10,7 @@ import {
   desktopLocalBackendId,
   desktopLocalConnectionId,
   isDesktopLocalConnectionTarget,
+  isDesktopOwnedConnectionTarget,
 } from "./desktopLocal";
 
 describe("desktop local connection identity", () => {
@@ -34,6 +35,17 @@ describe("desktop local connection identity", () => {
 
     expect(isDesktopLocalConnectionTarget(target)).toBe(false);
     expect(desktopLocalBackendId(target)).toBeNull();
+    expect(isDesktopOwnedConnectionTarget(target)).toBe(true);
+  });
+
+  it("does not let this desktop host a saved remote environment", () => {
+    const target = new BearerConnectionTarget({
+      connectionId: "remote:mac",
+      environmentId: EnvironmentId.make("environment-remote"),
+      label: "Mac",
+    });
+
+    expect(isDesktopOwnedConnectionTarget(target)).toBe(false);
   });
 });
 

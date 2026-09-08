@@ -137,6 +137,22 @@ describe("dispatchRemotePreviewInput", () => {
     }),
   );
 
+  it.effect("navigates the environment owner's live tab without a status round-trip", () =>
+    Effect.gen(function* () {
+      const { effect, requests } = run({
+        kind: "navigate",
+        url: "https://example.com/account",
+      });
+      yield* effect;
+
+      expect(requests.map((request) => request.operation)).toEqual(["navigate"]);
+      expect(requests[0]).toMatchObject({
+        tabId,
+        input: { url: "https://example.com/account" },
+      });
+    }),
+  );
+
   it.effect("refuses coordinate input when the host has no measured viewport", () =>
     Effect.gen(function* () {
       const { effect, requests } = run(

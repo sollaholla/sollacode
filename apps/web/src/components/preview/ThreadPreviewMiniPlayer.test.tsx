@@ -23,6 +23,9 @@ vi.mock("./previewBridge", () => ({ previewBridge: null }));
 // The floating player is an Electron-only surface owner; non-Electron clients
 // render null (their browser lives in the panel's RemoteBrowserFrame).
 vi.mock("~/env", () => ({ isElectron: true }));
+vi.mock("~/state/environments", () => ({
+  useEnvironment: () => ({ entry: { target: { _tag: "PrimaryConnectionTarget" } } }),
+}));
 
 vi.mock("~/previewStateStore", () => ({
   useThreadPreviewState: () => ({

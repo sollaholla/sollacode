@@ -20,6 +20,12 @@ const mocks = vi.hoisted(() => ({
   pictureInPicture: false,
   showEmptyState: false,
   surfaceProps: [] as Array<Record<string, unknown>>,
+  remoteFrameProps: [] as Array<Record<string, unknown>>,
+  environmentTargetTag: "PrimaryConnectionTarget",
+  remoteInput: vi.fn(async () => ({
+    _tag: "Success" as const,
+    value: { deliveredAt: "2026-09-08T00:00:00.000Z" },
+  })),
 }));
 
 vi.mock("~/state/session", async () => {
@@ -84,16 +90,24 @@ vi.mock("~/previewStateStore", () => ({
 }));
 
 vi.mock("~/state/environments", () => ({
-  useEnvironment: () => ({ label: "WSL" }),
+  useEnvironment: () => ({
+    label: "WSL",
+    entry: {
+      target:
+        mocks.environmentTargetTag === "PrimaryConnectionTarget"
+          ? { _tag: "PrimaryConnectionTarget" }
+          : { _tag: "BearerConnectionTarget", connectionId: "remote:mac" },
+    },
+  }),
   useEnvironmentHttpBaseUrl: () => "http://172.25.85.75:3773",
 }));
 
 vi.mock("~/state/preview", () => ({
-  previewEnvironment: { open: {}, resize: {} },
+  previewEnvironment: { open: "open", resize: "resize", remoteInput: "remoteInput" },
 }));
 
 vi.mock("~/state/use-atom-command", () => ({
-  useAtomCommand: () => vi.fn(),
+  useAtomCommand: (command: string) => (command === "remoteInput" ? mocks.remoteInput : vi.fn()),
 }));
 
 vi.mock("~/browser/browserRecording", () => ({
@@ -200,7 +214,12 @@ vi.mock("~/browser/BrowserSurfaceSlot", () => ({
 // These tests exercise the Electron-embedded surface (audio grants, slot
 // presentation). Non-Electron clients render RemoteBrowserFrame instead.
 vi.mock("~/env", () => ({ isElectron: true }));
-vi.mock("./RemoteBrowserFrame", () => ({ RemoteBrowserFrame: () => null }));
+vi.mock("./RemoteBrowserFrame", () => ({
+  RemoteBrowserFrame: (props: Record<string, unknown>) => {
+    mocks.remoteFrameProps.push(props);
+    return null;
+  },
+}));
 vi.mock("./useLoadingProgress", () => ({ useLoadingProgress: () => 0 }));
 vi.mock("./usePreviewSession", () => ({ usePreviewSession: vi.fn() }));
 
@@ -232,6 +251,9 @@ describe("PreviewView navigation", () => {
     mocks.pictureInPicture = false;
     mocks.showEmptyState = false;
     mocks.surfaceProps.length = 0;
+    mocks.remoteFrameProps.length = 0;
+    mocks.environmentTargetTag = "PrimaryConnectionTarget";
+    mocks.remoteInput.mockClear();
   });
 
   it.each([
@@ -351,5 +373,30 @@ describe("PreviewView navigation", () => {
 
     renderToStaticMarkup(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />);
     expect(mocks.surfaceProps.at(-1)?.audible).toBe(true);
+  });
+
+  it("mirrors a remote environment owner's live frame instead of mounting a local guest", async () => {
+    mocks.environmentTargetTag = "BearerConnectionTarget";
+    renderToStaticMarkup(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />);
+
+    expect(mocks.surfaceProps).toHaveLength(0);
+    expect(mocks.remoteFrameProps.at(-1)).toMatchObject({
+      threadRef: TEST_THREAD_REF,
+      tabId: "tab-1",
+      visible: true,
+    });
+
+    mocks.submittedUrl?.("https://example.com/account");
+    await vi.waitFor(() =>
+      expect(mocks.remoteInput).toHaveBeenCalledWith({
+        environmentId: "environment-1",
+        input: {
+          threadId: "thread-1",
+          tabId: "tab-1",
+          action: { kind: "navigate", url: "https://example.com/account" },
+        },
+      }),
+    );
+    expect(mocks.navigate).not.toHaveBeenCalled();
   });
 });
