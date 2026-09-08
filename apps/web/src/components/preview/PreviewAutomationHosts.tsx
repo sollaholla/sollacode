@@ -102,6 +102,7 @@ import {
 } from "./PreviewDownloadApprovalPrompt";
 import { isPreviewViewportReady } from "./previewViewportReadiness";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
+import { isDesktopOwnedConnectionTarget } from "~/connection/desktopLocal";
 import {
   isExclusiveAgentBrowserProfile,
   previewAutomationBrowserProfileRoot,
@@ -322,12 +323,14 @@ export function PreviewAutomationHosts() {
        * not the routed thread. This keeps background threads automatable and
        * lets the subscription runtime own reconnects for every saved target.
        */}
-      {environments.map((environment) => (
-        <PreviewAutomationHost
-          key={environment.environmentId}
-          environmentId={environment.environmentId}
-        />
-      ))}
+      {environments
+        .filter((environment) => isDesktopOwnedConnectionTarget(environment.entry.target))
+        .map((environment) => (
+          <PreviewAutomationHost
+            key={environment.environmentId}
+            environmentId={environment.environmentId}
+          />
+        ))}
     </>
   );
 }

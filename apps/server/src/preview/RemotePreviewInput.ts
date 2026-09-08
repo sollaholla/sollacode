@@ -141,6 +141,10 @@ export function dispatchRemotePreviewInput(input: {
         yield* invoke("evaluate", { expression }, ACTION_TIMEOUT_MS);
         return;
       }
+      case "navigate": {
+        yield* invoke("navigate", { url: action.url }, ACTION_TIMEOUT_MS);
+        return;
+      }
     }
   });
 

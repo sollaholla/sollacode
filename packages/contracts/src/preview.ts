@@ -298,6 +298,10 @@ export const PreviewRemoteInputAction = Schema.Union([
     kind: Schema.Literal("history"),
     action: Schema.Literals(["back", "forward", "reload"]),
   }),
+  Schema.Struct({
+    kind: Schema.Literal("navigate"),
+    url: Url,
+  }),
 ]);
 export type PreviewRemoteInputAction = typeof PreviewRemoteInputAction.Type;
 
