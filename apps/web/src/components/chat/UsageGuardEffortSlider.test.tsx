@@ -139,9 +139,7 @@ it("opens only by click and resumes with the applied setting, not the slider pre
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
   expect(container.textContent).toContain("Thinking effort: Low");
   await act(async () =>
-    [...container.querySelectorAll("button")]
-      .find((button) => button.textContent === "Resume now")!
-      .click(),
+    container.querySelector<HTMLButtonElement>("button[aria-label^='Resume now despite']")!.click(),
   );
   // The preview is not applied: Resume carries no selection, so the server
   // runs whatever effort is actually set on the thread.
@@ -209,7 +207,7 @@ it("shows increased waits in red and applies an alternative model quote", async 
   });
 });
 
-it("cancels the hold instead of resuming, and does not fake a saving on the current effort", async () => {
+it("confirms before cancelling the hold and does not fake a saving on the current effort", async () => {
   const cancel = vi.fn();
   const resume = vi.fn();
   const notice = findUsageGuardPauseNotice([
@@ -241,8 +239,15 @@ it("cancels the hold instead of resuming, and does not fake a saving on the curr
   expect(container.textContent).toContain("Current setting");
   expect(container.textContent).not.toContain("Estimated time saved: 0s");
   await act(async () =>
-    [...container.querySelectorAll("button")]
-      .find((button) => button.textContent === "Cancel")!
+    container
+      .querySelector<HTMLButtonElement>("button[aria-label='Cancel the held work']")!
+      .click(),
+  );
+  expect(cancel).not.toHaveBeenCalled();
+  expect(document.body.textContent).toContain("Cancel this held work?");
+  await act(async () =>
+    [...document.body.querySelectorAll("button")]
+      .find((button) => button.textContent === "Cancel held work")!
       .click(),
   );
   expect(cancel).toHaveBeenCalledTimes(1);

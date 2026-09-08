@@ -1,8 +1,24 @@
 import type { ModelSelection, ServerProvider } from "@t3tools/contracts";
-import { ChevronDownIcon, GaugeIcon, RefreshCwIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  GaugeIcon,
+  LoaderCircleIcon,
+  PlayIcon,
+  RefreshCwIcon,
+  XIcon,
+} from "lucide-react";
 import { memo, useEffect, useState } from "react";
 
 import { Button } from "../ui/button";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { UsageGuardEffortSlider } from "./UsageGuardEffortSlider";
 import {
   formatCooldownDuration,
@@ -57,6 +73,7 @@ export const UsageGuardPausedBanner = memo(function UsageGuardPausedBanner({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState<ModelSelection | null>(null);
+  const [cancelConfirmationOpen, setCancelConfirmationOpen] = useState(false);
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 1_000);
     return () => clearInterval(timer);
@@ -103,150 +120,155 @@ export const UsageGuardPausedBanner = memo(function UsageGuardPausedBanner({
   const busy = resuming || refreshing;
 
   return (
-    <div
-      className="pointer-events-auto mx-auto w-full max-w-3xl @container px-2 pt-2 pb-2"
-      data-testid="usage-guard-paused-banner"
-    >
+    <>
       <div
-        className="relative overflow-hidden alert-glass rounded-lg border border-warning/32 text-card-foreground text-xs"
-        data-variant="warning"
-        role="status"
-        title={detail.length > 0 ? detail : notice.summary}
+        className="pointer-events-auto mx-auto w-full max-w-3xl @container px-2 py-2"
+        data-testid="usage-guard-paused-banner"
       >
-        <div className="flex items-start gap-2 p-2.5">
-          <GaugeIcon className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
-          <button
-            type="button"
-            className="min-w-0 flex-1 text-left"
-            aria-expanded={expanded}
-            onClick={() => setExpanded((value) => !value)}
-          >
-            <span className="flex items-baseline gap-1.5">
-              <span className="font-medium">{heading}</span>
-              {timing && <span className="text-muted-foreground">· {timing}</span>}
+        <div
+          className="relative overflow-hidden alert-glass rounded-lg border border-warning/32 text-card-foreground text-xs"
+          data-variant="warning"
+          role="status"
+          title={detail.length > 0 ? detail : notice.summary}
+        >
+          <div className="flex min-h-10 items-center gap-1 px-2 py-1.5">
+            <GaugeIcon className="mx-1 size-3.5 shrink-0 text-warning" aria-hidden />
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-1.5 self-stretch text-left outline-none focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-ring"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              <span className="min-w-0 flex-1 truncate">
+                <span className="font-medium">{heading}</span>
+                {timing && <span className="text-muted-foreground"> · {timing}</span>}
+                {!expanded && (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · {detail.length > 0 ? detail : notice.summary}
+                  </span>
+                )}
+              </span>
               <ChevronDownIcon
                 className={`ml-auto size-3.5 shrink-0 self-center text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
                 aria-hidden
               />
-            </span>
-            <span
-              className={`mt-0.5 block break-words leading-relaxed text-muted-foreground ${expanded ? "whitespace-pre-wrap" : "line-clamp-2"}`}
-            >
-              {detail.length > 0 ? detail : notice.summary}
-            </span>
-          </button>
-        </div>
-        {expanded && (
-          <div className="space-y-3 border-t border-border/50 px-2.5 pt-2.5 pb-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
-              <span>
-                Reading {readingAge === null ? "age unknown" : readingAge}
-                {liveNewer ? "" : " · from when the hold began"}
-              </span>
-              {onRefresh && (
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  className="h-6 gap-1 px-2"
-                  disabled={busy}
-                  onClick={onRefresh}
-                  aria-label="Refresh usage reading"
-                >
-                  <RefreshCwIcon
-                    className={`size-3 ${refreshing ? "animate-spin" : ""}`}
-                    aria-hidden
-                  />
-                  {refreshing ? "Refreshing…" : "Refresh"}
-                </Button>
-              )}
-            </div>
-            {selection && onApplyEffort && (
-              <UsageGuardEffortSlider
-                key={JSON.stringify(selection)}
-                selection={selection}
-                provider={provider}
-                estimates={notice.effortEstimates}
-                nowMs={nowMs}
-                waitSeconds={Number.isFinite(dueMs) ? remainingSeconds : null}
-                onApply={onApplyEffort}
-                onDraftChange={setDraft}
-                busy={resuming}
-              />
-            )}
-            <div className="flex flex-col gap-2 @sm:flex-row @sm:items-center @sm:justify-end">
-              {draft !== null && (
-                <span className="text-[11px] text-muted-foreground @sm:mr-auto">
-                  Resume uses the applied setting. Apply the previewed effort first to use it.
-                </span>
-              )}
-              {onCancel && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  className="w-full @sm:w-auto"
-                  disabled={resuming}
-                  onClick={onCancel}
-                  aria-label="Cancel the held work"
-                >
-                  Cancel
-                </Button>
-              )}
-              <Button
-                type="button"
-                size="xs"
-                variant="default"
-                className="w-full @sm:w-auto"
-                disabled={resuming}
-                onClick={() => onResume()}
-                aria-label={`Resume now despite ${notice.providerLabel} usage`}
-              >
-                {resuming ? "Resuming…" : "Resume now"}
-              </Button>
-            </div>
-          </div>
-        )}
-        {!expanded && (
-          <div className="flex flex-col gap-2 px-2.5 pb-2.5 @sm:flex-row @sm:justify-end">
-            {onCancel && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="xs"
-                className="w-full @sm:w-auto"
-                disabled={resuming}
-                onClick={onCancel}
-                aria-label="Cancel the held work"
-              >
-                Cancel
-              </Button>
-            )}
+            </button>
             <Button
               type="button"
-              size="xs"
+              size="icon-xs"
               variant="outline"
-              className="w-full @sm:w-auto"
               disabled={resuming}
               onClick={() => onResume()}
               aria-label={`Resume now despite ${notice.providerLabel} usage`}
+              title="Resume now"
             >
-              {resuming ? "Resuming…" : "Resume now"}
+              {resuming ? (
+                <LoaderCircleIcon className="animate-spin" aria-hidden />
+              ) : (
+                <PlayIcon aria-hidden />
+              )}
             </Button>
+            {onCancel && (
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                className="text-destructive hover:bg-destructive/8"
+                disabled={resuming}
+                onClick={() => setCancelConfirmationOpen(true)}
+                aria-label="Cancel the held work"
+                title="Cancel held work"
+              >
+                <XIcon aria-hidden />
+              </Button>
+            )}
           </div>
-        )}
-        {progress !== null && (
-          <div
-            role="progressbar"
-            aria-label="Cooldown progress"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(progress)}
-            className="absolute bottom-0 left-0 h-0.5 bg-warning/60"
-            style={{ width: `${progress}%` }}
-          />
-        )}
+          {expanded && (
+            <div className="space-y-3 border-t border-border/50 px-2.5 pt-2.5 pb-2.5">
+              <p className="break-words whitespace-pre-wrap leading-relaxed text-muted-foreground">
+                {detail.length > 0 ? detail : notice.summary}
+              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span>
+                  Reading {readingAge === null ? "age unknown" : readingAge}
+                  {liveNewer ? "" : " · from when the hold began"}
+                </span>
+                {onRefresh && (
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    className="h-6 gap-1 px-2"
+                    disabled={busy}
+                    onClick={onRefresh}
+                    aria-label="Refresh usage reading"
+                  >
+                    <RefreshCwIcon
+                      className={`size-3 ${refreshing ? "animate-spin" : ""}`}
+                      aria-hidden
+                    />
+                    {refreshing ? "Refreshing…" : "Refresh"}
+                  </Button>
+                )}
+              </div>
+              {selection && onApplyEffort && (
+                <UsageGuardEffortSlider
+                  key={JSON.stringify(selection)}
+                  selection={selection}
+                  provider={provider}
+                  estimates={notice.effortEstimates}
+                  nowMs={nowMs}
+                  waitSeconds={Number.isFinite(dueMs) ? remainingSeconds : null}
+                  onApply={onApplyEffort}
+                  onDraftChange={setDraft}
+                  busy={resuming}
+                />
+              )}
+              {draft !== null && (
+                <p className="text-[11px] text-muted-foreground">
+                  Resume uses the applied setting. Apply the previewed effort first to use it.
+                </p>
+              )}
+            </div>
+          )}
+          {progress !== null && (
+            <div
+              role="progressbar"
+              aria-label="Cooldown progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(progress)}
+              className="absolute bottom-0 left-0 h-0.5 bg-warning/60"
+              style={{ width: `${progress}%` }}
+            />
+          )}
+        </div>
       </div>
-    </div>
+
+      <AlertDialog open={cancelConfirmationOpen} onOpenChange={setCancelConfirmationOpen}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel this held work?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the queued turn. It will not resume automatically when usage room is
+              available.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Keep waiting</AlertDialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setCancelConfirmationOpen(false);
+                onCancel?.();
+              }}
+            >
+              Cancel held work
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </>
   );
 });
