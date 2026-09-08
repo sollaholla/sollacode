@@ -41,6 +41,13 @@ Interacting with the frame:
 
 The frame refreshes about every 2.5 seconds, plus immediately after each input you send. Taps in
 the black letterbox bars around the frame are ignored rather than mapped to a page edge.
+Inputs are delivered in gesture order, even over a slow relay, and changing tabs immediately starts
+a fresh input lane. Older captures are discarded when a newer capture finishes first. If typing
+fails, the text remains in the row so it can be retried instead of being lost.
+
+OAuth and other real popup windows become the active remote frame until they close, then the frame
+returns to the opener. A held download appears as an approval card with Allow once, Allow always,
+and Deny actions on both mobile surfaces.
 
 ## Native Mobile App
 
@@ -70,4 +77,4 @@ a pure JavaScript change, so an over-the-air update or Metro reload is enough.
 - **The desktop app must be running** with the environment reachable; there is no host without it.
 - Remote input is treated as automation on the desktop side, so it does not pause an agent
   driving the same tab the way physical input at the desktop does.
-- DevTools, downloads approval, and CAPTCHA/human-verification challenges stay on the desktop.
+- DevTools and CAPTCHA/human-verification challenges stay under the desktop host's enforcement.

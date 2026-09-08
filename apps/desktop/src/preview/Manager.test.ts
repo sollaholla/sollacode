@@ -491,6 +491,8 @@ describe("PreviewManager", () => {
           getTitle: () => "paper.pdf",
           isLoading: () => false,
           isDevToolsOpened: () => false,
+          isFocused: () => true,
+          focus: vi.fn(),
           getZoomFactor: () => 1,
           setZoomFactor: vi.fn(),
           session: {},
@@ -2804,6 +2806,135 @@ describe("PreviewManager", () => {
           overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
         });
         expect(requests).toHaveLength(1);
+
+        const mainWindow = {
+          isDestroyed: () => false,
+          isFocused: () => true,
+          once: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          webContents: {
+            isDestroyed: () => false,
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+          },
+        } as never;
+        yield* manager.setMainWindow(mainWindow);
+        expect(
+          openHandler?.({
+            url: "https://accounts.example.com/oauth",
+            disposition: "new-window",
+            features: "popup,width=500,height=700",
+            frameName: "oauth-login",
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            center: true,
+            parent: mainWindow,
+            modal: false,
+          },
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect("routes automation through an OAuth child until that window closes", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let didCreateWindow: ((window: Electron.BrowserWindow) => void) | undefined;
+        let popupClosed: (() => void) | undefined;
+        let popupDestroyed = false;
+        const source = {
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://www.pinterest.com/login/",
+          getTitle: () => "Pinterest",
+          isLoading: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          executeJavaScript: vi.fn(async () => ({ width: 1280, height: 800 })),
+          on: vi.fn((event: string, listener: (window: Electron.BrowserWindow) => void) => {
+            if (event === "did-create-window") didCreateWindow = listener;
+          }),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never;
+        const popupSendCommand = vi.fn(async () => undefined);
+        const popupWebContents = {
+          id: 43,
+          isDestroyed: () => popupDestroyed,
+          getType: () => "window",
+          getURL: () => "https://accounts.google.com/gsi/select",
+          getTitle: () => "Sign in with Google",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          focus: vi.fn(),
+          executeJavaScript: vi.fn(async () => ({ width: 500, height: 600 })),
+          on: vi.fn(),
+          off: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand: popupSendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never;
+        const popupWindow = {
+          webContents: popupWebContents,
+          isDestroyed: () => popupDestroyed,
+          on: vi.fn((event: string, listener: () => void) => {
+            if (event === "closed") popupClosed = listener;
+          }),
+          off: vi.fn(),
+          close: vi.fn(),
+        } as never;
+        fromId.mockImplementation((id) =>
+          id === 42 ? source : id === 43 ? popupWebContents : null,
+        );
+
+        yield* manager.createTab("runtime-oauth");
+        yield* manager.registerWebview("runtime-oauth", 42);
+        didCreateWindow?.(popupWindow);
+        yield* Effect.yieldNow;
+
+        expect(yield* manager.automationStatus("runtime-oauth")).toMatchObject({
+          available: true,
+          url: "https://accounts.google.com/gsi/select",
+          title: "Sign in with Google",
+          viewport: { width: 500, height: 600 },
+        });
+        yield* manager.automationPress("runtime-oauth", { key: "Enter" });
+        expect(popupSendCommand).toHaveBeenCalledWith(
+          "Input.dispatchKeyEvent",
+          expect.objectContaining({ type: "keyDown", key: "Enter" }),
+        );
+
+        popupDestroyed = true;
+        popupClosed?.();
+        yield* Effect.yieldNow;
+        expect(yield* manager.automationStatus("runtime-oauth")).toMatchObject({
+          available: true,
+          url: "https://www.pinterest.com/login/",
+          title: "Pinterest",
+          viewport: { width: 1280, height: 800 },
+        });
       }),
     ),
   );
@@ -5761,6 +5892,7 @@ describe("PreviewManager", () => {
       Effect.gen(function* () {
         let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
         const activity: string[] = [];
+        let rejectReleaseOnce = false;
         const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
           if (method === "Runtime.evaluate") {
             return {
@@ -5772,6 +5904,14 @@ describe("PreviewManager", () => {
           if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") {
             activity.push("mousePressed");
             humanInput?.({}, { kind: "pointer", x: params.x, y: params.y, button: 0 });
+          }
+          if (
+            rejectReleaseOnce &&
+            method === "Input.dispatchMouseEvent" &&
+            params?.type === "mouseReleased"
+          ) {
+            rejectReleaseOnce = false;
+            throw new Error("simulated mouse-release failure");
           }
           return undefined;
         });
@@ -5844,6 +5984,22 @@ describe("PreviewManager", () => {
           button: "left",
           clickCount: 1,
         });
+
+        const callsBeforeFailure = sendCommand.mock.calls.length;
+        rejectReleaseOnce = true;
+        const failedClick = yield* manager
+          .automationClick("tab_1", { x: 200, y: 160 })
+          .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+        yield* TestClock.adjust(200);
+        expect(Exit.isFailure(yield* Fiber.join(failedClick))).toBe(true);
+        const releaseAttempts = sendCommand.mock.calls
+          .slice(callsBeforeFailure)
+          .filter(
+            ([method, params]) =>
+              method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased",
+          );
+        expect(releaseAttempts).toHaveLength(2);
+        expect(releaseAttempts[1]?.[1]).toMatchObject({ x: 200, y: 160, button: "left" });
       }),
     ),
   );
@@ -5855,9 +6011,18 @@ describe("PreviewManager", () => {
         Effect.gen(function* () {
           let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
           const phases: string[] = [];
+          let rejectHeldMove = false;
           const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
             if (method === "Runtime.evaluate") {
               return { result: { value: { width: 800, height: 600 } } };
+            }
+            if (
+              rejectHeldMove &&
+              method === "Input.dispatchMouseEvent" &&
+              params?.type === "mouseMoved" &&
+              params.buttons === 1
+            ) {
+              throw new Error("simulated held-move failure");
             }
             if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") {
               humanInput?.({}, { kind: "pointer", x: params.x, y: params.y, button: 0 });
@@ -5957,6 +6122,30 @@ describe("PreviewManager", () => {
           // UI cursor: approach move, press (rendered as a click), then one
           // pointer move per held drag step.
           expect(phases).toEqual(["move", "click", "move", "move", "move", "move"]);
+
+          const callsBeforeFailure = sendCommand.mock.calls.length;
+          rejectHeldMove = true;
+          const failedDrag = yield* manager
+            .automationDrag("tab_drag", {
+              from: { x: 200, y: 200 },
+              to: { x: 240, y: 220 },
+              steps: 2,
+            })
+            .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(2_000);
+          expect(Exit.isFailure(yield* Fiber.join(failedDrag))).toBe(true);
+          const failedMouseEvents = sendCommand.mock.calls
+            .slice(callsBeforeFailure)
+            .filter(([method]) => method === "Input.dispatchMouseEvent")
+            .map(([, params]) => params);
+          expect(failedMouseEvents.at(-1)).toEqual({
+            type: "mouseReleased",
+            x: 200,
+            y: 200,
+            button: "left",
+            buttons: 0,
+            clickCount: 1,
+          });
         }),
       ),
   );
