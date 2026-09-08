@@ -716,7 +716,7 @@ describe("provider usage summaries", () => {
     ]);
   });
 
-  it("repairs a stale Codex 100% snapshot from a current non-zero provider report", () => {
+  it("repairs a stale Codex 100% snapshot after two consistent non-zero reports", () => {
     const provider = makeProvider("codex", "codex-work", "work@example.com");
     const accountKey = providerUsageAccountKey(provider)!;
     const resetAt = Date.parse("2026-08-05T15:00:00.000Z");
@@ -729,19 +729,25 @@ describe("provider usage summaries", () => {
         windows: [{ key: "weekly", label: "Weekly", usedPercent: 100, resetAt }],
       },
     );
-    const corrected = mergeProviderUsageEntry(poisoned, {
+    const candidate = mergeProviderUsageEntry(poisoned, {
       accountKey,
       driver: provider.driver,
       reportedAt: "2026-08-02T20:01:00.000Z",
       windows: [{ key: "weekly", label: "Weekly", usedPercent: 4, resetAt }],
     });
+    const corrected = mergeProviderUsageEntry(candidate, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-08-02T20:02:00.000Z",
+      windows: [{ key: "weekly", label: "Weekly", usedPercent: 5, resetAt }],
+    });
 
     expect(corrected[accountKey]?.windows).toEqual([
-      expect.objectContaining({ key: "weekly", usedPercent: 4 }),
+      expect.objectContaining({ key: "weekly", usedPercent: 5 }),
     ]);
   });
 
-  it("repairs a stale Codex 98% snapshot from the current 10% provider report", () => {
+  it("does not let one lower Codex report replace the last confirmed value", () => {
     const provider = {
       ...makeProvider("codex", "codex-work", "work@example.com"),
       accountUsage: {
@@ -788,9 +794,9 @@ describe("provider usage summaries", () => {
       />,
     );
 
-    expect(summary.windows).toEqual([expect.objectContaining({ key: "weekly", usedPercent: 10 })]);
-    expect(markup).toContain("10% used");
-    expect(markup).not.toContain("98% used");
+    expect(summary.windows).toEqual([expect.objectContaining({ key: "weekly", usedPercent: 98 })]);
+    expect(markup).toContain("98% used");
+    expect(markup).not.toContain("10% used");
   });
 
   it("does not repair a stale Codex 100% snapshot from a transient zero", () => {

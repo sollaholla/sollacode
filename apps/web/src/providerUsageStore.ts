@@ -2,7 +2,9 @@ import type { EnvironmentId, ProviderDriverKind, ServerProvider } from "@t3tools
 import { create } from "zustand";
 
 export const PROVIDER_USAGE_STORAGE_KEY = "solla:provider-usage:v2";
-export const PROVIDER_USAGE_STALE_AFTER_MS = 15 * 60_000;
+// Battery-saver mode refreshes every 15 minutes. Leave enough scheduling
+// headroom that a healthy provider does not flash "Stale" between ticks.
+export const PROVIDER_USAGE_STALE_AFTER_MS = 20 * 60_000;
 
 export interface PersistedProviderUsageWindow {
   readonly key: string;
@@ -22,6 +24,12 @@ export interface PersistedProviderUsageWindow {
    * reporting is pruned after `PROVIDER_USAGE_WINDOW_STALE_AFTER_MS`.
    */
   readonly lastSeenAt?: string;
+  /** First unproven lower sample. A second consistent report confirms it. */
+  readonly decreaseCandidate?: {
+    readonly usedPercent: number;
+    readonly resetAt: number | null;
+    readonly firstSeenAt: string;
+  };
 }
 
 export const PROVIDER_USAGE_WINDOW_STALE_AFTER_MS = 7 * 24 * 60 * 60_000;
@@ -88,6 +96,13 @@ export interface PersistedProviderUsageEntry {
 
 const CODEX_RESET_TIME_JITTER_MS = 60_000;
 
+function withoutDecreaseCandidate(
+  window: PersistedProviderUsageWindow,
+): PersistedProviderUsageWindow {
+  const { decreaseCandidate: _, ...confirmed } = window;
+  return confirmed;
+}
+
 function mergeUsageWindow(
   driver: ProviderDriverKind,
   previous: PersistedProviderUsageWindow | undefined,
@@ -99,15 +114,9 @@ function mergeUsageWindow(
     previous?.usedPercent === null ||
     previous?.usedPercent === undefined ||
     next.usedPercent === null ||
-    next.usedPercent >= previous.usedPercent ||
-    // Older builds could invert Codex's remaining percentage and poison any
-    // persisted value near the top of the window (for example, 90% remaining
-    // became 98% used after subsequent refreshes). A fresh non-zero snapshot is
-    // authoritative. The provider's known unreliable value is a transient 0%,
-    // which stays guarded by the reset-cycle checks below.
-    next.usedPercent > 0
+    next.usedPercent >= previous.usedPercent
   ) {
-    return next;
+    return withoutDecreaseCandidate(next);
   }
 
   const reportedAtMs = Date.parse(reportedAt);
@@ -134,7 +143,23 @@ function mergeUsageWindow(
   // elapsed. OpenAI can also grant an out-of-band reset, which starts a new
   // full-duration window immediately while the old reset was still in the
   // future; its reported reset minus duration proves that new cycle has begun.
-  return nextCycleIsLater && (previousCycleElapsed || nextCycleHasStarted) ? next : previous;
+  if (nextCycleIsLater && (previousCycleElapsed || nextCycleHasStarted)) {
+    return withoutDecreaseCandidate(next);
+  }
+
+  const candidate = previous.decreaseCandidate;
+  const candidateMatchesCycle = candidate?.resetAt === next.resetAt;
+  if (candidateMatchesCycle && next.usedPercent <= previous.usedPercent) {
+    return withoutDecreaseCandidate(next);
+  }
+  return {
+    ...previous,
+    decreaseCandidate: {
+      usedPercent: next.usedPercent,
+      resetAt: next.resetAt,
+      firstSeenAt: reportedAt,
+    },
+  };
 }
 
 export function providerUsageResetCreditKey(credit: PersistedProviderUsageResetCredit): string {
