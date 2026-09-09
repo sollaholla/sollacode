@@ -37,5 +37,7 @@ describe("BrowserDeviceToolbar", () => {
 
     expect(toolbar).not.toContain('aria-hidden="true"');
     expect(toolbar).not.toContain(' inert=""');
+    // Two numeric controls need a submit button for native Enter submission.
+    expect(markup).toContain('<button type="submit" hidden="">Apply dimensions</button>');
   });
 });

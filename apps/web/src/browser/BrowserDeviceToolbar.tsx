@@ -298,6 +298,9 @@ export function BrowserDeviceToolbar({
             width >= 360 ? "w-14" : "w-11",
           )}
         />
+        <button type="submit" hidden disabled={pending || !customValid}>
+          Apply dimensions
+        </button>
       </form>
 
       <Button
