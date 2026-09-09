@@ -45,7 +45,13 @@ describe("PREVIEW_WEBVIEW_PREFERENCES", () => {
 
   it("contains exactly the required security and background-liveness keys", () => {
     expect(Object.keys(parsed).toSorted()).toEqual(
-      ["backgroundThrottling", "contextIsolation", "nodeIntegration", "sandbox"].toSorted(),
+      [
+        "backgroundThrottling",
+        "contextIsolation",
+        "nodeIntegration",
+        "sandbox",
+        "disableBlinkFeatures",
+      ].toSorted(),
     );
   });
 
@@ -53,7 +59,8 @@ describe("PREVIEW_WEBVIEW_PREFERENCES", () => {
     // `value="no"` is a TRUTHY string when assigned to webPreferences.X — so
     // `contextIsolation="no"` would silently leave isolation ENABLED. Lock
     // the values to `"true"` / `"false"` so the parser does the right thing.
-    for (const value of Object.values(parsed)) {
+    for (const [key, value] of Object.entries(parsed)) {
+      if (key === "disableBlinkFeatures") continue;
       expect(value).toMatch(/^(true|false)$/);
     }
   });
@@ -72,6 +79,10 @@ describe("PREVIEW_WEBVIEW_PREFERENCES", () => {
 
   it("keeps auth hydration and page timers alive while the preview is backgrounded", () => {
     expect(parsed["backgroundThrottling"]).toBe("false");
+  });
+
+  it("lets auth libraries fall back from the unsupported native FedCM dialog", () => {
+    expect(parsed["disableBlinkFeatures"]).toBe("FedCm");
   });
 
   it("contains no whitespace (Electron's parser does not trim)", () => {

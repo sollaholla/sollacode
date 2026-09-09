@@ -105,3 +105,15 @@ local desktop action; a remote client cannot read or provision the vault.
 - Remote input is treated as automation on the desktop side, so it does not pause an agent
   driving the same tab the way physical input at the desktop does.
 - DevTools and CAPTCHA/human-verification challenges stay under the desktop host's enforcement.
+
+## Responsive dimensions and sign-in windows
+
+Responsive width and height describe the page's CSS viewport. The page scales down to
+fit the panel, and its resize handles stay aligned with its visible edges even when
+Solla Code's application zoom is changed. Press Enter after editing a dimension, or
+move focus outside the device toolbar, to apply it.
+
+Google sign-in uses the site's popup flow in the desktop preview. The desktop engine
+currently lacks the browser-mediated FedCM account dialog, so previews disable that
+unsupported API and allow sign-in libraries to use their popup fallback. Account
+selection and any verification still happen on the provider's own sign-in page.

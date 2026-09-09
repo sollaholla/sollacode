@@ -27,11 +27,16 @@
  *   default throttling can otherwise leave a guest on its logged-out shell
  *   until the user visibly focuses every owning surface.
  *
+ * - `disableBlinkFeatures=FedCm`: Electron 41 exposes IdentityCredential but
+ *   does not implement Chromium's identity-request dialog. GIS then chooses
+ *   FedCM and rejects without displaying sign-in. Disable that unsupported
+ *   API natively so providers can select their ordinary OAuth popup flow.
+ *
  * Format notes (locked down by `WebviewPreferences.test.ts`):
  * - Whitespace-free. Electron's webpreferences parser splits on `,` and
  *   does not trim, so a leading space would turn a key into an unknown one
  *   and silently drop it.
- * - Values are JS-boolean strings (`true`/`false`) — `yes`/`no` are not
+ * - Boolean values are JS-boolean strings (`true`/`false`) — `yes`/`no` are not
  *   special-cased by the parser; `value="no"` becomes the truthy STRING
  *   `"no"` when assigned to a boolean webPreferences key. Most critically,
  *   `contextIsolation="no"` is truthy → contextIsolation stays ENABLED →
@@ -44,4 +49,4 @@
  * security-critical flags can't regress on preview tabs.
  */
 export const PREVIEW_WEBVIEW_PREFERENCES =
-  "contextIsolation=false,sandbox=true,nodeIntegration=false,backgroundThrottling=false";
+  "contextIsolation=false,sandbox=true,nodeIntegration=false,backgroundThrottling=false,disableBlinkFeatures=FedCm";
