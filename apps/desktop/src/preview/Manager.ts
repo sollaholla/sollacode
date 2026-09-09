@@ -5262,6 +5262,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               ? { width: measured.width, height: measured.height }
               : null;
           }),
+          Effect.timeout("750 millis"),
           Effect.orElseSucceed(() => null),
         )
       : null;

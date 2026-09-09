@@ -762,6 +762,7 @@ describe("PreviewManager", () => {
           getZoomFactor: () => 1,
           setZoomFactor: vi.fn(),
           loadURL,
+          executeJavaScript: vi.fn(() => new Promise(() => {})),
           on: vi.fn((event: string, listener: (...args: never[]) => void) => {
             listeners.set(event, listener);
           }),
@@ -789,7 +790,11 @@ describe("PreviewManager", () => {
         listeners.get("page-title-updated")?.();
         listeners.get("did-stop-loading")?.();
         yield* Effect.yieldNow;
-        expect(yield* manager.automationStatus("tab_background_navigation")).toMatchObject({
+        const pendingStatus = yield* manager
+          .automationStatus("tab_background_navigation")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* TestClock.adjust(750);
+        expect(yield* Fiber.join(pendingStatus)).toMatchObject({
           url: "https://youtube.com/",
           title: "Instagram",
           loading: true,

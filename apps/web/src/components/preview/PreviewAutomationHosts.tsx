@@ -25,6 +25,7 @@ import {
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
 import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Atom } from "effect/unstable/reactivity";
+import { readPreviewDiagnostic } from "./previewDiagnosticDeadline";
 
 import {
   applyPreviewServerSnapshot,
@@ -269,7 +270,9 @@ const currentStatus = async (
     ? (presentationsByRuntimeTabId[runtimeTabId]?.visible ?? false)
     : false;
   const viewportSetting = snapshot ? (snapshot.viewport ?? FILL_PREVIEW_VIEWPORT) : undefined;
-  const viewport = runtimeTabId ? await readRenderedViewport(runtimeTabId).catch(() => null) : null;
+  const viewport = runtimeTabId
+    ? await readPreviewDiagnostic(() => readRenderedViewport(runtimeTabId), null)
+    : null;
   const viewportStatus = {
     ...(viewportSetting === undefined ? {} : { viewportSetting }),
     ...(viewport === null ? {} : { viewport }),
@@ -717,7 +720,10 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
                 );
               }
               const ready = await requireReadyTab();
-              const humanVerification = await inspectReadyTab(ready).catch(() => null);
+              const humanVerification = await readPreviewDiagnostic(
+                () => inspectReadyTab(ready),
+                getPreviewHumanVerification(ready.runtimeTabId),
+              );
               const status = {
                 ...(await currentStatus(threadRef, activeTabId)),
                 humanVerification,
@@ -872,7 +878,10 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
               input.readiness ?? "load",
               input.timeoutMs ?? request.timeoutMs,
             );
-            const humanVerification = await inspectReadyTab(ready).catch(() => null);
+            const humanVerification = await readPreviewDiagnostic(
+              () => inspectReadyTab(ready),
+              getPreviewHumanVerification(ready.runtimeTabId),
+            );
             return {
               ...(await currentStatus(threadRef, ready.tabId)),
               humanVerification,
