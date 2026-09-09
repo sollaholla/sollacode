@@ -6067,6 +6067,91 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect(
+    "native user clicks claim the first key without preload IPC, while agent clicks do not",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let beforeMouse: ((event: unknown, mouse: Electron.MouseInputEvent) => void) | undefined;
+          let beforeInput: ((event: unknown, input: Electron.Input) => void) | undefined;
+          const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+            if (method === "Runtime.evaluate") {
+              return { result: { value: { width: 800, height: 600 } } };
+            }
+            if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") {
+              beforeMouse?.(
+                {},
+                { type: "mouseDown", x: Number(params.x), y: Number(params.y), button: "left" },
+              );
+            }
+            return undefined;
+          });
+          fromId.mockReturnValue({
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            on: vi.fn((event: string, listener: unknown) => {
+              if (event === "before-mouse-event") beforeMouse = listener as typeof beforeMouse;
+              if (event === "before-input-event") beforeInput = listener as typeof beforeInput;
+            }),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never);
+          yield* manager.createTab("tab_focus");
+          yield* manager.registerWebview("tab_focus", 42);
+          expect(beforeMouse).toBeDefined();
+          expect(beforeInput).toBeDefined();
+          const click = yield* manager
+            .automationClick("tab_focus", { x: 120, y: 80 })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(200);
+          yield* Fiber.join(click);
+          yield* TestClock.adjust(1501);
+          const input: Electron.Input = {
+            type: "keyDown",
+            key: "a",
+            code: "KeyA",
+            isAutoRepeat: false,
+            isComposing: false,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+            location: 0,
+            modifiers: [],
+          };
+          const afterAgentClick = { preventDefault: vi.fn() };
+          beforeInput?.(afterAgentClick, input);
+          expect(afterAgentClick.preventDefault).toHaveBeenCalledOnce();
+          beforeMouse?.({}, { type: "mouseMove", x: 240, y: 160 });
+          const afterHover = { preventDefault: vi.fn() };
+          beforeInput?.(afterHover, input);
+          expect(afterHover.preventDefault).toHaveBeenCalledOnce();
+          // No preload message or scheduler yield between the iframe click and first key.
+          beforeMouse?.({}, { type: "mouseDown", x: 240, y: 160, button: "left" });
+          const afterUserClick = { preventDefault: vi.fn() };
+          beforeInput?.(afterUserClick, input);
+          expect(afterUserClick.preventDefault).not.toHaveBeenCalled();
+        }),
+      ),
+  );
+
   effectIt.effect("emits the resolved pointer target before dispatching an automation click", () =>
     withManager((manager) =>
       Effect.gen(function* () {
