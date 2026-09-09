@@ -21,8 +21,8 @@ import {
   resolveFittedBrowserViewport,
 } from "./browserViewportLayout";
 import {
-  refineBrowserViewportHostScale,
-  type BrowserViewportHostScale,
+  resolveBrowserViewportHostScale,
+  resolveBrowserViewportHostTransform,
 } from "./browserViewportCompensation";
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
 import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
@@ -422,14 +422,9 @@ export function HostedBrowserWebview(props: {
     deviceToolbarVisible,
     aspectRatio: lockedAspectRatio,
   });
-  const effectiveViewportKey = browserViewportSettingKey(effectiveViewport);
-  const [viewportHostScale, setViewportHostScale] = useState<
-    (BrowserViewportHostScale & { readonly sourceKey: string }) | null
-  >(null);
-  const activeViewportHostScale =
-    viewportHostScale?.sourceKey === effectiveViewportKey
-      ? viewportHostScale
-      : { width: 1, height: 1 };
+  const activeViewportHostScale = resolveBrowserViewportHostScale(
+    effectiveViewport._tag === "fill" ? 1 : (window.desktopBridge?.getAppZoomFactor?.() ?? 1),
+  );
 
   const scaleFillCssIntoSlot =
     fillCssViewport !== null &&
@@ -468,63 +463,6 @@ export function HostedBrowserWebview(props: {
       : effectiveViewport._tag === "fill"
         ? Math.max(1, Math.round(layout.viewportHeight / normalizedZoomFactor))
         : effectiveViewport.height;
-
-  useLayoutEffect(() => {
-    const webview = webviewRef.current;
-    if (!webview || effectiveViewport._tag === "fill") {
-      setViewportHostScale(null);
-      return;
-    }
-    let cancelled = false;
-    let scale: BrowserViewportHostScale = { width: 1, height: 1 };
-    const expected = { width: declaredViewportWidth, height: declaredViewportHeight };
-    // Let Electron consume the React layout before measuring. Repeating a few
-    // bounded refinements handles fractional page zoom and pixel rounding
-    // without leaving a timer or animation running after the resize settles.
-    const calibrate = async () => {
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        if (cancelled) return;
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 32));
-        if (cancelled || webviewRef.current !== webview) return;
-        const value = await webview
-          .executeJavaScript("({ width: window.innerWidth, height: window.innerHeight })")
-          .catch(() => null);
-        if (typeof value !== "object" || value === null) continue;
-        const rendered = value as { readonly width?: unknown; readonly height?: unknown };
-        if (
-          typeof rendered.width !== "number" ||
-          !Number.isInteger(rendered.width) ||
-          rendered.width <= 0 ||
-          typeof rendered.height !== "number" ||
-          !Number.isInteger(rendered.height) ||
-          rendered.height <= 0
-        ) {
-          continue;
-        }
-        const refined = refineBrowserViewportHostScale({
-          current: scale,
-          expected,
-          rendered: { width: rendered.width, height: rendered.height },
-        });
-        if (!refined) return;
-        scale = refined;
-        setViewportHostScale({ sourceKey: effectiveViewportKey, ...scale });
-      }
-    };
-    void calibrate();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    declaredViewportHeight,
-    declaredViewportWidth,
-    effectiveViewportKey,
-    effectiveViewport._tag,
-    hostSize.height,
-    hostSize.width,
-    webviewGeneration,
-    zoomFactor,
-  ]);
 
   const syncContentPresentation = useCallback(() => {
     const wrapper = wrapperRef.current;
@@ -613,7 +551,10 @@ export function HostedBrowserWebview(props: {
             top: layout.viewportY,
             width: hostedViewportWidth,
             height: hostedViewportHeight,
-            transform: layout.viewportScale < 1 ? `scale(${layout.viewportScale})` : undefined,
+            transform: resolveBrowserViewportHostTransform(
+              layout.viewportScale,
+              activeViewportHostScale,
+            ),
             transformOrigin: "top left",
           }}
         />

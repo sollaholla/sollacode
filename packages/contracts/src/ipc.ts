@@ -1288,6 +1288,8 @@ export const DesktopVoiceTranscriptionResultSchema = Schema.Union([
 export type DesktopVoiceTranscriptionResult = typeof DesktopVoiceTranscriptionResultSchema.Type;
 
 export interface DesktopBridge {
+  /** Embedder page zoom, independent of the hosted preview page zoom. */
+  getAppZoomFactor?: () => number;
   getAppBranding: () => DesktopAppBranding | null;
   // One bootstrap per pool instance currently registered with bootstrap
   // info (omits instances whose backend hasn't produced a config yet).

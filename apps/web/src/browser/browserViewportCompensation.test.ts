@@ -1,38 +1,28 @@
 import { describe, expect, it } from "vite-plus/test";
+import {
+  resolveBrowserViewportHostScale,
+  resolveBrowserViewportHostTransform,
+} from "./browserViewportCompensation";
 
-import { refineBrowserViewportHostScale } from "./browserViewportCompensation";
-
-describe("refineBrowserViewportHostScale", () => {
-  it("compensates for embedder zoom on both viewport axes", () => {
-    expect(
-      refineBrowserViewportHostScale({
-        current: { width: 1, height: 1 },
-        expected: { width: 667, height: 375 },
-        rendered: { width: 609, height: 342 },
-      }),
-    ).toEqual({
-      width: 667 / 609,
-      height: 375 / 342,
-    });
-  });
-
-  it("settles when Electron is within one rounded CSS pixel", () => {
-    expect(
-      refineBrowserViewportHostScale({
-        current: { width: 1.1, height: 1.1 },
-        expected: { width: 667, height: 375 },
-        rendered: { width: 668, height: 374 },
-      }),
-    ).toBeNull();
-  });
-
-  it("bounds corrupt measurements instead of exploding the host surface", () => {
-    expect(
-      refineBrowserViewportHostScale({
-        current: { width: 1, height: 1 },
-        expected: { width: 4096, height: 4096 },
-        rendered: { width: 1, height: 1 },
-      }),
-    ).toEqual({ width: 4, height: 4 });
+describe("responsive viewport zoom compensation", () => {
+  it.each([0.5, 0.9, 1, 1.25, 2])(
+    "keeps page dimensions and resize rails aligned at app zoom %s",
+    (appZoom) => {
+      const scale = resolveBrowserViewportHostScale(appZoom);
+      const page = { width: 390, height: 844 };
+      const guestZoom = 1.2;
+      const fit = 0.5;
+      for (const axis of ["width", "height"] as const) {
+        const hostSize = page[axis] * guestZoom * scale[axis];
+        expect((hostSize * appZoom) / guestZoom).toBeCloseTo(page[axis]);
+        expect((hostSize * fit) / scale[axis]).toBeCloseTo(page[axis] * guestZoom * fit);
+      }
+      expect(resolveBrowserViewportHostTransform(fit, scale)).toBe(
+        `scale(${fit / scale.width}, ${fit / scale.height})`,
+      );
+    },
+  );
+  it.each([0, -1, NaN, Infinity])("ignores invalid embedder zoom %s", (zoom) => {
+    expect(resolveBrowserViewportHostScale(zoom)).toEqual({ width: 1, height: 1 });
   });
 });
