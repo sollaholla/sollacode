@@ -200,6 +200,9 @@ describe("Antigravity adapter process lifecycle", () => {
         errorMessage: expect.stringContaining("RESOURCE_EXHAUSTED (429)"),
       });
       expect((yield* adapter.listSessions())[0]?.status).toBe("ready");
+      expect(
+        events.filter((e) => e.type === "runtime.error").map((e) => e.payload.message),
+      ).toEqual([expect.stringContaining("RESOURCE_EXHAUSTED (429)")]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

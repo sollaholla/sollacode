@@ -1,6 +1,8 @@
 import { AntigravitySettings, TextGenerationError, type ServerProvider } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -20,12 +22,16 @@ import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
 
 import {
   makeAntigravityAccountAuth,
-  parseAntigravityAuthStatus,
+  readAntigravityAuthStatus,
 } from "../antigravityAccountAuth.ts";
 
 const decodeSettings = Schema.decodeSync(AntigravitySettings);
 
-export type AntigravityDriverEnv = ServerConfig | ChildProcessSpawner.ChildProcessSpawner;
+export type AntigravityDriverEnv =
+  | ServerConfig
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | Path.Path;
 export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityDriverEnv> = {
   driverKind: ANTIGRAVITY_DRIVER_KIND,
   metadata: { displayName: "Antigravity", supportsMultipleInstances: true },
@@ -34,6 +40,8 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
   create: Effect.fn("AntigravityDriver.create")(function* (input) {
     const serverConfig = yield* ServerConfig;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const environment = mergeProviderInstanceEnvironment(input.environment);
     const binaryPath = input.config.binaryPath || "agy";
     const continuationIdentity = defaultProviderContinuationIdentity({
@@ -63,7 +71,12 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
               [
                 runProbe(["--version"]),
                 runProbe(["models"]),
-                runProbe(["--print", "/usage", "--print-timeout", "10s"]),
+                readAntigravityAuthStatus({ binaryPath, environment }).pipe(
+                  Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(Path.Path, path),
+                  Effect.result,
+                ),
               ],
               {
                 concurrency: "unbounded",
@@ -73,15 +86,9 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         const versionResult = results?.[0];
         const modelsResult = results?.[1];
         const authResult = results?.[2];
-        const authenticated =
-          authResult?._tag === "Success" &&
-          authResult.success.code === 0 &&
-          parseAntigravityAuthStatus(authResult.success.stdout, authResult.success.stderr).loggedIn;
+        const authenticated = authResult?._tag === "Success" && authResult.success.loggedIn;
         const unauthenticated =
-          authResult?._tag === "Success" &&
-          /authentication required|not signed in/i.test(
-            authResult.success.stdout + authResult.success.stderr,
-          );
+          authResult?._tag === "Success" && authResult.success.unauthenticated;
         const installed = versionResult?._tag === "Success";
         const versionReady = installed && versionResult.success.code === 0;
         const modelsReady = modelsResult?._tag === "Success" && modelsResult.success.code === 0;
@@ -105,6 +112,9 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
                 ? "unauthenticated"
                 : "unknown",
             ...(authenticated ? { type: "Google account" } : {}),
+            ...(authenticated && authResult.success.accountLabel
+              ? { email: authResult.success.accountLabel }
+              : {}),
           },
           checkedAt: DateTime.formatIso(DateTime.nowUnsafe()),
           message: !input.enabled

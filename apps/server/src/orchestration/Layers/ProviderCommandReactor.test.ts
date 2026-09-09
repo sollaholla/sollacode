@@ -5629,6 +5629,90 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
+  it("preserves an AGY quota failure and cancels recovery after one delivered turn", async () => {
+    const quotaFailure =
+      "Antigravity was rejected by Google with RESOURCE_EXHAUSTED (429). Check the account quota or switch accounts before retrying.";
+    const threadId = ThreadId.make("thread-1");
+    const turnId = TurnId.make("agy-quota-rejection");
+    const messageId = MessageId.make("agy-quota-user-message");
+    const now = "2026-01-01T00:00:01.000Z";
+    const harness = await createHarness({
+      startReactor: false,
+      sendTurnEffect: (_input, sessions, sendOptions) =>
+        Effect.gen(function* () {
+          yield* sendOptions?.beforeNativeDispatch ?? Effect.void;
+          for (const status of ["running", "error"] as const) {
+            yield* harness.engine
+              .dispatch({
+                type: "thread.session.set",
+                commandId: CommandId.make(
+                  `timeout-${status}-${harness.sendTurn.mock.calls.length}`,
+                ),
+                threadId,
+                session: {
+                  threadId,
+                  status,
+                  providerName: "codex",
+                  providerInstanceId: ProviderInstanceId.make("codex"),
+                  runtimeMode: "approval-required",
+                  activeTurnId: status === "running" ? turnId : null,
+                  lastError: status === "error" ? quotaFailure : null,
+
+                  updatedAt: now,
+                },
+                createdAt: now,
+              })
+              .pipe(Effect.orDie);
+          }
+          const session = sessions.find((entry) => entry.threadId === threadId)!;
+          sessions.splice(sessions.indexOf(session), 1, {
+            ...session,
+            status: "ready",
+            activeTurnId: turnId,
+            lastError: quotaFailure,
+          });
+          return { threadId, turnId };
+        }),
+    });
+    const handlers = new Map<string, ThreadWorkHandler>();
+    vi.spyOn(harness.threadWorkScheduler, "registerHandler").mockImplementation((kind, handler) =>
+      Effect.sync(() => {
+        handlers.set(kind, handler);
+      }),
+    );
+    vi.spyOn(harness.threadWorkScheduler, "start").mockReturnValue(Effect.void);
+    await harness.startReactor();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("timeout-user-start"),
+        threadId,
+        message: { messageId, role: "user", text: "Finish my task", attachments: [] },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+    const obligation = Option.getOrThrow(
+      await Effect.runPromise(
+        harness.threadWorkObligations.getByKey({
+          threadId,
+          sourceTurnId: activeTurnWorkSourceId(messageId),
+          kind: "active-turn-recovery",
+        }),
+      ),
+    );
+    const outcome = await Effect.runPromise(
+      handlers.get("active-turn-recovery")!({ ...obligation, attempt: 1 }),
+    );
+    expect(outcome).toEqual({ state: "cancelled", reason: quotaFailure });
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.lastError).toBe(quotaFailure);
+    expect(thread?.latestTurn?.state).toBe("error");
+  });
+
   for (const runtimeStatus of ["running", "error", "ready"] as const) {
     it(`retries a terminal API timeout beyond the cap with a ${runtimeStatus} runtime`, async () => {
       const threadId = ThreadId.make("thread-1");

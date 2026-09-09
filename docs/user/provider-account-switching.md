@@ -32,3 +32,8 @@ one-time terms and data-sharing setup in a host terminal first. Solla reports th
 signing out and never accepts those choices automatically. Gemini API key mode has no Google
 account to switch. The provider's model menu groups effort variants into one model with a separate
 **Effort** selector; saved Low/Medium/High choices are preserved.
+
+The Antigravity account control shows the email confirmed by its native status check. A signed-in
+account can still have no Gemini quota remaining. If Google rejects a turn with `RESOURCE_EXHAUSTED
+(429)`, Solla keeps the error in the conversation and stops automatic recovery retries. Switch to an
+account with available quota or wait for its quota to reset before sending again.
