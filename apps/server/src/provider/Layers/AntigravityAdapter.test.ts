@@ -29,12 +29,18 @@ fs.appendFileSync(${JSON.stringify(NodePath.join(dir, "args.jsonl"))}, JSON.stri
 let input=''; process.stdin.setEncoding('utf8'); process.stdin.on('data', d => input+=d);
 process.stdin.on('end', () => {
  const message=JSON.parse(input); if(message.event!=='user') process.exit(3);
+ fs.writeFileSync(${JSON.stringify(NodePath.join(dir, "prompt.txt"))}, message.message.content);
  const mode=${JSON.stringify(mode)};
  if(mode==='malformed') { process.stdout.write('broken JSON\\n'); return; }
  if(mode==='silent') return;
  process.stdout.write(JSON.stringify({event:'init',conversation_id:'native-conversation',init:{model:'test-model'}})+'\\n');
  emit('step_update',{conversation_id:'native-conversation',step_index:0,state:'DONE',step_type:'user_input'});
  if(mode==='hang') { process.on('SIGTERM',()=>{}); setInterval(()=>{},1000); return; }
+ if(mode==='quota') {
+   process.stderr.write('error: unrelated optional browser download failed\\n');
+   process.stderr.write('ERROR: logging before google.Init: I0909 run.go:371] Run: attempt 1 failed (RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).), retrying in 4s\\n');
+   setInterval(()=>{},1000); return;
+ }
  emit('step_update',{step_index:1,state:'ACTIVE',step_type:'agent_response',text_delta:'OK'});
  const usage={input_tokens:13713,output_tokens:1,thinking_tokens:0,cache_read_tokens:0,total_tokens:13714};
  emit('step_update',{step_index:1,state:'DONE',step_type:'agent_response',text_delta:'\\n',usage});
@@ -87,7 +93,12 @@ describe("Antigravity adapter process lifecycle", () => {
       const { adapter, dir } = yield* setup();
       const { events, first, second } = yield* observe(adapter);
       yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
-      yield* adapter.sendTurn({ threadId, input: "one", messageId: MessageId.make("one") });
+      const accepted = yield* adapter.sendTurn({
+        threadId,
+        input: "one",
+        messageId: MessageId.make("one"),
+      });
+      expect(accepted.resumeCursor).toEqual({ conversationId: "native-conversation" });
       yield* Deferred.await(first);
       yield* adapter.sendTurn({
         threadId,
@@ -125,6 +136,10 @@ describe("Antigravity adapter process lifecycle", () => {
       expect(args[0]).toContain("--dangerously-skip-permissions");
       expect(args[1]).toContain("native-conversation");
       expect(args[1]).toContain("plan");
+      const prompt = yield* Effect.promise(() =>
+        NodeFSP.readFile(NodePath.join(dir, "prompt.txt"), "utf8"),
+      );
+      expect(prompt).toContain(dir);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -170,6 +185,21 @@ describe("Antigravity adapter process lifecycle", () => {
       expect(events.find((e) => e.type === "turn.completed")?.payload).toMatchObject({
         state: "failed",
       });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("ends hidden quota retries with a visible failure and releases the turn", () =>
+    Effect.gen(function* () {
+      const { adapter } = yield* setup("quota");
+      const { events, first } = yield* observe(adapter);
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, input: "test" });
+      yield* Deferred.await(first);
+      expect(events.find((e) => e.type === "turn.completed")?.payload).toMatchObject({
+        state: "failed",
+        errorMessage: expect.stringContaining("RESOURCE_EXHAUSTED (429)"),
+      });
+      expect((yield* adapter.listSessions())[0]?.status).toBe("ready");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -237,6 +267,9 @@ it.live.skipIf(process.env.SOLLA_TEST_LIVE_AGY !== "1")(
       expect((yield* adapter.listSessions())[0]?.resumeCursor).toMatchObject({
         conversationId: expect.any(String),
       });
+      expect(events.filter((e) => e.type === "turn.completed").map((e) => e.payload)).toEqual([
+        expect.objectContaining({ state: "completed" }),
+      ]);
       yield* adapter.sendTurn({
         threadId,
         messageId: MessageId.make("live-two"),

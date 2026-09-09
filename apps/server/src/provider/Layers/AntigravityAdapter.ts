@@ -9,12 +9,15 @@ import {
 } from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue, splitAntigravityModel } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
@@ -38,6 +41,8 @@ interface ActiveTurn {
   fiber?: Fiber.Fiber<void>;
   interrupted: boolean;
 }
+const encodeString = Schema.encodeSync(Schema.fromJsonString(Schema.String));
+const isAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 interface SessionContext {
   session: ProviderSession;
   active?: ActiveTurn | undefined;
@@ -62,6 +67,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
   readonly environment: NodeJS.ProcessEnv;
 }) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const platform = yield* HostProcessPlatform;
   const scope = yield* Effect.scope;
   const events = yield* Effect.acquireRelease(
     PubSub.unbounded<ProviderRuntimeEvent>(),
@@ -158,12 +164,14 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           }),
           "--mode",
           input.interactionMode === "plan" ? "plan" : "accept-edits",
+          // AGY otherwise hides upstream retries in a private log file.
+          ...(platform === "win32" ? [] : ["--log-file", "/dev/stderr"]),
         ];
         let terminal: ProviderRuntimeEvent | undefined;
         let textReceived = false;
         let delivered = false;
         let stderr = "";
-        const prompt = input.input;
+        const prompt = `The Solla project working directory is ${encodeString(context.session.cwd ?? config.cwd)}. Use that directory explicitly for command tools; AGY's default scratch directory is not this project.\n\n${input.input}`;
         const run = Effect.gen(function* () {
           const command = yield* resolveSpawnCommand(config.binaryPath, args, {
             env: config.environment,
@@ -210,18 +218,15 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                     resumeCursor: { conversationId: frame.conversationId },
                   };
                 }
-                if (
-                  frame.kind === "step_update" &&
-                  frame.stepType === "user_input" &&
-                  !delivered &&
-                  input.messageId
-                ) {
+                if (frame.kind === "step_update" && frame.stepType === "user_input" && !delivered) {
                   delivered = true;
-                  emit({
-                    ...base(input.threadId, active.id),
-                    type: "message.delivered",
-                    payload: { messageId: input.messageId },
-                  });
+                  Deferred.doneUnsafe(ready, Effect.void);
+                  if (input.messageId)
+                    emit({
+                      ...base(input.threadId, active.id),
+                      type: "message.delivered",
+                      payload: { messageId: input.messageId },
+                    });
                 }
                 if (
                   frame.kind === "step_update" &&
@@ -271,19 +276,26 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           yield* options?.onNativeDispatch ?? Effect.void;
           const write = Stream.make(
             new TextEncoder().encode(`${encodeAntigravityUserMessage(prompt)}\n`),
-          ).pipe(
-            Stream.run(handle.stdin),
-            Effect.tap(() => Deferred.succeed(ready, undefined)),
-          );
+          ).pipe(Stream.run(handle.stdin));
           yield* Effect.all(
             [
               consume,
               handle.stderr.pipe(
                 Stream.decodeText(),
+                Stream.splitLines,
                 Stream.runForEach((chunk) =>
-                  Effect.sync(() => {
-                    stderr = (stderr + chunk).slice(-16_384);
-                  }),
+                  /Run: attempt \d+ failed \(RESOURCE_EXHAUSTED \(code 429\)/.test(chunk)
+                    ? Effect.fail(
+                        error(
+                          "run",
+                          "Antigravity was rejected by Google with RESOURCE_EXHAUSTED (429). Check the account quota or switch accounts before retrying.",
+                        ),
+                      )
+                    : Effect.sync(() => {
+                        // Native logs may contain account details. Keep only direct CLI errors.
+                        if (!chunk.startsWith("ERROR: logging before google.Init:"))
+                          stderr = (stderr + chunk + "\n").slice(-16_384);
+                      }),
                 ),
               ),
               write,
@@ -300,7 +312,10 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           Effect.scoped,
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
-              const failure = error("run", stderr.trim() || String(cause));
+              const underlying = Cause.squash(cause);
+              const failure = isAdapterRequestError(underlying)
+                ? underlying
+                : error("run", stderr.trim() || String(cause));
               yield* Deferred.fail(ready, failure);
               terminal = {
                 ...base(input.threadId, active.id),

@@ -30,6 +30,48 @@ function makeDirectoryLayer<E, R>(persistenceLayer: Layer.Layer<SqlClient.SqlCli
 }
 
 it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryLive", (it) => {
+  it("clears foreign resume cursors when provider ownership changes", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.make("foreign-resume-cursor");
+      const codex = ProviderDriverKind.make("codex");
+      const agy = ProviderDriverKind.make("antigravity");
+      yield* directory.upsert({
+        threadId,
+        provider: codex,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        resumeCursor: { threadId: "codex-native" },
+      });
+      yield* directory.upsert({
+        threadId,
+        provider: agy,
+        providerInstanceId: ProviderInstanceId.make("agy"),
+      });
+      let binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.equal(binding.resumeCursor, null);
+      yield* directory.upsert({
+        threadId,
+        provider: agy,
+        providerInstanceId: ProviderInstanceId.make("agy"),
+        resumeCursor: { conversationId: "agy-native" },
+      });
+      yield* directory.upsert({
+        threadId,
+        provider: agy,
+        providerInstanceId: ProviderInstanceId.make("agy"),
+        status: "stopped",
+      });
+      binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.deepEqual(binding.resumeCursor, { conversationId: "agy-native" });
+      yield* directory.upsert({
+        threadId,
+        provider: agy,
+        providerInstanceId: ProviderInstanceId.make("agy-other"),
+      });
+      binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.equal(binding.resumeCursor, null);
+    }));
+
   it("upserts and reads thread bindings", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;
