@@ -10,6 +10,8 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { PtyAdapter, type PtyProcess } from "../terminal/PtyAdapter.ts";
 import * as NodePtyAdapter from "../terminal/NodePtyAdapter.ts";
 import {
@@ -62,6 +64,27 @@ describe("Antigravity native account switching", () => {
       url: authUrl,
       waitingForCode: true,
     });
+  });
+
+  it.each(["\x07", "\x1b\\"])(
+    "waits for the complete OSC hyperlink with terminator %j",
+    (terminator) => {
+      const href = `${authUrl}&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&response_type=code`;
+      const opening = `\x1b]8;id=native;${href}${terminator}`;
+      for (let end = 0; end < opening.length; end++) {
+        expect(antigravityAuthScreen(opening.slice(0, end)).url).toBeNull();
+      }
+      expect(
+        antigravityAuthScreen(`${opening}Click here to authenticate\x1b]8;;${terminator}`).url,
+      ).toBe(href);
+    },
+  );
+
+  it("does not freeze a partially streamed plain OAuth URL", () => {
+    for (let end = 1; end <= authUrl.length; end++) {
+      expect(antigravityAuthScreen(authUrl.slice(0, end)).url).toBeNull();
+    }
+    expect(antigravityAuthScreen(`${authUrl}\r\n`).url).toBe(authUrl);
   });
 
   it.live.each(["success", "cancel", "rejected", "unverified", "setup", "api-key"] as const)(
@@ -188,6 +211,9 @@ it.live.skipIf(process.env.SOLLA_TEST_LIVE_AGY_AUTH !== "1")(
       });
       const codePrompt = yield* Deferred.make<void>();
       let authUrl: string | undefined;
+      const capturedUrls: string[] = [];
+      let nativeOutput = "";
+      const nativePty = yield* PtyAdapter;
       const fiber = yield* makeAntigravityAccountAuth({
         binaryPath: "/opt/homebrew/bin/agy",
         environment: { ...process.env, HOME: dir },
@@ -197,16 +223,75 @@ it.live.skipIf(process.env.SOLLA_TEST_LIVE_AGY_AUTH !== "1")(
           wasAuthenticated: false,
           onProgress: (progress) => {
             authUrl = progress.authUrl ?? authUrl;
+            if (progress.authUrl) capturedUrls.push(progress.authUrl);
             if (progress.waitingForCode) Deferred.doneUnsafe(codePrompt, Effect.void);
           },
           onSubmitCode: () => {},
         })
-        .pipe(Effect.scoped, Effect.forkScoped);
+        .pipe(
+          Effect.provideService(PtyAdapter, {
+            spawn: (input) =>
+              nativePty.spawn(input).pipe(
+                Effect.map((child) => ({
+                  pid: child.pid,
+                  write: (data) => child.write(data),
+                  resize: (cols, rows) => child.resize(cols, rows),
+                  kill: (signal) => child.kill(signal),
+                  onExit: (callback) => child.onExit(callback),
+                  onData: (callback) =>
+                    child.onData((data) => {
+                      nativeOutput += data;
+                      callback(data);
+                    }),
+                })),
+              ),
+          }),
+          Effect.scoped,
+          Effect.forkScoped,
+        );
       yield* Deferred.await(codePrompt).pipe(Effect.timeout("25 seconds"));
       expect(authUrl).toMatch(/^https:\/\//);
+      // Compare against the native hyperlink, not the same parser's later interpretation.
+      const nativeHref = nativeOutput.match(
+        // eslint-disable-next-line no-control-regex
+        /\x1b\]8;[^;]*;(https:[^\x07\x1b]*)(?:\x07|\x1b\\)/,
+      )?.[1];
+      expect(nativeHref).toBeDefined();
+      expect(capturedUrls).toEqual([nativeHref]);
+      const parsed = new URL(authUrl!);
+      for (const key of [
+        "client_id",
+        "redirect_uri",
+        "response_type",
+        "scope",
+        "state",
+        "code_challenge",
+      ]) {
+        expect(parsed.searchParams.get(key), key).toBeTruthy();
+      }
+      const client = HttpClient.followRedirects(yield* HttpClient.HttpClient);
+      const response = yield* client
+        .get(authUrl!)
+        .pipe(
+          Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+          Effect.timeout("10 seconds"),
+        );
+      expect(response.status).toBe(200);
+      const destination = new URL(response.request.url);
+      expect(destination.hostname).toBe("accounts.google.com");
+      expect(destination.pathname).toMatch(/signin/);
+      expect(destination.pathname).not.toMatch(/error/);
+      yield* response.text;
       yield* Fiber.interrupt(fiber);
-    }).pipe(Effect.provide(NodePtyAdapter.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
-  30_000,
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          NodePtyAdapter.layer.pipe(Layer.provideMerge(NodeServices.layer)),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
+  45_000,
 );
 
 it.live.skipIf(process.env.SOLLA_TEST_LIVE_AGY_AUTH !== "1")(
