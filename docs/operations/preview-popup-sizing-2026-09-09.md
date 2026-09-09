@@ -47,3 +47,27 @@ The preference is shared by all desktop preview webviews on macOS, Windows, and 
 The hosted webview correction covers presets, responsive controls, dragging, and
 thumbnail presentation. Remote web/mobile clients receive the same desktop guest and
 its reported frame; the new optional desktop-only zoom getter does not change WebSocket schemas or provider adapters.
+
+## Composer/guest input isolation follow-up
+
+The user reported bidirectional text leakage while a long agent insertion overlapped
+human typing. Native CDP character packets were routed through Chromium's currently
+focused widget, and the action-wide key exemption hid physical input during a burst.
+
+Text insertion now executes as one edit inside the selected guest document. It does
+not call native focus, bring-to-front, synthetic mouse clicks, or keyboard dispatch.
+The browser edit preserves normal input events and undo, reads the result back, and
+fails if the field rejects it; there is no fallback to globally focused keyboard input.
+Physical input updates an interruption generation synchronously. Input commands check
+that generation before/after CDP calls, and admission checks again after remembering
+app focus. Only an explicitly dispatched key is exempt from keyboard reclamation.
+An edit already executing is atomic in the guest renderer; no remaining character
+stream can migrate into the composer.
+
+Native Electron 41.5.0 fixture using the exact production insertion expression passed
+8,803-character Unicode/multiline insertion and clearing in textarea and contenteditable
+fields while the host composer retained focus and its original contents. A contenteditable
+trailing line break can have an extra rendering newline in innerText; exact readback was
+verified with a non-newline final character. Manager regressions cover first-key
+interruption during setup, no native input for text, and physical-key reclamation during
+an agent action window. Installed follow-up verification is pending in 0.1.499.

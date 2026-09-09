@@ -34,7 +34,7 @@ Interacting with the frame:
 | Tap                                        | A click at that spot                                         |
 | Swipe                                      | Scrolling, in natural touch direction                        |
 | Hold ~⅓s, then move                        | A drag (sliders, drag-and-drop)                              |
-| Text row + **Type**                        | Trusted keyboard text sent to the last field you tapped      |
+| Text row + **Type**                        | Document-scoped text edit in the last field you tapped       |
 | ⏎ / ⌫ buttons                              | Enter / Backspace key presses                                |
 | Mouse drag (desktop browsers)              | A drag; use the scroll wheel to scroll                       |
 | Keyboard (desktop browsers, frame focused) | Letters, arrows, Enter, Tab, Escape forwarded as key presses |
@@ -59,6 +59,9 @@ and Deny actions on both mobile surfaces.
 Clicking inside a desktop browser tab gives that tab your next keystroke, including fields inside
 embedded frames. Merely hovering does not move keyboard focus. An agent selecting a page field
 does not transfer your typing away from the composer; only your own click chooses that surface.
+Long text edits stay inside the target page without borrowing the composer’s native keyboard
+focus. New human input cancels pending input commands immediately. A text edit already running
+finishes atomically inside that page, so no remaining characters can spill into your composer.
 Browser zoom is accounted for when matching agent clicks, so zoomed pages do not falsely report
 that an agent was interrupted by human input.
 
@@ -93,7 +96,7 @@ file is written.
 An agent first calls `preview_credentials`, which returns matching labels, usernames, and opaque
 IDs for the active tab's exact origin. It can then call `preview_fill_credential` with an ID and a
 field target. Electron checks the live tab origin again, decrypts in the main process, and sends the
-password directly as trusted keyboard input. The secret is absent from the tool arguments and
+password directly into the selected page document. The secret is absent from the tool arguments and
 result, server and WebSocket traffic, activity receipts, and logs. Password management is a
 local desktop action; a remote client cannot read or provision the vault.
 
