@@ -1746,8 +1746,11 @@ describe("ClaudeAdapterLive", () => {
       if (!consumed.done) {
         assert.equal(promptMessageText(consumed.value), "receipt-bearing synthetic prompt");
       }
-      assert.equal((yield* Fiber.join(receiptFiber)).length, 1);
-      assert.equal((yield* Fiber.join(sendFiber)).threadId, session.threadId);
+      const receipts = yield* Fiber.join(receiptFiber);
+      const sent = yield* Fiber.join(sendFiber);
+      assert.equal(receipts.length, 1);
+      assert.equal(sent.threadId, session.threadId);
+      assert.equal(receipts[0]?.turnId, sent.turnId);
       yield* adapter.stopSession(session.threadId);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

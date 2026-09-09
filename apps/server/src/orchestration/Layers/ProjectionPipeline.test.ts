@@ -6716,6 +6716,172 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
+  it.effect(
+    "keeps recovered Agent turns linked through delivery ordering, steers, and finalization",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const sql = yield* SqlClient.SqlClient;
+        const providerInstanceId = ProviderInstanceId.make("codex");
+        const projectId = ProjectId.make("project-recovered-agent-causality");
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("create-recovery-project"),
+          projectId,
+          title: "Recovered Agent",
+          workspaceRoot: "/tmp/project-recovered-agent-causality",
+          defaultModelSelection: { instanceId: providerInstanceId, model: "gpt-5.6-sol" },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        for (const scenario of [
+          "receipt-first",
+          "session-first",
+          "active-recovery",
+          "signed-off",
+          "new-intent",
+          "missing-source",
+        ] as const) {
+          const threadId = ThreadId.make(`thread-recovery-${scenario}`);
+          const oldTurnId = TurnId.make(`old-${scenario}`);
+          const turnId = TurnId.make(`recovered-${scenario}`);
+          const sourceId = MessageId.make(
+            scenario === "active-recovery"
+              ? `user-${scenario}`
+              : `agent-auto-resume-message:${threadId}:original-turn`,
+          );
+          const command = (suffix: string) => CommandId.make(`${scenario}-${suffix}`);
+          const session = (id: TurnId | null, at: string, suffix: string) =>
+            engine.dispatch({
+              type: "thread.session.set",
+              commandId: command(suffix),
+              threadId,
+              session: {
+                threadId,
+                status: id === null ? "ready" : "running",
+                providerName: "codex",
+                providerInstanceId,
+                runtimeMode: "full-access",
+                activeTurnId: id,
+                lastError: null,
+                updatedAt: at,
+              },
+              createdAt: at,
+            });
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: command("create"),
+            threadId,
+            projectId,
+            title: scenario,
+            modelSelection: { instanceId: providerInstanceId, model: "gpt-5.6-sol" },
+            interactionMode: "agent",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          });
+          if (scenario !== "missing-source") {
+            yield* engine.dispatch({
+              type: "thread.turn.start",
+              commandId: command("start"),
+              threadId,
+              message: {
+                messageId: sourceId,
+                role: "user",
+                text: "Keep working.",
+                attachments: [],
+              },
+              interactionMode: "agent",
+              runtimeMode: "full-access",
+              createdAt: "2026-01-01T00:00:01.000Z",
+            });
+            // The original dispatch consumed the source placeholder before the server restarted.
+            yield* session(oldTurnId, "2026-01-01T00:00:02.000Z", "old-running");
+            yield* session(null, "2026-01-01T00:00:03.000Z", "old-ready");
+          }
+          if (scenario === "session-first")
+            yield* session(turnId, "2026-01-01T00:00:04.000Z", "running-first");
+          const recoveryId =
+            scenario === "active-recovery"
+              ? `active-turn-recovery-delivery:${threadId}:${sourceId}`
+              : `agent-continuation-recovery-delivery:${threadId}:original-turn`;
+          const receipt = (messageId: string, suffix: string, at: string) =>
+            engine.dispatch({
+              type: "thread.activity.append",
+              commandId: command(suffix),
+              threadId,
+              activity: {
+                id: EventId.make(`${scenario}-${suffix}`),
+                tone: "info",
+                kind: "message.delivered",
+                summary: "Message delivered",
+                payload: { messageId },
+                turnId,
+                createdAt: at,
+              },
+              createdAt: at,
+            });
+          yield* receipt(recoveryId, "recovery-receipt", "2026-01-01T00:00:05.000Z");
+          yield* session(turnId, "2026-01-01T00:00:06.000Z", "running");
+          const steerId = MessageId.make(`steer-${scenario}`);
+          yield* engine.dispatch({
+            type: "thread.turn.start",
+            commandId: command("steer"),
+            threadId,
+            message: {
+              messageId: steerId,
+              role: "user",
+              text: "Also preserve the accepted layout.",
+              attachments: [],
+            },
+            interactionMode: "agent",
+            runtimeMode: "full-access",
+            createdAt: "2026-01-01T00:00:07.000Z",
+          });
+          if (scenario !== "new-intent")
+            yield* receipt(steerId, "steer-receipt", "2026-01-01T00:00:08.000Z");
+          const assistantId = MessageId.make(`assistant-${scenario}`);
+          yield* engine.dispatch({
+            type: "thread.message.assistant.delta",
+            commandId: command("delta"),
+            threadId,
+            messageId: assistantId,
+            delta:
+              scenario === "signed-off"
+                ? "Finished.\nAGENT_STOP"
+                : "Understood. I will implement the changes.",
+            turnId,
+            createdAt: "2026-01-01T00:00:09.000Z",
+          });
+          yield* engine.dispatch({
+            type: "thread.message.assistant.complete",
+            commandId: command("complete"),
+            threadId,
+            messageId: assistantId,
+            turnId,
+            createdAt: "2026-01-01T00:00:10.000Z",
+          });
+          yield* session(null, "2026-01-01T00:00:11.000Z", "ready");
+          const turns = yield* sql<{
+            pending_message_id: string | null;
+          }>`SELECT pending_message_id FROM projection_turns WHERE thread_id = ${threadId} AND turn_id = ${turnId}`;
+          assert.strictEqual(
+            turns[0]?.pending_message_id,
+            scenario === "missing-source" ? null : sourceId,
+          );
+          const work = yield* sql<{
+            state: string;
+          }>`SELECT state FROM thread_work_obligations WHERE thread_id = ${threadId} AND source_turn_id = ${turnId} AND kind = 'agent-continuation'`;
+          assert.deepEqual(
+            work,
+            ["signed-off", "new-intent", "missing-source"].includes(scenario)
+              ? []
+              : [{ state: "pending" }],
+          );
+        }
+      }),
+  );
+
   it.effect("atomically replaces active turn work with an authentication pause", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;

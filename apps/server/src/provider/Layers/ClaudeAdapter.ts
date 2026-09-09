@@ -145,6 +145,7 @@ function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
 type PromptQueueItem =
   | {
       readonly type: "message";
+      readonly turnId: TurnId;
       readonly message: SDKUserMessage;
       /**
        * Set when the caller knew which message this prompt came from, so the
@@ -3689,6 +3690,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 provider: PROVIDER,
                 createdAt: stamp.createdAt,
                 threadId,
+                turnId: item.turnId,
                 payload: { messageId },
                 providerRefs: {},
               });
@@ -4840,6 +4842,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
     yield* Queue.offer(context.promptQueue, {
       type: "message",
+      turnId,
       message,
       ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
       ...(input.liveSteerTarget !== undefined ? { liveSteerTarget: input.liveSteerTarget } : {}),
