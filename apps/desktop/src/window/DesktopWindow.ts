@@ -8,6 +8,7 @@ import * as Ref from "effect/Ref";
 import * as Electron from "electron";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
+import { withDesktopRelaunchArguments } from "../app/DesktopLifecycle.logic.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
@@ -169,6 +170,32 @@ function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean, displayName:
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
+const RECOVERY_RESTART_URL = "solla-recovery://restart";
+const RECOVERY_WAIT_URL = "solla-recovery://wait";
+
+export type DesktopRecoveryReason = "unresponsive" | "oom" | "crashed";
+
+export function buildRecoveryOverlayDataUrl(
+  shouldUseDarkColors: boolean,
+  displayName: string,
+  reason: DesktopRecoveryReason,
+): string {
+  const background = shouldUseDarkColors ? "#111113" : "#ffffff";
+  const foreground = shouldUseDarkColors ? "#f4f4f5" : "#18181b";
+  const muted = shouldUseDarkColors ? "#a1a1aa" : "#71717a";
+  const border = shouldUseDarkColors ? "#303036" : "#e4e4e7";
+  const accent = "#f5b82e";
+  const title = reason === "unresponsive" ? "The interface stopped responding" : "Memory overload";
+  const detail =
+    reason === "oom"
+      ? `${displayName}'s interface ran out of memory. Your threads are saved and can resume after a restart.`
+      : reason === "crashed"
+        ? `${displayName}'s interface closed unexpectedly. Your threads are saved and can resume after a restart.`
+        : `${displayName} may be recovering from heavy memory pressure. You can wait, or restart without losing saved thread history.`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><style>html,body{margin:0;height:100%}body{box-sizing:border-box;background:${background};color:${foreground};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;-webkit-user-select:none;user-select:none}.card{width:100%;box-sizing:border-box}.mark{width:42px;height:42px;border-radius:14px;background:color-mix(in srgb,${accent} 18%,transparent);color:${accent};display:grid;place-items:center;font-size:24px;font-weight:700;margin-bottom:18px}.title{font-size:20px;line-height:1.25;font-weight:700}.detail{color:${muted};font-size:13px;line-height:1.5;margin-top:9px}.actions{display:flex;gap:10px;margin-top:24px}.button{box-sizing:border-box;flex:1;text-align:center;text-decoration:none;border:1px solid ${border};border-radius:12px;padding:11px 14px;color:${foreground};font-size:13px;font-weight:650}.primary{background:${accent};border-color:${accent};color:#231900}</style></head><body><main class="card"><div class="mark">!</div><div class="title">${escapeHtml(title)}</div><div class="detail">${escapeHtml(detail)}</div><div class="actions"><a class="button" href="${RECOVERY_WAIT_URL}">Keep waiting</a><a class="button primary" href="${RECOVERY_RESTART_URL}">Restart ${escapeHtml(displayName)}</a></div></main></body></html>`;
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
 export function isSameOriginRendererNavigation(input: {
   readonly applicationUrl: string;
   readonly navigationUrl: string;
@@ -286,10 +313,123 @@ export const make = Effect.gen(function* () {
   // The transient "Connecting to WSL" splash window, tracked separately so it
   // is never mistaken for the real main window.
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+  const recoveryWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
+
+  let recoveryRestartRequested = false;
+  const requestRecoveryRestart = () => {
+    if (recoveryRestartRequested) return;
+    recoveryRestartRequested = true;
+    if (environment.isDevelopment) {
+      Electron.app.exit(75);
+      return;
+    }
+    Electron.app.relaunch({
+      execPath: process.execPath,
+      args: [...withDesktopRelaunchArguments(process.argv.slice(1))],
+    });
+    // The registered before-quit handler performs a bounded backend drain.
+    Electron.app.quit();
+  };
+  let nativeRecoveryDialogOpen = false;
+  const showNativeRecoveryDialog = (
+    parent: Electron.BrowserWindow,
+    reason: DesktopRecoveryReason,
+  ) => {
+    if (nativeRecoveryDialogOpen) return;
+    nativeRecoveryDialogOpen = true;
+    const message =
+      reason === "unresponsive"
+        ? "Solla Code's interface stopped responding."
+        : "Solla Code's interface closed while under memory pressure.";
+    void Electron.dialog
+      .showMessageBox(parent, {
+        type: "warning",
+        title: "Solla Code recovery",
+        message,
+        detail: "Saved thread history is preserved. Restarting will resume active work.",
+        buttons: ["Restart Solla Code", "Keep waiting"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      })
+      .then((result) => {
+        if (result.response === 0) requestRecoveryRestart();
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        nativeRecoveryDialogOpen = false;
+      });
+  };
+
+  const showRecoveryOverlay = Effect.fn("desktop.window.showRecoveryOverlay")(function* (
+    parent: Electron.BrowserWindow,
+    reason: DesktopRecoveryReason,
+  ) {
+    const existing = yield* Ref.get(recoveryWindowRef);
+    if (Option.isSome(existing) && !existing.value.isDestroyed()) {
+      existing.value.show();
+      existing.value.focus();
+      return;
+    }
+
+    const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+    const recovery = yield* electronWindow.create({
+      parent,
+      modal: true,
+      width: 460,
+      height: 300,
+      minWidth: 360,
+      minHeight: 260,
+      show: false,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      autoHideMenuBar: true,
+      backgroundColor: shouldUseDarkColors ? "#111113" : "#ffffff",
+      title: `${environment.displayName} recovery`,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    yield* electronWindow.markAuxiliary(recovery);
+    yield* Ref.set(recoveryWindowRef, Option.some(recovery));
+    recovery.on("closed", () => {
+      void runPromise(Ref.set(recoveryWindowRef, Option.none()));
+    });
+    recovery.once("ready-to-show", () => {
+      if (!recovery.isDestroyed()) recovery.show();
+    });
+    recovery.webContents.on("will-navigate", (event, navigationUrl) => {
+      if (navigationUrl !== RECOVERY_RESTART_URL && navigationUrl !== RECOVERY_WAIT_URL) return;
+      event.preventDefault();
+      if (navigationUrl === RECOVERY_RESTART_URL) {
+        requestRecoveryRestart();
+        return;
+      }
+      if (!recovery.isDestroyed()) recovery.close();
+    });
+    yield* Effect.tryPromise({
+      try: () =>
+        recovery.loadURL(
+          buildRecoveryOverlayDataUrl(shouldUseDarkColors, environment.displayName, reason),
+        ),
+      catch: (cause) =>
+        new ElectronWindow.ElectronWindowOperationError({
+          operation: "reveal-window",
+          platform: environment.platform,
+          windowId: recovery.id,
+          channel: null,
+          cause,
+        }),
+    });
+  });
 
   const dismissConnectingSplash = Effect.gen(function* () {
     const splash = yield* Ref.getAndSet(splashWindowRef, Option.none());
@@ -740,6 +880,36 @@ export const make = Effect.gen(function* () {
           exitCode: details.exitCode,
         }),
       );
+      if (details.reason !== "clean-exit") {
+        void runPromise(
+          showRecoveryOverlay(window, details.reason === "oom" ? "oom" : "crashed").pipe(
+            Effect.catch((error) =>
+              Effect.sync(() => showNativeRecoveryDialog(window, "crashed")).pipe(
+                Effect.andThen(
+                  logWindowWarning("failed to show renderer recovery overlay", {
+                    message: error.message,
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+    });
+    window.on("unresponsive", () => {
+      void runPromise(
+        showRecoveryOverlay(window, "unresponsive").pipe(
+          Effect.catch((error) =>
+            Effect.sync(() => showNativeRecoveryDialog(window, "unresponsive")).pipe(
+              Effect.andThen(
+                logWindowWarning("failed to show unresponsive recovery overlay", {
+                  message: error.message,
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
     });
 
     const revealSubscribers: RevealSubscription[] = [(fire) => window.once("ready-to-show", fire)];
@@ -764,6 +934,16 @@ export const make = Effect.gen(function* () {
       clearDevelopmentLoadRetry();
       clearBoundsPersist();
       void runPromise(electronWindow.clearMain(Option.some(window)));
+      void runPromise(
+        Ref.getAndSet(recoveryWindowRef, Option.none()).pipe(
+          Effect.tap((recovery) =>
+            Option.isSome(recovery) && !recovery.value.isDestroyed()
+              ? Effect.sync(() => recovery.value.close())
+              : Effect.void,
+          ),
+          Effect.asVoid,
+        ),
+      );
     });
 
     return window;

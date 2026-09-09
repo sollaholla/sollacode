@@ -383,6 +383,17 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
   });
 
 describe("DesktopWindow", () => {
+  it("builds a self-contained recovery overlay with restart and wait actions", () => {
+    const url = DesktopWindow.buildRecoveryOverlayDataUrl(true, "Solla Code", "oom");
+    const html = decodeURIComponent(url.slice("data:text/html;charset=utf-8,".length));
+
+    assert.include(html, "Memory overload");
+    assert.include(html, "solla-recovery://restart");
+    assert.include(html, "solla-recovery://wait");
+    assert.include(html, "Your threads are saved");
+    assert.include(html, "default-src 'none'");
+  });
+
   it("forwards the explicit auto-resume argument to the renderer startup URL", () => {
     assert.equal(
       DesktopWindow.withStartupAutoResumeRequest("sollacode://app/", [
