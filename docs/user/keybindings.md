@@ -54,12 +54,19 @@ back. With automatic sending on, the completed transcript is sent immediately. T
 microphone button beside the composer provides the same behavior. Sent voice messages show a
 **Transcribed** badge at the bottom-left of the user bubble.
 
-On current macOS releases, Solla Code first uses Apple's on-device SpeechAnalyzer. Other clients,
-and Macs where that API is unavailable, download the quantized `onnx-community/distil-small.en`
+On current macOS releases, Solla Code first uses Apple's on-device SpeechAnalyzer. Windows desktop
+first tries the installed Windows speech recognizer for your language. It processes the recording
+locally, with no account or model download. Missing language support, uncertain recognition, errors,
+or a timeout fall back to AI using the entire original recording. The native Windows attempt has a
+duration-scaled deadline of at most 30 seconds, plus three seconds for process startup and shutdown.
+
+Clients without usable native recognition download the quantized `onnx-community/distil-small.en`
 model at pinned revision `69be759f982d1d4c5b8a987d4140752742619bd0` and retain it in the
 browser or Electron cache. Local model inference does not use the selected coding provider. The
 fallback model's first use therefore requires internet access, while subsequent use can work from
-the cache.
+the cache. The AI fallback prefers WebGPU where available and retries on WebAssembly if GPU loading
+or inference fails. It keeps the loaded model for subsequent recordings. Windows' newer Windows AI
+speech API is not used by the current installer; this native path uses the installed SAPI recognizer.
 
 Microphone permission is requested on first use. Losing window focus stops the recording, as does
 releasing the key. Recordings are capped at two minutes. If microphone recording, audio decoding,

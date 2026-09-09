@@ -1,14 +1,13 @@
 import { env, pipeline } from "@huggingface/transformers";
 import onnxWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 import { configurePackagedOnnxWasm } from "./pushToTalkOnnx";
+import { createLocalTranscriptionRunner } from "./localTranscription";
 /* eslint-disable unicorn/require-post-message-target-origin -- DedicatedWorkerGlobalScope.postMessage has a transfer-list second argument, not a target origin. */
 import {
   assembleTranscriptionText,
   LOCAL_TRANSCRIPTION_MODEL,
   LONG_FORM_TRANSCRIPTION_OPTIONS,
 } from "./pushToTalkTranscription";
-
-let transcriberPromise: ReturnType<typeof pipeline<"automatic-speech-recognition">> | null = null;
 
 env.useBrowserCache = true;
 
@@ -24,24 +23,31 @@ if (!onnxWasm) {
 }
 configurePackagedOnnxWasm(onnxWasm, onnxWasmUrl, self.location.href);
 
-function getTranscriber(id: number) {
-  transcriberPromise ??= pipeline("automatic-speech-recognition", LOCAL_TRANSCRIPTION_MODEL.id, {
-    // q4 keeps the substantially more accurate 166M-parameter fallback
-    // practical in a browser cache. The full model is never bundled into the
-    // app or sent to a paid API.
-    dtype: LOCAL_TRANSCRIPTION_MODEL.dtype,
-    revision: LOCAL_TRANSCRIPTION_MODEL.revision,
-    progress_callback: (progress) => {
-      if (progress.status !== "progress") return;
-      self.postMessage({
-        id,
-        status: "loading",
-        progress: progress.progress,
-      });
-    },
-  });
-  return transcriberPromise;
-}
+const runner = createLocalTranscriptionRunner({
+  hasWebGpu: typeof navigator !== "undefined" && "gpu" in navigator,
+  create: async (device, id) => {
+    const transcriber = await pipeline(
+      "automatic-speech-recognition",
+      LOCAL_TRANSCRIPTION_MODEL.id,
+      {
+        device,
+        dtype: LOCAL_TRANSCRIPTION_MODEL.dtype,
+        revision: LOCAL_TRANSCRIPTION_MODEL.revision,
+        progress_callback: (progress) => {
+          if (progress.status !== "progress") return;
+          self.postMessage({ id, status: "loading", progress: progress.progress });
+        },
+      },
+    );
+    return Object.assign(
+      async (audio: Float32Array, requestId: number) => {
+        self.postMessage({ id: requestId, status: "transcribing" });
+        return transcriber(audio, LONG_FORM_TRANSCRIPTION_OPTIONS);
+      },
+      { dispose: () => transcriber.dispose() },
+    );
+  },
+});
 
 self.addEventListener(
   "message",
@@ -51,15 +57,12 @@ self.addEventListener(
     >,
   ) => {
     if ("type" in event.data) {
-      const transcriber = await transcriberPromise;
-      await transcriber?.dispose();
+      await runner.dispose();
       self.close();
       return;
     }
     try {
-      const transcriber = await getTranscriber(event.data.id);
-      self.postMessage({ id: event.data.id, status: "transcribing" });
-      const result = await transcriber(event.data.audio, LONG_FORM_TRANSCRIPTION_OPTIONS);
+      const result = await runner.transcribe(event.data.audio, event.data.id);
       self.postMessage({ id: event.data.id, text: assembleTranscriptionText(result) });
     } catch (cause) {
       self.postMessage({

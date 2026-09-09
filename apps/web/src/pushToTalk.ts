@@ -353,11 +353,9 @@ export function transcribeRecordedAudio(
     if (audio.length === 0) return "";
     if (controller.signal.aborted) throw transcriptionCancellationError(controller.signal);
 
-    // macOS 26's SpeechAnalyzer is the primary desktop path: it uses Apple's
-    // current on-device model, needs no account or API key, and avoids the
-    // smallest Whisper checkpoint that made dictation visibly inaccurate.
-    // The bridge is optional so web/mobile/older installs fall through to the
-    // local Transformers.js model below without changing their contract.
+    // Desktop uses the installed OS recognizer first (Apple SpeechAnalyzer or
+    // Windows SAPI). Unsupported, uncertain, and failed native recognition
+    // falls through with the same recording to the local AI model.
     const nativeTranscribe =
       typeof window === "undefined" ? undefined : window.desktopBridge?.transcribeVoice;
     if (nativeTranscribe) {
@@ -375,7 +373,7 @@ export function transcribeRecordedAudio(
         if (nativeResult.status === "success") return nativeResult.text.trim();
       } catch (cause) {
         if (controller.signal.aborted) throw transcriptionCancellationError(controller.signal);
-        // A missing native model, older macOS build, or helper failure is not a
+        // A missing native model, unsupported OS, or helper failure is not a
         // lost dictation: retry the same PCM through the free local fallback.
       }
     }
