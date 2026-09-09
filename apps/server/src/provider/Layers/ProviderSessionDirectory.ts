@@ -117,6 +117,9 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       existingRuntime !== undefined && existingRuntime.providerName !== binding.provider;
     const providerInstanceId =
       binding.providerInstanceId ?? (!providerChanged ? existingRuntime?.providerInstanceId : null);
+    const ownerChanged =
+      providerChanged ||
+      (existingRuntime !== undefined && existingRuntime.providerInstanceId !== providerInstanceId);
     if (providerInstanceId === null || providerInstanceId === undefined) {
       return yield* new ProviderValidationError({
         operation: "ProviderSessionDirectory.upsert",
@@ -136,7 +139,9 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       resumeCursor:
         binding.resumeCursor !== undefined
           ? binding.resumeCursor
-          : (existingRuntime?.resumeCursor ?? null),
+          : ownerChanged
+            ? null
+            : (existingRuntime?.resumeCursor ?? null),
       runtimePayload: mergeRuntimePayload(
         existingRuntime?.runtimePayload ?? null,
         binding.runtimePayload,

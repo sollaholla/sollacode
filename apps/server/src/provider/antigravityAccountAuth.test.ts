@@ -35,7 +35,19 @@ describe("Antigravity native account switching", () => {
     expect(
       antigravityAuthScreen("Terms of Service & Data Use https://policies.google.com/terms"),
     ).toMatchObject({ url: null, needsSetup: true });
-    expect(antigravityAuthScreen("Gemini API key\n? for shortcuts").apiKeyMode).toBe(true);
+    expect(antigravityAuthScreen("Gemini API Key Mode\n? for shortcuts").apiKeyMode).toBe(true);
+    expect(antigravityAuthScreen("Google OAuth\nGemini API key")).toMatchObject({
+      oauthChoice: true,
+      apiKeyMode: false,
+    });
+    expect(
+      antigravityAuthScreen(
+        `${authUrl}\nIf you aren't automatically redirected, paste the authorization code below:`,
+      ),
+    ).toMatchObject({
+      url: authUrl,
+      waitingForCode: true,
+    });
   });
 
   it.live.each(["success", "cancel", "rejected", "unverified", "setup", "api-key"] as const)(
@@ -80,7 +92,11 @@ describe("Antigravity native account switching", () => {
           },
           onExit: () => disposeExit,
           write: vi.fn((data: string) => {
-            if (data === "/logout\r") emit(`${authUrl}\nEnter the authorization code:`);
+            if (data === "/logout\r") emit("Google OAuth\nGemini API key");
+            if (data === "\r")
+              emit(
+                `${authUrl}\nIf you aren't automatically redirected, paste the authorization code below:`,
+              );
             if (data === "private-fixture-code\r")
               emit(
                 scenario === "rejected"
@@ -113,7 +129,7 @@ describe("Antigravity native account switching", () => {
         }
         const fiber = yield* run.pipe(Effect.result, Effect.forkScoped);
         yield* Deferred.await(registered);
-        emit(scenario === "api-key" ? "Gemini API key\n? for shortcuts" : "? for shortcuts");
+        emit(scenario === "api-key" ? "Gemini API Key Mode\n? for shortcuts" : "? for shortcuts");
         if (scenario === "cancel") {
           yield* Fiber.interrupt(fiber);
         } else {

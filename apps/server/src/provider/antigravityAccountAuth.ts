@@ -52,10 +52,11 @@ export function antigravityAuthScreen(output: string) {
   const url = text.match(/https:\/\/[^\s<>"']+(?:oauth|authorize|auth\/)[^\s<>"']*/i)?.[0] ?? null;
   return {
     url,
-    waitingForCode: /Enter the authorization code:/i.test(text),
+    waitingForCode: /Enter the authorization code:|paste the authorization code below:/i.test(text),
     authenticated: /Authentication successful!/i.test(text),
     ready: /\? for shortcuts/.test(text),
-    apiKeyMode: /Gemini API key|Gemini API Key Mode/.test(text),
+    oauthChoice: /Google OAuth/.test(text) && !url,
+    apiKeyMode: /Gemini API Key Mode/.test(text),
     failed: /Authentication failed|Invalid authorization code/i.test(text),
     needsSetup: /Terms of Service & Data Use|Here's the change:[\s\S]*\[Next\]/.test(text),
   };
@@ -124,6 +125,7 @@ export function makeAntigravityAccountAuth(config: {
       let logoutSent = false;
       let finished = false;
       let trustedAuthDirectory = false;
+      let selectedOAuth = false;
       const complete = (error?: Error) => {
         if (finished) return;
         finished = true;
@@ -132,6 +134,7 @@ export function makeAntigravityAccountAuth(config: {
       const disposeData = child.onData((data) => {
         output = (output + data).slice(-32_000);
         const screen = antigravityAuthScreen(output);
+        if (finished) return;
         if (
           !trustedAuthDirectory &&
           output.includes("Do you trust the contents of this project?")
@@ -154,6 +157,13 @@ export function makeAntigravityAccountAuth(config: {
           complete(
             authError("Complete Antigravity CLI setup in a host terminal, then retry Switch user."),
           );
+          return;
+        }
+        if (screen.oauthChoice && !selectedOAuth) {
+          selectedOAuth = true;
+          output = "";
+          // Google OAuth is the native first authentication choice after /logout.
+          child.write("\r");
           return;
         }
         if (screen.ready && !sawAuthUrl && !logoutSent) {
