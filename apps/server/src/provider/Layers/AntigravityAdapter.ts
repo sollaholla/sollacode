@@ -7,6 +7,7 @@ import {
   type ProviderSession,
   type ThreadId,
 } from "@t3tools/contracts";
+import { getModelSelectionStringOptionValue, splitAntigravityModel } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -42,6 +43,7 @@ interface SessionContext {
   active?: ActiveTurn | undefined;
   /** Token totals across the native conversation, so the meter can show what this thread has processed. */
   usage: AntigravityUsageTally;
+  effort?: string | undefined;
 }
 
 function conversationId(cursor: unknown): string | undefined {
@@ -107,7 +109,11 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    sessions.set(input.threadId, { session, usage: EMPTY_ANTIGRAVITY_USAGE_TALLY });
+    sessions.set(input.threadId, {
+      session,
+      usage: EMPTY_ANTIGRAVITY_USAGE_TALLY,
+      effort: getModelSelectionStringOptionValue(input.modelSelection, "effort"),
+    });
     return session;
   });
 
@@ -130,6 +136,13 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           );
         if (!input.input?.trim()) return yield* error("sendTurn", "A text prompt is required.");
         const model = input.modelSelection?.model ?? context.session.model;
+        const selectedEffort =
+          getModelSelectionStringOptionValue(input.modelSelection, "effort") ??
+          (input.modelSelection ? undefined : context.effort);
+        const effort = selectedEffort ?? (model ? splitAntigravityModel(model).effort : undefined);
+        if (effort !== undefined && !["low", "medium", "high"].includes(effort)) {
+          return yield* error("sendTurn", "Antigravity effort must be low, medium, or high.");
+        }
         const active: ActiveTurn = {
           id: TurnId.make(`agy-${config.instanceId}-${now()}-${++sequence}`),
           interrupted: false,
@@ -139,6 +152,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         const args = [
           ...buildAntigravityStreamArgs({
             model,
+            effort,
             conversationId: conversationId(context.session.resumeCursor),
             skipPermissions: context.session.runtimeMode === "full-access",
           }),
@@ -167,6 +181,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             }),
           );
           if (active.interrupted) return;
+          context.effort = effort;
           context.session = {
             ...context.session,
             status: "running",

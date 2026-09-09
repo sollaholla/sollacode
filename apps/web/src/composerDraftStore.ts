@@ -29,7 +29,11 @@ import * as Schema from "effect/Schema";
 import * as Equal from "effect/Equal";
 import * as Effect from "effect/Effect";
 import { DeepMutable } from "effect/Types";
-import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
+import {
+  createModelSelection,
+  normalizeModelSlug,
+  splitAntigravityModel,
+} from "@t3tools/shared/model";
 import { useMemo } from "react";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
@@ -1046,12 +1050,30 @@ export function deriveEffectiveComposerModelState(input: {
       normalizeModelSlug(activeSelection.model, input.selectedProvider) ??
       activeSelection.model)
     : baseModel;
-  const modelOptions =
+  let modelOptions =
     modelSelectionByProviderToOptions(input.draft?.modelSelectionByProvider) ??
     providerSelectionsFromModelSelection(input.threadModelSelection) ??
     providerSelectionsFromModelSelection(input.projectModelSelection) ??
     null;
 
+  // Resolve the family for the picker without discarding an old saved variant's effort.
+  if (input.selectedProvider === "antigravity") {
+    const source = activeSelection ?? input.threadModelSelection ?? input.projectModelSelection;
+    const instanceId = input.selectedInstanceId ?? ProviderInstanceId.make(input.selectedProvider);
+    if (
+      source?.instanceId === instanceId &&
+      normalizeModelSlug(source.model, input.selectedProvider) === selectedModel
+    ) {
+      const effort = splitAntigravityModel(source.model).effort;
+      const options = modelOptions?.[instanceId] ?? [];
+      if (effort && !options.some((option) => option.id === "effort")) {
+        modelOptions = {
+          ...modelOptions,
+          [instanceId]: [...options, { id: "effort", value: effort }],
+        };
+      }
+    }
+  }
   return {
     selectedModel,
     modelOptions,

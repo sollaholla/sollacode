@@ -4,6 +4,8 @@ import type {
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
 import {
+  antigravityCapabilitiesForSelection,
+  normalizeModelSlug,
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
@@ -93,12 +95,33 @@ export function buildModelOptions(
   }
 
   if (fallbackModelSelection) {
-    const key = `${fallbackModelSelection.instanceId}:${fallbackModelSelection.model}`;
+    const provider = config?.providers.find(
+      (entry) => entry.instanceId === fallbackModelSelection.instanceId,
+    );
+    const model = provider
+      ? normalizeModelSlug(fallbackModelSelection.model, provider.driver)
+      : fallbackModelSelection.model;
+    const key = `${fallbackModelSelection.instanceId}:${model}`;
     const existing = options.get(key);
     if (existing) {
       options.set(key, {
         ...existing,
-        selection: normalizeSelectionOptions(fallbackModelSelection, existing.capabilities),
+        capabilities:
+          provider?.driver === "antigravity"
+            ? (antigravityCapabilitiesForSelection(
+                existing.capabilities,
+                fallbackModelSelection.model,
+              ) ?? null)
+            : existing.capabilities,
+        selection: normalizeSelectionOptions(
+          fallbackModelSelection,
+          provider?.driver === "antigravity"
+            ? (antigravityCapabilitiesForSelection(
+                existing.capabilities,
+                fallbackModelSelection.model,
+              ) ?? null)
+            : existing.capabilities,
+        ),
       });
     } else {
       const providerLabel = fallbackModelSelection.instanceId;

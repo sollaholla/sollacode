@@ -2,7 +2,7 @@
 
 Solla Code runs Google's `agy` CLI on the environment host. Install and sign in using the [official CLI instructions](https://www.antigravity.google/docs/cli/), then configure the Antigravity provider instance in Settings. Remote environments need their own installation and credentials.
 
-The driver reads the executable version and available models from the installed CLI. Custom models can also be supplied in provider settings. Authentication status is not inferred from executable presence; if a request fails authentication, sign in through the CLI on that host.
+The driver reads the executable version and available models from the installed CLI. Custom models can also be supplied in provider settings. Authentication is verified using the native, non-generating `agy --print /usage` command. Executable presence or a model listing is not authentication proof; a transient status-check failure remains unknown.
 
 ## Supported behavior
 
@@ -10,6 +10,16 @@ The driver reads the executable version and available models from the installed 
 - Native conversation resume across turns using the CLI's conversation ID.
 - Plan and build interaction modes, with full-access permission bypass only when the thread explicitly selects full access.
 - Turn interruption and session shutdown. Solla owns the spawned child and forces termination after a two-second graceful shutdown window.
+
+## Accounts and effort
+
+**Switch user** in the composer account control uses AGY's native Google login. It runs a separate, scoped terminal process in an empty temporary directory, leaving existing provider turns alone. The remote/SSH login flow supplies an authorization link and code entry, so a phone can finish sign-in without opening another browser on the host. Cancellation closes only this auth process. Codes are sent directly to it and are not stored in account-switch state or emitted as tool activity.
+
+Run `agy` on the host once to review its initial terms and optional data-sharing choices. Solla does not accept these for you; an unfinished setup fails before logging out the current account. Gemini API key mode has no Google account to switch and returns an actionable explanation. Solla confirms native login completion and rechecks `/usage` before reporting success. AGY does not report an account email in that command, so the account label is **Google account** rather than an inferred identity.
+
+The model picker shows each native model family once. Its **Effort** selector includes only levels advertised by `agy models`, such as Low/Medium/High for Flash and Low/High for Pro. New selections default to High when supported. Existing saved suffixes such as `gemini-3.8-flash-low` retain Low; an explicit effort choice overrides the suffix. Native models without effort variants keep their existing names and have no invented effort controls.
+
+The account runner and grouped model selection have focused fixture tests against the 1.1.28 command shapes. Native `--model <family> --effort <level> --print /model` resolution was checked without generating a model turn. Fixture authentication success is not proof of a real Google OAuth exchange; that final exchange still requires the account owner's sign-in and one-time CLI setup.
 
 ## Transport limits
 

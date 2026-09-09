@@ -10,6 +10,7 @@ import {
 import {
   createModelSelection,
   normalizeCustomModelSlug,
+  normalizeModelSlug,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
 import { selectModelWithHighEffort } from "@t3tools/client-runtime/state/model-selection";
@@ -181,7 +182,10 @@ export function getAppModelOptions(
   const defaultInstanceId = defaultInstanceIdForDriver(provider);
   const customModels = readInstanceCustomModels(settings, defaultInstanceId, provider);
   for (const slug of normalizeCustomModelSlugs(customModels, builtInModelSlugs)) {
-    if (seen.has(slug)) {
+    if (
+      seen.has(slug) ||
+      (provider === "antigravity" && seen.has(normalizeModelSlug(slug, provider) ?? slug))
+    ) {
       continue;
     }
 
@@ -224,7 +228,11 @@ export function getAppModelOptionsForInstance(
 
   const customModels = readInstanceCustomModels(settings, entry.instanceId, entry.driverKind);
   for (const slug of normalizeCustomModelSlugs(customModels, builtInModelSlugs)) {
-    if (seen.has(slug)) {
+    if (
+      seen.has(slug) ||
+      (entry.driverKind === "antigravity" &&
+        seen.has(normalizeModelSlug(slug, entry.driverKind) ?? slug))
+    ) {
       continue;
     }
 
@@ -319,7 +327,8 @@ export function resolveAppModelSelectionState(
     const provider = entry.driverKind;
     const { modelOptionsForDispatch } = getComposerProviderState({
       provider,
-      model,
+      // Read legacy AGY effort before returning the canonical family slug.
+      model: provider === "antigravity" && selectedModel ? selectedModel : model,
       models: entry.models,
       modelOptions: selectedEntry ? selection.options : undefined,
     });

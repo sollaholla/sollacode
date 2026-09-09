@@ -11,6 +11,9 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { PtyAdapter } from "../terminal/PtyAdapter.ts";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -18,7 +21,11 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
-import type { ProviderAccountAuthCapability, ProviderAccountAuthStatus } from "./ProviderDriver.ts";
+import type {
+  ProviderAccountAuthCapability,
+  ProviderCommandAccountAuthCapability,
+  ProviderAccountAuthStatus,
+} from "./ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "./Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "./Services/ProviderRegistry.ts";
 
@@ -138,6 +145,9 @@ export const make = Effect.fn("ProviderAccountSwitch.make")(function* () {
   );
   const providerRegistry = yield* ProviderRegistry;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const authFs = yield* FileSystem.FileSystem;
+  const authPath = yield* Path.Path;
+  const authPty = Option.getOrUndefined(yield* Effect.serviceOption(PtyAdapter));
   const flows = new Map<ProviderInstanceId, AccountSwitchFlow>();
 
   const updateState = (
@@ -157,7 +167,7 @@ export const make = Effect.fn("ProviderAccountSwitch.make")(function* () {
     });
 
   const spawnCommand = Effect.fn("ProviderAccountSwitch.spawnCommand")(function* (input: {
-    readonly capability: ProviderAccountAuthCapability;
+    readonly capability: ProviderCommandAccountAuthCapability;
     readonly args: ReadonlyArray<string>;
   }) {
     const resolved = yield* resolveSpawnCommand(input.capability.binaryPath, input.args, {
@@ -193,7 +203,7 @@ export const make = Effect.fn("ProviderAccountSwitch.make")(function* () {
 
   const runCollectedCommand = Effect.fn("ProviderAccountSwitch.runCollectedCommand")(
     function* (input: {
-      readonly capability: ProviderAccountAuthCapability;
+      readonly capability: ProviderCommandAccountAuthCapability;
       readonly args: ReadonlyArray<string>;
     }) {
       return yield* Effect.gen(function* () {
@@ -225,7 +235,7 @@ export const make = Effect.fn("ProviderAccountSwitch.make")(function* () {
   );
 
   const readAuthenticatedStatus = Effect.fn("ProviderAccountSwitch.readAuthenticatedStatus")(
-    function* (capability: ProviderAccountAuthCapability) {
+    function* (capability: ProviderCommandAccountAuthCapability) {
       let lastStatus: ProviderAccountAuthStatus = {
         loggedIn: false,
         accountLabel: null,
@@ -248,7 +258,7 @@ export const make = Effect.fn("ProviderAccountSwitch.make")(function* () {
   const runLoginCommand = Effect.fn("ProviderAccountSwitch.runLoginCommand")(function* (input: {
     readonly instanceId: ProviderInstanceId;
     readonly switchId: string;
-    readonly capability: ProviderAccountAuthCapability;
+    readonly capability: ProviderCommandAccountAuthCapability;
   }) {
     return yield* Effect.gen(function* () {
       const child = yield* spawnCommand({
@@ -269,7 +279,7 @@ export const make = Effect.fn("ProviderAccountSwitch.make")(function* () {
             Effect.mapError(
               (cause) =>
                 new ProviderAccountSwitchFlowError({
-                  message: "The authentication code could not be sent to Claude Code.",
+                  message: "The authentication code could not be sent to the provider.",
                   cause,
                 }),
             ),
@@ -343,6 +353,70 @@ export const make = Effect.fn("ProviderAccountSwitch.make")(function* () {
     readonly capability: ProviderAccountAuthCapability;
     readonly wasAuthenticated: boolean;
   }) {
+    if ("switchAccount" in input.capability) {
+      if (!authPty)
+        return yield* new ProviderAccountSwitchFlowError({
+          message: "Interactive provider sign-in is unavailable in this environment.",
+        });
+      const status = yield* input.capability
+        .switchAccount({
+          wasAuthenticated: input.wasAuthenticated,
+          onProgress: (progress) => {
+            const flow = flows.get(input.instanceId);
+            if (!flow || flow.state.id !== input.switchId || !activeStatuses.has(flow.state.status))
+              return;
+            flow.state = {
+              ...flow.state,
+              ...(progress.authUrl ? { authUrl: progress.authUrl } : {}),
+              status: progress.waitingForCode ? "waiting_for_code" : "waiting_for_authentication",
+              message: progress.waitingForCode
+                ? "Open the sign-in link, complete Google sign-in, and paste the authorization code below."
+                : "Complete sign-in in your browser.",
+              updatedAt: nowIso(),
+            };
+          },
+          onSubmitCode: (submit) => {
+            const flow = flows.get(input.instanceId);
+            if (flow?.state.id === input.switchId)
+              flow.submitAuthCode = (code) =>
+                submit(code).pipe(
+                  Effect.mapError(
+                    () =>
+                      new ProviderAccountSwitchFlowError({
+                        message: "The provider could not accept the authentication code.",
+                      }),
+                  ),
+                );
+          },
+        })
+        .pipe(
+          Effect.provideService(FileSystem.FileSystem, authFs),
+          Effect.provideService(Path.Path, authPath),
+          Effect.provideService(PtyAdapter, authPty),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.scoped,
+          Effect.ensuring(
+            Effect.sync(() => {
+              const flow = flows.get(input.instanceId);
+              if (flow?.state.id === input.switchId) flow.submitAuthCode = null;
+            }),
+          ),
+          Effect.mapError(
+            (cause) => new ProviderAccountSwitchFlowError({ message: cause.message }),
+          ),
+        );
+      if (!status.loggedIn)
+        return yield* new ProviderAccountSwitchFlowError({
+          message: "The provider did not confirm authentication.",
+        });
+      yield* providerRegistry.refreshInstance(input.instanceId);
+      yield* updateState(input.instanceId, input.switchId, {
+        status: "succeeded",
+        currentAccountLabel: status.accountLabel,
+        message: "Signed in successfully.",
+      });
+      return;
+    }
     if (input.wasAuthenticated) {
       const logout = yield* runCollectedCommand({
         capability: input.capability,
@@ -359,7 +433,7 @@ export const make = Effect.fn("ProviderAccountSwitch.make")(function* () {
       status: "starting_login",
       message: "Starting provider login…",
     });
-    yield* runLoginCommand(input);
+    yield* runLoginCommand({ ...input, capability: input.capability });
     yield* updateState(input.instanceId, input.switchId, {
       status: "refreshing_account",
       message: "Verifying the new account…",
@@ -501,13 +575,13 @@ export const make = Effect.fn("ProviderAccountSwitch.make")(function* () {
     if (flow.state.status !== "waiting_for_code" || !flow.submitAuthCode) {
       return yield* new ProviderAccountSwitchError({
         instanceId: input.instanceId,
-        reason: "Claude Code is not waiting for an authentication code.",
+        reason: "The provider is not waiting for an authentication code.",
       });
     }
 
     yield* updateState(input.instanceId, input.switchId, {
       status: "waiting_for_authentication",
-      message: "Authentication code sent. Waiting for Claude Code…",
+      message: "Authentication code sent. Waiting for the provider…",
     });
     yield* flow.submitAuthCode(code).pipe(
       Effect.catch((cause) =>

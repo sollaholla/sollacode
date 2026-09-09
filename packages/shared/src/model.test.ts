@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind, ProviderInstanceId, type ModelCapabilities } from "@t3tools/contracts";
 
 import {
+  groupAntigravityModels,
+  antigravityCapabilitiesForSelection,
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
@@ -153,5 +155,42 @@ describe("model slug normalization", () => {
 
     expect(normalizeModelSlug("opus", claude)).toBe("claude-opus-5");
     expect(normalizeCustomModelSlug(" opus ")).toBe("opus");
+  });
+});
+
+describe("Antigravity model families", () => {
+  const models = groupAntigravityModels([
+    { slug: "gemini-flash-high", label: "Gemini Flash (High)" },
+    { slug: "gemini-flash-low", label: "Gemini Flash (Low)" },
+    { slug: "gemini-flash-medium", label: "Gemini Flash (Medium)" },
+    { slug: "gemini-pro-high", label: "Gemini Pro (High)" },
+    { slug: "gemini-pro-low", label: "Gemini Pro (Low)" },
+    { slug: "claude-opus-thinking", label: "Claude Opus (Thinking)" },
+  ]);
+  it("groups native variants once and exposes only supported effort levels", () => {
+    expect(models.map((model) => model.slug)).toEqual([
+      "gemini-flash",
+      "gemini-pro",
+      "claude-opus-thinking",
+    ]);
+    expect(models[0]?.name).toBe("Gemini Flash");
+    const descriptor = models[1]?.capabilities?.optionDescriptors?.[0];
+    expect(descriptor).toMatchObject({
+      id: "effort",
+      currentValue: "high",
+      options: [{ id: "low" }, { id: "high" }],
+    });
+    expect(models[2]?.capabilities).toBeNull();
+  });
+  it("preserves a legacy variant effort and lets explicit options override it", () => {
+    const caps = antigravityCapabilitiesForSelection(models[0]?.capabilities, "gemini-flash-low");
+    expect(getProviderOptionDescriptors({ caps, selections: undefined })[0]?.currentValue).toBe(
+      "low",
+    );
+    expect(
+      getProviderOptionDescriptors({ caps, selections: [{ id: "effort", value: "medium" }] })[0]
+        ?.currentValue,
+    ).toBe("medium");
+    expect(models[0]?.capabilities?.optionDescriptors?.[0]?.currentValue).toBe("high");
   });
 });

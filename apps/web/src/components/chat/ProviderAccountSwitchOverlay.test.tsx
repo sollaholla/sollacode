@@ -49,34 +49,37 @@ describe("ProviderAccountSwitchOverlay", () => {
     expect(markup).toContain("Don’t see the browser? Open sign-in link");
   });
 
-  it("shows a paste field when Claude Code requests an authentication code", () => {
-    const waitingForCode = {
-      ...baseState,
-      driver: ProviderDriverKind.make("claudeAgent"),
-      status: "waiting_for_code",
-      message: "Paste the authentication code shown in your browser.",
-    } satisfies ProviderAccountSwitchState;
-    const markup = renderToStaticMarkup(
-      <ProviderAccountSwitchOverlay
-        state={waitingForCode}
-        provider={null}
-        cancelling={false}
-        submittingCode={false}
-        onCancel={vi.fn()}
-        onDismiss={vi.fn()}
-        onOpenAuthLink={vi.fn()}
-        onRetry={vi.fn()}
-        onSubmitAuthCode={vi.fn(async () => true)}
-      />,
-    );
+  it.each(["claudeAgent", "antigravity"])(
+    "shows a paste field when %s requests an authentication code",
+    (driver) => {
+      const waitingForCode = {
+        ...baseState,
+        driver: ProviderDriverKind.make(driver),
+        status: "waiting_for_code",
+        message: "Paste the authentication code shown in your browser.",
+      } satisfies ProviderAccountSwitchState;
+      const markup = renderToStaticMarkup(
+        <ProviderAccountSwitchOverlay
+          state={waitingForCode}
+          provider={null}
+          cancelling={false}
+          submittingCode={false}
+          onCancel={vi.fn()}
+          onDismiss={vi.fn()}
+          onOpenAuthLink={vi.fn()}
+          onRetry={vi.fn()}
+          onSubmitAuthCode={vi.fn(async () => true)}
+        />,
+      );
 
-    expect(isProviderAccountSwitchActive(waitingForCode)).toBe(true);
-    expect(markup).toContain("max-w-xl");
-    expect(markup).toContain("Enter authentication code");
-    expect(markup).toContain('name="authenticationCode"');
-    expect(markup).toContain("Paste authentication code");
-    expect(markup).toContain("Continue sign-in");
-  });
+      expect(isProviderAccountSwitchActive(waitingForCode)).toBe(true);
+      expect(markup).toContain("max-w-xl");
+      expect(markup).toContain("Enter authentication code");
+      expect(markup).toContain('name="authenticationCode"');
+      expect(markup).toContain("Paste authentication code");
+      expect(markup).toContain("Continue sign-in");
+    },
+  );
 
   it("shows success without leaving an active cancel action", () => {
     const succeeded = {

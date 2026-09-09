@@ -99,7 +99,27 @@ export interface ProviderAccountAuthStatus {
   readonly accountLabel: string | null;
 }
 
-export interface ProviderAccountAuthCapability {
+export interface ProviderInteractiveAccountAuthCapability {
+  readonly switchAccount: (input: {
+    readonly wasAuthenticated: boolean;
+    readonly onProgress: (progress: { authUrl?: string; waitingForCode?: boolean }) => void;
+    readonly onSubmitCode: (submit: (code: string) => Effect.Effect<void, Error>) => void;
+  }) => Effect.Effect<
+    ProviderAccountAuthStatus,
+    Error,
+    | Scope.Scope
+    | import("effect/FileSystem").FileSystem
+    | import("effect/Path").Path
+    | import("../terminal/PtyAdapter.ts").PtyAdapter
+    | import("effect/unstable/process/ChildProcessSpawner").ChildProcessSpawner
+  >;
+}
+
+export type ProviderAccountAuthCapability =
+  | ProviderCommandAccountAuthCapability
+  | ProviderInteractiveAccountAuthCapability;
+
+export interface ProviderCommandAccountAuthCapability {
   readonly binaryPath: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly logoutArgs: ReadonlyArray<string>;

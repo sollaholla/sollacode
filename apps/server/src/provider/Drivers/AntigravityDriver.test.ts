@@ -53,3 +53,45 @@ process.exit(failed ? 4 : 0);
     expect(snapshot.models).toHaveLength(scenario.models);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.live.each([0, 4])(
+  "checks native authentication exit status %s and groups effort variants",
+  (exitCode) =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "solla-agy-auth-probe-")),
+        ),
+        (dir) => Effect.promise(() => NodeFSP.rm(dir, { recursive: true, force: true })),
+      );
+      const binaryPath = NodePath.join(dir, "agy");
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          binaryPath,
+          `#!/usr/bin/env node
+const arg = process.argv[2];
+if (arg === '--version') console.log('agy 1.1.28');
+else if (arg === 'models') console.log('gemini-flash-high\\tGemini Flash (High)\\ngemini-flash-low\\tGemini Flash (Low)');
+else {console.log('Gemini Models\\tWeekly Limit Remaining\\t0%\\t2026-09-11T18:30:48Z'); process.exit(${exitCode});}
+`,
+          { mode: 0o755 },
+        ),
+      );
+      const instance = yield* AntigravityDriver.create({
+        instanceId: ProviderInstanceId.make("agy-probe"),
+        displayName: undefined,
+        environment: [],
+        enabled: true,
+        config: {
+          ...AntigravityDriver.defaultConfig(),
+          binaryPath,
+          customModels: ["gemini-flash", "gemini-flash-low"],
+        },
+      }).pipe(Effect.provide(layerTest(dir, { prefix: "solla-agy-auth-probe-home-" })));
+      const snapshot = yield* instance.snapshot.getSnapshot;
+      expect(snapshot.auth.status).toBe(exitCode === 0 ? "authenticated" : "unknown");
+      expect(snapshot.models).toHaveLength(1);
+      expect(snapshot.models[0]?.slug).toBe("gemini-flash");
+      expect(instance.accountAuth).toHaveProperty("switchAccount");
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
