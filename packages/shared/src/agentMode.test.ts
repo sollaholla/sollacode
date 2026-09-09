@@ -347,6 +347,15 @@ describe("isTerminalProviderRefusal", () => {
     expect(isTerminalProviderRefusal("")).toBe(false);
   });
 
+  it("stops automatic retries after AGY rejects the account quota", () => {
+    expect(
+      isTerminalProviderRefusal(
+        "Antigravity was rejected by Google with RESOURCE_EXHAUSTED (429). Check the account quota or switch accounts before retrying.",
+      ),
+    ).toBe(true);
+    expect(isTerminalProviderRefusal("HTTP 429: retry in one second")).toBe(false);
+  });
+
   // Same guard as the authentication check: prose is not a status line.
   it("ignores an agent merely discussing a refusal", () => {
     expect(isTerminalProviderRefusal("x".repeat(401) + " refusing to start")).toBe(false);

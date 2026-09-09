@@ -31,15 +31,59 @@ const authError = (message: string) => new AntigravityAccountAuthError({ message
 /** /usage is a native, non-generating command. A model listing alone is not auth proof. */
 export function parseAntigravityAuthStatus(
   stdout: string,
-  _stderr: string,
+  diagnostics: string,
 ): ProviderAccountAuthStatus {
   const loggedIn = stdout
     .split(/\r?\n/)
     .some((line) =>
       /^[^\t]+\t[^\t]*(?:Limit|Quota) Remaining\t\d+(?:\.\d+)?%\t\d{4}-\d{2}-\d{2}T/.test(line),
     );
-  return { loggedIn, accountLabel: null };
+  const accountLabel = loggedIn
+    ? (diagnostics.match(/OAuth: authenticated successfully as ([^\s<>]+@[^\s<>]+)/)?.[1] ?? null)
+    : null;
+  return { loggedIn, accountLabel };
 }
+
+/** Keep native diagnostics in a disposable file and expose only verified account identity. */
+export const readAntigravityAuthStatus = Effect.fn("readAntigravityAuthStatus")(function* (config: {
+  binaryPath: string;
+  environment: NodeJS.ProcessEnv;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "solla-agy-status-" });
+      const logPath = path.join(directory, "native.log");
+      const command = yield* resolveSpawnCommand(
+        config.binaryPath,
+        ["--print", "/usage", "--print-timeout", "10s", "--log-file", logPath],
+        { env: config.environment },
+      );
+      const result = yield* spawnAndCollect(
+        config.binaryPath,
+        ChildProcess.make(command.command, command.args, {
+          env: config.environment,
+          extendEnv: false,
+          shell: command.shell,
+          cwd: directory,
+          forceKillAfter: "2 seconds",
+        }),
+      ).pipe(Effect.timeout("15 seconds"));
+      const diagnostics = yield* fs.readFileString(logPath).pipe(Effect.orElseSucceed(() => ""));
+      const status = parseAntigravityAuthStatus(
+        result.code === 0 ? result.stdout : "",
+        diagnostics,
+      );
+      return {
+        ...status,
+        unauthenticated: /authentication required|not signed in/i.test(
+          result.stdout + result.stderr,
+        ),
+      };
+    }),
+  );
+});
 
 export function antigravityAuthScreen(output: string) {
   const text = output
@@ -52,7 +96,10 @@ export function antigravityAuthScreen(output: string) {
   const url = text.match(/https:\/\/[^\s<>"']+(?:oauth|authorize|auth\/)[^\s<>"']*/i)?.[0] ?? null;
   return {
     url,
-    waitingForCode: /Enter the authorization code:|paste the authorization code below:/i.test(text),
+    waitingForCode:
+      /Enter\s+the\s+authorization\s+code:|paste\s+the\s+authorization\s+code\s+below:|copy\s+the\s+code\s+displayed\s+in\s+the\s+browser\s+and\s+paste\s+it\s+below:/i.test(
+        text,
+      ),
     authenticated: /Authentication successful!/i.test(text),
     ready: /\? for shortcuts/.test(text),
     oauthChoice: /Google OAuth/.test(text) && !url,
@@ -230,30 +277,14 @@ export function makeAntigravityAccountAuth(config: {
           ),
         ),
       );
-      const statusCommand = yield* resolveSpawnCommand(
-        config.binaryPath,
-        ["--print", "/usage", "--print-timeout", "10s"],
-        { env: config.environment },
-      );
-      const result = yield* spawnAndCollect(
-        config.binaryPath,
-        ChildProcess.make(statusCommand.command, statusCommand.args, {
-          env: config.environment,
-          extendEnv: false,
-          shell: statusCommand.shell,
-          cwd: authDirectory,
-          forceKillAfter: "2 seconds",
-        }),
-      ).pipe(
-        Effect.timeout("15 seconds"),
+      const status = yield* readAntigravityAuthStatus(config).pipe(
         Effect.mapError(() =>
           authError(
             "Could not verify the new Antigravity account. Refresh provider status after checking the CLI sign-in.",
           ),
         ),
       );
-      const status = parseAntigravityAuthStatus(result.stdout, result.stderr);
-      if (result.code !== 0 || !status.loggedIn)
+      if (!status.loggedIn)
         return yield* authError(
           "Antigravity did not confirm an authenticated account after login.",
         );

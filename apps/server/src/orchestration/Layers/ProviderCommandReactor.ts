@@ -3640,12 +3640,14 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       reason: string,
       attempt: number,
     ): Effect.Effect<ThreadWorkExecutionOutcome> =>
-      attempt >= MAX_FAILURE_RETRY_ATTEMPTS
-        ? Effect.succeed({
-            state: "cancelled" as const,
-            reason: `Gave up after ${attempt} failed attempts: ${reason}`,
-          })
-        : retryWorkAfter15Seconds(reason);
+      isTerminalProviderRefusal(reason)
+        ? Effect.succeed({ state: "cancelled" as const, reason })
+        : attempt >= MAX_FAILURE_RETRY_ATTEMPTS
+          ? Effect.succeed({
+              state: "cancelled" as const,
+              reason: `Gave up after ${attempt} failed attempts: ${reason}`,
+            })
+          : retryWorkAfter15Seconds(reason);
 
     const retryTransientUpstreamWork = (
       reason: string,

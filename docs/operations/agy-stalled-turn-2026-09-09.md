@@ -27,3 +27,13 @@ No production OAuth exchange or browser interaction was automated. Native login 
 ## Installed Mac 0.1.492
 
 The final archive completed at 14:27:14 UTC. The guarded installer reported healthy at 14:27:42 UTC. Installed Info.plist reads 0.1.492, and the installed server bundle contains the quota rejection, OAuth choice, alternate code prompt, native acceptance, and project-directory changes. The replacement main process launched with `--auto-resume`; its child backend returned HTTP 200 on port 3773. The source change is committed as `dd889b478`. This installed-artifact and startup check does not establish a successful production AGY turn or completed Google account switch.
+
+## Follow-up for 0.1.493
+
+The 14:35 UTC “Hello” turn did hit the new 429 rejection path, but the scheduler treated it as a generic recoverable failure and cleared the session error when retrying. AGY now emits a durable runtime-error activity before its terminal failure, and explicit AGY quota rejection retires automatic recovery on the first failure. Transient upstream timeout retries remain unchanged.
+
+The real 1.1.28 auth screen says “After authenticating, copy the code displayed in the browser and paste it below,” a third wording missed by 0.1.492. The parser now recognizes that wording, including terminal line wrapping. The native `/usage` probe still prints no email on stdout, but its own diagnostic log confirms identity. A scoped temporary log now supplies only the authenticated email to both provider snapshots and completed account switches; an unsuccessful status command cannot publish an identity.
+
+Verification: 76 tests passed across account auth, driver, adapter, and shared Agent-mode handling, including two opt-in native tests. The real native auth runner reached the code-entry state in a disposable HOME and cancelled; the separate read-only probe detected the current signed-in identity. Five focused scheduler tests passed, including one delivered quota failure and existing transient retry paths. Server typecheck passed. Production-file lint passed with an existing schema-hoisting warning; linting the full legacy reactor test file reports existing manual-Effect-runtime violations outside the added case.
+
+The live native usage check reported Gemini weekly quota at 0%. No additional generation retry or real account switch was attempted. Source/native-process proof is not installed-client or completed-OAuth proof. This server-side correction applies to the existing account controls in web, desktop, and mobile using the updated environment; other provider adapters, wire contracts, and connection modes do not change. Windows native runtime remains unverified.

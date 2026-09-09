@@ -72,7 +72,10 @@ it.live.each([0, 4])(
 const arg = process.argv[2];
 if (arg === '--version') console.log('agy 1.1.28');
 else if (arg === 'models') console.log('gemini-flash-high\\tGemini Flash (High)\\ngemini-flash-low\\tGemini Flash (Low)');
-else {console.log('Gemini Models\\tWeekly Limit Remaining\\t0%\\t2026-09-11T18:30:48Z'); process.exit(${exitCode});}
+else {
+ require('node:fs').writeFileSync(process.argv[process.argv.indexOf('--log-file')+1], 'OAuth: authenticated successfully as fixture@example.com\\n');
+ console.log('Gemini Models\\tWeekly Limit Remaining\\t0%\\t2026-09-11T18:30:48Z'); process.exit(${exitCode});
+}
 `,
           { mode: 0o755 },
         ),
@@ -90,6 +93,7 @@ else {console.log('Gemini Models\\tWeekly Limit Remaining\\t0%\\t2026-09-11T18:3
       }).pipe(Effect.provide(layerTest(dir, { prefix: "solla-agy-auth-probe-home-" })));
       const snapshot = yield* instance.snapshot.getSnapshot;
       expect(snapshot.auth.status).toBe(exitCode === 0 ? "authenticated" : "unknown");
+      expect(snapshot.auth.email).toBe(exitCode === 0 ? "fixture@example.com" : undefined);
       expect(snapshot.models).toHaveLength(1);
       expect(snapshot.models[0]?.slug).toBe("gemini-flash");
       expect(instance.accountAuth).toHaveProperty("switchAccount");

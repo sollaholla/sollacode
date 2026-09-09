@@ -384,6 +384,7 @@ const PROVIDER_TERMINAL_REFUSAL_SIGNATURES = [
   /\bisn't installed\b/i,
   /\bis not installed\b/i,
   /\bnative binary not found\b/i,
+  /Antigravity was rejected by Google with RESOURCE_EXHAUSTED \(429\)/i,
 ];
 
 /** Cap for the same reason as the authentication check: prose is not a status. */

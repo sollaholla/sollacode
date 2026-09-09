@@ -8,12 +8,15 @@ import { describe, expect, vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { PtyAdapter, type PtyProcess } from "../terminal/PtyAdapter.ts";
+import * as NodePtyAdapter from "../terminal/NodePtyAdapter.ts";
 import {
   makeAntigravityAccountAuth,
   antigravityAuthScreen,
   parseAntigravityAuthStatus,
+  readAntigravityAuthStatus,
 } from "./antigravityAccountAuth.ts";
 
 const encodeString = Schema.encodeSync(Schema.fromJsonString(Schema.String));
@@ -27,8 +30,19 @@ describe("Antigravity native account switching", () => {
       parseAntigravityAuthStatus("gemini-3.8-flash-high\tGemini 3.8 Flash (High)", "").loggedIn,
     ).toBe(false);
     expect(parseAntigravityAuthStatus("Authentication required", "").loggedIn).toBe(false);
+    const identity = "OAuth: authenticated successfully as fixture@example.com\n";
+    expect(parseAntigravityAuthStatus(quota, identity)).toEqual({
+      loggedIn: true,
+      accountLabel: "fixture@example.com",
+    });
+    expect(parseAntigravityAuthStatus("Authentication required", identity).accountLabel).toBeNull();
   });
   it("recognizes ANSI auth screens without treating legal links as an OAuth flow", () => {
+    expect(
+      antigravityAuthScreen(
+        `${authUrl}\nAfter authenticating, copy the code displayed in the browser\r\nand paste it below:\n authorization code...`,
+      ),
+    ).toMatchObject({ url: authUrl, waitingForCode: true });
     expect(
       antigravityAuthScreen(`\x1b[32m${authUrl}\x1b[0m\nEnter the authorization code:`),
     ).toMatchObject({ url: authUrl, waitingForCode: true });
@@ -95,7 +109,7 @@ describe("Antigravity native account switching", () => {
             if (data === "/logout\r") emit("Google OAuth\nGemini API key");
             if (data === "\r")
               emit(
-                `${authUrl}\nIf you aren't automatically redirected, paste the authorization code below:`,
+                `${authUrl}\nAfter authenticating, copy the code displayed in the browser and paste it below:`,
               );
             if (data === "private-fixture-code\r")
               emit(
@@ -153,3 +167,58 @@ describe("Antigravity native account switching", () => {
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+it.live.skipIf(process.env.SOLLA_TEST_LIVE_AGY_AUTH !== "1")(
+  "reaches the real native code prompt in an isolated home and cancels cleanly",
+  () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "solla-agy-native-auth-")),
+        ),
+        (dir) => Effect.promise(() => NodeFSP.rm(dir, { recursive: true, force: true })),
+      );
+      const cache = NodePath.join(dir, ".gemini", "antigravity-cli", "cache");
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(cache, { recursive: true });
+        await NodeFSP.writeFile(
+          NodePath.join(cache, "onboarding.json"),
+          '{"onboardingComplete":true}',
+        );
+      });
+      const codePrompt = yield* Deferred.make<void>();
+      let authUrl: string | undefined;
+      const fiber = yield* makeAntigravityAccountAuth({
+        binaryPath: "/opt/homebrew/bin/agy",
+        environment: { ...process.env, HOME: dir },
+        cwd: dir,
+      })
+        .switchAccount({
+          wasAuthenticated: false,
+          onProgress: (progress) => {
+            authUrl = progress.authUrl ?? authUrl;
+            if (progress.waitingForCode) Deferred.doneUnsafe(codePrompt, Effect.void);
+          },
+          onSubmitCode: () => {},
+        })
+        .pipe(Effect.scoped, Effect.forkScoped);
+      yield* Deferred.await(codePrompt).pipe(Effect.timeout("25 seconds"));
+      expect(authUrl).toMatch(/^https:\/\//);
+      yield* Fiber.interrupt(fiber);
+    }).pipe(Effect.provide(NodePtyAdapter.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
+  30_000,
+);
+
+it.live.skipIf(process.env.SOLLA_TEST_LIVE_AGY_AUTH !== "1")(
+  "reads the real signed-in identity without generating or changing accounts",
+  () =>
+    Effect.gen(function* () {
+      const status = yield* readAntigravityAuthStatus({
+        binaryPath: "/opt/homebrew/bin/agy",
+        environment: process.env,
+      });
+      expect(status.loggedIn).toBe(true);
+      expect(status.accountLabel).toMatch(/^[^\s@]+@[^\s@]+$/);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  20_000,
+);

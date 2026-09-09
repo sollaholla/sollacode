@@ -343,7 +343,17 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                   type: "turn.completed",
                   payload: { state: "interrupted" },
                 });
-              else if (terminal) emit(terminal);
+              else if (terminal) {
+                if (terminal.type === "turn.completed" && terminal.payload.state === "failed")
+                  emit({
+                    ...base(input.threadId, active.id),
+                    type: "runtime.error",
+                    payload: {
+                      message: terminal.payload.errorMessage ?? "Antigravity turn failed.",
+                    },
+                  });
+                emit(terminal);
+              }
             }),
           ),
         );
