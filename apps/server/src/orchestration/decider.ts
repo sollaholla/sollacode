@@ -3,6 +3,7 @@ import {
   AGENT_BUILDER_THREAD_ID,
   EventId,
   isAgentBuilderThreadId,
+  isAgentsProjectId,
   isOrchestratorProjectId,
   isOrchestratorThreadId,
   type OrchestrationCommand,
@@ -598,7 +599,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (isOrchestratorThreadId(thread.id) || isAgentBuilderThreadId(thread.id)) {
+      if (
+        isOrchestratorThreadId(thread.id) ||
+        isAgentBuilderThreadId(thread.id) ||
+        isAgentsProjectId(thread.projectId)
+      ) {
         return yield* Effect.fail(
           new OrchestrationCommandInvariantError({
             commandType: command.type,

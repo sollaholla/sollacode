@@ -45,7 +45,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@t3tools/contracts";
-import { ProviderAdapterProcessError, ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterProcessError,
+  ProviderAdapterRequestError,
+  type ProviderAdapterError,
+} from "../../provider/Errors.ts";
 import { CLAUDE_CODE_NOT_INSTALLED_MESSAGE } from "../../provider/providerFailureMessage.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -599,7 +603,7 @@ describe("ProviderCommandReactor", () => {
       options?: ProviderServiceSendTurnOptions,
     ) => Effect.Effect<
       { readonly threadId: ThreadId; readonly turnId: TurnId },
-      ProviderAdapterRequestError | ProviderAdapterProcessError
+      ProviderAdapterError
     >;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
@@ -5633,13 +5637,16 @@ describe("ProviderCommandReactor", () => {
       const now = "2026-01-01T00:00:01.000Z";
       const harness = await createHarness({
         startReactor: false,
-        sendTurnEffect: (_input, sessions) =>
+        sendTurnEffect: (_input, sessions, sendOptions) =>
           Effect.gen(function* () {
+            yield* sendOptions?.beforeNativeDispatch ?? Effect.void;
             for (const status of ["running", "error"] as const) {
               yield* harness.engine
                 .dispatch({
                   type: "thread.session.set",
-                  commandId: CommandId.make(`timeout-${status}`),
+                  commandId: CommandId.make(
+                    `timeout-${status}-${harness.sendTurn.mock.calls.length}`,
+                  ),
                   threadId,
                   session: {
                     threadId,
@@ -5696,7 +5703,39 @@ describe("ProviderCommandReactor", () => {
         ),
       );
       const outcome = await Effect.runPromise(
-        handlers.get("active-turn-recovery")!({ ...obligation, attempt: 12 }),
+        Effect.gen(function* () {
+          const outcome = yield* handlers.get("active-turn-recovery")!({
+            ...obligation,
+            attempt: 12,
+          });
+          if (runtimeStatus === "ready") {
+            // The first failure is only half the recovery contract. Exercise the
+            // next dispatch with real SQL admission and the production owner key
+            // (turn-start:<messageId>), after the provider returns to ready.
+            yield* harness.threadWorkObligations.transition({
+              obligationId: obligation.obligationId,
+              expectedState: obligation.state,
+              expectedAttempt: obligation.attempt,
+              state: "executing",
+              nextAttemptAt: null,
+              claimedAt: now,
+              leaseExpiresAt: "2026-01-01T00:01:01.000Z",
+              blockedReason: null,
+              updatedAt: now,
+            });
+            const retried = yield* handlers.get("active-turn-recovery")!({
+              ...obligation,
+              state: "executing",
+            });
+            expect(retried).toMatchObject({
+              state: "sleeping",
+              reason: "Request timed out",
+              retainedRuntimePhase: "provider-retrying",
+            });
+            expect(harness.sendTurn).toHaveBeenCalledTimes(2);
+          }
+          return outcome;
+        }),
       );
       expect(outcome).toMatchObject({
         state: "sleeping",
@@ -5706,7 +5745,7 @@ describe("ProviderCommandReactor", () => {
       const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
       expect(thread?.latestTurn?.state).toBe("error");
       expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
-      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn).toHaveBeenCalledTimes(runtimeStatus === "ready" ? 2 : 1);
     });
   }
 

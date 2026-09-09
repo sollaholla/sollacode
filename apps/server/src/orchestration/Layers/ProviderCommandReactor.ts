@@ -4454,7 +4454,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           ? {
               beforeNativeDispatch: syntheticDispatchAdmission(
                 obligation,
-                admissionSourceMessageId,
+                // This owner's sourceTurnId is turn-start:<messageId>, not a
+                // provider turn id. Pass the message explicitly so admission
+                // can find its persisted intent when retrying a started turn.
+                admissionSourceMessageId ?? messageId,
               ),
             }
           : undefined;

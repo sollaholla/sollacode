@@ -1,5 +1,6 @@
 import {
   AGENT_BUILDER_THREAD_ID,
+  AGENTS_PROJECT_ID,
   CommandId,
   EventId,
   MessageId,
@@ -72,6 +73,28 @@ function makeSession(status: OrchestrationSession["status"]): OrchestrationSessi
 }
 
 it.layer(NodeServices.layer)("settled thread decider", (it) => {
+  it.effect("rejects settlement of a dedicated agent chat with an ordinary UUID", () =>
+    Effect.gen(function* () {
+      const model = makeReadModel(null);
+      const error = yield* Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.settle",
+            commandId: CommandId.make("settle-agent"),
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: {
+            ...model,
+            threads: model.threads.map((thread) => ({ ...thread, projectId: AGENTS_PROJECT_ID })),
+          },
+        }),
+      );
+      expect(error).toMatchObject({
+        _tag: "OrchestrationCommandInvariantError",
+        detail: "thread thread-1 is a persistent control chat and cannot be settled",
+      });
+    }),
+  );
   for (const id of [
     ORCHESTRATOR_THREAD_ID,
     AGENT_BUILDER_THREAD_ID,
