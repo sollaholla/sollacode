@@ -80,6 +80,7 @@ import {
 } from "../../attachmentStore.ts";
 import {
   activeTurnWorkSourceId,
+  recoveryDeliverySourceMessageId,
   agentContinuationSourceTurnId,
   agentLoopSignedOffSinceUserIntent,
   isAgentAutoResumeMessageId,
@@ -438,7 +439,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
      * blocker prompts still own the next work slot.
      */
     const getTurnStartCausality = Effect.fn("ProjectionPipeline.getTurnStartCausality")(
-      function* (input: { readonly threadId: ThreadId; readonly messageId: MessageId }) {
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly messageId: MessageId;
+        readonly turnId: TurnId;
+      }) {
         const rows = yield* sql<{
           readonly sequence: number;
           readonly hasLaterRealUserTurn: number;
@@ -482,14 +487,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     AND absorbed.kind = 'message.delivered'
                     AND json_extract(absorbed.payload_json, '$.messageId') =
                       json_extract(later.payload_json, '$.messageId')
-                    AND absorbed.turn_id = source_turn.turn_id
+                    AND absorbed.turn_id = ${input.turnId}
                 )
             ) AS "hasLaterRealUserTurn"
           FROM orchestration_events AS source
-          LEFT JOIN projection_turns AS source_turn
-            ON source_turn.thread_id = source.stream_id
-            AND source_turn.pending_message_id =
-              json_extract(source.payload_json, '$.messageId')
           WHERE source.aggregate_kind = 'thread'
             AND source.stream_id = ${input.threadId}
             AND source.event_type = 'thread.turn-start-requested'
@@ -1733,6 +1734,53 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : null;
           if (rawMessageId === null) return;
 
+          // A recovered native turn does not emit another turn-start-requested.
+          // Bind its delivery receipt to the original durable intent before the
+          // running session arrives. Otherwise finalization sees an orphan turn
+          // and silently declines to schedule its next Agent continuation.
+          const recoveredSource = recoveryDeliverySourceMessageId(
+            event.payload.threadId,
+            rawMessageId,
+          );
+          if (recoveredSource !== null && activity.turnId != null) {
+            const causality = yield* getTurnStartCausality({
+              threadId: event.payload.threadId,
+              messageId: recoveredSource,
+              turnId: activity.turnId,
+            });
+            if (causality === null) return;
+            const existing = yield* projectionTurnRepository.getByTurnId({
+              threadId: event.payload.threadId,
+              turnId: activity.turnId,
+            });
+            if (Option.isSome(existing)) {
+              if (existing.value.pendingMessageId === null) {
+                yield* projectionTurnRepository.upsertByTurnId({
+                  ...existing.value,
+                  pendingMessageId: recoveredSource,
+                });
+              }
+            } else {
+              yield* projectionTurnRepository.upsertByTurnId({
+                threadId: event.payload.threadId,
+                turnId: activity.turnId,
+                pendingMessageId: recoveredSource,
+                sourceProposedPlanThreadId: null,
+                sourceProposedPlanId: null,
+                assistantMessageId: null,
+                state: "running",
+                requestedAt: activity.createdAt,
+                startedAt: activity.createdAt,
+                completedAt: null,
+                checkpointTurnCount: null,
+                checkpointRef: null,
+                checkpointStatus: null,
+                checkpointFiles: [],
+              });
+            }
+            return;
+          }
+
           const messageId = MessageId.make(rawMessageId);
           const pending = yield* projectionTurnRepository.getPendingTurnStart({
             threadId: event.payload.threadId,
@@ -1749,7 +1797,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // and for a steer into an already-running turn. Only the latter can
           // consume the null-turn placeholder here: a normal start still needs
           // that row so the subsequent session-set(running) can bind it to the
-          // concrete provider turn. Claude omits the host turn id, so the
+          // concrete provider turn. Older receipts omit the host turn id, so the
           // pre-claim marker — not activity.turnId — is the cross-provider
           // discriminator.
           if (
@@ -2363,6 +2411,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         const sourceCausality = yield* getTurnStartCausality({
           threadId: input.threadId,
           messageId: turn.value.pendingMessageId,
+          turnId: thread.value.latestTurnId,
         });
         if (sourceCausality === null || sourceCausality.hasLaterRealUserTurn) return;
 
@@ -2689,6 +2738,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         const sourceCausality = yield* getTurnStartCausality({
           threadId: event.payload.threadId,
           messageId: sourceTurn.value.pendingMessageId,
+          turnId: event.payload.turnId,
         });
         // Authentication recovery replays the failed source turn. If newer
         // user intent already exists, that newer turn owns recovery instead;

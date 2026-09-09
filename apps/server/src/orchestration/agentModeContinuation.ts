@@ -347,6 +347,26 @@ export function agentAutoResumeIds(input: {
   };
 }
 
+/** Recover the durable source of a native retry without creating another user turn. */
+export function recoveryDeliverySourceMessageId(
+  threadId: string,
+  deliveryMessageId: string,
+): MessageId | null {
+  const continuationPrefix = `agent-continuation-recovery-delivery:${threadId}:`;
+  if (deliveryMessageId.startsWith(continuationPrefix)) {
+    const completedTurnId = deliveryMessageId.slice(continuationPrefix.length);
+    return completedTurnId.length > 0
+      ? agentAutoResumeIds({ threadId, completedTurnId }).messageId
+      : null;
+  }
+  const activePrefix = `active-turn-recovery-delivery:${threadId}:`;
+  if (deliveryMessageId.startsWith(activePrefix)) {
+    const sourceMessageId = deliveryMessageId.slice(activePrefix.length);
+    return sourceMessageId.length > 0 ? MessageId.make(sourceMessageId) : null;
+  }
+  return null;
+}
+
 /**
  * True for the synthetic continuation prompts minted by
  * {@link agentAutoResumeIds}. These are the ONLY messages whose turn launch the

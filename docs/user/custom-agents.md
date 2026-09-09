@@ -222,3 +222,11 @@ workspace files or remote assets that the sandbox cannot load.
 This custom-agent **Dashboard** is not a [thread artifact](./thread-artifacts.md). A thread
 artifact is a revisioned file bundle published by any chat. The custom-agent artifact is one
 workspace view owned by that named agent, including an HTML dashboard when the agent needs a real UI.
+
+### Continuation after a host restart
+
+A recovered native provider turn remains linked to its original user or Agent-continuation message.
+When that recovered turn finishes without `AGENT_STOP`, Agent mode schedules the next continuation,
+including when additional user messages were delivered into the same turn. A newer request that has
+not been delivered, an explicit stop, or a pending user decision still takes precedence. Restart
+recovery does not create another visible user message or require reopening the chat.
