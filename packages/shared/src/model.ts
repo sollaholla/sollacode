@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
+  type ServerProviderModel,
 } from "@t3tools/contracts";
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -15,6 +16,74 @@ const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
 export interface SelectableModelOption {
   slug: string;
   name: string;
+}
+
+/** AGY exposes effort variants as native slugs; clients present the family once. */
+export function splitAntigravityModel(model: string): { model: string; effort?: string } {
+  const match = /^(.*)-(low|medium|high)$/.exec(model);
+  return match ? { model: match[1]!, effort: match[2]! } : { model };
+}
+
+export function groupAntigravityModels(
+  models: ReadonlyArray<{ slug: string; label: string }>,
+): ServerProviderModel[] {
+  const groups = new Map<string, Array<{ slug: string; label: string }>>();
+  for (const entry of models) {
+    const family = splitAntigravityModel(entry.slug).model;
+    const group = groups.get(family) ?? [];
+    group.push(entry);
+    groups.set(family, group);
+  }
+  return [...groups].map(([slug, variants], index) => {
+    const efforts = ["low", "medium", "high"].filter((effort) =>
+      variants.some((variant) => splitAntigravityModel(variant.slug).effort === effort),
+    );
+    const defaultEffort = efforts.includes("high") ? "high" : efforts.at(-1);
+    return {
+      slug,
+      name: efforts.length
+        ? variants[0]!.label.replace(/\s*\((?:Low|Medium|High)\)$/, "")
+        : variants[0]!.label,
+      isCustom: false,
+      isDefault: index === 0,
+      capabilities: defaultEffort
+        ? {
+            optionDescriptors: [
+              {
+                id: "effort",
+                label: "Effort",
+                type: "select" as const,
+                currentValue: defaultEffort,
+                options: efforts.map((id) => ({
+                  id,
+                  label: id[0]!.toUpperCase() + id.slice(1),
+                  isDefault: id === defaultEffort,
+                })),
+              },
+            ],
+          }
+        : null,
+    };
+  });
+}
+
+/** Preserve the effort of old saved variant slugs without rewriting durable history. */
+export function antigravityCapabilitiesForSelection(
+  capabilities: ModelCapabilities | null | undefined,
+  model: string | null | undefined,
+): ModelCapabilities | null | undefined {
+  const effort = model ? splitAntigravityModel(model).effort : undefined;
+  if (!effort || !capabilities) return capabilities;
+  return {
+    ...capabilities,
+    optionDescriptors: capabilities.optionDescriptors?.map((descriptor) =>
+      descriptor.id === "effort" &&
+      descriptor.type === "select" &&
+      descriptor.options.some((option) => option.id === effort)
+        ? { ...descriptor, currentValue: effort }
+        : descriptor,
+    ),
+  };
 }
 
 export function createModelCapabilities(input: {
@@ -240,6 +309,8 @@ export function normalizeModelSlug(
   if (!trimmed) {
     return null;
   }
+
+  if (provider === "antigravity") return splitAntigravityModel(trimmed).model;
 
   const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[provider] ?? {};
   const aliased = Object.prototype.hasOwnProperty.call(aliases, trimmed)

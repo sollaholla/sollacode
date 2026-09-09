@@ -1,7 +1,7 @@
 # Switching provider accounts
 
-The account control beside the chat composer shows the account reported by the active Codex or
-Claude provider. Choose **Switch user** to replace that provider's signed-in account. A confirmation
+The account control beside the chat composer shows the account reported by the active Codex,
+Claude, or Antigravity provider. Choose **Switch user** to replace that provider's signed-in account. A confirmation
 dialog always appears before signing out, including when your phone is connected directly to its
 primary host. Choose **Cancel** to keep the current account or **Sign out and continue** to proceed.
 
@@ -10,8 +10,8 @@ login status over the chat pane. The provider CLI opens the browser itself, so S
 open a duplicate browser window. If the window is missing or was closed, choose **Don't see the
 browser? Open sign-in link** to reopen it. The project and thread sidebar remains available.
 
-Claude Code may ask you to copy an authentication code from the browser. When it does, the login
-overlay shows a paste field and sends the code directly to the waiting Claude Code process. The
+Claude Code and Antigravity may ask you to copy an authentication code from the browser. When it does, the login
+overlay shows a paste field and sends the code directly to the waiting provider process. The
 code is not saved in account-switch state. You can cancel while authentication is pending.
 If that login has already ended or the host restarted, the stale panel clears without requiring a
 page refresh. **Close** hides the panel while sign-in continues on the host; it does not cancel login.
@@ -26,3 +26,9 @@ and subsequent provider work uses the newly authenticated account.
 
 Solla Code does not maintain an account list or store provider passwords. Switching replaces the
 account in the selected provider instance's own credential directory.
+
+Antigravity uses a sign-in link and code flow that also works from a remote phone. Complete `agy`'s
+one-time terms and data-sharing setup in a host terminal first. Solla reports this requirement before
+signing out and never accepts those choices automatically. Gemini API key mode has no Google
+account to switch. The provider's model menu groups effort variants into one model with a separate
+**Effort** selector; saved Low/Medium/High choices are preserved.

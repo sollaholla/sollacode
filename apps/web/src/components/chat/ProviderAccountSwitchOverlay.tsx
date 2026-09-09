@@ -49,7 +49,11 @@ export const ProviderAccountSwitchOverlay = memo(function ProviderAccountSwitchO
   const succeeded = props.state.status === "succeeded";
   const providerName =
     props.provider?.displayName?.trim() ||
-    (props.state.driver === "claudeAgent" ? "Claude" : "Codex");
+    (props.state.driver === "claudeAgent"
+      ? "Claude"
+      : props.state.driver === "antigravity"
+        ? "Antigravity"
+        : "Codex");
 
   return (
     <div
@@ -114,7 +118,7 @@ export const ProviderAccountSwitchOverlay = memo(function ProviderAccountSwitchO
                 <Input
                   nativeInput
                   name="authenticationCode"
-                  aria-label="Claude Code authentication code"
+                  aria-label={`${providerName} authentication code`}
                   autoComplete="one-time-code"
                   autoFocus
                   disabled={props.submittingCode}

@@ -1,3 +1,5 @@
+import { groupAntigravityModels } from "@t3tools/shared/model";
+import { deriveEffectiveComposerModelState } from "./composerDraftStore";
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
@@ -344,5 +346,49 @@ describe("instance-scoped model selection", () => {
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
     });
+  });
+});
+
+describe("AGY legacy effort selections", () => {
+  const instanceId = ProviderInstanceId.make("agy-personal");
+  const agy = {
+    ...provider({ provider: ProviderDriverKind.make("antigravity"), instanceId }),
+    models: groupAntigravityModels([
+      { slug: "gemini-flash-high", label: "Gemini Flash (High)" },
+      { slug: "gemini-flash-low", label: "Gemini Flash (Low)" },
+    ]),
+  };
+  it.each(["thread", "draft"])(
+    "keeps saved low effort in the %s while grouping the model picker",
+    (source) => {
+      const selection = { instanceId, model: "gemini-flash-low" };
+      const result = deriveEffectiveComposerModelState({
+        draft:
+          source === "draft"
+            ? { activeProvider: instanceId, modelSelectionByProvider: { [instanceId]: selection } }
+            : null,
+        threadModelSelection: selection,
+        projectModelSelection: null,
+        selectedInstanceId: instanceId,
+        selectedProvider: agy.driver,
+        providers: [agy],
+        settings: DEFAULT_UNIFIED_SETTINGS,
+      });
+      expect(result).toEqual({
+        selectedModel: "gemini-flash",
+        modelOptions: { [instanceId]: [{ id: "effort", value: "low" }] },
+      });
+    },
+  );
+  it("keeps a saved settings effort during canonical model resolution", () => {
+    expect(
+      resolveAppModelSelectionState(
+        {
+          ...DEFAULT_UNIFIED_SETTINGS,
+          textGenerationModelSelection: { instanceId, model: "gemini-flash-low" },
+        },
+        [agy],
+      ),
+    ).toEqual({ instanceId, model: "gemini-flash", options: [{ id: "effort", value: "low" }] });
   });
 });

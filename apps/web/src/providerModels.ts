@@ -8,7 +8,11 @@ import {
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
-import { createModelCapabilities, normalizeModelSlug } from "@t3tools/shared/model";
+import {
+  antigravityCapabilitiesForSelection,
+  createModelCapabilities,
+  normalizeModelSlug,
+} from "@t3tools/shared/model";
 
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -83,7 +87,12 @@ export function getProviderModelCapabilities(
   provider: ProviderDriverKind,
 ): ModelCapabilities {
   const slug = normalizeModelSlug(model, provider);
-  return models.find((candidate) => candidate.slug === slug)?.capabilities ?? EMPTY_CAPABILITIES;
+  const capabilities = models.find((candidate) => candidate.slug === slug)?.capabilities;
+  return (
+    (provider === "antigravity"
+      ? antigravityCapabilitiesForSelection(capabilities, model)
+      : capabilities) ?? EMPTY_CAPABILITIES
+  );
 }
 
 export function getDefaultServerModel(

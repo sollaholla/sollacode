@@ -15,6 +15,7 @@ import { makeAntigravityAdapter } from "./AntigravityAdapter.ts";
 const threadId = ThreadId.make("agy-test-thread");
 const instanceId = ProviderInstanceId.make("agy-test-instance");
 const decode = Schema.decodeUnknownSync(ProviderRuntimeEvent);
+const decodeArgs = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 
 async function fixture(mode = "success") {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "solla-agy-test-"));
@@ -124,6 +125,38 @@ describe("Antigravity adapter process lifecycle", () => {
       expect(args[0]).toContain("--dangerously-skip-permissions");
       expect(args[1]).toContain("native-conversation");
       expect(args[1]).toContain("plan");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.each([
+    { model: "gemini-flash", effort: "low", expected: "low" },
+    { model: "gemini-flash-low", effort: undefined, expected: "low" },
+    { model: "gemini-flash-low", effort: "high", expected: "high" },
+  ])("passes $model with $expected effort and retains it for the next turn", (scenario) =>
+    Effect.gen(function* () {
+      const { adapter, dir } = yield* setup();
+      const { first, second } = yield* observe(adapter);
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "one",
+        modelSelection: {
+          instanceId,
+          model: scenario.model,
+          ...(scenario.effort ? { options: [{ id: "effort", value: scenario.effort }] } : {}),
+        },
+      });
+      yield* Deferred.await(first);
+      yield* adapter.sendTurn({ threadId, input: "two" });
+      yield* Deferred.await(second);
+      const log = yield* Effect.promise(() =>
+        NodeFSP.readFile(NodePath.join(dir, "args.jsonl"), "utf8"),
+      );
+      for (const line of log.trim().split("\n")) {
+        const args = yield* decodeArgs(line);
+        expect(args[args.indexOf("--model") + 1]).toBe(scenario.model);
+        expect(args[args.indexOf("--effort") + 1]).toBe(scenario.expected);
+      }
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

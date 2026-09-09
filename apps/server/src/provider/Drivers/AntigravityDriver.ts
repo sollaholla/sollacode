@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import { groupAntigravityModels, splitAntigravityModel } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { ServerConfig } from "../../config.ts";
 import { parseGenericCliVersion, spawnAndCollect } from "../providerSnapshot.ts";
@@ -16,6 +17,11 @@ import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMainte
 import { parseAntigravityModelsOutput } from "../antigravityProtocol.ts";
 import { ANTIGRAVITY_DRIVER_KIND } from "../antigravityRuntime.ts";
 import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
+
+import {
+  makeAntigravityAccountAuth,
+  parseAntigravityAuthStatus,
+} from "../antigravityAccountAuth.ts";
 
 const decodeSettings = Schema.decodeSync(AntigravitySettings);
 
@@ -53,12 +59,29 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           );
         });
         const results = input.enabled
-          ? yield* Effect.all([runProbe(["--version"]), runProbe(["models"])], {
-              concurrency: "unbounded",
-            })
+          ? yield* Effect.all(
+              [
+                runProbe(["--version"]),
+                runProbe(["models"]),
+                runProbe(["--print", "/usage", "--print-timeout", "10s"]),
+              ],
+              {
+                concurrency: "unbounded",
+              },
+            )
           : undefined;
         const versionResult = results?.[0];
         const modelsResult = results?.[1];
+        const authResult = results?.[2];
+        const authenticated =
+          authResult?._tag === "Success" &&
+          authResult.success.code === 0 &&
+          parseAntigravityAuthStatus(authResult.success.stdout, authResult.success.stderr).loggedIn;
+        const unauthenticated =
+          authResult?._tag === "Success" &&
+          /authentication required|not signed in/i.test(
+            authResult.success.stdout + authResult.success.stderr,
+          );
         const installed = versionResult?._tag === "Success";
         const versionReady = installed && versionResult.success.code === 0;
         const modelsReady = modelsResult?._tag === "Success" && modelsResult.success.code === 0;
@@ -75,7 +98,14 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           installed,
           version: versionReady ? parseGenericCliVersion(versionResult.success.stdout) : null,
           status: !input.enabled ? "disabled" : available ? "ready" : "error",
-          auth: { status: "unknown" },
+          auth: {
+            status: authenticated
+              ? "authenticated"
+              : unauthenticated
+                ? "unauthenticated"
+                : "unknown",
+            ...(authenticated ? { type: "Google account" } : {}),
+          },
           checkedAt: DateTime.formatIso(DateTime.nowUnsafe()),
           message: !input.enabled
             ? "Antigravity is disabled in Solla Code settings."
@@ -88,15 +118,15 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           showInteractionModeToggle: true,
           requiresNewThreadForModelChange: false,
           models: [
-            ...models.map((model, index) => ({
-              slug: model.slug,
-              name: model.label,
-              isCustom: false,
-              isDefault: index === 0,
-              capabilities: null,
-            })),
+            ...groupAntigravityModels(models),
             ...input.config.customModels
-              .filter((slug) => !models.some((model) => model.slug === slug))
+              .filter(
+                (slug) =>
+                  !models.some(
+                    (model) =>
+                      splitAntigravityModel(model.slug).model === splitAntigravityModel(slug).model,
+                  ),
+              )
               .map((slug) => ({
                 slug,
                 name: slug,
@@ -136,6 +166,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       accentColor: input.accentColor,
       enabled: input.enabled,
       adapter,
+      accountAuth: makeAntigravityAccountAuth({ binaryPath, environment, cwd: serverConfig.cwd }),
       textGeneration: {
         generateCommitMessage: () =>
           Effect.fail(
