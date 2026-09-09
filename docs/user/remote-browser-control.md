@@ -47,8 +47,8 @@ turn, so a framework replacing the field's DOM node between the tap and the keys
 the text. Older captures are discarded when a newer capture finishes first. If typing fails, the
 text remains in the row so it can be retried instead of being lost. A failed follow-up frame capture
 does not rewrite a successful key delivery as an input failure.
-Text is delivered as native character events, preserving Unicode code points and normalizing line
-breaks for Chromium. Long strings are not sent as a single character event.
+Text is inserted atomically into the selected page field, preserving Unicode and normalizing
+line breaks for Chromium without borrowing the desktop's keyboard focus.
 
 OAuth and other real popup windows become the active remote frame until they close, then the frame
 returns to the opener. A held download appears as an approval card with Allow once, Allow always,
@@ -64,6 +64,11 @@ focus. New human input cancels pending input commands immediately. A text edit a
 finishes atomically inside that page, so no remaining characters can spill into your composer.
 Browser zoom is accounted for when matching agent clicks, so zoomed pages do not falsely report
 that an agent was interrupted by human input.
+
+Opening an agent browser tab returns its tab ID once the browser is available, even while the
+page is navigating. Optional viewport and page diagnostics have short deadlines; a slow page
+does not need to finish those checks before the open result can return. Known human-verification
+gates remain in effect.
 
 ## Native Mobile App
 
