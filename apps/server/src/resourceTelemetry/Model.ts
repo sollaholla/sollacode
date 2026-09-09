@@ -22,6 +22,8 @@ export interface GroupCounters {
   readonly cpuTimeMs: number;
   readonly ioReadBytes: number;
   readonly ioWriteBytes: number;
+  /** Highest concurrently sampled aggregate RSS for this group. */
+  readonly peakRssBytes: number;
   readonly processStarts: number;
   readonly processExits: number;
 }
@@ -72,6 +74,7 @@ export const emptyGroupCounters = (): GroupCounters => ({
   cpuTimeMs: 0,
   ioReadBytes: 0,
   ioWriteBytes: 0,
+  peakRssBytes: 0,
   processStarts: 0,
   processExits: 0,
 });
@@ -278,6 +281,7 @@ function incrementCounters(counters: GroupCounters, update: Partial<GroupCounter
     cpuTimeMs: counters.cpuTimeMs + (update.cpuTimeMs ?? 0),
     ioReadBytes: counters.ioReadBytes + (update.ioReadBytes ?? 0),
     ioWriteBytes: counters.ioWriteBytes + (update.ioWriteBytes ?? 0),
+    peakRssBytes: Math.max(counters.peakRssBytes, update.peakRssBytes ?? 0),
     processStarts: counters.processStarts + (update.processStarts ?? 0),
     processExits: counters.processExits + (update.processExits ?? 0),
   };
@@ -355,7 +359,10 @@ function aggregate(
     currentCpuPercent: processes.reduce((total, process) => total + process.cpuPercent, 0),
     cpuTimeMs: counters.cpuTimeMs,
     currentRssBytes: processes.reduce((total, process) => total + process.residentBytes, 0),
-    peakRssBytes: processes.reduce((total, process) => total + process.peakResidentBytes, 0),
+    peakRssBytes: Math.max(
+      counters.peakRssBytes,
+      processes.reduce((total, process) => total + process.residentBytes, 0),
+    ),
     ioReadBytes: counters.ioReadBytes,
     ioWriteBytes: counters.ioWriteBytes,
     ioReadBytesPerSecond: processes.reduce(
@@ -574,7 +581,7 @@ export function mergeProcesses(input: MergeProcessesInput): MergeProcessesResult
   });
   const ordered = orderProcessTree(normalized, rootPids);
 
-  const counters = input.updatePrevious
+  const lifecycleCounters = input.updatePrevious
     ? applyLifecycleCounters({
         counters: input.counters,
         deltas: processDeltas,
@@ -591,6 +598,31 @@ export function mergeProcesses(input: MergeProcessesInput): MergeProcessesResult
   const monitorProcesses = ordered.filter(
     (process) => categoryGroup(process.category) === "monitor",
   );
+  const counters = input.updatePrevious
+    ? {
+        backend: incrementCounters(lifecycleCounters.backend, {
+          peakRssBytes: backendProcesses.reduce(
+            (total, process) => total + process.residentBytes,
+            0,
+          ),
+        }),
+        electron: incrementCounters(lifecycleCounters.electron, {
+          peakRssBytes: electronProcesses.reduce(
+            (total, process) => total + process.residentBytes,
+            0,
+          ),
+        }),
+        monitor: incrementCounters(lifecycleCounters.monitor, {
+          peakRssBytes: monitorProcesses.reduce(
+            (total, process) => total + process.residentBytes,
+            0,
+          ),
+        }),
+        allT3: incrementCounters(lifecycleCounters.allT3, {
+          peakRssBytes: ordered.reduce((total, process) => total + process.residentBytes, 0),
+        }),
+      }
+    : lifecycleCounters;
 
   return {
     sampledAtMs,
