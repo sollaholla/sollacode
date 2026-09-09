@@ -16,6 +16,7 @@ import {
   deriveWorkLogEntries,
   findLatestProposedPlan,
   findSidebarProposedPlan,
+  formatDuration,
   hasActionableProposedPlan,
   isLatestTurnSettled,
   workEntryIndicatesToolFailure,
@@ -24,6 +25,24 @@ import {
 } from "./session-logic";
 
 let nextActivityId = 0;
+
+describe("formatDuration", () => {
+  it.each([
+    [125, "125ms"],
+    [1_250, "1.3s"],
+    [9_950, "10s"],
+    [90_000, "1m 30s"],
+    [3_599_600, "1h"],
+    [3_600_000, "1h"],
+    [569 * 60_000 + 34_000, "9h 29m"],
+    [86_400_000, "1d"],
+    [183_600_000, "2d 3h"],
+    [Number.NaN, "0ms"],
+    [-1, "0ms"],
+  ])("formats %s milliseconds as %s", (durationMs, expected) => {
+    expect(formatDuration(durationMs)).toBe(expected);
+  });
+});
 
 function makeActivity(overrides: {
   id?: string;
