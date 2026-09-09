@@ -52,6 +52,12 @@ OAuth and other real popup windows become the active remote frame until they clo
 returns to the opener. A held download appears as an approval card with Allow once, Allow always,
 and Deny actions on both mobile surfaces.
 
+## Keyboard focus on the desktop
+
+Clicking inside a desktop browser tab gives that tab your next keystroke, including fields inside
+embedded frames. Merely hovering does not move keyboard focus. An agent selecting a page field
+does not transfer your typing away from the composer; only your own click chooses that surface.
+
 ## Native Mobile App
 
 The **Browser** screen (safari icon in a thread's header, or the Browser button on an agent —

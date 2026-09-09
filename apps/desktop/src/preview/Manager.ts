@@ -1114,6 +1114,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       });
     });
   const currentIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+  const inputClock = yield* Clock.Clock;
   const currentMillis = Clock.currentTimeMillis;
   const encodeJson = (errorContext: PreviewOperationContext, value: unknown) =>
     encodeUnknownJson(value).pipe(
@@ -3145,6 +3146,27 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         (state) => state.controller === "human",
       );
     });
+    const beforeMouse = (_event: Electron.Event, mouse: Electron.MouseInputEvent): void => {
+      if (!listenersActive || (mouse.type !== "mouseDown" && mouse.type !== "contextMenu")) return;
+      const signal: PreviewInputSignal = {
+        kind: "pointer",
+        x: mouse.x,
+        y: mouse.y,
+        button: mouse.button === "middle" ? 1 : mouse.button === "right" ? 2 : 0,
+      };
+      const now = inputClock.currentTimeMillisUnsafe();
+      const expected = Ref.getUnsafe(expectedAgentInputsRef).get(tabId) ?? [];
+      if (
+        expected.some((entry) => entry.expiresAt > now && inputSignalsMatch(entry.signal, signal))
+      )
+        return;
+      // DOM pointer events in child frames do not reach the top-frame preload.
+      // Claim the guest synchronously, before before-input-event can redirect
+      // the user's first key. Agent clicks keep their exact-input exemption.
+      userFocusIntent = { kind: "guest", tabId };
+      lastUserInputAtMs = now;
+      runFork(handleHumanInput(signal));
+    };
     const humanInput = (_event: unknown, rawSignal?: unknown): void => {
       if (!listenersActive) return;
       if (
@@ -3341,6 +3363,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.off("did-stop-loading", sync);
         wc.off("did-fail-load", failed as never);
         wc.off("before-input-event", beforeInput);
+        wc.off("before-mouse-event", beforeMouse);
         wc.off("context-menu", contextMenu);
         wc.off("did-create-window", didCreateWindow);
         wc.off("destroyed", destroyed);
@@ -3350,6 +3373,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
     const install = Effect.fn("PreviewManager.installWebContentsListeners")(function* () {
       yield* attempt({ operation: "attachListeners", tabId, webContentsId: wc.id }, () => {
+        wc.on("before-mouse-event", beforeMouse);
         wc.on("did-navigate", navigationCommitted);
         wc.on("did-navigate-in-page", inPageNavigationCommitted);
         wc.on("did-start-navigation", navigationStarted);
