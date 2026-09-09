@@ -3982,7 +3982,7 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("settles pending automation without touching a destroyed guest", () =>
+  effectIt.effect("detaches the retained native debugger after its guest is destroyed", () =>
     withManager((manager) =>
       Effect.gen(function* () {
         let destroyed = false;
@@ -4005,13 +4005,20 @@ describe("PreviewManager", () => {
         const ipcOff = vi.fn(() => {
           if (destroyed) throw new Error("Object has been destroyed");
         });
-        const debuggerOff = vi.fn(() => {
-          if (destroyed) throw new Error("Object has been destroyed");
-        });
+        const debuggerOff = vi.fn();
         const detach = vi.fn(() => {
-          if (destroyed) throw new Error("Object has been destroyed");
           attached = false;
         });
+        const debuggerApi = {
+          isAttached: () => attached,
+          attach: vi.fn(() => {
+            attached = true;
+          }),
+          detach,
+          sendCommand,
+          on: vi.fn(),
+          off: debuggerOff,
+        };
         const webContents = {
           id: 42,
           isDestroyed: () => destroyed,
@@ -4030,15 +4037,9 @@ describe("PreviewManager", () => {
           send: webviewSend,
           navigationHistory: { canGoBack: () => false, canGoForward: () => false },
           setWindowOpenHandler: vi.fn(),
-          debugger: {
-            isAttached: () => attached,
-            attach: vi.fn(() => {
-              attached = true;
-            }),
-            detach,
-            sendCommand,
-            on: vi.fn(),
-            off: debuggerOff,
+          get debugger() {
+            if (destroyed) throw new Error("Object has been destroyed");
+            return debuggerApi;
           },
         };
         fromId.mockReturnValue(webContents as never);
@@ -4071,8 +4072,8 @@ describe("PreviewManager", () => {
         }
         expect(off).not.toHaveBeenCalled();
         expect(ipcOff).not.toHaveBeenCalled();
-        expect(debuggerOff).not.toHaveBeenCalled();
-        expect(detach).not.toHaveBeenCalled();
+        expect(debuggerOff).toHaveBeenCalledTimes(2);
+        expect(detach).toHaveBeenCalledOnce();
         expect(yield* manager.automationStatus("tab_destroyed_during_command")).toMatchObject({
           available: false,
           tabId: "tab_destroyed_during_command",
@@ -6574,6 +6575,13 @@ describe("PreviewManager", () => {
           let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
           const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
             if (
+              method === "Input.dispatchKeyEvent" &&
+              params?.type === "char" &&
+              String(params.text).length > 4
+            ) {
+              throw new Error("Invalid 'text' parameter");
+            }
+            if (
               failKeyDown &&
               method === "Input.dispatchKeyEvent" &&
               (params?.["type"] === "keyDown" || params?.["type"] === "rawKeyDown")
@@ -6685,7 +6693,7 @@ describe("PreviewManager", () => {
             ([method, params]) =>
               method === "Input.dispatchKeyEvent" &&
               params?.["type"] === "char" &&
-              params?.["text"] === "hello",
+              params?.["text"] === "h",
           );
           const backspaceDownIndex = calls.findIndex(
             ([method, params]) =>
@@ -6711,11 +6719,15 @@ describe("PreviewManager", () => {
               ].some((legacy) => (params["expression"] as string).includes(legacy)),
           );
           expect(legacyTypingExpressions).toEqual([]);
-          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
-            type: "char",
-            text: "hello",
-            unmodifiedText: "hello",
-          });
+          expect(
+            calls
+              .filter(
+                ([method, params]) =>
+                  method === "Input.dispatchKeyEvent" && params?.type === "char",
+              )
+              .map(([, params]) => params?.text)
+              .join(""),
+          ).toBe("hellocoordinate text");
           expect(sendCommand).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
             type: "mousePressed",
             x: 120,
@@ -6723,11 +6735,7 @@ describe("PreviewManager", () => {
             button: "left",
             clickCount: 1,
           });
-          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
-            type: "char",
-            text: "coordinate text",
-            unmodifiedText: "coordinate text",
-          });
+
           expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
             type: "rawKeyDown",
             key: "Backspace",
@@ -6811,6 +6819,18 @@ describe("PreviewManager", () => {
             unmodifiedText: "!",
           });
           expect(restoreFocus).toHaveBeenCalledTimes(6);
+          sendCommand.mockClear();
+          yield* manager.automationType("tab_input", {
+            text: "Hello 🌌 café\nNext\r\nLast",
+            clear: true,
+          });
+          const characters = sendCommand.mock.calls.filter(
+            ([method, params]) => method === "Input.dispatchKeyEvent" && params?.type === "char",
+          );
+          expect(characters.map(([, params]) => params?.text).join("")).toBe(
+            "Hello 🌌 café\rNext\rLast",
+          );
+          expect(characters.some(([, params]) => params?.text === "🌌")).toBe(true);
         }),
       ),
   );
