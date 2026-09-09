@@ -86,14 +86,36 @@ export const readAntigravityAuthStatus = Effect.fn("readAntigravityAuthStatus")(
 });
 
 export function antigravityAuthScreen(output: string) {
+  // OSC 8 carries the full href even when the terminal abbreviates its visible label.
+  // A PTY chunk can end anywhere in that href; only its terminator proves it is complete.
+  const hyperlinks = Array.from(
+    // eslint-disable-next-line no-control-regex
+    output.matchAll(/\x1b\]8;[^;]*;([^\x07\x1b]*)(?:\x07|\x1b\\)/g),
+    (match) => match[1] ?? "",
+  );
   const text = output
     // Native terminal output contains ANSI escape/control sequences.
     // eslint-disable-next-line no-control-regex
     .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    // Discard an unfinished OSC frame so its partial href cannot become a plain-text URL.
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\][^\x07\x1b]*(?:\x1b)?$/, "")
     // eslint-disable-next-line no-control-regex
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   // Only OAuth URLs qualify. Documentation and legal links never trigger login completion.
-  const url = text.match(/https:\/\/[^\s<>"']+(?:oauth|authorize|auth\/)[^\s<>"']*/i)?.[0] ?? null;
+  const plainUrls = Array.from(
+    // Plain links must also have a delivered delimiter, rather than merely ending this chunk.
+    // eslint-disable-next-line no-control-regex
+    text.matchAll(/https:\/\/[^\s<>"'\x00-\x1f]+(?=[\s<>"'\x00-\x1f])/g),
+    (match) => match[0],
+  );
+  const url =
+    [...hyperlinks, ...plainUrls].find(
+      (candidate) =>
+        candidate.startsWith("https://") &&
+        /oauth|authorize|auth\//i.test(candidate) &&
+        URL.canParse(candidate),
+    ) ?? null;
   return {
     url,
     waitingForCode:

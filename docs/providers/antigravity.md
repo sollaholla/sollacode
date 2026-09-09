@@ -19,6 +19,8 @@ Run `agy` on the host once to review its initial terms and optional data-sharing
 
 The account runner selects the native **Google OAuth** login option and recognizes the CLI code-entry prompts, including “copy the code displayed in the browser and paste it below.” A successful model listing or a mocked login is not evidence of a completed OAuth exchange.
 
+Sign-in links are captured only after the CLI finishes emitting the URL. Native terminal hyperlinks supply the full destination even when their visible label is shortened. The runner does not publish a link cut off at a subprocess-output boundary.
+
 The model picker shows each native model family once. Its **Effort** selector includes only levels advertised by `agy models`, such as Low/Medium/High for Flash and Low/High for Pro. New selections default to High when supported. Existing saved suffixes such as `gemini-3.8-flash-low` retain Low; an explicit effort choice overrides the suffix. Native models without effort variants keep their existing names and have no invented effort controls.
 
 The account runner and grouped model selection have focused fixture tests against the 1.1.28 command shapes. Native `--model <family> --effort <level> --print /model` resolution was checked without generating a model turn. Fixture authentication success is not proof of a real Google OAuth exchange; that final exchange still requires the account owner's sign-in and one-time CLI setup.
