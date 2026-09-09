@@ -7,7 +7,7 @@ asks for confirmation before settling from a row, a context menu, or a multi-thr
 Canceling the dialog leaves the thread and the current selection unchanged. A settled thread can be
 returned to the active list with **Un-settle**.
 
-Orchestrator and Agent Builder chats stay active permanently. They do not settle
+Dedicated agent, Orchestrator, and Agent Builder chats stay active permanently. They do not settle
 after inactivity, on a closed or merged pull request, or through a Settle action.
 This also applies to older Agent Creator chats. Any old settled classification
 is ignored when opening these persistent chats.

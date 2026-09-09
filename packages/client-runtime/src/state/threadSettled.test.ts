@@ -1,5 +1,6 @@
 import {
   AGENT_BUILDER_THREAD_ID,
+  AGENTS_PROJECT_ID,
   ORCHESTRATOR_THREAD_ID,
   ProjectId,
   ProviderInstanceId,
@@ -94,6 +95,20 @@ describe("threadLastActivityAt", () => {
 });
 
 describe("effectiveSettled", () => {
+  it("keeps dedicated agent chats active despite old overrides, inactivity, or a closed PR", () => {
+    for (const settledOverride of [null, "active", "settled"] as const) {
+      const shell = {
+        ...makeShell({ activityAt: STALE, settledOverride }),
+        projectId: AGENTS_PROJECT_ID,
+      };
+      expect(canSettle(shell, { now: NOW })).toBe(false);
+      for (const changeRequestState of [null, "merged", "closed"] as const) {
+        expect(
+          effectiveSettled(shell, { now: NOW, autoSettleAfterDays: 1, changeRequestState }),
+        ).toBe(false);
+      }
+    }
+  });
   it.each([
     ORCHESTRATOR_THREAD_ID,
     AGENT_BUILDER_THREAD_ID,

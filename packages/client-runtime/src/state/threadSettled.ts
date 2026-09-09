@@ -1,5 +1,6 @@
 import {
   isAgentBuilderThreadId,
+  isAgentsProjectId,
   isOrchestratorThreadId,
   type OrchestrationThreadShell,
 } from "@t3tools/contracts";
@@ -83,6 +84,7 @@ export function canSettle(
   shell: Pick<
     OrchestrationThreadShell,
     | "id"
+    | "projectId"
     | "hasPendingApprovals"
     | "hasPendingUserInput"
     | "session"
@@ -91,7 +93,12 @@ export function canSettle(
   >,
   options: { readonly now: string },
 ): boolean {
-  if (isOrchestratorThreadId(shell.id) || isAgentBuilderThreadId(shell.id)) return false;
+  if (
+    isOrchestratorThreadId(shell.id) ||
+    isAgentBuilderThreadId(shell.id) ||
+    isAgentsProjectId(shell.projectId)
+  )
+    return false;
   if (shell.hasPendingApprovals || shell.hasPendingUserInput) return false;
   if (shell.session?.status === "starting" || shell.session?.status === "running") return false;
   // Queued work is as blocked-on-progress as a live session: settling it
@@ -246,7 +253,12 @@ export function effectiveSettled(
 ): boolean {
   // These are persistent control chats, including older Agent Builder ids.
   // Ignore stale settlement overrides from clients predating this exemption.
-  if (isOrchestratorThreadId(shell.id) || isAgentBuilderThreadId(shell.id)) return false;
+  if (
+    isOrchestratorThreadId(shell.id) ||
+    isAgentBuilderThreadId(shell.id) ||
+    isAgentsProjectId(shell.projectId)
+  )
+    return false;
   // Blocked work must remain visible even when a user explicitly settled it.
   if (shell.hasPendingApprovals || shell.hasPendingUserInput) return false;
   if (shell.session?.status === "starting" || shell.session?.status === "running") return false;
