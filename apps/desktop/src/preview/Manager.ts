@@ -1685,6 +1685,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           if (existing) {
             yield* Scope.close(existing.scope, Exit.void).pipe(Effect.ignore);
           }
+          // Keep the Debugger wrapper alive until its native client is detached.
+          // WebContents destruction does not detach it, and the WebContents
+          // getter is no longer safe once that wrapper has been destroyed.
+          const debuggerApi = wc.debugger;
           const semaphore = yield* Semaphore.make(1);
           const scope = yield* Scope.fork(parentScope, "sequential");
           const handleDebuggerMessage = Effect.fnUntraced(function* (
@@ -1699,7 +1703,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                     operation: "ackScreencastFrame",
                     webContentsId: wc.id,
                   },
-                  () => wc.debugger.sendCommand("Page.screencastFrameAck", { sessionId }),
+                  () => debuggerApi.sendCommand("Page.screencastFrameAck", { sessionId }),
                 ).pipe(Effect.ignore);
               }
               const tabId = yield* tabIdForWebContents(wc.id);
@@ -1800,14 +1804,23 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           };
           yield* Scope.addFinalizer(
             scope,
-            attempt({ operation: "detachControlSession", webContentsId: wc.id }, () => {
-              control.detachRequested = true;
-              if (wc.isDestroyed()) return;
-              wc.debugger.off("message", onMessage);
-              wc.debugger.off("detach", onDetach);
-              if (control.debuggerAttachedByManager && wc.debugger.isAttached()) {
-                wc.debugger.detach();
-              }
+            // This targets the retained Debugger, not WebContents. The generic
+            // liveness guard would skip the required detach after guest teardown.
+            Effect.try({
+              try: () => {
+                control.detachRequested = true;
+                debuggerApi.off("message", onMessage);
+                debuggerApi.off("detach", onDetach);
+                if (control.debuggerAttachedByManager && debuggerApi.isAttached()) {
+                  debuggerApi.detach();
+                }
+              },
+              catch: (cause) =>
+                new PreviewOperationError({
+                  operation: "detachNativeDebugger",
+                  webContentsId: wc.id,
+                  cause,
+                }),
             }).pipe(Effect.ignore),
           );
           const initialize = Effect.fn("PreviewManager.initializeControlSession")(function* () {
@@ -1824,9 +1837,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             );
             const attached = yield* Effect.exit(
               attempt({ operation: "attachDebuggerListeners", webContentsId: wc.id }, () => {
-                wc.debugger.on("message", onMessage);
-                wc.debugger.on("detach", onDetach);
-                wc.debugger.attach("1.3");
+                debuggerApi.on("message", onMessage);
+                debuggerApi.on("detach", onDetach);
+                debuggerApi.attach("1.3");
                 control.debuggerAttachedByManager = true;
               }),
             );
@@ -1834,7 +1847,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               if (wc.isDevToolsOpened()) {
                 return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
               }
-              if (wc.debugger.isAttached()) {
+              if (debuggerApi.isAttached()) {
                 return yield* new PreviewAutomationDebuggerAttachedError({
                   webContentsId: wc.id,
                 });
@@ -1847,7 +1860,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   (method) =>
                     attemptPromise(
                       { operation: `initializeDebugger.${method}`, webContentsId: wc.id },
-                      () => wc.debugger.sendCommand(method),
+                      () => debuggerApi.sendCommand(method),
                     ),
                 ),
                 { concurrency: "unbounded", discard: true },
@@ -6775,12 +6788,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
       yield* typeIntoAutomationTarget(tabId, send, input);
       if (input.text.length > 0) {
-        yield* expectAgentInput(tabId, { kind: "key", key: input.text, code: "" });
-        yield* send("Input.dispatchKeyEvent", {
-          type: "char",
-          text: input.text,
-          unmodifiedText: input.text,
-        });
+        // Chromium character events have a bounded UTF-16 payload, not an
+        // arbitrary string. Iterate code points so surrogate pairs stay intact.
+        // A native return character inserts a line break; LF alone is ignored.
+        const normalizedText = input.text.replace(/\r\n?/g, "\n");
+        let renewInputWindowAt = 0;
+        for (const character of normalizedText) {
+          const text = character === "\n" ? "\r" : character;
+          const now = yield* currentMillis;
+          if (now >= renewInputWindowAt) {
+            yield* expectAgentInput(tabId, { kind: "key", key: text, code: "" });
+            renewInputWindowAt = now + AGENT_INPUT_WINDOW_MS / 2;
+          }
+          yield* send("Input.dispatchKeyEvent", { type: "char", text, unmodifiedText: text });
+        }
         // The trusted key event is delivered to whichever widget Chromium considers
         // focused, which is not necessarily this guest: focusing a `<webview>`'s
         // WebContents does not move the embedder's focus into it, so the text can
@@ -6789,7 +6810,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         // instead of silently typing into the user's conversation.
         const insertedJson = yield* encodeJson(
           { operation: "automationType.encodeVerification", tabId },
-          input.text,
+          normalizedText,
         );
         const landedInGuest = yield* evaluateWithDebugger<unknown>(
           tabId,

@@ -47,6 +47,8 @@ turn, so a framework replacing the field's DOM node between the tap and the keys
 the text. Older captures are discarded when a newer capture finishes first. If typing fails, the
 text remains in the row so it can be retried instead of being lost. A failed follow-up frame capture
 does not rewrite a successful key delivery as an input failure.
+Text is delivered as native character events, preserving Unicode code points and normalizing line
+breaks for Chromium. Long strings are not sent as a single character event.
 
 OAuth and other real popup windows become the active remote frame until they close, then the frame
 returns to the opener. A held download appears as an approval card with Allow once, Allow always,
