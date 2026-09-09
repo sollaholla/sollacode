@@ -578,4 +578,48 @@ describe("resource telemetry process model", () => {
     expect(second.groups.backend.processStarts).toBe(3);
     expect(second.groups.backend.processExits).toBe(1);
   });
+
+  it("tracks the highest concurrent aggregate instead of adding staggered process peaks", () => {
+    const first = merge({
+      native: nativeSnapshot(BASE_TIME_MS, [
+        processSample({
+          pid: SERVER_PID,
+          ppid: 1,
+          startTimeMs: 1_000,
+          residentBytes: 1_000,
+        }),
+        processSample({
+          pid: 200,
+          ppid: SERVER_PID,
+          startTimeMs: 2_000,
+          residentBytes: 5_000,
+        }),
+      ]),
+    });
+    const second = merge({
+      previous: first,
+      native: nativeSnapshot(
+        BASE_TIME_MS + 1_000,
+        [
+          processSample({
+            pid: SERVER_PID,
+            ppid: 1,
+            startTimeMs: 1_000,
+            residentBytes: 5_000,
+          }),
+          processSample({
+            pid: 200,
+            ppid: SERVER_PID,
+            startTimeMs: 2_000,
+            residentBytes: 1_000,
+          }),
+        ],
+        2,
+      ),
+    });
+
+    expect(second.processes.map((process) => process.peakResidentBytes)).toEqual([5_000, 5_000]);
+    expect(second.groups.backend.currentRssBytes).toBe(6_000);
+    expect(second.groups.backend.peakRssBytes).toBe(6_000);
+  });
 });

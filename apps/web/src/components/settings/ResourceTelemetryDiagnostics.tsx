@@ -997,7 +997,7 @@ export function ResourceTelemetryDiagnostics() {
               label="Resident memory"
               value={allT3 ? formatBytes(allT3.currentRssBytes) : "..."}
               detail={
-                allT3 ? `${formatBytes(allT3.peakRssBytes)} combined process peaks` : undefined
+                allT3 ? `${formatBytes(allT3.peakRssBytes)} highest sampled together` : undefined
               }
             />
             <IconStat
