@@ -170,7 +170,13 @@ provider-side rate limits and connection failures can still delay a response.
 
 Claude API timeout diagnostics are failures, not completed assistant replies. Temporary upstream
 failures remain under automatic retry supervision, including failures that occur before streaming
-begins. Retry status stays visible, and Stop cancels recovery. Claude's local proxy allows up to ten
+begins or after work is already underway. Recovery retains the original user message as its source;
+a transient disconnect does not count as a newer message cancelling the retry. Retry status stays visible, and Stop cancels recovery. Claude's local proxy allows up to ten
 minutes for upstream response headers; the CLI's default first-byte and request deadlines are longer
 so a large-context request can get past the old five-minute cutoff. Explicit environment overrides
 remain in effect. Authentication failures still require the account to be restored.
+
+## Work duration
+
+Work labels use hours and minutes for long turns (for example, **Worked for 9h 29m**),
+and days and hours after a day. Short turns retain seconds and milliseconds.
