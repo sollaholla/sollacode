@@ -44,8 +44,29 @@ listener removal and native detach through the retained handle.
 Forty isolated teardown cycles with explicit cleanup completed successfully. The simple baseline
 teardown stress also completed; it did not reproduce the exact native crash. This establishes a
 real cleanup defect and a targeted mitigation consistent with the crash evidence, not proof that
-all native crashes are eliminated or that a memory leak caused this crash. A live post-install
-check remains a separate proof step.
+all native crashes are eliminated or that a memory leak caused this crash.
+
+## Installed Mac 0.1.491 verification
+
+The guarded installer reported healthy at 13:58:22 UTC. Installed Info.plist reads 0.1.491;
+the installed ASAR contains the zoom conversion, bounded character dispatch, retained Debugger
+cleanup, AGY setup handling, and recovered-turn source handling. The main process relaunched
+with --auto-resume and its backend returned HTTP 200 on port 3773.
+
+At 14:02–14:03 UTC, the normal preview tools operated a disposable localhost fixture in this
+thread's existing test tab at a 1279 by 799 CSS viewport:
+
+- A role locator click and a coordinate click both succeeded; the page read back exactly two clicks.
+- Native typing read back `Native input verified` exactly.
+- Unicode and CRLF input read back `Hello 🌌 café\nNext line`, with the expected normalized newline.
+- A clear-only operation read back an empty textarea.
+- Closing the test tab succeeded through the normal harness; its temporary HTTP server was stopped.
+
+No Resend campaign, foreign thread tab, or existing Pinterest page was operated. This proves the
+installed normal input path on the fixture, not completion of the Personal Assistant's email task
+or a real AGY OAuth exchange. At 14:03:32 UTC, over five minutes after launch, the same main process
+was alive and no new Solla crash report had appeared since installation. This bounded observation
+does not establish long-term crash freedom.
 
 ## Source references
 
