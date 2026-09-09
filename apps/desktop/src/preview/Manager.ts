@@ -319,8 +319,6 @@ const APP_FOCUS_MARKER_ATTRIBUTE = "data-t3-last-user-focus";
  */
 const AGENT_INPUT_WINDOW_MS = 1_500;
 
-/** Time for a synthetic press's focus change to reach the guest's widget. */
-const AUTOMATION_FOCUS_SETTLE_MS = 120;
 /**
  * Keep the whole browser fleet foreground-equivalent while preview MCP is in
  * use. The lease is renewed by every request and expires only after a full
@@ -964,16 +962,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * A window covers every event an action emits, however many that is.
    */
   const agentInputWindows = new Map<string, number>();
-  /**
-   * Sync-readable mirror of the window above. `before-input-event` is
-   * synchronous and cannot consult a Clock, so the deadline is enforced by a
-   * forked expiry rather than compared against wall-clock time here.
-   */
-  const agentInputActiveTabs = new Set<string>();
   /** Tabs whose guest-side annotation editor currently holds focus. */
   const guestEditorFocusedTabs = new Set<string>();
-  const agentInputWindowGenerations = new Map<string, number>();
-  let agentInputWindowGeneration = 0;
   const controlEpochRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const actionTimelineRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<PreviewAutomationActionEvent>>
@@ -1007,6 +997,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   let pushToTalkInputGeneration = 0;
   /** Epoch millis of the last key the user pressed in the app's own window. */
   let lastUserInputAtMs = 0;
+  let userInputGeneration = 0;
   const recordActivityLeaseMetrics = Effect.fn("PreviewManager.recordActivityLeaseMetrics")(
     function* () {
       const snapshot = activityLeases.snapshot();
@@ -1967,6 +1958,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     };
     yield* pushAction(tabId, actionEvent);
     const epoch = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
+    const inputGeneration = userInputGeneration;
+    const inputAction = ["type", "press", "click", "drag"].includes(action);
     activityLeases.acquire(tabId, actionEvent.id, PreviewActivityConsumer.Automation);
     yield* recordActivityLeaseMetrics();
     const finalize = Effect.fn("PreviewManager.finalizeControlAction")(function* (
@@ -2013,7 +2006,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const send: SendCommand = Effect.fn("PreviewManager.sendCommand")(
           function* (method, commandParams) {
             const before = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
-            if (before !== epoch) {
+            if (before !== epoch || (inputAction && inputGeneration !== userInputGeneration)) {
               return yield* new PreviewAutomationControlInterruptedError({
                 operation: action,
                 tabId,
@@ -2027,7 +2020,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             );
             yield* ensureCurrentWebContents(tabId, wc);
             const after = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
-            if (after !== epoch) {
+            if (after !== epoch || (inputAction && inputGeneration !== userInputGeneration)) {
               return yield* new PreviewAutomationControlInterruptedError({
                 operation: action,
                 tabId,
@@ -2742,16 +2735,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             }),
           ] as const;
         }
-        // A KEY nobody registered is still the agent's while its window is
-        // open: a paste or typed sequence emits more key events than are
-        // registered, and letting those look human is what replayed them into
-        // the app window. A POINTER that matches no registration is the person
-        // reaching into the page — the window used to swallow it, so their
-        // click never handed focus to the guest and their next keystroke was
-        // reclaimed straight back to the composer (reported 2026-08-31).
-        if (windowOpen && signal.kind !== "pointer") {
-          return [true, allExpected] as const;
-        }
         return [
           false,
           replaceMap(allExpected, (copy) => {
@@ -2769,19 +2752,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const now = yield* currentMillis;
     agentInputWindows.set(tabId, now + AGENT_INPUT_WINDOW_MS);
-    agentInputActiveTabs.add(tabId);
-    const windowGeneration = ++agentInputWindowGeneration;
-    agentInputWindowGenerations.set(tabId, windowGeneration);
-    runFork(
-      Effect.sleep(AGENT_INPUT_WINDOW_MS).pipe(
-        Effect.map(() => {
-          // A newer action owns a later generation; only the latest expires.
-          if (agentInputWindowGenerations.get(tabId) !== windowGeneration) return;
-          agentInputWindowGenerations.delete(tabId);
-          agentInputActiveTabs.delete(tabId);
-        }),
-      ),
-    );
     yield* Ref.update(expectedAgentInputsRef, (allExpected) =>
       replaceMap(allExpected, (copy) => {
         const pending = (allExpected.get(tabId) ?? []).filter(
@@ -2812,15 +2782,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       inputSignalsMatch(expected, { kind: "key", key: input.key, code: input.code }),
     );
 
-  /**
-   * Whether this guest keystroke came from automation rather than the person.
-   *
-   * A paste or a typed sequence emits more key events than are individually
-   * registered, so the per-event list alone under-reports; the action window
-   * covers the rest of the burst.
-   */
+  /** Only the exact key currently being dispatched is agent input. */
   const isAgentOriginatedKey = (tabId: string, input: Electron.Input): boolean =>
-    isSynchronousAgentKey(tabId, input) || agentInputActiveTabs.has(tabId);
+    isSynchronousAgentKey(tabId, input);
 
   // Chrome's right-click menu, rebuilt for the embedded browser. The guest is a
   // <webview> living inside the main window, so the menu pops against that
@@ -3329,6 +3293,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     });
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
       if (!listenersActive) return;
+      if (!isAgentOriginatedKey(tabId, input) && input.type === "keyDown") {
+        lastUserInputAtMs = inputClock.currentTimeMillisUnsafe();
+        userInputGeneration++;
+      }
       // Never forward a chord the AGENT dispatched. This gate had no agent
       // check at all, while its sibling below took `expectedAgentInput` — so an
       // automated Cmd+V inside a guest was classified as an app shortcut and
@@ -3511,12 +3479,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // several independent activity windows, and synthetic redispatches could
       // keep the gate open for themselves.
       if (pushToTalkReleased) finishPushToTalkInput();
-      else if (input.type === "keyDown")
-        runFork(
-          Effect.gen(function* () {
-            lastUserInputAtMs = yield* currentMillis;
-          }),
-        );
+      else if (input.type === "keyDown") {
+        userFocusIntent = { kind: "app" };
+        lastUserInputAtMs = inputClock.currentTimeMillisUnsafe();
+        userInputGeneration++;
+      }
     };
     mainWebContents.on("before-input-event", observePushToTalk);
     const stopPushToTalkForWindowDeparture = (): void => {
@@ -3564,6 +3531,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // A click in the app's own window is the user claiming the keyboard back
       // from whatever a preview tab was holding.
       userFocusIntent = { kind: "app" };
+      userInputGeneration++;
       // Deliberately does NOT arm the deferral cooldown. This observer cannot
       // see WHAT was clicked, so arming here held automation for 5s after any
       // click anywhere — reading through threads parked every agent and the
@@ -3574,11 +3542,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     mainWebContents.on("input-event", observeUserPointer);
     const observeRendererUserInput = (): void => {
       userFocusIntent = { kind: "app" };
-      runFork(
-        Effect.gen(function* () {
-          lastUserInputAtMs = yield* currentMillis;
-        }),
-      );
+      lastUserInputAtMs = inputClock.currentTimeMillisUnsafe();
+      userInputGeneration++;
     };
     // The preload reports trusted pointer/key presses from the renderer. Keep
     // the native observers above as coverage for events Chromium handles
@@ -6262,6 +6227,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       Effect.gen(function* () {
         yield* deferToUserInput(operation, tabId, expiresAt);
         yield* rememberAppFocusTarget(tabId);
+        // The renderer round trip may overlap the first physical keystroke.
+        yield* deferToUserInput(operation, tabId, expiresAt);
         return yield* action;
       }).pipe(
         // Also runs when the wait is interrupted, so the badge can never
@@ -6618,8 +6585,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const locatorJson = locator
       ? yield* encodeJson({ operation: "automationType.encodeLocator", tabId }, locator)
       : null;
+    const textJson = yield* encodeJson(
+      { operation: "automationType.encodeText", tabId },
+      input.text.replace(/\r\n?/g, "\n"),
+    );
     const result = yield* evaluateWithDebugger<
       | { ok: true }
+      | { insertionFailed: true }
       | { invalidSelector: true; message: string }
       | { notEditable: true }
       | { notFound: true }
@@ -6628,7 +6600,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       send,
       `(() => {
           try {
-            const element = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, true); })()` : "document.activeElement"};
+            const element = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, true); })()` : input.x !== undefined && input.y !== undefined ? `document.elementFromPoint(${input.x}, ${input.y})` : "document.activeElement"};
             if (!element) return { notFound: true };
             const textControl =
               element instanceof HTMLTextAreaElement ||
@@ -6650,6 +6622,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 selection?.addRange(range);
               }
             }
+            // Execute inside this document, in one renderer task. Native keyboard
+            // dispatch targets the shared focused widget and can reach the composer.
+            const text = ${textJson};
+            if (text.length > 0) {
+              if (!document.execCommand("insertText", false, text)) return { insertionFailed: true };
+              if (!${PREVIEW_TYPED_TEXT_LANDED_JS}(element, text)) return { insertionFailed: true };
+            } else if (clear) {
+              document.execCommand("delete", false);
+              if ((textControl ? element.value : element.textContent) !== "") return { insertionFailed: true };
+            }
             return { ok: true };
           } catch (error) {
             return { invalidSelector: true, message: String(error) };
@@ -6657,6 +6639,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         })()`,
       { returnByValue: true, contextId: executionContextId },
     );
+    if ("insertionFailed" in result) {
+      return yield* new PreviewOperationError({
+        operation: "automationType.textDidNotReachGuest",
+        tabId,
+        cause: new Error("The target rejected document-scoped text insertion."),
+      });
+    }
     if ("invalidSelector" in result) {
       return yield* new PreviewAutomationInvalidSelectorError({
         operation: "type",
@@ -6683,162 +6672,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const performAutomationType = Effect.fn("PreviewManager.performAutomationType")(function* (
     tabId: string,
-    wc: Electron.WebContents,
     input: PreviewAutomationTypeInput,
     send: SendCommand,
-    sendCleanup: SendCommand,
   ) {
-    yield* prepareAutomationInput(send, true);
-    const previouslyFocused = yield* attempt(
-      { operation: "automationType.getFocusedWebContents", tabId, webContentsId: wc.id },
-      () => webContents.getFocusedWebContents(),
-    );
-    const clearSequence = makePreviewAutomationKeySequence(
-      { key: "Backspace" },
-      { isMac: hostPlatform === "darwin" },
-    );
-    let clearKeyDownAttempted = false;
-    const releaseInput = Effect.gen(function* () {
-      if (clearKeyDownAttempted) {
-        yield* sendCleanup("Input.dispatchKeyEvent", clearSequence.keyUp).pipe(Effect.ignore);
-        yield* Effect.sync(() => unregisterSynchronousAgentKey(tabId, clearSequence.signal));
-      }
-      yield* sendCleanup("Emulation.setFocusEmulationEnabled", {
-        enabled: automationForegroundActive,
-      }).pipe(Effect.ignore);
-      if (previouslyFocused && previouslyFocused.id !== wc.id && !previouslyFocused.isDestroyed()) {
-        // Only hand focus back if the guest we borrowed still holds it. When the
-        // user moves focus mid-dispatch — typically by clicking into the visible
-        // preview — restoring would pull the caret out from under them, and the
-        // next thing they type or paste lands in the composer instead of the
-        // page they are looking at.
-        const focusedNow = yield* attempt(
-          {
-            operation: "automationType.getFocusedWebContentsAfterDispatch",
-            tabId,
-            webContentsId: wc.id,
-          },
-          () => webContents.getFocusedWebContents(),
-        ).pipe(Effect.catch(() => Effect.succeed(null)));
-        if (focusedNow === null || focusedNow.id === wc.id) {
-          yield* attempt(
-            {
-              operation: "automationType.restoreFocusedWebContents",
-              tabId,
-              webContentsId: previouslyFocused.id,
-            },
-            () => previouslyFocused.focus(),
-          ).pipe(Effect.ignore);
-        }
-      }
-    });
-
-    // Native CDP input only reaches a hidden/background guest after Chromium has
-    // activated that WebContents. `setFocusEmulationEnabled` alone is NOT enough
-    // — dropping the `focus()` call was tried and native keyboard text silently did
-    // nothing against a hidden guest, so agent typing never reached the page.
-    // Focus it without surfacing its thread, emulate renderer focus for the
-    // dispatch, then hand focus back below.
-    yield* Effect.gen(function* () {
-      yield* attempt(
-        { operation: "automationType.focusWebContents", tabId, webContentsId: wc.id },
-        () => wc.focus(),
-      );
-      yield* send("Page.bringToFront");
-      yield* send("Emulation.setFocusEmulationEnabled", { enabled: true });
-      // Give the guest's widget keyboard focus the way a real click does.
-      // Focusing the WebContents is not enough for a `<webview>`: without a
-      // press, Chromium keeps routing keys to whichever widget the app has
-      // focused — the chat composer — so the agent's text lands in the user's
-      // conversation instead of the page. Only editable targets reach here, so
-      // the press cannot activate a control.
-      if (automationLocator(input) || (input.x !== undefined && input.y !== undefined)) {
-        const focusPoint = yield* resolveClickPoint(
-          tabId,
-          send,
-          input as unknown as PreviewAutomationClickInput,
-        );
-        // Mirror the click path exactly: Chromium hit-tests from the last
-        // pointer position, and the focus change it triggers propagates to the
-        // widget asynchronously. Skipping the move, or inserting text in the
-        // same tick as the release, leaves focus where it was.
-        yield* send("Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          ...focusPoint,
-          button: "none",
-        });
-        // Register the press as agent input before dispatching it, exactly as
-        // the click path does. The guest reports each input back and unattributed
-        // synthetic events are not honoured, so an unregistered press never
-        // moves focus.
-        yield* expectAgentInput(tabId, { kind: "pointer", ...focusPoint, button: 0 });
-        yield* send("Input.dispatchMouseEvent", {
-          type: "mousePressed",
-          ...focusPoint,
-          button: "left",
-          clickCount: 1,
-        });
-        yield* send("Input.dispatchMouseEvent", {
-          type: "mouseReleased",
-          ...focusPoint,
-          button: "left",
-          clickCount: 1,
-        });
-        yield* Effect.sleep(AUTOMATION_FOCUS_SETTLE_MS);
-      }
-      yield* typeIntoAutomationTarget(tabId, send, input);
-      if (input.text.length > 0) {
-        // Chromium character events have a bounded UTF-16 payload, not an
-        // arbitrary string. Iterate code points so surrogate pairs stay intact.
-        // A native return character inserts a line break; LF alone is ignored.
-        const normalizedText = input.text.replace(/\r\n?/g, "\n");
-        let renewInputWindowAt = 0;
-        for (const character of normalizedText) {
-          const text = character === "\n" ? "\r" : character;
-          const now = yield* currentMillis;
-          if (now >= renewInputWindowAt) {
-            yield* expectAgentInput(tabId, { kind: "key", key: text, code: "" });
-            renewInputWindowAt = now + AGENT_INPUT_WINDOW_MS / 2;
-          }
-          yield* send("Input.dispatchKeyEvent", { type: "char", text, unmodifiedText: text });
-        }
-        // The trusted key event is delivered to whichever widget Chromium considers
-        // focused, which is not necessarily this guest: focusing a `<webview>`'s
-        // WebContents does not move the embedder's focus into it, so the text can
-        // land in the app's own chat composer while this call still reports
-        // success. Read it back from the guest so a misdelivery fails loudly
-        // instead of silently typing into the user's conversation.
-        const insertedJson = yield* encodeJson(
-          { operation: "automationType.encodeVerification", tabId },
-          normalizedText,
-        );
-        const landedInGuest = yield* evaluateWithDebugger<unknown>(
-          tabId,
-          send,
-          `(() => {
-            const element = document.activeElement;
-            if (!element) return false;
-            return ${PREVIEW_TYPED_TEXT_LANDED_JS}(element, ${insertedJson});
-          })()`,
-          { returnByValue: true },
-        );
-        if (!landedInGuest) {
-          return yield* new PreviewOperationError({
-            operation: "automationType.textDidNotReachGuest",
-            tabId,
-            webContentsId: wc.id,
-            cause: new Error(
-              "Typed text was not found in the focused element after insertion; the guest never took keyboard focus, or the field rejected the text.",
-            ),
-          });
-        }
-      } else if (input.clear) {
-        yield* expectAgentInput(tabId, clearSequence.signal);
-        clearKeyDownAttempted = true;
-        yield* Effect.sync(() => registerSynchronousAgentKey(tabId, clearSequence.signal));
-        yield* send("Input.dispatchKeyEvent", clearSequence.keyDown);
-      }
-    }).pipe(Effect.ensuring(releaseInput));
+    // No native focus, mouse events, or keyboard packets: the renderer owns
+    // this edit atomically even if the user is typing in the app at the same time.
+    yield* send("Runtime.enable");
+    yield* typeIntoAutomationTarget(tabId, send, input);
   });
 
   const automationType = Effect.fn("PreviewManager.automationType")(function* (
@@ -6851,8 +6691,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       tabId,
       Effect.gen(function* () {
         const wc = yield* requireWebContents(tabId);
-        yield* withControlSession(tabId, wc, "type", (send, sendCleanup) =>
-          performAutomationType(tabId, wc, input, send, sendCleanup),
+        yield* withControlSession(tabId, wc, "type", (send) =>
+          performAutomationType(tabId, input, send),
         );
       }),
       options?.expiresAt,

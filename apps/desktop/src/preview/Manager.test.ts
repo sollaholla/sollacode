@@ -6567,13 +6567,41 @@ describe("PreviewManager", () => {
   );
 
   effectIt.effect(
-    "uses native CDP text input in background webviews and preserves key cleanup",
+    "keeps text edits inside the guest document and preserves explicit key cleanup",
     () =>
       withManager((manager) =>
         Effect.gen(function* () {
           let failKeyDown = false;
+          let interruptText = false;
+          let guestKey: ((event: Electron.Event, input: Electron.Input) => void) | undefined;
+          let mainKey: ((event: Electron.Event, input: Electron.Input) => void) | undefined;
+          const mainWebContents = {
+            sendInputEvent: vi.fn(),
+            focus: vi.fn(),
+            id: 7,
+            isDestroyed: () => false,
+            executeJavaScript: vi.fn(async () => true),
+            on: vi.fn((name: string, listener: typeof mainKey) => {
+              if (name === "before-input-event") mainKey = listener;
+            }),
+            off: vi.fn(),
+          };
+          yield* manager.setMainWindow({
+            isDestroyed: () => false,
+            once: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            focus: vi.fn(),
+            webContents: mainWebContents,
+          } as never);
           let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
           const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+            if (interruptText && method === "Runtime.enable") {
+              mainKey?.(
+                {} as Electron.Event,
+                { type: "keyDown", key: "u", code: "KeyU" } as Electron.Input,
+              );
+            }
             if (
               method === "Input.dispatchKeyEvent" &&
               params?.type === "char" &&
@@ -6621,6 +6649,7 @@ describe("PreviewManager", () => {
           });
           getFocusedWebContents.mockImplementation(() => focusedWebContents as never);
           fromId.mockReturnValue({
+            hostWebContents: mainWebContents,
             id: 42,
             isDestroyed: () => false,
             getType: () => "webview",
@@ -6631,7 +6660,9 @@ describe("PreviewManager", () => {
             focus,
             getZoomFactor: () => 1,
             setZoomFactor: vi.fn(),
-            on: vi.fn(),
+            on: vi.fn((name: string, listener: typeof guestKey) => {
+              if (name === "before-input-event") guestKey = listener;
+            }),
             off: vi.fn(),
             ipc: {
               on: vi.fn((channel: string, listener: typeof humanInput) => {
@@ -6689,81 +6720,33 @@ describe("PreviewManager", () => {
             ([method, params]) =>
               method === "Emulation.setFocusEmulationEnabled" && params?.["enabled"] === false,
           );
-          const insertTextIndex = calls.findIndex(
-            ([method, params]) =>
-              method === "Input.dispatchKeyEvent" &&
-              params?.["type"] === "char" &&
-              params?.["text"] === "h",
-          );
-          const backspaceDownIndex = calls.findIndex(
-            ([method, params]) =>
-              method === "Input.dispatchKeyEvent" &&
-              params?.["type"] === "rawKeyDown" &&
-              params?.["key"] === "Backspace",
-          );
-          const backspaceUpIndex = calls.findIndex(
-            ([method, params]) =>
-              method === "Input.dispatchKeyEvent" &&
-              params?.["type"] === "keyUp" &&
-              params?.["key"] === "Backspace",
-          );
-          const legacyTypingExpressions = calls.filter(
+          const textEdits = calls.filter(
             ([method, params]) =>
               method === "Runtime.evaluate" &&
-              typeof params?.["expression"] === "string" &&
-              [
-                "execCommand",
-                "Object.getOwnPropertyDescriptor",
-                "InputEvent",
-                "dispatchEvent",
-              ].some((legacy) => (params["expression"] as string).includes(legacy)),
+              String(params?.expression).includes('document.execCommand("insertText"'),
           );
-          expect(legacyTypingExpressions).toEqual([]);
+          expect(textEdits).toHaveLength(3);
+          expect(textEdits[0]?.[1]?.expression).toContain('const text = "hello"');
+          expect(textEdits[1]?.[1]?.expression).toContain("document.elementFromPoint(120, 80)");
+          expect(textEdits[2]?.[1]?.expression).toContain('document.execCommand("delete"');
           expect(
-            calls
-              .filter(
-                ([method, params]) =>
-                  method === "Input.dispatchKeyEvent" && params?.type === "char",
-              )
-              .map(([, params]) => params?.text)
-              .join(""),
-          ).toBe("hellocoordinate text");
-          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
-            type: "mousePressed",
-            x: 120,
-            y: 80,
-            button: "left",
-            clickCount: 1,
-          });
-
-          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
-            type: "rawKeyDown",
-            key: "Backspace",
-            code: "Backspace",
-            modifiers: 0,
-            windowsVirtualKeyCode: 8,
-            location: 0,
-            isKeypad: false,
-          });
-          expect(enableIndex).toBeGreaterThanOrEqual(0);
-          // Focus emulation alone does not deliver native keyboard text to a
-          // hidden guest, so the guest must really be focused for the dispatch
-          // and handed back afterwards.
-          expect(focus).toHaveBeenCalledTimes(4);
-          expect(restoreFocus).toHaveBeenCalledTimes(4);
-          expect(methods).toContain("Page.bringToFront");
+            calls.filter(
+              ([method, params]) => method === "Input.dispatchKeyEvent" && params?.type === "char",
+            ),
+          ).toEqual([]);
+          expect(calls.filter(([method]) => method === "Input.dispatchMouseEvent")).toEqual([]);
+          // Only the explicit press borrows native focus; none of the three text edits do.
+          expect(focus).toHaveBeenCalledTimes(1);
+          expect(restoreFocus).toHaveBeenCalledTimes(1);
           expect(enableIndex).toBeLessThan(focusOnIndex);
-          expect(focusOnIndex).toBeLessThan(insertTextIndex);
-          expect(insertTextIndex).toBeLessThan(focusOffIndex);
-          expect(backspaceDownIndex).toBeGreaterThan(insertTextIndex);
-          expect(backspaceDownIndex).toBeLessThan(backspaceUpIndex);
+          expect(focusOnIndex).toBeLessThan(focusOffIndex);
           expect(xKeyDownIndex).toBeLessThan(xKeyUpIndex);
           expect(
             calls.filter(
               ([method, params]) =>
                 method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp",
             ),
-          ).toHaveLength(2);
+          ).toHaveLength(1);
           expect(sendCommand).toHaveBeenCalledWith("Input.setIgnoreInputEvents", { ignore: false });
 
           // A user clicking into the visible preview mid-dispatch must win.
@@ -6796,7 +6779,7 @@ describe("PreviewManager", () => {
           expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
             enabled: false,
           });
-          expect(restoreFocus).toHaveBeenCalledTimes(5);
+          expect(restoreFocus).toHaveBeenCalledTimes(2);
           expect(
             sendCommand.mock.calls.filter(
               ([method, params]) =>
@@ -6818,7 +6801,7 @@ describe("PreviewManager", () => {
             text: "!",
             unmodifiedText: "!",
           });
-          expect(restoreFocus).toHaveBeenCalledTimes(6);
+          expect(restoreFocus).toHaveBeenCalledTimes(3);
           sendCommand.mockClear();
           yield* manager.automationType("tab_input", {
             text: "Hello 🌌 café\nNext\r\nLast",
@@ -6827,10 +6810,40 @@ describe("PreviewManager", () => {
           const characters = sendCommand.mock.calls.filter(
             ([method, params]) => method === "Input.dispatchKeyEvent" && params?.type === "char",
           );
-          expect(characters.map(([, params]) => params?.text).join("")).toBe(
-            "Hello 🌌 café\rNext\rLast",
+          expect(characters).toEqual([]);
+          expect(
+            sendCommand.mock.calls.some(
+              ([method, params]) =>
+                method === "Runtime.evaluate" &&
+                String(params?.expression).includes('const text = "Hello 🌌 café\\nNext\\nLast"'),
+            ),
+          ).toBe(true);
+          sendCommand.mockClear();
+          interruptText = true;
+          const interruptedText = yield* Effect.exit(
+            manager.automationType("tab_input", { text: "must never insert" }),
           );
-          expect(characters.some(([, params]) => params?.text === "🌌")).toBe(true);
+          expect(Exit.isFailure(interruptedText)).toBe(true);
+          expect(
+            sendCommand.mock.calls.some(
+              ([method, params]) =>
+                method === "Runtime.evaluate" &&
+                String(params?.expression).includes("document.execCommand"),
+            ),
+          ).toBe(false);
+          // A real key during the previous agent key's action window is human.
+          const preventDefault = vi.fn();
+          guestKey?.(
+            { preventDefault } as unknown as Electron.Event,
+            { type: "keyDown", key: "u", code: "KeyU" } as Electron.Input,
+          );
+          expect(preventDefault).toHaveBeenCalledOnce();
+          yield* Effect.yieldNow;
+          expect(mainWebContents.sendInputEvent).toHaveBeenCalledWith({
+            type: "char",
+            keyCode: "u",
+            modifiers: [],
+          });
         }),
       ),
   );
