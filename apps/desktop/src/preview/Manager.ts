@@ -3148,10 +3148,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     });
     const beforeMouse = (_event: Electron.Event, mouse: Electron.MouseInputEvent): void => {
       if (!listenersActive || (mouse.type !== "mouseDown" && mouse.type !== "contextMenu")) return;
+      let zoomFactor: number;
+      try {
+        zoomFactor = wc.getZoomFactor();
+      } catch {
+        return;
+      }
+      if (!Number.isFinite(zoomFactor) || zoomFactor <= 0) return;
+      // Electron reports widget coordinates after page zoom; CDP and the
+      // preload report CSS pixels. Compare in CSS space so our own mouse-down
+      // cannot invalidate its control session on a zoomed page.
       const signal: PreviewInputSignal = {
         kind: "pointer",
-        x: mouse.x,
-        y: mouse.y,
+        x: mouse.x / zoomFactor,
+        y: mouse.y / zoomFactor,
         button: mouse.button === "middle" ? 1 : mouse.button === "right" ? 2 : 0,
       };
       const now = inputClock.currentTimeMillisUnsafe();

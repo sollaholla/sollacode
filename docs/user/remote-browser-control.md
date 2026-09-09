@@ -57,6 +57,8 @@ and Deny actions on both mobile surfaces.
 Clicking inside a desktop browser tab gives that tab your next keystroke, including fields inside
 embedded frames. Merely hovering does not move keyboard focus. An agent selecting a page field
 does not transfer your typing away from the composer; only your own click chooses that surface.
+Browser zoom is accounted for when matching agent clicks, so zoomed pages do not falsely report
+that an agent was interrupted by human input.
 
 ## Native Mobile App
 
