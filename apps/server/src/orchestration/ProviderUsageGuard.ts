@@ -1689,6 +1689,7 @@ export function toServerProviderUsageGuardState(input: {
     summary: config.active ? evaluation.summary : "Off",
     windowKey: evaluation.windowKey,
     windowLabel: evaluation.windowLabel,
+    windowScope: evaluation.windowScope,
     reportedPercent: evaluation.reportedPercent,
     estimatedPercent: evaluation.estimatedPercent,
     resetsAt: evaluation.resetsAtMs,

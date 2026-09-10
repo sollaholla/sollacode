@@ -29,8 +29,14 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useUiStateStore } from "../../uiStateStore";
 import { toastManager } from "../ui/toast";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
-import { useThreadShell } from "../../state/entities";
-import { hasUnseenCompletion, resolveSidebarV2Status } from "../Sidebar.logic";
+import { useThreadShell, useThreadShells } from "../../state/entities";
+import { deriveWorkingSideChatsByParent, sideChatParentActivityKey } from "../../sideChat";
+import { useStartupResumeStore } from "../../startupResumeStore";
+import {
+  hasUnseenCompletion,
+  promoteAgentRowStatus,
+  resolveSidebarV2Status,
+} from "../Sidebar.logic";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
@@ -396,10 +402,33 @@ function AgentSidebarRow(props: {
   const rowEnvironment = useEnvironment(props.environmentId);
   const environmentUnreachable =
     rowEnvironment != null && rowEnvironment.connection.phase !== "connected";
-  const status =
+  // An agent delegates its real work to side chats, and its own chat thread
+  // sits "ready" while they run — so reading only its own shell lit nothing at
+  // all while the agent was plainly busy. An ordinary thread row already gets
+  // this promotion (SidebarV2); the agent row was the one surface that did
+  // not, which is what "agent side-chats should show the working icon just
+  // like normal working does" is asking for.
+  const threadShells = useThreadShells();
+  const startupResumePendingByThreadKey = useStartupResumeStore(
+    (state) => state.pendingStartedAtByThreadKey,
+  );
+  const sideChatActivity = useMemo(() => {
+    if (!agent.threadId) return null;
+    return (
+      deriveWorkingSideChatsByParent(threadShells, startupResumePendingByThreadKey).get(
+        sideChatParentActivityKey(props.environmentId, agent.threadId),
+      ) ?? null
+    );
+  }, [agent.threadId, props.environmentId, startupResumePendingByThreadKey, threadShells]);
+  const ownStatus =
     threadShell === null
       ? null
       : resolveSidebarV2Status({ ...threadShell, environmentUnreachable });
+  const status = promoteAgentRowStatus({
+    ownStatus,
+    hasWorkingSideChat: sideChatActivity !== null,
+    environmentUnreachable,
+  });
   const working = status === "working";
   // An agent parked on an approval or a question is the one state on this row
   // the user has to act on, so it outranks "working" here exactly as it does

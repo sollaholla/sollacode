@@ -46,6 +46,7 @@ import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
   describeProviderStatus,
   describeProviderUpdateOutcome,
+  getProviderInstallPresentation,
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
   getProviderSummary,
@@ -385,6 +386,8 @@ interface ProviderInstanceCardProps {
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
+  readonly onRunInstall?: (() => void) | undefined;
+  readonly isInstalling?: boolean | undefined;
   /** Account-scoped usage details, revealed by the Usage toggle. */
   readonly usage?: ReactNode | undefined;
   /** Compact usage figure shown in the header row next to the Usage toggle. */
@@ -433,6 +436,8 @@ export function ProviderInstanceCard({
   onModelOrderChange,
   onRunUpdate,
   isUpdating = false,
+  onRunInstall,
+  isInstalling = false,
   usage,
   usageBadge,
 }: ProviderInstanceCardProps) {
@@ -473,6 +478,8 @@ export function ProviderInstanceCard({
     .map(([label]) => label);
   const updateOutcome = describeProviderUpdateOutcome(liveProvider?.updateState);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
+  const installOffer = getProviderInstallPresentation(liveProvider);
+  const installOutcome = describeProviderUpdateOutcome(liveProvider?.installState);
   const detailsId = `provider-instance-${instanceId}-details`;
   const usageId = `${detailsId}-usage`;
   // Usage starts folded: the header badge carries the headline number.
@@ -703,6 +710,85 @@ export function ProviderInstanceCard({
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               {titleHeadNode}
               {versionCodeNode}
+              {installOffer && onRunInstall ? (
+                <Popover>
+                  <PopoverTrigger
+                    render={
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="outline"
+                        className="h-5 gap-1 rounded-sm px-1.5 text-[11px]"
+                        aria-label={`Install ${displayName}`}
+                      >
+                        {isInstalling ? (
+                          <LoaderIcon className="animate-spin" />
+                        ) : (
+                          <DownloadIcon className="size-3" />
+                        )}
+                        {isInstalling ? "Installing" : "Install"}
+                      </Button>
+                    }
+                  />
+                  <PopoverPopup
+                    side="bottom"
+                    align="start"
+                    className="w-[min(21rem,calc(100vw-1.5rem))] [--popup-width:min(21rem,calc(100vw-1.5rem))]"
+                  >
+                    <div className="grid min-w-0 gap-3">
+                      <div className="grid gap-0.5">
+                        <p className="text-[13px] font-semibold leading-tight text-foreground">
+                          Install {displayName}
+                        </p>
+                        <p className="text-xs leading-snug text-muted-foreground">
+                          Solla Code runs this on the environment host. The CLI still needs its own
+                          sign-in afterwards.
+                        </p>
+                      </div>
+                      {installOutcome ? (
+                        <p
+                          role={installOutcome.tone === "error" ? "alert" : "status"}
+                          className={cn(
+                            "rounded-md px-2 py-1.5 text-xs leading-snug",
+                            installOutcome.tone === "error"
+                              ? "border border-destructive/30 bg-destructive/5 text-destructive"
+                              : "bg-muted/60 text-muted-foreground",
+                          )}
+                        >
+                          {installOutcome.text}
+                        </p>
+                      ) : null}
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="default"
+                        className="w-full"
+                        disabled={isInstalling}
+                        onClick={onRunInstall}
+                      >
+                        {isInstalling ? <LoaderIcon className="animate-spin" /> : <DownloadIcon />}
+                        {isInstalling ? "Installing" : "Install now"}
+                      </Button>
+                      {installOffer.installCommand ? (
+                        <>
+                          <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                            <span aria-hidden className="h-px flex-1 bg-border" />
+                            or, install manually using
+                            <span aria-hidden className="h-px flex-1 bg-border" />
+                          </div>
+                          <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
+                            <ScrollArea scrollFade className="h-8 min-w-0 flex-1 rounded-none">
+                              <code className="flex h-full w-max items-center whitespace-nowrap pr-3 font-mono text-[11px] text-foreground">
+                                {installOffer.installCommand}
+                              </code>
+                            </ScrollArea>
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                  </PopoverPopup>
+                </Popover>
+              ) : null}
               {versionAdvisory ? (
                 <Popover>
                   <PopoverTrigger

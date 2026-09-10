@@ -1,3 +1,5 @@
+// @effect-diagnostics globalDate:off - Both uses reformat a timestamp the CLI already
+// printed; neither reads the current time, so there is no clock to inject.
 import { antigravityUsageModelFamily } from "@t3tools/shared/model";
 
 const DAY_MS = 24 * 60 * 60_000;

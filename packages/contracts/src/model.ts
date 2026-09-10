@@ -133,6 +133,7 @@ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const ANTIGRAVITY_DRIVER_KIND = ProviderDriverKind.make("antigravity");
+const DEEPCODE_DRIVER_KIND = ProviderDriverKind.make("deepcode");
 
 export const DEFAULT_MODEL = "gpt-5.6-sol";
 
@@ -162,6 +163,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [GROK_DRIVER_KIND]: "grok-build",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
   [ANTIGRAVITY_DRIVER_KIND]: "gemini-3.1-pro-high",
+  [DEEPCODE_DRIVER_KIND]: "deepseek-flash",
 };
 
 /** Per-provider text generation model defaults. */
@@ -232,4 +234,5 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [CURSOR_DRIVER_KIND]: "Cursor",
   [GROK_DRIVER_KIND]: "Grok",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
+  [DEEPCODE_DRIVER_KIND]: "Deep Code",
 };

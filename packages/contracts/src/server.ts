@@ -133,6 +133,11 @@ export const ServerProviderVersionAdvisory = Schema.Struct({
   latestVersion: Schema.NullOr(TrimmedNonEmptyString),
   updateCommand: Schema.NullOr(TrimmedNonEmptyString),
   canUpdate: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Command that installs the CLI from scratch, when the host can run one. */
+  installCommand: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  canInstall: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   checkedAt: Schema.NullOr(IsoDateTime),
   message: Schema.NullOr(TrimmedNonEmptyString),
 });
@@ -147,6 +152,10 @@ export const ServerProviderUpdateStatus = Schema.Literals([
   "unchanged",
 ]);
 export type ServerProviderUpdateStatus = typeof ServerProviderUpdateStatus.Type;
+
+/** Which one-click maintenance command a client is asking the server to run. */
+export const ServerProviderMaintenanceAction = Schema.Literals(["update", "install"]);
+export type ServerProviderMaintenanceAction = typeof ServerProviderMaintenanceAction.Type;
 
 export const ServerProviderUpdateState = Schema.Struct({
   status: ServerProviderUpdateStatus,
@@ -188,6 +197,14 @@ export const ServerProviderUsageGuardState = Schema.Struct({
   summary: Schema.String,
   windowKey: Schema.NullOr(Schema.String),
   windowLabel: Schema.NullOr(Schema.String),
+  /**
+   * What the governing window binds. Failover reads this: an `account` window
+   * at 100% rules the whole instance out, while a `model-family` window at
+   * 100% only rules out that family's models.
+   */
+  windowScope: Schema.NullOr(Schema.Literals(["account", "model-family", "extra-usage"])).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   /** Last figure the provider itself reported, before extrapolation. */
   reportedPercent: Schema.NullOr(Schema.Number),
   /** Reported figure plus the weighted tokens spent since, priced by the ratio. */
@@ -257,6 +274,8 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
+  /** Progress of the last one-click install, shaped like `updateState`. */
+  installState: Schema.optionalKey(ServerProviderUpdateState),
   /** Present when a provider exposes an explicit runtime capability contract. */
   runtimeCapabilities: Schema.optionalKey(ServerProviderRuntimeCapabilities),
   /** Live usage-guard reading. Absent until the provider reports its quota. */
@@ -750,6 +769,8 @@ export class ProviderAccountSwitchError extends Schema.TaggedErrorClass<Provider
 export const ServerProviderUpdateInput = Schema.Struct({
   provider: ProviderDriverKind,
   instanceId: Schema.optionalKey(ProviderInstanceId),
+  /** Defaults to `update`; `install` runs the from-scratch install command. */
+  action: Schema.optionalKey(ServerProviderMaintenanceAction),
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
 

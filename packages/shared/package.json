@@ -255,7 +255,11 @@
       "types": "./src/usageGuardCurve.ts",
       "import": "./src/usageGuardCurve.ts"
     },
-    "./heldMessages": "./src/heldMessages.ts"
+    "./heldMessages": "./src/heldMessages.ts",
+    "./providerDrivers": {
+      "types": "./src/providerDrivers.ts",
+      "import": "./src/providerDrivers.ts"
+    }
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",

@@ -41,6 +41,13 @@ export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
   readonly update: ProviderMaintenanceCommandAction | null;
+  /**
+   * Command that installs the CLI on a host that does not have it yet.
+   * Distinct from `update`: a self-updating binary (`claude update`,
+   * `cursor-agent update`) cannot install itself, so drivers that update
+   * natively still install through their package manager or vendor script.
+   */
+  readonly install: ProviderMaintenanceCommandAction | null;
 }
 
 export interface ProviderMaintenanceCommandAction {
@@ -63,10 +70,32 @@ export interface ProviderMaintenanceCapabilitiesResolver {
   ) => ProviderMaintenanceCapabilities;
 }
 
+/** A vendor's documented install command, per host platform. */
+export interface ProviderInstallScriptDefinition {
+  readonly lockKey: string;
+  readonly posix: { readonly executable: string; readonly args: ReadonlyArray<string> };
+  readonly windows: { readonly executable: string; readonly args: ReadonlyArray<string> };
+}
+
+export function resolveProviderInstallScript(
+  definition: ProviderInstallScriptDefinition,
+  platform: NodeJS.Platform = process.platform,
+): ProviderMaintenanceCommandAction {
+  const target = platform === "win32" ? definition.windows : definition.posix;
+  return {
+    command: [target.executable, ...target.args].join(" "),
+    executable: target.executable,
+    args: target.args,
+    lockKey: definition.lockKey,
+  };
+}
+
 export interface PackageManagedProviderMaintenanceDefinition {
   readonly provider: ProviderDriverKind;
   readonly npmPackageName: string;
   readonly homebrewFormula: string | null;
+  /** Vendor install script, for CLIs whose native build is not on npm. */
+  readonly installScript?: ProviderInstallScriptDefinition | null;
   readonly nativeUpdate: {
     readonly executable: string;
     readonly args: ReadonlyArray<string>;
@@ -100,6 +129,7 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly updateExecutable: string | null;
   readonly updateArgs: ReadonlyArray<string>;
   readonly updateLockKey: string | null;
+  readonly install?: ProviderMaintenanceCommandAction | null;
 }): ProviderMaintenanceCapabilities {
   const update =
     input.updateExecutable === null || input.updateLockKey === null
@@ -114,12 +144,37 @@ export function makeProviderMaintenanceCapabilities(input: {
     provider: input.provider,
     packageName: input.packageName,
     update,
+    install: input.install ?? null,
   };
+}
+
+function makeCommandAction(
+  executable: string,
+  args: ReadonlyArray<string>,
+  lockKey: string,
+): ProviderMaintenanceCommandAction {
+  return { command: [executable, ...args].join(" "), executable, args, lockKey };
+}
+
+/**
+ * The npm global install is the fallback install channel for every
+ * package-managed driver: the host may update through Homebrew or a native
+ * `<cli> update`, but neither can bootstrap a CLI that is not there yet.
+ */
+function npmGlobalInstallAction(
+  definition: PackageManagedProviderMaintenanceDefinition,
+): ProviderMaintenanceCommandAction {
+  return makeCommandAction(
+    "npm",
+    ["install", "-g", `${definition.npmPackageName}@latest`],
+    "npm-global",
+  );
 }
 
 export function makeManualOnlyProviderMaintenanceCapabilities(input: {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
+  readonly install?: ProviderMaintenanceCommandAction | null;
 }): ProviderMaintenanceCapabilities {
   return makeProviderMaintenanceCapabilities({
     provider: input.provider,
@@ -127,6 +182,7 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
     updateExecutable: null,
     updateArgs: [],
     updateLockKey: null,
+    install: input.install ?? null,
   });
 }
 
@@ -139,6 +195,7 @@ function makeNpmGlobalProviderMaintenanceCapabilities(
     updateExecutable: "npm",
     updateArgs: ["install", "-g", `${definition.npmPackageName}@latest`],
     updateLockKey: "npm-global",
+    install: npmGlobalInstallAction(definition),
   });
 }
 
@@ -151,6 +208,11 @@ function makeBunGlobalProviderMaintenanceCapabilities(
     updateExecutable: "bun",
     updateArgs: ["i", "-g", `${definition.npmPackageName}@latest`],
     updateLockKey: "bun-global",
+    install: makeCommandAction(
+      "bun",
+      ["i", "-g", `${definition.npmPackageName}@latest`],
+      "bun-global",
+    ),
   });
 }
 
@@ -163,6 +225,11 @@ function makePnpmGlobalProviderMaintenanceCapabilities(
     updateExecutable: "pnpm",
     updateArgs: ["add", "-g", `${definition.npmPackageName}@latest`],
     updateLockKey: "pnpm-global",
+    install: makeCommandAction(
+      "pnpm",
+      ["add", "-g", `${definition.npmPackageName}@latest`],
+      "pnpm-global",
+    ),
   });
 }
 
@@ -175,6 +242,7 @@ function makeVitePlusGlobalProviderMaintenanceCapabilities(
     updateExecutable: "vp",
     updateArgs: ["i", "-g", definition.npmPackageName],
     updateLockKey: "vite-plus-global",
+    install: makeCommandAction("vp", ["i", "-g", definition.npmPackageName], "vite-plus-global"),
   });
 }
 
@@ -185,6 +253,7 @@ function makeHomebrewProviderMaintenanceCapabilities(
     return makeManualOnlyProviderMaintenanceCapabilities({
       provider: definition.provider,
       packageName: definition.npmPackageName,
+      install: npmGlobalInstallAction(definition),
     });
   }
 
@@ -194,6 +263,7 @@ function makeHomebrewProviderMaintenanceCapabilities(
     updateExecutable: "brew",
     updateArgs: ["upgrade", definition.homebrewFormula],
     updateLockKey: "homebrew",
+    install: makeCommandAction("brew", ["install", definition.homebrewFormula], "homebrew"),
   });
 }
 
@@ -210,6 +280,9 @@ function makeNativeProviderMaintenanceCapabilities(
     updateExecutable: definition.nativeUpdate.executable,
     updateArgs: definition.nativeUpdate.args,
     updateLockKey: definition.nativeUpdate.lockKey,
+    install: definition.installScript
+      ? resolveProviderInstallScript(definition.installScript)
+      : npmGlobalInstallAction(definition),
   });
 }
 
@@ -326,6 +399,33 @@ export function makePackageManagedProviderMaintenanceResolver(
   };
 }
 
+/**
+ * Maintenance for a CLI whose only install channel is the vendor's script
+ * (Antigravity, Cursor). The binary updates itself or not at all, so the
+ * install command is the interesting half.
+ */
+export function makeScriptInstalledProviderMaintenanceResolver(definition: {
+  readonly provider: ProviderDriverKind;
+  readonly installScript: ProviderInstallScriptDefinition;
+  readonly update?: {
+    readonly executable: (options?: ProviderMaintenanceCapabilityResolutionOptions) => string;
+    readonly args: ReadonlyArray<string>;
+    readonly lockKey: string;
+  };
+}): ProviderMaintenanceCapabilitiesResolver {
+  return {
+    resolve: (options) =>
+      makeProviderMaintenanceCapabilities({
+        provider: definition.provider,
+        packageName: null,
+        updateExecutable: definition.update ? definition.update.executable(options) : null,
+        updateArgs: definition.update?.args ?? [],
+        updateLockKey: definition.update?.lockKey ?? null,
+        install: resolveProviderInstallScript(definition.installScript),
+      }),
+  };
+}
+
 export function makeStaticProviderMaintenanceResolver(
   capabilities: ProviderMaintenanceCapabilities,
 ): ProviderMaintenanceCapabilitiesResolver {
@@ -415,6 +515,8 @@ export function createProviderVersionAdvisory(input: {
     latestVersion,
     updateCommand: capabilities.update?.command ?? null,
     canUpdate: capabilities.update !== null,
+    installCommand: capabilities.install?.command ?? null,
+    canInstall: capabilities.install !== null,
     checkedAt: input.checkedAt ?? null,
     message: advisory.message,
   };

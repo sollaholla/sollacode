@@ -1588,6 +1588,12 @@ describe("provider usage summaries", () => {
     expect(markup).toContain('aria-label="Provider usage"');
     expect(markup).toContain("shrink-0");
     expect(markup).not.toContain("overflow-x-auto");
+    // A phone fits ~390px and four chips wanted ~412, so the fourth meter was
+    // sliced off the right edge. The strip is bounded by its row and wraps
+    // rather than clipping; a sideways scroller was rejected above, and this
+    // keeps that decision.
+    expect(markup).toContain("max-w-full");
+    expect(markup).toContain("flex-wrap");
     expect(markup).toContain('aria-label="Show Claude usage details; Claude Fable: 91% used"');
     expect(markup).toContain(
       'aria-label="Show Codex account usage details; Codex Weekly: 38% used"',

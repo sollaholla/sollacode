@@ -36,6 +36,7 @@ function provider(input: {
   readonly capabilitiesBySlug?: Readonly<
     Record<string, NonNullable<ServerProvider["models"][number]["capabilities"]>>
   >;
+  readonly usageGuard?: ServerProvider["usageGuard"];
 }): ServerProvider {
   const slugs = input.models ?? (input.model === undefined ? [] : [input.model]);
   return {
@@ -48,6 +49,7 @@ function provider(input: {
     auth: { status: input.authStatus ?? "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
     ...(input.accountUsage === undefined ? {} : { accountUsage: input.accountUsage }),
+    ...(input.usageGuard === undefined ? {} : { usageGuard: input.usageGuard }),
     models: slugs.map((slug, index) => ({
       slug,
       name: slug,
@@ -1141,5 +1143,125 @@ describe("resolveUsageLimitFailoverRestore", () => {
         nowEpochMs: afterReset,
       }),
     ).toBeNull();
+  });
+});
+
+describe("selectProviderFailoverTarget usage readings", () => {
+  const NOW = 1700000000000;
+  const target = (usageGuard: ServerProvider["usageGuard"]) =>
+    selectProviderFailoverTarget({
+      providers: [
+        provider({ instanceId: "claude", driver: "claudeAgent", model: "claude-opus-5" }),
+        provider({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5.6-sol",
+          ...(usageGuard === undefined ? {} : { usageGuard }),
+        }),
+      ],
+      currentInstanceId: ProviderInstanceId.make("claude"),
+      currentDriver: ProviderDriverKind.make("claudeAgent"),
+      currentModel: "claude-opus-5",
+      nowEpochMs: NOW,
+    });
+
+  it("passes over a candidate whose account window already reads 100%", () => {
+    // Handing the thread to a provider the guard already reads as full just
+    // buys one more turn that hits the same wall and bounces again.
+    expect(
+      target({
+        enabled: true,
+        tier: "none" as const,
+        summary: "",
+        windowKey: "weekly",
+        windowLabel: "Weekly",
+        windowScope: "account" as const,
+        reportedPercent: 100,
+        estimatedPercent: 100,
+        resetsAt: null,
+        burnPercentPerHour: null,
+        projectedAtResetPercent: null,
+        turnCostPercent: null,
+        headroomPercent: 0,
+        effortTarget: null,
+        backgroundBudget: null,
+        activeThreads: 0,
+        holdingBackgroundWork: false,
+        backgroundCooldownMs: null,
+        tokensPerPercent: 1,
+        tokensPerPercentSource: "default" as const,
+        learnedTokensPerPercent: null,
+        tokensSinceReport: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ).toBeNull();
+  });
+
+  it("still selects a candidate whose full window is only one model family", () => {
+    // Other families on that instance are untouched, and failoverModel skips
+    // the exhausted models on its own.
+    expect(
+      target({
+        enabled: true,
+        tier: "none" as const,
+        summary: "",
+        windowKey: "weekly",
+        windowLabel: "Weekly",
+        windowScope: "model-family" as const,
+        reportedPercent: 100,
+        estimatedPercent: 100,
+        resetsAt: null,
+        burnPercentPerHour: null,
+        projectedAtResetPercent: null,
+        turnCostPercent: null,
+        headroomPercent: 0,
+        effortTarget: null,
+        backgroundBudget: null,
+        activeThreads: 0,
+        holdingBackgroundWork: false,
+        backgroundCooldownMs: null,
+        tokensPerPercent: 1,
+        tokensPerPercentSource: "default" as const,
+        learnedTokensPerPercent: null,
+        tokensSinceReport: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      })?.instanceId,
+    ).toBe("codex");
+  });
+
+  it("still selects a candidate whose full window has already reset", () => {
+    expect(
+      target({
+        enabled: true,
+        tier: "none" as const,
+        summary: "",
+        windowKey: "weekly",
+        windowLabel: "Weekly",
+        windowScope: "account" as const,
+        reportedPercent: 100,
+        estimatedPercent: 100,
+        resetsAt: 1699999999000,
+        burnPercentPerHour: null,
+        projectedAtResetPercent: null,
+        turnCostPercent: null,
+        headroomPercent: 0,
+        effortTarget: null,
+        backgroundBudget: null,
+        activeThreads: 0,
+        holdingBackgroundWork: false,
+        backgroundCooldownMs: null,
+        tokensPerPercent: 1,
+        tokensPerPercentSource: "default" as const,
+        learnedTokensPerPercent: null,
+        tokensSinceReport: 0,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      })?.instanceId,
+    ).toBe("codex");
+  });
+
+  it("still selects a candidate that reports no usage at all", () => {
+    // An absent reading is not evidence of exhaustion; failing closed here
+    // would leave failover with no target at all.
+    expect(target(undefined)?.instanceId).toBe("codex");
   });
 });

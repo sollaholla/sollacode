@@ -45,7 +45,11 @@ import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../../config.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
-import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry.ts";
+import {
+  ProviderRegistry,
+  type ProviderMaintenanceActionKind,
+  type ProviderRegistryShape,
+} from "../Services/ProviderRegistry.ts";
 import {
   hydrateCachedProvider,
   isCachedProviderCorrelated,
@@ -327,7 +331,10 @@ export const ProviderRegistryLive = Layer.effect(
     );
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
     const maintenanceActionStatesRef = yield* Ref.make<
-      ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
+      ReadonlyMap<
+        ProviderInstanceId,
+        Partial<Record<ProviderMaintenanceActionKind, ServerProviderUpdateState>>
+      >
     >(new Map());
     const usageGuardStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, ServerProviderUsageGuardState>
@@ -373,14 +380,16 @@ export const ProviderRegistryLive = Layer.effect(
       provider: ServerProvider,
     ) {
       const maintenanceActionStates = yield* Ref.get(maintenanceActionStatesRef);
-      const updateState = maintenanceActionStates.get(provider.instanceId)?.update;
-      if (!updateState) {
-        const { updateState: _updateState, ...providerWithoutUpdateState } = provider;
-        return providerWithoutUpdateState;
-      }
+      const actions = maintenanceActionStates.get(provider.instanceId);
+      const {
+        updateState: _updateState,
+        installState: _installState,
+        ...providerWithoutActionState
+      } = provider;
       return {
-        ...provider,
-        updateState,
+        ...providerWithoutActionState,
+        ...(actions?.update ? { updateState: actions.update } : {}),
+        ...(actions?.install ? { installState: actions.install } : {}),
       };
     });
 
@@ -475,7 +484,7 @@ export const ProviderRegistryLive = Layer.effect(
     const setProviderMaintenanceActionState = Effect.fn("setProviderMaintenanceActionState")(
       function* (input: {
         readonly instanceId: ProviderInstanceId;
-        readonly action: "update";
+        readonly action: ProviderMaintenanceActionKind;
         readonly state: ServerProviderUpdateState | null;
       }) {
         yield* Ref.update(maintenanceActionStatesRef, (previous) => {

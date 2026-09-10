@@ -20,7 +20,11 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
-import { ProviderRegistry, type ProviderRegistryShape } from "./Services/ProviderRegistry.ts";
+import {
+  ProviderRegistry,
+  type ProviderMaintenanceActionKind,
+  type ProviderRegistryShape,
+} from "./Services/ProviderRegistry.ts";
 import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
 import {
   makeProviderMaintenanceCapabilities,
@@ -161,7 +165,7 @@ function makeRegistry(
       "providerMaintenanceRunner.test.setProviderMaintenanceActionState",
     )(function* (input: {
       readonly instanceId: ProviderInstanceId;
-      readonly action: "update";
+      readonly action: ProviderMaintenanceActionKind;
       readonly state: ServerProviderUpdateState | null;
     }) {
       const updateState = input.state;
@@ -264,6 +268,8 @@ describe("providerMaintenanceRunner", () => {
           latestVersion: "2.1.123",
           updateCommand: "bun i -g @anthropic-ai/claude-code@latest",
           canUpdate: true,
+          installCommand: null,
+          canInstall: false,
           checkedAt: "2026-04-30T12:00:00.000Z",
           message: "Update available.",
         },

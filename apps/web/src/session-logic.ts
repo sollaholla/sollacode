@@ -58,6 +58,12 @@ export const PROVIDER_OPTIONS: Array<{
     pickerSidebarBadge: "new",
   },
   {
+    value: ProviderDriverKind.make("deepcode"),
+    label: "Deep Code",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
+  {
     value: ProviderDriverKind.make("mcpBridge"),
     label: "MCP Bridge",
     available: true,

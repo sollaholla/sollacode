@@ -50,11 +50,40 @@ describe("composer send hold", () => {
 
 describe("sendWouldStopBackgroundWork", () => {
   it("is destructive only while a turn is running over background tasks", () => {
+    // Antigravity's headless transport refuses a live steer, so the send has
+    // to interrupt the turn -- and take its tasks with it.
     expect(
       sendWouldStopBackgroundWork({
         hasRunningBackgroundTask: true,
         turnRunning: true,
-        providerDriver: "claudeAgent",
+        providerDriver: "antigravity",
+      }),
+    ).toBe(true);
+  });
+
+  it("destroys nothing for a provider that steers the live turn", () => {
+    // The message joins the running turn instead of interrupting it, so every
+    // background task under that turn survives. Naming only Grok here offered
+    // to kill tasks on every Claude, Codex, Cursor and OpenCode send.
+    for (const providerDriver of ["claudeAgent", "codex", "cursor", "grok", "opencode"]) {
+      expect(
+        sendWouldStopBackgroundWork({
+          hasRunningBackgroundTask: true,
+          turnRunning: true,
+          providerDriver,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("treats an unrecognised driver as unable to steer", () => {
+    // Fail closed: a driver this build does not ship must never silently lose
+    // someone's background work.
+    expect(
+      sendWouldStopBackgroundWork({
+        hasRunningBackgroundTask: true,
+        turnRunning: true,
+        providerDriver: "nimbus-quill",
       }),
     ).toBe(true);
   });

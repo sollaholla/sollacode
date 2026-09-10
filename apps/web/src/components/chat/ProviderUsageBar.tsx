@@ -9,6 +9,7 @@ import type {
 } from "@t3tools/contracts";
 import { antigravityUsageModelFamily } from "@t3tools/shared/model";
 import { ExternalLinkIcon, RefreshCwIcon, UserRoundIcon } from "lucide-react";
+import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -91,6 +92,38 @@ export interface ProviderUsageSummary {
   windows: ProviderUsageWindow[];
   reportedAt: string | null;
   resetCredits?: ProviderUsageResetCredits | null;
+}
+
+/**
+ * Which account a usage reading belongs to.
+ *
+ * The popout answers "how much is left" but never said *whose* quota that
+ * was, which is the first question with more than one account configured --
+ * and the card already offers "Switch user" right beside the number.
+ */
+export interface ProviderUsageAccount {
+  readonly email: string | null;
+  /** A distinct display label, when the provider reports one that is not the email. */
+  readonly label: string | null;
+  /** Non-sensitive credential kind ("Google account", "DeepSeek API key"). */
+  readonly type: string | null;
+}
+
+/**
+ * Only an authenticated provider has an account to name. An unauthenticated or
+ * unknown one gets nothing rather than a blurred placeholder over an empty
+ * string, which reads as hidden information that does not exist.
+ */
+export function providerUsageAccount(provider: ServerProvider): ProviderUsageAccount | null {
+  if (provider.auth.status !== "authenticated") return null;
+  const email = provider.auth.email?.trim() || null;
+  const rawLabel = provider.auth.label?.trim() || null;
+  // Mirrors the settings card: a label identical to the email is not a second
+  // fact, it is the same one twice.
+  const label = rawLabel && rawLabel !== email ? rawLabel : null;
+  const type = provider.auth.type?.trim() || null;
+  if (!email && !label && !type) return null;
+  return { email, label, type };
 }
 
 export type ProviderUsageResetCredit = PersistedProviderUsageResetCredit;
@@ -1040,8 +1073,11 @@ export function ProviderUsageDetails({
   onDismissResetCredit,
   externalUsageLink = null,
   creditsOnly = false,
+  account = null,
 }: Pick<ProviderUsageSummary, "state" | "windows" | "reportedAt"> & {
   name: string;
+  /** Whose quota this is. Blurred until the reader asks for it. */
+  account?: ProviderUsageAccount | null;
   /** Skip the header and window bars; render only reset credits and the external link. */
   creditsOnly?: boolean;
   onRefresh?: () => void;
@@ -1157,6 +1193,26 @@ export function ProviderUsageDetails({
                 ? `${state === "stale" ? "Last reported" : "Reported"} ${formatReportedAt(reportedAt)}`
                 : "Account-level provider usage"}
             </p>
+            {account ? (
+              <div className="flex w-full min-w-0 basis-full items-center gap-1.5 text-[11px] text-muted-foreground leading-snug">
+                <UserRoundIcon className="size-3 shrink-0" aria-hidden />
+                {account.email || account.label ? (
+                  <RedactedSensitiveText
+                    value={account.email ?? account.label}
+                    ariaLabel={`${name} account`}
+                    revealTooltip="Reveal account"
+                    hideTooltip="Hide account"
+                    confirmationMessage="Reveal the signed-in account? Make sure nobody else can see your screen."
+                    className="truncate"
+                  />
+                ) : null}
+                {account.type ? (
+                  <span className="shrink-0 truncate text-muted-foreground/80">
+                    {account.email || account.label ? `· ${account.type}` : account.type}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
           </header>
           {refreshError ? (
             <p
@@ -1367,13 +1423,27 @@ export function ProviderUsageBadgeDetails(props: {
   useEffect(() => {
     setRefreshError(null);
   }, [summary.reportedAt]);
+  // Read at await-resolution time, not render time: the closure above captures
+  // the summary from the render that created it, which is by definition the
+  // pre-refresh one.
+  const summaryReportedAtRef = useRef(summary.reportedAt);
+  summaryReportedAtRef.current = summary.reportedAt;
   const refreshUsage = async () => {
     if (!onRefreshProvider || !canRefresh || refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
     setIsRefreshing(true);
     setRefreshError(null);
+    // A refresh whose probe fails resolves successfully and re-publishes the
+    // SAME reading with its old timestamp, so the button spun, the card did
+    // not move, and nothing said why. Compare the timestamp we started from.
+    const reportedAtBefore = summary.reportedAt;
     try {
       await onRefreshProvider(provider);
+      if (summaryReportedAtRef.current === reportedAtBefore && reportedAtBefore !== null) {
+        setRefreshError(
+          "The provider returned the same reading, so its usage is still as old as the timestamp above. Its CLI may not be reporting usage right now.",
+        );
+      }
     } catch {
       setRefreshError(
         "Couldn’t refresh right now. Showing the last confirmed usage while Solla Code retries.",
@@ -1396,6 +1466,7 @@ export function ProviderUsageBadgeDetails(props: {
           windows={[...windows]}
           reportedAt={summary.reportedAt}
           resetCredits={summary.resetCredits ?? null}
+          account={providerUsageAccount(provider)}
           externalUsageLink={providerUsageExternalLink(provider.driver)}
           isRefreshing={isRefreshing}
           refreshError={refreshError}
@@ -1489,7 +1560,7 @@ function ProviderUsageBadge({
         closeDelay={150}
         aria-label={`Show ${usageDetailsLabel}; ${compactUsageLabel}: ${compactStatusWithPace}`}
         data-provider-usage-compact-driver={provider.driver}
-        className="flex min-h-6 shrink-0 items-center gap-1.5 rounded-full px-1 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex min-h-6 shrink-0 items-center gap-1 rounded-full px-0.5 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring sm:gap-1.5 sm:px-1"
       >
         <ProviderInstanceIcon
           driverKind={provider.driver}
@@ -1514,7 +1585,9 @@ function ProviderUsageBadge({
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(compactUsedPercent)}
-            className="relative h-1 w-7 overflow-hidden rounded-full bg-foreground/10 sm:w-8"
+            // Narrowed rather than hidden below sm: the bar carries the pace
+            // overlay, which the percentage alone does not say.
+            className="relative h-1 w-5 overflow-hidden rounded-full bg-foreground/10 sm:w-8"
           >
             <span
               className={`block h-full rounded-full ${usageProgressClass(compactUsedPercent)}`}
@@ -1586,7 +1659,12 @@ export function ProviderUsageBar(props: {
     <section
       aria-label="Provider usage"
       data-chat-composer-provider-usage="true"
-      className="pointer-events-auto mx-auto flex w-fit shrink-0 items-center gap-1.5 rounded-full border border-border/65 bg-background/95 px-2 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur"
+      // `w-fit` with no wrap ran the strip straight off a phone: four providers
+      // need ~412px and an iPhone portrait viewport is 390, so the last meter
+      // was sliced in half. `max-w-full` bounds it to the row and `flex-wrap`
+      // spills onto a second line instead of clipping, which also keeps a
+      // fifth or sixth provider readable rather than invisible.
+      className="pointer-events-auto mx-auto flex w-fit max-w-full shrink-0 flex-wrap items-center justify-center gap-x-1 gap-y-0.5 rounded-2xl border border-border/65 bg-background/95 px-1.5 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur sm:gap-x-1.5 sm:rounded-full sm:px-2"
     >
       {compactEntries.map(({ summary, compactMetric }) => (
         <ProviderUsageBadge

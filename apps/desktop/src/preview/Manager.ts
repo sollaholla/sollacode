@@ -7633,7 +7633,11 @@ export class PreviewAutomationDeferredToUserInputError extends Schema.TaggedErro
   },
 ) {
   override get message(): string {
-    return `Preview automation ${this.operation} waited ${Math.round(this.waitedMs)}ms for the user to stop typing or clicking and was still waiting when the request expired; nothing was dispatched to tab ${this.tabId}`;
+    // The model reads this and decides what to do next, so it has to say the
+    // one correct thing: retry. Reported 2026-09-10 as a red "Runtime error"
+    // card mid-run -- the wording described a failure, so the model treated a
+    // person typing as a broken page and changed approach instead of waiting.
+    return `Preview automation ${this.operation} is still waiting for the user to stop typing or clicking (waited ${Math.round(this.waitedMs)}ms). Nothing was dispatched to tab ${this.tabId}, the page and your selector are fine, and no state changed. This is not a failure: retry this exact call, and keep retrying until it goes through.`;
   }
 }
 

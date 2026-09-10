@@ -4448,7 +4448,9 @@ function ChatViewContent(props: ChatViewProps) {
         status={
           usageGuardPaused
             ? "Waiting for usage budget"
-            : "Sends together when background work finishes"
+            : phase === "running"
+              ? "Joining the running turn"
+              : "Sends when the current work finishes"
         }
       >
         {usageGuardPaused && usageGuardPauseNotice && (

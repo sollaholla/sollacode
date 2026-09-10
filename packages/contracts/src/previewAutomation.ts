@@ -208,6 +208,19 @@ export const PreviewAutomationLoadFailure = Schema.Struct({
 });
 export type PreviewAutomationLoadFailure = typeof PreviewAutomationLoadFailure.Type;
 
+/**
+ * Which caller in this thread group last drove a tab.
+ *
+ * A parent chat and its connected side chats share one browser, one partition
+ * and one tab strip by design, so "this thread's tabs" is a set several
+ * sessions can act on at once. The desktop already names a HUMAN who is
+ * driving (see PreviewAutomationDeferredToUserInputError), but a peer agent
+ * produced no signal at all, so two agents would repeatedly take the same tab
+ * from each other with nothing in either one's tool result to notice.
+ */
+export const PreviewAutomationTabHolder = Schema.Literals(["you", "peer"]);
+export type PreviewAutomationTabHolder = typeof PreviewAutomationTabHolder.Type;
+
 export const PreviewAutomationTabSummary = Schema.Struct({
   tabId: PreviewTabId,
   url: Schema.NullOr(Schema.String),
@@ -216,6 +229,12 @@ export const PreviewAutomationTabSummary = Schema.Struct({
   visible: Schema.Boolean,
   active: Schema.Boolean,
   updatedAt: Schema.String,
+  /**
+   * Filled by the server, not the renderer: only the broker sees the calling
+   * session behind each request. Absent when nobody in the group has driven
+   * this tab through automation.
+   */
+  heldBy: Schema.optional(PreviewAutomationTabHolder),
 });
 export type PreviewAutomationTabSummary = typeof PreviewAutomationTabSummary.Type;
 

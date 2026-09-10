@@ -136,6 +136,24 @@ export function getProviderVersionAdvisoryPresentation(
 }
 
 /**
+ * The from-scratch install offer for a CLI this host does not have yet.
+ *
+ * Distinct from the update advisory above, which needs a current version to
+ * compare and so is silent exactly when the CLI is missing -- the case where
+ * the person most needs a button. `canInstall` comes from the server, which
+ * resolves the right channel per host (npm/bun/pnpm global, Homebrew, or the
+ * vendor's own installer).
+ */
+export function getProviderInstallPresentation(provider: ServerProvider | undefined): {
+  readonly installCommand: string | null;
+} | null {
+  if (!provider || provider.installed || provider.availability === "unavailable") return null;
+  const advisory = provider.versionAdvisory;
+  if (!advisory?.canInstall) return null;
+  return { installCommand: advisory.installCommand ?? null };
+}
+
+/**
  * The outcome of the last in-app provider update, for the card that offered
  * it. The update runs on the server and reports back through
  * `updateState`; until now only the global launch notification read it, so

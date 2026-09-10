@@ -460,6 +460,35 @@ type SidebarV2StatusInput = Pick<
     readonly environmentUnreachable?: boolean;
   };
 
+/**
+ * An agent row's status, once its side chats are taken into account.
+ *
+ * An agent delegates its real work to side chats, so its own chat thread sits
+ * "ready" the whole time they run. Reading only that shell left the row dark
+ * while the agent was plainly busy — an ordinary thread row has had this
+ * promotion for a while (see the `sideChatActivity` term in SidebarV2); the
+ * agent row was the one surface without it.
+ *
+ * Only an otherwise-idle row is promoted, so an agent parked on an approval or
+ * a question still reads as needing an answer rather than being buried under
+ * "working" — the same precedence the thread row uses.
+ */
+export function promoteAgentRowStatus<Status extends string>(input: {
+  readonly ownStatus: Status | null;
+  readonly hasWorkingSideChat: boolean;
+  /** Suppressed AFTER the promotion — see below. */
+  readonly environmentUnreachable: boolean;
+}): Status | "working" | "ready" | null {
+  const promoted =
+    input.ownStatus === "ready" && input.hasWorkingSideChat ? "working" : input.ownStatus;
+  // Order matters, and SidebarV2 learned this the hard way: suppressing only
+  // the row's own status is useless, because the side-chat signal promotes it
+  // straight back to "working" — and an unreachable host is exactly where a
+  // last-known side chat sits "running" forever, since nothing can ever drain
+  // it. That is a timer climbing on a row nobody is working.
+  return input.environmentUnreachable && promoted === "working" ? "ready" : promoted;
+}
+
 export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2Status {
   // Last-known state is not live state. A row on a host we cannot reach cannot
   // be observed working, and the user has no way to stop it from here, so the

@@ -469,6 +469,37 @@ function isClaudeAccountExhausted(accountUsage: unknown, nowEpochMs: number | nu
   return false;
 }
 
+/**
+ * Is this provider's binding usage window already full?
+ *
+ * Failover used to consult only the outgoing provider's rate-limit signal, so
+ * it would happily hand a thread to an instance the usage guard already reads
+ * at 100% -- the handoff ran, the first turn hit the same wall, and the thread
+ * bounced again. Checking the reading before choosing skips those.
+ *
+ * Only a definite full reading disqualifies a candidate. A provider that
+ * reports nothing, has the guard switched off, or whose window has already
+ * rolled over stays selectable: an absent reading is not evidence of
+ * exhaustion, and failing closed here would leave failover with no target at
+ * all. This filters *targets*; it never forces a switch off the provider the
+ * person chose, which a bare 100% reading must not do.
+ */
+export function isProviderUsageWindowFull(
+  provider: ServerProvider,
+  nowEpochMs: number | null,
+): boolean {
+  const usageGuard = provider.usageGuard;
+  if (!usageGuard) return false;
+  // Only an account-wide window speaks for the whole instance. A model-family
+  // window at 100% leaves the other families usable, and `failoverModel`
+  // already skips the exhausted ones per model.
+  if (usageGuard.windowScope !== "account") return false;
+  const resetsAt = usageGuard.resetsAt;
+  if (resetsAt !== null && nowEpochMs !== null && resetsAt <= nowEpochMs) return false;
+  const percent = usageGuard.reportedPercent ?? usageGuard.estimatedPercent;
+  return percent !== null && percent !== undefined && percent >= 100;
+}
+
 function isProviderAccountExhausted(provider: ServerProvider, nowEpochMs: number | null): boolean {
   if (String(provider.driver) === CLAUDE_DRIVER) {
     return isClaudeAccountExhausted(provider.accountUsage, nowEpochMs);
@@ -488,6 +519,9 @@ function targetFromProvider(
   skipSlugs?: ReadonlySet<string>,
 ): ProviderFailoverTarget | null {
   if (isProviderAccountExhausted(provider, nowEpochMs)) {
+    return null;
+  }
+  if (isProviderUsageWindowFull(provider, nowEpochMs)) {
     return null;
   }
   const model = failoverModel(provider, nowEpochMs, skipSlugs);

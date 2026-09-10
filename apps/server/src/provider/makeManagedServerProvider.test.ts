@@ -52,6 +52,7 @@ const maintenanceCapabilities = {
 
     lockKey: "npm-global",
   },
+  install: null,
 } as const;
 
 const initialSnapshot: ServerProvider = {

@@ -143,6 +143,15 @@ export function isProviderUpdateActive(provider: Pick<ServerProvider, "updateSta
   return provider.updateState?.status === "queued" || provider.updateState?.status === "running";
 }
 
+/** The install counterpart, reading the server's separate install-action slot. */
+export function isProviderInstallActive(
+  provider: Pick<ServerProvider, "installState"> | undefined,
+): boolean {
+  return (
+    provider?.installState?.status === "queued" || provider?.installState?.status === "running"
+  );
+}
+
 export function collectProviderUpdateCandidates(
   providers: ReadonlyArray<ServerProvider>,
 ): ProviderUpdateCandidate[] {
