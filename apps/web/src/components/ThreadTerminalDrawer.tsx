@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import "@xterm/xterm/css/xterm.css";
 
 import {
   stripTerminalMouseReports,
