@@ -117,4 +117,25 @@ describe("usePreviewBridge", () => {
       }),
     });
   });
+
+  it("does not drop the agent cursor when the same URL starts loading", async () => {
+    mocks.reportStatus.mockResolvedValue({ _tag: "Success" });
+    await act(async () => root.render(<BridgeConsumer syncGeneration={0} />));
+    await act(async () => mocks.emit(runtimeTabId, state));
+    await act(async () =>
+      mocks.emit(runtimeTabId, {
+        ...state,
+        navStatus: { kind: "Loading", url: "https://example.test/", title: "Example" },
+      }),
+    );
+    expect(mocks.clearBrowserPointer).not.toHaveBeenCalled();
+
+    await act(async () =>
+      mocks.emit(runtimeTabId, {
+        ...state,
+        navStatus: { kind: "Loading", url: "https://other.test/", title: "Other" },
+      }),
+    );
+    expect(mocks.clearBrowserPointer).toHaveBeenCalledWith(runtimeTabId);
+  });
 });
