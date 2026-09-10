@@ -44,7 +44,10 @@ export function shouldShowProviderSettingsUsage(
   summary: ProviderUsageSummary | undefined,
 ): boolean {
   const supportedDriver =
-    driverKind === "codex" || driverKind === "claudeAgent" || driverKind === "grok";
+    driverKind === "codex" ||
+    driverKind === "claudeAgent" ||
+    driverKind === "grok" ||
+    driverKind === "antigravity";
   return supportedDriver && summary?.state !== "unsupported";
 }
 

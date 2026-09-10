@@ -262,7 +262,7 @@ describe("composer push-to-talk action", () => {
     expect(markup).not.toContain('disabled=""');
   });
 
-  it("keeps Stop primary and offers a distinct queued action for an empty running composer", () => {
+  it("keeps Stop primary without a Send queued now action for an empty running composer", () => {
     const markup = renderActions({
       isRunning: true,
       hasQueuedSendNow: true,
@@ -271,8 +271,8 @@ describe("composer push-to-talk action", () => {
       hasSendableContent: false,
     });
 
-    expect(markup).toContain('aria-label="Send queued now"');
-    expect(markup).toContain(">Send queued now</span>");
+    expect(markup).not.toContain('aria-label="Send queued now"');
+    expect(markup).not.toContain(">Send queued now</span>");
     expect(markup).toContain('aria-label="Stop generation"');
     expect(markup).not.toContain('aria-label="Send message"');
     expect(markup).not.toContain('disabled=""');
@@ -343,12 +343,12 @@ describe("composer push-to-talk action", () => {
       promptHasText: false,
       hasSendableContent: false,
     });
-    expect(markup).toContain('aria-label="Send queued now"');
+    expect(markup).not.toContain('aria-label="Send queued now"');
     expect(markup).toContain('aria-label="Stop generation"');
     expect(markup).not.toContain('aria-label="Send message"');
   });
 
-  it("shows separate queue and draft actions when a queued message has a new draft", () => {
+  it("shows draft send without a queued action when a queued message has a new draft", () => {
     const markup = renderActions({
       isRunning: true,
       hasQueuedSendNow: true,
@@ -357,7 +357,7 @@ describe("composer push-to-talk action", () => {
       hasSendableContent: true,
     });
 
-    expect(markup).toContain('aria-label="Send queued now"');
+    expect(markup).not.toContain('aria-label="Send queued now"');
     expect(markup).toContain('aria-label="Send message"');
     expect(markup).not.toContain('aria-label="Stop generation"');
   });
@@ -372,48 +372,8 @@ describe("composer push-to-talk action", () => {
       hasSendableContent: false,
     });
 
-    expect(markup).toContain('disabled="" aria-label="Sending queued messages now"');
+    expect(markup).not.toContain('aria-label="Sending queued messages now"');
     expect(markup).toContain('aria-label="Stop generation"');
-  });
-
-  it("invokes queued promotion without submitting the draft action", async () => {
-    const onPromoteQueued = vi.fn();
-    const onSubmit = vi.fn();
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-
-    await act(async () => {
-      root.render(
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSubmit();
-          }}
-        >
-          {actions({
-            isRunning: true,
-            hasQueuedSendNow: true,
-            sendWhileRunning: true,
-            promptHasText: true,
-            hasSendableContent: true,
-            onPromoteQueued,
-          })}
-        </form>,
-      );
-    });
-
-    const queuedButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Send queued now"]',
-    );
-    expect(queuedButton).not.toBeNull();
-    await act(async () => queuedButton?.click());
-
-    expect(onPromoteQueued).toHaveBeenCalledTimes(1);
-    expect(onSubmit).not.toHaveBeenCalled();
-
-    await act(async () => root.unmount());
-    container.remove();
   });
 
   it("shows the microphone beside a pending plan-question action", () => {

@@ -235,7 +235,7 @@ export function expireStaleQueuedMessagePromotion(input: {
   setQueuedMessagePromotionPhase({ ...input, state: null });
   return {
     status: "failed",
-    detail: "Sending queued messages timed out. Try Send queued now again.",
+    detail: "Sending queued messages timed out. They will retry automatically.",
   };
 }
 

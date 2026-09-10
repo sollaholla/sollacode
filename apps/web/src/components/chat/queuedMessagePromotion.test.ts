@@ -442,7 +442,7 @@ describe("queued-message promotion lifecycle", () => {
       }),
     ).toEqual({
       status: "failed",
-      detail: "Sending queued messages timed out. Try Send queued now again.",
+      detail: "Sending queued messages timed out. They will retry automatically.",
     });
     expect(phasesRef.current).toEqual({});
   });
@@ -478,7 +478,7 @@ describe("queued-message promotion lifecycle", () => {
       }),
     ).toEqual({
       status: "failed",
-      detail: "Sending queued messages timed out. Try Send queued now again.",
+      detail: "Sending queued messages timed out. They will retry automatically.",
     });
 
     releasePromotion?.();

@@ -57,6 +57,14 @@ describe("provider settings usage refresh coordinator", () => {
       }),
     ).toBe(false);
     expect(
+      isProviderUsageRefreshEligible(
+        provider({
+          driver: ProviderDriverKind.make("antigravity"),
+          instanceId: ProviderInstanceId.make("antigravity"),
+        }),
+      ),
+    ).toBe(true);
+    expect(
       isProviderUsageRefreshEligible({
         ...codex(),
         driver: ProviderDriverKind.make("cursor"),

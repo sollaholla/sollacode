@@ -360,6 +360,7 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { RenderErrorBoundary } from "./RenderErrorBoundary";
 import { ComposerStatusRail } from "./chat/ComposerStatusRail";
 import { useTerminalLayoutSync } from "../hooks/useTerminalLayoutSync";
 import type { TerminalLaunchProvider } from "./terminal/TerminalLaunchPad";
@@ -9837,23 +9838,31 @@ function ChatViewContent(props: ChatViewProps) {
       activeProject &&
       activeWorkspaceRoot ? (
       <Suspense fallback={null}>
-        <FilePreviewPanel
-          key={`${activeProject.environmentId}:${activeWorkspaceRoot}`}
-          environmentId={activeProject.environmentId}
-          cwd={activeWorkspaceRoot}
-          projectName={activeProject.title}
-          threadRef={activeThreadRef}
-          composerDraftTarget={composerDraftTarget}
-          keybindings={keybindings}
-          availableEditors={availableEditors}
-          relativePath={
-            activeRightPanelSurface.kind === "file" ? activeRightPanelSurface.relativePath : null
+        <RenderErrorBoundary
+          fallback={
+            <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
+              Couldn’t load the file preview. Close the Files panel and open it again.
+            </div>
           }
-          revealLine={activeFileSurface?.revealLine ?? null}
-          revealRequestId={activeFileSurface?.revealRequestId ?? 0}
-          onOpenFile={openFileSurface}
-          onPendingChange={handleFilePendingChange}
-        />
+        >
+          <FilePreviewPanel
+            key={`${activeProject.environmentId}:${activeWorkspaceRoot}`}
+            environmentId={activeProject.environmentId}
+            cwd={activeWorkspaceRoot}
+            projectName={activeProject.title}
+            threadRef={activeThreadRef}
+            composerDraftTarget={composerDraftTarget}
+            keybindings={keybindings}
+            availableEditors={availableEditors}
+            relativePath={
+              activeRightPanelSurface.kind === "file" ? activeRightPanelSurface.relativePath : null
+            }
+            revealLine={activeFileSurface?.revealLine ?? null}
+            revealRequestId={activeFileSurface?.revealRequestId ?? 0}
+            onOpenFile={openFileSurface}
+            onPendingChange={handleFilePendingChange}
+          />
+        </RenderErrorBoundary>
       </Suspense>
     ) : null
   ) : null;
@@ -9863,6 +9872,7 @@ function ChatViewContent(props: ChatViewProps) {
       ref={chatViewRootRef}
       className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
       data-embedded-side-chat={embeddedSideChat ? "true" : undefined}
+      data-chat-quote-target={transcriptionOwnerKey}
     >
       {isServerThread && activeThreadRef ? (
         <ThreadArtifactDeepLinkOpener
@@ -10376,6 +10386,7 @@ function ChatViewContent(props: ChatViewProps) {
                             isServerThread={isServerThread}
                             isLocalDraftThread={isLocalDraftThread}
                             forceExpandedOnMobile={forceExpandedMobileComposer && isDraftHeroState}
+                            acceptUntargetedQuotes={!embeddedSideChat}
                             projectSelectionRequired={isLocalDraftThread && activeProject === null}
                             canReferenceLocalFiles={canReferenceLocalFiles}
                             phase={phase}

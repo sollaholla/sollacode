@@ -1,5 +1,7 @@
 import { creditBudgetDay } from "./usageGuardCredits.ts";
+import { antigravityUsageModelFamily } from "@t3tools/shared/model";
 import { usageGuardPaceAllowance } from "@t3tools/shared/usageGuardCurve";
+import { antigravityUsageWindowsFromAccountUsage } from "../provider/antigravityUsage.ts";
 import {
   emptyCreditLedger,
   creditTurnCost,
@@ -48,6 +50,7 @@ export const DEFAULT_TOKENS_PER_PERCENT_BY_DRIVER: Readonly<Record<string, numbe
   claudeAgent: 2_000_000,
   codex: 4_500_000,
   grok: 2_000_000,
+  antigravity: 2_000_000,
 };
 export const FALLBACK_TOKENS_PER_PERCENT = 1_000_000;
 
@@ -131,6 +134,10 @@ const DAY_MS = 24 * HOUR_MS;
  * Grok 4.3 and are priced as it.
  *   Source: https://docs.x.ai (via xAI pricing trackers, September 2026)
  *
+ * Antigravity reports remaining-percent family windows, not token prices.
+ * Until a measured tokens-per-percent exists, the Grok estimate is the
+ * starting ratio and every native model stays at multiplier 1.
+ *
  * These ratios are not learned or adjusted at runtime. The base
  * tokens-per-percent ratio is the driver default or the configured value.
  */
@@ -174,6 +181,7 @@ const CLAUDE_MODEL_FAMILIES = ["mythos", "sonnet", "haiku", "fable", "opus"] as 
 
 /** The family a model belongs to for per-family windows; null for drivers without them. */
 export function modelFamily(driver: string, model: string | null | undefined): string | null {
+  if (driver === "antigravity") return antigravityUsageModelFamily(model);
   if (driver !== "claudeAgent" || !model) return null;
   const normalized = model.toLowerCase();
   return CLAUDE_MODEL_FAMILIES.find((family) => normalized.includes(family)) ?? null;
@@ -451,6 +459,18 @@ function claudeWindows(raw: unknown): UsageWindowSample[] {
   return windows;
 }
 
+function antigravityWindows(raw: unknown): UsageWindowSample[] {
+  return antigravityUsageWindowsFromAccountUsage(raw).map((window) => ({
+    key: window.key,
+    label: window.label,
+    usedPercent: window.usedPercent,
+    resetsAtMs: window.resetsAt === null ? null : Date.parse(window.resetsAt),
+    windowDurationMs: window.windowDurationMs,
+    scope: "model-family",
+    family: window.family,
+  }));
+}
+
 function grokWindows(raw: unknown): UsageWindowSample[] {
   const envelope = asRecord(raw);
   if (!envelope) return [];
@@ -491,6 +511,8 @@ export function extractUsageWindows(driver: string, rateLimits: unknown): UsageW
       return claudeWindows(rateLimits);
     case "grok":
       return grokWindows(rateLimits);
+    case "antigravity":
+      return antigravityWindows(rateLimits);
     default:
       return [];
   }

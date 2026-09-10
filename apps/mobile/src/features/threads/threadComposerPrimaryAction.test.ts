@@ -21,7 +21,7 @@ describe("mobile thread composer primary action", () => {
       canPromoteQueued: true,
       queuedPromotionLabel: "Send queued now",
       sendLabel: "Queue",
-      showQueuedPromotionAction: true,
+      showQueuedPromotionAction: false,
       showStopAction: true,
     });
   });
@@ -41,7 +41,7 @@ describe("mobile thread composer primary action", () => {
       canPromoteQueued: false,
       queuedPromotionLabel: "Sending queued messages",
       sendLabel: "Queue",
-      showQueuedPromotionAction: true,
+      showQueuedPromotionAction: false,
       showStopAction: true,
     });
   });

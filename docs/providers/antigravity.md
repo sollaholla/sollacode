@@ -2,7 +2,7 @@
 
 Solla Code runs Google's `agy` CLI on the environment host. Install and sign in using the [official CLI instructions](https://www.antigravity.google/docs/cli/), then configure the Antigravity provider instance in Settings. Remote environments need their own installation and credentials.
 
-The driver reads the executable version and available models from the installed CLI. Custom models can also be supplied in provider settings. Authentication is verified using the native, non-generating `agy --print /usage` command. Executable presence or a model listing is not authentication proof; a transient status-check failure remains unknown.
+The driver reads the executable version and available models from the installed CLI. Custom models can also be supplied in provider settings. Authentication is verified using the native, non-generating `agy --print /usage` command. That same command supplies the account usage bar: remaining-percent rows for Gemini versus Claude and GPT, converted to used percent with the reported weekly reset. Executable presence or a model listing is not authentication proof; a transient status-check failure remains unknown.
 
 ## Supported behavior
 

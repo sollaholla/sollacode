@@ -32,7 +32,7 @@ export function resolveThreadComposerPrimaryAction(input: {
       !input.connectionConnected || input.activeThreadBusy || input.queueCount > 0
         ? "Queue"
         : "Send",
-    showQueuedPromotionAction: input.hasQueuedSendNow,
+    showQueuedPromotionAction: false,
     showStopAction: input.activeThreadBusy,
   };
 }

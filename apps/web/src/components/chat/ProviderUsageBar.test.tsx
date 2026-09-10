@@ -206,6 +206,66 @@ describe("provider usage summaries", () => {
     );
   });
 
+  it("turns AGY remaining-percent family rows into used-percent windows", () => {
+    const provider = {
+      ...makeProvider("antigravity", "antigravity", "fixture@example.com"),
+      displayName: "Antigravity",
+      accountUsage: {
+        windows: [
+          {
+            key: "gemini",
+            family: "gemini",
+            label: "Gemini",
+            remainingPercent: 0,
+            usedPercent: 100,
+            resetsAt: "2026-09-11T18:30:48Z",
+            windowDurationMs: 7 * 24 * 60 * 60_000,
+          },
+          {
+            key: "claude-gpt",
+            family: "claude-gpt",
+            label: "Claude and GPT",
+            remainingPercent: 100,
+            usedPercent: 0,
+            resetsAt: "2026-09-17T14:30:07Z",
+            windowDurationMs: 7 * 24 * 60 * 60_000,
+          },
+        ],
+      },
+      accountUsageReportedAt: "2026-09-10T14:00:00.000Z",
+    } satisfies ServerProvider;
+
+    const summaries = deriveProviderUsageSummaries(
+      [provider],
+      [],
+      {},
+      Date.parse("2026-09-10T14:01:00.000Z"),
+    );
+    expect(summaries[0]?.state).toBe("available");
+    expect(summaries[0]?.windows).toEqual([
+      expect.objectContaining({ key: "gemini", label: "Gemini", usedPercent: 100 }),
+      expect.objectContaining({ key: "claude-gpt", label: "Claude and GPT", usedPercent: 0 }),
+    ]);
+    expect(
+      compactProviderUsageMetric(summaries[0]!, {
+        instanceId: provider.instanceId,
+        model: "gemini-3.8-flash-low",
+      }),
+    ).toEqual({
+      label: "Gemini",
+      window: expect.objectContaining({ key: "gemini", usedPercent: 100 }),
+    });
+    expect(
+      compactProviderUsageMetric(summaries[0]!, {
+        instanceId: provider.instanceId,
+        model: "claude-sonnet-4-5",
+      }),
+    ).toEqual({
+      label: "Claude and GPT",
+      window: expect.objectContaining({ key: "claude-gpt", usedPercent: 0 }),
+    });
+  });
+
   it("omits Codex's retired five-hour window while preserving reported weekly and credit data", () => {
     const summaries = deriveProviderUsageSummaries(
       [makeProvider("codex")],

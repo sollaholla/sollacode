@@ -207,6 +207,37 @@ describe("extractUsageWindows", () => {
     ).toMatchObject([{ key: "weekly", usedPercent: 41, scope: "account" }]);
     expect(extractUsageWindows("cursor", { anything: true })).toEqual([]);
   });
+
+  it("scopes AGY remaining-percent rows to Gemini versus Claude/GPT families", () => {
+    const windows = extractUsageWindows("antigravity", {
+      windows: [
+        {
+          key: "gemini",
+          family: "gemini",
+          label: "Gemini",
+          remainingPercent: 0,
+          usedPercent: 100,
+          resetsAt: "2026-09-11T18:30:48Z",
+          windowDurationMs: 7 * DAY,
+        },
+        {
+          key: "claude-gpt",
+          family: "claude-gpt",
+          label: "Claude and GPT",
+          remainingPercent: 100,
+          usedPercent: 0,
+          resetsAt: "2026-09-17T14:30:07Z",
+          windowDurationMs: 7 * DAY,
+        },
+      ],
+    });
+    expect(
+      windows.map((entry) => [entry.key, entry.usedPercent, entry.scope, entry.family]),
+    ).toEqual([
+      ["gemini", 100, "model-family", "gemini"],
+      ["claude-gpt", 0, "model-family", "claude-gpt"],
+    ]);
+  });
 });
 
 describe("modelCostMultiplier", () => {
@@ -617,6 +648,47 @@ describe("evaluateUsageGuard", () => {
     });
     expect(aged.tokenCapSpent).toBe(0);
     expect(aged.admitBackground).toBe(true);
+  });
+
+  it("binds AGY Gemini quota only to Gemini models", () => {
+    const state = recordWindowsIntoState(
+      emptyUsageGuardInstanceState("antigravity"),
+      [
+        window({
+          key: "gemini",
+          usedPercent: 100,
+          resetsAtMs: NOW + 2 * DAY,
+          windowDurationMs: 7 * DAY,
+          scope: "model-family",
+          family: "gemini",
+        }),
+        window({
+          key: "claude-gpt",
+          usedPercent: 0,
+          resetsAtMs: NOW + 7 * DAY,
+          windowDurationMs: 7 * DAY,
+          scope: "model-family",
+          family: "claude-gpt",
+        }),
+      ],
+      NOW,
+    );
+    const gemini = evaluateUsageGuard({
+      state,
+      config: { ...config, holdBackgroundWork: true },
+      nowMs: NOW,
+      model: "gemini-3.8-flash-low",
+    });
+    const claude = evaluateUsageGuard({
+      state,
+      config: { ...config, holdBackgroundWork: true },
+      nowMs: NOW,
+      model: "claude-sonnet-4-5",
+    });
+    expect(gemini.windows.find((entry) => entry.key === "gemini")?.applicable).toBe(true);
+    expect(gemini.windows.find((entry) => entry.key === "claude-gpt")?.applicable).toBe(false);
+    expect(claude.windows.find((entry) => entry.key === "gemini")?.applicable).toBe(false);
+    expect(claude.windows.find((entry) => entry.key === "claude-gpt")?.applicable).toBe(true);
   });
 
   it("binds a model-family window only to turns on that family", () => {
