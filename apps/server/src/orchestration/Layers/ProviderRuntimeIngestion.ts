@@ -2709,6 +2709,22 @@ const make = Effect.gen(function* () {
 
       if (projectedAssistantDelta && projectedAssistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
+        // Grok often opens a turn with a newline-only chunk. Starting an
+        // assistant item from that draws an empty card. Do not invent a
+        // Working/tool activity for those blanks — the existing Working row
+        // already covers an in-progress turn.
+        if (projectedAssistantDelta.trim().length === 0) {
+          const activeMessageId =
+            turnId === undefined
+              ? Option.none()
+              : yield* getActiveAssistantMessageIdForTurn(thread.id, turnId);
+          if (Option.isNone(activeMessageId)) {
+            projectedAssistantDelta = undefined;
+          }
+        }
+      }
+      if (projectedAssistantDelta && projectedAssistantDelta.length > 0) {
+        const turnId = toTurnId(event.turnId);
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
           event,

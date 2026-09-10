@@ -102,6 +102,7 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  visibleAssistantMessageText,
   resolveTimelineDrawDistance,
   resolveTimelineIsAtEnd,
   resolveTimelineIsExactlyAtEnd,
@@ -1967,7 +1968,9 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const messageText =
+    visibleAssistantMessageText(row.message.text) ||
+    (row.message.streaming ? "" : "(empty response)");
   const stopSignoff = row.message.streaming
     ? { hasStop: false, text: messageText }
     : extractAgentStopSignoff(messageText);

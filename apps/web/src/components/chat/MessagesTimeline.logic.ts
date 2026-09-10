@@ -299,11 +299,24 @@ export function resolveAssistantMessageCopyState({
   showCopyButton: boolean;
   streaming: boolean;
 }) {
-  const hasText = text !== null && text.trim().length > 0;
+  const visibleText = visibleAssistantMessageText(text);
+  const hasText = visibleText.length > 0;
   return {
-    text: hasText ? text : null,
+    text: hasText ? visibleText : null,
     visible: showCopyButton && hasText && !streaming,
   };
+}
+
+/** Grok often opens a turn with `"\\n"` chunks. Those must not draw a card. */
+export function visibleAssistantMessageText(text: string | null | undefined): string {
+  return (text ?? "").replace(/^\s+|\s+$/g, "").replace(/\n{3,}/g, "\n\n");
+}
+
+export function assistantMessageHasVisibleBody(
+  message: Pick<ChatMessage, "text" | "attachments">,
+): boolean {
+  if ((message.attachments?.length ?? 0) > 0) return true;
+  return visibleAssistantMessageText(message.text).length > 0;
 }
 
 /**
@@ -709,11 +722,15 @@ export function deriveMessagesTimelineRows(input: {
         continue;
       }
       if (workLogEntryIsThought(timelineEntry.entry)) {
+        const thoughtText = (timelineEntry.entry.detail ?? "").trim();
+        if (thoughtText.length === 0) {
+          continue;
+        }
         nextRows.push({
           kind: "thought",
           id: timelineEntry.id,
           createdAt: timelineEntry.createdAt,
-          text: (timelineEntry.entry.detail ?? "").trim(),
+          text: thoughtText,
         });
         continue;
       }
@@ -783,6 +800,13 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: timelineEntry.createdAt,
         proposedPlan: timelineEntry.proposedPlan,
       });
+      continue;
+    }
+
+    if (
+      timelineEntry.message.role === "assistant" &&
+      !assistantMessageHasVisibleBody(timelineEntry.message)
+    ) {
       continue;
     }
 
