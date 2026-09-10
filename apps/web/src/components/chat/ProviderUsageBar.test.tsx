@@ -22,6 +22,7 @@ import {
   providerUsageBadgeTriggerOpen,
   providerUsageDetailsSide,
   providerUsageExternalLink,
+  providerUsageName,
   resolveProviderUsagePlacement,
   resolveUsageWindowElapsedPercent,
   resolveUsageWindowPaceDeltaMs,
@@ -264,6 +265,18 @@ describe("provider usage summaries", () => {
       label: "Claude and GPT",
       window: expect.objectContaining({ key: "claude-gpt", usedPercent: 0 }),
     });
+  });
+
+  it("titles Antigravity usage as AGY so the card heading stays on one line", () => {
+    expect(
+      providerUsageName({
+        ...makeProvider("antigravity"),
+        displayName: "Antigravity",
+        badgeLabel: "AGY",
+      }),
+    ).toBe("AGY");
+    expect(providerUsageName(makeProvider("antigravity"))).toBe("AGY");
+    expect(providerUsageName(makeProvider("claudeAgent"))).toBe("Claude");
   });
 
   it("omits Codex's retired five-hour window while preserving reported weekly and credit data", () => {
@@ -1394,6 +1407,22 @@ describe("provider usage summaries", () => {
     );
     expect(unavailableMarkup).toContain('data-provider-usage-state="unavailable"');
     expect(unavailableMarkup).toContain(">Unavailable<");
+
+    const agyHeaderMarkup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        name="AGY"
+        state="unavailable"
+        reportedAt={null}
+        windows={[]}
+        onRefresh={() => undefined}
+        onSwitchUser={() => undefined}
+      />,
+    );
+    expect(agyHeaderMarkup).toContain(">AGY usage<");
+    expect(agyHeaderMarkup).toContain("whitespace-nowrap");
+    expect(agyHeaderMarkup).toContain("basis-full");
+    expect(agyHeaderMarkup).toContain("Account-level provider usage");
+    expect(agyHeaderMarkup).not.toContain(">Antigravity usage<");
 
     const staleMarkup = renderToStaticMarkup(
       <ProviderUsageDetails
