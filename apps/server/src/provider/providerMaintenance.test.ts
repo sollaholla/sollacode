@@ -14,10 +14,12 @@ import {
   enrichProviderSnapshotWithVersionAdvisory,
   makePackageManagedProviderMaintenanceResolver,
   makeProviderMaintenanceCapabilities,
+  makeScriptInstalledProviderMaintenanceResolver,
   makeStaticProviderMaintenanceResolver,
   normalizeCommandPath,
   ProviderVersionCache,
   resolveLatestProviderVersion,
+  resolveProviderInstallScript,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "./providerMaintenance.ts";
 
@@ -195,6 +197,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
         lockKey: "static-tool",
       },
+      install: null,
     });
   });
 
@@ -231,6 +234,15 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
             lockKey: "vite-plus-global",
           },
+          install: {
+            command: "vp i -g @example/package-tool",
+
+            executable: "vp",
+
+            args: ["i", "-g", "@example/package-tool"],
+
+            lockKey: "vite-plus-global",
+          },
         });
       }),
   );
@@ -259,6 +271,15 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           provider: driver("nativePackageTool"),
           packageName: "@example/native-package-tool",
           update: {
+            command: "bun i -g @example/native-package-tool@latest",
+
+            executable: "bun",
+
+            args: ["i", "-g", "@example/native-package-tool@latest"],
+
+            lockKey: "bun-global",
+          },
+          install: {
             command: "bun i -g @example/native-package-tool@latest",
 
             executable: "bun",
@@ -304,6 +325,15 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
             lockKey: "pnpm-global",
           },
+          install: {
+            command: "pnpm add -g @example/scoped-package-tool@latest",
+
+            executable: "pnpm",
+
+            args: ["add", "-g", "@example/scoped-package-tool@latest"],
+
+            lockKey: "pnpm-global",
+          },
         });
       }),
   );
@@ -326,6 +356,12 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
         args: ["upgrade", "package-tool"],
 
+        lockKey: "homebrew",
+      },
+      install: {
+        command: "brew install package-tool",
+        executable: "brew",
+        args: ["install", "package-tool"],
         lockKey: "homebrew",
       },
     });
@@ -364,6 +400,12 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
             lockKey: "native-package-tool-native",
           },
+          install: {
+            command: "npm install -g @example/native-package-tool@latest",
+            executable: "npm",
+            args: ["install", "-g", "@example/native-package-tool@latest"],
+            lockKey: "npm-global",
+          },
         });
       }),
   );
@@ -401,6 +443,12 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
             lockKey: "scoped-package-tool-native",
           },
+          install: {
+            command: "npm install -g @example/scoped-package-tool@latest",
+            executable: "npm",
+            args: ["install", "-g", "@example/scoped-package-tool@latest"],
+            lockKey: "npm-global",
+          },
         });
       }),
   );
@@ -425,6 +473,12 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
         lockKey: "homebrew",
       },
+      install: {
+        command: "brew install native-package-tool",
+        executable: "brew",
+        args: ["install", "native-package-tool"],
+        lockKey: "homebrew",
+      },
     });
   });
 
@@ -446,6 +500,12 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
         args: ["upgrade", "example/tap/scoped-package-tool"],
 
+        lockKey: "homebrew",
+      },
+      install: {
+        command: "brew install example/tap/scoped-package-tool",
+        executable: "brew",
+        args: ["install", "example/tap/scoped-package-tool"],
         lockKey: "homebrew",
       },
     });
@@ -482,6 +542,15 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         provider: driver("packageTool"),
         packageName: "@example/package-tool",
         update: {
+          command: "npm install -g @example/package-tool@latest",
+
+          executable: "npm",
+
+          args: ["install", "-g", "@example/package-tool@latest"],
+
+          lockKey: "npm-global",
+        },
+        install: {
           command: "npm install -g @example/package-tool@latest",
 
           executable: "npm",
@@ -537,6 +606,15 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
           lockKey: "pnpm-global",
         },
+        install: {
+          command: "pnpm add -g @example/package-tool@latest",
+
+          executable: "pnpm",
+
+          args: ["add", "-g", "@example/package-tool@latest"],
+
+          lockKey: "pnpm-global",
+        },
       });
     }),
   );
@@ -554,6 +632,71 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       provider: driver("packageTool"),
       packageName: "@example/package-tool",
       update: null,
+      install: null,
     });
   });
+});
+
+it("offers a from-scratch install even where the update command cannot bootstrap one", () => {
+  // `claude update` / `cursor-agent update` need the binary that is missing,
+  // and Homebrew's `upgrade` is not `install`. Each channel therefore carries
+  // its own install command rather than reusing the update one.
+  const npm = packageToolUpdate.resolve({ binaryPath: "package-tool" });
+  expect(npm.install?.command).toBe("npm install -g @example/package-tool@latest");
+
+  const homebrew = packageToolUpdate.resolve({
+    binaryPath: "package-tool",
+    resolvedCommandPath: "/opt/homebrew/Cellar/package-tool/1.0.0/bin/package-tool",
+  });
+  expect(homebrew.update?.command).toBe("brew upgrade package-tool");
+  expect(homebrew.install?.command).toBe("brew install package-tool");
+
+  const native = nativePackageToolUpdate.resolve({
+    binaryPath: "native-package-tool",
+    resolvedCommandPath: "/home/example/.local/bin/native-package-tool",
+  });
+  expect(native.update?.command).toBe("native-package-tool update");
+  expect(native.install?.command).toBe("npm install -g @example/native-package-tool@latest");
+});
+
+it("installs a registry-less CLI through its vendor script, per platform", () => {
+  const resolver = makeScriptInstalledProviderMaintenanceResolver({
+    provider: driver("scriptTool"),
+    installScript: {
+      lockKey: "script-tool-install",
+      posix: { executable: "bash", args: ["-lc", "curl -fsSL https://example.test/i.sh | bash"] },
+      windows: {
+        executable: "powershell",
+        args: ["-NoProfile", "-Command", "irm https://example.test/i.ps1 | iex"],
+      },
+    },
+  });
+  expect(resolver.resolve().install?.lockKey).toBe("script-tool-install");
+  expect(
+    resolveProviderInstallScript(
+      {
+        lockKey: "script-tool-install",
+        posix: { executable: "bash", args: ["-lc", "curl -fsSL https://example.test/i.sh | bash"] },
+        windows: {
+          executable: "powershell",
+          args: ["-NoProfile", "-Command", "irm https://example.test/i.ps1 | iex"],
+        },
+      },
+      "win32",
+    ).executable,
+  ).toBe("powershell");
+});
+
+it("carries the install offer to clients on the version advisory", () => {
+  // The advisory is the only maintenance channel a snapshot already has, and
+  // its update half is silent exactly when the CLI is missing: no current
+  // version means status "unknown". The install half must not be.
+  const advisory = createProviderVersionAdvisory({
+    driver: driver("packageTool"),
+    currentVersion: null,
+    maintenanceCapabilities: packageToolUpdate.resolve({ binaryPath: "package-tool" }),
+  });
+  expect(advisory.status).toBe("unknown");
+  expect(advisory.canInstall).toBe(true);
+  expect(advisory.installCommand).toBe("npm install -g @example/package-tool@latest");
 });

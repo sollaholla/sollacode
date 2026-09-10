@@ -5573,7 +5573,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     ) {
       const thread = yield* resolveThread(event.payload.threadId);
       const message = thread?.messages.find((entry) => entry.id === event.payload.messageId);
+      // A held id is only ever minted by the composer for something a person
+      // typed, so it stays a steer candidate even before its row projects.
+      // Losing that race dropped the message onto the obligation path, where
+      // the per-thread lease held by the live turn keeps it unclaimed until
+      // that turn ends -- the slow, silent half of the same complaint.
+      const heldBeforeProjection =
+        message === undefined && isHeldMessageId(event.payload.messageId);
       if (
+        !heldBeforeProjection &&
         !isDirectUserSteerCandidate({
           threadId: event.payload.threadId,
           message,
@@ -5908,9 +5916,19 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             event.payload.session.activeTurnId !== null)
         ) {
           const thread = yield* resolveThread(event.payload.threadId);
-          if (thread && outstandingBackgroundTasks(thread.activities).length === 0) {
+          if (thread) {
             // Reuse the normal steer admission/CAS path: a running resume
             // keeps its supervisor slot, while each queued message can join it.
+            //
+            // This used to wait for `outstandingBackgroundTasks` to reach zero
+            // before releasing anything, which is what the composer's "sends
+            // together when background work finishes" promised. Neither half of
+            // the release destroys a background task, though: a steer JOINS the
+            // live turn rather than interrupting it, and a release onto an idle
+            // thread has no turn to interrupt in the first place. All the gate
+            // bought was silence -- a message typed during a long-running task
+            // sat unread for the entire task, reported as "I see these 2 queued
+            // messages that aren't getting sent".
             for (const message of thread.messages) {
               if (!isHeldMessageId(message.id) || message.queueState !== "queued") continue;
               const context = yield* getPersistedTurnStartContext(thread.id, message.id);

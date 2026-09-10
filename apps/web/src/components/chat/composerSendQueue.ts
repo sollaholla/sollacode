@@ -14,10 +14,28 @@
  * no reason to touch, and left a task whose completion never arrived holding
  * messages for the thirty minutes it takes the panel to call that task stale.
  *
- * A running Grok session is excluded for the opposite reason: it queues the
- * message itself and keeps its tasks, so a send there destroys nothing even
- * mid-turn.
+ * A provider that steers is excluded for the opposite reason: the message
+ * joins the live turn instead of interrupting it, so the turn keeps running
+ * and its tasks with it. Grok was the first such driver and for a while the
+ * only one named here, which meant every Claude, Codex, Cursor and OpenCode
+ * send offered to kill background work it would never have touched.
+ *
+ * Unknown drivers fail closed -- treated as unable to steer -- so a driver
+ * this build does not ship can never silently lose someone's tasks.
  */
+const DRIVERS_THAT_STEER_A_LIVE_TURN: ReadonlySet<string> = new Set([
+  "claudeAgent",
+  "codex",
+  "cursor",
+  "grok",
+  "mcpBridge",
+  "opencode",
+]);
+
+export function providerSteersLiveTurn(providerDriver: string | null): boolean {
+  return providerDriver !== null && DRIVERS_THAT_STEER_A_LIVE_TURN.has(providerDriver);
+}
+
 export function sendWouldStopBackgroundWork(input: {
   readonly hasRunningBackgroundTask: boolean;
   readonly turnRunning: boolean;
@@ -25,7 +43,7 @@ export function sendWouldStopBackgroundWork(input: {
 }): boolean {
   if (!input.hasRunningBackgroundTask) return false;
   if (!input.turnRunning) return false;
-  return input.providerDriver !== "grok";
+  return !providerSteersLiveTurn(input.providerDriver);
 }
 
 export function shouldHoldComposerSend(input: {

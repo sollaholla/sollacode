@@ -505,6 +505,38 @@ export const AntigravitySettings = makeProviderSettingsSchema(
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
 /**
+ * Deep Code CLI (`deepcode`) — DeepSeek's terminal coding assistant.
+ *
+ * Headless turns use `deepcode --exec --prompt`. Model, thinking, and
+ * reasoning effort are overridden per spawn through `DEEPCODE_*`
+ * environment variables; the process still reads `~/.deepcode/settings.json`
+ * for the API key and default policy.
+ */
+export const DeepCodeSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("deepcode").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Deep Code CLI binary (deepcode).",
+        providerSettingsForm: { placeholder: "deepcode", clearWhenEmpty: "omit" },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath"],
+  },
+);
+export type DeepCodeSettings = typeof DeepCodeSettings.Type;
+
+/**
  * Configuration for a user-owned external provider bridge speaking the
  * `solla.provider-bridge/1` application contract over MCP stdio.
  *
@@ -938,6 +970,7 @@ export const ServerSettings = Schema.Struct({
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    deepcode: DeepCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -1049,6 +1082,12 @@ const AntigravitySettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const DeepCodeSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const OrchestratorSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   // Legacy write-only field. Older clients save it into whichever provider is
@@ -1132,6 +1171,7 @@ export const ServerSettingsPatch = Schema.Struct({
       grok: Schema.optionalKey(GrokSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       antigravity: Schema.optionalKey(AntigravitySettingsPatch),
+      deepcode: Schema.optionalKey(DeepCodeSettingsPatch),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual

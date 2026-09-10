@@ -333,6 +333,7 @@ it("shows the reading's age with a Refresh control and prefers a newer live read
       summary: "Holding new work · 0.0 credits remain",
       windowKey: "paid-credits",
       windowLabel: "paid credits",
+      windowScope: "extra-usage",
       reportedPercent: 100,
       estimatedPercent: 100,
       resetsAt: null,

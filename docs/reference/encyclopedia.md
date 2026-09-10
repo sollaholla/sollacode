@@ -95,7 +95,7 @@ The live backend agent implementation and its event stream. The main service is 
 
 #### Provider
 
-The backend agent runtime that actually performs work. See [ProviderService.ts][14], [ProviderAdapter.ts][15], and [CodexAdapter.ts][17].
+The backend agent runtime that actually performs work. Built-in drivers currently include Codex, Claude, Cursor, Grok, OpenCode, Antigravity, Deep Code, and the MCP bridge. See [ProviderService.ts][14], [ProviderAdapter.ts][15], and [CodexAdapter.ts][17].
 
 #### Session
 

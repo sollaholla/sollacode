@@ -31,6 +31,7 @@ import {
   sortProjectsForSidebar,
   sortScopedProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
+  promoteAgentRowStatus,
 } from "./Sidebar.logic";
 import {
   EnvironmentId,
@@ -1603,5 +1604,76 @@ describe("resolveAutoResumeStartedAt — settling delay", () => {
         nowMs: startedMs,
       }),
     ).toBe("not-a-date");
+  });
+});
+
+describe("promoteAgentRowStatus", () => {
+  it("lights an idle agent whose side chat is working", () => {
+    // The agent's own chat thread is "ready" for the whole time its side
+    // chats run, so reading that shell alone left the row dark while the
+    // agent was plainly busy — verified live: agent thread session "ready",
+    // child side chat holding an open turn.
+    expect(
+      promoteAgentRowStatus({
+        ownStatus: "ready",
+        hasWorkingSideChat: true,
+        environmentUnreachable: false,
+      }),
+    ).toBe("working");
+  });
+
+  it("leaves an idle agent alone when nothing is working", () => {
+    expect(
+      promoteAgentRowStatus({
+        ownStatus: "ready",
+        hasWorkingSideChat: false,
+        environmentUnreachable: false,
+      }),
+    ).toBe("ready");
+  });
+
+  it("never buries a row that needs the user", () => {
+    // Same precedence as a thread row: an agent waiting on an approval or a
+    // question is the one state the person has to act on, so it outranks a
+    // busy side chat rather than being hidden under it.
+    for (const ownStatus of ["approval", "input", "error", "working"] as const) {
+      expect(
+        promoteAgentRowStatus({
+          ownStatus,
+          hasWorkingSideChat: true,
+          environmentUnreachable: false,
+        }),
+      ).toBe(ownStatus);
+    }
+  });
+
+  it("passes a missing status straight through", () => {
+    expect(
+      promoteAgentRowStatus({
+        ownStatus: null,
+        hasWorkingSideChat: true,
+        environmentUnreachable: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not climb a timer on an unreachable host", () => {
+    // Suppression runs after the promotion: a last-known side chat on a host
+    // nobody can reach never drains, so promoting first and suppressing second
+    // is the only order that cannot pin "working" on a dead row.
+    expect(
+      promoteAgentRowStatus({
+        ownStatus: "ready",
+        hasWorkingSideChat: true,
+        environmentUnreachable: true,
+      }),
+    ).toBe("ready");
+    expect(
+      promoteAgentRowStatus({
+        ownStatus: "approval",
+        hasWorkingSideChat: true,
+        environmentUnreachable: true,
+      }),
+    ).toBe("approval");
   });
 });

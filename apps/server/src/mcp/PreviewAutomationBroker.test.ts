@@ -111,8 +111,11 @@ it.effect("gives focus-taking input time for the user on top of its own timeout"
       // The caller's number is what errors report; the deadline is what the
       // desktop enforces, and only the click got the grace.
       expect(click?.timeoutMs).toBe(15_000);
+      // The grace is now large enough that a user-input operation gets the
+      // whole budget: a person's typing pause must never be what ends the
+      // call, and the leftover seconds bought nothing.
       expect((click?.expiresAt ?? 0) - before).toBeGreaterThanOrEqual(
-        15_000 + PreviewAutomationBroker.USER_INPUT_DEFERRAL_GRACE_MS - 50,
+        PreviewAutomationBroker.PREVIEW_REQUEST_BUDGET_MS - 50,
       );
       expect(waitFor?.timeoutMs).toBe(15_000);
       expect((waitFor?.expiresAt ?? 0) - before).toBeLessThan(15_000 + 1_000);
@@ -120,7 +123,7 @@ it.effect("gives focus-taking input time for the user on top of its own timeout"
       expect((type?.expiresAt ?? 0) - before).toBeLessThanOrEqual(
         PreviewAutomationBroker.PREVIEW_REQUEST_BUDGET_MS + 50,
       );
-      expect(PreviewAutomationBroker.previewRequestDeadlineMs("press", 15_000)).toBe(45_000);
+      expect(PreviewAutomationBroker.previewRequestDeadlineMs("press", 15_000)).toBe(50_000);
       expect(PreviewAutomationBroker.previewRequestDeadlineMs("drag", 40_000)).toBe(50_000);
       expect(PreviewAutomationBroker.previewRequestDeadlineMs("evaluate", 15_000)).toBe(15_000);
       // A caller who asked for more than the budget still gets what they asked for.
@@ -1548,6 +1551,146 @@ it.effect("still falls back to a remote host when the environment's machine has 
       expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
         "remote",
       );
+    }),
+  ),
+);
+
+// A parent chat and its side chat share one browser on purpose. They used to
+// share the implicit "current tab" too, so each call without an explicit tabId
+// silently retargeted whatever the other one last touched.
+it.effect("gives a parent and its side chat their own current tab", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const parentThreadId = ThreadId.make("thread-tab-parent");
+      const sideChatThreadId = ThreadId.make("thread-tab-side");
+      threadShells.set(sideChatThreadId, {
+        isSideChat: true,
+        sideChatParentThreadId: parentThreadId,
+      });
+      threadShells.set(parentThreadId, {});
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      const seen: Array<PreviewAutomationRequest> = [];
+      yield* Stream.runForEach(requests, (request) => {
+        seen.push(request);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          // Echo whichever tab the caller asked for; open mints a new one.
+          result: { tabId: request.tabId ?? (seen.length === 1 ? "tab-parent" : "tab-side") },
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.invoke<unknown>({
+        scope: { ...scope, threadId: parentThreadId },
+        operation: "open",
+        input: {},
+      });
+      yield* broker.invoke<unknown>({
+        scope: { ...scope, threadId: sideChatThreadId },
+        operation: "open",
+        input: {},
+      });
+      // Neither names a tab: each must land on its own, not the other's.
+      yield* broker.invoke<unknown>({
+        scope: { ...scope, threadId: parentThreadId },
+        operation: "click",
+        input: {},
+      });
+      yield* broker.invoke<unknown>({
+        scope: { ...scope, threadId: sideChatThreadId },
+        operation: "click",
+        input: {},
+      });
+
+      expect(seen.map((request) => request.tabId)).toEqual([
+        undefined,
+        undefined,
+        "tab-parent",
+        "tab-side",
+      ]);
+      threadShells.clear();
+    }),
+  ),
+);
+
+it.effect("tells each caller which tabs a peer is holding", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const parentThreadId = ThreadId.make("thread-held-parent");
+      const sideChatThreadId = ThreadId.make("thread-held-side");
+      threadShells.set(sideChatThreadId, {
+        isSideChat: true,
+        sideChatParentThreadId: parentThreadId,
+      });
+      threadShells.set(parentThreadId, {});
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      let opened = 0;
+      yield* Stream.runForEach(requests, (request) => {
+        const tabId = request.tabId ?? (++opened === 1 ? "tab-a" : "tab-b");
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result:
+            request.operation === "status"
+              ? {
+                  tabId,
+                  tabs: [
+                    {
+                      tabId: "tab-a",
+                      url: null,
+                      title: null,
+                      loading: false,
+                      visible: true,
+                      active: true,
+                      updatedAt: "t",
+                    },
+                    {
+                      tabId: "tab-b",
+                      url: null,
+                      title: null,
+                      loading: false,
+                      visible: false,
+                      active: false,
+                      updatedAt: "t",
+                    },
+                  ],
+                }
+              : { tabId },
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.invoke<unknown>({
+        scope: { ...scope, threadId: parentThreadId },
+        operation: "open",
+        input: {},
+      });
+      yield* broker.invoke<unknown>({
+        scope: { ...scope, threadId: sideChatThreadId },
+        operation: "open",
+        input: {},
+      });
+      const status = (yield* broker.invoke<{
+        tabs: ReadonlyArray<{ tabId: string; heldBy?: string }>;
+      }>({
+        scope: { ...scope, threadId: sideChatThreadId },
+        operation: "status",
+        input: {},
+      })) as { tabs: ReadonlyArray<{ tabId: string; heldBy?: string }> };
+
+      const heldBy = Object.fromEntries(status.tabs.map((tab) => [tab.tabId, tab.heldBy]));
+      // The side chat is asking, so its own tab reads "you" and the parent's
+      // reads "peer" — the signal that used to not exist at all.
+      expect(heldBy["tab-b"]).toBe("you");
+      expect(heldBy["tab-a"]).toBe("peer");
+      threadShells.clear();
     }),
   ),
 );

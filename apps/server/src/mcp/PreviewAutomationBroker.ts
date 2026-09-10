@@ -95,6 +95,33 @@ interface HostAssignment {
   readonly queue: ClientConnection["queue"];
   readonly tabId?: PreviewTabId;
   readonly tabSequence?: number;
+  /**
+   * Last tab each caller in this group drove, keyed by its own thread id
+   * before the side-chat remap.
+   *
+   * The group shares one browser on purpose, but it also shared this ONE
+   * `tabId` — the implicit target for every call that omits one. A parent and
+   * its side chat therefore silently repointed each other's "current tab"
+   * after every request, which is what "they fight each other a lot on using
+   * the same tabs" looks like from the inside. Each caller now remembers its
+   * own, and the group-wide `tabId` above is no longer a targeting fallback.
+   *
+   * Keyed by thread id rather than `providerSessionId` on purpose: a provider
+   * session is a fresh UUID from every `prepareMcpSession`, so a model switch,
+   * a usage-limit failover or a resume would rotate it and lose the pointer
+   * mid-work. It also matches the invariant this file's own tests assert —
+   * host ownership belongs to the thread, not to whichever provider session
+   * issued the first request.
+   *
+   * KNOWN GAP: a CLI spawned in one of the thread's terminal panes gets its
+   * own preview-capable MCP credential carrying the SAME thread id (see
+   * `issueTerminalAgentMcpCredential`), so it shares a key with the thread's
+   * chat agent and the two still share one pointer. `heldBy` on the status
+   * result still tells each of them the tab is taken; only the implicit
+   * target is unseparated. Splitting that needs a caller identity that is
+   * both stable and distinct, which does not exist today.
+   */
+  readonly tabByCaller?: ReadonlyMap<string, PreviewTabId>;
 }
 
 interface PreviewAutomationRequestErrorContext {
@@ -183,7 +210,13 @@ const USER_INPUT_OPERATIONS: ReadonlySet<PreviewAutomationOperation> = new Set([
   "type",
   "press",
 ]);
-export const USER_INPUT_DEFERRAL_GRACE_MS = 30_000;
+/**
+ * Enough that the deferral wait can use the whole request budget below: the
+ * person's typing pause should never be what ends the call. `min(timeoutMs +
+ * grace, ...)` with a 30s grace capped an ordinary 15s click at 45s and spent
+ * the last 5s of the budget on nothing.
+ */
+export const USER_INPUT_DEFERRAL_GRACE_MS = 60_000;
 /**
  * The MCP client waits 60s for a tool call (the SDK default, and the LAN Chat
  * client's), then reports "Request timed out" and discards whatever the
@@ -205,6 +238,49 @@ export function previewRequestDeadlineMs(
 ): number {
   const grace = USER_INPUT_OPERATIONS.has(operation) ? USER_INPUT_DEFERRAL_GRACE_MS : 0;
   return Math.min(timeoutMs + grace, Math.max(timeoutMs, PREVIEW_REQUEST_BUDGET_MS));
+}
+
+/**
+ * Stamp each tab in a status result with who in this thread group last drove
+ * it, from the broker's own per-caller record.
+ *
+ * The renderer builds those summaries and has no idea which session asked, so
+ * this is the only place the two facts meet. Tabs nobody has driven through
+ * automation are left unstamped rather than labelled "free" — the desktop's
+ * own `agentActive` flag is a single process-wide boolean that can only ever
+ * mark one tab, so an absent stamp genuinely means "not known", not "idle".
+ *
+ * This is also what covers the case the per-caller pointer cannot: when a
+ * caller has no tab of its own, the renderer still resolves the implicit
+ * target from shared panel state (the thread's visible guest), so it can
+ * still land in a tab a peer is working in. It now arrives knowing that.
+ */
+function stampTabHolders(
+  result: unknown,
+  tabByCaller: ReadonlyMap<string, PreviewTabId> | undefined,
+  callerKey: string,
+): unknown {
+  if (tabByCaller === undefined || tabByCaller.size === 0) return result;
+  if (typeof result !== "object" || result === null || !("tabs" in result)) return result;
+  const tabs = (result as { tabs: unknown }).tabs;
+  if (!Array.isArray(tabs)) return result;
+  const ownerByTabId = new Map<string, string>();
+  for (const [caller, tabId] of tabByCaller) {
+    // First writer wins only for a foreign caller; the reader's own claim
+    // always takes precedence, so a tab both have touched reads as "you".
+    if (caller === callerKey || !ownerByTabId.has(String(tabId))) {
+      ownerByTabId.set(String(tabId), caller);
+    }
+  }
+  return {
+    ...result,
+    tabs: tabs.map((tab) => {
+      if (typeof tab !== "object" || tab === null || !("tabId" in tab)) return tab;
+      const owner = ownerByTabId.get(String((tab as { tabId: unknown }).tabId));
+      if (owner === undefined) return tab;
+      return { ...tab, heldBy: owner === callerKey ? "you" : "peer" };
+    }),
+  };
 }
 
 const readResultTabId = (result: unknown): PreviewTabId | null | undefined => {
@@ -539,6 +615,10 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     // and every caller, and keeps the host-assignment key consistent with the
     // thread the tabs actually belong to.
     const owningThreadId = yield* resolveOwningThreadIdWith(projections, rawInput.scope.threadId);
+    // The remap below is what makes a side chat share its parent's browser. It
+    // also erases who is calling, so keep the pre-remap id: it is the only
+    // thing that tells one member of the group from another.
+    const callerKey = String(rawInput.scope.threadId);
     const input =
       owningThreadId === rawInput.scope.threadId
         ? rawInput
@@ -602,6 +682,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         connectionId: connection.connectionId,
         queue: connection.queue,
         ...(canReuseAssignedTab && assigned.tabId !== undefined ? { tabId: assigned.tabId } : {}),
+        ...(canReuseAssignedTab && assigned.tabByCaller !== undefined
+          ? { tabByCaller: assigned.tabByCaller }
+          : {}),
         ...(canReuseAssignedTab && assigned.tabSequence !== undefined
           ? { tabSequence: assigned.tabSequence }
           : {}),
@@ -609,7 +692,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
 
       const requestSequence = current.requestSequence;
       const requestId = `preview-${requestSequence}`;
-      const tabId = input.tabId ?? (canReuseAssignedTab ? assigned.tabId : undefined);
+      // The implicit target is the tab THIS caller last drove, and nothing
+      // else. It used to fall through to one tab shared by the whole group,
+      // which is what handed a side chat its parent's tab and then handed it
+      // back on the next call. A caller with no tab of its own sends none and
+      // gets a fresh one, rather than silently adopting a peer's.
+      const tabId =
+        input.tabId ?? (canReuseAssignedTab ? assigned.tabByCaller?.get(callerKey) : undefined);
       const selectorDiagnostics = selectorDiagnosticsFromInput(input.input);
       const context: PreviewAutomationRequestErrorContext = {
         operation: input.operation,
@@ -678,11 +767,20 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         onSome: Effect.succeed,
       });
     });
+    const withTabHolders = (value: A, key: string, caller: string) =>
+      SynchronizedRef.get(state).pipe(
+        Effect.map(
+          (current) =>
+            stampTabHolders(value, current.assignments.get(key)?.tabByCaller, caller) as A,
+        ),
+      );
     const result = yield* awaitResponse().pipe(Effect.ensuring(removePending));
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
-    if (resultTabId === undefined) return result;
     const assignmentKey = hostAssignmentKey(input.scope);
+    if (resultTabId === undefined) {
+      return yield* withTabHolders(result, assignmentKey, callerKey);
+    }
     yield* SynchronizedRef.update(state, (current) => {
       const assignment = current.assignments.get(assignmentKey);
       if (
@@ -699,21 +797,40 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         input.tabId !== undefined &&
         assignment.tabId !== undefined &&
         input.tabId !== assignment.tabId;
+      // Every branch keeps the per-caller map in step with the group tab, so
+      // closing or clearing a tab never leaves a caller pointing at one that
+      // is gone -- which would resurrect the collision through the fallback.
+      const withoutCaller = () => {
+        if (assignment.tabByCaller === undefined) return {};
+        const next = new Map(assignment.tabByCaller);
+        next.delete(callerKey);
+        return next.size === 0 ? {} : { tabByCaller: next };
+      };
+      const withCaller = (tab: PreviewTabId) => ({
+        tabByCaller: new Map(assignment.tabByCaller ?? []).set(callerKey, tab),
+      });
       if (closedDifferentExactTab) {
+        // Closing some OTHER tab must not disturb what this caller is working
+        // in, so its entry is carried through untouched.
         assignments.set(assignmentKey, { ...assignment, tabSequence: requestSequence });
       } else if (resultTabId === null) {
-        const { tabId: _tabId, ...withoutTabId } = assignment;
-        assignments.set(assignmentKey, { ...withoutTabId, tabSequence: requestSequence });
+        const { tabId: _tabId, tabByCaller: _dropped, ...withoutTabId } = assignment;
+        assignments.set(assignmentKey, {
+          ...withoutTabId,
+          ...withoutCaller(),
+          tabSequence: requestSequence,
+        });
       } else {
         assignments.set(assignmentKey, {
           ...assignment,
-          ...(resultTabId === undefined ? {} : { tabId: resultTabId }),
+          tabId: resultTabId,
+          ...withCaller(resultTabId),
           tabSequence: requestSequence,
         });
       }
       return { ...current, assignments };
     });
-    return result;
+    return yield* withTabHolders(result, assignmentKey, callerKey);
   });
 
   return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke });

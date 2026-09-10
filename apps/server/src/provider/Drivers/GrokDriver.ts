@@ -28,8 +28,7 @@ import {
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
-  makeManualOnlyProviderMaintenanceCapabilities,
-  makeStaticProviderMaintenanceResolver,
+  makePackageManagedProviderMaintenanceResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
 import {
@@ -40,12 +39,21 @@ import {
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("grok");
-const UPDATE = makeStaticProviderMaintenanceResolver(
-  makeManualOnlyProviderMaintenanceCapabilities({
-    provider: DRIVER_KIND,
-    packageName: null,
-  }),
-);
+const UPDATE = makePackageManagedProviderMaintenanceResolver({
+  provider: DRIVER_KIND,
+  npmPackageName: "@xai-official/grok",
+  homebrewFormula: null,
+  nativeUpdate: null,
+  // x.ai's shell installer, for hosts without a global npm prefix.
+  installScript: {
+    lockKey: "xai-grok-install",
+    posix: { executable: "bash", args: ["-lc", "curl -fsSL https://x.ai/cli/install.sh | bash"] },
+    windows: {
+      executable: "powershell",
+      args: ["-NoProfile", "-Command", "irm https://x.ai/cli/install.ps1 | iex"],
+    },
+  },
+});
 
 export type GrokDriverEnv =
   | BackgroundPolicy.BackgroundPolicy

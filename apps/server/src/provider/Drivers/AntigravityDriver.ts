@@ -1,5 +1,11 @@
-import { AntigravitySettings, TextGenerationError, type ServerProvider } from "@t3tools/contracts";
+import {
+  AntigravitySettings,
+  DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
+  TextGenerationError,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -11,11 +17,14 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { groupAntigravityModels, splitAntigravityModel } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { parseGenericCliVersion, spawnAndCollect } from "../providerSnapshot.ts";
 import { defaultProviderContinuationIdentity, type ProviderDriver } from "../ProviderDriver.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
+import { makeScriptInstalledProviderMaintenanceResolver } from "../providerMaintenance.ts";
 import { parseAntigravityModelsOutput } from "../antigravityProtocol.ts";
 import { ANTIGRAVITY_DRIVER_KIND } from "../antigravityRuntime.ts";
 import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
@@ -27,11 +36,32 @@ import {
 
 const decodeSettings = Schema.decodeSync(AntigravitySettings);
 
+/** `agy` ships only through Google's install script; there is no npm package. */
+const ANTIGRAVITY_MAINTENANCE = makeScriptInstalledProviderMaintenanceResolver({
+  provider: ANTIGRAVITY_DRIVER_KIND,
+  installScript: {
+    lockKey: "antigravity-install",
+    posix: {
+      executable: "bash",
+      args: ["-lc", "curl -fsSL https://antigravity.google/cli/install.sh | bash"],
+    },
+    windows: {
+      executable: "powershell",
+      args: ["-NoProfile", "-Command", "irm https://antigravity.google/cli/install.ps1 | iex"],
+    },
+  },
+});
+
+/** Matches makeManagedServerProvider: a skipped tick costs 30s, not a whole interval. */
+const DEFERRED_ANTIGRAVITY_RECHECK = Duration.seconds(30);
+
 export type AntigravityDriverEnv =
   | ServerConfig
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
-  | Path.Path;
+  | Path.Path
+  | BackgroundPolicy.BackgroundPolicy
+  | ServerSettingsService;
 export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityDriverEnv> = {
   driverKind: ANTIGRAVITY_DRIVER_KIND,
   metadata: { displayName: "Antigravity", supportsMultipleInstances: true },
@@ -173,6 +203,66 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       PubSub.unbounded<ServerProvider>(),
       PubSub.shutdown,
     );
+    const refreshSnapshot = probe().pipe(
+      Effect.tap((snapshot) => Ref.set(snapshotRef, snapshot)),
+      Effect.tap((snapshot) => PubSub.publish(changes, snapshot)),
+    );
+
+    /**
+     * Re-probe on the provider-health interval.
+     *
+     * Every other usage-reporting driver gets this from
+     * `makeManagedServerProvider`; Antigravity hand-rolls its snapshot and so
+     * had no periodic probe at all. Its `accountUsageReportedAt` is the
+     * probe's own `checkedAt`, and `agy` publishes no in-turn usage events
+     * either, so the reading only advanced when someone pressed Refresh --
+     * and then aged past the client's 20-minute window and sat on "Stale"
+     * indefinitely while the app ran. Reported with a card frozen at
+     * "Last reported Sep 10, 12:32 PM" beside live countdowns.
+     *
+     * Gated on the same demand check the managed loop uses, so this does not
+     * spend `agy` invocations on a host nobody is watching, and re-checks
+     * quickly after a skip rather than losing a whole interval to it.
+     */
+    const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
+    const serverSettings = yield* ServerSettingsService;
+    const refreshOwedRef = yield* Ref.make(false);
+    yield* Effect.forever(
+      Effect.gen(function* () {
+        const interval = yield* serverSettings.getSettings.pipe(
+          Effect.map(
+            (settings) =>
+              resolveServerBackgroundActivitySettings(settings).providerHealthRefreshInterval,
+          ),
+          Effect.orElseSucceed(() => DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL),
+        );
+        const configuredMs = Duration.toMillis(Duration.fromInputUnsafe(interval));
+        if (configuredMs <= 0) {
+          yield* Effect.sleep(Duration.seconds(60));
+          return;
+        }
+        const owed = yield* Ref.get(refreshOwedRef);
+        yield* Effect.sleep(
+          owed && Duration.toMillis(DEFERRED_ANTIGRAVITY_RECHECK) < configuredMs
+            ? DEFERRED_ANTIGRAVITY_RECHECK
+            : Duration.fromInputUnsafe(interval),
+        );
+        const [genericDemand, instanceDemand] = yield* Effect.all([
+          backgroundPolicy.shouldRunScopeWork({ type: "provider-status" }),
+          backgroundPolicy.shouldRunScopeWork({
+            type: "provider-status",
+            instanceId: input.instanceId,
+          }),
+        ]);
+        if (!genericDemand && !instanceDemand) {
+          yield* Ref.set(refreshOwedRef, true);
+          return;
+        }
+        yield* Ref.set(refreshOwedRef, false);
+        yield* refreshSnapshot.pipe(Effect.asVoid);
+      }).pipe(Effect.ignoreCause({ log: true })),
+    ).pipe(Effect.forkScoped);
+
     const adapter = yield* makeAntigravityAdapter({
       instanceId: input.instanceId,
       binaryPath,
@@ -240,15 +330,9 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           ),
       },
       snapshot: {
-        maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
-          provider: ANTIGRAVITY_DRIVER_KIND,
-          packageName: null,
-        }),
+        maintenanceCapabilities: ANTIGRAVITY_MAINTENANCE.resolve({ binaryPath }),
         getSnapshot: Ref.get(snapshotRef),
-        refresh: probe().pipe(
-          Effect.tap((snapshot) => Ref.set(snapshotRef, snapshot)),
-          Effect.tap((snapshot) => PubSub.publish(changes, snapshot)),
-        ),
+        refresh: refreshSnapshot,
         streamChanges: Stream.fromPubSub(changes),
       },
     };

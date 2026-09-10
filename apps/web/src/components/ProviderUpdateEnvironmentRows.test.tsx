@@ -125,6 +125,8 @@ function provider(updateStatus?: "succeeded"): ServerProvider {
       latestVersion: "1.1.0",
       updateCommand: "npm install -g @openai/codex@latest",
       canUpdate: true,
+      installCommand: null,
+      canInstall: false,
       checkedAt: "2026-06-26T12:00:00.000Z",
       message: updateStatus ? "Up to date." : "Update available.",
     },

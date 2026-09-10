@@ -21,7 +21,10 @@ import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { ProviderRegistry } from "./Services/ProviderRegistry.ts";
+import {
+  ProviderRegistry,
+  type ProviderMaintenanceActionKind,
+} from "./Services/ProviderRegistry.ts";
 import { makeProviderMaintenanceCommandCoordinator } from "./providerMaintenanceCommandCoordinator.ts";
 import { enrichProviderSnapshotWithVersionAdvisory } from "./providerMaintenance.ts";
 import type { ProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
@@ -47,6 +50,8 @@ export interface ProviderMaintenanceRunnerShape {
       | {
           readonly provider: ProviderDriverKind;
           readonly instanceId?: ProviderInstanceId | undefined;
+          /** Defaults to `update`. `install` runs the from-scratch command. */
+          readonly action?: ProviderMaintenanceActionKind | undefined;
         },
   ) => Effect.Effect<ServerProviderUpdatedPayload, ServerProviderUpdateError>;
 }
@@ -292,23 +297,28 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       typeof target === "string"
         ? defaultInstanceIdForDriver(provider)
         : (target.instanceId ?? defaultInstanceIdForDriver(provider));
+    const action: ProviderMaintenanceActionKind =
+      typeof target === "string" ? "update" : (target.action ?? "update");
+    const isInstall = action === "install";
     const targetKey = `instance:${instanceId}`;
     const capabilities = yield* providerRegistry.getProviderMaintenanceCapabilitiesForInstance(
       instanceId,
       provider,
     );
-    const update = capabilities.update;
+    const update = isInstall ? capabilities.install : capabilities.update;
     if (!update) {
       return yield* new ServerProviderUpdateError({
         provider,
-        reason: "This provider does not support one-click updates.",
+        reason: isInstall
+          ? "This provider does not support one-click installs."
+          : "This provider does not support one-click updates.",
       });
     }
 
     const setUpdateState = (state: ServerProviderUpdateState | null) =>
       providerRegistry.setProviderMaintenanceActionState({
         instanceId,
-        action: "update",
+        action,
         state,
       });
     const setQueuedState = setUpdateState(
@@ -316,7 +326,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
         status: "queued",
         startedAt: null,
         finishedAt: null,
-        message: "Waiting for another provider update to finish.",
+        message: isInstall
+          ? "Waiting for another provider install to finish."
+          : "Waiting for another provider update to finish.",
       }),
     ).pipe(Effect.asVoid);
 
@@ -335,7 +347,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 status: "running",
                 startedAt,
                 finishedAt: null,
-                message: "Updating provider.",
+                message: isInstall ? "Installing provider." : "Updating provider.",
               }),
             );
 
@@ -359,6 +371,25 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               instanceId,
             );
             const couldNotVerify = verifiedProviders.length === 0;
+            if (isInstall) {
+              // An install is only real once the refreshed probe finds the CLI.
+              const stillMissing =
+                couldNotVerify ||
+                verifiedProviders.some((verifiedProvider) => !verifiedProvider.installed);
+              return yield* finish(
+                makeUpdateState({
+                  status: stillMissing ? "unchanged" : "succeeded",
+                  startedAt,
+                  finishedAt,
+                  message: couldNotVerify
+                    ? "Install command completed, but Solla Code could not verify the provider."
+                    : stillMissing
+                      ? "Install command completed, but Solla Code still cannot find the CLI. It may need a new PATH entry or a restart."
+                      : "Provider installed.",
+                  output: commandOutput(result),
+                }),
+              );
+            }
             const stillOutdated =
               couldNotVerify ||
               verifiedProviders.some((verifiedProvider) => isOutdatedProvider(verifiedProvider));
@@ -387,7 +418,12 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 status: "failed",
                 startedAt,
                 finishedAt: yield* nowIso,
-                message: failure instanceof Error ? failure.message : "Update command failed.",
+                message:
+                  failure instanceof Error
+                    ? failure.message
+                    : isInstall
+                      ? "Install command failed."
+                      : "Update command failed.",
                 output: null,
               }),
             );

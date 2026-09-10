@@ -41,8 +41,7 @@ import {
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
-  makeProviderMaintenanceCapabilities,
-  type ProviderMaintenanceCapabilitiesResolver,
+  makeScriptInstalledProviderMaintenanceResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
 import {
@@ -53,16 +52,29 @@ import {
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("cursor");
-const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
-  resolve: (options) =>
-    makeProviderMaintenanceCapabilities({
-      provider: DRIVER_KIND,
-      packageName: null,
-      updateExecutable: options?.binaryPath?.trim() || "cursor-agent",
-      updateArgs: ["update"],
-      updateLockKey: "cursor-agent",
-    }),
-};
+/**
+ * `cursor-agent` updates itself but cannot install itself, so a missing CLI
+ * bootstraps through Cursor's documented installer.
+ */
+const UPDATE = makeScriptInstalledProviderMaintenanceResolver({
+  provider: DRIVER_KIND,
+  update: {
+    executable: (options) => options?.binaryPath?.trim() || "cursor-agent",
+    args: ["update"],
+    lockKey: "cursor-agent",
+  },
+  installScript: {
+    lockKey: "cursor-agent-install",
+    posix: {
+      executable: "bash",
+      args: ["-lc", "curl https://cursor.com/install -fsS | bash"],
+    },
+    windows: {
+      executable: "powershell",
+      args: ["-NoProfile", "-Command", "irm 'https://cursor.com/install?win32=true' | iex"],
+    },
+  },
+});
 
 export type CursorDriverEnv =
   | BackgroundPolicy.BackgroundPolicy

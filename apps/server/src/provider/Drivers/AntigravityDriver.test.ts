@@ -6,8 +6,24 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { layerTest } from "../../config.ts";
+import { layerTest as serverSettingsLayerTest } from "../../serverSettings.ts";
 import { AntigravityDriver } from "./AntigravityDriver.ts";
+
+/**
+ * The driver now forks a periodic probe, so it needs the same demand gate and
+ * settings source every other managed driver has. The stub always answers "no
+ * demand", which keeps these tests to the single explicit probe they assert on
+ * rather than racing a background refresh.
+ */
+const antigravityDriverTestLayers = Layer.mergeAll(
+  Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+    shouldRunScopeWork: () => Effect.succeed(false),
+  } as never),
+  serverSettingsLayerTest(),
+);
 
 it.live.each([
   { mode: "ready", installed: true, status: "ready", version: "1.2.3", models: 1 },
@@ -42,7 +58,10 @@ process.exit(failed ? 4 : 0);
       environment: [],
       enabled: true,
       config: { ...AntigravityDriver.defaultConfig(), binaryPath },
-    }).pipe(Effect.provide(layerTest(dir, { prefix: "solla-agy-probe-home-" })));
+    }).pipe(
+      Effect.provide(antigravityDriverTestLayers),
+      Effect.provide(layerTest(dir, { prefix: "solla-agy-probe-home-" })),
+    );
     const snapshot = yield* instance.snapshot.getSnapshot;
     expect(snapshot).toMatchObject({
       installed: scenario.installed,
@@ -90,7 +109,10 @@ else {
           binaryPath,
           customModels: ["gemini-flash", "gemini-flash-low"],
         },
-      }).pipe(Effect.provide(layerTest(dir, { prefix: "solla-agy-auth-probe-home-" })));
+      }).pipe(
+        Effect.provide(antigravityDriverTestLayers),
+        Effect.provide(layerTest(dir, { prefix: "solla-agy-auth-probe-home-" })),
+      );
       const snapshot = yield* instance.snapshot.getSnapshot;
       expect(snapshot.auth.status).toBe(exitCode === 0 ? "authenticated" : "unknown");
       expect(snapshot.auth.email).toBe(exitCode === 0 ? "fixture@example.com" : undefined);

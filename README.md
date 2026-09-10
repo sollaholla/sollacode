@@ -105,6 +105,7 @@ Solla Code controls provider software that is already installed and authenticate
 | [Grok Build](https://x.ai/cli)                        | Install Grok CLI, then run `grok login`              | Thought streaming, usage status, terminal session resume             |
 | [OpenCode](https://opencode.ai)                       | Install OpenCode, then run `opencode auth login`     | Agent sessions and model selection                                   |
 | [Antigravity](./docs/providers/antigravity.md)        | Install `agy` and sign in from a terminal            | Text sessions, streamed tools, model discovery, native resume        |
+| [Deep Code](./docs/providers/deepcode.md)             | Install `deepcode` and add a DeepSeek API key        | Exec sessions, model and effort selection, native resume             |
 | [MCP Provider Bridge](./docs/providers/mcp-bridge.md) | Configure an absolute path to a trusted local bridge | Versioned capability negotiation for external providers              |
 
 Antigravity has a built-in driver, model discovery, streamed tool activity, native conversation resume, and interruption. Its headless transport currently accepts text only and does not inject Solla's thread-scoped MCP tools. See the [provider guide](./docs/providers/README.md) for setup, limits, and verification status.

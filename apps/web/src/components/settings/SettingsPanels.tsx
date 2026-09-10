@@ -117,6 +117,7 @@ import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
   hasOneClickUpdateProviderCandidate,
+  isProviderInstallActive,
   isProviderUpdateActive,
   type ProviderUpdateCandidate,
 } from "../ProviderUpdateLaunchNotification.logic";
@@ -2080,7 +2081,12 @@ export function ProviderSettingsPanel() {
   }, [primaryEnvironment, refreshServerProviders]);
 
   const runProviderUpdate = useCallback(
-    async (candidate: ProviderUpdateCandidate) => {
+    async (
+      // Only the identity is used, and install targets a provider that is not
+      // an update candidate by construction (it has no version to compare).
+      candidate: Pick<ServerProvider, "driver" | "instanceId">,
+      action: "update" | "install" = "update",
+    ) => {
       if (!primaryEnvironment) return;
       let started = false;
       setUpdatingProviderDrivers((previous) => {
@@ -2101,6 +2107,7 @@ export function ProviderSettingsPanel() {
         input: {
           provider: candidate.driver,
           instanceId: candidate.instanceId,
+          action,
         },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -2108,11 +2115,11 @@ export function ProviderSettingsPanel() {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: `Could not update ${PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver}`,
+            title: `Could not ${action} ${PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver}`,
             description:
               error instanceof Error
                 ? error.message
-                : "The provider update command could not be started.",
+                : `The provider ${action} command could not be started.`,
           }),
         );
       }
@@ -2454,6 +2461,20 @@ export function ProviderSettingsPanel() {
                   : undefined
               }
               isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
+              onRunInstall={
+                liveProvider && !liveProvider.installed
+                  ? () => {
+                      if (updatingProviderDrivers.has(row.driver)) return;
+                      void runProviderUpdate(
+                        { driver: row.driver, instanceId: row.instanceId },
+                        "install",
+                      );
+                    }
+                  : undefined
+              }
+              isInstalling={
+                updatingProviderDrivers.has(row.driver) || isProviderInstallActive(liveProvider)
+              }
               usageBadge={<ProviderUsageBadge summary={providerUsageSummary} />}
               usage={
                 row.instance.enabled !== false &&

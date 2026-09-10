@@ -75,6 +75,8 @@ function provider(input: {
       latestVersion: "latestVersion" in input ? input.latestVersion : "1.1.0",
       updateCommand: "updateCommand" in input ? input.updateCommand : "npm install -g provider",
       canUpdate: input.canUpdate ?? true,
+      installCommand: null,
+      canInstall: false,
       checkedAt,
       message: "Update available.",
     },
