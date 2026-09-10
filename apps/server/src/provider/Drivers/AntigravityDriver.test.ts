@@ -59,8 +59,12 @@ process.exit(failed ? 4 : 0);
       enabled: true,
       config: { ...AntigravityDriver.defaultConfig(), binaryPath },
     }).pipe(
-      Effect.provide(antigravityDriverTestLayers),
-      Effect.provide(layerTest(dir, { prefix: "solla-agy-probe-home-" })),
+      Effect.provide(
+        Layer.merge(
+          antigravityDriverTestLayers,
+          layerTest(dir, { prefix: "solla-agy-probe-home-" }),
+        ),
+      ),
     );
     const snapshot = yield* instance.snapshot.getSnapshot;
     expect(snapshot).toMatchObject({
@@ -110,8 +114,12 @@ else {
           customModels: ["gemini-flash", "gemini-flash-low"],
         },
       }).pipe(
-        Effect.provide(antigravityDriverTestLayers),
-        Effect.provide(layerTest(dir, { prefix: "solla-agy-auth-probe-home-" })),
+        Effect.provide(
+          Layer.merge(
+            antigravityDriverTestLayers,
+            layerTest(dir, { prefix: "solla-agy-auth-probe-home-" }),
+          ),
+        ),
       );
       const snapshot = yield* instance.snapshot.getSnapshot;
       expect(snapshot.auth.status).toBe(exitCode === 0 ? "authenticated" : "unknown");
