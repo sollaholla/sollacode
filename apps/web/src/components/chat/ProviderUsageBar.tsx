@@ -7,6 +7,7 @@ import type {
   ProviderUsageResetOutcome,
   ServerProvider,
 } from "@t3tools/contracts";
+import { antigravityUsageModelFamily } from "@t3tools/shared/model";
 import { ExternalLinkIcon, RefreshCwIcon, UserRoundIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -110,7 +111,7 @@ export function providerUsageExternalLink(
   };
 }
 
-const SUPPORTED_USAGE_DRIVERS = new Set(["codex", "claudeAgent", "grok"]);
+const SUPPORTED_USAGE_DRIVERS = new Set(["codex", "claudeAgent", "grok", "antigravity"]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -658,10 +659,36 @@ function grokWindows(raw: unknown): ProviderUsageWindow[] {
   return windows;
 }
 
+function antigravityWindows(raw: unknown): ProviderUsageWindow[] {
+  const envelope = asRecord(raw);
+  const rows = Array.isArray(envelope?.windows) ? envelope.windows : [];
+  const windows: ProviderUsageWindow[] = [];
+  for (const row of rows) {
+    const window = asRecord(row);
+    const key = typeof window?.key === "string" ? window.key.trim() : "";
+    const label = typeof window?.label === "string" ? window.label.trim() : "";
+    if (!window || !key || !label) continue;
+    const remainingPercent = finiteNumber(window.remainingPercent);
+    const usedPercent =
+      finiteNumber(window.usedPercent) ??
+      (remainingPercent === null ? null : clampPercentage(100 - remainingPercent));
+    if (usedPercent === null) continue;
+    windows.push({
+      key,
+      label,
+      usedPercent: clampPercentage(usedPercent),
+      resetAt: epochMilliseconds(window.resetsAt),
+      windowDurationMs: finiteNumber(window.windowDurationMs),
+    });
+  }
+  return windows;
+}
+
 function usageWindowsForDriver(driver: ProviderDriverKind, raw: unknown): ProviderUsageWindow[] {
   if (driver === "codex") return codexWindows(raw);
   if (driver === "claudeAgent") return claudeWindows(raw);
   if (driver === "grok") return grokWindows(raw);
+  if (driver === "antigravity") return antigravityWindows(raw);
   return [];
 }
 
@@ -886,9 +913,28 @@ export function compactProviderUsageMetric(
   if (
     summary.provider.driver !== "claudeAgent" &&
     summary.provider.driver !== "codex" &&
-    summary.provider.driver !== "grok"
+    summary.provider.driver !== "grok" &&
+    summary.provider.driver !== "antigravity"
   ) {
     return null;
+  }
+
+  if (summary.provider.driver === "antigravity") {
+    const family =
+      selectedModelSelection?.instanceId === summary.provider.instanceId
+        ? antigravityUsageModelFamily(selectedModelSelection.model)
+        : null;
+    const applicable =
+      family === null ? summary.windows : summary.windows.filter((window) => window.key === family);
+    const pool = applicable.length > 0 ? applicable : summary.windows;
+    const highestReportedWindow = pool.reduce<ProviderUsageWindow | null>(
+      (highest, candidate) => maxReportedUsageWindow(highest, candidate),
+      null,
+    );
+    return {
+      label: highestReportedWindow?.label ?? "Weekly",
+      window: highestReportedWindow,
+    };
   }
 
   if (summary.provider.driver === "claudeAgent") {

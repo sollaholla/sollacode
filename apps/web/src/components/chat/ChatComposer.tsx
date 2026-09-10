@@ -234,7 +234,11 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
-import { buildQuotedPrompt, useComposerQuoteStore } from "../../composerQuote";
+import {
+  buildQuotedPrompt,
+  composerQuoteTargetKey,
+  useComposerQuoteStore,
+} from "../../composerQuote";
 import { interactionModeConfig, interactionModeOptions } from "./interactionModes";
 import { runtimeModeConfig, runtimeModeDangerClasses, runtimeModeOptions } from "./runtimeModes";
 
@@ -672,6 +676,7 @@ export interface ChatComposerProps {
   isServerThread: boolean;
   isLocalDraftThread: boolean;
   forceExpandedOnMobile: boolean;
+  acceptUntargetedQuotes?: boolean;
   projectSelectionRequired: boolean;
   canReferenceLocalFiles: boolean;
 
@@ -803,6 +808,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isServerThread: _isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     forceExpandedOnMobile,
+    acceptUntargetedQuotes = false,
     projectSelectionRequired,
     canReferenceLocalFiles,
     phase,
@@ -1475,10 +1481,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isComposerCollapsedMobile && !isComposerApprovalState && pendingUserInputs.length === 0;
 
   const composerFooterHasWideActions =
-    showPlanFollowUpPrompt ||
-    activePendingProgress !== null ||
-    settingsUpdateLabel !== null ||
-    hasQueuedSendNow;
+    showPlanFollowUpPrompt || activePendingProgress !== null || settingsUpdateLabel !== null;
   const showPlanSidebarToggle = Boolean(activePlan || sidebarProposedPlan || planSidebarOpen);
   const composerFooterActionLayoutKey = useMemo(() => {
     if (activePendingProgress) {
@@ -2272,13 +2275,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
-  // Applies a "Quote" from the transcript context menu. Subscribing rather than
-  // polling means only the mounted composer for the active thread consumes it,
-  // and the store clears on read so a remount cannot duplicate the quote.
+  // Applies a "Quote" from the transcript context menu. The store names the
+  // chat pane that owned the selection so a side-chat quote cannot land in the
+  // main composer, and the store clears on read so a remount cannot duplicate it.
   const pendingQuote = useComposerQuoteStore((state) => state.pending);
+  const quoteTargetKey = composerQuoteTargetKey(composerDraftTarget);
   useEffect(() => {
     if (pendingQuote === null) return;
-    const selection = useComposerQuoteStore.getState().takeQuote();
+    const selection = useComposerQuoteStore.getState().takeQuote({
+      targetKey: quoteTargetKey,
+      acceptUntargeted: acceptUntargetedQuotes,
+    });
     if (selection === null) return;
     const current = composerEditorRef.current?.readSnapshot().value ?? promptRef.current;
     const { prompt } = buildQuotedPrompt({ prompt: current, selection });
@@ -2291,7 +2298,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     window.requestAnimationFrame(() => {
       composerEditorRef.current?.focusAtEnd();
     });
-  }, [composerDraftTarget, pendingQuote, promptRef, setComposerDraftPrompt]);
+  }, [
+    acceptUntargetedQuotes,
+    composerDraftTarget,
+    pendingQuote,
+    promptRef,
+    quoteTargetKey,
+    setComposerDraftPrompt,
+  ]);
 
   /**
    * Swipe down on the composer to put the keyboard away.
@@ -3485,22 +3499,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       ? "Selected provider unavailable on this environment"
                       : "Ask anything...")}
               </button>
-              {hasQueuedSendNow ? (
-                <button
-                  type="button"
-                  className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-border bg-background/80 px-2.5 text-xs font-medium text-foreground  disabled:opacity-40"
-                  disabled={queuedPromotionDisabled}
-                  aria-label={isPromotingQueued ? "Sending queued messages now" : "Send queued now"}
-                  onPointerDown={(event) => event.preventDefault()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onPromoteQueued();
-                  }}
-                >
-                  {isPromotingQueued ? <Spinner className="size-3.5" aria-hidden="true" /> : null}
-                  <span>{isPromotingQueued ? "Sending queued…" : "Send queued now"}</span>
-                </button>
-              ) : null}
+
               <button
                 type="button"
                 className={cn(

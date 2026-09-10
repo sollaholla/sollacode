@@ -74,7 +74,7 @@ if (arg === '--version') console.log('agy 1.1.28');
 else if (arg === 'models') console.log('gemini-flash-high\\tGemini Flash (High)\\ngemini-flash-low\\tGemini Flash (Low)');
 else {
  require('node:fs').writeFileSync(process.argv[process.argv.indexOf('--log-file')+1], 'OAuth: authenticated successfully as fixture@example.com\\n');
- console.log('Gemini Models\\tWeekly Limit Remaining\\t0%\\t2026-09-11T18:30:48Z'); process.exit(${exitCode});
+ console.log('Gemini Models\\tWeekly Limit Remaining\\t0%\\t2026-09-11T18:30:48Z\\nClaude and GPT models\\tWeekly Limit Remaining\\t100%\\t2026-09-17T14:30:07Z'); process.exit(${exitCode});
 }
 `,
           { mode: 0o755 },
@@ -94,6 +94,27 @@ else {
       const snapshot = yield* instance.snapshot.getSnapshot;
       expect(snapshot.auth.status).toBe(exitCode === 0 ? "authenticated" : "unknown");
       expect(snapshot.auth.email).toBe(exitCode === 0 ? "fixture@example.com" : undefined);
+      expect(snapshot.accountUsage).toEqual(
+        exitCode === 0
+          ? {
+              windows: [
+                expect.objectContaining({
+                  key: "gemini",
+                  usedPercent: 100,
+                  remainingPercent: 0,
+                }),
+                expect.objectContaining({
+                  key: "claude-gpt",
+                  usedPercent: 0,
+                  remainingPercent: 100,
+                }),
+              ],
+            }
+          : undefined,
+      );
+      expect(snapshot.accountUsageReportedAt).toEqual(
+        exitCode === 0 ? expect.any(String) : undefined,
+      );
       expect(snapshot.models).toHaveLength(1);
       expect(snapshot.models[0]?.slug).toBe("gemini-flash");
       expect(instance.accountAuth).toHaveProperty("switchAccount");

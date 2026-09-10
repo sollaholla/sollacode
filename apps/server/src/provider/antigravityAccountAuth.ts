@@ -8,6 +8,7 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { spawnAndCollect } from "./providerSnapshot.ts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { PtyAdapter } from "../terminal/PtyAdapter.ts";
+import { parseAntigravityAccountUsage } from "./antigravityUsage.ts";
 import type {
   ProviderAccountAuthStatus,
   ProviderInteractiveAccountAuthCapability,
@@ -33,11 +34,7 @@ export function parseAntigravityAuthStatus(
   stdout: string,
   diagnostics: string,
 ): ProviderAccountAuthStatus {
-  const loggedIn = stdout
-    .split(/\r?\n/)
-    .some((line) =>
-      /^[^\t]+\t[^\t]*(?:Limit|Quota) Remaining\t\d+(?:\.\d+)?%\t\d{4}-\d{2}-\d{2}T/.test(line),
-    );
+  const loggedIn = parseAntigravityAccountUsage(stdout) !== null;
   const accountLabel = loggedIn
     ? (diagnostics.match(/OAuth: authenticated successfully as ([^\s<>]+@[^\s<>]+)/)?.[1] ?? null)
     : null;
@@ -71,12 +68,12 @@ export const readAntigravityAuthStatus = Effect.fn("readAntigravityAuthStatus")(
         }),
       ).pipe(Effect.timeout("15 seconds"));
       const diagnostics = yield* fs.readFileString(logPath).pipe(Effect.orElseSucceed(() => ""));
-      const status = parseAntigravityAuthStatus(
-        result.code === 0 ? result.stdout : "",
-        diagnostics,
-      );
+      const stdout = result.code === 0 ? result.stdout : "";
+      const status = parseAntigravityAuthStatus(stdout, diagnostics);
+      const accountUsage = parseAntigravityAccountUsage(stdout);
       return {
         ...status,
+        ...(accountUsage !== null ? { accountUsage } : {}),
         unauthenticated: /authentication required|not signed in/i.test(
           result.stdout + result.stderr,
         ),

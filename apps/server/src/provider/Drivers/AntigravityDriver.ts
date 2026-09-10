@@ -89,11 +89,16 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         const authenticated = authResult?._tag === "Success" && authResult.success.loggedIn;
         const unauthenticated =
           authResult?._tag === "Success" && authResult.success.unauthenticated;
+        const accountUsage =
+          authenticated && authResult.success.accountUsage !== undefined
+            ? authResult.success.accountUsage
+            : undefined;
         const installed = versionResult?._tag === "Success";
         const versionReady = installed && versionResult.success.code === 0;
         const modelsReady = modelsResult?._tag === "Success" && modelsResult.success.code === 0;
         const available = versionReady && modelsReady;
         const models = modelsReady ? parseAntigravityModelsOutput(modelsResult.success.stdout) : [];
+        const checkedAt = DateTime.formatIso(DateTime.nowUnsafe());
         return {
           instanceId: input.instanceId,
           driver: ANTIGRAVITY_DRIVER_KIND,
@@ -116,7 +121,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
               ? { email: authResult.success.accountLabel }
               : {}),
           },
-          checkedAt: DateTime.formatIso(DateTime.nowUnsafe()),
+          checkedAt,
+          ...(accountUsage !== undefined
+            ? {
+                accountUsage,
+                accountUsageReportedAt: checkedAt,
+              }
+            : {}),
           message: !input.enabled
             ? "Antigravity is disabled in Solla Code settings."
             : available

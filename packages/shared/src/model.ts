@@ -18,6 +18,24 @@ export interface SelectableModelOption {
   name: string;
 }
 
+/**
+ * AGY meters Gemini separately from Claude and GPT. The native `/usage` rows
+ * and the selected model slug both map onto these two family keys.
+ */
+export function antigravityUsageModelFamily(model: string | null | undefined): string | null {
+  if (!model) return null;
+  const normalized = model.toLowerCase();
+  if (normalized.includes("gemini")) return "gemini";
+  if (
+    normalized.includes("claude") ||
+    normalized.includes("gpt") ||
+    normalized.includes("openai")
+  ) {
+    return "claude-gpt";
+  }
+  return null;
+}
+
 /** AGY exposes effort variants as native slugs; clients present the family once. */
 export function splitAntigravityModel(model: string): { model: string; effort?: string } {
   const match = /^(.*)-(low|medium|high)$/.exec(model);

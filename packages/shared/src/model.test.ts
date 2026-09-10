@@ -4,6 +4,7 @@ import { ProviderDriverKind, ProviderInstanceId, type ModelCapabilities } from "
 import {
   groupAntigravityModels,
   antigravityCapabilitiesForSelection,
+  antigravityUsageModelFamily,
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
@@ -159,6 +160,15 @@ describe("model slug normalization", () => {
 });
 
 describe("Antigravity model families", () => {
+  it("maps native /usage rows and model slugs onto the same quota families", () => {
+    expect(antigravityUsageModelFamily("Gemini Models")).toBe("gemini");
+    expect(antigravityUsageModelFamily("gemini-3.8-flash-low")).toBe("gemini");
+    expect(antigravityUsageModelFamily("Claude and GPT models")).toBe("claude-gpt");
+    expect(antigravityUsageModelFamily("claude-sonnet-4-5")).toBe("claude-gpt");
+    expect(antigravityUsageModelFamily("gpt-5")).toBe("claude-gpt");
+    expect(antigravityUsageModelFamily("unknown-model")).toBeNull();
+  });
+
   const models = groupAntigravityModels([
     { slug: "gemini-flash-high", label: "Gemini Flash (High)" },
     { slug: "gemini-flash-low", label: "Gemini Flash (Low)" },

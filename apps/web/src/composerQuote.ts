@@ -1,3 +1,5 @@
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import { create } from "zustand";
 
 /**
@@ -44,31 +46,56 @@ export function buildQuotedPrompt(input: { readonly prompt: string; readonly sel
   return { prompt, cursor: prompt.length };
 }
 
+export const CHAT_QUOTE_TARGET_ATTRIBUTE = "data-chat-quote-target";
+
+export function composerQuoteTargetKey(target: ScopedThreadRef | string): string {
+  return typeof target === "string" ? `draft:${target}` : `thread:${scopedThreadKey(target)}`;
+}
+
+export interface PendingComposerQuote {
+  readonly selection: string;
+  readonly targetKey: string | null;
+}
+
 interface ComposerQuoteState {
-  /** Selection awaiting insertion, consumed by the active composer. */
-  readonly pending: string | null;
-  requestQuote: (selection: string) => void;
-  takeQuote: () => string | null;
+  /** Selection awaiting insertion, consumed by the matching composer. */
+  readonly pending: PendingComposerQuote | null;
+  requestQuote: (selection: string, targetKey?: string | null) => void;
+  takeQuote: (input: {
+    readonly targetKey: string;
+    readonly acceptUntargeted?: boolean;
+  }) => string | null;
 }
 
 export const useComposerQuoteStore = create<ComposerQuoteState>((set, get) => ({
   pending: null,
-  requestQuote: (selection) => {
+  requestQuote: (selection, targetKey = null) => {
     if (selection.trim().length === 0) return;
-    set({ pending: selection });
+    set({ pending: { selection, targetKey } });
   },
-  takeQuote: () => {
+  takeQuote: (input) => {
     const { pending } = get();
     if (pending === null) return null;
+    const matchesTarget = pending.targetKey === input.targetKey;
+    const matchesUntargeted = pending.targetKey === null && input.acceptUntargeted === true;
+    if (!matchesTarget && !matchesUntargeted) return null;
     // Cleared on read so a remount cannot re-insert the same quote.
     set({ pending: null });
-    return pending;
+    return pending.selection;
   },
 }));
 
-/** Reads the current document selection, ignoring selections inside inputs. */
-export function readDocumentSelection(): string {
+/** Reads the current document selection and the chat pane that owns it. */
+export function readDocumentSelection(): PendingComposerQuote {
   const selection = window.getSelection();
-  if (!selection || selection.isCollapsed) return "";
-  return selection.toString();
+  if (!selection || selection.isCollapsed) {
+    return { selection: "", targetKey: null };
+  }
+  const node = selection.anchorNode;
+  const element = node instanceof Element ? node : (node?.parentElement ?? null);
+  const pane = element?.closest(`[${CHAT_QUOTE_TARGET_ATTRIBUTE}]`);
+  return {
+    selection: selection.toString(),
+    targetKey: pane?.getAttribute(CHAT_QUOTE_TARGET_ATTRIBUTE) ?? null,
+  };
 }

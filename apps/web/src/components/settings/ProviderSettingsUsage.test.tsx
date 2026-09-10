@@ -74,6 +74,9 @@ describe("ProviderSettingsUsage", () => {
       false,
     );
     expect(shouldShowProviderSettingsUsage(ProviderDriverKind.make("grok"), undefined)).toBe(true);
+    expect(shouldShowProviderSettingsUsage(ProviderDriverKind.make("antigravity"), undefined)).toBe(
+      true,
+    );
     expect(shouldShowProviderSettingsUsage(claudeProvider().driver, unsupported)).toBe(false);
     expect(markup).toBe("");
   });

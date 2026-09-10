@@ -1,6 +1,12 @@
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildQuotedPrompt, formatQuoteBlock, useComposerQuoteStore } from "./composerQuote";
+import {
+  buildQuotedPrompt,
+  composerQuoteTargetKey,
+  formatQuoteBlock,
+  useComposerQuoteStore,
+} from "./composerQuote";
 
 describe("formatQuoteBlock", () => {
   it("prefixes every line of the selection", () => {
@@ -47,17 +53,48 @@ describe("buildQuotedPrompt", () => {
   });
 });
 
+describe("composerQuoteTargetKey", () => {
+  it("keeps drafts and threads on separate keys", () => {
+    expect(composerQuoteTargetKey("draft-1")).toBe("draft:draft-1");
+    expect(
+      composerQuoteTargetKey({
+        environmentId: EnvironmentId.make("environment-local"),
+        threadId: ThreadId.make("thread-1"),
+      }),
+    ).toBe("thread:environment-local:thread-1");
+  });
+});
+
 describe("useComposerQuoteStore", () => {
-  it("hands the pending selection over exactly once", () => {
+  it("hands the pending selection over exactly once to the matching composer", () => {
     const store = useComposerQuoteStore.getState();
-    store.requestQuote("some text");
-    expect(useComposerQuoteStore.getState().takeQuote()).toBe("some text");
+    store.requestQuote("some text", "thread:side");
+    expect(useComposerQuoteStore.getState().takeQuote({ targetKey: "thread:main" })).toBeNull();
+    expect(useComposerQuoteStore.getState().takeQuote({ targetKey: "thread:side" })).toBe(
+      "some text",
+    );
     // Cleared on read, so a composer remount cannot duplicate the quote.
-    expect(useComposerQuoteStore.getState().takeQuote()).toBeNull();
+    expect(useComposerQuoteStore.getState().takeQuote({ targetKey: "thread:side" })).toBeNull();
+  });
+
+  it("lets only the main composer claim a quote with no pane target", () => {
+    useComposerQuoteStore.getState().requestQuote("untargeted");
+    expect(useComposerQuoteStore.getState().takeQuote({ targetKey: "thread:side" })).toBeNull();
+    expect(
+      useComposerQuoteStore.getState().takeQuote({
+        targetKey: "thread:main",
+        acceptUntargeted: true,
+      }),
+    ).toBe("untargeted");
   });
 
   it("ignores a blank selection", () => {
     useComposerQuoteStore.getState().requestQuote("   ");
-    expect(useComposerQuoteStore.getState().takeQuote()).toBeNull();
+    expect(
+      useComposerQuoteStore.getState().takeQuote({
+        targetKey: "thread:main",
+        acceptUntargeted: true,
+      }),
+    ).toBeNull();
   });
 });

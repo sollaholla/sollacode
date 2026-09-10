@@ -304,7 +304,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         // Read the selection here rather than shipping it through the menu
         // channel: activating a native menu item leaves the DOM selection
         // intact, and this keeps the action payload a plain string.
-        useComposerQuoteStore.getState().requestQuote(readDocumentSelection());
+        const quote = readDocumentSelection();
+        useComposerQuoteStore.getState().requestQuote(quote.selection, quote.targetKey);
         return;
       }
       if (action === "open-settings") {
