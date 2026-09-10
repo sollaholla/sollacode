@@ -15,6 +15,7 @@ import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { previewBridge } from "./previewBridge";
+import { shouldClearBrowserPointer } from "./previewPointerLifecycle";
 
 /**
  * Mirrors low-latency desktop state into the store and reflects navigation
@@ -93,16 +94,6 @@ export function usePreviewBridge(input: {
     threadId,
   ]);
   return snapshotStageId;
-}
-
-function shouldClearBrowserPointer(
-  previous: DesktopPreviewTabState["navStatus"] | null,
-  current: DesktopPreviewTabState["navStatus"],
-): boolean {
-  if (!previous) return false;
-  if (current.kind === "Loading" && previous.kind !== "Loading") return true;
-  if (current.kind === "Idle" || previous.kind === "Idle") return false;
-  return current.url !== previous.url;
 }
 
 function projectDesktopState(state: DesktopPreviewTabState): DesktopPreviewOverlay {

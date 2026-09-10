@@ -129,7 +129,18 @@ function AgentBrowserCursorEvent(props: {
     };
     measure();
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
+    const escaped = CSS.escape(tabId);
+    const guest =
+      document.querySelector<HTMLElement>(`[data-preview-viewport="${escaped}"] webview`) ??
+      document.querySelector<HTMLElement>(`[data-browser-surface-slot="${escaped}"]`);
+    const parent = nodeRef.current?.offsetParent;
+    if (guest instanceof HTMLElement) observer?.observe(guest);
+    if (parent instanceof HTMLElement) observer?.observe(parent);
+    return () => {
+      window.removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
   }, [event.viewportHeight, event.viewportWidth, event.x, event.y, tabId, zoomFactor]);
 
   // Fall back to the computed offset when the guest element is not reachable
