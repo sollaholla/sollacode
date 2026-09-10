@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeURL from "node:url";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -29,6 +32,19 @@ import {
 } from "./ThreadTerminalDrawer";
 
 describe("terminal viewport layout", () => {
+  it("loads xterm CSS from the app shell instead of the lazy drawer chunk", () => {
+    const drawer = NodeFS.readFileSync(
+      NodeURL.fileURLToPath(new URL("./ThreadTerminalDrawer.tsx", import.meta.url)),
+      "utf8",
+    );
+    const main = NodeFS.readFileSync(
+      NodeURL.fileURLToPath(new URL("../main.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(drawer).not.toMatch(/@xterm\/xterm\/css\/xterm\.css/);
+    expect(main).toMatch(/@xterm\/xterm\/css\/xterm\.css/);
+  });
+
   it("does not fit a hidden terminal down to zero-sized geometry", () => {
     expect(hasRenderableTerminalViewportSize({ width: 900, height: 600 })).toBe(true);
     expect(hasRenderableTerminalViewportSize({ width: 0, height: 600 })).toBe(false);

@@ -6,6 +6,11 @@ import "@fontsource-variable/dm-sans/index.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "./index.css";
+// xterm CSS must live in the always-loaded shell. Putting it on the lazy
+// terminal drawer made Vite emit ThreadTerminalDrawer-*.css and preload it
+// when the pane opened. That preload 404s or errors on sollacode://, which
+// rejects the dynamic import and crashes the chat with "Unable to preload CSS".
+import "@xterm/xterm/css/xterm.css";
 
 import { APP_VERSION } from "./branding";
 import { isElectron } from "./env";

@@ -59,6 +59,7 @@ import { providerDriverLaunchCommand } from "@t3tools/shared/terminalProvider";
 import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  type ComponentProps,
   lazy,
   memo,
   type DragEvent as ReactDragEvent,
@@ -543,6 +544,22 @@ import {
 import { resolveVoiceCuePolicy } from "../orchestrator/voiceCues";
 
 const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
+
+function ThreadTerminalDrawerMount(props: ComponentProps<typeof ThreadTerminalDrawer>) {
+  return (
+    <Suspense fallback={null}>
+      <RenderErrorBoundary
+        fallback={
+          <div className="flex h-full min-h-0 items-center justify-center px-4 text-center text-sm text-muted-foreground">
+            Couldn’t load the terminal. Close it and open it again.
+          </div>
+        }
+      >
+        <ThreadTerminalDrawer {...props} />
+      </RenderErrorBoundary>
+    </Suspense>
+  );
+}
 
 interface PushToTalkTerminalTarget {
   readonly environmentId: EnvironmentId;
@@ -1476,65 +1493,63 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   // to render under the chat is gone.
   return (
     <div className={visible ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-      <Suspense fallback={null}>
-        <ThreadTerminalDrawer
-          showPaneHeaders={paneLayout !== "tabs"}
-          mode="panel"
-          focusOwner="drawer"
-          {...(paneLayout !== undefined ? { paneLayout } : {})}
-          {...(tabStripTrailing !== undefined ? { tabStripTrailing } : {})}
-          threadRef={threadRef}
-          threadId={threadId}
-          cwd={cwd}
-          worktreePath={effectiveWorktreePath}
-          runtimeEnv={runtimeEnv}
-          visible={visible}
-          nudgeEpoch={revealNudgeEpoch}
-          height={terminalUiState.terminalHeight}
-          // Known-session order is MRU and changes on focus; persisted store order keeps sidebar labels stable.
-          terminalIds={terminalUiState.terminalIds}
-          activeTerminalId={terminalUiState.activeTerminalId}
-          terminalGroups={terminalUiState.terminalGroups}
-          activeTerminalGroupId={terminalUiState.activeTerminalGroupId}
-          focusRequestId={focusRequestId + localFocusRequestId + (visible ? 1 : 0)}
-          onSplitTerminal={splitTerminal}
-          onSplitTerminalVertical={splitTerminalVertical}
-          onNewTerminal={createNewTerminal}
-          onLaunchTerminals={launchTerminals}
-          launchProviders={launchProviders}
-          onAddBrowserPane={addBrowserPane}
-          renderBrowserPane={renderBrowserPane}
-          splitShortcutLabel={visible ? splitShortcutLabel : undefined}
-          splitVerticalShortcutLabel={visible ? splitVerticalShortcutLabel : undefined}
-          newShortcutLabel={visible ? newShortcutLabel : undefined}
-          closeShortcutLabel={visible ? closeShortcutLabel : undefined}
-          keybindings={keybindings}
-          onActiveTerminalChange={activateTerminal}
-          onCloseTerminal={closeTerminal}
-          onHeightChange={setTerminalHeight}
-          onMoveTerminal={(groupId, terminalId, targetTerminalId, zone) =>
-            storeMoveTerminalInGroup(threadRef, groupId, terminalId, targetTerminalId, zone)
-          }
-          onMoveTerminalToGroup={(terminalId, destinationGroupId, placement) =>
-            storeMoveTerminalToGroup(threadRef, terminalId, destinationGroupId, placement)
-          }
-          onReorderTerminalGroups={(groupId, placement) =>
-            storeReorderTerminalGroups(threadRef, groupId, placement)
-          }
-          {...(onToggleFullscreen !== undefined
-            ? { fullscreen: fullscreen === true, onToggleFullscreen }
-            : {})}
-          onSplitSizesChange={(groupId, path, sizes) =>
-            storeSetGroupSplitSizes(threadRef, groupId, path, sizes)
-          }
-          onRenameGroup={(groupId, name) => storeRenameTerminalGroup(threadRef, groupId, name)}
-          sidebarWidth={terminalUiState.sidebarWidth}
-          onSidebarWidthChange={(width) => storeSetTerminalSidebarWidth(threadRef, width)}
-          onAddTerminalContext={handleAddTerminalContext}
-          terminalLabelsById={terminalLabelsById}
-          terminalLaunchLocationsById={terminalLaunchLocationsById}
-        />
-      </Suspense>
+      <ThreadTerminalDrawerMount
+        showPaneHeaders={paneLayout !== "tabs"}
+        mode="panel"
+        focusOwner="drawer"
+        {...(paneLayout !== undefined ? { paneLayout } : {})}
+        {...(tabStripTrailing !== undefined ? { tabStripTrailing } : {})}
+        threadRef={threadRef}
+        threadId={threadId}
+        cwd={cwd}
+        worktreePath={effectiveWorktreePath}
+        runtimeEnv={runtimeEnv}
+        visible={visible}
+        nudgeEpoch={revealNudgeEpoch}
+        height={terminalUiState.terminalHeight}
+        // Known-session order is MRU and changes on focus; persisted store order keeps sidebar labels stable.
+        terminalIds={terminalUiState.terminalIds}
+        activeTerminalId={terminalUiState.activeTerminalId}
+        terminalGroups={terminalUiState.terminalGroups}
+        activeTerminalGroupId={terminalUiState.activeTerminalGroupId}
+        focusRequestId={focusRequestId + localFocusRequestId + (visible ? 1 : 0)}
+        onSplitTerminal={splitTerminal}
+        onSplitTerminalVertical={splitTerminalVertical}
+        onNewTerminal={createNewTerminal}
+        onLaunchTerminals={launchTerminals}
+        launchProviders={launchProviders}
+        onAddBrowserPane={addBrowserPane}
+        renderBrowserPane={renderBrowserPane}
+        splitShortcutLabel={visible ? splitShortcutLabel : undefined}
+        splitVerticalShortcutLabel={visible ? splitVerticalShortcutLabel : undefined}
+        newShortcutLabel={visible ? newShortcutLabel : undefined}
+        closeShortcutLabel={visible ? closeShortcutLabel : undefined}
+        keybindings={keybindings}
+        onActiveTerminalChange={activateTerminal}
+        onCloseTerminal={closeTerminal}
+        onHeightChange={setTerminalHeight}
+        onMoveTerminal={(groupId, terminalId, targetTerminalId, zone) =>
+          storeMoveTerminalInGroup(threadRef, groupId, terminalId, targetTerminalId, zone)
+        }
+        onMoveTerminalToGroup={(terminalId, destinationGroupId, placement) =>
+          storeMoveTerminalToGroup(threadRef, terminalId, destinationGroupId, placement)
+        }
+        onReorderTerminalGroups={(groupId, placement) =>
+          storeReorderTerminalGroups(threadRef, groupId, placement)
+        }
+        {...(onToggleFullscreen !== undefined
+          ? { fullscreen: fullscreen === true, onToggleFullscreen }
+          : {})}
+        onSplitSizesChange={(groupId, path, sizes) =>
+          storeSetGroupSplitSizes(threadRef, groupId, path, sizes)
+        }
+        onRenameGroup={(groupId, name) => storeRenameTerminalGroup(threadRef, groupId, name)}
+        sidebarWidth={terminalUiState.sidebarWidth}
+        onSidebarWidthChange={(width) => storeSetTerminalSidebarWidth(threadRef, width)}
+        onAddTerminalContext={handleAddTerminalContext}
+        terminalLabelsById={terminalLabelsById}
+        terminalLaunchLocationsById={terminalLaunchLocationsById}
+      />
     </div>
   );
 });
@@ -1671,7 +1686,7 @@ const PersistentThreadTerminalPanel = memo(function PersistentThreadTerminalPane
   if (!project || !cwd) return null;
 
   return (
-    <ThreadTerminalDrawer
+    <ThreadTerminalDrawerMount
       mode="panel"
       threadRef={threadRef}
       threadId={threadRef.threadId}
