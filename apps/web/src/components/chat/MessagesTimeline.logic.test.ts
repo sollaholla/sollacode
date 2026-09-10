@@ -5,6 +5,7 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  visibleAssistantMessageText,
 } from "./MessagesTimeline.logic";
 
 describe("computeMessageDurationStart", () => {
@@ -260,7 +261,79 @@ describe("resolveAssistantMessageCopyState", () => {
   });
 });
 
+describe("visibleAssistantMessageText", () => {
+  it("drops newline-only Grok openers and collapses extra blank lines", () => {
+    expect(visibleAssistantMessageText("\n")).toBe("");
+    expect(visibleAssistantMessageText("\n\n  \n")).toBe("");
+    expect(visibleAssistantMessageText("\n\nHello\n\n\n\nworld\n")).toBe("Hello\n\nworld");
+  });
+});
+
 describe("deriveMessagesTimelineRows", () => {
+  it("omits whitespace-only assistant cards instead of synthesizing Working tool rows", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "Move to music gen",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "blank-assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:01Z",
+          message: {
+            id: "assistant-blank" as never,
+            role: "assistant",
+            text: "\n\n",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:01Z",
+            updatedAt: "2026-01-01T00:00:01Z",
+            streaming: true,
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:02Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "Loop is approved.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:02Z",
+            updatedAt: "2026-01-01T00:00:02Z",
+            streaming: false,
+          },
+        },
+      ],
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:01Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual(["message", "message", "working"]);
+    expect(rows.filter((row) => row.kind === "work")).toEqual([]);
+    expect(
+      rows.filter((row) => row.kind === "message" && row.message.role === "assistant"),
+    ).toEqual([
+      expect.objectContaining({
+        id: "assistant-entry",
+        message: expect.objectContaining({ text: "Loop is approved." }),
+      }),
+    ]);
+  });
+
   it("keeps provider handoffs visible as separators instead of folding them into work", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
