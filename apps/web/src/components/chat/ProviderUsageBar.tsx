@@ -977,6 +977,9 @@ export function compactProviderUsageMetric(
 /** Exported so the voice orchestrator names a provider the same way this does. */
 export function providerUsageName(provider: ServerProvider): string {
   if (provider.driver === "claudeAgent") return "Claude";
+  if (provider.driver === "antigravity") {
+    return provider.badgeLabel?.trim() || "AGY";
+  }
   return provider.displayName?.trim() || String(provider.driver);
 }
 
@@ -1110,18 +1113,11 @@ export function ProviderUsageDetails({
     >
       {creditsOnly ? null : (
         <>
-          <header className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
-            <div className="min-w-0 flex-1">
-              <h3 className="font-semibold text-[13px] text-foreground leading-tight tracking-[-0.01em]">
-                {name} usage
-              </h3>
-              <p className="mt-0.5 text-[11px] text-muted-foreground leading-snug">
-                {reportedAt
-                  ? `${state === "stale" ? "Last reported" : "Reported"} ${formatReportedAt(reportedAt)}`
-                  : "Account-level provider usage"}
-              </p>
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <h3 className="shrink-0 whitespace-nowrap font-semibold text-[13px] text-foreground leading-tight tracking-[-0.01em]">
+              {name} usage
+            </h3>
+            <div className="flex shrink-0 items-center gap-1.5">
               {statusLabel ? (
                 <span
                   className={`inline-flex h-6 shrink-0 items-center whitespace-nowrap rounded-full px-2 font-medium text-[11px] ${
@@ -1156,6 +1152,11 @@ export function ProviderUsageDetails({
                 </button>
               ) : null}
             </div>
+            <p className="mt-0.5 w-full basis-full text-[11px] text-muted-foreground leading-snug">
+              {reportedAt
+                ? `${state === "stale" ? "Last reported" : "Reported"} ${formatReportedAt(reportedAt)}`
+                : "Account-level provider usage"}
+            </p>
           </header>
           {refreshError ? (
             <p
