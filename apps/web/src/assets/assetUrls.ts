@@ -1,3 +1,4 @@
+import { bytesToBase64 } from "@t3tools/shared/base64";
 import { useAtomValue } from "@effect/atom-react";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
@@ -15,9 +16,7 @@ const DESKTOP_RENDERER_PROTOCOLS = new Set(["sollacode:", "t3code-dev:"]);
 
 function encodeBase64Url(value: string): string {
   const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  return bytesToBase64(bytes).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
 export function resolveDisplayAssetUrl(

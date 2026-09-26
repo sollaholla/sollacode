@@ -1,3 +1,5 @@
+import { bytesToBase64 } from "@t3tools/shared/base64";
+
 /**
  * Re-encoding for stashed image attachments.
  *
@@ -44,16 +46,6 @@ export type CompressStashImageResult =
   | { ok: true; image: CompressedStashImage }
   | { ok: false; reason: StashImageFailureReason };
 
-/** Chunked so a large image can't blow the argument limit of `fromCharCode`. */
-const BASE64_CHUNK_SIZE = 0x8000;
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK_SIZE) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + BASE64_CHUNK_SIZE));
-  }
-  return btoa(binary);
-}
 
 /**
  * Blob → base64 data URL. Uses `arrayBuffer()` rather than `FileReader` so

@@ -1,3 +1,5 @@
+import { bytesToBase64 } from "@t3tools/shared/base64";
+
 /**
  * Final image preparation for user-sent chat attachments.
  *
@@ -24,7 +26,6 @@ const MAX_INITIAL_DIMENSION = MODEL_MAX_IMAGE_EDGE;
 const MIN_DIMENSION = 32;
 const DIMENSION_SCALE = 0.75;
 const QUALITY_STEPS = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4] as const;
-const BASE64_CHUNK_SIZE = 0x8000;
 
 const ALPHA_CAPABLE_SOURCE_TYPES = new Set(["image/avif", "image/gif", "image/png", "image/webp"]);
 
@@ -47,14 +48,6 @@ export class SendImagePreparationError extends Error {
 interface Canvas2D {
   readonly canvas: OffscreenCanvas | HTMLCanvasElement;
   readonly context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK_SIZE) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + BASE64_CHUNK_SIZE));
-  }
-  return btoa(binary);
 }
 
 async function blobToDataUrl(blob: Blob, mimeTypeOverride?: string): Promise<string> {
