@@ -138,6 +138,13 @@ export function createRemoteControlVideoSink(
     queuedBytes = 0;
     onError?.(detail);
   };
+  const handleBufferError = () => {
+    fail("The video stream could not be parsed. Falling back to image frames.");
+  };
+  const handleVideoError = () => {
+    fail("The video stream could not be decoded. Falling back to image frames.");
+  };
+  video.addEventListener("error", handleVideoError);
 
   const pump = () => {
     if (disposed || failed || !sourceBuffer || sourceBuffer.updating) return;
@@ -175,6 +182,7 @@ export function createRemoteControlVideoSink(
     try {
       sourceBuffer = mediaSource.addSourceBuffer(mimeType);
       sourceBuffer.addEventListener("updateend", handleUpdateEnd);
+      sourceBuffer.addEventListener("error", handleBufferError);
       pump();
     } catch (cause) {
       sourceBuffer = null;
@@ -234,6 +242,8 @@ export function createRemoteControlVideoSink(
       queuedBytes = 0;
       mediaSource.removeEventListener("sourceopen", handleSourceOpen);
       sourceBuffer?.removeEventListener("updateend", handleUpdateEnd);
+      sourceBuffer?.removeEventListener("error", handleBufferError);
+      video.removeEventListener("error", handleVideoError);
       video.pause();
       video.removeAttribute("src");
       video.load();

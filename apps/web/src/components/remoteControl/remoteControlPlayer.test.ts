@@ -68,7 +68,7 @@ function installVideoStandIns() {
   );
   vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:test-stream");
   const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
-  const video = {
+  const video = Object.assign(new EventTarget(), {
     currentTime: 0,
     buffered: buffer.buffered,
     paused: false,
@@ -76,7 +76,7 @@ function installVideoStandIns() {
     pause: vi.fn(),
     removeAttribute: vi.fn(),
     load: vi.fn(),
-  };
+  });
   return { buffer, media, video, revoke };
 }
 
@@ -158,6 +158,34 @@ describe("remote video resource lifetime", () => {
     expect(video.load).toHaveBeenCalledOnce();
     expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:test-stream");
   });
+
+  it.each(["buffer", "video"] as const)(
+    "recovers from an asynchronous %s error after the first frame without awaiting another chunk",
+    (target) => {
+      const { video, media, buffer } = installVideoStandIns();
+      const error = vi.fn();
+      const sink = createRemoteControlVideoSink(
+        "video/webm",
+        video as unknown as HTMLVideoElement,
+        error,
+      )!;
+      media.dispatchEvent(new Event("sourceopen"));
+      sink.append({ data: "AAEC", isInit: true });
+      buffer.complete();
+      sink.append({ data: "AAEC", isInit: false });
+      sink.append({ data: "AAEC", isInit: false });
+      expect(sink.stats().queued).toBe(1);
+      const emitter = target === "buffer" ? buffer : video;
+      emitter.dispatchEvent(new Event("error"));
+      expect(error).toHaveBeenCalledOnce();
+      expect(sink.stats().queued).toBe(0);
+      buffer.complete();
+      expect(buffer.appendBuffer).toHaveBeenCalledTimes(2);
+      sink.dispose();
+      emitter.dispatchEvent(new Event("error"));
+      expect(error).toHaveBeenCalledOnce();
+    },
+  );
 });
 
 describe("liveEdgeSeekTarget", () => {
