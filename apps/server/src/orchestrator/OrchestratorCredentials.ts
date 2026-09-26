@@ -1,5 +1,4 @@
 import {
-  type OrchestratorRealtimeTransport,
   type OrchestratorVoiceProvider,
   OPENAI_REALTIME_CLIENT_SECRETS_URL,
   XAI_API_KEY_ENV,
@@ -106,20 +105,6 @@ const RealtimeClientSecretResponse = Schema.Struct({
     }),
   ),
 });
-
-export interface OrchestratorRealtimeToken {
-  readonly value: string;
-  readonly expiresAt: number | undefined;
-  readonly model: string;
-  /** The voice actually minted, which may not be the one that was asked for. */
-  readonly voice: string;
-  readonly provider: OrchestratorVoiceProvider;
-  readonly transport: OrchestratorRealtimeTransport;
-  /** WebSocket URL for Grok. Absent on the OpenAI WebRTC path. */
-  readonly realtimeUrl?: string;
-  /** Set when the requested voice was refused and this one was used instead. */
-  readonly fellBackFrom?: string;
-}
 
 /**
  * The voice used when the configured OpenAI one is refused.
