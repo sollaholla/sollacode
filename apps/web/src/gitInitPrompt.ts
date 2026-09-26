@@ -24,14 +24,6 @@ export const DEFAULT_GIT_INIT_INSTRUCTIONS = [
 ].join("\n");
 
 /**
- * How the repository gets created.
- *
- * `plain` is the original button behaviour, kept as a first-class choice
- * because the assisted path costs a provider turn and is not always wanted.
- */
-export type GitInitMode = "plain" | "assisted";
-
-/**
  * Wraps the user's instructions with the target directory.
  *
  * The path is stated explicitly because the provider's working directory is not
