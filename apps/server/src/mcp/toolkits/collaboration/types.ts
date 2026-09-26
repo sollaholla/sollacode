@@ -262,5 +262,3 @@ export const ThreadCollaborationError = Schema.Union([
   ThreadCollaborationOperationFailedError,
 ]);
 export type ThreadCollaborationError = typeof ThreadCollaborationError.Type;
-
-export type ThreadHistoryOptions = typeof ThreadHistoryQueryOptions.Type;
