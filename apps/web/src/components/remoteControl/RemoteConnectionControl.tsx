@@ -9,6 +9,7 @@ import { LoaderCircleIcon, MonitorSmartphoneIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { environmentCatalog } from "~/connection/catalog";
+import { cn } from "~/lib/utils";
 import { useEnvironment, usePrimaryEnvironmentId } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 
@@ -116,7 +117,10 @@ export function RemoteConnectionControl(props: {
             <Button
               size="xs"
               variant="outline"
-              className={props.className}
+              className={cn(
+                "bg-transparent dark:bg-transparent [:hover,[data-pressed]]:bg-transparent dark:[:hover,[data-pressed]]:bg-transparent hover:border-foreground/40 before:shadow-none dark:before:shadow-none",
+                props.className,
+              )}
               aria-label={label}
               disabled={isConnecting}
               onClick={() => void connectAndOpen()}
@@ -124,9 +128,9 @@ export function RemoteConnectionControl(props: {
           }
         >
           {isConnecting ? (
-            <LoaderCircleIcon className="size-3.5 animate-spin" />
+            <LoaderCircleIcon className="size-3.5 animate-spin text-foreground opacity-100" />
           ) : (
-            <MonitorSmartphoneIcon className="size-3.5" />
+            <MonitorSmartphoneIcon className="size-3.5 text-foreground opacity-100" />
           )}
           <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
             {isConnecting ? `Connecting to ${environment.label}` : label}

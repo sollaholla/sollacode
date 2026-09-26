@@ -34,6 +34,8 @@ const announceHangingPrompt = process.env.T3_ACP_ANNOUNCE_HANGING_PROMPT === "1"
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
 const omitXAiPromptCompleteStopReason =
   process.env.T3_ACP_OMIT_XAI_PROMPT_COMPLETE_STOP_REASON === "1";
+/** Grok's shape for a failed turn: stop_reason "error" plus the reason text. */
+const xAiPromptCompleteErrorResult = process.env.T3_ACP_XAI_PROMPT_COMPLETE_ERROR_RESULT;
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
 const emitLoadReplay = process.env.T3_ACP_EMIT_LOAD_REPLAY === "1";
 const hangLoadSessionAfterReplay = process.env.T3_ACP_HANG_LOAD_SESSION_AFTER_REPLAY === "1";
@@ -756,8 +758,12 @@ const program = Effect.gen(function* () {
         writeJsonRpcNotification("_x.ai/session/prompt_complete", {
           sessionId: requestedSessionId,
           promptId: promptIdFromRequestMeta(request) ?? "mock-xai-prompt-1",
-          ...(omitXAiPromptCompleteStopReason ? {} : { stopReason: "end_turn" }),
-          agentResult: null,
+          ...(xAiPromptCompleteErrorResult
+            ? { stopReason: "error", agentResult: xAiPromptCompleteErrorResult }
+            : {
+                ...(omitXAiPromptCompleteStopReason ? {} : { stopReason: "end_turn" }),
+                agentResult: null,
+              }),
         });
 
         if (emitForeignSessionUpdates) {

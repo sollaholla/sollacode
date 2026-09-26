@@ -173,6 +173,59 @@ export function messageDeliveryLabel(
   }
 }
 
+export const PROVIDER_TURN_START_FAILED_ACTIVITY_KIND = "provider.turn.start.failed";
+
+export interface UnsentMessage {
+  readonly messageId: string;
+  /** The provider's own words for why the turn never started. */
+  readonly detail: string;
+}
+
+/**
+ * The newest user message when its delivery failed for good.
+ *
+ * A turn-start that fails terminally (a rejected model, a provider switch that
+ * could not complete) leaves a message persisted but never sent. Without this
+ * it sat on "Queued for X" forever, a claim that it would still go out.
+ *
+ * Servers from 0.1.645 tag the failure activity with the message id and
+ * whether its delivery was cancelled. Older failure activities carry neither,
+ * so for them the absence of anything that could still deliver the message
+ * decides: no running turn, no queued server work, no receipt, and no reply
+ * after it.
+ */
+export function deriveUnsentMessage(input: {
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly newestUserMessage: { readonly id: string; readonly createdAt: string } | undefined;
+  readonly delivered: ReadonlySet<string>;
+  /** A running turn or queued server work could still deliver it. */
+  readonly deliveryInFlight: boolean;
+  /** The provider replied after the message was sent. */
+  readonly answeredAfter: boolean;
+}): UnsentMessage | null {
+  const message = input.newestUserMessage;
+  if (message === undefined || input.deliveryInFlight || input.answeredAfter) return null;
+  if (input.delivered.has(message.id)) return null;
+  let unsent: UnsentMessage | null = null;
+  for (const activity of input.activities) {
+    if (activity.kind !== PROVIDER_TURN_START_FAILED_ACTIVITY_KIND) continue;
+    if (activity.createdAt < message.createdAt) continue;
+    const payload = asRecord(activity.payload);
+    const detail =
+      typeof payload.detail === "string" && payload.detail.length > 0
+        ? payload.detail
+        : activity.summary;
+    if (typeof payload.messageId !== "string") {
+      unsent = { messageId: message.id, detail };
+      continue;
+    }
+    if (payload.messageId !== message.id) continue;
+    // A tagged failure that is still being retried supersedes an earlier one.
+    unsent = payload.deliveryCancelled === true ? { messageId: message.id, detail } : null;
+  }
+  return unsent;
+}
+
 export function isMessageDeliveredId(
   delivered: ReadonlySet<string>,
   messageId: MessageId | string,

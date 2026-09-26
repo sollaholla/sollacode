@@ -11,7 +11,7 @@ import {
 import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
 import { SymbolView } from "../../components/AppSymbol";
 import { HeaderHeightContext } from "@react-navigation/elements";
-import { useNavigation } from "@react-navigation/native";
+import { CommonActions, useNavigation } from "@react-navigation/native";
 import {
   memo,
   useCallback,
@@ -198,6 +198,39 @@ function MessageAttachmentImage(props: {
     <TouchableOpacity activeOpacity={0.7} onPress={() => props.onPressImage(uri)}>
       <Image source={{ uri }} className={props.className} resizeMode="cover" />
     </TouchableOpacity>
+  );
+}
+
+function MessageVoiceNote(props: {
+  environmentId: EnvironmentId;
+  attachment: { id: string; durationMs: number; transcript?: string };
+}) {
+  const uri = useAssetUrl(props.environmentId, {
+    _tag: "attachment",
+    attachmentId: props.attachment.id,
+  });
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <View className="gap-2 rounded-xl border border-neutral-400/30 p-3">
+      <Pressable
+        disabled={!uri}
+        accessibilityRole="button"
+        accessibilityLabel="Play voice note"
+        onPress={() => {
+          if (uri) void Linking.openURL(uri);
+        }}
+      >
+        <Text>▶ Voice note · {Math.round(props.attachment.durationMs / 1000)}s</Text>
+      </Pressable>
+      {props.attachment.transcript ? (
+        <>
+          <Pressable accessibilityRole="button" onPress={() => setExpanded(!expanded)}>
+            <Text className="text-xs text-neutral-500">Transcribed {expanded ? "▴" : "▾"}</Text>
+          </Pressable>
+          {expanded ? <Text>{props.attachment.transcript}</Text> : null}
+        </>
+      ) : null}
+    </View>
   );
 }
 
@@ -828,7 +861,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
 
 function renderFeedEntry(
   info: { item: ThreadFeedEntry; index: number },
-  props: Pick<ThreadFeedProps, "environmentId" | "skills"> & {
+  props: Pick<ThreadFeedProps, "environmentId" | "threadId" | "skills"> & {
     readonly copiedRowId: string | null;
     readonly expandedWorkRows: Record<string, boolean>;
     readonly terminalAssistantMessageIds: ReadonlySet<string>;
@@ -839,6 +872,7 @@ function renderFeedEntry(
     readonly onToggleTurnFold: (turnId: TurnId) => void;
     readonly onPressImage: (uri: string, headers?: Record<string, string>) => void;
     readonly onMarkdownLinkPress: (href: string) => void;
+    readonly onOpenSenderThread: (threadId: string) => void;
     readonly iconSubtleColor: string | import("react-native").ColorValue;
     readonly userBubbleColor: string | import("react-native").ColorValue;
     readonly markdownStyles: MarkdownStyleSets;
@@ -924,7 +958,8 @@ function renderFeedEntry(
   if (entry.type === "message") {
     const { message } = entry;
     const isUser = message.role === "user";
-    const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
+    const styles =
+      isUser && !message.senderThreadId ? markdownStyles.user : markdownStyles.assistant;
     const timestampLabel = formatMessageTime(isUser ? message.createdAt : message.updatedAt);
     const attachments = message.attachments ?? [];
     const hasReviewCommentContext = message.text.includes("<review_comment");
@@ -939,6 +974,28 @@ function renderFeedEntry(
       !message.streaming;
 
     if (isUser) {
+      const messageFooter = (
+        <View
+          className={
+            message.senderThreadId
+              ? "mt-1 flex-row items-center gap-1"
+              : "mt-1 flex-row items-center justify-end gap-1 pr-0.5"
+          }
+        >
+          <Text className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400">
+            {timestampLabel}
+          </Text>
+          {message.text.trim().length > 0 ? (
+            <CopyTextButton
+              accessibilityLabel="Copy message"
+              text={message.text}
+              tintColor={iconSubtleColor}
+              buttonSize={28}
+              iconSize={13}
+            />
+          ) : null}
+        </View>
+      );
       const enterAnimated = isFreshTimestamp(message.createdAt);
       if (isBrowserTabCleanupMessageId(message.id)) {
         return (
@@ -957,18 +1014,35 @@ function renderFeedEntry(
       }
       return (
         <Animated.View
-          className="mb-5 items-end"
+          className={message.senderThreadId ? "mb-5 items-start" : "mb-5 items-end"}
           {...(enterAnimated ? { entering: FadeInUp.duration(220) } : {})}
         >
           <View
             className="min-w-0 gap-2 rounded-[20px] px-3.5 py-2.5"
             style={{
-              backgroundColor: userBubbleColor,
+              backgroundColor: message.senderThreadId
+                ? "rgba(14, 165, 233, 0.07)"
+                : userBubbleColor,
               maxWidth: props.userBubbleMaxWidth,
               ...(hasReviewCommentContext ? { width: props.reviewCommentBubbleWidth } : null),
             }}
           >
-            {message.text.trim().length > 0 ? (
+            {message.senderThreadId ? (
+              <Pressable
+                accessibilityRole="link"
+                className="self-start rounded-full border border-sky-500/25 bg-sky-500/10 px-2.5 py-1"
+                onPress={() => props.onOpenSenderThread(message.senderThreadId!)}
+              >
+                <Text className="font-t3-medium text-sm text-foreground">
+                  {message.senderThreadTitle || "Another AI thread"}
+                </Text>
+              </Pressable>
+            ) : null}
+            {message.text.trim().length > 0 &&
+            !(
+              attachments.some((a) => a.type === "audio") &&
+              message.text === "[Voice note attached]"
+            ) ? (
               <UserMessageContent
                 text={message.text}
                 markdownStyles={styles}
@@ -978,6 +1052,14 @@ function renderFeedEntry(
               />
             ) : null}
             {attachments.map((attachment) => {
+              if (attachment.type === "audio")
+                return (
+                  <MessageVoiceNote
+                    key={attachment.id}
+                    environmentId={props.environmentId}
+                    attachment={attachment}
+                  />
+                );
               return (
                 <MessageAttachmentImage
                   key={attachment.id}
@@ -988,21 +1070,12 @@ function renderFeedEntry(
                 />
               );
             })}
-          </View>
-          <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
-            <Text className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400">
-              {timestampLabel}
-            </Text>
-            {message.text.trim().length > 0 ? (
-              <CopyTextButton
-                accessibilityLabel="Copy message"
-                text={message.text}
-                tintColor={iconSubtleColor}
-                buttonSize={28}
-                iconSize={13}
-              />
+            {message.senderThreadId ? (
+              <Text className="mt-1 text-xs text-foreground-muted">Sent by another thread</Text>
             ) : null}
+            {message.senderThreadId ? messageFooter : null}
           </View>
+          {!message.senderThreadId ? messageFooter : null}
         </Animated.View>
       );
     }
@@ -1039,6 +1112,14 @@ function renderFeedEntry(
           )
         ) : null}
         {attachments.map((attachment) => {
+          if (attachment.type === "audio")
+            return (
+              <MessageVoiceNote
+                key={attachment.id}
+                environmentId={props.environmentId}
+                attachment={attachment}
+              />
+            );
           return (
             <MessageAttachmentImage
               key={attachment.id}
@@ -1069,6 +1150,8 @@ function renderFeedEntry(
 
   return (
     <ThreadWorkLog
+      environmentId={props.environmentId}
+      threadId={props.threadId}
       activities={entry.activities}
       copiedRowId={props.copiedRowId}
       expandedRows={props.expandedWorkRows}
@@ -1478,6 +1561,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   // Keep row-local interaction props in extraData so disclosures and copy feedback repaint.
   const listAppearanceData = useMemo(
     () => ({
+      navigation,
       copiedRowId,
       expandedWorkRows,
       iconSubtleColor,
@@ -1818,6 +1902,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     (info: { item: ThreadFeedEntry; index: number }) =>
       renderFeedEntry(info, {
         environmentId: props.environmentId,
+        threadId: props.threadId,
         copiedRowId,
         expandedWorkRows,
         terminalAssistantMessageIds,
@@ -1828,6 +1913,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         onToggleTurnFold,
         onPressImage,
         onMarkdownLinkPress,
+        onOpenSenderThread: (threadId) =>
+          navigation.dispatch(
+            CommonActions.navigate("Thread", {
+              environmentId: String(props.environmentId),
+              threadId,
+            }),
+          ),
         iconSubtleColor,
         userBubbleColor,
         markdownStyles,
@@ -1854,6 +1946,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       onToggleWorkGroup,
       onToggleWorkRow,
       props.environmentId,
+      props.threadId,
       props.skills,
     ],
   );

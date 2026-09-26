@@ -16,8 +16,10 @@ import {
   PreviewAutomationTargetNotEditableError,
   PreviewAutomationTimeoutError,
   PreviewAutomationUnsupportedClientError,
+  PreviewCredentialVaultError,
   PreviewHumanVerification,
   PreviewTabId,
+  type PreviewCredentialVaultCommand,
   type PreviewAutomationError,
   type PreviewAutomationOperation,
   type PreviewAutomationHost,
@@ -36,6 +38,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
+import { PreviewManager } from "../preview/Manager.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveOwningThreadIdWith } from "./owningThread.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -45,6 +48,12 @@ export interface PreviewAutomationInvokeInput {
   readonly operation: PreviewAutomationOperation;
   readonly input: unknown;
   readonly tabId?: PreviewTabId;
+  readonly timeoutMs?: number;
+}
+
+export interface PreviewCredentialVaultInvokeInput {
+  readonly environmentId: PreviewAutomationHost["environmentId"];
+  readonly command: PreviewCredentialVaultCommand;
   readonly timeoutMs?: number;
 }
 
@@ -61,6 +70,14 @@ export class PreviewAutomationBroker extends Context.Service<
     readonly invoke: <A = unknown>(
       request: PreviewAutomationInvokeInput,
     ) => Effect.Effect<A, PreviewAutomationError>;
+    /**
+     * Relays a settings screen's change to the saved passwords kept by the
+     * desktop app on the environment's own machine. The result is whatever
+     * that desktop answered; callers decode it.
+     */
+    readonly manageCredentials: (
+      request: PreviewCredentialVaultInvokeInput,
+    ) => Effect.Effect<unknown, PreviewCredentialVaultError>;
   }
 >()("t3/mcp/PreviewAutomationBroker") {}
 
@@ -70,6 +87,7 @@ interface ClientConnection {
   readonly environmentId: PreviewAutomationHost["environmentId"];
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
   readonly environmentLocal: boolean;
+  readonly manageCredentials: boolean;
   readonly focused: boolean;
   readonly focusOrder: number;
   readonly queue: Queue.Queue<PreviewAutomationStreamEvent>;
@@ -79,6 +97,14 @@ interface PendingRequest {
   readonly queue: ClientConnection["queue"];
   readonly deferred: Deferred.Deferred<unknown, PreviewAutomationError>;
   readonly context: PreviewAutomationRequestErrorContext;
+}
+
+/** A credential vault request waiting on its desktop. It carries no command, so no secret. */
+interface PendingCredentialVaultRequest {
+  readonly queue: ClientConnection["queue"];
+  readonly clientId: ClientConnection["clientId"];
+  readonly connectionId: ClientConnection["connectionId"];
+  readonly deferred: Deferred.Deferred<unknown, PreviewCredentialVaultError>;
 }
 
 /**
@@ -143,21 +169,32 @@ interface BrokerState {
   readonly clients: ReadonlyMap<string, ClientConnection>;
   readonly assignments: ReadonlyMap<string, HostAssignment>;
   readonly pending: ReadonlyMap<string, PendingRequest>;
+  readonly vaultPending: ReadonlyMap<string, PendingCredentialVaultRequest>;
   readonly requestSequence: number;
   readonly focusSequence: number;
 }
 
 const PREVIEW_AUTOMATION_HOST_QUEUE_CAPACITY = 64;
+const CREDENTIAL_VAULT_TIMEOUT_MS = 15_000;
+const CREDENTIAL_VAULT_MESSAGE_MAX_LENGTH = 300;
+
+interface RemovedConnection {
+  readonly state: BrokerState;
+  readonly disconnected: ReadonlyArray<PendingRequest>;
+  readonly disconnectedVault: ReadonlyArray<PendingCredentialVaultRequest>;
+}
 
 const removeConnectionFromState = (
   current: BrokerState,
   clientId: string,
   queue: ClientConnection["queue"],
-): { readonly state: BrokerState; readonly disconnected: ReadonlyArray<PendingRequest> } => {
+): RemovedConnection => {
   const clients = new Map(current.clients);
   const assignments = new Map(current.assignments);
   const pending = new Map(current.pending);
+  const vaultPending = new Map(current.vaultPending);
   const disconnected: PendingRequest[] = [];
+  const disconnectedVault: PendingCredentialVaultRequest[] = [];
   if (current.clients.get(clientId)?.queue === queue) clients.delete(clientId);
   for (const [assignmentKey, assignment] of assignments) {
     if (assignment.queue === queue) assignments.delete(assignmentKey);
@@ -167,10 +204,44 @@ const removeConnectionFromState = (
     pending.delete(requestId);
     disconnected.push(entry);
   }
+  for (const [requestId, entry] of vaultPending) {
+    if (entry.queue !== queue) continue;
+    vaultPending.delete(requestId);
+    disconnectedVault.push(entry);
+  }
   return {
-    state: { ...current, clients, assignments, pending },
+    state: { ...current, clients, assignments, pending, vaultPending },
     disconnected,
+    disconnectedVault,
   };
+};
+
+const credentialVaultError = (
+  reason: PreviewCredentialVaultError["reason"],
+  message: string,
+): PreviewCredentialVaultError => new PreviewCredentialVaultError({ reason, message });
+
+const desktopDisconnectedError = () =>
+  credentialVaultError(
+    "desktopDisconnected",
+    "The desktop app disconnected before it answered. Try again.",
+  );
+
+/**
+ * The desktop's own words for why a vault change failed, such as a site that
+ * is not HTTPS. They reach a person, not a model, but are still bounded and
+ * kept to one line.
+ */
+const credentialVaultRejection = (message: string): PreviewCredentialVaultError => {
+  const text = message.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  return credentialVaultError(
+    "rejected",
+    text.length === 0
+      ? "The desktop app could not change the saved passwords."
+      : text.length > CREDENTIAL_VAULT_MESSAGE_MAX_LENGTH
+        ? `${text.slice(0, CREDENTIAL_VAULT_MESSAGE_MAX_LENGTH - 1)}…`
+        : text,
+  );
 };
 
 const selectorDiagnosticsFromInput = (
@@ -463,23 +534,30 @@ const classifyResponseError = (
 
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const previewManager = yield* PreviewManager;
   const crypto = yield* Crypto.Crypto;
   const state = yield* SynchronizedRef.make<BrokerState>({
     clients: new Map(),
     assignments: new Map(),
     pending: new Map(),
+    vaultPending: new Map(),
     requestSequence: 0,
     focusSequence: 0,
   });
 
   const closeConnection = Effect.fn("PreviewAutomationBroker.closeConnection")(function* (
     queue: ClientConnection["queue"],
-    disconnected: ReadonlyArray<PendingRequest>,
+    removed: Pick<RemovedConnection, "disconnected" | "disconnectedVault">,
   ) {
     yield* Effect.forEach(
-      disconnected,
+      removed.disconnected,
       ({ deferred, context }) =>
         Deferred.fail(deferred, new PreviewAutomationClientDisconnectedError(context)),
+      { discard: true },
+    );
+    yield* Effect.forEach(
+      removed.disconnectedVault,
+      ({ deferred }) => Deferred.fail(deferred, desktopDisconnectedError()),
       { discard: true },
     );
     yield* Queue.shutdown(queue);
@@ -489,11 +567,11 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     clientId: string,
     queue: ClientConnection["queue"],
   ) {
-    const disconnected = yield* SynchronizedRef.modify(state, (current) => {
-      const removed = removeConnectionFromState(current, clientId, queue);
-      return [removed.disconnected, removed.state] as const;
+    const removed = yield* SynchronizedRef.modify(state, (current) => {
+      const next = removeConnectionFromState(current, clientId, queue);
+      return [next, next.state] as const;
     });
-    yield* closeConnection(queue, disconnected);
+    yield* closeConnection(queue, removed);
   });
 
   const acquireConnection = Effect.fn("PreviewAutomationBroker.acquireConnection")(function* (
@@ -511,15 +589,16 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       environmentId: host.environmentId,
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
       environmentLocal: host.environmentLocal ?? false,
+      manageCredentials: host.manageCredentials ?? false,
       focused: false,
       focusOrder: 0,
       queue,
     };
     const registration = yield* SynchronizedRef.modify(state, (current) => {
       const previousConnection = current.clients.get(clientId);
-      const removed = previousConnection
+      const removed: RemovedConnection = previousConnection
         ? removeConnectionFromState(current, clientId, previousConnection.queue)
-        : { state: current, disconnected: [] };
+        : { state: current, disconnected: [], disconnectedVault: [] };
       const clients = new Map(removed.state.clients);
       const focusSequence = removed.state.focusSequence + 1;
       const registeredConnection = { ...connection, focusOrder: focusSequence };
@@ -527,14 +606,14 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       return [
         {
           previousConnection,
-          disconnected: removed.disconnected,
+          removed,
           registeredConnection,
         },
         { ...removed.state, clients, focusSequence },
       ] as const;
     });
     if (registration.previousConnection) {
-      yield* closeConnection(registration.previousConnection.queue, registration.disconnected);
+      yield* closeConnection(registration.previousConnection.queue, registration.removed);
     }
     return registration.registeredConnection;
   });
@@ -577,6 +656,28 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const respond: PreviewAutomationBroker["Service"]["respond"] = Effect.fn(
     "PreviewAutomationBroker.respond",
   )(function* (response) {
+    const vaultPending = yield* SynchronizedRef.modify(state, (current) => {
+      const entry = current.vaultPending.get(response.requestId);
+      if (
+        !entry ||
+        entry.clientId !== response.clientId ||
+        entry.connectionId !== response.connectionId
+      ) {
+        return [undefined, current] as const;
+      }
+      const next = new Map(current.vaultPending);
+      next.delete(response.requestId);
+      return [entry, { ...current, vaultPending: next }] as const;
+    });
+    if (vaultPending) {
+      yield* response.ok
+        ? Deferred.succeed(vaultPending.deferred, response.result)
+        : Deferred.fail(
+            vaultPending.deferred,
+            credentialVaultRejection(response.error?.message ?? ""),
+          );
+      return;
+    }
     const pending = yield* SynchronizedRef.modify(state, (current) => {
       const entry = current.pending.get(response.requestId);
       if (
@@ -730,6 +831,19 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       });
     }
     const { connection, requestId, requestContext, requestSequence } = route;
+    // Mobile frame capture polls snapshot/status without a person interacting.
+    // Those probes must not keep an abandoned tab alive.
+    const countsAsActivity =
+      input.operation !== "status" &&
+      input.operation !== "close" &&
+      !(input.scope.providerInstanceId === "mobileBrowser" && input.operation === "snapshot");
+    const noteActivity = (tabId: string | null | undefined) =>
+      tabId && countsAsActivity
+        ? previewManager
+            .reportActivity({ threadId: input.scope.threadId, tabId, interacted: true })
+            .pipe(Effect.catch(() => Effect.void))
+        : Effect.void;
+    yield* noteActivity(requestContext.tabId);
     const expiresAt = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + deadlineMs;
     const removePending = SynchronizedRef.update(state, (next) => {
       if (!next.pending.has(requestId)) return next;
@@ -777,6 +891,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     const result = yield* awaitResponse().pipe(Effect.ensuring(removePending));
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
+    yield* noteActivity(responseTabId === undefined ? requestContext.tabId : responseTabId);
     const assignmentKey = hostAssignmentKey(input.scope);
     if (resultTabId === undefined) {
       return yield* withTabHolders(result, assignmentKey, callerKey);
@@ -833,7 +948,80 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return yield* withTabHolders(result, assignmentKey, callerKey);
   });
 
-  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke });
+  const manageCredentials: PreviewAutomationBroker["Service"]["manageCredentials"] = Effect.fn(
+    "PreviewAutomationBroker.manageCredentials",
+  )(function* (input) {
+    const timeoutMs = input.timeoutMs ?? CREDENTIAL_VAULT_TIMEOUT_MS;
+    const deferred = yield* Deferred.make<unknown, PreviewCredentialVaultError>();
+    // Only the desktop running on the environment's own machine: its vault is
+    // the one agents' fills read from. Another desktop viewing this
+    // environment keeps a different vault on a different computer.
+    const route = yield* SynchronizedRef.modify(state, (current) => {
+      const connection = Array.from(current.clients.values())
+        .filter(
+          (host) =>
+            host.environmentId === input.environmentId &&
+            host.environmentLocal &&
+            host.manageCredentials,
+        )
+        .sort(
+          (left, right) =>
+            Number(right.focused) - Number(left.focused) || right.focusOrder - left.focusOrder,
+        )[0];
+      if (!connection) return [undefined, current] as const;
+      const requestId = `credential-vault-${current.requestSequence}`;
+      const vaultPending = new Map(current.vaultPending);
+      vaultPending.set(requestId, {
+        queue: connection.queue,
+        clientId: connection.clientId,
+        connectionId: connection.connectionId,
+        deferred,
+      });
+      return [
+        { connection, requestId },
+        { ...current, vaultPending, requestSequence: current.requestSequence + 1 },
+      ] as const;
+    });
+    if (!route) {
+      return yield* credentialVaultError(
+        "desktopUnavailable",
+        "Saved passwords are kept by the Solla Code desktop app on the computer running this environment, and it isn't connected. Open the desktop app there, then try again.",
+      );
+    }
+    const { connection, requestId } = route;
+    const removePending = SynchronizedRef.update(state, (next) => {
+      if (!next.vaultPending.has(requestId)) return next;
+      const vaultPending = new Map(next.vaultPending);
+      vaultPending.delete(requestId);
+      return { ...next, vaultPending };
+    });
+    const expiresAt = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + timeoutMs;
+    const result = yield* Effect.gen(function* () {
+      const offered = yield* Queue.offer(connection.queue, {
+        type: "credentialVault",
+        connectionId: connection.connectionId,
+        request: { requestId, command: input.command, expiresAt },
+      });
+      if (!offered) {
+        const completion = yield* Deferred.poll(deferred);
+        if (Option.isSome(completion)) return yield* completion.value;
+        return yield* desktopDisconnectedError();
+      }
+      return yield* Deferred.await(deferred);
+    }).pipe(
+      Effect.timeoutOption(timeoutMs + BROKER_DEADLINE_MARGIN_MS),
+      Effect.ensuring(removePending),
+    );
+    return yield* Option.match(result, {
+      onNone: () =>
+        Effect.fail(
+          credentialVaultError("timeout", "The desktop app didn't answer in time. Try again."),
+        ),
+      onSome: Effect.succeed,
+    });
+  });
+
+  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke, manageCredentials });
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 
 export const layer = Layer.effect(PreviewAutomationBroker, make);

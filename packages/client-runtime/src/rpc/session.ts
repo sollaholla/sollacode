@@ -9,6 +9,8 @@ import * as RpcClient from "effect/unstable/rpc/RpcClient";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Socket from "effect/unstable/socket/Socket";
 
+import { isLoopbackHost } from "@t3tools/shared/preview";
+
 import { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";
 import type {
   ConnectionAttemptError,
@@ -65,6 +67,18 @@ function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionA
   }
 }
 
+/** The primary environment on this machine: its socket cannot be half-open. */
+export function isLocalPrimarySocket(
+  connection: Pick<PreparedConnection, "socketUrl" | "target">,
+): boolean {
+  if (connection.target._tag !== "PrimaryConnectionTarget") return false;
+  try {
+    return isLoopbackHost(new URL(connection.socketUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
 export const make = Effect.gen(function* () {
   const webSocketConstructor = yield* Socket.WebSocketConstructor;
 
@@ -97,11 +111,12 @@ export const make = Effect.gen(function* () {
       // though the WebSocket and server are both healthy. Keep the local
       // protocol alive through that scheduling stall; an actual socket close
       // still runs `onDisconnect`, and the supervisor's foreground probe is
-      // the authoritative local liveness check. Remote targets retain the
-      // heartbeat timeout because a half-open network socket must be detected.
-      ...(connection.target._tag === "PrimaryConnectionTarget"
-        ? { onPingTimeout: Effect.never }
-        : {}),
+      // the authoritative local liveness check. Everything else keeps the
+      // heartbeat timeout because a half-open network socket must be
+      // detected — including the primary environment when it is reached over
+      // the network (a phone opening the host's Tailscale URL), where a
+      // socket that stopped delivering left threads "Catching up" forever.
+      ...(isLocalPrimarySocket(connection) ? { onPingTimeout: Effect.never } : {}),
     });
     const socketLayer = Socket.layerWebSocket(connection.socketUrl, {
       openTimeout: SOCKET_OPEN_TIMEOUT,

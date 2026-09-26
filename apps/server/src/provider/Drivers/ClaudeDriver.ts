@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { compareSemverVersions } from "@t3tools/shared/semver";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -52,6 +53,14 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
+import {
+  claimClaudeBankedReset,
+  ClaudeBankedResetError,
+  fetchClaudeBankedResets,
+  makeClaudeBankedResetCache,
+  readClaudeOAuthCredentials,
+  withClaudeResetCredits,
+} from "./ClaudeBankedResets.ts";
 import { makeClaudeContinuationGroupKey, makeClaudeEnvironment } from "./ClaudeHome.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -141,7 +150,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         continuationGroupKey,
       });
 
+      let cliVersion: string | null = null;
+      let discoveredModels: ReadonlyArray<ServerProvider["models"][number]> = [];
       const adapterOptions = {
+        supportsThinkingDisplay: () =>
+          cliVersion !== null && compareSemverVersions(cliVersion, "2.1.280") >= 0,
+        getModelCapabilities: (model: string | null | undefined) =>
+          discoveredModels.find((entry) => entry.slug === model)?.capabilities ?? undefined,
         instanceId,
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
@@ -149,16 +164,68 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const adapter = yield* makeClaudeAdapter(effectiveConfig, adapterOptions);
       const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv);
 
+      const readCredentials = readClaudeOAuthCredentials(accountEnvironment).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      const bankedResets = yield* makeClaudeBankedResetCache(
+        readCredentials.pipe(
+          Effect.flatMap((credentials) =>
+            credentials === null
+              ? Effect.succeed({ status: "signedOut" } as const)
+              : cliVersion === null
+                ? Effect.succeed({ status: "failed" } as const)
+                : fetchClaudeBankedResets(credentials.accessToken, cliVersion),
+          ),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+        ),
+      );
+
       const checkProvider = checkClaudeProviderStatus(
         effectiveConfig,
         () =>
           probeClaudeCapabilities(effectiveConfig, processEnv, cwd).pipe(
+            Effect.map((capabilities) =>
+              capabilities
+                ? {
+                    ...capabilities,
+                    models: capabilities.models?.length ? capabilities.models : discoveredModels,
+                  }
+                : undefined,
+            ),
             Effect.provideService(Path.Path, path),
           ),
         processEnv,
         cwd,
       ).pipe(
-        Effect.map(stampIdentity),
+        Effect.tap((next) =>
+          Effect.sync(() => {
+            cliVersion = next.version;
+          }),
+        ),
+        Effect.flatMap((next) =>
+          // Only alongside real usage: the registry keeps the previous usage
+          // when a check has none, and a bank-only envelope would replace it.
+          next.status === "ready" &&
+          next.auth.status === "authenticated" &&
+          next.accountUsage !== undefined
+            ? bankedResets.current.pipe(
+                Effect.map((credits) => ({
+                  ...next,
+                  accountUsage: withClaudeResetCredits(next.accountUsage, credits),
+                })),
+              )
+            : Effect.succeed(next),
+        ),
+        Effect.map((next) => {
+          if (next.status === "ready") discoveredModels = next.models;
+          // Retain the last model list during a transient probe failure, scoped
+          // to this provider instance and discarded when its config changes.
+          const models = new Map(discoveredModels.map((model) => [model.slug, model]));
+          for (const model of next.models) models.set(model.slug, model);
+          return stampIdentity({ ...next, models: [...models.values()] });
+        }),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -205,6 +272,43 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        usageReset: {
+          consume: ({ creditId, idempotencyKey }) =>
+            Effect.gen(function* () {
+              if (!creditId) {
+                return yield* Effect.fail(
+                  new ClaudeBankedResetError("Choose which Claude reset to use."),
+                );
+              }
+              const credentials = yield* readCredentials;
+              if (credentials === null) {
+                return yield* Effect.fail(
+                  new ClaudeBankedResetError(
+                    "Claude's stored sign-in is missing or expired. Run a Claude turn, then retry.",
+                  ),
+                );
+              }
+              if (cliVersion === null) {
+                return yield* Effect.fail(
+                  new ClaudeBankedResetError(
+                    "Claude's version is still being checked. Try again in a moment.",
+                  ),
+                );
+              }
+              const outcome = yield* claimClaudeBankedReset({
+                credentials,
+                cliVersion,
+                grantId: creditId,
+                requestId: idempotencyKey,
+              });
+              if (outcome === "reset") yield* bankedResets.spend(creditId);
+              return outcome;
+            }).pipe(
+              Effect.provideService(HttpClient.HttpClient, httpClient),
+              // Whatever happened, the bank changed or needs checking.
+              Effect.ensuring(bankedResets.invalidate),
+            ),
+        },
         accountAuth: {
           binaryPath: effectiveConfig.binaryPath,
           environment: accountEnvironment,

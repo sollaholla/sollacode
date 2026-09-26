@@ -20,6 +20,8 @@ import type {
   PreviewDownloadApproval,
   PreviewAutomationWaitForDownloadResult,
   PreviewAutomationClickInput,
+  PreviewAutomationContextMenuInput,
+  PreviewAutomationContextMenuResult,
   PreviewAutomationDragInput,
   PreviewAutomationActionEvent,
   PreviewAutomationConsoleEntry,
@@ -35,9 +37,15 @@ import type {
   PreviewAutomationUploadResult,
   PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
+import { PreviewCredentialKind } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
-import { buildPreviewContextMenuTemplate, webSearchUrl } from "./contextMenu.ts";
+import {
+  buildPreviewContextMenuTemplate,
+  REMOTE_CONTEXT_MENU_WAIT_MS,
+  remoteContextMenuTarget,
+  webSearchUrl,
+} from "./contextMenu.ts";
 import {
   collectFrameIdsFromTree,
   isPdfPreviewDocument,
@@ -79,6 +87,12 @@ import {
   PREVIEW_USER_INPUT_CHANNEL,
 } from "../ipc/channels.ts";
 import { PreviewActivityConsumer, PreviewActivityLeases } from "./ActivityLeases.ts";
+import {
+  armUserInputHold,
+  isUserInputStorm,
+  initialUserInputHoldState,
+  type UserInputHoldState,
+} from "./userInputHold.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import { classifyPreviewNetworkResponse } from "./CloudflareChallenge.ts";
 import {
@@ -107,6 +121,7 @@ export type PreviewNavStatus =
 
 export interface PreviewTabState {
   tabId: string;
+  lastInteractionAt?: string;
   webContentsId: number | null;
   snapshotStageId: string | null;
   navStatus: PreviewNavStatus;
@@ -122,6 +137,8 @@ export interface PreviewTabState {
   downloads: ReadonlyArray<PreviewDownload>;
   /** Downloads held on this tab until the user allows or denies the site. */
   pendingDownloadApprovals: ReadonlyArray<PreviewDownloadApproval>;
+  /** Whether the page is making sound right now (Chromium's audible state). */
+  audible?: boolean;
   updatedAt: string;
 }
 
@@ -274,6 +291,44 @@ function isSameAutomationSnapshotPage(
   return JSON.stringify(semanticSignature(before)) === JSON.stringify(semanticSignature(after));
 }
 
+const FILLED_SECRET_MASK = "••••••••";
+
+/**
+ * Masks every saved password filled into a tab wherever it appears in a value
+ * read back from that tab: raw, JSON-escaped, or percent/form-encoded (a GET
+ * login URL). Strings, array items, and object keys and values are rewritten;
+ * everything else is returned as is.
+ */
+export function redactFilledSecrets<A>(value: A, secrets: ReadonlySet<string> | undefined): A {
+  if (secrets === undefined || secrets.size === 0) return value;
+  const forms = new Set<string>();
+  for (const secret of secrets) {
+    const encoded = encodeURIComponent(secret);
+    for (const form of [
+      secret,
+      JSON.stringify(secret).slice(1, -1),
+      encoded,
+      encoded.replaceAll("%20", "+"),
+    ]) {
+      if (form.length > 0) forms.add(form);
+    }
+  }
+  const ordered = [...forms].toSorted((left, right) => right.length - left.length);
+  const redactString = (text: string) =>
+    ordered.reduce((current, form) => current.replaceAll(form, FILLED_SECRET_MASK), text);
+  const redact = (current: unknown): unknown => {
+    if (typeof current === "string") return redactString(current);
+    if (Array.isArray(current)) return current.map(redact);
+    if (current !== null && typeof current === "object") {
+      return Object.fromEntries(
+        Object.entries(current).map(([key, entry]) => [redactString(key), redact(entry)]),
+      );
+    }
+    return current;
+  };
+  return redact(value) as A;
+}
+
 const DEFAULT_ZOOM_FACTOR = 1.0;
 const ZOOM_EPSILON = 0.001;
 const MAX_EVALUATION_BYTES = 64_000;
@@ -318,6 +373,15 @@ const APP_FOCUS_MARKER_ATTRIBUTE = "data-t3-last-user-focus";
  * events, a drag's interpolated moves — plus the guest's dispatch latency.
  */
 const AGENT_INPUT_WINDOW_MS = 1_500;
+
+/**
+ * How long after the user clicks into a guest a `visible-surface` release is
+ * treated as the click's own echo. Focusing the `<webview>` blurs the host
+ * document, and the renderer briefly reports the panel as not presented
+ * (release, release, re-acquire within a few ms). Taking the keyboard back on
+ * that release sent the first typed character to the composer.
+ */
+export const GUEST_CLICK_SURFACE_SETTLE_MS = 1_000;
 
 /**
  * Keep the whole browser fleet foreground-equivalent while preview MCP is in
@@ -374,6 +438,36 @@ export function isDeliberateUserInputEvent(type: string | undefined): boolean {
 }
 
 /**
+ * Names the input the main renderer's preload reported, for the hold's diagnostics.
+ *
+ * The report is optional: a preload from before 0.1.547 sends nothing, and a
+ * malformed one must not throw inside an IPC listener.
+ */
+export function describeRendererUserInput(rawReport: unknown): {
+  readonly source: string;
+  readonly repeat: boolean;
+} {
+  if (typeof rawReport !== "object" || rawReport === null) {
+    return { source: "app-typing", repeat: false };
+  }
+  const report = rawReport as Record<string, unknown>;
+  const eventType = typeof report.eventType === "string" ? report.eventType : "input";
+  const repeat = report.repeat === true;
+  const detail =
+    eventType === "keydown"
+      ? typeof report.key === "string"
+        ? report.key
+        : "key"
+      : [
+          typeof report.pointerType === "string" ? report.pointerType : "pointer",
+          typeof report.button === "number" ? String(report.button) : null,
+        ]
+          .filter((part) => part !== null)
+          .join("-");
+  return { source: `app-typing:${eventType}${repeat ? "-repeat" : ""}:${detail}`, repeat };
+}
+
+/**
  * Page-side source for confirming inserted text actually reached the guest.
  *
  * Read back as `(element, inserted) => boolean`, evaluated inside the page so
@@ -388,15 +482,186 @@ export function isDeliberateUserInputEvent(type: string | undefined): boolean {
  *   land. `innerText` renders that structure back as newlines.
  * - `\u00a0` to a space, because contenteditable stores typed spaces as
  *   non-breaking ones, and CRLF to LF.
+ * - Runs of whitespace collapse to one space. A rich editor renders one
+ *   requested blank line as its own block structure — Gmail's body turns
+ *   `a\n\nb` into `<div>a</div><div><br></div><div>b</div>`, whose innerText
+ *   is `a\n\n\nb` — so an exact newline count fails text that landed whole
+ *   (VeeraMedical, 2026-09-13: "textDidNotReachGuest" while the snapshot
+ *   showed the entire email in place). The question here is whether the
+ *   words arrived, not how the editor chose to space them.
  */
 export const PREVIEW_TYPED_TEXT_LANDED_JS = `((element, inserted) => {
-  const normalize = (text) => text.replace(/\\r\\n?/g, "\\n").replace(/\\u00a0/g, " ");
+  const normalize = (text) =>
+    text.replace(/\\r\\n?/g, "\\n").replace(/\\u00a0/g, " ").replace(/\\s+/g, " ").trim();
+  // tagName as well: a field inside an iframe belongs to that frame's realm,
+  // so this page's HTMLInputElement never matches it.
   const raw =
-    element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element.tagName === "INPUT" ||
+    element.tagName === "TEXTAREA"
       ? element.value
       : (element.innerText ?? element.textContent);
   return typeof raw === "string" && normalize(raw).includes(normalize(inserted));
 })`;
+
+/**
+ * Controlled editors may cancel native beforeinput, return false from execCommand,
+ * and commit their own edit afterwards. Observe that commit without replaying input.
+ */
+export const PREVIEW_INSERT_TEXT_JS = `(async (element, text, clear, textControl) => {
+  if (text.length === 0 && !clear) return true;
+  // The field's own document: a field inside an iframe edits that frame's selection.
+  const doc = element.ownerDocument ?? document;
+  if (!textControl) {
+    // DOM selection changes are delivered in a later renderer task. Controlled
+    // editors must import that range before their beforeinput handler edits it.
+    await new Promise((resolve) => {
+      let deadline;
+      const settled = () => {
+        doc.removeEventListener("selectionchange", settled);
+        clearTimeout(deadline);
+        resolve();
+      };
+      doc.addEventListener("selectionchange", settled);
+      // An unchanged selection produces no event.
+      deadline = setTimeout(settled, 100);
+    });
+  }
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    let deadline;
+    const landed = () => text.length > 0
+      ? ${PREVIEW_TYPED_TEXT_LANDED_JS}(element, text)
+      : (textControl ? element.value : element.textContent) === "";
+    const finish = (result) => {
+      if (finished) return;
+      finished = true;
+      observer.disconnect();
+      clearTimeout(deadline);
+      resolve(result);
+    };
+    const check = () => { if (landed()) finish(true); };
+    const observer = new MutationObserver(check);
+    observer.observe(element, { subtree: true, childList: true, characterData: true, attributes: true });
+    deadline = setTimeout(() => finish(landed()), 1500);
+    try {
+      let handledEdit = false;
+      if (text.length > 0 && !textControl) {
+        // Controlled editors handle paste through their model. execCommand may
+        // emit only input (not beforeinput), so its DOM breaks can be discarded.
+        const clipboardData = new DataTransfer();
+        clipboardData.setData("text/plain", text);
+        const paste = new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true });
+        element.dispatchEvent(paste);
+        handledEdit = paste.defaultPrevented;
+      } else if (clear && !textControl) {
+        const deletion = new InputEvent("beforeinput", {
+          inputType: "deleteContentBackward", bubbles: true, cancelable: true,
+        });
+        element.dispatchEvent(deletion);
+        handledEdit = deletion.defaultPrevented;
+      }
+      // A cancelled edit belongs to the editor, even while its commit is queued.
+      // Never replay it through a second insertion path.
+      if (!handledEdit) {
+        if (text.length > 0) doc.execCommand("insertText", false, text);
+        else doc.execCommand("delete", false);
+      }
+      queueMicrotask(check);
+    } catch (error) {
+      observer.disconnect();
+      clearTimeout(deadline);
+      reject(error);
+    }
+  });
+})`;
+
+/**
+ * Finds the element preview_type or a credential fill edits:
+ * `(target, query) => { element } | { notFound } | { crossOriginFrame }`, where
+ * `target` is `{ kind: "locator", parts }`, `{ kind: "point", x, y }`, or
+ * `{ kind: "focused" }`, and `query(part, root)` resolves one locator part.
+ *
+ * Fields inside same-origin iframes are reached, because sites embed payment
+ * and PIN forms that way (a RealPage rent PIN, 2026-09-24):
+ *
+ * - Each `>> internal:control=enter-frame >>` step (Playwright's frameLocator
+ *   form, split into `parts`) enters the frame matched before it.
+ * - A single-part locator the page itself lacks is looked for in its
+ *   same-origin frames, since snapshots list frame contents only as text.
+ * - A point descends through the frame under it; focus follows the focused frame.
+ *
+ * A cross-origin frame's document is unreadable, so reaching one is reported
+ * instead of editing the `<iframe>` element itself.
+ */
+export const PREVIEW_EDIT_TARGET_JS = `((target, query) => {
+  const MAX_FRAMES = 16;
+  const frameDocument = (element) =>
+    element && (element.tagName === "IFRAME" || element.tagName === "FRAME")
+      ? element.contentDocument
+      : undefined;
+  if (target.kind === "locator") {
+    const inFrames = (part) => {
+      const pending = [document];
+      let visited = 0;
+      while (pending.length > 0) {
+        for (const frame of pending.shift().querySelectorAll("iframe,frame")) {
+          const inner = frame.contentDocument;
+          if (!inner) continue;
+          if (++visited > MAX_FRAMES) return null;
+          const match = query(part, inner);
+          if (match) return match;
+          pending.push(inner);
+        }
+      }
+      return null;
+    };
+    let root = document;
+    let element = null;
+    for (let index = 0; index < target.parts.length; index += 1) {
+      element = query(target.parts[index], root);
+      if (!element && target.parts.length === 1) element = inFrames(target.parts[0]);
+      if (!element) return { notFound: true };
+      if (index === target.parts.length - 1) break;
+      const inner = frameDocument(element);
+      if (inner === undefined) return { notFound: true };
+      if (inner === null) return { crossOriginFrame: true };
+      root = inner;
+    }
+    return { element };
+  }
+  let element =
+    target.kind === "point" ? document.elementFromPoint(target.x, target.y) : document.activeElement;
+  let x = target.x;
+  let y = target.y;
+  for (let depth = 0; depth < MAX_FRAMES; depth += 1) {
+    const inner = frameDocument(element);
+    if (inner === undefined) break;
+    if (inner === null) return { crossOriginFrame: true };
+    if (target.kind === "point") {
+      // The frame's viewport starts inside its border and padding.
+      const box = element.getBoundingClientRect();
+      const style = element.ownerDocument.defaultView.getComputedStyle(element);
+      x -= box.left + element.clientLeft + parseFloat(style.paddingLeft);
+      y -= box.top + element.clientTop + parseFloat(style.paddingTop);
+      element = inner.elementFromPoint(x, y);
+    } else {
+      element = inner.activeElement;
+    }
+  }
+  return element ? { element } : { notFound: true };
+})`;
+
+/** Playwright's frameLocator form, `iframe#pay >> internal:control=enter-frame >> #pin`, split per frame. */
+export const splitFrameLocator = (locator: string): string[] =>
+  locator.split(/\s*>>\s*(?:internal:)?control=enter-frame\s*>>\s*/);
+
+/** Input types a PIN or code may fill: sites show those in plain view too. */
+export const CODE_CREDENTIAL_INPUT_TYPES = ["password", "text", "tel", "number", "search"] as const;
+
+/** What a typing target must be: anything editable, or a field a credential kind may fill. */
+type EditTargetRule = "any" | PreviewCredentialKind;
 
 /** Modifier keys alone say nothing about where someone means to type. */
 const BARE_MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
@@ -755,6 +1020,8 @@ type PreviewInputSignal =
       readonly kind: "key";
       readonly key: string;
       readonly code: string;
+      /** A keyboard auto-repeat rather than a fresh press. */
+      readonly repeat?: boolean;
       readonly directNewTabUrl?: string | null;
     }
   /**
@@ -937,6 +1204,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * agent's do not, so automation cannot quietly reassign the keyboard.
    */
   let userFocusIntent: UserFocusIntent = { kind: "app" };
+  /** The user's latest own click into a tab's guest page. */
+  let lastUserGuestClick: { readonly tabId: string; readonly atMs: number } | null = null;
+  const claimGuestForUserClick = (tabId: string, atMs: number): void => {
+    userFocusIntent = { kind: "guest", tabId };
+    lastUserGuestClick = { tabId, atMs };
+  };
   const expectedAgentInputsRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<ExpectedAgentInput>>
   >(new Map());
@@ -964,6 +1237,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const agentInputWindows = new Map<string, number>();
   /** Tabs whose guest-side annotation editor currently holds focus. */
   const guestEditorFocusedTabs = new Set<string>();
+  /**
+   * A remote viewer's right-click, or an automation right drag, in flight per
+   * tab. The guest's next `context-menu` goes here instead of popping a native
+   * menu on the desktop, where whoever pressed the button could never see it.
+   */
+  const remoteContextMenuWaiters = new Map<string, (params: Electron.ContextMenuParams) => void>();
   const controlEpochRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const actionTimelineRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<PreviewAutomationActionEvent>>
@@ -971,6 +1250,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const actionSequenceRef = yield* Ref.make(0);
   const navigationSequenceRef = yield* Ref.make(0);
   const navigationAttemptsByTab = new Map<string, NavigationAttempt>();
+  /**
+   * Saved passwords filled into each tab. Evaluations and snapshots that read
+   * one back (a password field's value, a serialized form, a GET login URL)
+   * return it masked.
+   */
+  const filledSecretsByTab = new Map<string, Set<string>>();
   const pointerSequenceRef = yield* Ref.make(0);
   const frameCaptureSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<string, FrameCaptureSession>
@@ -996,7 +1281,44 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   let pushToTalkInputActive = false;
   let pushToTalkInputGeneration = 0;
   /** Epoch millis of the last key the user pressed in the app's own window. */
-  let lastUserInputAtMs = 0;
+  /**
+   * The hold's memory of the user's input: the timestamp the deferral reads,
+   * which observer armed it, and the repeat/storm rules that decide whether an
+   * event counts (see userInputHold.ts).
+   *
+   * The hold itself is one timestamp, so a 50s wait that fails reads the same
+   * whether a person typed for 50s or a runaway signal keeps re-arming it.
+   * Reported 2026-09-12 (VeeraMedical fleet): every action held for the full
+   * deadline, over hours, with nothing dispatched; 0.1.546's diagnostics then
+   * showed ~24 renderer events a second with nobody typing.
+   */
+  let userInputHold: UserInputHoldState = initialUserInputHoldState;
+  /** Records the input; true when it counted (moved the hold's timestamp). */
+  const noteUserInput = (source: string, atMs: number, repeat = false): boolean => {
+    const next = armUserInputHold(userInputHold, { source, atMs, repeat });
+    const counted = next.armCount !== userInputHold.armCount;
+    const previousObservedAt = userInputHold.sources.get(source)?.recentAtMs.at(-1) ?? atMs;
+    if (
+      isUserInputStorm(next, source, atMs) &&
+      !isUserInputStorm(userInputHold, source, previousObservedAt)
+    ) {
+      // One record on crossing the sustained-rate threshold, never per input.
+      // The observer family and repeat flag contain no typed text or key code.
+      runFork(
+        Effect.logWarning(
+          "Preview input observer has sustained activity; protection remains active.",
+          {
+            observer: source.split(":")[0],
+            repeat,
+            observedInputs: next.armCount,
+            origin: "unresolved",
+          },
+        ),
+      );
+    }
+    userInputHold = next;
+    return counted;
+  };
   let userInputGeneration = 0;
   const recordActivityLeaseMetrics = Effect.fn("PreviewManager.recordActivityLeaseMetrics")(
     function* () {
@@ -2352,7 +2674,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (isPreviewInputSignal(rawSignal) && (yield* consumeExpectedAgentInput(tabId, rawSignal))) {
         return;
       }
-      lastUserInputAtMs = yield* currentMillis;
+      yield* update(tabId, { lastInteractionAt: yield* currentIso });
+      noteUserInput(
+        `popup-${isPreviewInputSignal(rawSignal) ? rawSignal.kind : "signal"}:${tabId}`,
+        yield* currentMillis,
+      );
       if (isPreviewInputSignal(rawSignal) && rawSignal.kind === "pointer") {
         userFocusIntent = { kind: "guest", tabId };
       }
@@ -2546,7 +2872,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const generation = pushToTalkInputGeneration;
     runFork(
       Effect.gen(function* () {
-        lastUserInputAtMs = yield* currentMillis;
+        noteUserInput("push-to-talk-release", yield* currentMillis);
         // A rapid new press owns a new generation. Its hold must not be cleared
         // by an older release whose clock read happened to resume afterwards.
         if (pushToTalkInputGeneration === generation) pushToTalkInputActive = false;
@@ -2984,6 +3310,34 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const sync = () => {
       if (listenersActive) runFork(syncState(true));
     };
+    // Remote listeners hear a tab only while it makes sound, so the renderer
+    // that captures it needs to know the moment that starts and stops.
+    const audioStateChanged = (event: { readonly audible: boolean }): void => {
+      if (!listenersActive) return;
+      runFork(
+        Effect.gen(function* () {
+          const updatedAt = yield* currentIso;
+          const next = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
+            const current = tabs.get(tabId);
+            if (
+              !current ||
+              current.webContentsId !== webContentsId ||
+              (current.audible ?? false) === event.audible
+            ) {
+              return [Option.none<PreviewTabState>(), tabs] as const;
+            }
+            const state: PreviewTabState = { ...current, audible: event.audible, updatedAt };
+            return [
+              Option.some(state),
+              replaceMap(tabs, (copy) => {
+                copy.set(tabId, state);
+              }),
+            ] as const;
+          });
+          if (Option.isSome(next)) yield* emit(tabId, next.value);
+        }),
+      );
+    };
     const navigationCommitted = (_event: Electron.Event, _url: string): void => {
       if (!listenersActive) return;
       invalidatePlaywrightExecutionContext(tabId, webContentsId);
@@ -3096,7 +3450,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (isPreviewInputSignal(rawSignal) && (yield* consumeExpectedAgentInput(tabId, rawSignal))) {
         return;
       }
-      const marked = yield* updateCurrentWebContents({ controller: "human" });
+      const marked = yield* updateCurrentWebContents({
+        controller: "human",
+        lastInteractionAt: yield* currentIso,
+      });
       if (Option.isNone(marked)) return;
       const generation = ++humanInputGeneration;
       // Anything reaching here is the human, typing or clicking inside a guest.
@@ -3104,12 +3461,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // the deferral gate goes blind exactly when it matters most: once an agent
       // click has moved their focus into the page, every further keystroke of
       // theirs is invisible and the next automation call steals focus again.
-      lastUserInputAtMs = yield* currentMillis;
+      const inputAtMs = yield* currentMillis;
+      noteUserInput(
+        `guest-${isPreviewInputSignal(rawSignal) ? rawSignal.kind : "signal"}:${tabId}`,
+        inputAtMs,
+        isPreviewInputSignal(rawSignal) && rawSignal.kind === "key" && rawSignal.repeat === true,
+      );
       // Only their own clicks hand the keyboard to a page. Typing does not:
       // a keystroke that arrives because an agent moved the caret here is the
       // thing being corrected, not a choice to work in this tab.
       if (isPreviewInputSignal(rawSignal) && rawSignal.kind === "pointer") {
-        userFocusIntent = { kind: "guest", tabId };
+        claimGuestForUserClick(tabId, inputAtMs);
       }
       yield* Ref.update(controlEpochRef, (epochs) =>
         replaceMap(epochs, (copy) => {
@@ -3150,8 +3512,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // DOM pointer events in child frames do not reach the top-frame preload.
       // Claim the guest synchronously, before before-input-event can redirect
       // the user's first key. Agent clicks keep their exact-input exemption.
-      userFocusIntent = { kind: "guest", tabId };
-      lastUserInputAtMs = now;
+      claimGuestForUserClick(tabId, now);
+      noteUserInput(`guest-mouse:${tabId}`, now);
       runFork(handleHumanInput(signal));
     };
     const humanInput = (_event: unknown, rawSignal?: unknown): void => {
@@ -3267,7 +3629,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           () => target?.focus(),
         ).pipe(Effect.ignore);
       }
-      lastUserInputAtMs = yield* currentMillis;
+      noteUserInput(`reclaimed-key:${tabId}`, yield* currentMillis);
       const modifiers = [
         ...(input.meta ? (["meta"] as const) : []),
         ...(input.shift ? (["shift"] as const) : []),
@@ -3294,8 +3656,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
       if (!listenersActive) return;
       if (!isAgentOriginatedKey(tabId, input) && input.type === "keyDown") {
-        lastUserInputAtMs = inputClock.currentTimeMillisUnsafe();
-        userInputGeneration++;
+        // Known automation is excluded by the dispatch-origin check above.
+        // Repeats and event rate cannot establish whether input is human.
+        if (
+          // Labelled apart from the preload's report of the same keystroke:
+          // the storm rate is per label, and one key seen twice under one
+          // label would read as double speed.
+          noteUserInput(
+            `guest-key-native:${tabId}`,
+            inputClock.currentTimeMillisUnsafe(),
+            input.isAutoRepeat === true,
+          )
+        ) {
+          userInputGeneration++;
+        }
       }
       // Never forward a chord the AGENT dispatched. This gate had no agent
       // check at all, while its sibling below took `expectedAgentInput` — so an
@@ -3335,6 +3709,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     };
     const contextMenu = (_event: Electron.Event, params: Electron.ContextMenuParams): void => {
       if (!listenersActive) return;
+      const remoteWaiter = remoteContextMenuWaiters.get(tabId);
+      if (remoteWaiter !== undefined) {
+        remoteContextMenuWaiters.delete(tabId);
+        remoteWaiter(params);
+        return;
+      }
       runFork(showGuestContextMenu(tabId, wc, params));
     };
     const didCreateWindow = (window: BrowserWindow): void => {
@@ -3350,6 +3730,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.off("did-navigate-in-page", inPageNavigationCommitted);
         wc.off("did-start-navigation", navigationStarted);
         wc.off("page-title-updated", sync);
+        wc.off("audio-state-changed", audioStateChanged);
         wc.off("did-start-loading", sync);
         wc.off("did-stop-loading", sync);
         wc.off("did-fail-load", failed as never);
@@ -3369,6 +3750,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.on("did-navigate-in-page", inPageNavigationCommitted);
         wc.on("did-start-navigation", navigationStarted);
         wc.on("page-title-updated", sync);
+        wc.on("audio-state-changed", audioStateChanged);
         wc.on("did-start-loading", sync);
         wc.on("did-stop-loading", sync);
         wc.on("did-fail-load", failed as never);
@@ -3481,8 +3863,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (pushToTalkReleased) finishPushToTalkInput();
       else if (input.type === "keyDown") {
         userFocusIntent = { kind: "app" };
-        lastUserInputAtMs = inputClock.currentTimeMillisUnsafe();
-        userInputGeneration++;
+        if (
+          noteUserInput(
+            "app-key",
+            inputClock.currentTimeMillisUnsafe(),
+            input.isAutoRepeat === true,
+          )
+        ) {
+          userInputGeneration++;
+        }
       }
     };
     mainWebContents.on("before-input-event", observePushToTalk);
@@ -3540,10 +3929,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // surface), and guest input arms on the guest's own webContents.
     };
     mainWebContents.on("input-event", observeUserPointer);
-    const observeRendererUserInput = (): void => {
+    const observeRendererUserInput = (_event: unknown, rawReport?: unknown): void => {
       userFocusIntent = { kind: "app" };
-      lastUserInputAtMs = inputClock.currentTimeMillisUnsafe();
-      userInputGeneration++;
+      // The preload says what it saw (key or pointer, repeat or not, which
+      // key or pointer type) so a runaway source can be named from the error
+      // alone; an old preload sends no report and reads as plain typing.
+      const report = describeRendererUserInput(rawReport);
+      if (noteUserInput(report.source, inputClock.currentTimeMillisUnsafe(), report.repeat)) {
+        userInputGeneration++;
+      }
     };
     // The preload reports trusted pointer/key presses from the renderer. Keep
     // the native observers above as coverage for events Chromium handles
@@ -3667,6 +4061,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
     }
     activityLeases.clearTab(tabId);
+    filledSecretsByTab.delete(tabId);
     yield* recordActivityLeaseMetrics();
     const updatedAt = yield* currentIso;
     const closed: PreviewTabState = {
@@ -4004,34 +4399,68 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
     } else {
       activityLeases.release(tabId, stableLeaseId);
-      if (leaseId === "visible-surface" && mainWindowFocused) {
-        const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-        const focused = yield* attempt(
-          {
-            operation: "setUiActivity.getFocusedWebContents",
-            tabId,
-            ...(tab?.webContentsId != null ? { webContentsId: tab.webContentsId } : {}),
-          },
-          () => webContents.getFocusedWebContents(),
-        ).pipe(Effect.orElseSucceed(() => null));
-        if (focused && focused.id === tab?.webContentsId) {
-          userFocusIntent = { kind: "app" };
-          const mainWindow = yield* Ref.get(mainWindowRef);
-          if (Option.isSome(mainWindow) && !mainWindow.value.webContents.isDestroyed()) {
-            yield* attempt(
-              {
-                operation: "setUiActivity.restoreAppFocus",
-                tabId,
-                webContentsId: focused.id,
-              },
-              () => mainWindow.value.webContents.focus(),
-            ).pipe(Effect.ignore);
-          }
+      if (leaseId === "visible-surface") {
+        const click = lastUserGuestClick;
+        const settleMs =
+          click?.tabId === tabId
+            ? click.atMs + GUEST_CLICK_SURFACE_SETTLE_MS - (yield* currentMillis)
+            : 0;
+        if (settleMs > 0) {
+          // Most likely the click's own focus handoff flickering the panel.
+          // Look again once the renderer has settled; a newer click is the
+          // user choosing again, so it leaves the keyboard where it put it.
+          yield* Effect.forkIn(
+            Effect.sleep(settleMs).pipe(
+              Effect.andThen(
+                Effect.suspend(() =>
+                  lastUserGuestClick === click
+                    ? restoreAppFocusFromHiddenGuest(tabId)
+                    : Effect.void,
+                ),
+              ),
+            ),
+            parentScope,
+          );
+        } else {
+          yield* restoreAppFocusFromHiddenGuest(tabId);
         }
       }
     }
     yield* recordActivityLeaseMetrics();
   });
+
+  /**
+   * Keys follow the panel: when a tab stops being presented while its guest
+   * still holds focus, give focus back to the app so typing cannot land in a
+   * page nobody can see.
+   */
+  const restoreAppFocusFromHiddenGuest = Effect.fn("PreviewManager.restoreAppFocusFromHiddenGuest")(
+    function* (tabId: string) {
+      if (!mainWindowFocused || activityLeases.holds(tabId, "ui:visible-surface")) return;
+      const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      const focused = yield* attempt(
+        {
+          operation: "setUiActivity.getFocusedWebContents",
+          tabId,
+          ...(tab?.webContentsId != null ? { webContentsId: tab.webContentsId } : {}),
+        },
+        () => webContents.getFocusedWebContents(),
+      ).pipe(Effect.orElseSucceed(() => null));
+      if (!focused || focused.id !== tab?.webContentsId) return;
+      userFocusIntent = { kind: "app" };
+      const mainWindow = yield* Ref.get(mainWindowRef);
+      if (Option.isSome(mainWindow) && !mainWindow.value.webContents.isDestroyed()) {
+        yield* attempt(
+          {
+            operation: "setUiActivity.restoreAppFocus",
+            tabId,
+            webContentsId: focused.id,
+          },
+          () => mainWindow.value.webContents.focus(),
+        ).pipe(Effect.ignore);
+      }
+    },
+  );
 
   const navigate = Effect.fn("PreviewManager.navigate")(function* (tabId: string, rawUrl: string) {
     const url = yield* attempt({ operation: "navigate.normalizeUrl", tabId }, () =>
@@ -4484,6 +4913,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  /**
+   * How long one guest may take to be foregrounded before it is treated as
+   * unavailable.
+   *
+   * Generous relative to the work (a CDP round trip to a healthy guest is
+   * milliseconds) and small relative to the damage: this runs under a global
+   * mutex, so the wait is paid by every other tab.
+   */
+  const AUTOMATION_FOREGROUND_ACTIVATION_TIMEOUT_MS = 4_000;
+
   const activateAutomationForegroundFleet = Effect.fn(
     "PreviewManager.activateAutomationForegroundFleet",
   )(function* () {
@@ -4493,9 +4932,33 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       (tab) => {
         const wc = currentWebContentsForTab(tab);
         if (!wc) return Effect.succeed(null);
-        return Effect.exit(activateAutomationForegroundForTab(tab.tabId, wc)).pipe(
-          Effect.map((exit) => ({ tabId: tab.tabId, webContentsId: wc.id, exit })),
-        );
+        // Bounded per guest, not just per failure. `Effect.exit` already keeps
+        // one guest's ERROR from rejecting the others - that is this function's
+        // stated intent - but it says nothing about TIME, and a wedged renderer
+        // never settles at all. This whole loop runs inside
+        // `automationForegroundMutationMutex`, so one unresponsive guest held
+        // that global lock forever and took the entire automation pipeline with
+        // it: every later call queued behind it, and even opening a brand-new
+        // tab timed out because registration needs the same mutex. A guest that
+        // will not answer in time is simply an unavailable guest, which is a
+        // state the code below and `automationStatus` already handle.
+        return Effect.exit(
+          activateAutomationForegroundForTab(tab.tabId, wc).pipe(
+            Effect.timeout(AUTOMATION_FOREGROUND_ACTIVATION_TIMEOUT_MS),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.fail(
+                new PreviewOperationError({
+                  operation: "automationForeground.activateTimedOut",
+                  tabId: tab.tabId,
+                  webContentsId: wc.id,
+                  cause: new Error(
+                    "The preview guest did not answer in time and was left unavailable.",
+                  ),
+                }),
+              ),
+            ),
+          ),
+        ).pipe(Effect.map((exit) => ({ tabId: tab.tabId, webContentsId: wc.id, exit })));
       },
       { concurrency: "unbounded" },
     );
@@ -5171,6 +5634,26 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     return yield* Effect.failCause(initializationExit.cause);
   });
 
+  /**
+   * A one-shot id the window showing this tab can pass to getUserMedia to
+   * capture the tab's sound. Chromium binds it to that window, so it is only
+   * ever minted for the guest's own embedder.
+   */
+  const getTabAudioSource = Effect.fn("PreviewManager.getTabAudioSource")(function* (
+    tabId: string,
+  ) {
+    const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+    if (!tab || tab.webContentsId === null) return null;
+    const wc = webContents.fromId(tab.webContentsId);
+    if (!wc || wc.isDestroyed() || !wc.hostWebContents || wc.hostWebContents.isDestroyed()) {
+      return null;
+    }
+    const embedder = wc.hostWebContents;
+    return yield* attempt({ operation: "getTabAudioSource", tabId, webContentsId: wc.id }, () =>
+      wc.getMediaSourceId(embedder),
+    ).pipe(Effect.orElseSucceed(() => null));
+  });
+
   const startRecording = Effect.fn("PreviewManager.startRecording")(function* (tabId: string) {
     yield* startFrameCapture(tabId, "recording");
   });
@@ -5220,7 +5703,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     };
   });
 
-  const automationStatus = Effect.fn("PreviewManager.automationStatus")(function* (tabId: string) {
+  const readAutomationStatus = Effect.fn("PreviewManager.automationStatus")(function* (
+    tabId: string,
+  ) {
     const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
     const downloadApprovalRequired = (tab?.pendingDownloadApprovals.length ?? 0) > 0;
     if (!tab || tab.webContentsId == null) {
@@ -5396,7 +5881,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               y: rect.y,
               width: rect.width,
               height: rect.height,
-              ...(typeof element.value === "string" ? { value: element.value } : {}),
+              // A password is never read back, only whether the field holds one.
+              ...(typeof element.value === "string"
+                ? {
+                    value: element instanceof HTMLInputElement && element.type === "password"
+                      ? (element.value ? "${FILLED_SECRET_MASK}" : "")
+                      : element.value
+                  }
+                : {}),
               ...(element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")
                 ? { checked: element.checked }
                 : {}),
@@ -5439,7 +5931,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           { returnByValue: true },
         );
         return {
-          ...snapshotPage,
+          ...redactFilledSecrets(snapshotPage, filledSecretsByTab.get(tabId)),
           navigationGeneration,
           navigationGenerationAfterRead: playwrightExecutionContextGenerations.get(tabId) ?? 0,
         };
@@ -5891,21 +6383,29 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         viewportHeight: _viewportHeight,
         ...snapshotPage
       } = page;
+      // The screenshot stays out of the redaction: rewriting base64 would
+      // corrupt it, and a password field paints as dots anyway.
+      const readBack = redactFilledSecrets(
+        {
+          ...snapshotPage,
+          accessibilityTree: accessibility,
+          consoleEntries: [...(browserDiagnostics?.consoleEntries ?? [])],
+          networkEntries: [...(browserDiagnostics?.networkEntries ?? [])],
+          actionTimeline: [...(timelines.get(tabId) ?? [])],
+          // Downloads finish with no save panel and no on-screen trace, so an
+          // agent that asked for one has no other way to learn it arrived — or
+          // where. Without this, a silent success is indistinguishable from a
+          // failure, and the agent simply asks again.
+          downloads: browserSession.recentDownloads(),
+          // A held download looks exactly like a failed one from inside the
+          // page, so say it is waiting on a person rather than letting the
+          // agent conclude nothing happened and fetch it again.
+          pendingDownloadApprovals: [...(snapshotTabs.get(tabId)?.pendingDownloadApprovals ?? [])],
+        },
+        filledSecretsByTab.get(tabId),
+      );
       return {
-        ...snapshotPage,
-        accessibilityTree: accessibility,
-        consoleEntries: [...(browserDiagnostics?.consoleEntries ?? [])],
-        networkEntries: [...(browserDiagnostics?.networkEntries ?? [])],
-        actionTimeline: [...(timelines.get(tabId) ?? [])],
-        // Downloads finish with no save panel and no on-screen trace, so an
-        // agent that asked for one has no other way to learn it arrived — or
-        // where. Without this, a silent success is indistinguishable from a
-        // failure, and the agent simply asks again.
-        downloads: browserSession.recentDownloads(),
-        // A held download looks exactly like a failed one from inside the
-        // page, so say it is waiting on a person rather than letting the
-        // agent conclude nothing happened and fetch it again.
-        pendingDownloadApprovals: [...(snapshotTabs.get(tabId)?.pendingDownloadApprovals ?? [])],
+        ...readBack,
         ...("screenshotError" in screenshot
           ? { screenshotError: screenshot.screenshotError }
           : { screenshot }),
@@ -6171,12 +6671,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     expiresAt?: number,
   ) {
     const startedAt = yield* currentMillis;
+    const armCountAtStart = userInputHold.armCount;
     let deferred = false;
     while (true) {
       const now = yield* currentMillis;
       if (
         resolveUserInputDeferral({
-          lastUserInputAtMs,
+          lastUserInputAtMs: userInputHold.lastArmAtMs,
           nowMs: now,
           pushToTalkActive: pushToTalkInputActive,
         }) === "proceed"
@@ -6192,11 +6693,22 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           operation,
           tabId,
           waitedMs: now - startedAt,
+          source: userInputHold.lastSource,
+          renewals: userInputHold.armCount - armCountAtStart,
+          lastInputAgoMs: now - userInputHold.lastArmAtMs,
+          pushToTalkActive: pushToTalkInputActive,
         });
       }
       if (!deferred) {
         // Say why nothing is happening: waiting silently looks identical to the
         // agent being stuck.
+        yield* Effect.logInfo("Preview automation waiting for user input.", {
+          operation,
+          tabId,
+          source: userInputHold.lastSource,
+          lastInputAgoMs: now - userInputHold.lastArmAtMs,
+          pushToTalkActive: pushToTalkInputActive,
+        });
         const tabs = yield* SynchronizedRef.get(tabsRef);
         if (tabs.has(tabId)) yield* update(tabId, { controller: "waiting-for-user" });
       }
@@ -6209,6 +6721,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         operation,
         tabId,
         waitedMs: settledAt - startedAt,
+        source: userInputHold.lastSource,
+        renewals: userInputHold.armCount - armCountAtStart,
       });
     }
   });
@@ -6536,8 +7050,34 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { operation: "automationDrag.getFocusedWebContents", tabId, webContentsId: wc.id },
       () => webContents.getFocusedWebContents(),
     ).pipe(Effect.catch(() => Effect.succeed(null)));
+    // A right press makes the guest report a context menu, which would pop
+    // natively on the desktop where neither an agent nor a remote viewer can
+    // see or dismiss it. A remote right-click has already registered a waiter
+    // that captures the menu; any other right drag swallows it. Windows reports
+    // the menu after the release, so the swallow outlives the drag briefly.
+    const swallowMenu =
+      input.button === "right" && !remoteContextMenuWaiters.has(tabId)
+        ? (): void => undefined
+        : undefined;
+    if (swallowMenu !== undefined) remoteContextMenuWaiters.set(tabId, swallowMenu);
     yield* withControlSession(tabId, wc, "drag", (send, sendCleanup) =>
       performAutomationDrag(tabId, input, send, sendCleanup),
+    ).pipe(
+      Effect.ensuring(
+        swallowMenu === undefined
+          ? Effect.void
+          : Effect.sleep(REMOTE_CONTEXT_MENU_WAIT_MS).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  if (remoteContextMenuWaiters.get(tabId) === swallowMenu) {
+                    remoteContextMenuWaiters.delete(tabId);
+                  }
+                }),
+              ),
+              Effect.forkDetach,
+              Effect.asVoid,
+            ),
+      ),
     );
     if (previouslyFocused && previouslyFocused.id !== wc.id && !previouslyFocused.isDestroyed()) {
       // Only if the drag is what moved focus. If the user clicked into the
@@ -6576,19 +7116,105 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  /**
+   * Remote-viewer right-click: a trusted right-button press at the point,
+   * with the guest's `context-menu` captured (see remoteContextMenuWaiters)
+   * and returned as data for the viewer to draw. `menu` is null when the page
+   * swallowed the event to show its own menu, which then appears in the frame.
+   * With `command`, runs one of that menu's editing items instead.
+   */
+  const automationContextMenuUnlocked = Effect.fn("PreviewManager.automationContextMenuUnlocked")(
+    function* (tabId: string, input: PreviewAutomationContextMenuInput) {
+      const wc = yield* requireWebContents(tabId);
+      const command = input.command;
+      if (command !== undefined) {
+        yield* attempt(
+          { operation: "automationContextMenu.command", tabId, webContentsId: wc.id },
+          () => {
+            switch (command) {
+              case "undo":
+                return wc.undo();
+              case "redo":
+                return wc.redo();
+              case "delete":
+                return wc.delete();
+              case "selectAll":
+                return wc.selectAll();
+            }
+          },
+        );
+        return { menu: null } satisfies PreviewAutomationContextMenuResult;
+      }
+      const point = { x: input.x ?? 0, y: input.y ?? 0 };
+      const captured = yield* Deferred.make<Electron.ContextMenuParams>();
+      const waiter = (params: Electron.ContextMenuParams): void => {
+        runFork(Deferred.succeed(captured, params));
+      };
+      remoteContextMenuWaiters.set(tabId, waiter);
+      const params = yield* Effect.gen(function* () {
+        yield* automationDragUnlocked(tabId, { from: point, to: point, button: "right" });
+        return yield* Deferred.await(captured).pipe(
+          Effect.timeoutOption(REMOTE_CONTEXT_MENU_WAIT_MS),
+        );
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (remoteContextMenuWaiters.get(tabId) === waiter) {
+              remoteContextMenuWaiters.delete(tabId);
+            }
+          }),
+        ),
+      );
+      if (Option.isNone(params) || wc.isDestroyed()) {
+        return { menu: null } satisfies PreviewAutomationContextMenuResult;
+      }
+      return {
+        menu: remoteContextMenuTarget(params.value, {
+          canGoBack: wc.navigationHistory.canGoBack(),
+          canGoForward: wc.navigationHistory.canGoForward(),
+        }),
+      } satisfies PreviewAutomationContextMenuResult;
+    },
+  );
+
+  const automationContextMenu = Effect.fn("PreviewManager.automationContextMenu")(function* (
+    tabId: string,
+    input: PreviewAutomationContextMenuInput,
+    options?: AutomationInputOptions,
+  ) {
+    return yield* withAutomationInputTurn(
+      "contextMenu",
+      tabId,
+      automationContextMenuUnlocked(tabId, input),
+      options?.expiresAt,
+    );
+  });
+
   const typeIntoAutomationTarget = Effect.fn("PreviewManager.typeIntoAutomationTarget")(function* (
     tabId: string,
     send: SendCommand,
     input: PreviewAutomationTypeInput,
+    rule: EditTargetRule = "any",
   ) {
     const locator = automationLocator(input);
     const executionContextId = locator ? yield* ensurePlaywrightInjected(tabId, send) : undefined;
-    const locatorJson = locator
-      ? yield* encodeJson({ operation: "automationType.encodeLocator", tabId }, locator)
-      : null;
+    const targetJson = yield* encodeJson(
+      { operation: "automationType.encodeTarget", tabId },
+      locator
+        ? { kind: "locator", parts: splitFrameLocator(locator) }
+        : input.x !== undefined && input.y !== undefined
+          ? { kind: "point", x: input.x, y: input.y }
+          : { kind: "focused" },
+    );
     const textJson = yield* encodeJson(
       { operation: "automationType.encodeText", tabId },
       input.text.replace(/\r\n?/g, "\n"),
+    );
+    const allowedInputTypes =
+      rule === "password" ? ["password"] : rule === "code" ? CODE_CREDENTIAL_INPUT_TYPES : null;
+    const allowedInputTypesJson = yield* encodeJson(
+      { operation: "automationType.encodeRule", tabId },
+      allowedInputTypes,
     );
     const result = yield* evaluateWithDebugger<
       | { ok: true }
@@ -6596,42 +7222,50 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       | { invalidSelector: true; message: string }
       | { notEditable: true }
       | { notFound: true }
+      | { crossOriginFrame: true }
+      | { credentialFieldRejected: true }
     >(
       tabId,
       send,
-      `(() => {
+      `(async () => {
           try {
-            const element = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, true); })()` : input.x !== undefined && input.y !== undefined ? `document.elementFromPoint(${input.x}, ${input.y})` : "document.activeElement"};
-            if (!element) return { notFound: true };
+            const target = ${PREVIEW_EDIT_TARGET_JS}(${targetJson}, (part, root) => {
+              const injected = globalThis.__t3PlaywrightInjected;
+              return injected.querySelector(injected.parseSelector(part), root, true);
+            });
+            if (!target.element) return target;
+            const element = target.element;
+            // Tag names, not instanceof: a field in an iframe is from that frame's realm.
+            const allowedInputTypes = ${allowedInputTypesJson};
+            if (allowedInputTypes && !(element.tagName === "INPUT" && allowedInputTypes.includes(element.type))) {
+              return { credentialFieldRejected: true };
+            }
             const textControl =
-              element instanceof HTMLTextAreaElement ||
-              (element instanceof HTMLInputElement &&
+              element.tagName === "TEXTAREA" ||
+              (element.tagName === "INPUT" &&
                 !new Set(["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"]).has(element.type));
             const editable = textControl || element.isContentEditable;
             if (!editable || element.disabled || element.readOnly) return { notEditable: true };
+            const doc = element.ownerDocument;
             element.focus();
-            if (document.activeElement !== element) return { notEditable: true };
+            if (doc.activeElement !== element) return { notEditable: true };
             const clear = ${input.clear ?? false};
             if (clear) {
               if (textControl) {
                 element.select();
               } else {
-                const range = document.createRange();
+                const range = doc.createRange();
                 range.selectNodeContents(element);
-                const selection = document.getSelection();
+                const selection = doc.getSelection();
                 selection?.removeAllRanges();
                 selection?.addRange(range);
               }
             }
-            // Execute inside this document, in one renderer task. Native keyboard
-            // dispatch targets the shared focused widget and can reach the composer.
+            // Insert once inside this document, then observe the editor commit.
+            // Native keyboard dispatch can target a different focused widget.
             const text = ${textJson};
-            if (text.length > 0) {
-              if (!document.execCommand("insertText", false, text)) return { insertionFailed: true };
-              if (!${PREVIEW_TYPED_TEXT_LANDED_JS}(element, text)) return { insertionFailed: true };
-            } else if (clear) {
-              document.execCommand("delete", false);
-              if ((textControl ? element.value : element.textContent) !== "") return { insertionFailed: true };
+            if (!await ${PREVIEW_INSERT_TEXT_JS}(element, text, clear, textControl)) {
+              return { insertionFailed: true };
             }
             return { ok: true };
           } catch (error) {
@@ -6669,17 +7303,32 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ...automationSelectorDiagnostics(input),
       });
     }
+    if ("crossOriginFrame" in result) {
+      return yield* new PreviewAutomationTargetInCrossOriginFrameError({
+        tabId,
+        credentialFill: rule !== "any",
+        ...automationSelectorDiagnostics(input),
+      });
+    }
+    if ("credentialFieldRejected" in result && rule !== "any") {
+      return yield* new PreviewCredentialTargetRejectedError({
+        tabId,
+        credentialKind: rule,
+        ...automationSelectorDiagnostics(input),
+      });
+    }
   });
 
   const performAutomationType = Effect.fn("PreviewManager.performAutomationType")(function* (
     tabId: string,
     input: PreviewAutomationTypeInput,
     send: SendCommand,
+    rule: EditTargetRule = "any",
   ) {
     // No native focus, mouse events, or keyboard packets: the renderer owns
     // this edit atomically even if the user is typing in the app at the same time.
     yield* send("Runtime.enable");
-    yield* typeIntoAutomationTarget(tabId, send, input);
+    yield* typeIntoAutomationTarget(tabId, send, input, rule);
   });
 
   const automationType = Effect.fn("PreviewManager.automationType")(function* (
@@ -6694,6 +7343,37 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const wc = yield* requireWebContents(tabId);
         yield* withControlSession(tabId, wc, "type", (send) =>
           performAutomationType(tabId, input, send),
+        );
+      }),
+      options?.expiresAt,
+    );
+  });
+
+  /**
+   * Types a saved secret. A password goes only into an `<input type="password">`,
+   * since any other target leaves it in plain view; a PIN or code may also go
+   * into a single-line text, tel, number, or search input, because sites
+   * collect those in plain view themselves. The tab remembers the secret, so
+   * evaluations and snapshots return it masked.
+   */
+  const automationFillCredential = Effect.fn("PreviewManager.automationFillCredential")(function* (
+    tabId: string,
+    kind: PreviewCredentialKind,
+    input: PreviewAutomationTypeInput,
+    options?: AutomationInputOptions,
+  ) {
+    if (input.text.length > 0) {
+      const secrets = filledSecretsByTab.get(tabId) ?? new Set<string>();
+      secrets.add(input.text);
+      filledSecretsByTab.set(tabId, secrets);
+    }
+    yield* withAutomationInputTurn(
+      "type",
+      tabId,
+      Effect.gen(function* () {
+        const wc = yield* requireWebContents(tabId);
+        yield* withControlSession(tabId, wc, "type", (send) =>
+          performAutomationType(tabId, input, send, kind),
         );
       }),
       options?.expiresAt,
@@ -6944,9 +7624,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     let keyDownAttempted = false;
     const releaseInput = Effect.gen(function* () {
       if (keyDownAttempted) {
-        yield* sendCleanup("Input.dispatchKeyEvent", keySequence.keyUp).pipe(Effect.ignore);
-        yield* Effect.sync(() => unregisterSynchronousAgentKey(tabId, keySequence.signal));
+        yield* sendCleanup("Input.dispatchKeyEvent", keySequence.keyUp).pipe(
+          Effect.catch(() =>
+            Effect.logWarning("Preview automation could not release its dispatched key.", {
+              tabId,
+              webContentsId: wc.id,
+              inputOrigin: "preview-automation",
+              // No text or key value: the dispatch origin is sufficient to
+              // distinguish this failure from observed user activity.
+              operation: "automationPress.keyUp",
+            }),
+          ),
+        );
       }
+      yield* Effect.sync(() => unregisterSynchronousAgentKey(tabId, keySequence.signal));
       yield* sendCleanup("Emulation.setFocusEmulationEnabled", {
         enabled: automationForegroundActive,
       }).pipe(Effect.ignore);
@@ -6993,6 +7684,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       keyDownAttempted = true;
       yield* Effect.sync(() => registerSynchronousAgentKey(tabId, keySequence.signal));
       yield* send("Input.dispatchKeyEvent", keySequence.keyDown);
+      // Releasing is part of a successful press. If it fails, the finalizer
+      // retries this owned key once and the caller still receives the failure.
+      yield* sendCleanup("Input.dispatchKeyEvent", keySequence.keyUp);
+      keyDownAttempted = false;
     }).pipe(Effect.ensuring(releaseInput));
   });
 
@@ -7014,11 +7709,57 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  // Turns a real wheel at a point, so the panel under it scrolls the way it
+  // would for a mouse: most web apps scroll an inner container, which
+  // `window.scrollBy` never reaches. Wheels are never attributed to the human
+  // (only presses and keys are), so no agent-input expectation is needed.
+  const performAutomationWheel = Effect.fn("PreviewManager.performAutomationWheel")(function* (
+    tabId: string,
+    input: PreviewAutomationScrollInput & { readonly x: number; readonly y: number },
+    send: SendCommand,
+  ) {
+    yield* prepareAutomationInput(send, true);
+    const viewport = yield* evaluateWithDebugger<{ width: number; height: number }>(
+      tabId,
+      send,
+      "({ width: window.innerWidth, height: window.innerHeight })",
+      { returnByValue: true },
+    );
+    if (input.x < 0 || input.y < 0 || input.x > viewport.width || input.y > viewport.height) {
+      return yield* new PreviewAutomationCoordinatesOutsideViewportError({
+        tabId,
+        x: input.x,
+        y: input.y,
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
+      });
+    }
+    yield* send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: input.x,
+      y: input.y,
+      deltaX: input.deltaX ?? 0,
+      deltaY: input.deltaY ?? 0,
+    });
+    // The compositor applies the scroll on its next frame; wait for it so the
+    // capture that follows shows where the page landed. Capped, because a
+    // hidden guest may not produce frames at all.
+    yield* evaluateWithDebugger(
+      tabId,
+      send,
+      "new Promise((resolve) => { const done = () => resolve(true); requestAnimationFrame(() => requestAnimationFrame(done)); setTimeout(done, 120); })",
+      { returnByValue: true },
+    ).pipe(Effect.ignore);
+  });
+
   const performAutomationScroll = Effect.fn("PreviewManager.performAutomationScroll")(function* (
     tabId: string,
     input: PreviewAutomationScrollInput,
     send: SendCommand,
   ) {
+    if (input.x !== undefined && input.y !== undefined) {
+      return yield* performAutomationWheel(tabId, { ...input, x: input.x, y: input.y }, send);
+    }
     yield* send("Runtime.enable");
     const locator = automationLocator(input);
     const executionContextId = locator ? yield* ensurePlaywrightInjected(tabId, send) : undefined;
@@ -7073,10 +7814,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const performAutomationEvaluate = Effect.fn("PreviewManager.performAutomationEvaluate")(
     function* (tabId: string, input: PreviewAutomationEvaluateInput, send: SendCommand) {
       yield* send("Runtime.enable");
-      const value = yield* evaluateWithDebugger(tabId, send, input.expression, {
-        returnByValue: input.returnByValue ?? true,
-        awaitPromise: input.awaitPromise ?? true,
-      });
+      const value = redactFilledSecrets(
+        yield* evaluateWithDebugger(tabId, send, input.expression, {
+          returnByValue: input.returnByValue ?? true,
+          awaitPromise: input.awaitPromise ?? true,
+        }),
+        filledSecretsByTab.get(tabId),
+      );
       const serialized = yield* encodeJson(
         { operation: "automationEvaluate.encodeResult", tabId },
         value,
@@ -7340,13 +8084,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   return {
     automationClick,
+    automationContextMenu,
     automationDrag,
     automationEvaluate,
     automationPress,
     automationScroll,
     automationSnapshot,
-    automationStatus,
+    automationStatus: (tabId: string) =>
+      readAutomationStatus(tabId).pipe(
+        Effect.map((status) => redactFilledSecrets(status, filledSecretsByTab.get(tabId))),
+      ),
     automationType,
+    automationFillCredential,
     automationUpload,
     automationSelectOption,
     automationWaitFor,
@@ -7375,6 +8124,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     setAnnotationTheme,
     setColorScheme,
     setMainWindow,
+    getTabAudioSource,
     startRecording,
     closePictureInPicture,
     stopRecording,
@@ -7534,6 +8284,39 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
   }
 }
 
+export class PreviewCredentialTargetRejectedError extends Schema.TaggedErrorClass<PreviewCredentialTargetRejectedError>()(
+  "PreviewCredentialTargetRejectedError",
+  {
+    tabId: Schema.String,
+    credentialKind: PreviewCredentialKind,
+    selectorKind: PreviewAutomationSelectorKind,
+    selectorLength: Schema.optionalKey(Schema.Number),
+  },
+) {
+  override get message(): string {
+    const target = previewAutomationTargetLabel(this.selectorKind, this.selectorLength);
+    return this.credentialKind === "code"
+      ? `Preview credential fill puts a saved PIN or code only into a single-line text, tel, number, search, or password input, and ${target} in tab ${this.tabId} is not one`
+      : `Preview credential fill puts a saved password only into a password input (input type=password), and ${target} in tab ${this.tabId} is not one`;
+  }
+}
+
+export class PreviewAutomationTargetInCrossOriginFrameError extends Schema.TaggedErrorClass<PreviewAutomationTargetInCrossOriginFrameError>()(
+  "PreviewAutomationTargetInCrossOriginFrameError",
+  {
+    tabId: Schema.String,
+    credentialFill: Schema.Boolean,
+    selectorKind: PreviewAutomationSelectorKind,
+    selectorLength: Schema.optionalKey(Schema.Number),
+  },
+) {
+  override get message(): string {
+    const target = previewAutomationTargetLabel(this.selectorKind, this.selectorLength);
+    const action = this.credentialFill ? "credential fill" : "type";
+    return `Preview automation ${action} reached ${target} inside a frame from another site in tab ${this.tabId}, whose fields it cannot edit`;
+  }
+}
+
 export class PreviewAutomationCoordinatesOutsideViewportError extends Schema.TaggedErrorClass<PreviewAutomationCoordinatesOutsideViewportError>()(
   "PreviewAutomationCoordinatesOutsideViewportError",
   {
@@ -7630,14 +8413,35 @@ export class PreviewAutomationDeferredToUserInputError extends Schema.TaggedErro
     operation: Schema.String,
     tabId: Schema.String,
     waitedMs: Schema.Number,
+    /** Which observer armed the hold last (see `noteUserInput`). */
+    source: Schema.optional(Schema.String),
+    /** How many times the hold was re-armed during this wait. */
+    renewals: Schema.optional(Schema.Number),
+    /** Age of the arming input when the wait gave up. */
+    lastInputAgoMs: Schema.optional(Schema.Number),
+    /** A held dictation chord keeps the hold regardless of the timestamp. */
+    pushToTalkActive: Schema.optional(Schema.Boolean),
   },
 ) {
+  /**
+   * What kept the hold on, for whoever reads the error after the fact.
+   *
+   * Lives at the front of the message: the transport truncates long messages,
+   * and a diagnosis that lands after the cut is no diagnosis.
+   */
+  get holdDetail(): string {
+    if (this.source === undefined) return "";
+    const parts = [
+      `held by ${this.source}`,
+      `${this.renewals ?? 0} re-arms`,
+      `last ${Math.round(this.lastInputAgoMs ?? 0)}ms ago`,
+    ];
+    if (this.pushToTalkActive) parts.push("push-to-talk chord held");
+    return `; ${parts.join(", ")}`;
+  }
+
   override get message(): string {
-    // The model reads this and decides what to do next, so it has to say the
-    // one correct thing: retry. Reported 2026-09-10 as a red "Runtime error"
-    // card mid-run -- the wording described a failure, so the model treated a
-    // person typing as a broken page and changed approach instead of waiting.
-    return `Preview automation ${this.operation} is still waiting for the user to stop typing or clicking (waited ${Math.round(this.waitedMs)}ms). Nothing was dispatched to tab ${this.tabId}, the page and your selector are fine, and no state changed. This is not a failure: retry this exact call, and keep retrying until it goes through.`;
+    return `Preview automation ${this.operation} paused because the input guard is still receiving activity (waited ${Math.round(this.waitedMs)}ms${this.holdDetail}). Nothing was dispatched to tab ${this.tabId}. These observations do not establish whether the input was physical, forwarded, or injected. Retry after input settles; if the hold persists while the user is idle, report these diagnostics instead of repeating indefinitely.`;
   }
 }
 
@@ -7666,6 +8470,8 @@ export const PreviewManagerError = Schema.Union([
   PreviewAutomationEvaluationError,
   PreviewAutomationTargetNotFoundError,
   PreviewAutomationTargetNotEditableError,
+  PreviewCredentialTargetRejectedError,
+  PreviewAutomationTargetInCrossOriginFrameError,
   PreviewAutomationCoordinatesOutsideViewportError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationResultTooLargeError,
@@ -7745,6 +8551,7 @@ export class PreviewManager extends Context.Service<
     readonly openPictureInPicture: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly closePictureInPicture: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly startRecording: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly getTabAudioSource: (tabId: string) => Effect.Effect<string | null>;
     readonly stopRecording: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly saveRecording: (
       tabId: string,
@@ -7767,8 +8574,19 @@ export class PreviewManager extends Context.Service<
       input: PreviewAutomationDragInput,
       options?: AutomationInputOptions,
     ) => Effect.Effect<void, PreviewManagerError>;
+    readonly automationContextMenu: (
+      tabId: string,
+      input: PreviewAutomationContextMenuInput,
+      options?: AutomationInputOptions,
+    ) => Effect.Effect<PreviewAutomationContextMenuResult, PreviewManagerError>;
     readonly automationType: (
       tabId: string,
+      input: PreviewAutomationTypeInput,
+      options?: AutomationInputOptions,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly automationFillCredential: (
+      tabId: string,
+      kind: PreviewCredentialKind,
       input: PreviewAutomationTypeInput,
       options?: AutomationInputOptions,
     ) => Effect.Effect<void, PreviewManagerError>;
@@ -7911,13 +8729,16 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     openPictureInPicture: operations.openPictureInPicture,
     closePictureInPicture: operations.closePictureInPicture,
     startRecording: operations.startRecording,
+    getTabAudioSource: operations.getTabAudioSource,
     stopRecording: operations.stopRecording,
     saveRecording: operations.saveRecording,
     automationStatus: operations.automationStatus,
     automationSnapshot: operations.automationSnapshot,
     automationClick: operations.automationClick,
     automationDrag: operations.automationDrag,
+    automationContextMenu: operations.automationContextMenu,
     automationType: operations.automationType,
+    automationFillCredential: operations.automationFillCredential,
     automationUpload: operations.automationUpload,
     automationSelectOption: operations.automationSelectOption,
     automationPress: operations.automationPress,

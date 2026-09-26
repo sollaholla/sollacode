@@ -131,8 +131,6 @@ export function resolveGrokAcpBaseModelId(model: string | null | undefined): str
   return normalizeModelSlug(base, GROK_DRIVER_KIND) ?? "grok-build";
 }
 
-const GROK_GENERIC_ACP_MODEL_IDS = new Set(["grok-build"]);
-
 export function currentGrokModelIdFromSessionSetup(
   sessionSetupResult:
     | EffectAcpSchema.LoadSessionResponse
@@ -154,6 +152,16 @@ export function advertisedGrokAcpModelIds(
     .filter((modelId) => modelId.length > 0);
 }
 
+/**
+ * Maps the model Solla wants onto one the Grok agent will accept. The agent
+ * validates `session/set_model` against its live catalog and answers anything
+ * else with JSON-RPC "Invalid params", so an id it does not advertise — the
+ * generic `grok-build` slug, or a model xAI has since retired (grok-4.6 was
+ * dropped from the catalog on 2026-09-23 and every thread still selecting it
+ * failed its next turn) — falls back to the model the session is already on,
+ * then the agent's advertised default. Only an empty list, which means the
+ * agent told us nothing, lets the requested id through unchecked.
+ */
 export function resolveGrokAcpSessionModelId(input: {
   readonly requestedModelId: string | undefined;
   readonly currentModelId: string | undefined;
@@ -170,9 +178,6 @@ export function resolveGrokAcpSessionModelId(input: {
   if (available.length === 0 || available.includes(requested)) {
     return requested;
   }
-  if (!GROK_GENERIC_ACP_MODEL_IDS.has(requested)) {
-    return requested;
-  }
   const current = input.currentModelId?.trim() || undefined;
   if (current && available.includes(current)) {
     return current;
@@ -184,6 +189,82 @@ export function resolveGrokAcpSessionModelId(input: {
     return advertisedCurrent;
   }
   return available[0];
+}
+
+interface GrokReasoningEffortLevel {
+  readonly value: string;
+  readonly label: string;
+  readonly isDefault: boolean;
+}
+
+/**
+ * Reads the reasoning-effort levels Grok advertises per model in ACP model
+ * metadata (`_meta.reasoningEfforts`), which back the composer's effort
+ * dropdown and are applied via `session/set_model` metadata.
+ */
+export function grokReasoningEffortLevelsFromModelMeta(
+  meta: Record<string, unknown> | null | undefined,
+): ReadonlyArray<GrokReasoningEffortLevel> {
+  if (!meta || meta["supportsReasoningEffort"] !== true) {
+    return [];
+  }
+  const rawEfforts = meta["reasoningEfforts"];
+  if (!Array.isArray(rawEfforts)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const levels: Array<GrokReasoningEffortLevel> = [];
+  for (const entry of rawEfforts) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const value =
+      typeof record["value"] === "string" && record["value"].trim()
+        ? record["value"].trim()
+        : typeof record["id"] === "string"
+          ? record["id"].trim()
+          : "";
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    levels.push({
+      value,
+      label:
+        typeof record["label"] === "string" && record["label"].trim()
+          ? record["label"].trim()
+          : value,
+      isDefault: record["default"] === true,
+    });
+  }
+  return levels;
+}
+
+/**
+ * Drops a requested reasoning effort that `modelId` explicitly does not offer,
+ * such as `xhigh` carried over from a model that had it. When the agent lists
+ * no levels for the model, the effort is left for the agent to judge.
+ */
+export function resolveGrokAcpSessionEffort(input: {
+  readonly modelId: string | undefined;
+  readonly requestedEffort: string | undefined;
+  readonly sessionSetupResult?:
+    | EffectAcpSchema.LoadSessionResponse
+    | EffectAcpSchema.NewSessionResponse
+    | EffectAcpSchema.ResumeSessionResponse
+    | undefined;
+}): string | undefined {
+  if (input.requestedEffort === undefined || input.modelId === undefined) {
+    return input.requestedEffort;
+  }
+  const model = input.sessionSetupResult?.models?.availableModels.find(
+    (candidate) => candidate.modelId.trim() === input.modelId,
+  );
+  const levels = grokReasoningEffortLevelsFromModelMeta(model?._meta);
+  return levels.length === 0 || levels.some((level) => level.value === input.requestedEffort)
+    ? input.requestedEffort
+    : undefined;
 }
 
 export interface GrokAcpModelSelectionState {
@@ -211,9 +292,14 @@ export function applyGrokAcpModelSelection<E>(input: {
   const requestedModelId = resolveGrokAcpSessionModelId(input);
   const shouldSwitchModel =
     requestedModelId !== undefined && requestedModelId !== input.currentModelId;
-  const shouldApplyEffort =
-    input.requestedEffort !== undefined && input.requestedEffort !== input.currentEffort;
   const resolvedModelId = requestedModelId ?? input.currentModelId;
+  const requestedEffort = resolveGrokAcpSessionEffort({
+    modelId: resolvedModelId,
+    requestedEffort: input.requestedEffort,
+    sessionSetupResult: input.sessionSetupResult,
+  });
+  const shouldApplyEffort =
+    requestedEffort !== undefined && requestedEffort !== input.currentEffort;
   if (!shouldSwitchModel && !shouldApplyEffort) {
     return Effect.succeed({ modelId: resolvedModelId, reasoningEffort: input.currentEffort });
   }
@@ -223,10 +309,10 @@ export function applyGrokAcpModelSelection<E>(input: {
   // notification.
   if (shouldApplyEffort && resolvedModelId !== undefined) {
     return input.runtime
-      .setSessionModel(resolvedModelId, { reasoningEffort: input.requestedEffort })
+      .setSessionModel(resolvedModelId, { reasoningEffort: requestedEffort })
       .pipe(
         Effect.mapError(input.mapError),
-        Effect.as({ modelId: resolvedModelId, reasoningEffort: input.requestedEffort }),
+        Effect.as({ modelId: resolvedModelId, reasoningEffort: requestedEffort }),
       );
   }
   if (!shouldSwitchModel) {

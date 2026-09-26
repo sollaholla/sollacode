@@ -1,4 +1,11 @@
 import {
+  CODEX_BACKGROUND_TASK_METHOD,
+  codexBackgroundStopTarget,
+  routeCodexBackgroundNotification,
+  updateCodexBackgroundTaskMetadata,
+  type CodexBackgroundTask,
+} from "./CodexSubagentRouting.ts";
+import {
   ApprovalRequestId,
   DEFAULT_MODEL,
   EventId,
@@ -41,6 +48,21 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
+
+/** Read only child identity once; failures never stall the provider event stream. */
+export function hydrateCodexBackgroundTaskMetadata<E>(input: {
+  readonly providerThreadId: string;
+  readonly tasks: Map<string, CodexBackgroundTask>;
+  readonly readThread: (threadId: string) => Effect.Effect<unknown, E>;
+}) {
+  return input.readThread(input.providerThreadId).pipe(
+    Effect.timeout("5 seconds"),
+    Effect.map((response) =>
+      updateCodexBackgroundTaskMetadata(input.tasks, input.providerThreadId, response),
+    ),
+    Effect.catch(() => Effect.succeed(null)),
+  );
+}
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
@@ -152,7 +174,7 @@ export function mcpFormElicitationQuestions(
   const entries = Object.entries(payload.requestedSchema.properties);
   if (entries.length === 0) return null;
 
-  const questions = entries.map(([propertyName, property], index) => {
+  const questions = entries.map(([propertyName, property]) => {
     const options = elicitationOptions(property);
     if (!options || options.length === 0) return null;
     const header = elicitationHeader(propertyName, property);
@@ -307,6 +329,7 @@ export interface CodexSessionRuntimeShape {
       readonly url: string;
     }>;
   }) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly stopTask?: (taskId: string) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
@@ -329,7 +352,17 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
-  | CodexSessionRuntimeThreadIdMissingError;
+  | CodexSessionRuntimeThreadIdMissingError
+  | CodexBackgroundTaskNotRunningError;
+
+export class CodexBackgroundTaskNotRunningError extends Schema.TaggedErrorClass<CodexBackgroundTaskNotRunningError>()(
+  "CodexBackgroundTaskNotRunningError",
+  { taskId: Schema.String },
+) {
+  override get message() {
+    return `Codex background task '${this.taskId}' has no observed running child turn to stop.`;
+  }
+}
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -728,54 +761,6 @@ export const openCodexThread = (input: {
     );
 };
 
-function readNotificationThreadId(notification: CodexServerNotification): string | undefined {
-  switch (notification.method) {
-    case "thread/started":
-      return notification.params.thread.id;
-    case "error":
-    case "thread/status/changed":
-    case "thread/archived":
-    case "thread/unarchived":
-    case "thread/closed":
-    case "thread/name/updated":
-    case "thread/tokenUsage/updated":
-    case "turn/started":
-    case "hook/started":
-    case "turn/completed":
-    case "hook/completed":
-    case "turn/diff/updated":
-    case "turn/plan/updated":
-    case "item/started":
-    case "item/autoApprovalReview/started":
-    case "item/autoApprovalReview/completed":
-    case "item/completed":
-    case "rawResponseItem/completed":
-    case "item/agentMessage/delta":
-    case "item/plan/delta":
-    case "item/commandExecution/outputDelta":
-    case "item/commandExecution/terminalInteraction":
-    case "item/fileChange/outputDelta":
-    case "item/fileChange/patchUpdated":
-    case "serverRequest/resolved":
-    case "item/mcpToolCall/progress":
-    case "item/reasoning/summaryTextDelta":
-    case "item/reasoning/summaryPartAdded":
-    case "item/reasoning/textDelta":
-    case "thread/compacted":
-    case "thread/realtime/started":
-    case "thread/realtime/itemAdded":
-    case "thread/realtime/transcript/delta":
-    case "thread/realtime/transcript/done":
-    case "thread/realtime/outputAudio/delta":
-    case "thread/realtime/sdp":
-    case "thread/realtime/error":
-    case "thread/realtime/closed":
-      return notification.params.threadId;
-    default:
-      return undefined;
-  }
-}
-
 function readRouteFields(notification: CodexServerNotification): {
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
@@ -833,47 +818,6 @@ function readRouteFields(notification: CodexServerNotification): {
         itemId: undefined,
       };
   }
-}
-
-function rememberCollabReceiverTurns(
-  collabReceiverTurns: Map<string, TurnId>,
-  notification: CodexServerNotification,
-  parentTurnId: TurnId | undefined,
-): void {
-  if (!parentTurnId) {
-    return;
-  }
-
-  if (notification.method !== "item/started" && notification.method !== "item/completed") {
-    return;
-  }
-
-  if (notification.params.item.type !== "collabAgentToolCall") {
-    return;
-  }
-
-  for (const receiverThreadId of notification.params.item.receiverThreadIds) {
-    collabReceiverTurns.set(receiverThreadId, parentTurnId);
-  }
-}
-
-function shouldSuppressChildConversationNotification(
-  method: CodexRpc.ServerNotificationMethod,
-): boolean {
-  return (
-    method === "thread/started" ||
-    method === "thread/status/changed" ||
-    method === "thread/archived" ||
-    method === "thread/unarchived" ||
-    method === "thread/closed" ||
-    method === "thread/compacted" ||
-    method === "thread/name/updated" ||
-    method === "thread/tokenUsage/updated" ||
-    method === "turn/started" ||
-    method === "turn/completed" ||
-    method === "turn/plan/updated" ||
-    method === "item/plan/delta"
-  );
 }
 
 function toCodexUserInputAnswer(
@@ -957,7 +901,8 @@ export const makeCodexSessionRuntime = (
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
-    const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    const backgroundTasks = new Map<string, CodexBackgroundTask>();
+    const providerThreadReady = yield* Deferred.make<string>();
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -1092,23 +1037,53 @@ export const makeCodexSessionRuntime = (
       Effect.gen(function* () {
         const payload = notification.params;
         const route = readRouteFields(notification);
-        const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
-        const childParentTurnId = (() => {
-          const providerConversationId = readNotificationThreadId(notification);
-          return providerConversationId
-            ? collabReceiverTurns.get(providerConversationId)
-            : undefined;
-        })();
-
-        rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
-        if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
-          yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
+        // Startup notifications can precede thread/start or thread/resume returning.
+        // Keep them queued until the authoritative root ID is bound.
+        const rootProviderThreadId = yield* Deferred.await(providerThreadReady);
+        const currentSession = yield* Ref.get(sessionRef);
+        const backgroundTask = routeCodexBackgroundNotification({
+          rootProviderThreadId,
+          rootTurnId: currentSession.activeTurnId,
+          method: notification.method,
+          params: payload,
+          tasks: backgroundTasks,
+        });
+        if (backgroundTask !== undefined) {
+          if (backgroundTask)
+            yield* emitEvent({
+              kind: "notification",
+              threadId: options.threadId,
+              method: CODEX_BACKGROUND_TASK_METHOD,
+              ...(backgroundTask.parentTurnId ? { turnId: backgroundTask.parentTurnId } : {}),
+              payload: backgroundTask,
+            });
+          if (backgroundTask?.discovered) {
+            yield* hydrateCodexBackgroundTaskMetadata({
+              providerThreadId: backgroundTask.providerThreadId,
+              tasks: backgroundTasks,
+              readThread: (threadId) =>
+                client.request("thread/read", { threadId, includeTurns: false }),
+            }).pipe(
+              Effect.flatMap((metadata) =>
+                metadata
+                  ? emitEvent({
+                      kind: "notification",
+                      threadId: options.threadId,
+                      method: CODEX_BACKGROUND_TASK_METHOD,
+                      ...(metadata.parentTurnId ? { turnId: metadata.parentTurnId } : {}),
+                      payload: metadata,
+                    })
+                  : Effect.void,
+              ),
+              Effect.forkIn(runtimeScope),
+            );
+          }
           return;
         }
 
         let requestId: ApprovalRequestId | undefined;
         let requestKind: ProviderRequestKind | undefined;
-        let turnId = childParentTurnId ?? route.turnId;
+        let turnId = route.turnId;
         let itemId = route.itemId;
 
         if (notification.method === "serverRequest/resolved") {
@@ -1132,7 +1107,6 @@ export const makeCodexSessionRuntime = (
           }
         }
 
-        yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
         yield* emitEvent({
           kind: "notification",
           threadId: options.threadId,
@@ -1153,7 +1127,7 @@ export const makeCodexSessionRuntime = (
     yield* client.handleServerNotification("thread/started", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
-          if (providerThreadId && payload.thread.id !== providerThreadId) {
+          if (!providerThreadId || payload.thread.id !== providerThreadId) {
             return Effect.void;
           }
           return updateSession(sessionRef, {
@@ -1558,6 +1532,7 @@ export const makeCodexSessionRuntime = (
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
+      yield* Deferred.succeed(providerThreadReady, providerThreadId);
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
       return session;
     });
@@ -1725,6 +1700,13 @@ export const makeCodexSessionRuntime = (
               ? { resumeCursor: { threadId: resumedProviderThreadId } }
               : {}),
           } satisfies ProviderTurnStartResult;
+        }).pipe(closeIfWedged),
+      stopTask: (taskId) =>
+        Effect.gen(function* () {
+          const rootProviderThreadId = yield* readProviderThreadId;
+          const target = codexBackgroundStopTarget(backgroundTasks, taskId, rootProviderThreadId);
+          if (!target) return yield* new CodexBackgroundTaskNotRunningError({ taskId });
+          yield* client.request("turn/interrupt", target);
         }).pipe(closeIfWedged),
       interruptTurn: (turnId) =>
         Effect.gen(function* () {

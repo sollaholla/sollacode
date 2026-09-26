@@ -3,7 +3,11 @@ import { Schema } from "effect";
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   PREVIEW_VIEWPORT_MAX_AREA,
+  PreviewAgentPointer,
+  PreviewContextMenuCommand,
+  PreviewContextMenuTarget,
   PreviewRenderedViewportSize,
+  PreviewTabAudioTarget,
   PreviewTabId,
   PreviewViewportPresetId,
   PreviewViewportSetting,
@@ -54,6 +58,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "answerDownloadApproval",
   "credentialList",
   "credentialFill",
+  "contextMenu",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -700,6 +705,32 @@ export const PreviewAutomationDragInput = Schema.Struct({
   });
 export type PreviewAutomationDragInput = typeof PreviewAutomationDragInput.Type;
 
+/**
+ * Remote-viewer context menu. With `x`/`y` it right-clicks the guest and
+ * returns what Chromium would have put in its menu instead of popping a
+ * native menu on the host, where nobody watching the mirror could see it.
+ * With `command` it runs one of the menu's editing commands.
+ */
+export const PreviewAutomationContextMenuInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  x: Schema.optional(Schema.Finite),
+  y: Schema.optional(Schema.Finite),
+  command: Schema.optional(PreviewContextMenuCommand),
+}).check(
+  Schema.makeFilter((input) => {
+    const hasPoint = input.x !== undefined && input.y !== undefined;
+    if (input.command !== undefined) return !hasPoint || "Provide a point or a command, not both.";
+    return hasPoint || "Provide x and y, or a command.";
+  }),
+);
+export type PreviewAutomationContextMenuInput = typeof PreviewAutomationContextMenuInput.Type;
+
+/** `menu` is null when the page handled the right-click itself (its own menu is in the frame). */
+export const PreviewAutomationContextMenuResult = Schema.Struct({
+  menu: Schema.NullOr(PreviewContextMenuTarget),
+});
+export type PreviewAutomationContextMenuResult = typeof PreviewAutomationContextMenuResult.Type;
+
 export const PreviewAutomationTypeInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   text: Schema.String.annotate({ description: "Literal text to insert." }),
@@ -749,15 +780,51 @@ export const PreviewCredentialId = TrimmedNonEmptyString.check(Schema.isMaxLengt
 });
 export type PreviewCredentialId = typeof PreviewCredentialId.Type;
 
+/**
+ * `password` fills only `<input type="password">`. `code` is a PIN or similar
+ * short secret, which sites also collect in plain text, tel, number, or search
+ * boxes, so it may fill those too. Entries saved without a kind are passwords.
+ */
+export const PreviewCredentialKind = Schema.Literals(["password", "code"]).annotate({
+  description:
+    "password fills only password inputs; code (a PIN or similar) also fills text, tel, number, and search inputs. Absent means password.",
+});
+export type PreviewCredentialKind = typeof PreviewCredentialKind.Type;
+
 export const PreviewCredentialSummary = Schema.Struct({
   id: PreviewCredentialId,
   label: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
   origin: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
+  kind: Schema.optionalKey(PreviewCredentialKind),
   username: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
 export type PreviewCredentialSummary = typeof PreviewCredentialSummary.Type;
+
+/** Adds a saved password, or edits one when `id` is set. */
+export const PreviewCredentialSaveInput = Schema.Struct({
+  id: Schema.optionalKey(PreviewCredentialId),
+  label: Schema.String.check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(128)),
+  origin: Schema.String.check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(2048)),
+  /** Omitted keeps an edited entry's kind; a new entry defaults to `password`. */
+  kind: Schema.optionalKey(PreviewCredentialKind),
+  username: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(512))),
+  /** Omitted when editing an existing entry keeps its saved password. */
+  secret: Schema.optionalKey(
+    Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(4096)),
+  ),
+});
+export type PreviewCredentialSaveInput = typeof PreviewCredentialSaveInput.Type;
+
+export const PreviewCredentialRemoveInput = Schema.Struct({
+  id: PreviewCredentialId,
+});
+export type PreviewCredentialRemoveInput = typeof PreviewCredentialRemoveInput.Type;
 
 export const PreviewAutomationCredentialListInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
@@ -782,11 +849,11 @@ export const PreviewAutomationCredentialFillInput = Schema.Struct({
     .check(Schema.isNonEmpty())
     .check(Schema.isMaxLength(128)),
   selector: Schema.optional(LegacySelector).annotate({
-    description: "Legacy CSS selector for the password field. Prefer locator.",
+    description: "Legacy CSS selector for the field. Prefer locator.",
   }),
   locator: Schema.optional(Locator).annotate({
     description:
-      "Playwright selector for the password field, for example role=textbox[name='Password'].",
+      "Playwright selector for the field, for example role=textbox[name='Password']. Fields inside a same-origin iframe are found too, or address one with iframe#pay >> internal:control=enter-frame >> #pin.",
   }),
   x: Schema.optional(
     Schema.Finite.annotate({
@@ -817,7 +884,7 @@ export const PreviewAutomationCredentialFillInput = Schema.Struct({
   )
   .annotate({
     description:
-      "Fills one password field from OS-encrypted desktop storage without sending its secret through the server or tool call.",
+      "Fills one field from OS-encrypted desktop storage without sending its secret through the server or tool call: a password input for a password entry, or a single-line text, tel, number, search, or password input for a PIN or code entry.",
   });
 export type PreviewAutomationCredentialFillInput = typeof PreviewAutomationCredentialFillInput.Type;
 
@@ -975,11 +1042,28 @@ export const PreviewAutomationScrollInput = Schema.Struct({
   locator: Schema.optional(Locator).annotate({
     description: "Playwright selector for a scrollable container. Omit to scroll the viewport.",
   }),
+  x: Schema.optional(
+    Schema.Finite.annotate({
+      description:
+        "Viewport-relative X coordinate in CSS pixels. Scrolls whatever sits under the point, as a mouse wheel would. Must be paired with y.",
+    }),
+  ),
+  y: Schema.optional(
+    Schema.Finite.annotate({
+      description:
+        "Viewport-relative Y coordinate in CSS pixels. Scrolls whatever sits under the point, as a mouse wheel would. Must be paired with x.",
+    }),
+  ),
 })
   .check(
     Schema.makeFilter((input) => {
-      if (input.selector !== undefined && input.locator !== undefined) {
-        return "Provide at most one of selector or locator.";
+      const targets =
+        Number(input.selector !== undefined) +
+        Number(input.locator !== undefined) +
+        Number(input.x !== undefined || input.y !== undefined);
+      if (targets > 1) return "Provide at most one of selector, locator, or the x/y pair.";
+      if ((input.x === undefined) !== (input.y === undefined)) {
+        return "Coordinates require both x and y.";
       }
       return (
         input.deltaX !== undefined || input.deltaY !== undefined || "Provide deltaX or deltaY."
@@ -988,7 +1072,7 @@ export const PreviewAutomationScrollInput = Schema.Struct({
   )
   .annotate({
     description:
-      "Scrolls the viewport, or a locator/selector container. Provide deltaX, deltaY, or both.",
+      "Scrolls the viewport, a locator/selector container, or whatever sits under the x/y point. Provide deltaX, deltaY, or both.",
   });
 export type PreviewAutomationScrollInput = typeof PreviewAutomationScrollInput.Type;
 
@@ -1186,6 +1270,8 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   ),
   /** Why there is no screenshot, when there is none. */
   screenshotError: Schema.optional(Schema.String),
+  /** Only when a remote viewer asks (`includeAgentPointer`); agents never receive it. */
+  agentPointer: Schema.optional(PreviewAgentPointer),
   /** Optional for compatibility with hosts predating challenge handoff. */
   humanVerification: Schema.optional(Schema.NullOr(PreviewHumanVerification)),
 });
@@ -1239,6 +1325,19 @@ export const PreviewAutomationHost = Schema.Struct({
    * is treated as not local.
    */
   environmentLocal: Schema.optional(Schema.Boolean),
+  /**
+   * Whether this host can capture a tab's sound for remote listeners. Only
+   * such hosts are sent `audioDemand`, so older desktops never see an event
+   * type they cannot decode.
+   */
+  streamsTabAudio: Schema.optional(Schema.Boolean),
+  /**
+   * Whether this host answers `credentialVault` requests, so a settings screen
+   * on another device can manage the passwords this desktop keeps. A flag
+   * rather than an operation name because older servers reject an unknown
+   * operation and would drop the whole registration.
+   */
+  manageCredentials: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationHost = typeof PreviewAutomationHost.Type;
 
@@ -1262,6 +1361,22 @@ export const PreviewAutomationRequest = Schema.Struct({
 });
 export type PreviewAutomationRequest = typeof PreviewAutomationRequest.Type;
 
+/** One change to the desktop's saved passwords, asked for by a settings screen. */
+export const PreviewCredentialVaultCommand = Schema.Union([
+  Schema.Struct({ action: Schema.Literal("list") }),
+  Schema.Struct({ action: Schema.Literal("save"), credential: PreviewCredentialSaveInput }),
+  Schema.Struct({ action: Schema.Literal("remove"), id: PreviewCredentialId }),
+]);
+export type PreviewCredentialVaultCommand = typeof PreviewCredentialVaultCommand.Type;
+
+export const PreviewCredentialVaultRequest = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+  command: PreviewCredentialVaultCommand,
+  /** Absolute server deadline; hosts must discard work after this time. */
+  expiresAt: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+export type PreviewCredentialVaultRequest = typeof PreviewCredentialVaultRequest.Type;
+
 export const PreviewAutomationStreamEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("connected"),
@@ -1271,6 +1386,21 @@ export const PreviewAutomationStreamEvent = Schema.Union([
     type: Schema.Literal("request"),
     connectionId: PreviewAutomationConnectionId,
     request: PreviewAutomationRequest,
+  }),
+  /** Sent only to hosts that registered with `manageCredentials`. */
+  Schema.Struct({
+    type: Schema.Literal("credentialVault"),
+    connectionId: PreviewAutomationConnectionId,
+    request: PreviewCredentialVaultRequest,
+  }),
+  /**
+   * Every tab some remote viewer is listening to right now; the whole set
+   * each time. Sent only to hosts that registered with `streamsTabAudio`.
+   */
+  Schema.Struct({
+    type: Schema.Literal("audioDemand"),
+    connectionId: PreviewAutomationConnectionId,
+    tabs: Schema.Array(PreviewTabAudioTarget),
   }),
 ]);
 export type PreviewAutomationStreamEvent = typeof PreviewAutomationStreamEvent.Type;
@@ -1290,6 +1420,18 @@ export const PreviewAutomationResponse = Schema.Struct({
   ),
 });
 export type PreviewAutomationResponse = typeof PreviewAutomationResponse.Type;
+
+/**
+ * A settings screen could not reach or change the desktop's saved passwords.
+ * `message` is written for the person looking at that screen.
+ */
+export class PreviewCredentialVaultError extends Schema.TaggedErrorClass<PreviewCredentialVaultError>()(
+  "PreviewCredentialVaultError",
+  {
+    reason: Schema.Literals(["desktopUnavailable", "desktopDisconnected", "timeout", "rejected"]),
+    message: Schema.String,
+  },
+) {}
 
 export class PreviewAutomationUnavailableError extends Schema.TaggedErrorClass<PreviewAutomationUnavailableError>()(
   "PreviewAutomationUnavailableError",

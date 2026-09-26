@@ -38,6 +38,7 @@ import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -60,6 +61,7 @@ import {
 } from "../providerStatusCache.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
+import { withProviderSignInCommand } from "../providerSignIn.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
 
 const loadProviders = (
@@ -113,6 +115,28 @@ const isCodexModelScopedUsage = (accountUsage: unknown): boolean => {
   }
   const limitId = (rawSnapshot as Record<string, unknown>).limitId;
   return typeof limitId === "string" && limitId !== "codex";
+};
+
+/**
+ * Claude's banked resets come from the health check, not from the runtime's
+ * rate-limit events, so a live event must not wipe them off the card until
+ * the next health refresh.
+ */
+export const carryClaudeResetCredits = (
+  driver: ProviderDriverKind,
+  previous: unknown,
+  next: unknown,
+): unknown => {
+  if (
+    driver !== ProviderDriverKind.make("claudeAgent") ||
+    !Predicate.isObject(previous) ||
+    !Predicate.isObject(next) ||
+    previous.rateLimitResetCredits === undefined ||
+    "rateLimitResetCredits" in next
+  ) {
+    return next;
+  }
+  return { ...next, rateLimitResetCredits: previous.rateLimitResetCredits };
 };
 
 const mergeProviderModels = (
@@ -409,10 +433,35 @@ export const ProviderRegistryLive = Layer.effect(
       return { ...provider, usageGuard };
     });
 
+    /**
+     * Advertise whether this instance can be signed in from inside the app.
+     *
+     * Read from the live instance's `accountAuth` capability rather than a
+     * driver allow-list in the web bundle, so a driver that gains the
+     * capability starts offering the in-app flow immediately instead of
+     * continuing to print a command for the person to run themselves.
+     */
+    const applyAccountSwitchSupport = Effect.fn("applyAccountSwitchSupport")(function* (
+      provider: ServerProvider,
+    ) {
+      const instance = yield* instanceRegistry
+        .getInstance(provider.instanceId)
+        .pipe(Effect.orElseSucceed(() => undefined));
+      if (instance?.accountAuth === undefined) {
+        const { supportsAccountSwitch: _supportsAccountSwitch, ...rest } = provider;
+        return rest;
+      }
+      return { ...provider, supportsAccountSwitch: true };
+    });
+
     const applyVolatileProviderState = Effect.fn("applyVolatileProviderState")(function* (
       provider: ServerProvider,
     ) {
-      return yield* applyProviderUsageGuardState(yield* applyProviderUpdateState(provider));
+      return withProviderSignInCommand(
+        yield* applyAccountSwitchSupport(
+          yield* applyProviderUsageGuardState(yield* applyProviderUpdateState(provider)),
+        ),
+      );
     });
 
     const upsertProviders = Effect.fn("upsertProviders")(function* (
@@ -655,7 +704,11 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* upsertProviders([
         {
           ...provider,
-          accountUsage: input.accountUsage,
+          accountUsage: carryClaudeResetCredits(
+            input.driver,
+            provider.accountUsage,
+            input.accountUsage,
+          ),
           accountUsageReportedAt: input.reportedAt,
         },
       ]);

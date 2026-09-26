@@ -1,6 +1,12 @@
 import type { ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 
-const REFRESHABLE_USAGE_DRIVERS = new Set(["codex", "claudeAgent", "grok", "antigravity"]);
+const REFRESHABLE_USAGE_DRIVERS = new Set([
+  "codex",
+  "claudeAgent",
+  "grok",
+  "antigravity",
+  "deepcode",
+]);
 export const PROVIDER_USAGE_REFRESH_FAILURE_BACKOFF_MS = 30_000;
 
 export class ProviderUsageRefreshBackoffError extends Error {
@@ -15,7 +21,7 @@ export function isProviderUsageRefreshEligible(provider: ServerProvider): boolea
     provider.enabled &&
     provider.status !== "disabled" &&
     provider.availability !== "unavailable" &&
-    provider.auth.status !== "unauthenticated" &&
+    (provider.driver === "deepcode" || provider.auth.status !== "unauthenticated") &&
     REFRESHABLE_USAGE_DRIVERS.has(provider.driver)
   );
 }

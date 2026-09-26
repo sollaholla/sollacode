@@ -317,6 +317,61 @@ it.layer(managerTestLayer)("PreviewManager", (it) => {
     }),
   );
 
+  it.effect("broadcasts who drives a tab to remote clients and never persists it", () =>
+    Effect.gen(function* () {
+      const threadId = freshThreadId();
+      const manager = yield* PreviewManager.PreviewManager;
+      const store = yield* PreviewSessionStore;
+      const opened = yield* manager.open({ threadId, url: "http://localhost:5173" });
+      const collector = yield* collectEvents;
+
+      // A phone only learns an agent took over from this event.
+      yield* manager.reportActivity({
+        threadId,
+        tabId: opened.tabId,
+        interacted: true,
+        agentControl: "agent",
+      });
+      const taken = yield* collector.drain;
+      expect(taken).toHaveLength(1);
+      expect(taken[0]?.type === "navigated" ? taken[0].snapshot.agentControl : null).toBe("agent");
+
+      // An unchanged report stays quiet; a hand-back clears the field.
+      yield* manager.reportActivity({
+        threadId,
+        tabId: opened.tabId,
+        interacted: true,
+        agentControl: "agent",
+      });
+      expect(yield* collector.drain).toHaveLength(0);
+      yield* manager.reportActivity({
+        threadId,
+        tabId: opened.tabId,
+        interacted: false,
+        agentControl: "none",
+      });
+      const released = yield* collector.drain;
+      expect(released).toHaveLength(1);
+      expect(
+        released[0]?.type === "navigated" ? "agentControl" in released[0].snapshot : null,
+      ).toBe(false);
+
+      // After a restart nobody drives the tab, whatever was live when it was saved.
+      yield* manager.reportActivity({
+        threadId,
+        tabId: opened.tabId,
+        interacted: false,
+        agentControl: "waiting-for-user",
+        attentionRequired: true,
+      });
+      const persisted = (yield* store.listAll()).find(
+        (entry) => entry.threadId === threadId && entry.tabId === opened.tabId,
+      );
+      expect(persisted?.snapshot.attentionRequired).toBe(true);
+      expect(persisted?.snapshot.agentControl).toBeUndefined();
+    }),
+  );
+
   it.effect("ordinary threads can close the final tab and return to the surface picker", () =>
     Effect.gen(function* () {
       const threadId = freshThreadId();

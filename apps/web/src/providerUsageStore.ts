@@ -18,6 +18,7 @@ export interface PersistedProviderUsageWindow {
    */
   readonly windowDurationMs?: number | null;
   readonly detail?: string;
+  readonly description?: string;
   /**
    * When the provider last included this window in a usage response. Windows
    * for experimental models come and go; one the provider has stopped
@@ -33,6 +34,47 @@ export interface PersistedProviderUsageWindow {
 }
 
 export const PROVIDER_USAGE_WINDOW_STALE_AFTER_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * A cold Codex app-server answers with unfilled stand-in windows: 0% used and
+ * a reset sitting exactly one window-length after the report itself. The
+ * server strips those before publishing (see `codexRateLimitPlaceholders`),
+ * but clients persisted some before it did, and a window that was stored as
+ * "0% used, resets a week from now" would otherwise sit on the card until a
+ * real reading overwrote it. Same tolerance as the server.
+ */
+export const CODEX_SYNTHETIC_WINDOW_TOLERANCE_MS = 90_000;
+
+export function isSyntheticCodexUsageWindow(
+  window: Pick<PersistedProviderUsageWindow, "usedPercent" | "resetAt" | "windowDurationMs">,
+  reportedAtMs: number,
+): boolean {
+  if (window.usedPercent !== 0) return false;
+  if (typeof window.resetAt !== "number" || typeof window.windowDurationMs !== "number") {
+    return false;
+  }
+  if (!Number.isFinite(reportedAtMs)) return false;
+  return (
+    Math.abs(window.resetAt - (reportedAtMs + window.windowDurationMs)) <=
+    CODEX_SYNTHETIC_WINDOW_TOLERANCE_MS
+  );
+}
+
+/** Drop persisted Codex stand-in windows (judged against when they were last seen). */
+export function retireSyntheticCodexWindows(
+  entries: Readonly<Record<string, PersistedProviderUsageEntry>>,
+): Readonly<Record<string, PersistedProviderUsageEntry>> {
+  return Object.fromEntries(
+    Object.entries(entries).map(([accountKey, entry]) => {
+      if (entry.driver !== "codex") return [accountKey, entry];
+      const windows = entry.windows.filter(
+        (window) =>
+          !isSyntheticCodexUsageWindow(window, Date.parse(window.lastSeenAt ?? entry.reportedAt)),
+      );
+      return [accountKey, windows.length === entry.windows.length ? entry : { ...entry, windows }];
+    }),
+  );
+}
 
 /**
  * Drop windows the provider has not mentioned for a week. `seenKeys` are the
@@ -309,16 +351,23 @@ function normalizeIdentityPart(value: string): string {
 }
 
 /**
- * Uses only provider-reported public account metadata. Tokens, home paths,
- * cookies, and credentials never participate in the key or persisted value.
+ * Uses public account metadata or a server-generated opaque fingerprint.
+ * Raw credentials, home paths and cookies are never persisted here.
  */
 export function providerUsageAccountKey(
   provider: ServerProvider,
   environmentId?: EnvironmentId,
 ): string | null {
+  // OpenCode's report is held only in the current thread, never persisted as
+  // account usage. Free models can report it without an authenticated account.
+  if (provider.driver === "opencode") {
+    return `${environmentId ?? "local"}\0${provider.instanceId}:session`;
+  }
   if (provider.auth.status !== "authenticated") return null;
   let accountKey: string;
-  if (provider.auth.email) {
+  if (provider.accountUsageIdentity) {
+    accountKey = `${provider.driver}:instance:${provider.instanceId}:account:${provider.accountUsageIdentity}`;
+  } else if (provider.auth.email) {
     accountKey = `${provider.driver}:account:${normalizeIdentityPart(provider.auth.email)}`;
   } else {
     // Labels describe plans/auth methods and can be shared by many accounts.
@@ -339,10 +388,15 @@ export function mergeProviderUsageEntry(
   entry: PersistedProviderUsageEntry,
 ): Readonly<Record<string, PersistedProviderUsageEntry>> {
   const previous = state[entry.accountKey];
-  const windowsByKey = new Map(
-    (previous?.windows ?? []).map((window) => [window.key, window] as const),
-  );
   const entryIsOlder = previous !== undefined && previous.reportedAt > entry.reportedAt;
+  // A balance response is a complete currency inventory, not a partial quota
+  // update. Removed currencies must disappear immediately on a newer report.
+  // Muse's spend report is likewise the whole figure, not one window of many.
+  const windowsByKey = new Map(
+    (REPLACES_ALL_WINDOWS.has(entry.driver) && !entryIsOlder ? [] : (previous?.windows ?? [])).map(
+      (window) => [window.key, window] as const,
+    ),
+  );
   const seenKeys = new Set<string>();
   for (const window of entry.windows) {
     seenKeys.add(window.key);
@@ -437,7 +491,8 @@ function isPersistedWindow(value: unknown): value is PersistedProviderUsageWindo
       (typeof candidate.windowDurationMs === "number" &&
         Number.isFinite(candidate.windowDurationMs) &&
         candidate.windowDurationMs > 0)) &&
-    (candidate.detail === undefined || typeof candidate.detail === "string")
+    (candidate.detail === undefined || typeof candidate.detail === "string") &&
+    (candidate.description === undefined || typeof candidate.description === "string")
   );
 }
 
@@ -470,7 +525,44 @@ function isPersistedResetCredits(value: unknown): value is PersistedProviderUsag
   );
 }
 
+/** Drivers whose every report is the complete set of windows. */
+const REPLACES_ALL_WINDOWS: ReadonlySet<string> = new Set(["deepcode", "muse", "opencode"]);
+
+/**
+ * Window keys a driver still reports. Anything else persisted under that
+ * driver is a leftover from an earlier build and is dropped on load.
+ *
+ * Persisted windows are otherwise replaced only by a newer report with the
+ * same key, so a driver that stops reporting a window leaves it on screen for
+ * a week. That is what a phone showed after 0.1.539: "Session Tokens" and
+ * "Context Window" rows from the previous build's Muse report, still on the
+ * usage card an hour after the build that retired them had installed, and
+ * nothing that would ever remove them short of a fresh report -- which also
+ * would not have removed them, since the merge kept unseen keys.
+ */
+const LIVE_WINDOW_KEYS_BY_DRIVER: Readonly<Record<string, ReadonlySet<string>>> = {
+  muse: new Set(["session-spend"]),
+  opencode: new Set(["session-cost"]),
+};
+
+export function retireUnreportedWindows(
+  entries: Readonly<Record<string, PersistedProviderUsageEntry>>,
+): Readonly<Record<string, PersistedProviderUsageEntry>> {
+  return Object.fromEntries(
+    Object.entries(entries).map(([accountKey, entry]) => {
+      const live = LIVE_WINDOW_KEYS_BY_DRIVER[entry.driver];
+      if (live === undefined) return [accountKey, entry];
+      const windows = entry.windows.filter((window) => live.has(window.key));
+      return [accountKey, windows.length === entry.windows.length ? entry : { ...entry, windows }];
+    }),
+  );
+}
+
 function parseStoredEntries(): Readonly<Record<string, PersistedProviderUsageEntry>> {
+  return retireSyntheticCodexWindows(retireUnreportedWindows(parseStoredEntriesRaw()));
+}
+
+function parseStoredEntriesRaw(): Readonly<Record<string, PersistedProviderUsageEntry>> {
   if (typeof window === "undefined") return {};
   try {
     const value = JSON.parse(window.localStorage.getItem(PROVIDER_USAGE_STORAGE_KEY) ?? "{}");

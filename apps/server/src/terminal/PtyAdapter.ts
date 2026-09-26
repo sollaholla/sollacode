@@ -7,6 +7,7 @@
  * @module PtyAdapter
  */
 import * as Context from "effect/Context";
+import type { TerminalWindowsPty } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -35,9 +36,13 @@ export interface PtyExitEvent {
 }
 
 export interface PtyProcess {
+  readonly windowsPty?: TerminalWindowsPty | undefined;
   readonly pid: number;
   write(data: string): void;
   resize(cols: number, rows: number): void;
+  /** Stop/resume reads when a viewer falls behind, preserving terminal control bytes. */
+  pause?(): void;
+  resume?(): void;
   kill(signal?: string): void;
   onData(callback: (data: string) => void): () => void;
   onExit(callback: (event: PtyExitEvent) => void): () => void;

@@ -154,8 +154,26 @@ describe("model slug normalization", () => {
   it("preserves exact custom slugs instead of expanding provider aliases", () => {
     const claude = ProviderDriverKind.make("claudeAgent");
 
-    expect(normalizeModelSlug("opus", claude)).toBe("claude-opus-5");
+    expect(normalizeModelSlug("opus", claude)).toBe("claude-opus-5-5");
     expect(normalizeCustomModelSlug(" opus ")).toBe("opus");
+  });
+
+  it("normalizes Opus 5.5 spellings without moving explicitly pinned older models", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    for (const alias of ["opus-5.5", "opus-5-5", "claude-opus-5.5", "claude-opus-5-5"]) {
+      expect(normalizeModelSlug(alias, claude)).toBe("claude-opus-5-5");
+    }
+    expect(normalizeModelSlug("opus-5", claude)).toBe("claude-opus-5");
+    expect(normalizeModelSlug("claude-opus-4-8", claude)).toBe("claude-opus-4-8");
+  });
+
+  it("resolves Deep Code's retired slugs onto the model they now serve", () => {
+    const deepCode = ProviderDriverKind.make("deepcode");
+
+    expect(normalizeModelSlug("deepseek-v4-flash", deepCode)).toBe("deepseek-flash");
+    expect(normalizeModelSlug("deepseek-v4-flash-vision-exp", deepCode)).toBe("deepseek-flash");
+    // A current slug is left alone.
+    expect(normalizeModelSlug("deepseek-v4-pro", deepCode)).toBe("deepseek-v4-pro");
   });
 });
 
@@ -194,6 +212,10 @@ describe("Antigravity model families", () => {
   });
   it("preserves a legacy variant effort and lets explicit options override it", () => {
     const caps = antigravityCapabilitiesForSelection(models[0]?.capabilities, "gemini-flash-low");
+    // The grouped catalog always carries capabilities on the base model, and
+    // every assertion below is vacuous without them, so fail loudly here
+    // instead of passing `undefined` into a descriptor read.
+    if (!caps) throw new Error("expected capabilities on the grouped Antigravity model");
     expect(getProviderOptionDescriptors({ caps, selections: undefined })[0]?.currentValue).toBe(
       "low",
     );

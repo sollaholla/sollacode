@@ -1,3 +1,5 @@
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { environmentPresentations } from "../state/presentation";
 import {
   parseScopedThreadKey,
   scopeProjectRef,
@@ -43,6 +45,15 @@ import { useClientSettings } from "./useSettings";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useRightPanelStore } from "../rightPanelStore";
 import { sideChatDisplayTitle } from "../sideChat";
+
+function notifyDeferredThreadAction(action: string) {
+  toastManager.add({
+    type: "info",
+    title: action + " queued",
+    description:
+      "Will apply when this device reconnects. Keep this client available to deliver the request.",
+  });
+}
 
 export class ThreadArchiveBlockedError extends Schema.TaggedErrorClass<ThreadArchiveBlockedError>()(
   "ThreadArchiveBlockedError",
@@ -213,6 +224,9 @@ export function useThreadActions() {
       if (archiveResult._tag === "Failure") {
         return archiveResult;
       }
+      if (archiveResult.value._tag === "Deferred") {
+        notifyDeferredThreadAction("Archive");
+      }
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
       opts.onArchived?.();
 
@@ -238,7 +252,8 @@ export function useThreadActions() {
         input: { threadId: target.threadId },
       });
       if (result._tag === "Success") {
-        refreshArchivedThreadsForEnvironment(target.environmentId);
+        if (result.value._tag === "Deferred") notifyDeferredThreadAction("Restore");
+        else refreshArchivedThreadsForEnvironment(target.environmentId);
       }
       return result;
     },
@@ -359,14 +374,23 @@ export function useThreadActions() {
       } = {},
     ) => {
       const resolved = resolveThreadTarget(target);
-      if (!resolved) {
+      const connected =
+        appAtomRegistry.get(environmentPresentations.presentationAtom(target.environmentId))
+          ?.connection.phase === "connected";
+      if (!resolved || !connected) {
+        // Offline requests must not attempt session, terminal, or worktree RPCs.
         // Thread not in main store (e.g. archived thread) — dispatch delete directly.
         const result = await deleteThreadMutation({
           environmentId: target.environmentId,
           input: { threadId: target.threadId },
         });
         if (result._tag === "Success") {
-          refreshArchivedThreadsForEnvironment(target.environmentId);
+          if (result.value._tag === "Deferred") notifyDeferredThreadAction("Delete");
+          else refreshArchivedThreadsForEnvironment(target.environmentId);
+          const route = getCurrentRouteThreadRef();
+          if (route?.environmentId === target.environmentId && route.threadId === target.threadId) {
+            await router.navigate({ to: "/", replace: true });
+          }
         }
         return result;
       }
@@ -448,6 +472,10 @@ export function useThreadActions() {
         input: { threadId: threadRef.threadId },
       });
       if (deleteResult._tag === "Failure") {
+        return deleteResult;
+      }
+      if (deleteResult.value._tag === "Deferred") {
+        notifyDeferredThreadAction("Delete");
         return deleteResult;
       }
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);

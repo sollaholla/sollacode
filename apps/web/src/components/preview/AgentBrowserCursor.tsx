@@ -165,9 +165,25 @@ function AgentBrowserCursorEvent(props: {
       aria-hidden="true"
       data-agent-browser-cursor
     >
-      {event.phase === "click" ? (
+      <AgentCursorArrow phase={event.phase} sequence={event.sequence} />
+    </div>
+  );
+}
+
+/**
+ * The agent cursor as drawn over a page: the arrow, and a ping on a click.
+ * Shared by the desktop overlay and the remote frame so both read as the same
+ * agent. Position it with a wrapper; the arrow's tip sits at the wrapper's origin.
+ */
+export function AgentCursorArrow(props: {
+  readonly phase: "move" | "click";
+  readonly sequence: number;
+}) {
+  return (
+    <>
+      {props.phase === "click" ? (
         <span
-          key={event.sequence}
+          key={props.sequence}
           className="absolute left-0.5 top-0.5 size-4 animate-status-ping rounded-full motion-reduce:animate-none"
           style={{ backgroundColor: `${AGENT_CURSOR_GLOW}59` }}
         />
@@ -199,6 +215,6 @@ function AgentBrowserCursorEvent(props: {
           paintOrder="stroke"
         />
       </svg>
-    </div>
+    </>
   );
 }

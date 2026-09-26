@@ -6,15 +6,15 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#161616" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#161616" />
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#050505" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#050505" />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
       (() => {
-        const LIGHT_BACKGROUND = "#ffffff";
-        const DARK_BACKGROUND = "#161616";
+        const LIGHT_BACKGROUND = "#fafafa";
+        const DARK_BACKGROUND = "#050505";
         const themeColorMeta = document.querySelector('meta[name="theme-color"]');
         try {
           const storedTheme = window.localStorage.getItem("t3code:theme");
@@ -45,7 +45,7 @@
       }
 
       body {
-        background: #ffffff;
+        background: #fafafa;
         color: #262626;
         font-family:
           "DM Sans Variable",
@@ -58,24 +58,41 @@
       }
 
       html.dark body {
-        background: #161616;
-        color: #f5f5f5;
+        background: #050505;
+        color: #f4f4f5;
       }
 
+      /* The startup splash sits over the app, not inside it, so the app can
+         render underneath and the splash leaves only when told to. */
       #boot-shell {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483000;
         display: flex;
-        min-height: 100%;
         align-items: center;
         justify-content: center;
-        background: inherit;
+        background: #fafafa;
+        color: #262626;
+        transition: opacity 180ms ease-out;
+      }
+
+      html.dark #boot-shell {
+        background: #050505;
+        color: #f4f4f5;
+      }
+
+      #boot-shell.boot-shell-leaving {
+        opacity: 0;
+        pointer-events: none;
       }
 
       #boot-shell-card {
         display: flex;
+        width: min(320px, calc(100vw - 48px));
+        flex-direction: column;
         align-items: center;
-        justify-content: center;
-        width: 96px;
-        height: 96px;
+        gap: 14px;
+        text-align: center;
       }
 
       #boot-shell-logo {
@@ -84,19 +101,49 @@
         object-fit: contain;
       }
 
-      #boot-shell.boot-shell-failed #boot-shell-card {
-        width: min(360px, calc(100vw - 48px));
-        height: auto;
-        flex-direction: column;
-        gap: 12px;
-        text-align: center;
+      /* The step line and bar appear only when startup is slow, so a fast
+         start is just the logo. */
+      #boot-shell-progress,
+      #boot-shell-status {
+        visibility: hidden;
+      }
+
+      #boot-shell.boot-shell-slow #boot-shell-progress,
+      #boot-shell.boot-shell-slow #boot-shell-status,
+      #boot-shell.boot-shell-failed #boot-shell-status {
+        visibility: visible;
+      }
+
+      #boot-shell-progress {
+        width: 120px;
+        height: 3px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: color-mix(in srgb, currentColor 12%, transparent);
+      }
+
+      #boot-shell-progress-fill {
+        width: 0;
+        height: 100%;
+        border-radius: 2px;
+        background: #d9a93a;
+        transition: width 240ms ease-out;
+      }
+
+      #boot-shell.boot-shell-failed #boot-shell-progress {
+        display: none;
       }
 
       #boot-shell-status {
+        min-height: 21px;
         margin: 0;
-        color: inherit;
+        color: color-mix(in srgb, currentColor 62%, transparent);
         font-size: 14px;
         line-height: 1.5;
+      }
+
+      #boot-shell.boot-shell-failed #boot-shell-status {
+        color: inherit;
       }
 
       #boot-shell-retry {
@@ -111,86 +158,148 @@
         font-weight: 600;
         cursor: pointer;
       }
+
+      #boot-shell-retry:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #boot-shell,
+        #boot-shell-progress-fill {
+          transition: none;
+        }
+      }
     </style>
     <title>Solla Code</title>
   </head>
   <body>
-    <div id="root">
-      <div id="boot-shell">
-        <div id="boot-shell-card" aria-label="Solla Code splash screen">
-          <img id="boot-shell-logo" src="/apple-touch-icon.png" alt="Solla Code" />
+    <div id="root"></div>
+    <div id="boot-shell" role="status" aria-label="Solla Code is starting">
+      <div id="boot-shell-card">
+        <img id="boot-shell-logo" src="/apple-touch-icon.png" alt="Solla Code" />
+        <div id="boot-shell-progress" aria-hidden="true">
+          <div id="boot-shell-progress-fill"></div>
         </div>
+        <p id="boot-shell-status" aria-live="polite"></p>
       </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
       (() => {
+        // Before the app's code runs, a stuck load gets one automatic reload.
         const BOOT_TIMEOUT_MS = 8000;
+        // Startup under this long is just the logo; past it, the step shows.
+        const SLOW_AFTER_MS = 1500;
+        // Once the app is running and waiting for the workspace, it takes
+        // over with its own loading states after this long.
+        const WORKSPACE_WAIT_MS = 20000;
+        // Past this, any unfinished step offers Retry as a way out.
+        const STUCK_AFTER_MS = 30000;
         const RETRY_QUERY_KEY = "solla_boot_retry";
+        // Where the stalled attempt stopped, carried in the retry URL so the
+        // server's request log shows it.
+        const STAGE_QUERY_KEY = "solla_boot_stage";
         const RETRY_STORAGE_KEY = "solla:boot-recovery:v1";
+        const STAGES = {
+          loading: { label: "Loading Solla Code…", step: 1 },
+          "signing-in": { label: "Signing in…", step: 2 },
+          connecting: { label: "Loading your workspace…", step: 3 },
+          opening: { label: "Opening…", step: 4 },
+        };
+        const STEP_COUNT = 5;
+
         const bootShell = document.getElementById("boot-shell");
         const bootShellCard = document.getElementById("boot-shell-card");
-        if (!bootShell || !bootShellCard) return;
+        const status = document.getElementById("boot-shell-status");
+        const progressFill = document.getElementById("boot-shell-progress-fill");
+        if (!bootShell || !bootShellCard || !status || !progressFill) return;
+
+        let stage = "loading";
+        let finished = false;
+        let retryShown = false;
+
+        const render = () => {
+          status.textContent = STAGES[stage].label;
+          progressFill.style.width = (STAGES[stage].step / STEP_COUNT) * 100 + "%";
+        };
 
         const removeRetryMarker = () => {
           try {
             window.sessionStorage.removeItem(RETRY_STORAGE_KEY);
             const url = new URL(window.location.href);
-            if (!url.searchParams.has(RETRY_QUERY_KEY)) return;
+            if (!url.searchParams.has(RETRY_QUERY_KEY) && !url.searchParams.has(STAGE_QUERY_KEY))
+              return;
             url.searchParams.delete(RETRY_QUERY_KEY);
+            url.searchParams.delete(STAGE_QUERY_KEY);
             window.history.replaceState(window.history.state, "", url);
           } catch {
             // Storage and history can be unavailable in strict private modes.
           }
         };
 
-        const appBooted = () => !document.getElementById("boot-shell");
-        const observer = new MutationObserver(() => {
-          if (!appBooted()) return;
-          observer.disconnect();
-          removeRetryMarker();
-        });
-        observer.observe(document.getElementById("root"), { childList: true, subtree: true });
-
         const retryWithFreshShell = () => {
           try {
             window.sessionStorage.setItem(RETRY_STORAGE_KEY, "attempted");
             const url = new URL(window.location.href);
             url.searchParams.set(RETRY_QUERY_KEY, Date.now().toString());
+            url.searchParams.set(STAGE_QUERY_KEY, stage);
             window.location.replace(url.toString());
           } catch {
             window.location.reload();
           }
         };
 
-        const showRecovery = () => {
-          bootShell.classList.add("boot-shell-failed");
-          bootShellCard.replaceChildren();
-
-          const logo = document.createElement("img");
-          logo.id = "boot-shell-logo";
-          logo.src = "/apple-touch-icon.png";
-          logo.alt = "Solla Code";
-
-          const status = document.createElement("p");
-          status.id = "boot-shell-status";
-          status.textContent = "Solla Code did not finish loading.";
-
+        const showRetry = (message) => {
+          if (finished || retryShown) return;
+          retryShown = true;
+          if (message) {
+            bootShell.classList.add("boot-shell-failed");
+            status.textContent = message;
+          }
           const retry = document.createElement("button");
           retry.id = "boot-shell-retry";
           retry.type = "button";
           retry.textContent = "Retry";
-          retry.addEventListener("click", retryWithFreshShell);
-
-          bootShellCard.append(logo, status, retry);
+          retry.addEventListener("click", () => {
+            // A reload that stalls leaves this page on screen; say it is
+            // working, and let a second press start a new attempt.
+            retry.disabled = true;
+            retry.textContent = "Retrying…";
+            window.setTimeout(() => {
+              retry.disabled = false;
+              retry.textContent = "Retry";
+            }, 10000);
+            retryWithFreshShell();
+          });
+          bootShellCard.append(retry);
         };
 
-        window.setTimeout(() => {
-          if (appBooted()) {
-            removeRetryMarker();
-            return;
-          }
+        const done = () => {
+          if (finished) return;
+          finished = true;
+          progressFill.style.width = "100%";
+          removeRetryMarker();
+          bootShell.classList.add("boot-shell-leaving");
+          window.setTimeout(() => bootShell.remove(), 200);
+        };
 
+        const setStage = (next) => {
+          if (finished || !STAGES[next] || STAGES[next].step <= STAGES[stage].step) return;
+          stage = next;
+          if (!retryShown || !bootShell.classList.contains("boot-shell-failed")) render();
+          if (next === "connecting") window.setTimeout(done, WORKSPACE_WAIT_MS);
+        };
+
+        window.__sollaSplash = { setStage, done };
+        render();
+        window.setTimeout(() => bootShell.classList.add("boot-shell-slow"), SLOW_AFTER_MS);
+        window.setTimeout(() => showRetry(null), STUCK_AFTER_MS);
+
+        window.setTimeout(() => {
+          // Once the app's code runs it retries its own requests; reloading
+          // then only throws away downloads that are still arriving.
+          if (finished || stage !== "loading") return;
           let alreadyRetried = false;
           try {
             alreadyRetried = window.sessionStorage.getItem(RETRY_STORAGE_KEY) === "attempted";
@@ -198,7 +307,7 @@
             // A cache-busting retry is still safe when storage is unavailable.
           }
           if (alreadyRetried) {
-            showRecovery();
+            showRetry("Solla Code did not finish loading.");
             return;
           }
           retryWithFreshShell();

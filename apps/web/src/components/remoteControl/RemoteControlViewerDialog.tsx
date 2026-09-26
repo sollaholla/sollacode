@@ -1,6 +1,7 @@
 "use client";
 
-import { createTouchPressDelay } from "./touchPressDelay";
+import { createTouchActionMenu, type TouchMenuState } from "./touchActionMenu";
+import { TouchActionRadialMenu } from "./TouchActionRadialMenu";
 
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
@@ -183,7 +184,15 @@ export function RemoteControlViewerDialog(props: {
   sessionRef.current = session;
   const inputSequenceRef = useRef(0);
   const pressedKeysRef = useRef(new Map<string, string>());
-  const [touchPressDelay] = useState(createTouchPressDelay);
+  const [touchMenu, setTouchMenu] = useState<TouchMenuState | null>(null);
+  const touchCallbacksRef = useRef<Parameters<typeof createTouchActionMenu>[0] | null>(null);
+  const [touchActions] = useState(() =>
+    createTouchActionMenu({
+      menu: setTouchMenu,
+      pointer: (...args) => touchCallbacksRef.current?.pointer(...args),
+      scroll: (...args) => touchCallbacksRef.current?.scroll(...args),
+    }),
+  );
   const pressedPointerButtonRef = useRef<RemoteControlPointerButton | null>(null);
   const lastPointerPointRef = useRef({ x: 0.5, y: 0.5 });
   const platform = useMemo(() => controllerPlatform(navigator.userAgent), []);
@@ -445,7 +454,7 @@ export function RemoteControlViewerDialog(props: {
   }, [enqueueInput, videoUnavailable]);
 
   const releasePressedInputs = useCallback(() => {
-    touchPressDelay.cancel();
+    touchActions.cancel();
     for (const [code, key] of pressedKeysRef.current) {
       enqueueInput({ type: "key", action: "up", code, key, repeat: false });
     }
@@ -460,7 +469,7 @@ export function RemoteControlViewerDialog(props: {
       });
     }
     pressedPointerButtonRef.current = null;
-  }, [enqueueInput, touchPressDelay]);
+  }, [enqueueInput, touchActions]);
 
   const releaseInputCapture = useCallback(() => {
     inputCapturedRef.current = false;
@@ -541,11 +550,11 @@ export function RemoteControlViewerDialog(props: {
     () => () => {
       inputCapturedRef.current = false;
       inputScheduler.clear();
-      touchPressDelay.cancel();
+      touchActions.cancel();
       pressedKeysRef.current.clear();
       pressedPointerButtonRef.current = null;
     },
-    [inputScheduler, touchPressDelay],
+    [inputScheduler, touchActions],
   );
 
   const close = async () => {
@@ -835,6 +844,58 @@ export function RemoteControlViewerDialog(props: {
       deltaX: Math.max(-2_000, Math.min(2_000, event.deltaX)),
       deltaY: Math.max(-2_000, Math.min(2_000, event.deltaY)),
     });
+  };
+
+  touchCallbacksRef.current = {
+    menu: setTouchMenu,
+    pointer: (action, point, button) => {
+      if (action === "up") {
+        if (pressedPointerButtonRef.current === button) {
+          enqueueInput({ type: "pointer", action: "up", ...lastPointerPointRef.current, button });
+          pressedPointerButtonRef.current = null;
+        }
+        return;
+      }
+      const target = surfaceElementRef.current;
+      if (!target) return;
+      if (action === "down") {
+        if (!canPointer || !inputCapturedRef.current || zoomViewAdjustingRef.current) return;
+        pressedPointerButtonRef.current = button;
+      }
+      sendPointer(
+        {
+          button: button === "right" ? 2 : 0,
+          clientX: point.x,
+          clientY: point.y,
+          movementX: 0,
+          movementY: 0,
+          currentTarget: target,
+          preventDefault: () => {},
+        },
+        action,
+        button,
+      );
+    },
+    scroll: (anchor, delta) => {
+      if (
+        !shouldForwardRemoteSurfaceInput({
+          viewAdjusting: zoomViewAdjustingRef.current,
+          capabilityGranted: canPointer,
+          inputCaptured: inputCapturedRef.current,
+          kind: "wheel",
+        })
+      )
+        return;
+      const rect = remoteSurfaceRect();
+      if (!rect) return;
+      const point = normalizedRemotePoint({ clientX: anchor.x, clientY: anchor.y, rect });
+      enqueueInput({
+        type: "wheel",
+        ...point,
+        deltaX: Math.max(-2000, Math.min(2000, delta.x)),
+        deltaY: Math.max(-2000, Math.min(2000, delta.y)),
+      });
+    },
   };
 
   /**
@@ -1181,6 +1242,7 @@ export function RemoteControlViewerDialog(props: {
               data-remote-pointer-lock={pointerLocked ? "locked" : "unlocked"}
               data-remote-video-fallback={videoUnavailable ?? undefined}
               style={{
+                WebkitTouchCallout: "none",
                 cursor: remoteSurfaceCursorStyle({
                   shape: remoteCursorShape,
                   inputCaptured,
@@ -1248,19 +1310,25 @@ export function RemoteControlViewerDialog(props: {
                   pressedPointerButtonRef.current = button;
                   sendPointer(sample, "down", button);
                 };
-                if (event.pointerType === "touch") touchPressDelay.start(press);
-                else press();
+                if (event.pointerType === "touch") {
+                  touchActions.start(
+                    { x: event.clientX, y: event.clientY },
+                    {
+                      x: Math.max(102, Math.min(window.innerWidth - 102, event.clientX)),
+                      y: Math.max(102, Math.min(window.innerHeight - 145, event.clientY)),
+                    },
+                  );
+                } else press();
               }}
               onPointerMove={(event) => {
                 if (zoomView.onPointerMove(event)) return;
-                const sample = pointerSample(event);
                 if (
                   event.pointerType === "touch" &&
-                  touchPressDelay.move(() =>
-                    sendPointer(sample, "move", pressedPointerButtonRef.current ?? "left"),
-                  )
-                )
+                  touchActions.move({ x: event.clientX, y: event.clientY })
+                ) {
+                  event.preventDefault();
                   return;
+                }
                 sendPointer(event, "move", pressedPointerButtonRef.current ?? "left");
               }}
               onPointerUp={(event) => {
@@ -1271,7 +1339,12 @@ export function RemoteControlViewerDialog(props: {
                   }
                   return;
                 }
-                if (event.pointerType === "touch") touchPressDelay.flush();
+                if (event.pointerType === "touch" && touchActions.end()) {
+                  event.preventDefault();
+                  if (event.currentTarget.hasPointerCapture(event.pointerId))
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  return;
+                }
                 sendPointer(
                   event,
                   "up",
@@ -1282,8 +1355,9 @@ export function RemoteControlViewerDialog(props: {
                   event.currentTarget.releasePointerCapture(event.pointerId);
                 }
               }}
+              onLostPointerCapture={() => touchActions.cancel()}
               onPointerCancel={(event) => {
-                touchPressDelay.cancel();
+                touchActions.cancel();
                 if (zoomView.onPointerUp(event)) {
                   zoomViewAdjustingRef.current = zoomView.pinchingRef.current;
                   return;
@@ -1294,6 +1368,7 @@ export function RemoteControlViewerDialog(props: {
               }}
               onWheel={sendWheel}
             >
+              <TouchActionRadialMenu state={touchMenu} />
               <div
                 ref={zoomView.paneRef}
                 className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden"

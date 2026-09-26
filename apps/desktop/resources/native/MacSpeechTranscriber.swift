@@ -21,46 +21,23 @@ private struct SuccessPayload: Encodable {
 }
 
 @available(macOS 26.0, *)
-private func transcribe(
+private func analyze(
   audioPath: String,
-  localeIdentifier: String,
-  contextualStrings: [String]
+  contextualStrings: [String],
+  module: any SpeechModule,
+  resultTask: Task<[String], Error>
 ) async throws -> String {
-  let requestedLocale = Locale(identifier: localeIdentifier)
-  guard let locale = await DictationTranscriber.supportedLocale(equivalentTo: requestedLocale)
-  else {
-    throw TranscriptionError.unsupportedLocale(localeIdentifier)
-  }
-
-  let transcriber = DictationTranscriber(locale: locale, preset: .longDictation)
-  if let installation = try await AssetInventory.assetInstallationRequest(supporting: [transcriber])
-  {
-    try await installation.downloadAndInstall()
-  }
-
-  let resultTask = Task { () throws -> [String] in
-    var phrases: [String] = []
-    for try await result in transcriber.results {
-      let phrase = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-      if !phrase.isEmpty {
-        phrases.append(phrase)
-      }
-    }
-    return phrases
-  }
-
   do {
     let audioFile = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
     let context = AnalysisContext()
     if !contextualStrings.isEmpty {
       context.contextualStrings[.general] = Array(contextualStrings.prefix(100))
     }
-    // This initializer starts analysis immediately. Keeping the analyzer
-    // alive until the result sequence ends is required; releasing it early
-    // cancels the native model before it publishes its final phrases.
+    // The file initializer starts analysis immediately. Keep the analyzer alive
+    // until its final results arrive so the native model is not cancelled early.
     let analyzer = try await SpeechAnalyzer(
       inputAudioFile: audioFile,
-      modules: [transcriber],
+      modules: [module],
       options: .init(priority: .userInitiated, modelRetention: .processLifetime),
       analysisContext: context,
       finishAfterFile: true
@@ -72,6 +49,69 @@ private func transcribe(
     resultTask.cancel()
     throw error
   }
+}
+
+@available(macOS 26.0, *)
+private func transcribe(
+  audioPath: String,
+  localeIdentifier: String,
+  contextualStrings: [String]
+) async throws -> String {
+  let requestedLocale = Locale(identifier: localeIdentifier)
+  // SpeechTranscriber is Apple's newer transcription model. Dictation remains
+  // the compatibility path for unsupported hardware/locales or unavailable assets.
+  if SpeechTranscriber.isAvailable,
+    let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale)
+  {
+    do {
+      let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
+      if let installation = try await AssetInventory.assetInstallationRequest(supporting: [
+        transcriber
+      ]) {
+        try await installation.downloadAndInstall()
+      }
+      try Task.checkCancellation()
+      let resultTask = Task { () throws -> [String] in
+        var phrases: [String] = []
+        for try await result in transcriber.results {
+          let phrase = String(result.text.characters).trimmingCharacters(
+            in: .whitespacesAndNewlines)
+          if !phrase.isEmpty { phrases.append(phrase) }
+        }
+        return phrases
+      }
+      return try await analyze(
+        audioPath: audioPath, contextualStrings: contextualStrings,
+        module: transcriber, resultTask: resultTask
+      )
+    } catch {
+      if error is CancellationError || Task.isCancelled { throw error }
+      // A failed model installation or unsupported native path must not remove
+      // transcription on machines where the existing dictation model works.
+    }
+  }
+
+  try Task.checkCancellation()
+  guard let locale = await DictationTranscriber.supportedLocale(equivalentTo: requestedLocale)
+  else { throw TranscriptionError.unsupportedLocale(localeIdentifier) }
+  let transcriber = DictationTranscriber(locale: locale, preset: .longDictation)
+  if let installation = try await AssetInventory.assetInstallationRequest(supporting: [transcriber])
+  {
+    try await installation.downloadAndInstall()
+  }
+  try Task.checkCancellation()
+  let resultTask = Task { () throws -> [String] in
+    var phrases: [String] = []
+    for try await result in transcriber.results {
+      let phrase = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+      if !phrase.isEmpty { phrases.append(phrase) }
+    }
+    return phrases
+  }
+  return try await analyze(
+    audioPath: audioPath, contextualStrings: contextualStrings,
+    module: transcriber, resultTask: resultTask
+  )
 }
 
 @main

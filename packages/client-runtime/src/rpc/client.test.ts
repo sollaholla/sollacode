@@ -282,6 +282,53 @@ describe("environment RPC", () => {
     }),
   );
 
+  // Closing a session's scope (the supervisor dropping a lease it judged dead,
+  // e.g. the phone went offline) ends every in-flight RPC stream with an
+  // interrupt, not an RpcClientError. That is still a lost transport.
+  it.effect("keeps durable subscriptions alive when the session scope closes under them", () =>
+    Effect.gen(function* () {
+      const subscriptions: string[] = [];
+      const firstQueue = yield* Queue.unbounded<never>();
+      const firstClient = {
+        [WS_METHODS.subscribeTerminalEvents]: () => {
+          subscriptions.push("first");
+          return Stream.fromQueue(firstQueue);
+        },
+      } as unknown as WsRpcProtocolClient;
+      const secondClient = {
+        [WS_METHODS.subscribeTerminalEvents]: () => {
+          subscriptions.push("second");
+          return Stream.never;
+        },
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, supervisor } = yield* makeHarness();
+
+      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalEvents, {}).pipe(
+        Stream.runDrain,
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
+      yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
+      for (let attempt = 0; attempt < 100 && subscriptions.length < 1; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      // What RpcClient's scope finalizer does to every open stream.
+      yield* Queue.failCause(firstQueue, Cause.interrupt(1));
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      yield* SubscriptionRef.set(activeSession, Option.none());
+      yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
+      for (let attempt = 0; attempt < 100 && subscriptions.length < 2; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      expect(subscriptionFiber.pollUnsafe()).toBeUndefined();
+      expect(subscriptions).toEqual(["first", "second"]);
+      yield* Fiber.interrupt(subscriptionFiber);
+    }),
+  );
+
   it.effect("surfaces domain subscription failures without reconnecting", () =>
     Effect.gen(function* () {
       const domainError = new Error("terminal subscription rejected");

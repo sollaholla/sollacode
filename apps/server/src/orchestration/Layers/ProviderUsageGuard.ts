@@ -24,6 +24,7 @@ import { isUsageGuardYield } from "../usageGuardYield.ts";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { providerDisplayLabel } from "@t3tools/shared/model";
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -269,7 +270,9 @@ const make = Effect.gen(function* () {
     );
 
   const providerLabel = (provider: ServerProvider | undefined, instanceId: ProviderInstanceId) =>
-    provider?.displayName?.trim() || String(provider?.driver ?? instanceId);
+    provider === undefined
+      ? String(instanceId)
+      : providerDisplayLabel(provider.displayName, provider.driver);
 
   const activeThreadsFor = (instanceId: ProviderInstanceId) =>
     scheduler.snapshot.pipe(

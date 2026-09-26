@@ -43,6 +43,56 @@ function queuedMessage(input: {
 }
 
 describe("thread outbox", () => {
+  it("persists rejected sends with their attachments and preserves order when retrying", async () => {
+    const first: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "first", createdAt: "2026-09-22T00:00:00.000Z" }),
+      deliveryError: "Rejected by host",
+      attachments: [
+        {
+          id: "image-1",
+          type: "image",
+          name: "proof.png",
+          mimeType: "image/png",
+          sizeBytes: 3,
+          dataUrl: "data:image/png;base64,YWJj",
+          previewUri: "data:image/png;base64,YWJj",
+        },
+      ],
+    };
+    const second = queuedMessage({ messageId: "second", createdAt: first.createdAt });
+    const stored = new Map([
+      [first.messageId, encodeQueuedThreadMessage(first)],
+      [second.messageId, encodeQueuedThreadMessage(second)],
+    ]);
+    const registry = AtomRegistry.make();
+    const manager = createThreadOutboxManager({
+      registry,
+      storage: {
+        load: async () => [...stored.values()].map(decodeQueuedThreadMessage),
+        write: async (message) => {
+          stored.set(message.messageId, encodeQueuedThreadMessage(message));
+        },
+        remove: async (message) => {
+          stored.delete(message.messageId);
+        },
+      },
+    });
+    await manager.load();
+    expect(
+      registry.get(manager.queuedMessagesByThreadKeyAtom)["environment-1:thread-1"]?.[0]
+        ?.deliveryError,
+    ).toBe("Rejected by host");
+    const { deliveryError: _, ...retry } = first;
+    await manager.update(retry);
+    const retried = registry.get(manager.queuedMessagesByThreadKeyAtom)["environment-1:thread-1"];
+    expect(retried?.map((message) => message.messageId)).toEqual(["first", "second"]);
+    expect(decodeQueuedThreadMessage(stored.get(first.messageId)).deliveryError).toBeUndefined();
+    expect(decodeQueuedThreadMessage(stored.get(first.messageId)).attachments).toEqual(
+      first.attachments,
+    );
+    registry.dispose();
+  });
+
   it("groups messages by scoped thread and preserves creation order", () => {
     const later = queuedMessage({
       messageId: "message-2",
@@ -352,7 +402,7 @@ describe("thread outbox", () => {
     registry.dispose();
   });
 
-  it("only removes a missing-thread message after shell synchronization is live", () => {
+  it("keeps messages when their thread is temporarily absent, including archived threads", () => {
     expect(
       resolveThreadOutboxDeliveryAction({
         isCreation: false,
@@ -370,7 +420,7 @@ describe("thread outbox", () => {
         environmentConnected: true,
         threadBusy: false,
       }),
-    ).toBe("remove");
+    ).toBe("wait");
     expect(
       resolveThreadOutboxDeliveryAction({
         isCreation: false,
@@ -483,7 +533,7 @@ describe("thread outbox", () => {
     expect(isQueuedThreadCreationSendable(base)).toBe(false);
   });
 
-  it("retries transport failures but drops deterministic command failures", () => {
+  it("distinguishes transport failures from deterministic command failures", () => {
     expect(shouldRetryThreadOutboxDelivery(new Error("Socket is not connected"))).toBe(true);
     expect(
       shouldRetryThreadOutboxDelivery({
@@ -510,6 +560,6 @@ describe("thread outbox", () => {
         error: deterministicFailure,
         interrupted: false,
       }),
-    ).toBe("discard");
+    ).toBe("pause");
   });
 });

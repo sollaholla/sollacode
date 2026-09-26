@@ -384,7 +384,15 @@ const PROVIDER_TERMINAL_REFUSAL_SIGNATURES = [
   /\bisn't installed\b/i,
   /\bis not installed\b/i,
   /\bnative binary not found\b/i,
-  /Antigravity was rejected by Google with RESOURCE_EXHAUSTED \(429\)/i,
+  // OpenCode Zen's gateway 402: the account has no credit for the model.
+  // Retrying re-bills nothing and re-fails the same way (2026-09-17).
+  /\bHTTP 402 Payment Required\b/i,
+  // Grok Build's own 402, reported verbatim by the CLI (2026-09-18).
+  /\busage balance exhausted\b/i,
+  // Antigravity 429s and Muse progress timeouts used to retire here. They no
+  // longer do: a 429 fails over to the surviving pool or provider, and a
+  // stalled turn restarts on a fresh host. Both stay silent while recovery is
+  // live and record exactly once if it gives up.
 ];
 
 /** Cap for the same reason as the authentication check: prose is not a status. */

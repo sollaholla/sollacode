@@ -6,7 +6,7 @@ import {
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { SearchIcon } from "lucide-react";
+import { ExternalLinkIcon, SearchIcon } from "lucide-react";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
 import { isModelPickerNewModel } from "./modelPickerModelHighlights";
@@ -28,6 +28,7 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
+import { describeProviderModelAccess } from "./providerModelAccess";
 
 type ModelPickerItem = {
   slug: string;
@@ -93,6 +94,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   onRequestClose?: () => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  /** Opens the provider's account screen. Absent where there is nowhere to send them. */
+  onSwitchProviderAccount?: (instanceId: ProviderInstanceId) => void;
 }) {
   const {
     keybindings: providedKeybindings,
@@ -259,6 +262,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     return [...available, ...disabled];
   }, [instanceEntries, isLocked, matchesLockedProvider]);
   const showSidebar = !isSearching && sidebarInstanceEntries.length > 0;
+
   const instanceOrder = useMemo(
     () => instanceEntries.map((entry) => entry.instanceId),
     [instanceEntries],
@@ -453,6 +457,24 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     setShowTopScrollFade(scrollElement.scrollTop > 1);
     setShowBottomScrollFade(maxScrollOffset - scrollElement.scrollTop > 1);
   }, []);
+  // Why this provider's pane is empty, when the reason is something the person
+  // can act on. Only for a single provider's pane: across "Favorites" or a
+  // search there is no one provider to explain.
+  const emptyPaneNotice = useMemo(() => {
+    if (filteredModelKeys.length > 0 || isSearching || selectedInstanceId === "favorites") {
+      return null;
+    }
+    const entry = instanceEntries.find((item) => item.instanceId === selectedInstanceId);
+    return describeProviderModelAccess(entry?.snapshot, {
+      canSwitchAccount: props.onSwitchProviderAccount !== undefined,
+    });
+  }, [
+    filteredModelKeys.length,
+    isSearching,
+    selectedInstanceId,
+    instanceEntries,
+    props.onSwitchProviderAccount,
+  ]);
   const modelJumpShortcutContext = useMemo(
     () =>
       ({
@@ -631,9 +653,53 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               </div>
             </div>
 
-            {/* Model list */}
+            {/* Model list. When a provider's pane is empty for a reason worth
+                explaining, the notice takes the list's place rather than
+                following it: as a sibling it sat below a full-height empty
+                list, which pushed it to the very bottom of the screen. */}
             <div className="relative min-h-0 flex-1 overflow-hidden pr-px">
-              <ComboboxListVirtualized className="size-full min-w-0 p-0 not-empty:p-0">
+              {emptyPaneNotice ? (
+                <div className="h-full overflow-y-auto px-3 pt-3">
+                  <div
+                    className="rounded-lg border border-border/70 bg-muted/25 p-3"
+                    data-model-picker-empty-notice={selectedInstanceId}
+                    role="status"
+                  >
+                    <p className="font-medium text-foreground text-xs">{emptyPaneNotice.title}</p>
+                    <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+                      {emptyPaneNotice.detail}
+                    </p>
+                    {emptyPaneNotice.action?.kind === "link" ? (
+                      <a
+                        href={emptyPaneNotice.action.href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-flex items-center gap-1 font-medium text-primary text-xs underline underline-offset-2"
+                      >
+                        {emptyPaneNotice.action.label}
+                        <ExternalLinkIcon className="size-3" />
+                      </a>
+                    ) : null}
+                    {emptyPaneNotice.action?.kind === "switch-account" &&
+                    props.onSwitchProviderAccount !== undefined &&
+                    selectedInstanceId !== "favorites" ? (
+                      <button
+                        type="button"
+                        className="mt-2 inline-flex items-center font-medium text-primary text-xs underline underline-offset-2"
+                        onClick={() => {
+                          props.onRequestClose?.();
+                          props.onSwitchProviderAccount?.(selectedInstanceId);
+                        }}
+                      >
+                        {emptyPaneNotice.action.label}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              <ComboboxListVirtualized
+                className={cn("size-full min-w-0 p-0 not-empty:p-0", emptyPaneNotice && "hidden")}
+              >
                 <LegendList<string>
                   ref={modelListRef}
                   data={filteredModelKeys}
@@ -682,7 +748,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 />
               </ComboboxListVirtualized>
             </div>
-            <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
+            <ComboboxEmpty className="not-empty:py-6 empty:h-0 font-normal text-xs leading-snug">
               No models found
             </ComboboxEmpty>
           </div>

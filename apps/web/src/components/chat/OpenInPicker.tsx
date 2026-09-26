@@ -3,8 +3,8 @@ import { memo, useCallback, useEffect, useMemo } from "react";
 import { isOpenFavoriteEditorShortcut, shortcutLabelForCommand } from "../../keybindings";
 import { usePreferredEditor } from "../../editorPreferences";
 import { ChevronDownIcon, FolderClosedIcon } from "lucide-react";
-import { Button } from "../ui/button";
-import { Group, GroupSeparator } from "../ui/group";
+import { Group } from "../ui/group";
+import { ToolbarControl, ToolbarControlSeparator } from "../ui/toolbar-control";
 import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "../ui/menu";
 import {
   AntigravityIcon,
@@ -258,10 +258,8 @@ export const OpenInPicker = memo(function OpenInPicker({
 
   return (
     <Group aria-label="Open in editor">
-      <Button
+      <ToolbarControl
         aria-label={compact ? "Open file in preferred editor" : undefined}
-        size="xs"
-        variant="outline"
         disabled={!preferredEditor || !openInCwd}
         onClick={() => openInEditor(preferredEditor)}
       >
@@ -280,18 +278,12 @@ export const OpenInPicker = memo(function OpenInPicker({
         >
           Open
         </span>
-      </Button>
-      <GroupSeparator {...(!compact ? { className: "hidden @3xl/header-actions:block" } : {})} />
+      </ToolbarControl>
+      <ToolbarControlSeparator
+        {...(!compact ? { className: "hidden @3xl/header-actions:block" } : {})}
+      />
       <Menu>
-        <MenuTrigger
-          render={
-            <Button
-              aria-label={compact ? "Choose editor" : "Copy options"}
-              size="icon-xs"
-              variant="outline"
-            />
-          }
-        >
+        <MenuTrigger render={<ToolbarControl aria-label="Choose editor" size="icon-xs" />}>
           <ChevronDownIcon aria-hidden="true" className="size-4" />
         </MenuTrigger>
         <MenuPopup align="end">

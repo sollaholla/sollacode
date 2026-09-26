@@ -53,6 +53,7 @@ import {
   visibleResourceTelemetryProcesses,
 } from "./ResourceTelemetryDiagnostics.logic";
 import { SettingsSection, useRelativeTimeTick } from "./settingsLayout";
+import { confirmInApp } from "../ui/appConfirm";
 
 const HISTORY_WINDOWS = [
   { label: "5m", windowMs: 5 * 60_000, bucketMs: 15_000 },
@@ -851,58 +852,63 @@ export function ResourceTelemetryDiagnostics() {
 
   const signalProcess = useCallback(
     (process: ResourceTelemetryProcess, signal: ServerProcessSignal) => {
-      if (
-        signal === "SIGKILL" &&
-        !window.confirm(
-          `Send SIGKILL to process ${process.identity.pid}? This cannot be handled by the process.`,
-        )
-      ) {
-        return;
-      }
-      const identityKey = processIdentityKey(process);
-      const environmentId = primaryEnvironment?.environmentId;
-      if (environmentId === undefined) {
-        return;
-      }
-      setSignalingKeys((current) => new Set(current).add(identityKey));
-      void signalServerProcess({
-        environmentId,
-        input: {
-          pid: process.identity.pid,
-          startTimeMs: process.identity.startTimeMs,
-          signal,
-        },
-      })
-        .then((result) => {
-          if (result._tag === "Failure") {
-            if (isAtomCommandInterrupted(result)) return;
-            throw squashAtomCommandFailure(result);
-          }
-          if (result.value.signaled) return;
-          toastManager.add({
-            type: "error",
-            title: `Could not send ${signal}`,
-            description: Option.getOrElse(
-              result.value.message,
-              () => `Failed to send ${signal} to process ${process.identity.pid}.`,
-            ),
-          });
+      void (async () => {
+        // Asked without freezing the renderer: a native confirm stops the
+        // page's JavaScript thread, which is what wedged the whole app.
+        if (
+          signal === "SIGKILL" &&
+          !(await confirmInApp(
+            `Send SIGKILL to process ${process.identity.pid}? This cannot be handled by the process.`,
+            { confirmLabel: "Send SIGKILL" },
+          ))
+        ) {
+          return;
+        }
+        const identityKey = processIdentityKey(process);
+        const environmentId = primaryEnvironment?.environmentId;
+        if (environmentId === undefined) {
+          return;
+        }
+        setSignalingKeys((current) => new Set(current).add(identityKey));
+        void signalServerProcess({
+          environmentId,
+          input: {
+            pid: process.identity.pid,
+            startTimeMs: process.identity.startTimeMs,
+            signal,
+          },
         })
-        .catch((error: unknown) => {
-          toastManager.add({
-            type: "error",
-            title: `Could not send ${signal}`,
-            description: error instanceof Error ? error.message : `Failed to send ${signal}.`,
+          .then((result) => {
+            if (result._tag === "Failure") {
+              if (isAtomCommandInterrupted(result)) return;
+              throw squashAtomCommandFailure(result);
+            }
+            if (result.value.signaled) return;
+            toastManager.add({
+              type: "error",
+              title: `Could not send ${signal}`,
+              description: Option.getOrElse(
+                result.value.message,
+                () => `Failed to send ${signal} to process ${process.identity.pid}.`,
+              ),
+            });
+          })
+          .catch((error: unknown) => {
+            toastManager.add({
+              type: "error",
+              title: `Could not send ${signal}`,
+              description: error instanceof Error ? error.message : `Failed to send ${signal}.`,
+            });
+          })
+          .finally(() => {
+            setSignalingKeys((current) => {
+              if (!current.has(identityKey)) return current;
+              const next = new Set(current);
+              next.delete(identityKey);
+              return next;
+            });
           });
-        })
-        .finally(() => {
-          setSignalingKeys((current) => {
-            if (!current.has(identityKey)) return current;
-            const next = new Set(current);
-            next.delete(identityKey);
-            return next;
-          });
-        });
+      })();
     },
     [primaryEnvironment?.environmentId, signalServerProcess],
   );

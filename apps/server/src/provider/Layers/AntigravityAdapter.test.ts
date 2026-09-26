@@ -88,6 +88,18 @@ const observe = Effect.fn("AntigravityTest.observe")(function* (
 });
 
 describe("Antigravity adapter process lifecycle", () => {
+  it.live("declares that a mid-turn message cannot join the running turn", () =>
+    Effect.gen(function* () {
+      // AGY spawns a process per turn and writes the one user message to its
+      // stdin, so nothing can reach a turn already in flight. Undeclared, this
+      // defaulted to "native" and the reactor kept trying to steer: the message
+      // sat reading "Queued for Antigravity" until the turn ended. Declaring it
+      // routes the message through the stop-and-deliver-next path instead.
+      const { adapter } = yield* setup();
+      expect(adapter.capabilities.liveSteering).toBe("unsupported");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.live("delivers, streams DONE text once, and resumes the same native conversation", () =>
     Effect.gen(function* () {
       const { adapter, dir } = yield* setup();

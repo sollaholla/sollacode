@@ -1,3 +1,5 @@
+import type { DesktopPreviewPointerEvent, PreviewAgentPointer } from "@t3tools/contracts";
+
 export type BrowserController = "human" | "agent" | "none";
 
 export function agentBrowserCursorOpacity(active: boolean, controller: BrowserController): number {
@@ -89,5 +91,34 @@ export function agentBrowserCursorPoint(input: {
   return {
     x: drawn.left - input.parent.left + fractionX * drawn.width,
     y: drawn.top - input.parent.top + fractionY * drawn.height,
+  };
+}
+
+/**
+ * The agent's latest pointer as fractions of the page, for a viewer that only
+ * sees rendered frames. Frames keep the page's aspect ratio, so a fraction of
+ * the page is the same fraction of the frame. Null without a measured
+ * viewport, since a raw CSS point means nothing to that viewer.
+ */
+export function agentPointerFraction(
+  event: DesktopPreviewPointerEvent | null | undefined,
+): PreviewAgentPointer | null {
+  if (!event) return null;
+  const { viewportWidth, viewportHeight } = event;
+  if (
+    viewportWidth === undefined ||
+    viewportHeight === undefined ||
+    !(viewportWidth > 0) ||
+    !(viewportHeight > 0) ||
+    !Number.isFinite(event.x) ||
+    !Number.isFinite(event.y)
+  ) {
+    return null;
+  }
+  return {
+    x: Math.min(1, Math.max(0, event.x / viewportWidth)),
+    y: Math.min(1, Math.max(0, event.y / viewportHeight)),
+    phase: event.phase,
+    sequence: event.sequence,
   };
 }

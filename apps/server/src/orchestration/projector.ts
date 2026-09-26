@@ -603,6 +603,12 @@ export function projectEvent(
             id: payload.messageId,
             role: payload.role,
             text: payload.text,
+            ...(payload.senderThreadId !== undefined
+              ? { senderThreadId: payload.senderThreadId }
+              : {}),
+            ...(payload.senderThreadTitle !== undefined
+              ? { senderThreadTitle: payload.senderThreadTitle }
+              : {}),
             ...(payload.inputOrigin !== undefined ? { inputOrigin: payload.inputOrigin } : {}),
             ...(payload.delegationId !== undefined ? { delegationId: payload.delegationId } : {}),
             ...(payload.voiceTranscript === true ? { voiceTranscript: true } : {}),
@@ -622,11 +628,14 @@ export function projectEvent(
               entry.id === message.id
                 ? {
                     ...entry,
-                    text: message.streaming
-                      ? appendAgentStreamText(entry.text, message.text)
-                      : message.text.length > 0
+                    text:
+                      payload.textMode === "replace"
                         ? message.text
-                        : entry.text,
+                        : message.streaming
+                          ? appendAgentStreamText(entry.text, message.text)
+                          : message.text.length > 0
+                            ? message.text
+                            : entry.text,
                     streaming: message.streaming,
                     updatedAt: message.updatedAt,
                     turnId: message.turnId,
@@ -724,6 +733,7 @@ export function projectEvent(
       });
 
     case "thread.queued-turn-promote-requested":
+    case "thread.queued-message-send-now-requested":
       return Effect.succeed(nextBase);
 
     case "thread.session-set":
@@ -972,9 +982,20 @@ export function projectEvent(
             return nextBase;
           }
 
+          const existing = payload.historicalReplay
+            ? thread.activities.find((entry) => entry.id === payload.activity.id)
+            : undefined;
+          const { sequence: _replayedSequence, ...replayed } = payload.activity;
+          const activity = existing
+            ? {
+                ...replayed,
+                createdAt: existing.createdAt,
+                ...(existing.sequence !== undefined ? { sequence: existing.sequence } : {}),
+              }
+            : payload.activity;
           const activities = [
             ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
-            payload.activity,
+            activity,
           ]
             .toSorted(compareThreadActivities)
             .slice(-500);

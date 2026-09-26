@@ -1,4 +1,5 @@
 import * as NodeAssert from "node:assert/strict";
+import { isTerminalProviderRefusal } from "@t3tools/shared/agentMode";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Context from "effect/Context";
@@ -19,6 +20,8 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderRuntimeEvent,
+  type ProviderSession,
   ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -37,7 +40,12 @@ import {
   isSameOpenCodeDirectory,
   makeOpenCodeAdapter,
   mergeOpenCodeAssistantText,
+  isOpenCodeRetryableUpstreamError,
+  openCodeBillingRefusalMessage,
+  openCodeGatewayUpstreamStatus,
   openCodeOverloadRetryReason,
+  sessionErrorMessage,
+  unwrapOpenCodeErrorBody,
 } from "./OpenCodeAdapter.ts";
 
 // Test-local service tag so the rest of the file can keep using `yield* OpenCodeAdapter`.
@@ -76,8 +84,12 @@ const runtimeMock = {
     missingSessionIds: new Set<string>(),
     transientErrorSessionIds: new Set<string>(),
     sessionDirectoryById: new Map<string, string>(),
+    sessionUsageById: new Map<string, { cost: number; time: { updated: number } }>(),
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
+    summarizeCalls: [] as Array<Record<string, unknown>>,
+    summarizeResult: true as boolean,
+    summarizeError: null as Error | null,
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -99,8 +111,12 @@ const runtimeMock = {
     this.state.missingSessionIds.clear();
     this.state.transientErrorSessionIds.clear();
     this.state.sessionDirectoryById.clear();
+    this.state.sessionUsageById.clear();
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
+    this.state.summarizeCalls.length = 0;
+    this.state.summarizeResult = true;
+    this.state.summarizeError = null;
   },
 };
 
@@ -166,7 +182,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             });
           }
           const directory = runtimeMock.state.sessionDirectoryById.get(sessionID);
-          return { data: { id: sessionID, ...(directory ? { directory } : {}) } };
+          return {
+            data: {
+              id: sessionID,
+              ...(directory ? { directory } : {}),
+              ...runtimeMock.state.sessionUsageById.get(sessionID),
+            },
+          };
         },
         update: async ({ sessionID, permission }: { sessionID: string; permission: unknown }) => {
           runtimeMock.state.sessionUpdateCalls.push({ sessionID, permission });
@@ -180,6 +202,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             runtimeMock.state.sessionDirectoryById.set(forkedId, directory);
           }
           return { data: { id: forkedId, ...(directory ? { directory } : {}) } };
+        },
+        summarize: async (input: Record<string, unknown>) => {
+          runtimeMock.state.summarizeCalls.push(input);
+          if (runtimeMock.state.summarizeError) {
+            throw runtimeMock.state.summarizeError;
+          }
+          return { data: runtimeMock.state.summarizeResult };
         },
         abort: async ({ sessionID }: { sessionID: string }) => {
           runtimeMock.state.abortCalls.push(sessionID);
@@ -291,7 +320,385 @@ beforeEach(() => {
 const advanceTestClock = (ms: number) =>
   TestClock.adjust(`${ms} millis`).pipe(Effect.andThen(Effect.yieldNow));
 
+/** Fork one reader of the adapter's single event queue and hand back its log. */
+const collectThreadEvents = (adapter: OpenCodeAdapterShape, threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const seen: Array<ProviderRuntimeEvent> = [];
+    yield* adapter.streamEvents.pipe(
+      Stream.filter((event) => event.threadId === threadId),
+      Stream.runForEach((event) => Effect.sync(() => seen.push(event))),
+      Effect.forkChild,
+    );
+    return seen;
+  });
+
+/** Poll `listSessions`, yielding to the event pump between reads, until `predicate` holds. */
+const waitForSession = (
+  adapter: OpenCodeAdapterShape,
+  threadId: ThreadId,
+  predicate: (session: ProviderSession) => boolean,
+) =>
+  Effect.gen(function* () {
+    let session = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+    for (
+      let attempt = 0;
+      attempt < 500 && (session === undefined || !predicate(session));
+      attempt += 1
+    ) {
+      yield* advanceTestClock(1);
+      session = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+    }
+    return session;
+  });
+
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  const sessionID = "http://127.0.0.1:9999/session";
+  const message = (role: "assistant" | "user" = "assistant", extra = {}) => ({
+    type: "message.updated",
+    properties: { info: { id: "msg-edge", sessionID, role, ...extra } },
+  });
+  const textPart = {
+    id: "part-edge",
+    messageID: "msg-edge",
+    sessionID,
+    type: "text",
+    text: "Hello",
+    time: { start: 1 },
+  };
+  const update = (part: unknown) => ({ type: "message.part.updated", properties: { part } });
+  const delta = (extra = {}) => ({
+    type: "message.part.delta",
+    properties: {
+      sessionID,
+      messageID: "msg-edge",
+      partID: "part-edge",
+      field: "text",
+      delta: " world",
+      ...extra,
+    },
+  });
+  let replayId = 0;
+  const replay = (
+    nativeEvents: unknown[],
+    interrupt: boolean | "during-abort" = false,
+    resumeSessionId?: string,
+  ) =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId(`thread-event-edge-${++replayId}`);
+      let release!: () => void;
+      runtimeMock.state.subscribedEventsGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      runtimeMock.state.subscribedEvents = [
+        ...nativeEvents,
+        {
+          type: "session.updated",
+          properties: { info: { id: sessionID, title: "replay-drained" } },
+        },
+      ];
+      const fiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil(
+          (event) =>
+            event.type === "thread.metadata.updated" && event.payload.name === "replay-drained",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+        ...(resumeSessionId
+          ? { resumeCursor: { schemaVersion: 1, sessionId: resumeSessionId } }
+          : {}),
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "fixture",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "opencode/big-pickle",
+        },
+      });
+      let releaseAbort: (() => void) | undefined;
+      if (interrupt === "during-abort") {
+        runtimeMock.state.abortGate = new Promise<void>((resolve) => {
+          releaseAbort = resolve;
+        });
+        runtimeMock.state.onAbort = release;
+      }
+      const abortFiber =
+        interrupt === "during-abort"
+          ? yield* adapter.interruptTurn(threadId, turn.turnId).pipe(Effect.forkChild)
+          : undefined;
+      if (interrupt === true) yield* adapter.interruptTurn(threadId, turn.turnId);
+      if (interrupt !== "during-abort") release();
+      const events = Array.from(yield* Fiber.join(fiber));
+      releaseAbort?.();
+      if (abortFiber) yield* Fiber.join(abortFiber);
+      yield* adapter.stopSession(threadId);
+      return { events, turn };
+    });
+
+  it.effect("preserves deltas that arrive before the assistant message metadata", () =>
+    Effect.gen(function* () {
+      const { events, turn } = yield* replay([
+        update(textPart),
+        delta(),
+        message(),
+        update({ ...textPart, text: "Hello world", time: { start: 1, end: 2 } }),
+      ]);
+      const deltas = events.filter((event) => event.type === "content.delta");
+      NodeAssert.deepEqual(
+        deltas.map((event) => event.payload.delta),
+        ["Hello world"],
+      );
+      NodeAssert.ok(deltas.every((event) => event.turnId === turn.turnId));
+      NodeAssert.equal(events.filter((event) => event.type === "item.completed").length, 1);
+    }),
+  );
+
+  it.effect("never publishes delayed user text as assistant output", () =>
+    Effect.gen(function* () {
+      const { events } = yield* replay([update(textPart), delta(), message("user")]);
+      NodeAssert.equal(events.filter((event) => event.type === "content.delta").length, 0);
+    }),
+  );
+
+  it.effect(
+    "ignores foreign sessions, mismatched message IDs, non-text fields and deltas after completion",
+    () =>
+      Effect.gen(function* () {
+        const { events } = yield* replay([
+          message(),
+          update(textPart),
+          delta({ sessionID: "foreign" }),
+          delta({ messageID: "wrong" }),
+          delta({ field: "time" }),
+          update({ ...textPart, time: { start: 1, end: 2 } }),
+          delta(),
+        ]);
+        NodeAssert.deepEqual(
+          events
+            .filter((event) => event.type === "content.delta")
+            .map((event) => event.payload.delta),
+          ["Hello"],
+        );
+      }),
+  );
+
+  it.effect("keeps reasoning in its own stream and ignores tool-output deltas", () =>
+    Effect.gen(function* () {
+      const tool = {
+        id: "tool-part",
+        messageID: "msg-edge",
+        sessionID,
+        type: "tool",
+        callID: "tool-call",
+        tool: "bash",
+        state: { status: "running", input: {}, title: "test", time: { start: 1 } },
+      };
+      const { events } = yield* replay([
+        message(),
+        update({ ...textPart, type: "reasoning" }),
+        delta(),
+        update(tool),
+        delta({ partID: "tool-part", field: "output" }),
+      ]);
+      const deltas = events.filter((event) => event.type === "content.delta");
+      NodeAssert.deepEqual(
+        deltas.map((event) => event.payload.delta),
+        ["Hello", " world"],
+      );
+      NodeAssert.ok(deltas.every((event) => event.payload.streamKind === "reasoning_text"));
+    }),
+  );
+
+  it.effect("does not duplicate or reopen a terminal tool on replay", () =>
+    Effect.gen(function* () {
+      const tool = {
+        id: "tool-part",
+        messageID: "msg-edge",
+        sessionID,
+        type: "tool",
+        callID: "tool-call",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input: {},
+          output: "passed",
+          title: "test",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        },
+      };
+      const { events } = yield* replay([
+        message(),
+        update(tool),
+        update(tool),
+        update({ ...tool, state: { ...tool.state, status: "running" } }),
+      ]);
+      const lifecycle = events.filter((event) => event.itemId === "tool-call");
+      NodeAssert.deepEqual(
+        lifecycle.map((event) => event.type),
+        ["item.completed"],
+      );
+    }),
+  );
+
+  it.effect("tracks completed usage once and ignores stale and foreign snapshots", () =>
+    Effect.gen(function* () {
+      const tokens = { input: 100, output: 30, reasoning: 10, cache: { read: 50, write: 20 } };
+      const { events } = yield* replay([
+        message("assistant", { tokens, time: { created: 1 } }),
+        message("assistant", { tokens, time: { created: 1, completed: 20 } }),
+        message("assistant", { tokens, time: { created: 1, completed: 20 } }),
+        message("assistant", { id: "older", tokens, time: { created: 1, completed: 10 } }),
+        message("assistant", { sessionID: "foreign", tokens, time: { created: 1, completed: 30 } }),
+      ]);
+      const usage = events.filter((event) => event.type === "thread.token-usage.updated");
+      NodeAssert.equal(usage.length, 1);
+      NodeAssert.equal(usage[0]?.payload.usage.usedTokens, 210);
+    }),
+  );
+
+  it.effect(
+    "uses native cumulative session cost without replay double counting or cross-session leakage",
+    () =>
+      Effect.gen(function* () {
+        const snapshot = (cost: unknown, updated: number, id = sessionID) => ({
+          type: "session.updated",
+          properties: { info: { id, cost, time: { updated } } },
+        });
+        const { events } = yield* replay([
+          snapshot(0, 10),
+          snapshot(1.25, 20),
+          snapshot(1.25, 20),
+          snapshot(0.5, 15),
+          snapshot(99, 30, "foreign"),
+          snapshot(NaN, 30),
+          snapshot(-1, 30),
+          snapshot(undefined, 30),
+          snapshot(1.5, 30),
+        ]);
+        const reports = events.filter((event) => event.type === "account.rate-limits.updated");
+        NodeAssert.deepEqual(
+          reports.map((event) => event.payload.rateLimits),
+          [0, 1.25, 1.5].map((cost, i) => ({
+            source: "opencode-session",
+            sessionId: sessionID,
+            sessionCost: cost,
+            updatedAt: (i + 1) * 10,
+          })),
+        );
+        const other = yield* replay([snapshot(0, 10)]);
+        NodeAssert.equal(
+          other.events.filter((event) => event.type === "account.rate-limits.updated").length,
+          1,
+        );
+      }),
+  );
+
+  it.effect("restores the native session total on resume without loading message history", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.sessionUsageById.set(sessionID, { cost: 2.5, time: { updated: 50 } });
+      const { events } = yield* replay(
+        [
+          {
+            type: "session.updated",
+            properties: { info: { id: sessionID, cost: 1, time: { updated: 20 } } },
+          },
+          {
+            type: "session.updated",
+            properties: { info: { id: sessionID, cost: 3, time: { updated: 60 } } },
+          },
+        ],
+        false,
+        sessionID,
+      );
+      const reports = events.filter((event) => event.type === "account.rate-limits.updated");
+      NodeAssert.deepEqual(
+        reports.map((event) => event.payload.rateLimits),
+        [
+          { source: "opencode-session", sessionId: sessionID, sessionCost: 2.5, updatedAt: 50 },
+          { source: "opencode-session", sessionId: sessionID, sessionCost: 3, updatedAt: 60 },
+        ],
+      );
+    }),
+  );
+
+  it.effect("closes an interrupted turn as interrupted when idle precedes the abort error", () =>
+    Effect.gen(function* () {
+      const { events } = yield* replay(
+        [
+          { type: "session.status", properties: { sessionID, status: { type: "idle" } } },
+          {
+            type: "session.error",
+            properties: {
+              sessionID,
+              error: { name: "MessageAbortedError", data: { message: "Aborted" } },
+            },
+          },
+          { type: "session.status", properties: { sessionID, status: { type: "idle" } } },
+        ],
+        true,
+      );
+      const completed = events.filter((event) => event.type === "turn.completed");
+      NodeAssert.deepEqual(
+        completed.map((event) => event.payload.state),
+        ["interrupted"],
+      );
+      NodeAssert.equal(events.filter((event) => event.type === "turn.aborted").length, 1);
+      NodeAssert.equal(events.filter((event) => event.type === "runtime.error").length, 0);
+    }),
+  );
+
+  it.effect("handles native idle arriving before the abort RPC resolves", () =>
+    Effect.gen(function* () {
+      const { events } = yield* replay(
+        [{ type: "session.status", properties: { sessionID, status: { type: "idle" } } }],
+        "during-abort",
+      );
+      NodeAssert.deepEqual(
+        events
+          .filter((event) => event.type === "turn.completed")
+          .map((event) => event.payload.state),
+        ["interrupted"],
+      );
+      NodeAssert.equal(events.filter((event) => event.type === "turn.aborted").length, 1);
+    }),
+  );
+
+  it.effect("rejects Jev as a coding model before starting a turn or submitting a prompt", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-jev-selection");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      for (const model of [
+        "opencode/jev-1.13-free",
+        "opencode/jev-1.13",
+        "openrouter/typesafe/jev-latest",
+      ]) {
+        const error = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "write code",
+            modelSelection: { instanceId: ProviderInstanceId.make("opencode"), model },
+          })
+          .pipe(Effect.flip);
+        NodeAssert.equal(error._tag, "ProviderAdapterValidationError");
+      }
+      NodeAssert.equal(runtimeMock.state.promptCalls.length, 0);
+      NodeAssert.equal((yield* adapter.listSessions())[0]?.status, "ready");
+      yield* adapter.stopSession(threadId);
+    }),
+  );
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -967,6 +1374,185 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("declares delivery receipts so ProviderService writes one per accepted send", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      // Without this flag no `message.delivered` receipt was ever recorded and
+      // every OpenCode message sat at "Queued for OpenCode" indefinitely.
+      NodeAssert.equal(adapter.capabilities.messageDeliveryReceipts, true);
+    }),
+  );
+
+  it.effect(
+    "treats OpenCode's MessageAbortedError after an interrupt as the interrupt, not a failure",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-aborted-after-interrupt");
+        let releaseAbortError!: () => void;
+        runtimeMock.state.subscribedEventsGate = new Promise<void>((resolve) => {
+          releaseAbortError = resolve;
+        });
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "session.error",
+            properties: {
+              sessionID: "http://127.0.0.1:9999/session",
+              error: { name: "MessageAbortedError", data: { message: "Aborted" } },
+            },
+          },
+        ];
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+        // `streamEvents` is one queue, so a single reader must see everything.
+        const seen = yield* collectThreadEvents(adapter, threadId);
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "long task",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("opencode"),
+            model: "openai/gpt-5",
+          },
+        });
+        yield* adapter.interruptTurn(threadId, turn.turnId);
+        releaseAbortError();
+        const session = yield* waitForSession(
+          adapter,
+          threadId,
+          (candidate) => candidate.status === "ready",
+        );
+
+        NodeAssert.equal(session?.status, "ready");
+        NodeAssert.equal(session?.lastError, undefined);
+        NodeAssert.equal(session?.activeTurnId, undefined);
+        NodeAssert.deepEqual(
+          seen.filter((event) => event.type === "runtime.error"),
+          [],
+          "an abort we requested must not surface as a runtime error",
+        );
+        // 2026-09-17: ingestion interrupts the provider when the assistant
+        // streams AGENT_STOP, then waits for the turn to close. Orchestration
+        // settles turns from `turn.completed` only, so an abort that emitted
+        // nothing left the thread "Working" until the user pressed Stop.
+        const completed = seen.filter((event) => event.type === "turn.completed");
+        NodeAssert.equal(completed.length, 1, "the confirmed abort closes the turn exactly once");
+        NodeAssert.equal(String(completed[0]?.turnId), String(turn.turnId));
+        NodeAssert.equal(
+          completed[0]?.type === "turn.completed" ? completed[0].payload.state : undefined,
+          "interrupted",
+          "an abort we requested closes the turn as interrupted, never as failed",
+        );
+        const aborted = seen.filter((event) => event.type === "turn.aborted");
+        NodeAssert.equal(aborted.length, 1, "interruptTurn's turn.aborted must not be duplicated");
+        NodeAssert.equal(String(aborted[0]?.turnId), String(turn.turnId));
+      }),
+  );
+
+  it.effect(
+    "closes the turn as interrupted when OpenCode aborts it without an interrupt call",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-aborted-by-opencode");
+        let releaseAbortError!: () => void;
+        runtimeMock.state.subscribedEventsGate = new Promise<void>((resolve) => {
+          releaseAbortError = resolve;
+        });
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "session.error",
+            properties: {
+              sessionID: "http://127.0.0.1:9999/session",
+              error: { name: "MessageAbortedError", data: { message: "Aborted" } },
+            },
+          },
+        ];
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+        const seen = yield* collectThreadEvents(adapter, threadId);
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "long task",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("opencode"),
+            model: "openai/gpt-5",
+          },
+        });
+        releaseAbortError();
+        const session = yield* waitForSession(
+          adapter,
+          threadId,
+          (candidate) => candidate.status === "ready",
+        );
+
+        NodeAssert.equal(session?.status, "ready");
+        NodeAssert.equal(session?.lastError, undefined);
+        const aborted = seen.filter((event) => event.type === "turn.aborted");
+        NodeAssert.equal(aborted.length, 1);
+        NodeAssert.equal(String(aborted[0]?.turnId), String(turn.turnId));
+        NodeAssert.equal(
+          aborted[0]?.type === "turn.aborted" ? aborted[0].payload.reason : undefined,
+          "Interrupted.",
+        );
+        NodeAssert.deepEqual(
+          seen.filter((event) => event.type === "runtime.error"),
+          [],
+        );
+        const completed = seen.filter((event) => event.type === "turn.completed");
+        NodeAssert.equal(completed.length, 1, "an external abort still ends the turn");
+        NodeAssert.equal(String(completed[0]?.turnId), String(turn.turnId));
+        NodeAssert.equal(
+          completed[0]?.type === "turn.completed" ? completed[0].payload.state : undefined,
+          "interrupted",
+        );
+      }),
+  );
+
+  it.effect("compacts the OpenCode session in place through session.summarize", () =>
+    Effect.gen(function* () {
+      // Open World, 2026-09-17: a context overflow reset the session five times
+      // in a row. Compaction keeps the session and its working memory; the
+      // reset is the fallback when compaction cannot run.
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-compact");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "work",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "opencode/union-alpha",
+        },
+      });
+      NodeAssert.equal(yield* adapter.compactSessionHistory!(threadId), true);
+      NodeAssert.deepEqual(runtimeMock.state.summarizeCalls, [
+        {
+          sessionID: "http://127.0.0.1:9999/session",
+          providerID: "opencode",
+          modelID: "union-alpha",
+        },
+      ]);
+      // OpenCode declining is a false, so the caller falls back to a reset.
+      runtimeMock.state.summarizeResult = false;
+      NodeAssert.equal(yield* adapter.compactSessionHistory!(threadId), false);
+      // A summarize that fails (the overflow rejects it too) is a typed error
+      // the service catches and treats as "not compacted".
+      runtimeMock.state.summarizeError = new Error("Prompt too long");
+      const failed = yield* adapter.compactSessionHistory!(threadId).pipe(Effect.flip);
+      NodeAssert.equal(failed instanceof Error, true);
+    }),
+  );
+
   it.effect("passes agent and variant options for the adapter's bound custom instance id", () => {
     const instanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(
@@ -1349,6 +1935,395 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("surfaces a subagent's child session as the parent turn's task lifecycle", () =>
+    Effect.gen(function* () {
+      // 2026-09-17: a `task` subagent retried an unavailable upstream for 13
+      // minutes while every event from its child session was dropped as
+      // "another session's", leaving a bare Working row with no progress.
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-subagent");
+      const parent = "http://127.0.0.1:9999/session";
+      const child = "ses-child-explore";
+      const taskPart = (state: Record<string, unknown>) => ({
+        id: "part-task",
+        sessionID: parent,
+        messageID: "msg-parent",
+        type: "tool",
+        callID: "call-task",
+        tool: "task",
+        state,
+      });
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.updated",
+          properties: {
+            info: { id: child, parentID: parent, title: "Trace retry (@explore subagent)" },
+          },
+        },
+        {
+          type: "message.updated",
+          properties: { sessionID: parent, info: { id: "msg-parent", role: "assistant" } },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: parent,
+            part: taskPart({
+              status: "running",
+              input: { description: "Trace retry", subagent_type: "explore" },
+              title: "Trace retry",
+              metadata: { sessionId: child, parentSessionId: parent },
+              time: { start: 1 },
+            }),
+            time: 1,
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: child,
+            part: {
+              id: "part-child-grep",
+              sessionID: child,
+              messageID: "msg-child",
+              type: "tool",
+              callID: "call-grep",
+              tool: "grep",
+              state: {
+                status: "running",
+                input: { pattern: "retry" },
+                title: "grep retry",
+                time: { start: 2 },
+              },
+            },
+            time: 2,
+          },
+        },
+        {
+          type: "session.status",
+          properties: {
+            sessionID: child,
+            status: { type: "retry", attempt: 2, message: "Endpoint is unavailable.", next: 0 },
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: parent,
+            part: taskPart({
+              status: "completed",
+              input: { description: "Trace retry", subagent_type: "explore" },
+              output: "Findings: the label lives in ChatView.",
+              title: "Trace retry",
+              metadata: { sessionId: child, parentSessionId: parent },
+              time: { start: 1, end: 3 },
+            }),
+            time: 3,
+          },
+        },
+      ];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "task.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      const started = events.filter((event) => event.type === "task.started");
+      NodeAssert.equal(started.length, 1);
+      NodeAssert.deepEqual(started[0]?.type === "task.started" ? started[0].payload : null, {
+        taskId: child,
+        taskType: "subagent",
+        description: "Trace retry (@explore subagent)",
+      });
+      const progress = events.find((event) => event.type === "task.progress");
+      NodeAssert.deepEqual(progress?.type === "task.progress" ? progress.payload : null, {
+        taskId: child,
+        title: "Trace retry",
+        description: "Running grep",
+        lastToolName: "grep",
+        summary: "grep retry",
+      });
+      const retry = events.find((event) => event.type === "session.state.changed");
+      NodeAssert.equal(
+        retry?.type === "session.state.changed" &&
+          retry.payload.reason?.startsWith("provider_overloaded:retrying;attempt=2"),
+        true,
+        "a subagent's upstream retry feeds the parent turn's retry heartbeat",
+      );
+      const completed = events.at(-1);
+      NodeAssert.deepEqual(completed?.type === "task.completed" ? completed.payload : null, {
+        taskId: child,
+        status: "completed",
+        title: "Trace retry",
+        summary: "Findings: the label lives in ChatView.",
+      });
+    }),
+  );
+
+  it.effect(
+    "classifies fifteen consecutive empty upstream responses for bounded silent recovery",
+    () =>
+      Effect.gen(function* () {
+        // 2026-09-17 06:36-06:41: after a startup resume, union-alpha answered
+        // every request with an empty stream. OpenCode logged a finished step
+        // every ~33s (0 tokens, only a step-finish part) and looped forever;
+        // Solla showed "Working" with nothing behind it.
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-opencode-empty-steps");
+        const parent = "http://127.0.0.1:9999/session";
+        let releaseEvents!: () => void;
+        runtimeMock.state.subscribedEventsGate = new Promise<void>((resolve) => {
+          releaseEvents = resolve;
+        });
+        const emptyStep = (index: number) => ({
+          type: "message.updated",
+          properties: {
+            sessionID: parent,
+            info: {
+              id: `msg-empty-${index}`,
+              sessionID: parent,
+              role: "assistant",
+              time: { created: index, completed: index + 30 },
+              parentID: "msg-user",
+              modelID: "union-alpha",
+              providerID: "opencode",
+              mode: "build",
+              path: { cwd: "/repo", root: "/repo" },
+              cost: 0,
+              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              finish: "unknown",
+            },
+          },
+        });
+        runtimeMock.state.subscribedEvents = [
+          // A real step with output resets the count.
+          {
+            type: "message.updated",
+            properties: {
+              sessionID: parent,
+              info: {
+                ...emptyStep(0).properties.info,
+                id: "msg-real",
+                tokens: { input: 900, output: 12, reasoning: 0, cache: { read: 0, write: 0 } },
+              },
+            },
+          },
+          emptyStep(1),
+          emptyStep(2),
+          emptyStep(3),
+          emptyStep(4),
+          emptyStep(5),
+          emptyStep(6),
+          emptyStep(7),
+          emptyStep(8),
+          emptyStep(9),
+          emptyStep(10),
+          emptyStep(11),
+          emptyStep(12),
+          emptyStep(13),
+          emptyStep(14),
+          emptyStep(15),
+        ];
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+        const seen = yield* collectThreadEvents(adapter, threadId);
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "resume",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("opencode"),
+            model: "opencode/union-alpha",
+          },
+        });
+        releaseEvents();
+        const session = yield* waitForSession(
+          adapter,
+          threadId,
+          (candidate) => candidate.status === "error",
+        );
+
+        NodeAssert.equal(session?.status, "error");
+        const failed = seen.filter((event) => event.type === "turn.completed");
+        NodeAssert.equal(failed.length, 1);
+        NodeAssert.equal(String(failed[0]?.turnId), String(turn.turnId));
+        NodeAssert.equal(
+          failed[0]?.type === "turn.completed" &&
+            failed[0].payload.state === "failed" &&
+            failed[0].payload.errorMessage?.includes("15 empty responses"),
+          true,
+        );
+        NodeAssert.equal(failed[0]?.payload.failureKind, "retryable-upstream");
+        const errors = seen.filter((event) => event.type === "runtime.error");
+        NodeAssert.equal(errors.length, 1);
+        NodeAssert.equal(errors[0]?.payload.failureKind, "retryable-upstream");
+        NodeAssert.equal(errors[0]?.turnId, turn.turnId);
+        NodeAssert.deepEqual(runtimeMock.state.abortCalls, [parent], "OpenCode's loop is stopped");
+      }),
+  );
+
+  it.effect("stops only the subagent when its child session loops on empty responses", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-child-empty-steps");
+      const parent = "http://127.0.0.1:9999/session";
+      const child = "ses-child-stalled";
+      const emptyChildStep = (index: number) => ({
+        type: "message.updated",
+        properties: {
+          sessionID: child,
+          info: {
+            id: `msg-child-empty-${index}`,
+            sessionID: child,
+            role: "assistant",
+            time: { created: index, completed: index + 30 },
+            parentID: "msg-child-user",
+            modelID: "union-alpha",
+            providerID: "opencode",
+            mode: "explore",
+            path: { cwd: "/repo", root: "/repo" },
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            finish: "unknown",
+          },
+        },
+      });
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.updated",
+          properties: {
+            info: { id: child, parentID: parent, title: "Explore (@explore subagent)" },
+          },
+        },
+        emptyChildStep(1),
+        emptyChildStep(2),
+        emptyChildStep(3),
+        emptyChildStep(4),
+        emptyChildStep(5),
+        emptyChildStep(6),
+        emptyChildStep(7),
+        emptyChildStep(8),
+        emptyChildStep(9),
+        emptyChildStep(10),
+        emptyChildStep(11),
+        emptyChildStep(12),
+        emptyChildStep(13),
+        emptyChildStep(14),
+        emptyChildStep(15),
+      ];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil(
+          (event) =>
+            event.type === "task.progress" &&
+            event.payload.description.startsWith("Subagent stalled"),
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.equal(events.filter((event) => event.type === "turn.completed").length, 0);
+      NodeAssert.equal(events.filter((event) => event.type === "runtime.error").length, 0);
+      const stalled = events.at(-1);
+      NodeAssert.equal(
+        stalled?.type === "task.progress" &&
+          stalled.payload.summary?.includes("15 empty responses"),
+        true,
+      );
+      NodeAssert.deepEqual(runtimeMock.state.abortCalls, [child], "only the child is aborted");
+    }),
+  );
+
+  it.effect("turns OpenCode's todowrite into one plan update for the Plan tab", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-todowrite");
+      const parent = "http://127.0.0.1:9999/session";
+      const input = {
+        todos: [
+          { content: "Find the fresh aborted payload", status: "in_progress", priority: "high" },
+          { content: "Remove the provider slow label", status: "pending", priority: "medium" },
+          { content: "Read the live DB", status: "completed", priority: "low" },
+        ],
+      };
+      const todoPart = (state: Record<string, unknown>) => ({
+        id: "part-todo",
+        sessionID: parent,
+        messageID: "msg-parent",
+        type: "tool",
+        callID: "call-todo",
+        tool: "todowrite",
+        state,
+      });
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "message.updated",
+          properties: { sessionID: parent, info: { id: "msg-parent", role: "assistant" } },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: parent,
+            part: todoPart({ status: "running", input, title: "todowrite", time: { start: 1 } }),
+            time: 1,
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: parent,
+            part: todoPart({
+              status: "completed",
+              input,
+              output: "[]",
+              title: "todowrite",
+              time: { start: 1, end: 2 },
+            }),
+            time: 2,
+          },
+        },
+      ];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "item.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      const plans = events.filter((event) => event.type === "turn.plan.updated");
+      NodeAssert.equal(plans.length, 1, "running + completed carry the same input: one plan");
+      NodeAssert.deepEqual(plans[0]?.type === "turn.plan.updated" ? plans[0].payload : null, {
+        plan: [
+          { step: "Find the fresh aborted payload", status: "inProgress" },
+          { step: "Remove the provider slow label", status: "pending" },
+          { step: "Read the live DB", status: "completed" },
+        ],
+      });
+    }),
+  );
+
   it.effect("normalizes OpenCode's native retryable upstream statuses", () =>
     Effect.sync(() => {
       NodeAssert.equal(
@@ -1372,6 +2347,186 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         }),
         undefined,
       );
+      // 2026-09-17 15:55: the gateway's api_error carries the status only in
+      // its message. 503/429 ride the transient budget; 402 stays terminal.
+      const gateway = (status: number) => ({
+        name: "APIError",
+        data: {
+          type: "api_error",
+          message: `Streaming response failed: [api_error] upstream provider error (HTTP ${status})`,
+        },
+      });
+      NodeAssert.equal(openCodeGatewayUpstreamStatus(gateway(503)), 503);
+      NodeAssert.equal(isOpenCodeRetryableUpstreamError(gateway(503)), true);
+      // Same policy as a structured status: 502/503/504/529 retry; a 429 is
+      // the usage-limit path's business and a 402 is billing, both terminal.
+      NodeAssert.equal(isOpenCodeRetryableUpstreamError(gateway(429)), false);
+      NodeAssert.equal(isOpenCodeRetryableUpstreamError(gateway(402)), false);
+      NodeAssert.match(
+        openCodeBillingRefusalMessage(gateway(402), "opencode/union-alpha") ?? "",
+        /no credit left for the opencode\/union-alpha model \(HTTP 402 Payment Required\)/,
+      );
+      NodeAssert.equal(openCodeBillingRefusalMessage(gateway(503)), undefined);
+      NodeAssert.equal(
+        isOpenCodeRetryableUpstreamError({
+          name: "APIError",
+          data: { type: "invalid_request_error", message: "Prompt too long (HTTP 503)" },
+        }),
+        false,
+        "only the gateway's own upstream wording counts",
+      );
+    }),
+  );
+
+  // 2026-09-17: OpenCode Zen's 402 reached the side chat as "[api_error]
+  // upstream provider error (HTTP 402)" and then burned eight retries. The
+  // transcript must say what it means (no credit) and what to do.
+  it.effect("explains a gateway HTTP 402 session.error as a billing refusal", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-gateway-402");
+      let releaseEvents!: () => void;
+      runtimeMock.state.subscribedEventsGate = new Promise<void>((resolve) => {
+        releaseEvents = resolve;
+      });
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.error",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            error: {
+              name: "APIError",
+              data: {
+                type: "api_error",
+                message:
+                  "Streaming response failed: [api_error] upstream provider error (HTTP 402)",
+              },
+            },
+          },
+        },
+      ];
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const seen = yield* collectThreadEvents(adapter, threadId);
+      yield* adapter.sendTurn({
+        threadId,
+        input: "work",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "opencode/union-alpha",
+        },
+      });
+      releaseEvents();
+      const session = yield* waitForSession(
+        adapter,
+        threadId,
+        (candidate) => candidate.status === "error",
+      );
+      NodeAssert.match(
+        session?.lastError ?? "",
+        /OpenCode Zen declined this request because the account has no credit left/,
+      );
+      NodeAssert.match(session?.lastError ?? "", /https:\/\/opencode\.ai\/zen/);
+      NodeAssert.equal(isTerminalProviderRefusal(session?.lastError ?? ""), true);
+      const completed = seen.filter((event) => event.type === "turn.completed");
+      NodeAssert.equal(completed.length, 1);
+      NodeAssert.equal(
+        completed[0]?.type === "turn.completed" ? completed[0].payload.failureKind : undefined,
+        undefined,
+        "a billing refusal is not a retryable upstream failure",
+      );
+      const errors = seen.filter((event) => event.type === "runtime.error");
+      NodeAssert.equal(errors.length, 1);
+      NodeAssert.match(
+        errors[0]?.type === "runtime.error" ? errors[0].payload.message : "",
+        /HTTP 402 Payment Required/,
+      );
+    }),
+  );
+
+  it.effect("classifies a gateway HTTP 503 session.error for bounded silent recovery", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-gateway-503");
+      let releaseEvents!: () => void;
+      runtimeMock.state.subscribedEventsGate = new Promise<void>((resolve) => {
+        releaseEvents = resolve;
+      });
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.error",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            error: {
+              name: "APIError",
+              data: {
+                type: "api_error",
+                message:
+                  "Streaming response failed: [api_error] upstream provider error (HTTP 503)",
+              },
+            },
+          },
+        },
+      ];
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const seen = yield* collectThreadEvents(adapter, threadId);
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "work",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "opencode/union-alpha",
+        },
+      });
+      releaseEvents();
+      const session = yield* waitForSession(
+        adapter,
+        threadId,
+        (candidate) => candidate.status === "error",
+      );
+      NodeAssert.equal(session?.status, "error");
+      const completed = seen.filter((event) => event.type === "turn.completed");
+      NodeAssert.equal(completed.length, 1);
+      NodeAssert.equal(String(completed[0]?.turnId), String(turn.turnId));
+      NodeAssert.equal(
+        completed[0]?.type === "turn.completed" ? completed[0].payload.failureKind : undefined,
+        "retryable-upstream",
+      );
+      const errors = seen.filter((event) => event.type === "runtime.error");
+      NodeAssert.equal(errors.length, 1);
+      NodeAssert.equal(errors[0]?.payload.failureKind, "retryable-upstream");
+    }),
+  );
+
+  it.effect("unwraps the JSON body OpenCode forwards as an upstream error message", () =>
+    Effect.sync(() => {
+      // Open World side chat, 2026-09-17 14:41: the card read as raw JSON.
+      const body =
+        '{"type":"invalid_request_error","message":"Streaming response failed: [invalid_request_error] Prompt too long: the maximum context length is 262144 tokens including the completion"}';
+      NodeAssert.equal(
+        unwrapOpenCodeErrorBody(body),
+        "Streaming response failed: [invalid_request_error] Prompt too long: the maximum context length is 262144 tokens including the completion",
+      );
+      NodeAssert.equal(
+        sessionErrorMessage({ name: "APIError", data: { message: body } }),
+        "Streaming response failed: [invalid_request_error] Prompt too long: the maximum context length is 262144 tokens including the completion",
+      );
+      // Plain text, non-object JSON, and bodies without a message pass through.
+      NodeAssert.equal(
+        unwrapOpenCodeErrorBody("Endpoint is unavailable"),
+        "Endpoint is unavailable",
+      );
+      NodeAssert.equal(unwrapOpenCodeErrorBody("[1, 2]"), "[1, 2]");
+      NodeAssert.equal(unwrapOpenCodeErrorBody('{"type":"x"}'), '{"type":"x"}');
+      NodeAssert.equal(unwrapOpenCodeErrorBody("{not json}"), "{not json}");
+      NodeAssert.equal(sessionErrorMessage(undefined), "OpenCode session failed.");
     }),
   );
 

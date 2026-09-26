@@ -211,6 +211,21 @@ export const DeepCodeIcon: Icon = (props) => (
   </svg>
 );
 
+export const MuseIcon: Icon = (props) => (
+  // Meta's loop mark, drawn as a stroked lemniscate. Stroked rather than
+  // filled so it stays legible at the 14px the provider picker uses, and in
+  // the brand blue so it reads like its siblings rather than like a glyph.
+  <svg {...props} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M4.3 12c0-2.2 1.3-3.7 3-3.7 1.4 0 2.4 1 3.3 2.3l2.8 4.1c.9 1.3 1.9 2.3 3.3 2.3 1.7 0 3-1.5 3-3.7S18.4 9 16.7 9c-1.4 0-2.4 1-3.3 2.3l-2.8 4.1c-.9 1.3-1.9 2.3-3.3 2.3-1.7 0-3-1.5-3-3.7Z"
+      stroke="#0082FB"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 export const GrokIcon: Icon = ({ className, ...props }) => (
   <svg
     {...props}
@@ -665,10 +680,12 @@ export const AntigravityIcon: Icon = (props) => (
 export const OpenCodeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 32 40" fill="none" xmlns="http://www.w3.org/2000/svg">
     <g clipPath="url(#opencode__clip0_1311_94969)">
-      <path className="dark:hidden" d="M24 32H8V16H24V32Z" fill="#CFCECD" />
-      <path className="dark:hidden" d="M24 8H8V32H24V8ZM32 40H0V0H32V40Z" fill="#211E1E" />
-      <path className="hidden dark:block" d="M24 32H8V16H24V32Z" fill="#4B4646" />
-      <path className="hidden dark:block" d="M24 8H8V32H24V8ZM32 40H0V0H32V40Z" fill="#F1ECEC" />
+      {/* currentColor, not theme-keyed hex: the hex pair depended on the
+          `dark` root class, and whenever that class was absent (theme
+          re-applied, media-query dark) the light frame (#211E1E) painted
+          black on the black composer and the icon "disappeared". */}
+      <path d="M24 32H8V16H24V32Z" fill="currentColor" fillOpacity="0.35" />
+      <path d="M24 8H8V32H24V8ZM32 40H0V0H32V40Z" fill="currentColor" />
     </g>
     <defs>
       <clipPath id="opencode__clip0_1311_94969">

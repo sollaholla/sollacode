@@ -3,9 +3,11 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import type * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
+import { grokUsageExhaustedMessage } from "./GrokUsage.ts";
 
 const XAiPromptCompleteNotification = Schema.Struct({
   sessionId: Schema.String,
@@ -65,7 +67,7 @@ export function xAiQueueInterjectPayloads(
 interface PendingXAiPromptCompletion {
   readonly sessionId: string;
   readonly promptId: string;
-  readonly deferred: Deferred.Deferred<EffectAcpSchema.PromptResponse>;
+  readonly deferred: Deferred.Deferred<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
 }
 
 const completedXAiPromptIdLimit = 128;
@@ -324,7 +326,7 @@ const registerXAiPromptCompletionFallback = (
   sessionId: string,
   promptId: string,
 ) =>
-  Deferred.make<EffectAcpSchema.PromptResponse>().pipe(
+  Deferred.make<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>().pipe(
     Effect.tap((deferred) =>
       Ref.update(pendingRef, (pending) => [...pending, { sessionId, promptId, deferred }]),
     ),
@@ -333,7 +335,7 @@ const registerXAiPromptCompletionFallback = (
 
 const unregisterXAiPromptCompletionFallback = (
   pendingRef: Ref.Ref<ReadonlyArray<PendingXAiPromptCompletion>>,
-  deferred: Deferred.Deferred<EffectAcpSchema.PromptResponse>,
+  deferred: Deferred.Deferred<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>,
 ) => Ref.update(pendingRef, (pending) => pending.filter((entry) => entry.deferred !== deferred));
 
 const abortPendingPromptCompletions = (
@@ -403,8 +405,12 @@ const resolveXAiPromptCompletionFallback = ({
         if (!entry) {
           return [Effect.void, pending] as const;
         }
+        const failure = xAiPromptFailure(notification);
         return [
-          Deferred.succeed(entry.deferred, promptResponseFromXAi(notification)).pipe(Effect.asVoid),
+          (failure === undefined
+            ? Deferred.succeed(entry.deferred, promptResponseFromXAi(notification))
+            : Deferred.fail(entry.deferred, failure)
+          ).pipe(Effect.asVoid),
           [...pending.slice(0, index), ...pending.slice(index + 1)],
         ] as const;
       }).pipe(Effect.flatten);
@@ -439,6 +445,33 @@ export function promptResponseHasMissingXAiStopReason(
 ): boolean {
   const meta = response._meta;
   return meta !== null && typeof meta === "object" && meta[xAiStopReasonMissingMetaKey] === true;
+}
+
+/**
+ * Grok ends a failed turn with `stop_reason: "error"` and puts the reason in
+ * `agentResult` — for an exhausted account, "API error (status 402 Payment
+ * Required): Grok Build usage balance exhausted". ACP's `StopReason` has no
+ * `error` member, so `normalizeXAiStopReason` used to fold it into `end_turn`
+ * and this notification won its race against the (also failing) prompt
+ * request. The turn then settled as an ordinary completion: about half a
+ * second long, no content, no error, session back to ready. Every Grok turn
+ * on an exhausted account vanished that way (2026-09-18, reported as "Grok is
+ * not responding"). Failing the deferred hands the turn to the normal failure
+ * path, which is what makes the reason visible.
+ */
+function xAiPromptFailure(
+  notification: XAiPromptCompleteNotification,
+): EffectAcpErrors.AcpError | undefined {
+  if (notification.stopReason !== "error") return undefined;
+  const result = notification.agentResult;
+  const detail = typeof result === "string" && result.trim().length > 0 ? result.trim() : undefined;
+  const readable = detail === undefined ? undefined : grokUsageExhaustedMessage(detail);
+  return new EffectAcpErrors.AcpRequestError({
+    code: -32603,
+    errorMessage: readable ?? detail ?? "Grok ended the turn with an error.",
+    method: "session/prompt",
+    ...(notification.promptId !== undefined ? { data: { promptId: notification.promptId } } : {}),
+  });
 }
 
 function promptResponseFromXAi(

@@ -54,6 +54,13 @@ export function TerminalLaunchPad({
   // Nothing preselected: launching a provider CLI is a deliberate choice.
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [each, setEach] = useState(1);
+  useEffect(() => {
+    setSelected((current) => {
+      const available = new Set(providers.map((provider) => provider.driverKind));
+      const next = [...current].filter((driver) => available.has(driver)).slice(0, maxTerminals);
+      return next.length === current.size ? current : new Set(next);
+    });
+  }, [providers, maxTerminals]);
   // The stepper is "per selected provider", so its ceiling shrinks as more
   // providers are picked and the total stays within the layout's pane cap.
   const maxEach = clampLaunchCount(
@@ -78,6 +85,7 @@ export function TerminalLaunchPad({
       if (next.has(driverKind)) {
         next.delete(driverKind);
       } else {
+        if (next.size >= maxTerminals) return current;
         next.add(driverKind);
       }
       return next;
@@ -90,9 +98,9 @@ export function TerminalLaunchPad({
   return (
     <div
       data-testid="terminal-launch-pad"
-      className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 py-6"
+      className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto px-4 py-6"
     >
-      <div className="w-full max-w-md rounded-[14px] border border-[var(--line)] bg-[var(--card)] p-5">
+      <div className="my-auto w-full max-w-md rounded-[14px] border border-[var(--line)] bg-[var(--card)] p-5">
         <div className="flex items-center gap-2.5">
           <span className="flex size-8 items-center justify-center rounded-[10px] bg-gold-500 text-[#0b0b0b]">
             <TerminalSquare className="size-4" />
@@ -121,9 +129,10 @@ export function TerminalLaunchPad({
                   type="button"
                   role="checkbox"
                   aria-checked={checked}
+                  disabled={!checked && selected.size >= maxTerminals}
                   onClick={() => toggleProvider(provider.driverKind)}
                   className={cn(
-                    "flex h-9 w-full items-center gap-2.5 rounded-[10px] border px-2.5 text-left text-[13px] transition-colors",
+                    "flex h-9 w-full items-center gap-2.5 rounded-[10px] border px-2.5 text-left text-[13px] transition-colors disabled:cursor-not-allowed disabled:opacity-45",
                     checked
                       ? "border-[var(--gold-line)] bg-[var(--gold-tint)] text-foreground"
                       : "border-[var(--line)] bg-surface-row text-muted-foreground hover:bg-surface-hover hover:text-foreground",
@@ -155,6 +164,12 @@ export function TerminalLaunchPad({
             })
           )}
         </div>
+
+        {selected.size >= maxTerminals && providers.length > maxTerminals ? (
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Up to {maxTerminals} panes per group. Deselect a CLI to choose another.
+          </p>
+        ) : null}
 
         <div className="mt-4 flex items-center justify-between gap-3 rounded-[10px] border border-[var(--line)] bg-surface-row px-2.5 py-2">
           <div className="min-w-0">

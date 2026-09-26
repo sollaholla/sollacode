@@ -54,6 +54,10 @@ import {
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import {
+  makeProviderApiKeyAccounts,
+  type ResolvedProviderApiKey,
+} from "./provider/providerApiKeyAccounts.ts";
+import {
   LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME,
   ORCHESTRATOR_OPENAI_API_KEY_SECRET_NAME,
   ORCHESTRATOR_XAI_API_KEY_SECRET_NAME,
@@ -134,6 +138,10 @@ export class ServerSettingsService extends Context.Service<
 
     /** Read the current settings. */
     readonly getSettings: Effect.Effect<ServerSettings, ServerSettingsError>;
+    /** Server-only resolution; credentials never enter public settings snapshots. */
+    readonly getProviderApiKey: (
+      instanceId: ProviderInstanceId,
+    ) => Effect.Effect<ResolvedProviderApiKey | null, ServerSettingsError>;
 
     /** Patch settings and persist. Returns the new full settings object. */
     readonly updateSettings: (
@@ -175,6 +183,7 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
       start: Effect.void,
       ready: Effect.void,
       getSettings: Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider)),
+      getProviderApiKey: () => Effect.succeed(null),
       updateSettings: (patch) =>
         Ref.get(currentSettingsRef).pipe(
           Effect.map((currentSettings) => applyServerSettingsPatch(currentSettings, patch)),
@@ -266,6 +275,7 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
+  const providerApiKeys = yield* makeProviderApiKeyAccounts(settingsPath);
   const writeSemaphore = yield* Semaphore.make(1);
   const cacheKey = "settings" as const;
   const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
@@ -713,6 +723,12 @@ const make = Effect.gen(function* () {
   return {
     start,
     ready: Deferred.await(startedDeferred),
+    getProviderApiKey: (instanceId) =>
+      writeSemaphore.withPermits(1)(
+        getSettingsFromCache.pipe(
+          Effect.flatMap((settings) => providerApiKeys.resolve(settings, instanceId)),
+        ),
+      ),
     getSettings: getSettingsFromCache.pipe(
       Effect.flatMap(materializeProviderEnvironmentSecrets),
       Effect.map(resolveTextGenerationProvider),
@@ -731,9 +747,16 @@ const make = Effect.gen(function* () {
             nextPersisted,
             patch,
           );
-          const next = yield* normalizeServerSettings(withOrchestratorSecret);
-          yield* writeSettingsAtomically(next);
+          const prepared = yield* providerApiKeys.prepare(
+            withOrchestratorSecret,
+            patch.providerApiKeyAccountAction,
+          );
+          const next = yield* normalizeServerSettings(prepared.settings).pipe(
+            Effect.tapError(() => prepared.rollback),
+          );
+          yield* writeSettingsAtomically(next).pipe(Effect.tapError(() => prepared.rollback));
           yield* Cache.set(settingsCache, cacheKey, next);
+          yield* prepared.commit;
           yield* emitChange(next);
           const materialized = yield* materializeProviderEnvironmentSecrets(next);
           return yield* overlayOrchestratorKeyPresence(resolveTextGenerationProvider(materialized));

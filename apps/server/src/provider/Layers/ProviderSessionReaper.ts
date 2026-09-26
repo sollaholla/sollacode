@@ -309,16 +309,47 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           continue;
         }
 
-        const reaped = yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
-          Effect.tap(() =>
-            Effect.logInfo("provider.session.reaped", {
-              threadId: binding.threadId,
-              provider: binding.provider,
-              idleDurationMs,
-              reason: "inactivity_threshold",
-            }),
+        const reaped = yield* Effect.gen(function* () {
+          const liveSessions = yield* providerService.listSessions();
+          // Native task completions can wake the CLI without another sendTurn.
+          // The persisted send timestamp and a nullable turn ID are therefore
+          // insufficient evidence that this process is idle.
+          const liveSession = liveSessions.find(
+            (session) =>
+              session.threadId === binding.threadId &&
+              (binding.providerInstanceId === undefined
+                ? session.provider === binding.provider
+                : session.providerInstanceId === binding.providerInstanceId),
+          );
+          if (
+            liveSession &&
+            liveSession.status !== "closed" &&
+            (liveSession.status === "running" ||
+              liveSession.status === "connecting" ||
+              liveSession.activeTurnId !== undefined ||
+              (liveSession.activeBackgroundTaskCount ?? 0) > 0 ||
+              now - Date.parse(liveSession.updatedAt) < inactivityThresholdMs)
+          ) {
+            yield* increment(providerSessionReaperSkippedTotal, {
+              reason: "live-provider-work",
+              phase: "idle-sweep",
+            });
+            return false;
+          }
+
+          yield* providerService.stopSession({ threadId: binding.threadId });
+          return true;
+        }).pipe(
+          Effect.tap((didReap) =>
+            didReap
+              ? Effect.logInfo("provider.session.reaped", {
+                  threadId: binding.threadId,
+                  provider: binding.provider,
+                  idleDurationMs,
+                  reason: "inactivity_threshold",
+                })
+              : Effect.void,
           ),
-          Effect.as(true),
           Effect.catchCause((cause) =>
             Effect.logWarning("provider.session.reaper.stop-failed", {
               threadId: binding.threadId,

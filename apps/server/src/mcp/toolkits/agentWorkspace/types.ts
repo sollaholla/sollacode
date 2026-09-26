@@ -33,7 +33,7 @@ export const AgentWorkspaceInput = Schema.Struct({
   }),
   icon: Schema.optional(VmAgentIcon).annotate({
     description:
-      "set_icon: your outlined glyph — the uncoloured, emoji-like icon that identifies you in the sidebar and header. Pick the one that best fits your purpose. Do this once, as the first step of your first run, when the workspace snapshot says you have no icon yet.",
+      "set_icon: legacy glyph for older clients. Current clients automatically assign each agent a blob avatar and stable color; this command does not change that avatar and is not a setup step.",
   }),
   title: Schema.optional(VmAgentTask.fields.title),
   prompt: Schema.optional(VmAgentTask.fields.prompt),

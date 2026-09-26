@@ -7,6 +7,7 @@ import {
   type ProviderSession,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   ThreadId,
   type ToolLifecycleItemType,
   TurnId,
@@ -15,6 +16,8 @@ import {
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -23,7 +26,13 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
+import type {
+  AssistantMessage,
+  OpencodeClient,
+  Part,
+  PermissionRequest,
+  QuestionRequest,
+} from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -36,6 +45,7 @@ import {
   providerOverloadRetryReason,
 } from "../providerOverloadRetry.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { isTodoWriteTool, planStepsFromTodoInput } from "../todoPlanSteps.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -58,6 +68,9 @@ import {
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { openCodeSessionUsage, openCodeTokenUsage } from "../opencodeUsage.ts";
+import { isOpenCodeDecisionModel } from "../opencodeModels.ts";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
 
@@ -189,6 +202,14 @@ function trimText(value: string | undefined | null): string | undefined {
 }
 
 function openCodeEventSessionId(event: OpenCodeSubscribedEvent): string | undefined {
+  // The SDK puts message identity and session identity in different fields.
+  // Some CLI versions also supply a top-level sessionID; it is not required.
+  if (event.type === "message.updated" && event.properties.info.sessionID) {
+    return event.properties.info.sessionID;
+  }
+  if (event.type === "message.part.updated" && event.properties.part.sessionID) {
+    return event.properties.part.sessionID;
+  }
   const properties = "properties" in event ? event.properties : undefined;
   if (!properties || typeof properties !== "object") {
     return undefined;
@@ -200,8 +221,14 @@ function openCodeEventSessionId(event: OpenCodeSubscribedEvent): string | undefi
     return sessionIDFromProperties;
   }
 
-  const info = (properties as { readonly info?: { readonly id?: unknown } }).info;
-  return info && typeof info.id === "string" ? info.id : undefined;
+  if (
+    event.type === "session.created" ||
+    event.type === "session.updated" ||
+    event.type === "session.deleted"
+  ) {
+    return event.properties.info.id;
+  }
+  return undefined;
 }
 
 function openCodeEventSessionTitle(event: OpenCodeSubscribedEvent): string | undefined {
@@ -225,9 +252,38 @@ interface OpenCodeSessionContext {
   readonly emittedTextByPartId: Map<string, string>;
   readonly completedAssistantPartIds: Set<string>;
   readonly turns: Array<OpenCodeTurnSnapshot>;
+  /**
+   * Subagent sessions OpenCode's `task` tool spawned under this session,
+   * keyed by child session id. Events for these sessions would otherwise be
+   * dropped as "another session's", which is exactly what hid a 13-minute
+   * subagent retry loop behind a bare "Working" row on 2026-09-17.
+   */
+  readonly childSessionTaskIds: Map<string, RuntimeTaskId>;
+  /** Display title per child session id, taken from the task tool call. */
+  readonly childTaskTitleById: Map<string, string>;
+  /** `todowrite` calls already turned into a plan update, by call id. */
+  readonly emittedTodoPlanCallIds: Set<string>;
+  /**
+   * Consecutive completed assistant messages with no tokens and no content,
+   * per OpenCode session id (the parent's own id or a subagent child's).
+   * OpenCode keeps looping on those when its upstream answers with nothing;
+   * see `trackEmptyAssistantStep`.
+   */
+  readonly consecutiveEmptyStepsBySession: Map<string, number>;
+  readonly countedEmptyStepMessageIds: Set<string>;
   activeTurnId: TurnId | undefined;
+  lastUsageMessage: { id: string; completedAt: number; signature: string } | undefined;
+  sessionUsage: ReturnType<typeof openCodeSessionUsage>;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
+  /**
+   * The turn `interruptTurn` already closed with `turn.aborted`. OpenCode
+   * answers the abort with a `session.error` carrying `MessageAbortedError`;
+   * that event must not close the same turn a second time.
+   */
+  interruptedTurnId: TurnId | undefined;
+  /** The abort RPC is in flight; native idle/error events may precede its response. */
+  interruptingTurnId: TurnId | undefined;
   /**
    * One-shot guard flipped by `stopOpenCodeContext` / `emitUnexpectedExit`.
    * The session lifecycle is owned by `sessionScope`; this Ref exists only
@@ -324,6 +380,90 @@ function toToolLifecycleItemType(toolName: string): ToolLifecycleItemType {
     return "collab_agent_tool_call";
   }
   return "dynamic_tool_call";
+}
+
+type OpenCodeToolPart = Extract<Part, { type: "tool" }>;
+
+/** OpenCode's `task` tool runs a subagent in a child session. */
+function isSubagentTaskTool(toolName: string): boolean {
+  return toToolLifecycleItemType(toolName) === "collab_agent_tool_call";
+}
+
+/** The child session a `task` tool call is running in, once OpenCode has spawned it. */
+function childSessionIdFromToolPart(part: OpenCodeToolPart): string | undefined {
+  const state = part.state;
+  const metadata =
+    "metadata" in state && state.metadata && typeof state.metadata === "object"
+      ? (state.metadata as { readonly sessionId?: unknown })
+      : undefined;
+  return typeof metadata?.sessionId === "string" ? trimText(metadata.sessionId) : undefined;
+}
+
+function taskTitleFromToolPart(part: OpenCodeToolPart): string | undefined {
+  const state = part.state;
+  const title = state.status === "running" ? trimText(state.title) : undefined;
+  if (title) {
+    return title;
+  }
+  const input =
+    "input" in state && state.input && typeof state.input === "object"
+      ? (state.input as { readonly description?: unknown })
+      : undefined;
+  return typeof input?.description === "string" ? trimText(input.description) : undefined;
+}
+
+const SUBAGENT_SUMMARY_MAX_CHARS = 2_000;
+
+/**
+ * Empty completed steps in a row before the turn is failed. Each costs
+ * OpenCode ~30s of waiting on a stream that never sends anything, so fifteen
+ * is about seven and a half minutes of a "Working" row with nothing behind it.
+ */
+const EMPTY_STEP_FAILURE_THRESHOLD = 15;
+
+/** A summarize call is one model round trip; past this it is treated as failed. */
+const OPENCODE_COMPACTION_TIMEOUT = Duration.seconds(120);
+
+type OpenCodeAssistantInfo = AssistantMessage;
+
+/**
+ * A completed assistant message that carried no tokens either way and no
+ * content part: the upstream request produced nothing at all (an empty
+ * stream, typically after "Endpoint is unavailable" retries), yet OpenCode
+ * records it as a finished step and loops again.
+ */
+function isEmptyAssistantStep(
+  context: OpenCodeSessionContext,
+  info: OpenCodeAssistantInfo,
+): boolean {
+  if (info.time?.completed === undefined || info.error !== undefined) {
+    return false;
+  }
+  const tokens = info.tokens;
+  const tokenCount =
+    (tokens?.input ?? 0) +
+    (tokens?.output ?? 0) +
+    (tokens?.reasoning ?? 0) +
+    (tokens?.cache?.read ?? 0);
+  if (tokenCount > 0) {
+    return false;
+  }
+  for (const part of context.partById.values()) {
+    if (part.messageID === info.id && part.type !== "step-start" && part.type !== "step-finish") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function subagentSummary(value: string | undefined): string | undefined {
+  const trimmed = trimText(value);
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.length > SUBAGENT_SUMMARY_MAX_CHARS
+    ? `${trimmed.slice(0, SUBAGENT_SUMMARY_MAX_CHARS)}…`
+    : trimmed;
 }
 
 function mapPermissionToRequestType(
@@ -511,15 +651,104 @@ function toolStateCreatedAt(part: Extract<Part, { type: "tool" }>): string | und
   }
 }
 
-function sessionErrorMessage(error: unknown): string {
+/** OpenCode's `session.error` payload for a session it aborted on request. */
+function isMessageAbortedError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === "MessageAbortedError"
+  );
+}
+
+/**
+ * OpenCode forwards an upstream API failure with the raw response body as
+ * its message, e.g. `{"type":"invalid_request_error","message":"Streaming
+ * response failed: [invalid_request_error] Prompt too long: …"}`. That blob
+ * drew a JSON-shaped error card (2026-09-17). Unwrap the body's own `message`
+ * when there is one; anything else passes through untouched.
+ */
+const decodeErrorBodyJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
+
+export function unwrapOpenCodeErrorBody(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return message;
+  }
+  const parsed = Option.getOrUndefined(decodeErrorBodyJson(trimmed));
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "message" in parsed) {
+    const inner = (parsed as { message?: unknown }).message;
+    if (typeof inner === "string" && inner.trim().length > 0) {
+      return inner.trim();
+    }
+  }
+  return message;
+}
+
+export function sessionErrorMessage(error: unknown): string {
   if (!error || typeof error !== "object") {
     return "OpenCode session failed.";
   }
   const data = "data" in error && error.data && typeof error.data === "object" ? error.data : null;
   const message = data && "message" in data ? data.message : null;
   return typeof message === "string" && message.trim().length > 0
-    ? message
+    ? unwrapOpenCodeErrorBody(message)
     : "OpenCode session failed.";
+}
+
+/**
+ * OpenCode's gateway wraps an upstream HTTP failure as a structured
+ * `api_error` whose only status is in its own message text:
+ * `Streaming response failed: [api_error] upstream provider error (HTTP 503)`.
+ * That reached Solla with no statusCode and no isRetryable flag, so a 503 fell
+ * through the transient budget and paused a thread after the generic retries
+ * (2026-09-17 15:55). This reads the status from that provider-authored text
+ * only — the error arrives on `session.error`, never from model prose — and
+ * applies the same status policy as a structured field would.
+ */
+export function openCodeGatewayUpstreamStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const data = "data" in error && error.data && typeof error.data === "object" ? error.data : error;
+  const type = "type" in data ? data.type : undefined;
+  const message = "message" in data ? data.message : undefined;
+  if (typeof message !== "string") return undefined;
+  if (type !== undefined && type !== "api_error" && type !== "APIError") return undefined;
+  const match = /\bupstream (?:provider|request) (?:error|failed)\b[^()]*\(HTTP (\d{3})\)/i.exec(
+    message,
+  );
+  if (!match) return undefined;
+  const status = Number.parseInt(match[1] ?? "", 10);
+  return Number.isFinite(status) ? status : undefined;
+}
+
+/**
+ * OpenCode Zen answers a request it will not bill with a gateway 402, which
+ * reached the transcript as `Streaming response failed: [api_error] upstream
+ * provider error (HTTP 402)` (2026-09-17, eight times in one afternoon). That
+ * is not a fault a retry can clear and not a sentence a user can act on: it
+ * means the Zen account has no credit for this model. Say so, name the fix,
+ * and keep the wording on the terminal-refusal list (`isTerminalProviderRefusal`)
+ * so the resume retires instead of burning its retry budget on the same 402.
+ */
+export function openCodeBillingRefusalMessage(
+  error: unknown,
+  model?: string | undefined,
+): string | undefined {
+  if (openCodeGatewayUpstreamStatus(error) !== 402) return undefined;
+  const modelLabel = model && model.trim().length > 0 ? `the ${model.trim()} model` : "this model";
+  return (
+    `OpenCode Zen declined this request because the account has no credit left for ${modelLabel} ` +
+    "(HTTP 402 Payment Required). Add credit to your OpenCode Zen account at https://opencode.ai/zen, " +
+    "or switch this thread to a different model, then send the message again."
+  );
+}
+
+/** Structured retryable statuses plus the gateway's message-borne HTTP status. */
+export function isOpenCodeRetryableUpstreamError(error: unknown): boolean {
+  return (
+    hasRetryableUpstreamStatus(error) ||
+    isRetryableUpstreamStatus(openCodeGatewayUpstreamStatus(error))
+  );
 }
 
 export function openCodeOverloadRetryReason(input: {
@@ -528,7 +757,8 @@ export function openCodeOverloadRetryReason(input: {
     readonly statusCode?: number | undefined;
   };
 }): string | undefined {
-  return isRetryableUpstreamStatus(input.error.statusCode)
+  return isRetryableUpstreamStatus(input.error.statusCode) ||
+    isOpenCodeRetryableUpstreamError(input.error)
     ? providerOverloadRetryReason({ attempt: input.attempt })
     : undefined;
 }
@@ -642,6 +872,27 @@ export function makeOpenCodeAdapter(
             : {}),
         })),
       );
+
+    const emitSessionUsage = Effect.fn("OpenCode.emitSessionUsage")(function* (
+      context: OpenCodeSessionContext,
+      info: unknown,
+    ) {
+      const usage = openCodeSessionUsage(info);
+      if (!usage || usage.sessionId !== context.openCodeSessionId) return;
+      const previous = context.sessionUsage;
+      if (
+        previous &&
+        (usage.updatedAt < previous.updatedAt ||
+          (usage.updatedAt === previous.updatedAt && usage.sessionCost === previous.sessionCost))
+      )
+        return;
+      context.sessionUsage = usage;
+      yield* emit({
+        ...(yield* buildEventBase({ threadId: context.session.threadId })),
+        type: "account.rate-limits.updated",
+        payload: { rateLimits: usage },
+      });
+    });
 
     // Layer-level finalizer: when the adapter layer shuts down, stop every
     // session. Each session's `Scope.close` tears down its spawned OpenCode
@@ -804,12 +1055,374 @@ export function makeOpenCodeAdapter(
       }
     });
 
+    const emitOverloadRetryHeartbeat = Effect.fn("emitOverloadRetryHeartbeat")(function* (
+      context: OpenCodeSessionContext,
+      status: { readonly attempt: number; readonly next?: number | undefined },
+      raw: unknown,
+    ) {
+      // OpenCode retries upstream failures itself and heartbeats one of
+      // these per attempt. As a warning row each attempt stacked another
+      // "Error from provider … Upstream request failed" entry in the
+      // work log; as a retry heartbeat ingestion collapses them into one
+      // durable marker, and the failure only becomes visible if OpenCode
+      // gives up (session.error).
+      const nowMs = yield* Clock.currentTimeMillis;
+      const delayMs =
+        typeof status.next === "number" && Number.isFinite(status.next)
+          ? Math.max(0, status.next - nowMs)
+          : undefined;
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId: context.activeTurnId,
+          raw,
+        })),
+        type: "session.state.changed",
+        payload: {
+          state: "running",
+          reason: providerOverloadRetryReason({
+            attempt: status.attempt,
+            ...(delayMs === undefined ? {} : { delayMs }),
+          }),
+          detail: status,
+        },
+      });
+    });
+
+    /**
+     * Count empty completed steps per OpenCode session and, at the threshold,
+     * stop that session. For the parent that fails the turn visibly (the
+     * user's rule: stay quiet through transient failures, show the fifteenth);
+     * for a subagent child it aborts only the child, so the parent's `task`
+     * tool returns an error the model can act on instead of blocking the turn.
+     */
+    const trackEmptyAssistantStep = Effect.fn("trackEmptyAssistantStep")(function* (
+      context: OpenCodeSessionContext,
+      sessionId: string,
+      info: OpenCodeAssistantInfo,
+      raw: unknown,
+    ) {
+      if (info.time?.completed === undefined || context.countedEmptyStepMessageIds.has(info.id)) {
+        return;
+      }
+      if (!isEmptyAssistantStep(context, info)) {
+        context.consecutiveEmptyStepsBySession.set(sessionId, 0);
+        return;
+      }
+      context.countedEmptyStepMessageIds.add(info.id);
+      const count = (context.consecutiveEmptyStepsBySession.get(sessionId) ?? 0) + 1;
+      context.consecutiveEmptyStepsBySession.set(sessionId, count);
+      if (count < EMPTY_STEP_FAILURE_THRESHOLD) {
+        return;
+      }
+      context.consecutiveEmptyStepsBySession.set(sessionId, 0);
+      const model = `${info.providerID}/${info.modelID}`;
+      const message = `OpenCode's model (${model}) returned ${count} empty responses in a row; its upstream endpoint is not answering. Resume to try again.`;
+      const abortSession = runOpenCodeSdk("session.abort", () =>
+        context.client.session.abort({ sessionID: sessionId }),
+      ).pipe(Effect.catchCause(() => Effect.void));
+
+      if (sessionId !== context.openCodeSessionId) {
+        const taskId = context.childSessionTaskIds.get(sessionId);
+        if (taskId !== undefined) {
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId: context.activeTurnId,
+              raw,
+            })),
+            type: "task.progress",
+            payload: {
+              taskId,
+              ...(context.childTaskTitleById.has(sessionId)
+                ? { title: context.childTaskTitleById.get(sessionId)! }
+                : {}),
+              description: "Subagent stalled on empty responses; stopping it",
+              summary: message,
+            },
+          });
+        }
+        yield* abortSession;
+        return;
+      }
+
+      const turnId = context.activeTurnId;
+      if (turnId === undefined) {
+        yield* abortSession;
+        return;
+      }
+      // Mark the turn as ours to abort so the MessageAbortedError OpenCode
+      // answers with is not reported a second time.
+      context.interruptedTurnId = turnId;
+      context.activeTurnId = undefined;
+      yield* updateProviderSession(
+        context,
+        { status: "error", lastError: message },
+        { clearActiveTurnId: true },
+      );
+      yield* emit({
+        ...(yield* buildEventBase({ threadId: context.session.threadId, turnId, raw })),
+        type: "turn.completed",
+        payload: { state: "failed", errorMessage: message, failureKind: "retryable-upstream" },
+      });
+      yield* emit({
+        ...(yield* buildEventBase({ threadId: context.session.threadId, turnId, raw })),
+        type: "runtime.error",
+        payload: {
+          message,
+          class: "provider_error",
+          failureKind: "retryable-upstream",
+          detail: { emptySteps: count, model, sessionId },
+        },
+      });
+      yield* abortSession;
+    });
+
+    /** First sighting of a subagent session: open its task row once. */
+    const registerSubagentSession = Effect.fn("registerSubagentSession")(function* (
+      context: OpenCodeSessionContext,
+      childSessionId: string,
+      input: {
+        readonly title: string | undefined;
+        readonly itemId?: string | undefined;
+        readonly createdAt?: string | undefined;
+        readonly raw: unknown;
+      },
+    ) {
+      if (input.title) {
+        context.childTaskTitleById.set(childSessionId, input.title);
+      }
+      if (context.childSessionTaskIds.has(childSessionId)) {
+        return context.childSessionTaskIds.get(childSessionId)!;
+      }
+      const taskId = RuntimeTaskId.make(childSessionId);
+      context.childSessionTaskIds.set(childSessionId, taskId);
+      const title = context.childTaskTitleById.get(childSessionId);
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId: context.activeTurnId,
+          itemId: input.itemId,
+          createdAt: input.createdAt,
+          raw: input.raw,
+        })),
+        type: "task.started",
+        payload: {
+          taskId,
+          taskType: "subagent",
+          ...(title ? { description: title } : {}),
+        },
+      });
+      return taskId;
+    });
+
+    /**
+     * The parent's `task` tool part carries the child session id from the
+     * moment it runs, and its completion is the subagent's outcome.
+     */
+    const trackSubagentTaskFromToolPart = Effect.fn("trackSubagentTaskFromToolPart")(function* (
+      context: OpenCodeSessionContext,
+      part: OpenCodeToolPart,
+      raw: unknown,
+    ) {
+      const childSessionId = childSessionIdFromToolPart(part);
+      if (!childSessionId) {
+        return;
+      }
+      const taskId = yield* registerSubagentSession(context, childSessionId, {
+        title: taskTitleFromToolPart(part),
+        itemId: part.callID,
+        createdAt: toolStateCreatedAt(part),
+        raw,
+      });
+      if (part.state.status !== "completed" && part.state.status !== "error") {
+        return;
+      }
+      context.childSessionTaskIds.delete(childSessionId);
+      const title = context.childTaskTitleById.get(childSessionId);
+      context.childTaskTitleById.delete(childSessionId);
+      const summary = subagentSummary(detailFromToolPart(part));
+      // OpenCode reports our own abort of the parent as "Task cancelled" on
+      // the tool part: that is a stop, not a subagent failure.
+      const stopped = part.state.status === "error" && /cancel|abort/i.test(part.state.error ?? "");
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId: context.activeTurnId,
+          itemId: part.callID,
+          createdAt: toolStateCreatedAt(part),
+          raw,
+        })),
+        type: "task.completed",
+        payload: {
+          taskId,
+          status: part.state.status === "completed" ? "completed" : stopped ? "stopped" : "failed",
+          ...(title ? { title } : {}),
+          ...(summary ? { summary } : {}),
+        },
+      });
+    });
+
+    /** OpenCode's `todowrite` is Claude's TodoWrite: it feeds the Plan tab. */
+    const emitTodoPlanFromToolPart = Effect.fn("emitTodoPlanFromToolPart")(function* (
+      context: OpenCodeSessionContext,
+      turnId: TurnId | undefined,
+      part: OpenCodeToolPart,
+      raw: unknown,
+    ) {
+      // The input is complete once the call runs; emitting again on
+      // completion would only duplicate the same plan.
+      if (part.state.status === "pending" || context.emittedTodoPlanCallIds.has(part.callID)) {
+        return;
+      }
+      const plan = planStepsFromTodoInput("input" in part.state ? part.state.input : undefined);
+      if (!plan) {
+        return;
+      }
+      context.emittedTodoPlanCallIds.add(part.callID);
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId,
+          raw,
+        })),
+        type: "turn.plan.updated",
+        payload: { plan },
+      });
+    });
+
+    /**
+     * Events from a subagent session ride the parent turn's task lifecycle:
+     * each tool call updates the one live task row, and upstream retries feed
+     * the same heartbeat the parent's own retries do.
+     */
+    const handleChildSessionEvent = Effect.fn("handleChildSessionEvent")(function* (
+      context: OpenCodeSessionContext,
+      childSessionId: string,
+      taskId: RuntimeTaskId,
+      event: OpenCodeSubscribedEvent,
+    ) {
+      const title = context.childTaskTitleById.get(childSessionId);
+      switch (event.type) {
+        case "message.updated": {
+          if (event.properties.info.role === "assistant") {
+            yield* trackEmptyAssistantStep(context, childSessionId, event.properties.info, event);
+          }
+          break;
+        }
+
+        case "message.part.updated": {
+          const part = event.properties.part;
+          // Kept so the empty-step check can see whether a child message had content.
+          context.partById.set(part.id, part);
+          if (part.type !== "tool" || part.state.status === "pending") {
+            break;
+          }
+          const verb =
+            part.state.status === "running"
+              ? "Running"
+              : part.state.status === "error"
+                ? "Failed"
+                : "Ran";
+          const summary =
+            part.state.status === "running"
+              ? trimText(part.state.title)
+              : part.state.status === "error"
+                ? subagentSummary(part.state.error)
+                : undefined;
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId: context.activeTurnId,
+              itemId: part.callID,
+              createdAt: toolStateCreatedAt(part),
+              raw: event,
+            })),
+            type: "task.progress",
+            payload: {
+              taskId,
+              ...(title ? { title } : {}),
+              description: `${verb} ${part.tool}`,
+              lastToolName: part.tool,
+              ...(summary ? { summary } : {}),
+            },
+          });
+          break;
+        }
+
+        case "session.status": {
+          if (event.properties.status.type === "retry") {
+            yield* emitOverloadRetryHeartbeat(context, event.properties.status, event);
+          }
+          break;
+        }
+
+        case "session.error": {
+          if (isMessageAbortedError(event.properties.error)) {
+            break;
+          }
+          // OpenCode gave up inside the subagent. The parent's task tool part
+          // reports the outcome; this keeps the reason on the live row.
+          const summary = subagentSummary(sessionErrorMessage(event.properties.error));
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId: context.activeTurnId,
+              raw: event,
+            })),
+            type: "task.progress",
+            payload: {
+              taskId,
+              ...(title ? { title } : {}),
+              description: "Subagent provider error",
+              ...(summary ? { summary } : {}),
+            },
+          });
+          break;
+        }
+
+        default:
+          break;
+      }
+    });
+
     const handleSubscribedEvent = Effect.fn("handleSubscribedEvent")(function* (
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
     ) {
       const payloadSessionId = openCodeEventSessionId(event);
       if (payloadSessionId !== context.openCodeSessionId) {
+        if (payloadSessionId === undefined) {
+          return;
+        }
+        const childTaskId = context.childSessionTaskIds.get(payloadSessionId);
+        if (childTaskId === undefined) {
+          // A session OpenCode parents to ours is a subagent it just spawned;
+          // it can announce itself before the parent's `task` part carries its id.
+          if (
+            event.type === "session.updated" &&
+            event.properties.info.parentID === context.openCodeSessionId
+          ) {
+            yield* registerSubagentSession(context, payloadSessionId, {
+              title: trimText(event.properties.info.title),
+              raw: event,
+            });
+          }
+          return;
+        }
+        yield* writeNativeEventBestEffort(context.session.threadId, {
+          observedAt: yield* nowIso,
+          event: {
+            provider: PROVIDER,
+            threadId: context.session.threadId,
+            providerThreadId: context.openCodeSessionId,
+            subagentSessionId: payloadSessionId,
+            type: event.type,
+            ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
+            payload: event,
+          },
+        });
+        yield* handleChildSessionEvent(context, payloadSessionId, childTaskId, event);
         return;
       }
 
@@ -828,6 +1441,7 @@ export function makeOpenCodeAdapter(
 
       switch (event.type) {
         case "session.updated": {
+          yield* emitSessionUsage(context, event.properties.info);
           const title = openCodeEventSessionTitle(event);
           if (title) {
             yield* emit({
@@ -850,12 +1464,47 @@ export function makeOpenCodeAdapter(
         case "message.updated": {
           context.messageRoleById.set(event.properties.info.id, event.properties.info.role);
           if (event.properties.info.role === "assistant") {
+            const info = event.properties.info;
+            const completedAt = info.time?.completed;
+            const usage = openCodeTokenUsage(info.tokens);
+            if (usage && completedAt !== undefined && Number.isFinite(completedAt)) {
+              const previous = context.lastUsageMessage;
+              const signature = [
+                usage.usedTokens,
+                usage.inputTokens,
+                usage.cachedInputTokens,
+                usage.outputTokens,
+                usage.reasoningOutputTokens,
+              ].join(":");
+              if (
+                !previous ||
+                (completedAt >= previous.completedAt &&
+                  (info.id !== previous.id || signature !== previous.signature))
+              ) {
+                context.lastUsageMessage = { id: info.id, completedAt, signature };
+                yield* emit({
+                  ...(yield* buildEventBase({
+                    threadId: context.session.threadId,
+                    turnId,
+                    raw: event,
+                  })),
+                  type: "thread.token-usage.updated",
+                  payload: { usage },
+                });
+              }
+            }
             for (const part of context.partById.values()) {
               if (part.messageID !== event.properties.info.id) {
                 continue;
               }
               yield* emitAssistantTextDelta(context, part, turnId, event);
             }
+            yield* trackEmptyAssistantStep(
+              context,
+              context.openCodeSessionId,
+              event.properties.info,
+              event,
+            );
           }
           break;
         }
@@ -867,51 +1516,43 @@ export function makeOpenCodeAdapter(
 
         case "message.part.delta": {
           const existingPart = context.partById.get(event.properties.partID);
-          if (!existingPart) {
+          if (
+            !existingPart ||
+            (existingPart.type !== "text" && existingPart.type !== "reasoning") ||
+            event.properties.field !== "text" ||
+            event.properties.messageID !== existingPart.messageID ||
+            context.completedAssistantPartIds.has(existingPart.id)
+          ) {
             break;
           }
           const role = messageRoleForPart(context, existingPart);
-          if (role !== "assistant") {
+          if (role === "user" || event.properties.delta.length === 0) {
             break;
           }
-          const streamKind = resolveTextStreamKind(existingPart);
-          const delta = event.properties.delta;
-          if (delta.length === 0) {
-            break;
+          // Preserve text while message metadata is in flight. Publish only
+          // after message.updated identifies this as an assistant message.
+          const nextPart = {
+            ...existingPart,
+            text: existingPart.text + event.properties.delta,
+          };
+          context.partById.set(existingPart.id, nextPart);
+          if (role === "assistant") {
+            yield* emitAssistantTextDelta(context, nextPart, turnId, event);
           }
-          const previousText =
-            context.emittedTextByPartId.get(event.properties.partID) ??
-            textFromPart(existingPart) ??
-            "";
-          const { nextText, deltaToEmit } = appendOpenCodeAssistantTextDelta(previousText, delta);
-          if (deltaToEmit.length === 0) {
-            break;
-          }
-          context.emittedTextByPartId.set(event.properties.partID, nextText);
-          if (existingPart.type === "text" || existingPart.type === "reasoning") {
-            context.partById.set(event.properties.partID, {
-              ...existingPart,
-              text: nextText,
-            });
-          }
-          yield* emit({
-            ...(yield* buildEventBase({
-              threadId: context.session.threadId,
-              turnId,
-              itemId: event.properties.partID,
-              raw: event,
-            })),
-            type: "content.delta",
-            payload: {
-              streamKind,
-              delta: deltaToEmit,
-            },
-          });
           break;
         }
 
         case "message.part.updated": {
           const part = event.properties.part;
+          const previousPart = context.partById.get(part.id);
+          if (
+            previousPart?.type === "tool" &&
+            (previousPart.state.status === "completed" || previousPart.state.status === "error")
+          ) {
+            // Terminal tool snapshots can be replayed after a reconnect.
+            // They must neither duplicate completion nor reopen the tool.
+            break;
+          }
           context.partById.set(part.id, part);
           const messageRole = messageRoleForPart(context, part);
 
@@ -956,6 +1597,12 @@ export function makeOpenCodeAdapter(
             };
             appendTurnItem(context, turnId, part);
             yield* emit(runtimeEvent);
+            if (isSubagentTaskTool(part.tool)) {
+              yield* trackSubagentTaskFromToolPart(context, part, event);
+            }
+            if (isTodoWriteTool(part.tool)) {
+              yield* emitTodoPlanFromToolPart(context, turnId, part, event);
+            }
           }
           break;
         }
@@ -1084,22 +1731,25 @@ export function makeOpenCodeAdapter(
           }
 
           if (event.properties.status.type === "retry") {
-            yield* emit({
-              ...(yield* buildEventBase({
-                threadId: context.session.threadId,
-                turnId,
-                raw: event,
-              })),
-              type: "runtime.warning",
-              payload: {
-                message: event.properties.status.message,
-                detail: event.properties.status,
-              },
-            });
+            yield* emitOverloadRetryHeartbeat(context, event.properties.status, event);
             break;
           }
 
           if (event.properties.status.type === "idle" && turnId) {
+            const interrupted =
+              context.interruptedTurnId === turnId || context.interruptingTurnId === turnId;
+            if (interrupted && context.interruptedTurnId !== turnId) {
+              yield* emit({
+                ...(yield* buildEventBase({
+                  threadId: context.session.threadId,
+                  turnId,
+                  raw: event,
+                })),
+                type: "turn.aborted",
+                payload: { reason: "Interrupted by user." },
+              });
+            }
+            context.interruptedTurnId = undefined;
             context.activeTurnId = undefined;
             yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
             yield* emit({
@@ -1110,7 +1760,7 @@ export function makeOpenCodeAdapter(
               })),
               type: "turn.completed",
               payload: {
-                state: "completed",
+                state: interrupted ? "interrupted" : "completed",
               },
             });
           }
@@ -1118,11 +1768,66 @@ export function makeOpenCodeAdapter(
         }
 
         case "session.error": {
+          if (isMessageAbortedError(event.properties.error)) {
+            // OpenCode reports its own `session.abort` as an error named
+            // MessageAbortedError with the message "Aborted". Stop, a provider
+            // switch, or a streamed AGENT_STOP is what aborts these sessions,
+            // so this is the interruption we asked for, not a failure:
+            // surfacing it drew a "Runtime error: Aborted" card plus a failed
+            // turn with a Resume button every time the user switched providers
+            // mid-turn.
+            //
+            // It is still the end of the turn. Orchestration settles a turn
+            // from `turn.completed` (or from its own Stop / switch session
+            // writes) and never from `turn.aborted`, so the abort has to close
+            // the turn the way Codex's `turn/completed {interrupted}` does.
+            // Without it a streamed AGENT_STOP — ingestion interrupts the
+            // provider so it stops generating — left the thread "Working" until
+            // the user pressed Stop (2026-09-17, 4.5 minutes). Stop and switch
+            // flows have already settled or replaced the session by the time
+            // this arrives, and ingestion ignores the late completion there.
+            const abortedTurnId = context.activeTurnId;
+            const requestedByUs =
+              abortedTurnId !== undefined && abortedTurnId === context.interruptedTurnId;
+            context.activeTurnId = undefined;
+            context.activeAgent = undefined;
+            context.activeVariant = undefined;
+            yield* updateProviderSession(
+              context,
+              { status: "ready" },
+              { clearActiveTurnId: true, clearLastError: true },
+            );
+            if (abortedTurnId !== undefined) {
+              if (!requestedByUs) {
+                yield* emit({
+                  ...(yield* buildEventBase({
+                    threadId: context.session.threadId,
+                    turnId: abortedTurnId,
+                    raw: event,
+                  })),
+                  type: "turn.aborted",
+                  payload: { reason: "Interrupted." },
+                });
+              }
+              yield* emit({
+                ...(yield* buildEventBase({
+                  threadId: context.session.threadId,
+                  turnId: abortedTurnId,
+                  raw: event,
+                })),
+                type: "turn.completed",
+                payload: { state: "interrupted" },
+              });
+            }
+            context.interruptedTurnId = undefined;
+            break;
+          }
           const providerMessage = sessionErrorMessage(event.properties.error);
-          const retryableUpstream = hasRetryableUpstreamStatus(event.properties.error);
+          const retryableUpstream = isOpenCodeRetryableUpstreamError(event.properties.error);
           const message = retryableUpstream
             ? providerOverloadExhaustedMessage(providerMessage)
-            : providerMessage;
+            : (openCodeBillingRefusalMessage(event.properties.error, context.session.model) ??
+              providerMessage);
           const activeTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
           yield* updateProviderSession(
@@ -1433,7 +2138,16 @@ export function makeOpenCodeAdapter(
           messageRoleById: new Map(),
           completedAssistantPartIds: new Set(),
           turns: [],
+          childSessionTaskIds: new Map(),
+          childTaskTitleById: new Map(),
+          emittedTodoPlanCallIds: new Set(),
+          consecutiveEmptyStepsBySession: new Map(),
+          countedEmptyStepMessageIds: new Set(),
           activeTurnId: undefined,
+          lastUsageMessage: undefined,
+          sessionUsage: undefined,
+          interruptedTurnId: undefined,
+          interruptingTurnId: undefined,
           activeAgent: undefined,
           activeVariant: undefined,
           stopped: yield* Ref.make(false),
@@ -1456,6 +2170,7 @@ export function makeOpenCodeAdapter(
             providerThreadId: started.openCodeSession.id,
           },
         });
+        yield* emitSessionUsage(context, started.openCodeSession);
 
         return session;
       },
@@ -1503,6 +2218,14 @@ export function makeOpenCodeAdapter(
         });
       }
       const parsedModel = parseOpenCodeModelSlug(modelSelection?.model);
+      if (modelSelection && isOpenCodeDecisionModel(modelSelection.model)) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue:
+            "Jev returns structured decisions and cannot run a coding conversation. Select a coding model and use the jev_decide tool for Jev Free.",
+        });
+      }
       if (!parsedModel) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
@@ -1621,14 +2344,29 @@ export function makeOpenCodeAdapter(
     const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
       function* (threadId, turnId) {
         const context = yield* ensureSessionContext(sessions, threadId);
+        const interruptedTurnId = turnId ?? context.activeTurnId;
+        if (!interruptedTurnId || interruptedTurnId !== context.activeTurnId) return;
+        context.interruptingTurnId = interruptedTurnId;
         yield* runOpenCodeSdk("session.abort", () =>
           context.client.session.abort({ sessionID: context.openCodeSessionId }),
-        ).pipe(Effect.mapError(toRequestError));
-        if (turnId ?? context.activeTurnId) {
+        ).pipe(
+          Effect.mapError(toRequestError),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (context.interruptingTurnId === interruptedTurnId)
+                context.interruptingTurnId = undefined;
+            }),
+          ),
+        );
+        if (
+          context.activeTurnId === interruptedTurnId &&
+          context.interruptedTurnId !== interruptedTurnId
+        ) {
+          context.interruptedTurnId = interruptedTurnId;
           yield* emit({
             ...(yield* buildEventBase({
               threadId,
-              turnId: turnId ?? context.activeTurnId,
+              turnId: interruptedTurnId,
             })),
             type: "turn.aborted",
             payload: {
@@ -1638,6 +2376,30 @@ export function makeOpenCodeAdapter(
         }
       },
     );
+
+    /**
+     * OpenCode's native compaction: `session.summarize` folds the session's
+     * messages into a summary the next request builds on, so the session and
+     * its working memory survive a context overflow. Resolves false when
+     * OpenCode declines or the summarize call itself fails (the same overflow
+     * rejects a summarize request that still carries the oversized message).
+     */
+    const compactSessionHistory: NonNullable<OpenCodeAdapterShape["compactSessionHistory"]> =
+      Effect.fn("compactSessionHistory")(function* (threadId) {
+        const context = yield* ensureSessionContext(sessions, threadId);
+        const parsedModel = parseOpenCodeModelSlug(context.session.model);
+        const result = yield* runOpenCodeSdk("session.summarize", () =>
+          context.client.session.summarize({
+            sessionID: context.openCodeSessionId,
+            ...(parsedModel
+              ? { providerID: parsedModel.providerID, modelID: parsedModel.modelID }
+              : {}),
+          }),
+        ).pipe(Effect.timeoutOption(OPENCODE_COMPACTION_TIMEOUT), Effect.mapError(toRequestError));
+        if (Option.isNone(result)) return false;
+        const data: unknown = result.value.data;
+        return data === true;
+      });
 
     const respondToRequest: OpenCodeAdapterShape["respondToRequest"] = Effect.fn(
       "respondToRequest",
@@ -1782,10 +2544,17 @@ export function makeOpenCodeAdapter(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
+        // `session.promptAsync` resolving is OpenCode's acceptance boundary for
+        // both fresh turns and steers, so ProviderService publishes the exact
+        // `message.delivered` receipt on return. Without this flag no receipt
+        // was ever written and every OpenCode message sat at "Queued for
+        // OpenCode" for the life of the thread (reported 2026-09-17).
+        messageDeliveryReceipts: true,
       },
       startSession,
       sendTurn,
       interruptTurn,
+      compactSessionHistory,
       respondToRequest,
       respondToUserInput,
       stopSession,

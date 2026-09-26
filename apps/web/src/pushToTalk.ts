@@ -153,7 +153,7 @@ export function raceWithTranscriptionCancellation<T>(
   });
 }
 
-async function decodeAudio(blob: Blob, signal: AbortSignal): Promise<Float32Array> {
+export async function decodeAudio(blob: Blob, signal: AbortSignal): Promise<Float32Array> {
   const context = new AudioContext({ sampleRate: 16_000 });
   try {
     const encodedAudio = await raceWithTranscriptionCancellation(blob.arrayBuffer(), signal);

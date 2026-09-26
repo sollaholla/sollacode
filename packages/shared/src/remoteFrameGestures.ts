@@ -86,7 +86,8 @@ export function containedFrameFraction(
  * - Stationary touch → click at the start point (long-press stays a click).
  * - Movement after holding ≥ FRAME_DRAG_HOLD_MS → drag from start to end.
  * - Any other movement → scroll, in natural touch direction: dragging the
- *   finger down reveals content above, which is a negative deltaY.
+ *   finger down reveals content above, which is a negative deltaY. It turns
+ *   at the start point, so the panel under the finger scrolls.
  *
  * `size` is the rectangle the frame content occupies; `sample` points are
  * relative to it (already letterbox-corrected on surfaces that letterbox).
@@ -112,5 +113,6 @@ export function resolveFrameGesture(
     kind: "scroll",
     deltaX: (sample.start.x - sample.end.x) / size.width,
     deltaY: (sample.start.y - sample.end.y) / size.height,
+    position: start,
   };
 }

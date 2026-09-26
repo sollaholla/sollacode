@@ -47,8 +47,10 @@ export function shouldShowProviderSettingsUsage(
     driverKind === "codex" ||
     driverKind === "claudeAgent" ||
     driverKind === "grok" ||
-    driverKind === "antigravity";
-  return supportedDriver && summary?.state !== "unsupported";
+    driverKind === "antigravity" ||
+    driverKind === "opencode" ||
+    driverKind === "deepcode";
+  return supportedDriver && (driverKind === "deepcode" || summary?.state !== "unsupported");
 }
 
 // ── Formatting ───────────────────────────────────────────────────
@@ -194,6 +196,9 @@ function QuotaWindow({ window, nowMs }: { window: ProviderUsageWindow; nowMs: nu
           {used === null ? (window.detail ?? "—") : `${Math.round(used)}% used`}
         </span>
       </div>
+      {window.description ? (
+        <p className="text-[11px] text-muted-foreground">{window.description}</p>
+      ) : null}
       {used !== null ? (
         <div
           role="progressbar"
@@ -347,24 +352,42 @@ export function ProviderSettingsUsage(props: {
   // with it. A refresh disables its own button and spins its own icon; nothing
   // else about the card may move.
   const statusLabel =
-    summary?.state === "stale" ? "Stale" : summary?.state === "unavailable" ? "Unavailable" : null;
+    driverKind === "opencode"
+      ? null
+      : summary?.state === "stale"
+        ? "Stale"
+        : summary?.state === "unavailable"
+          ? "Unavailable"
+          : summary?.state === "unsupported"
+            ? "Unsupported"
+            : null;
   const reportedAt = summary?.reportedAt ? formatAt(summary.reportedAt) : null;
   const hasActivity = digest.allTime.turns > 0;
 
   return (
     <section
-      aria-label={`${displayName} account usage`}
+      aria-label={`${displayName} ${driverKind === "opencode" ? "session" : "account"} usage`}
       data-provider-usage-state={refreshing ? "loading" : (summary?.state ?? "loading")}
       className="space-y-5 rounded-[14px] border border-[var(--line)] bg-[var(--card)] p-4"
     >
       <div>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <h4 className="text-[13px] font-semibold text-foreground">Account limits</h4>
+            <h4 className="text-[13px] font-semibold text-foreground">
+              {driverKind === "opencode"
+                ? "Session cost"
+                : driverKind === "deepcode"
+                  ? "Account credit"
+                  : "Account limits"}
+            </h4>
             <p className="text-[11.5px] text-muted-foreground">
               {reportedAt
                 ? `${summary?.state === "stale" ? "Last reported" : "Reported"} ${reportedAt}`
-                : "Quotas reported by the provider account"}
+                : driverKind === "opencode"
+                  ? "Estimates are tracked separately in each thread"
+                  : driverKind === "deepcode"
+                    ? "Balance reported by the DeepSeek account"
+                    : "Quotas reported by the provider account"}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -396,6 +419,9 @@ export function ProviderSettingsUsage(props: {
           </div>
         </div>
 
+        {summary?.message ? (
+          <p className="mt-2 text-[12px] text-muted-foreground">{summary.message}</p>
+        ) : null}
         {!provider || !summary ? (
           <p className="mt-3 text-[12px] text-muted-foreground">
             Waiting for provider status before account usage can be requested.
@@ -408,7 +434,9 @@ export function ProviderSettingsUsage(props: {
           </ul>
         ) : (
           <p className="mt-3 text-[12px] text-muted-foreground">
-            Usage has not been reported for this provider account yet.
+            {driverKind === "opencode"
+              ? "Open a thread's usage bar to see its OpenCode session cost."
+              : "Usage has not been reported for this provider account yet."}
           </p>
         )}
 
@@ -422,9 +450,11 @@ export function ProviderSettingsUsage(props: {
         </span>
         {provider && !canRefresh ? (
           <p className="mt-2 text-[11px] text-muted-foreground">
-            {provider.auth.status === "unauthenticated"
-              ? `Sign in to ${displayName} to refresh usage.`
-              : `${displayName} does not expose refreshable account usage.`}
+            {driverKind === "opencode"
+              ? "Session estimates update automatically as OpenCode reports usage."
+              : provider.auth.status === "unauthenticated"
+                ? `Sign in to ${displayName} to refresh usage.`
+                : `${displayName} does not expose refreshable account usage.`}
           </p>
         ) : null}
         {refreshState.status === "error" ? (

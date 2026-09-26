@@ -99,7 +99,15 @@ const ACTIVE_THREAD: OrchestrationThread = {
   },
 };
 
-type TestThreadInput = OrchestrationThreadStreamItem | Error;
+/** Ends the fake subscription with a defect rather than a domain failure. */
+class TestDefect {
+  readonly message: string;
+  constructor(message: string) {
+    this.message = message;
+  }
+}
+
+type TestThreadInput = OrchestrationThreadStreamItem | Error | TestDefect;
 
 function testSession(
   client: WsRpcProtocolClient,
@@ -133,6 +141,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   readonly cached?: OrchestrationThread;
   readonly httpSnapshot?: Option.Option<OrchestrationThreadDetailSnapshot>;
   readonly completionMarker?: boolean;
+  readonly connected?: boolean;
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
@@ -150,12 +159,23 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
-    AVAILABLE_CONNECTION_STATE,
+    options?.connected
+      ? {
+          ...AVAILABLE_CONNECTION_STATE,
+          desired: true,
+          network: "online",
+          phase: "connected",
+        }
+      : AVAILABLE_CONNECTION_STATE,
   );
   const streamFrom = (queue: Queue.Queue<TestThreadInput>) =>
     Stream.fromQueue(queue).pipe(
       Stream.mapEffect((input) =>
-        input instanceof Error ? Effect.fail(input) : Effect.succeed(input),
+        input instanceof TestDefect
+          ? Effect.die(input.message)
+          : input instanceof Error
+            ? Effect.fail(input)
+            : Effect.succeed(input),
       ),
     );
   const client = {
@@ -559,6 +579,45 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("restarts a subscription that died from a fresh snapshot", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_THREAD });
+      const first = yield* Queue.take(harness.subscriptions);
+      expect(first.afterSequence).toBe(CACHED_SNAPSHOT_SEQUENCE);
+      yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+
+      yield* Queue.offer(harness.inputs, new TestDefect("boom"));
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(1);
+
+      yield* TestClock.adjust("1 second");
+      const restarted = yield* Queue.take(harness.subscriptions);
+      expect(restarted.afterSequence).toBeUndefined();
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
+      yield* awaitThreadState(harness.observed, (value) => value.status === "synchronizing");
+
+      yield* Queue.offer(
+        harness.inputs,
+        snapshot({
+          ...BASE_THREAD,
+          title: "Restarted thread",
+        }),
+      );
+      const recovered = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.title === "Restarted thread",
+      );
+
+      expect(Option.isNone(recovered.error)).toBe(true);
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+    }),
+  );
+
   it.effect("recovers from a transient domain failure without replacing the session", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -681,6 +740,123 @@ describe("EnvironmentThreads", () => {
         (value) => value.status === "live" && Option.isSome(value.data),
       );
       expect(Option.getOrThrow(live.data).title).toBe("Caught-up title");
+    }),
+  );
+
+  it.effect("recovers a missing completion marker even while thread updates keep arriving", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        completionMarker: true,
+        connected: true,
+      });
+      yield* Queue.take(harness.subscriptions);
+
+      for (let index = 0; index < 3; index += 1) {
+        const title = `Replayed update ${index}`;
+        yield* Queue.offer(
+          harness.inputs,
+          titleUpdated(title, CACHED_SNAPSHOT_SEQUENCE + index + 1),
+        );
+        const replayed = yield* awaitThreadState(
+          harness.observed,
+          (value) => Option.isSome(value.data) && value.data.value.title === title,
+        );
+        expect(replayed.status).toBe("synchronizing");
+        yield* TestClock.adjust("5 seconds");
+      }
+
+      const resumed = yield* Queue.take(harness.subscriptions);
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+      expect(resumed.afterSequence).toBe(CACHED_SNAPSHOT_SEQUENCE + 3);
+      expect(resumed.requestCompletionMarker).toBe(true);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      expect((yield* Ref.get(harness.latest)).status).toBe("synchronizing");
+
+      yield* Queue.offer(harness.inputs, synchronized());
+      const recovered = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live",
+      );
+      expect(Option.getOrThrow(recovered.data).title).toBe("Replayed update 2");
+      yield* TestClock.adjust("30 seconds");
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+    }),
+  );
+
+  it.effect("escalates repeated missing completion markers despite successful replay updates", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        completionMarker: true,
+        connected: true,
+      });
+      yield* Queue.take(harness.subscriptions);
+      for (let index = 0; index < 6; index += 1) {
+        const title = `Unconfirmed update ${index}`;
+        yield* Queue.offer(
+          harness.inputs,
+          titleUpdated(title, CACHED_SNAPSHOT_SEQUENCE + index + 1),
+        );
+        yield* awaitThreadState(
+          harness.observed,
+          (value) => Option.isSome(value.data) && value.data.value.title === title,
+        );
+        yield* TestClock.adjust("5 seconds");
+        if (index === 2) {
+          expect((yield* Queue.take(harness.subscriptions)).afterSequence).toBe(
+            CACHED_SNAPSHOT_SEQUENCE + 3,
+          );
+        }
+      }
+      const fresh = yield* Queue.take(harness.subscriptions);
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(3);
+      expect(fresh.afterSequence).toBeUndefined();
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
+      yield* Queue.offer(harness.inputs, snapshot({ ...BASE_THREAD, title: "Authoritative" }));
+      yield* Queue.offer(harness.inputs, synchronized());
+      const recovered = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live",
+      );
+      expect(Option.getOrThrow(recovered.data).title).toBe("Authoritative");
+    }),
+  );
+
+  it.effect("replaces the connection once when resubscribing keeps going unconfirmed", () =>
+    Effect.gen(function* () {
+      // The server received every resubscribe but none of its answers came
+      // back: the socket had stopped delivering. Resubscribing on it forever
+      // left the thread "Catching up" until the page was refreshed.
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        completionMarker: true,
+        connected: true,
+      });
+      yield* Queue.take(harness.subscriptions);
+
+      for (let stall = 1; stall <= 2; stall += 1) {
+        yield* TestClock.adjust("15 seconds");
+        yield* Queue.take(harness.subscriptions);
+        expect(yield* Ref.get(harness.retryCount)).toBe(0);
+      }
+      yield* TestClock.adjust("15 seconds");
+      yield* Queue.take(harness.subscriptions);
+      expect(yield* Ref.get(harness.retryCount)).toBe(1);
+
+      // Still stuck on the new connection: keep resubscribing, but do not
+      // tear the connection down again for the same episode.
+      yield* TestClock.adjust("15 seconds");
+      yield* Queue.take(harness.subscriptions);
+      expect(yield* Ref.get(harness.retryCount)).toBe(1);
+
+      yield* Queue.offer(harness.inputs, snapshot({ ...BASE_THREAD, title: "Recovered" }));
+      yield* Queue.offer(harness.inputs, synchronized());
+      const recovered = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live",
+      );
+      expect(Option.getOrThrow(recovered.data).title).toBe("Recovered");
     }),
   );
 

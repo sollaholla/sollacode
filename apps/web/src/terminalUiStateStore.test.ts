@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   migratePersistedTerminalUiStateStoreState,
+  localTerminalGroupsToRemote,
   projectRemoteTerminalGroups,
   selectThreadTerminalUiState,
   terminalGroupsSyncKey,
@@ -931,6 +932,38 @@ describe("single-layout actions", () => {
     expect(state.terminalGroups[0]?.terminalIds).toEqual(["term-1", "term-2", "term-3"]);
     expect(state.terminalGroups[0]?.layout?.kind).toBe("split");
     expect(state.activeTerminalGroupId).toBe(state.terminalGroups[0]?.id);
+  });
+
+  it("keeps six restored singleton groups in two columns and three rows", () => {
+    const store = useTerminalUiStateStore.getState();
+    const ids = Array.from({ length: 6 }, (_, index) => `term-${index + 1}`);
+    for (const id of ids) store.newTerminal(THREAD_REF, id);
+    store.flattenTerminalGroups(THREAD_REF);
+    const layout = read().terminalGroups[0]?.layout;
+    expect(layout).toEqual({
+      kind: "split",
+      direction: "vertical",
+      children: [0, 2, 4].map((offset) => ({
+        kind: "split",
+        direction: "horizontal",
+        children: ids
+          .slice(offset, offset + 2)
+          .map((terminalId) => ({ kind: "terminal", terminalId })),
+      })),
+    });
+    const remote = localTerminalGroupsToRemote(read().terminalGroups);
+    store.applyRemoteTerminalLayout(THREAD_REF, remote);
+    expect(read().terminalGroups[0]?.layout).toEqual(layout);
+  });
+
+  it("preserves a pending launch grid when the first remote snapshot only knows one pane", () => {
+    const store = useTerminalUiStateStore.getState();
+    const ids = Array.from({ length: 6 }, (_, index) => `term-${index + 1}`);
+    store.launchTerminalGrid(THREAD_REF, ids);
+    const expected = read().terminalGroups;
+    store.reconcileTerminalIds(THREAD_REF, ["term-1"]);
+    store.applyRemoteTerminalLayout(THREAD_REF, [{ id: "group-term-1", terminalIds: ["term-1"] }]);
+    expect(read().terminalGroups).toEqual(expected);
   });
 
   it("launches a grid of terminals as one layout", () => {

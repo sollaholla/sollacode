@@ -10,6 +10,7 @@ import {
   buildClaudeCapabilitiesProbeQueryOptions,
   CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES,
   probeClaudeCapabilities,
+  mergeClaudeDiscoveredModels,
 } from "./ClaudeProvider.ts";
 
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -79,6 +80,7 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
           'process.stdin.on("error", () => process.exit(0));',
           'lines.on("line", (line) => {',
           "  const message = JSON.parse(line);",
+          '  if (message.type === "user") process.exit(42);',
           '  if (message.type !== "control_request") return;',
           '  if (message.request?.subtype === "get_usage") {',
           "    process.stdout.write(JSON.stringify({",
@@ -108,7 +110,7 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
           "        agents: [],",
           '        output_style: "default",',
           '        available_output_styles: ["default"],',
-          "        models: [],",
+          '        models: [{ value: "opus", resolvedModel: "claude-opus-6", displayName: "Claude Opus 6", description: "Future release", supportsEffort: true, supportedEffortLevels: ["medium", "xhigh"], supportsFastMode: true }],',
           '        account: { email: "dev@example.com", subscriptionType: "pro", tokenSource: "oauth" },',
           "      },",
           "    },",
@@ -131,6 +133,20 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
       );
 
       assert.deepEqual(capabilities, {
+        models: mergeClaudeDiscoveredModels(
+          [],
+          [
+            {
+              value: "opus",
+              resolvedModel: "claude-opus-6",
+              displayName: "Claude Opus 6",
+              description: "Future release",
+              supportsEffort: true,
+              supportedEffortLevels: ["medium", "xhigh"],
+              supportsFastMode: true,
+            },
+          ],
+        ),
         email: "dev@example.com",
         subscriptionType: "pro",
         tokenSource: "oauth",
@@ -180,4 +196,63 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
       assert.equal(invocation.args.includes("--setting-sources=user,project,local"), true);
     }).pipe(Effect.scoped),
   );
+});
+
+it("discovers future exact IDs without guessing capabilities or storing moving aliases", () => {
+  const models = mergeClaudeDiscoveredModels(
+    [],
+    [
+      {
+        value: "default",
+        resolvedModel: "claude-opus-6[1m]",
+        displayName: "Claude Opus 6",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "xhigh", "xhigh", "invalid"],
+        supportsFastMode: true,
+      },
+      { value: "opus[1m]", resolvedModel: "claude-opus-6[1m]", displayName: "Duplicate" },
+      { value: "claude-small-7", displayName: "Small 7" },
+      { value: "default" },
+      { value: "opus" },
+      { value: "sonnet[1m]" },
+      { value: " " },
+      { value: "bad\nmodel" },
+      null,
+      "bad",
+      {},
+    ],
+  );
+  assert.deepEqual(
+    models.map((model) => model.slug),
+    ["claude-opus-6[1m]", "claude-small-7"],
+  );
+  const caps = models[0]?.capabilities?.optionDescriptors ?? [];
+  assert.equal(caps[0]?.id, "effort");
+  assert.deepEqual(caps[0]?.type === "select" ? caps[0].options.map((option) => option.id) : [], [
+    "low",
+    "xhigh",
+  ]);
+  assert.equal(caps[0]?.currentValue, undefined);
+  assert.equal(caps[1]?.id, "fastMode");
+  assert.deepEqual(models[1]?.capabilities?.optionDescriptors, []);
+});
+
+it("merges known discovery variants once, retaining the published Opus 5.5 defaults", () => {
+  const models = mergeClaudeDiscoveredModels(
+    [],
+    [
+      { value: "default", resolvedModel: "claude-opus-5-5[1m]" },
+      { value: "opus[1m]", resolvedModel: "claude-opus-5-5[1m]" },
+    ],
+  );
+  assert.equal(models.length, 1);
+  assert.equal(models[0]?.slug, "claude-opus-5-5");
+  assert.equal(models[0]?.name, "Claude Opus 5.5");
+  assert.equal(
+    models[0]?.capabilities?.optionDescriptors?.find((option) => option.id === "effort")
+      ?.currentValue,
+    "medium",
+  );
+  assert.deepEqual(mergeClaudeDiscoveredModels(models, undefined), models);
+  assert.deepEqual(mergeClaudeDiscoveredModels(models, []), models);
 });

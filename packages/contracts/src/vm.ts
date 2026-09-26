@@ -194,12 +194,10 @@ export const VmAgent = Schema.Struct({
   name: VmAgentName,
   handle: VmAgentHandle,
   purpose: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
-  /**
-   * The agent's outlined glyph. Null until the AI that created it, or the
-   * first run of its own chat, chooses one; the client falls back to a
-   * name-derived glyph meanwhile.
-   */
+  /** Legacy glyph selection, retained for older clients. */
   icon: Schema.NullOr(VmAgentIcon),
+  /** Stable automatic character color. Optional for older environments. */
+  avatarColor: Schema.optional(Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)))),
   vmId: VmId,
   /** The agent's dedicated single chat thread (null only if creation failed). */
   threadId: Schema.NullOr(ThreadId),

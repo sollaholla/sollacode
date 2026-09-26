@@ -65,6 +65,11 @@ interface AdaptiveWorkspaceContextValue {
   readonly showAuxiliaryPane: (role: WorkspaceAuxiliaryPaneRole) => void;
   readonly toggleAuxiliaryPane: () => void;
   readonly togglePrimarySidebar: () => void;
+  /**
+   * Explicit sidebar visibility. Terminal routes use this to force fullscreen
+   * while focused (hide on focus, restore the previous value on blur).
+   */
+  readonly setPrimarySidebarVisible: (visible: boolean) => void;
   readonly setAuxiliaryPaneWidth: (width: number) => void;
 }
 
@@ -90,6 +95,7 @@ const AdaptiveWorkspaceContext = createContext<AdaptiveWorkspaceContextValue>({
   showAuxiliaryPane: () => undefined,
   toggleAuxiliaryPane: () => undefined,
   togglePrimarySidebar: () => undefined,
+  setPrimarySidebarVisible: () => undefined,
   setAuxiliaryPaneWidth: () => undefined,
 });
 
@@ -343,6 +349,15 @@ function AdaptiveWorkspaceLayoutContent(
     }
     setPrimarySidebarPreferredVisible((current) => !current);
   }, [panes.primarySidebarSuppressedByAuxiliary, panes.primarySidebarVisible]);
+  const setPrimarySidebarVisible = useCallback(
+    (visible: boolean) => {
+      if (visible && !panes.primarySidebarVisible && panes.primarySidebarSuppressedByAuxiliary) {
+        setFileInspectorPreferredVisible(false);
+      }
+      setPrimarySidebarPreferredVisible(visible);
+    },
+    [panes.primarySidebarSuppressedByAuxiliary, panes.primarySidebarVisible],
+  );
   const revealPrimarySidebar = useCallback(() => {
     if (panes.primarySidebarSuppressedByAuxiliary) {
       setFileInspectorPreferredVisible(false);
@@ -405,6 +420,7 @@ function AdaptiveWorkspaceLayoutContent(
       showAuxiliaryPane,
       toggleAuxiliaryPane,
       togglePrimarySidebar,
+      setPrimarySidebarVisible,
       setAuxiliaryPaneWidth,
     }),
     [
@@ -419,6 +435,7 @@ function AdaptiveWorkspaceLayoutContent(
       setAuxiliaryPaneWidth,
       toggleAuxiliaryPane,
       togglePrimarySidebar,
+      setPrimarySidebarVisible,
     ],
   );
 

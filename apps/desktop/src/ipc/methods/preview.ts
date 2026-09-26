@@ -2,6 +2,7 @@ import {
   DesktopPreviewAnnotationThemeInputSchema,
   DesktopPreviewArtifactInputSchema,
   DesktopPreviewAutomationClickInputSchema,
+  DesktopPreviewAutomationContextMenuInputSchema,
   DesktopPreviewAutomationDragInputSchema,
   DesktopPreviewAutomationEvaluateInputSchema,
   DesktopPreviewAutomationPressInputSchema,
@@ -28,6 +29,7 @@ import {
   DesktopPreviewUiActivityInputSchema,
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationPayloadSchema,
+  PreviewAutomationContextMenuResult,
   PreviewAutomationWaitForDownloadResult,
   PreviewAutomationSnapshot,
   PreviewAutomationCredentialFillResult,
@@ -349,6 +351,16 @@ export const captureScreenshot = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const getTabAudioSource = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_GET_TAB_AUDIO_SOURCE_CHANNEL,
+  payload: DesktopPreviewTabInputSchema,
+  result: Schema.NullOr(Schema.String),
+  handler: Effect.fn("desktop.ipc.preview.getTabAudioSource")(function* ({ tabId }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.getTabAudioSource(tabId);
+  }),
+});
+
 export const revealArtifact = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_REVEAL_ARTIFACT_CHANNEL,
   payload: DesktopPreviewArtifactInputSchema,
@@ -405,7 +417,7 @@ export const automationSnapshot = DesktopIpc.makeIpcMethod({
  * push-to-talk could time out remotely and still click or type after release.
  */
 const runAutomationInputBeforeExpiry = <A, E, R>(input: {
-  readonly operation: "click" | "drag" | "type" | "press" | "credentialFill";
+  readonly operation: "click" | "drag" | "contextMenu" | "type" | "press" | "credentialFill";
   readonly tabId: string;
   readonly expiresAt: number | undefined;
   readonly effect: Effect.Effect<A, E, R>;
@@ -473,6 +485,25 @@ export const automationDrag = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const automationContextMenu = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_AUTOMATION_CONTEXT_MENU_CHANNEL,
+  payload: DesktopPreviewAutomationContextMenuInputSchema,
+  result: PreviewAutomationContextMenuResult,
+  handler: Effect.fn("desktop.ipc.preview.automationContextMenu")(function* ({
+    tabId,
+    input,
+    expiresAt,
+  }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* runAutomationInputBeforeExpiry({
+      operation: "contextMenu",
+      tabId,
+      expiresAt,
+      effect: manager.automationContextMenu(tabId, input, { expiresAt }),
+    });
+  }),
+});
+
 export const automationType = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL,
   payload: DesktopPreviewAutomationTypeInputSchema,
@@ -505,7 +536,8 @@ export const saveCredential = DesktopIpc.makeIpcMethod({
     return yield* (yield* BrowserCredentialVault.BrowserCredentialVault).save({
       label: input.label,
       origin: input.origin,
-      secret: input.secret,
+      ...(input.kind === undefined ? {} : { kind: input.kind }),
+      ...(input.secret === undefined ? {} : { secret: input.secret }),
       ...(input.id === undefined ? {} : { id: input.id }),
       ...(input.username === undefined ? {} : { username: input.username }),
     });
@@ -555,8 +587,9 @@ export const fillCredential = DesktopIpc.makeIpcMethod({
       operation: "credentialFill",
       tabId,
       expiresAt,
-      effect: manager.automationType(
+      effect: manager.automationFillCredential(
         tabId,
+        resolved.summary.kind ?? "password",
         {
           text: resolved.secret,
           ...(input.selector === undefined ? {} : { selector: input.selector }),
@@ -698,6 +731,7 @@ export const methods = [
   pickElement,
   cancelPickElement,
   captureScreenshot,
+  getTabAudioSource,
   revealArtifact,
   copyArtifactToClipboard,
   openPictureInPicture,
@@ -707,6 +741,7 @@ export const methods = [
   automationSnapshot,
   automationClick,
   automationDrag,
+  automationContextMenu,
   automationType,
   listCredentials,
   saveCredential,

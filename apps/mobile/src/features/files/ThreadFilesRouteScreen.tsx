@@ -41,7 +41,9 @@ import { WorkspaceFileImagePreview } from "./WorkspaceFileImagePreview";
 import { WorkspaceFileWebPreview } from "./WorkspaceFileWebPreview";
 import {
   basename,
+  isAudioPreviewFile,
   isBrowserPreviewFile,
+  isExternalMediaPreviewFile,
   isImagePreviewFile,
   isMarkdownPreviewFile,
   isSvgImagePreviewFile,
@@ -89,10 +91,37 @@ function FileContent(props: {
   readonly initialLine: number | null;
   readonly truncated: boolean;
   readonly onRefresh?: () => Promise<void> | void;
+  readonly onOpenExternalMedia?: () => void;
 }) {
   const isMarkdown = isMarkdownPreviewFile(props.relativePath);
   const isBrowserFile = isBrowserPreviewFile(props.relativePath);
   const isImageFile = isImagePreviewFile(props.relativePath);
+
+  if (isExternalMediaPreviewFile(props.relativePath)) {
+    const isAudio = isAudioPreviewFile(props.relativePath);
+    if (props.previewUri === null) {
+      return (
+        <View className="flex-1 items-center justify-center gap-3 bg-sheet px-6">
+          <ActivityIndicator />
+          <Text className="text-center text-sm text-foreground-muted">Loading file...</Text>
+        </View>
+      );
+    }
+    return (
+      <View className="flex-1 items-center justify-center bg-sheet px-6">
+        <EmptyState
+          title={basename(props.relativePath)}
+          detail={
+            isAudio
+              ? "This audio file plays in your system player."
+              : "This video opens in your system player."
+          }
+          actionLabel={isAudio ? "Play audio" : "Play video"}
+          onAction={props.onOpenExternalMedia}
+        />
+      </View>
+    );
+  }
 
   if (props.activeMode === "preview" && isImageFile) {
     if (isSvgImagePreviewFile(props.relativePath)) {
@@ -473,6 +502,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
   const [previewRevision, setPreviewRevision] = useState(0);
   const isBrowserFile = relativePath !== null && isBrowserPreviewFile(relativePath);
   const isImageFile = relativePath !== null && isImagePreviewFile(relativePath);
+  const isExternalMediaFile = relativePath !== null && isExternalMediaPreviewFile(relativePath);
   const canPreview =
     relativePath !== null && (isMarkdownPreviewFile(relativePath) || isBrowserFile || isImageFile);
   const activeMode =
@@ -480,7 +510,8 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
       ? modeOverride.mode
       : defaultViewMode(relativePath);
   const resolvedActiveMode = canPreview ? activeMode : "source";
-  const assetPreviewPath = isBrowserFile || isImageFile ? relativePath : null;
+  const assetPreviewPath =
+    isBrowserFile || isImageFile || isExternalMediaFile ? relativePath : null;
   const assetPreviewUri = useWorkspaceFileAssetUrl({
     cwd,
     environmentId,
@@ -493,6 +524,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
       : `${assetPreviewUri}${assetPreviewUri.includes("?") ? "&" : "?"}revision=${previewRevision}`;
   const needsFileContents =
     relativePath !== null &&
+    !isExternalMediaFile &&
     (resolvedActiveMode === "source" || isMarkdownPreviewFile(relativePath));
   const fileQuery = useEnvironmentQuery(
     environmentId !== null && cwd !== null && relativePath !== null && needsFileContents
@@ -603,7 +635,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
           />
         ) : null}
         <NativeHeaderToolbar.Menu accessibilityLabel="File actions" icon="ellipsis">
-          {canPreview && !isImageFile ? (
+          {canPreview && !isImageFile && !isExternalMediaFile ? (
             <NativeHeaderToolbar.Menu inline>
               <NativeHeaderToolbar.MenuAction
                 icon="eye"
@@ -637,6 +669,16 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
               Open in Safari
             </NativeHeaderToolbar.MenuAction>
           ) : null}
+          {isExternalMediaFile && typeof assetPreviewUri === "string" ? (
+            <NativeHeaderToolbar.MenuAction
+              icon="play.fill"
+              onPress={() => {
+                void tryOpenExternalUrl(assetPreviewUri, "file-preview");
+              }}
+            >
+              Open in player
+            </NativeHeaderToolbar.MenuAction>
+          ) : null}
           {resolvedActiveMode === "preview" && (isBrowserFile || isImageFile) ? (
             <NativeHeaderToolbar.MenuAction
               icon="arrow.clockwise"
@@ -658,6 +700,13 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
         relativePath={relativePath}
         truncated={fileData?.truncated ?? false}
         onRefresh={() => fileQuery.refresh()}
+        {...(typeof previewUri === "string"
+          ? {
+              onOpenExternalMedia: () => {
+                void tryOpenExternalUrl(previewUri, "file-preview");
+              },
+            }
+          : {})}
       />
     </View>
   );

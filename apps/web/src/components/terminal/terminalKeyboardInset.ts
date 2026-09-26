@@ -7,9 +7,6 @@
  * terminal you are interacting with is the part you cannot see. Insetting the
  * pane by the covered height lifts the whole column clear.
  *
- * Portrait only, deliberately. In landscape the keyboard already takes most of
- * a phone's height, and reserving that much again would leave the terminal a
- * couple of rows tall - worse than the overlap it was meant to fix.
  */
 
 import { visualViewportBottomInset } from "../chat/mobileComposerViewport.ts";
@@ -24,6 +21,7 @@ export const TERMINAL_KEYBOARD_MINIMUM_INSET = 80;
 export function resolveTerminalKeyboardInset(input: {
   /** Bottom edge of the terminal pane in layout-viewport coordinates. */
   readonly paneBottom: number;
+  readonly paneTop?: number;
   readonly visualViewportHeight: number;
   readonly visualViewportOffsetTop: number;
   /** The terminal itself holds focus, so this keyboard is its own. */
@@ -31,7 +29,7 @@ export function resolveTerminalKeyboardInset(input: {
   readonly isPortrait: boolean;
   readonly isTouch: boolean;
 }): number {
-  if (!input.terminalFocused || !input.isPortrait || !input.isTouch) {
+  if (!input.terminalFocused || !input.isTouch) {
     return 0;
   }
   const inset = visualViewportBottomInset({
@@ -39,5 +37,7 @@ export function resolveTerminalKeyboardInset(input: {
     visualViewportHeight: input.visualViewportHeight,
     visualViewportOffsetTop: input.visualViewportOffsetTop,
   });
-  return inset >= TERMINAL_KEYBOARD_MINIMUM_INSET ? inset : 0;
+  // Leave room for the key bar and a usable grid even in landscape.
+  const maximumInset = Math.max(0, input.paneBottom - (input.paneTop ?? 0) - 120);
+  return inset >= TERMINAL_KEYBOARD_MINIMUM_INSET ? Math.min(inset, maximumInset) : 0;
 }

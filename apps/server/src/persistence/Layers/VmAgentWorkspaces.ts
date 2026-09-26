@@ -888,6 +888,73 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const prepareResume: VmAgentWorkspaceStoreShape["prepareResume"] = (input) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const tasks = (yield* listTasks({ vmAgentId: input.vmAgentId })).filter(
+            (task) =>
+              task.status === "active" &&
+              task.approvalState === "approved" &&
+              task.nextRunAt !== null &&
+              task.nextRunAt <= input.now,
+          );
+          if (!input.policy || tasks.length === 0) return tasks.length;
+          // The agent is still stopped. Consume the old occurrences atomically
+          // before its status changes, so the scheduler cannot dispatch the backlog.
+          for (const task of tasks) {
+            yield* updateTaskRow({
+              ...task,
+              status: task.schedule?.kind === "interval" ? "active" : "paused",
+              nextRunAt:
+                task.schedule?.kind === "interval"
+                  ? DateTime.formatIso(
+                      DateTime.add(DateTime.makeUnsafe(input.now), {
+                        minutes: task.schedule.everyMinutes,
+                      }),
+                    )
+                  : null,
+              updatedAt: input.now,
+            });
+          }
+          if (input.policy === "combine") {
+            const details = tasks
+              .map(
+                (task) =>
+                  `Task ${task.taskId}: ${task.title}\n${task.prompt}\nCompletion criteria: ${task.completionCriteria.join("; ")}`,
+              )
+              .join("\n\n");
+            const index = tasks
+              .map((task) => `${task.taskId}: ${task.title.slice(0, 40)}`)
+              .join("\n");
+            const prompt =
+              "The user chose one catch-up message for overdue scheduled work. Reconcile this backlog with current progress, discard obsolete instructions, and continue only remaining authorized work. Do not repeat finished work. Original task records remain available through list_tasks.\n\n" +
+              (details.length < 49000
+                ? details
+                : "Read the retained task records for the full instructions and criteria:\n" +
+                  index);
+            yield* insertTask({
+              taskId: input.catchUpTaskId,
+              vmAgentId: input.vmAgentId,
+              title: `Catch up on ${tasks.length} overdue tasks`,
+              prompt,
+              completionCriteria: [],
+              status: "active",
+              schedule: { kind: "once", runAt: input.now },
+              nextRunAt: input.now,
+              createdBy: "user",
+              approvalState: "approved",
+              notificationPolicy: "failure",
+              artifactId: null,
+              createdAt: input.now,
+              updatedAt: input.now,
+            });
+          }
+          return 0;
+        }),
+      )
+      .pipe(mapError("prepareResume"));
+
   const claimNextDue: VmAgentWorkspaceStoreShape["claimNextDue"] = (input: ClaimVmAgentTaskInput) =>
     sql
       .withTransaction(
@@ -1094,6 +1161,7 @@ const make = Effect.gen(function* () {
     deleteTask,
     purgeCompletedTasks,
     runTaskNow,
+    prepareResume,
     claimNextDue,
     setRunBooting,
     setRunRunning,

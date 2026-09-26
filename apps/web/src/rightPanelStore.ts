@@ -35,7 +35,6 @@ type RightPanelSurfaceDescriptor =
       resourceId: string;
       terminalIds: string[];
       activeTerminalId: string;
-      splitDirection?: "horizontal" | "vertical";
     }
   | { id: "diff"; kind: "diff" }
   | { id: "files"; kind: "files" }
@@ -100,12 +99,6 @@ interface RightPanelStoreState {
     artifactId: string,
     revision: number,
     title: string,
-  ) => void;
-  splitTerminal: (
-    ref: ScopedThreadRef,
-    surfaceId: string,
-    terminalId: string,
-    direction?: "horizontal" | "vertical",
   ) => void;
   activateTerminal: (ref: ScopedThreadRef, surfaceId: string, terminalId: string) => void;
   closeTerminal: (ref: ScopedThreadRef, surfaceId: string, terminalId: string) => void;
@@ -188,13 +181,48 @@ const fileSurface = (
   revealRequestId,
 });
 
+/**
+ * One terminal surface per thread, holding every terminal as a tab.
+ *
+ * A surface per terminal made the right panel and the terminals view keep two
+ * different lists — a terminal lived in one or the other, never both — and it
+ * filled the surface bar with a tab per shell. The tab strip inside the surface
+ * names them instead, exactly as the fullscreen terminals view does.
+ */
+export const THREAD_TERMINAL_SURFACE_ID = "terminal:thread" as const;
+
 const terminalSurface = (terminalId: string): RightPanelSurface => ({
-  id: `terminal:${terminalId}`,
+  id: THREAD_TERMINAL_SURFACE_ID,
   kind: "terminal",
   resourceId: terminalId,
   terminalIds: [terminalId],
   activeTerminalId: terminalId,
 });
+
+/**
+ * Fold persisted per-terminal surfaces into the single shared one, keeping the
+ * first one's position in the tab order so the panel does not visibly reshuffle
+ * on the upgrade. Every terminal they listed survives as a tab.
+ */
+const collapseTerminalSurfaces = (surfaces: readonly RightPanelSurface[]): RightPanelSurface[] => {
+  const terminals = surfaces.filter((surface) => surface.kind === "terminal");
+  if (terminals.length <= 1) return [...surfaces];
+  const merged = terminals.reduce<RightPanelSurface | null>((accumulator, surface) => {
+    if (surface.kind !== "terminal") return accumulator;
+    if (accumulator === null || accumulator.kind !== "terminal") return surface;
+    return {
+      ...accumulator,
+      terminalIds: [...new Set([...accumulator.terminalIds, ...surface.terminalIds])],
+    };
+  }, null);
+  let placed = false;
+  return surfaces.flatMap((surface) => {
+    if (surface.kind !== "terminal") return [surface];
+    if (placed || merged === null) return [];
+    placed = true;
+    return [merged];
+  });
+};
 
 type SideChatSurface = Extract<RightPanelSurface, { kind: "side-chat" }>;
 
@@ -312,7 +340,7 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
             ([threadKey, threadState]) => {
               const validThreadState =
                 threadState && typeof threadState === "object" ? threadState : null;
-              const surfaces = Array.isArray(validThreadState?.surfaces)
+              const parsedSurfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces
                     .flatMap<RightPanelSurface>((surface) => {
                       if (surface.kind === "file") {
@@ -363,7 +391,10 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                       if (
                         !("resourceId" in surface) ||
                         typeof surface.resourceId !== "string" ||
-                        surface.id !== `terminal:${surface.resourceId}`
+                        // Releases before the shared terminal surface wrote one
+                        // surface per terminal, keyed by its id.
+                        (surface.id !== THREAD_TERMINAL_SURFACE_ID &&
+                          surface.id !== `terminal:${surface.resourceId}`)
                       ) {
                         return [];
                       }
@@ -387,6 +418,7 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                       return [
                         {
                           ...surface,
+                          id: THREAD_TERMINAL_SURFACE_ID,
                           terminalIds: terminalIds.length > 0 ? terminalIds : [surface.resourceId],
                           activeTerminalId,
                         },
@@ -394,10 +426,19 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                     })
                     .map(normalizePersistedSurfaceCustomTitle)
                 : [];
+              const surfaces = collapseTerminalSurfaces(parsedSurfaces);
+              // A terminal that was the active tab keeps the selection across
+              // the id change; matching on the stored id alone would silently
+              // deselect it, because every terminal surface is now one id.
+              const persistedActiveSurfaceId =
+                typeof validThreadState?.activeSurfaceId === "string" &&
+                validThreadState.activeSurfaceId.startsWith("terminal:")
+                  ? THREAD_TERMINAL_SURFACE_ID
+                  : (validThreadState?.activeSurfaceId ?? null);
               const activeSurfaceId = surfaces.some(
-                (surface) => surface.id === validThreadState?.activeSurfaceId,
+                (surface) => surface.id === persistedActiveSurfaceId,
               )
-                ? (validThreadState?.activeSurfaceId ?? null)
+                ? persistedActiveSurfaceId
                 : null;
               const isOpen =
                 typeof validThreadState?.isOpen === "boolean"
@@ -472,11 +513,36 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             };
           }),
         })),
+      // Opening a terminal focuses its tab on the one shared surface rather than
+      // adding another surface. `upsertSurface` alone would no-op once the
+      // surface exists, leaving the newly opened terminal unselected.
       openTerminal: (ref, terminalId) =>
         set((state) => ({
-          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
-            upsertSurface(current, terminalSurface(terminalId)),
-          ),
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const existing = current.surfaces.find(
+              (entry) => entry.id === THREAD_TERMINAL_SURFACE_ID,
+            );
+            if (!existing || existing.kind !== "terminal") {
+              return upsertSurface(current, terminalSurface(terminalId));
+            }
+            return {
+              ...current,
+              isOpen: true,
+              activeSurfaceId: THREAD_TERMINAL_SURFACE_ID,
+              surfaces: current.surfaces.map((entry) =>
+                entry.id === THREAD_TERMINAL_SURFACE_ID && entry.kind === "terminal"
+                  ? {
+                      ...entry,
+                      resourceId: terminalId,
+                      terminalIds: entry.terminalIds.includes(terminalId)
+                        ? entry.terminalIds
+                        : [...entry.terminalIds, terminalId],
+                      activeTerminalId: terminalId,
+                    }
+                  : entry,
+              ),
+            };
+          }),
         })),
       openSideChat: (ref, sideChatThreadId, title) => {
         const threadKey = scopedThreadKey(ref);
@@ -532,36 +598,23 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               : [...current.surfaces, artifactSurface(artifactId, revision, title)],
           })),
         })),
-      splitTerminal: (ref, surfaceId, terminalId, direction = "horizontal") =>
-        set((state) => ({
-          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => ({
-            ...current,
-            isOpen: true,
-            activeSurfaceId: surfaceId,
-            surfaces: current.surfaces.map((surface) => {
-              if (surface.id !== surfaceId || surface.kind !== "terminal") return surface;
-              const { splitDirection: _splitDirection, ...baseSurface } = surface;
-              return {
-                ...baseSurface,
-                terminalIds: surface.terminalIds.includes(terminalId)
-                  ? surface.terminalIds
-                  : [...surface.terminalIds, terminalId],
-                activeTerminalId: terminalId,
-                ...(direction === "vertical" ? { splitDirection: "vertical" as const } : {}),
-              };
-            }),
-          })),
-        })),
       activateTerminal: (ref, surfaceId, terminalId) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => ({
             ...current,
             activeSurfaceId: surfaceId,
             surfaces: current.surfaces.map((surface) =>
-              surface.id === surfaceId &&
-              surface.kind === "terminal" &&
-              surface.terminalIds.includes(terminalId)
-                ? { ...surface, activeTerminalId: terminalId }
+              // Membership is not required: the tab list comes from the
+              // thread's live terminals, so a terminal opened in the terminals
+              // view is selectable here before this surface has recorded it.
+              surface.id === surfaceId && surface.kind === "terminal"
+                ? {
+                    ...surface,
+                    activeTerminalId: terminalId,
+                    terminalIds: surface.terminalIds.includes(terminalId)
+                      ? surface.terminalIds
+                      : [...surface.terminalIds, terminalId],
+                  }
                 : surface,
             ),
           })),

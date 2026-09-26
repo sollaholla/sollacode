@@ -2,7 +2,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { resolveHostedBrowserWebviewWrapperStyle } from "../../browser/hostedBrowserWebviewStyle";
-import { SETTINGS_ROUTE_SURFACE_Z_INDEX, SettingsRouteLayout } from "./SettingsRouteLayout";
+import {
+  SETTINGS_ROUTE_SURFACE_Z_INDEX,
+  SettingsRouteLayout,
+  SettingsRoutePending,
+} from "./SettingsRouteLayout";
 
 vi.mock("@tanstack/react-router", () => ({
   Outlet: () => <div data-testid="settings-outlet" />,
@@ -21,6 +25,12 @@ vi.mock("./SettingsPanels", () => ({
 }));
 
 describe("SettingsRouteLayout", () => {
+  it("renders the settings shell while its panel is still loading", () => {
+    const markup = renderToStaticMarkup(<SettingsRoutePending />);
+    expect(markup).toContain("Settings");
+    expect(markup).toContain("Loading settings");
+    expect(markup).not.toContain('data-testid="settings-outlet"');
+  });
   it("layers the rendered settings surface above a still-presented preview webview", () => {
     const previewStyle = resolveHostedBrowserWebviewWrapperStyle({
       active: true,

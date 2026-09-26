@@ -1,3 +1,4 @@
+import { PreviewManager } from "../preview/Manager.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -17,6 +18,8 @@ import {
   type PreviewAutomationHost,
   type PreviewAutomationRequest,
   type PreviewAutomationStreamEvent,
+  type PreviewCredentialVaultError,
+  type PreviewCredentialVaultRequest,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -24,6 +27,7 @@ import * as Option from "effect/Option";
 import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -46,7 +50,17 @@ const projectionsStub = ProjectionSnapshotQuery.of({
   },
 } as never);
 
+const activityReports: Array<{ threadId: string; tabId: string; interacted: boolean }> = [];
 const makeBroker = PreviewAutomationBroker.make.pipe(
+  Effect.provideService(
+    PreviewManager,
+    PreviewManager.of({
+      reportActivity: (input: { threadId: string; tabId: string; interacted: boolean }) =>
+        Effect.sync(() => {
+          activityReports.push(input);
+        }),
+    } as never),
+  ),
   Effect.provide(NodeServices.layer),
   Effect.provideService(ProjectionSnapshotQuery, projectionsStub),
 );
@@ -80,8 +94,24 @@ const requestsFrom = (
         onConnected(event.connectionId);
         return Result.failVoid;
       }
+      if (event.type !== "request") return Result.failVoid;
       return Result.succeed({ ...event.request, connectionId: event.connectionId });
     }),
+  );
+
+type RoutedVaultRequest = PreviewCredentialVaultRequest & {
+  readonly connectionId: PreviewAutomationStreamEvent["connectionId"];
+};
+
+const vaultRequestsFrom = (
+  events: Stream.Stream<PreviewAutomationStreamEvent>,
+): Stream.Stream<RoutedVaultRequest> =>
+  events.pipe(
+    Stream.filterMap((event) =>
+      event.type === "credentialVault"
+        ? Result.succeed({ ...event.request, connectionId: event.connectionId })
+        : Result.failVoid,
+    ),
   );
 
 it.effect("gives focus-taking input time for the user on top of its own timeout", () =>
@@ -447,7 +477,7 @@ it.effect("announces a live replacement stream before delivering requests", () =
         Stream.take(2),
         Stream.runForEach((event) => {
           receivedTypes.push(event.type);
-          return event.type === "connected"
+          return event.type === "connected" || event.type === "audioDemand"
             ? Effect.void
             : broker.respond({
                 clientId: "client-1",
@@ -1691,6 +1721,239 @@ it.effect("tells each caller which tabs a peer is holding", () =>
       expect(heldBy["tab-b"]).toBe("you");
       expect(heldBy["tab-a"]).toBe("peer");
       threadShells.clear();
+    }),
+  ),
+);
+
+it.effect("records interaction on the caller's tab but ignores mobile frame polling", () =>
+  Effect.gen(function* () {
+    const broker = yield* makeBroker;
+    const connected = yield* Deferred.make<void>();
+    const events = yield* broker.connect(makeHost());
+    let connectionId = "";
+    yield* Stream.runForEach(events, (event) => {
+      if (event.type === "connected") {
+        connectionId = event.connectionId;
+        return Deferred.succeed(connected, undefined);
+      }
+      if (event.type !== "request") return Effect.void;
+      return broker.respond({
+        clientId: "client-1",
+        connectionId,
+        requestId: event.request.requestId,
+        ok: true,
+        result: { tabId: event.request.tabId ?? "tab-activity" },
+      });
+    }).pipe(Effect.forkScoped);
+    yield* Deferred.await(connected);
+    const start = activityReports.length;
+    const tabId = PreviewTabId.make("tab-activity");
+    yield* broker.invoke({ scope, tabId, operation: "click", input: {} });
+    expect(activityReports.slice(start)).toEqual([
+      { threadId: scope.threadId, tabId, interacted: true },
+      { threadId: scope.threadId, tabId, interacted: true },
+    ]);
+    const afterClick = activityReports.length;
+    const mobileScope = { ...scope, providerInstanceId: ProviderInstanceId.make("mobileBrowser") };
+    yield* broker.invoke({ scope: mobileScope, tabId, operation: "snapshot", input: {} });
+    yield* broker.invoke({ scope: mobileScope, tabId, operation: "status", input: {} });
+    expect(activityReports).toHaveLength(afterClick);
+    yield* broker.invoke({ scope: mobileScope, tabId, operation: "type", input: {} });
+    expect(activityReports).toHaveLength(afterClick + 2);
+    yield* broker.invoke({ scope, tabId, operation: "snapshot", input: {} });
+    expect(activityReports).toHaveLength(afterClick + 4);
+  }),
+);
+
+const summary = {
+  id: "credential-1",
+  label: "Work GitHub",
+  origin: "https://github.com",
+  username: "octocat",
+  createdAt: "2026-09-23T00:00:00.000Z",
+  updatedAt: "2026-09-23T00:00:00.000Z",
+};
+
+it.effect("sends credential vault changes only to the desktop on the environment's machine", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const answered: string[] = [];
+      const seen: RoutedVaultRequest[] = [];
+      const answer = (clientId: string, events: Stream.Stream<PreviewAutomationStreamEvent>) =>
+        Stream.runForEach(vaultRequestsFrom(events), (request) => {
+          answered.push(clientId);
+          seen.push(request);
+          return broker.respond({
+            clientId,
+            connectionId: request.connectionId,
+            requestId: request.requestId,
+            ok: true,
+            result: [summary],
+          });
+        }).pipe(Effect.forkScoped);
+      // A desktop viewing this environment from another computer keeps a
+      // different vault, and a local host that never offered the vault (an
+      // older desktop) cannot answer; neither may receive the request.
+      yield* answer(
+        "client-remote-desktop",
+        yield* broker.connect(
+          makeHost({ clientId: "client-remote-desktop", manageCredentials: true }),
+        ),
+      );
+      yield* answer(
+        "client-local-legacy",
+        yield* broker.connect(
+          makeHost({ clientId: "client-local-legacy", environmentLocal: true }),
+        ),
+      );
+      yield* answer(
+        "client-other-environment",
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-other-environment",
+            environmentId: EnvironmentId.make("environment-2"),
+            environmentLocal: true,
+            manageCredentials: true,
+          }),
+        ),
+      );
+      yield* answer(
+        "client-local",
+        yield* broker.connect(
+          makeHost({ clientId: "client-local", environmentLocal: true, manageCredentials: true }),
+        ),
+      );
+      yield* Effect.yieldNow;
+
+      const result = yield* broker.manageCredentials({
+        environmentId: scope.environmentId,
+        command: { action: "list" },
+      });
+
+      expect(result).toEqual([summary]);
+      expect(answered).toEqual(["client-local"]);
+      expect(seen[0]?.command).toEqual({ action: "list" });
+      expect(seen[0]?.requestId).toMatch(/^credential-vault-/);
+    }),
+  ),
+);
+
+it.effect("says where saved passwords live when that desktop is not connected", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      yield* Stream.runDrain(
+        vaultRequestsFrom(yield* broker.connect(makeHost({ manageCredentials: true }))),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .manageCredentials({ environmentId: scope.environmentId, command: { action: "list" } })
+        .pipe(Effect.asVoid, Effect.flip);
+
+      expect(error.reason).toBe("desktopUnavailable");
+      expect(error.message).toContain("desktop app on the computer running this environment");
+    }),
+  ),
+);
+
+it.effect("carries the desktop's refusal as one bounded line", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = vaultRequestsFrom(
+        yield* broker.connect(makeHost({ environmentLocal: true, manageCredentials: true })),
+      );
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: {
+            _tag: "PreviewCredentialVaultError",
+            message: `Saved passwords need an HTTPS site.\n${"x".repeat(600)}`,
+          },
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .manageCredentials({
+          environmentId: scope.environmentId,
+          command: { action: "remove", id: "credential-1" },
+        })
+        .pipe(Effect.asVoid, Effect.flip);
+
+      expect(error.reason).toBe("rejected");
+      expect(error.message.startsWith("Saved passwords need an HTTPS site. x")).toBe(true);
+      expect(error.message).not.toContain("\n");
+      expect(error.message.length).toBeLessThanOrEqual(300);
+    }),
+  ),
+);
+
+it.effect("fails a pending vault change when its desktop disconnects", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const received = yield* Deferred.make<void>();
+      const consumer = yield* Stream.runForEach(
+        vaultRequestsFrom(
+          yield* broker.connect(makeHost({ environmentLocal: true, manageCredentials: true })),
+        ),
+        () => Deferred.succeed(received, undefined),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const pending = yield* broker
+        .manageCredentials({ environmentId: scope.environmentId, command: { action: "list" } })
+        .pipe(Effect.asVoid, Effect.flip, Effect.forkScoped);
+      yield* Deferred.await(received);
+      yield* Fiber.interrupt(consumer);
+
+      const error: PreviewCredentialVaultError = yield* Fiber.join(pending);
+      expect(error.reason).toBe("desktopDisconnected");
+    }),
+  ),
+);
+
+it.effect("gives up on a desktop that never answers a vault change", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const received = yield* Deferred.make<void>();
+      yield* Stream.runForEach(
+        vaultRequestsFrom(
+          yield* broker.connect(makeHost({ environmentLocal: true, manageCredentials: true })),
+        ),
+        () => Deferred.succeed(received, undefined),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const pending = yield* broker
+        .manageCredentials({
+          environmentId: scope.environmentId,
+          command: { action: "list" },
+          timeoutMs: 1_000,
+        })
+        .pipe(Effect.asVoid, Effect.flip, Effect.forkScoped);
+      yield* Deferred.await(received);
+      yield* TestClock.adjust(60_000);
+
+      const error = yield* Fiber.join(pending);
+      expect(error.reason).toBe("timeout");
+
+      // A late answer to the expired request is ignored rather than
+      // resolving anything or failing the stream.
+      yield* broker.respond({
+        clientId: "client-1",
+        connectionId: "unused",
+        requestId: "credential-vault-0",
+        ok: true,
+        result: [],
+      });
     }),
   ),
 );

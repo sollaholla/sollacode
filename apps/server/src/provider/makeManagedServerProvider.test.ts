@@ -21,6 +21,10 @@ import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import {
   makeManagedServerProvider,
+  providerUsageIsDrifting,
+  PROVIDER_USAGE_DRIFT_CHASE_MAX_MS,
+  PROVIDER_USAGE_FRESHNESS_BUDGET_MS,
+  resolveProviderRefreshDelay,
   stabilizeProviderSnapshot,
 } from "./makeManagedServerProvider.ts";
 
@@ -192,6 +196,139 @@ describe("makeManagedServerProvider", () => {
     assert.strictEqual(expired.transientFailureSince, null);
   });
 
+  describe("resolveProviderRefreshDelay", () => {
+    const configuredMs = 5 * 60_000;
+    const nowMs = Date.parse("2026-09-12T12:00:00.000Z");
+
+    it("chases a drifting reading once a minute", () => {
+      const delay = resolveProviderRefreshDelay({
+        configuredMs,
+        transientFailure: false,
+        usageDriftSince: nowMs - 10 * 60_000,
+        refreshOwed: false,
+        nowMs,
+      });
+      assert.strictEqual(Duration.toMillis(delay), 60_000);
+    });
+
+    /**
+     * The chase is for one unlucky round trip, not a dead endpoint. Without
+     * a bound, a provider whose usage call always failed was probed every
+     * minute for as long as the app ran.
+     */
+    it("stops chasing after an hour and returns to the configured interval", () => {
+      const delay = resolveProviderRefreshDelay({
+        configuredMs,
+        transientFailure: false,
+        usageDriftSince: nowMs - PROVIDER_USAGE_DRIFT_CHASE_MAX_MS,
+        refreshOwed: false,
+        nowMs,
+      });
+      assert.strictEqual(Duration.toMillis(delay), configuredMs);
+    });
+
+    it("never chases faster than the configured interval already is", () => {
+      const delay = resolveProviderRefreshDelay({
+        configuredMs: 30_000,
+        transientFailure: false,
+        usageDriftSince: nowMs - 60_000,
+        refreshOwed: false,
+        nowMs,
+      });
+      assert.strictEqual(Duration.toMillis(delay), 30_000);
+    });
+
+    it("lets a transient failure's faster retry win over the drift chase", () => {
+      const delay = resolveProviderRefreshDelay({
+        configuredMs,
+        transientFailure: true,
+        usageDriftSince: nowMs - 60_000,
+        refreshOwed: false,
+        nowMs,
+      });
+      assert.strictEqual(Duration.toMillis(delay), 30_000);
+    });
+  });
+
+  describe("providerUsageIsDrifting", () => {
+    const FRESH = "2026-04-10T00:00:00.000Z";
+    const nowMs = Date.parse("2026-04-10T00:12:00.000Z"); // 12 min after FRESH
+
+    const usageProvider = (overrides: Partial<ServerProvider>): ServerProvider => ({
+      ...refreshedSnapshot,
+      auth: { status: "authenticated" },
+      enabled: true,
+      accountUsage: { rateLimits: { primary: { usedPercent: 42 } } },
+      accountUsageReportedAt: FRESH,
+      accountUsageStatus: { state: "available" },
+      ...overrides,
+    });
+
+    it("chases a reading older than the freshness budget", () => {
+      // The reported bug: a reading this old is halfway to the client's
+      // 20-minute "Stale" label, and the loop used to sleep another full
+      // refresh interval rather than try again.
+      assert.isTrue(providerUsageIsDrifting(usageProvider({}), nowMs));
+    });
+
+    it("leaves a reading inside the budget alone", () => {
+      const justInside = Date.parse(FRESH) + PROVIDER_USAGE_FRESHNESS_BUDGET_MS - 1_000;
+      assert.isFalse(providerUsageIsDrifting(usageProvider({}), justInside));
+    });
+
+    it("never chases a provider that does not report usage at all", () => {
+      // Muse and OpenCode report `unsupported`. Treating a permanent absence
+      // as drift would put them in a 60-second retry loop forever, spending
+      // probes on a number that is never coming.
+      assert.isFalse(
+        providerUsageIsDrifting(
+          usageProvider({
+            accountUsage: undefined,
+            accountUsageReportedAt: undefined,
+            accountUsageStatus: { state: "unsupported" },
+          }),
+          nowMs,
+        ),
+      );
+      assert.isFalse(
+        providerUsageIsDrifting(
+          usageProvider({
+            accountUsage: undefined,
+            accountUsageReportedAt: undefined,
+            accountUsageStatus: undefined,
+          }),
+          nowMs,
+        ),
+      );
+    });
+
+    it("chases a provider that claims usage but has never produced a reading", () => {
+      assert.isTrue(
+        providerUsageIsDrifting(
+          usageProvider({
+            accountUsage: undefined,
+            accountUsageReportedAt: undefined,
+            accountUsageStatus: { state: "error", message: "Timed out." },
+          }),
+          nowMs,
+        ),
+      );
+    });
+
+    it("does not chase a disabled or signed-out provider", () => {
+      assert.isFalse(providerUsageIsDrifting(usageProvider({ enabled: false }), nowMs));
+      assert.isFalse(
+        providerUsageIsDrifting(usageProvider({ auth: { status: "unauthenticated" } }), nowMs),
+      );
+    });
+
+    it("treats an unparseable timestamp as no evidence of freshness", () => {
+      assert.isTrue(
+        providerUsageIsDrifting(usageProvider({ accountUsageReportedAt: "not-a-date" }), nowMs),
+      );
+    });
+  });
+
   it("publishes explicit logout immediately instead of smoothing it", () => {
     const result = stabilizeProviderSnapshot({
       previous: refreshedSnapshot,
@@ -322,6 +459,7 @@ describe("makeManagedServerProvider", () => {
             start: Effect.void,
             ready: Effect.void,
             getSettings: Ref.get(serverSettingsRef),
+            getProviderApiKey: () => Effect.succeed(null),
             updateSettings: () => Effect.die(new Error("unused in this test")),
             streamChanges: Stream.empty,
             subscribeChanges: PubSub.subscribe(serverSettingsChanges).pipe(

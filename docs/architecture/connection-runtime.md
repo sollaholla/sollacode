@@ -43,6 +43,12 @@ The supervisor is the only retry owner.
 6. Authentication or configuration failures remain blocked until an external
    wakeup changes the relevant input.
 7. An involuntary session close keeps the registration and cache, then retries.
+   A socket that stops delivering without closing is caught by the RPC
+   heartbeat, which closes it. Only the primary environment on this machine
+   (a loopback socket, the desktop renderer's own server) skips the heartbeat,
+   because macOS can pause its timers while the socket stays healthy. The
+   primary environment reached over the network — a phone opening the host's
+   Tailscale URL — keeps it.
 8. Explicit removal closes the session and deletes the registration,
    credentials, shell cache, and thread cache.
 
@@ -63,6 +69,16 @@ Finite requests, durable subscriptions, and commands are separate APIs:
 - Subscription atoms switch to replacement sessions.
 - Expected subscription failures update domain sync state and wait for a
   replacement session; they do not take down a healthy transport.
+- A session's scope closing ends its open streams with an interrupt, not an
+  `RpcClientError`. `subscribeDynamic` treats any mix of the two as transport
+  loss and waits for the next session. Failing on the interrupt ended the
+  subscription for good.
+- The thread subscription restarts from a fresh snapshot one second after it
+  ends for any other reason, such as a defect, so "Catching up…" never needs a
+  page refresh.
+- A thread whose resubscribes keep going unconfirmed asks the supervisor for a
+  new connection (`retryNow`) on its third stall, once per stuck episode: by then
+  the socket, not the thread, is the likely fault.
 - Mutations resolve the current environment runtime at execution time.
 - Shell and thread snapshots are available while offline.
 - Thread detail snapshots carry a bounded recent transcript plus total counts and keyset cursors;

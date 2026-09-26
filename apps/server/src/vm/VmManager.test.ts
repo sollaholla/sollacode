@@ -32,13 +32,42 @@ managerLayer("VmManager", (it) => {
       // No VM to boot: an agent is usable the moment its row exists.
       assert.strictEqual(agent.status, "running");
       assert.strictEqual(agent.controlMode, "agent");
+      assert.isNumber(agent.avatarColor);
 
       const persisted = yield* store.getById(agent.vmAgentId);
       assert.isTrue(Option.isSome(persisted));
       if (Option.isSome(persisted)) {
         assert.strictEqual(persisted.value.status, "running");
+        assert.strictEqual(persisted.value.avatarColor, agent.avatarColor);
       }
     }),
+  );
+
+  it.effect(
+    "assigns distinct colors during concurrent creation and preserves survivors on deletion",
+    () =>
+      Effect.gen(function* () {
+        const manager = yield* VmManager;
+        const store = yield* VmAgentStore;
+        const agents = yield* Effect.all(
+          Array.from({ length: 8 }, (_, index) =>
+            manager.create({ name: `Color ${index}`, purpose: "color audit", threadId: null }),
+          ),
+          { concurrency: "unbounded" },
+        );
+        assert.strictEqual(new Set(agents.map((agent) => agent.avatarColor)).size, 8);
+        yield* manager.deleteAgent(agents[0]!.vmAgentId);
+        const next = yield* manager.create({
+          name: "Next color",
+          purpose: "color audit",
+          threadId: null,
+        });
+        for (const agent of agents.slice(1)) {
+          const persisted = Option.getOrThrow(yield* store.getById(agent.vmAgentId));
+          assert.strictEqual(persisted.avatarColor, agent.avatarColor);
+          assert.notStrictEqual(persisted.avatarColor, next.avatarColor);
+        }
+      }),
   );
 
   it.effect("stops and starts an agent, persisting the status and re-broadcasting", () =>

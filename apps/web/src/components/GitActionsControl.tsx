@@ -63,7 +63,8 @@ import {
   DialogPopup,
   DialogTitle,
 } from "~/components/ui/dialog";
-import { Group, GroupSeparator } from "~/components/ui/group";
+import { Group } from "~/components/ui/group";
+import { ToolbarControl, ToolbarControlSeparator } from "~/components/ui/toolbar-control";
 import { Input } from "~/components/ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
@@ -1683,9 +1684,7 @@ export default function GitActionsControl({
     <>
       {!isRepo ? (
         <>
-          <Button
-            variant="outline"
-            size="xs"
+          <ToolbarControl
             disabled={initAction.isPending}
             onClick={() => setGitInitDialogOpen(true)}
           >
@@ -1697,7 +1696,7 @@ export default function GitActionsControl({
             <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
               {initAction.isPending ? "Initializing..." : "Initialize Git"}
             </span>
-          </Button>
+          </ToolbarControl>
           <GitInitDialog
             open={gitInitDialogOpen}
             onOpenChange={setGitInitDialogOpen}
@@ -1727,11 +1726,9 @@ export default function GitActionsControl({
               <PopoverTrigger
                 openOnHover
                 render={
-                  <Button
+                  <ToolbarControl
                     aria-disabled="true"
                     className="cursor-not-allowed rounded-e-none border-e-0 opacity-64 before:rounded-e-none"
-                    size="xs"
-                    variant="outline"
                   />
                 }
               >
@@ -1748,9 +1745,7 @@ export default function GitActionsControl({
               </PopoverPopup>
             </Popover>
           ) : (
-            <Button
-              variant="outline"
-              size="xs"
+            <ToolbarControl
               disabled={isGitActionRunning || quickAction.disabled}
               onClick={runQuickAction}
             >
@@ -1758,9 +1753,9 @@ export default function GitActionsControl({
               <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
                 {quickAction.label}
               </span>
-            </Button>
+            </ToolbarControl>
           )}
-          <GroupSeparator className="hidden @3xl/header-actions:block" />
+          <ToolbarControlSeparator className="hidden @3xl/header-actions:block" />
           <Menu
             onOpenChange={(open) => {
               if (open) {
@@ -1769,7 +1764,7 @@ export default function GitActionsControl({
             }}
           >
             <MenuTrigger
-              render={<Button aria-label="Git action options" size="icon-xs" variant="outline" />}
+              render={<ToolbarControl aria-label="Git action options" size="icon-xs" />}
               disabled={isGitActionRunning}
             >
               <ChevronDownIcon aria-hidden="true" className="size-4" />

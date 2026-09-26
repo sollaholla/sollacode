@@ -34,7 +34,7 @@ export function shouldCollapseMobileComposer(input: {
   /** The reader swiped the composer down to put it away. */
   readonly swipeDismissed: boolean;
 }): boolean {
-  if (!input.isMobileViewport || input.forceExpandedOnMobile) {
+  if (!input.isMobileViewport || input.forceExpandedOnMobile || input.isComposerFocused) {
     return false;
   }
 

@@ -163,8 +163,8 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             : available
               ? "Uses your Antigravity CLI sign-in. Headless approvals follow CLI policy; Full access permits all tools."
               : installed
-                ? "Antigravity is installed, but its CLI check failed. Run agy --version and agy models in a terminal, then refresh."
-                : "Install agy and sign in from a terminal, then refresh.",
+                ? "Antigravity is installed, but its CLI check failed. Refresh to try again."
+                : "Install Antigravity, then sign in from this card.",
           availability: "available",
           showInteractionModeToggle: true,
           requiresNewThreadForModelChange: false,

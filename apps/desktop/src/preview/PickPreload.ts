@@ -102,6 +102,7 @@ const reportHumanKeyInput = (event: KeyboardEvent): void => {
     kind: "key",
     key: event.key,
     code: event.code,
+    repeat: event.repeat,
     directNewTabUrl:
       event.key === "Enter" && anchor instanceof HTMLAnchorElement && target === "_blank"
         ? anchor.href

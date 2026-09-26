@@ -6,6 +6,7 @@ import {
   contextRecoveryReminder,
   contextRecoveryReminderBlock,
   withContextRecoveryReminder,
+  historyResetReminderBlock,
 } from "./contextRecovery.ts";
 
 describe("contextRecovery", () => {
@@ -43,6 +44,30 @@ describe("contextRecovery", () => {
     NodeAssert.ok(!compaction.includes("Read that history before"));
   });
 
+  it("points a runtime without the history tool at the workspace", () => {
+    // Live 2026-09-10: Deep Code received this reminder with no t3-code MCP
+    // server mounted. Naming the tool read as a broken integration, so the
+    // model answered "I am blocked" and asked the user to re-supply context
+    // the digest already carried.
+    const handoff = contextRecoveryReminder("provider-handoff", {
+      threadHistoryToolAvailable: false,
+    });
+    NodeAssert.ok(!handoff.includes(CONTEXT_RECOVERY_TOOL_NAME));
+    NodeAssert.ok(handoff.includes("workspace is the record you can inspect"));
+    NodeAssert.ok(handoff.includes("Do not ask the user to paste, repeat, or summarize"));
+    NodeAssert.ok(handoff.includes("do not report yourself blocked"));
+    NodeAssert.ok(handoff.includes("still owed unless that evidence shows it delivered"));
+    // The tool-directed closing cannot be followed here, so it must not appear.
+    NodeAssert.ok(!handoff.includes("Read that history before"));
+  });
+
+  it("keeps the history-tool instruction when the runtime mounts it", () => {
+    NodeAssert.equal(
+      contextRecoveryReminder("provider-handoff", { threadHistoryToolAvailable: true }),
+      contextRecoveryReminder("provider-handoff"),
+    );
+  });
+
   it("wraps the reminder as a system reminder block", () => {
     const block = contextRecoveryReminderBlock("compaction");
     NodeAssert.ok(block.startsWith("<system-reminder>"));
@@ -65,5 +90,19 @@ describe("contextRecovery", () => {
   it("still carries the reminder for an attachment-only turn", () => {
     const result = withContextRecoveryReminder("", "provider-handoff");
     NodeAssert.equal(result, contextRecoveryReminderBlock("provider-handoff"));
+  });
+});
+
+describe("historyResetReminderBlock", () => {
+  it("names the cause, forbids repeating it, and reads as an out-of-band note", () => {
+    const block = historyResetReminderBlock(
+      "Prompt too long: the maximum context length is 262144 tokens. The last tool result before the failure was the `read` tool result for /reports/overview_review.png (1.6 MB)",
+    );
+    NodeAssert.equal(block.startsWith("<system-reminder>\n"), true);
+    NodeAssert.equal(block.endsWith("\n</system-reminder>"), true);
+    NodeAssert.match(block, /restarted with a summary because the provider rejected/);
+    NodeAssert.match(block, /overview_review\.png \(1\.6 MB\)\./);
+    NodeAssert.match(block, /Do not repeat the step that caused it\./);
+    NodeAssert.match(block, /downscale or crop images/);
   });
 });

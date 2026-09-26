@@ -12,6 +12,31 @@ const layer = it.layer(
 );
 
 layer("ProjectionThreadMessageRepository", (it) => {
+  it.effect("preserves cross-thread sender identity through updates and reads", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const row = {
+        messageId: MessageId.make("sender-message"),
+        threadId: ThreadId.make("recipient"),
+        turnId: null,
+        role: "user" as const,
+        text: "Progress from another agent",
+        isStreaming: false,
+        createdAt: "2026-09-14T00:00:00.000Z",
+        updatedAt: "2026-09-14T00:00:00.000Z",
+      };
+      yield* repository.upsert({
+        ...row,
+        senderThreadId: ThreadId.make("sender"),
+        senderThreadTitle: "Engineer",
+      });
+      yield* repository.upsert({ ...row, text: "Updated progress" });
+      const result = yield* repository.listByThreadId({ threadId: row.threadId });
+      assert.equal(result[0]?.senderThreadId, "sender");
+      assert.equal(result[0]?.senderThreadTitle, "Engineer");
+    }),
+  );
+
   it.effect("persists transcribed message provenance across later upserts", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;

@@ -1,4 +1,6 @@
 import * as NodeOS from "node:os";
+import { replayOrBootstrapTurn } from "./orchestration/bootstrapReplay.ts";
+import { OrchestrationCommandReceiptRepository } from "./persistence/Services/OrchestrationCommandReceipts.ts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -106,6 +108,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
+import * as TabAudioRelay from "./preview/TabAudioRelay.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
 import {
@@ -125,10 +128,16 @@ import { VmAgentStore } from "./persistence/Services/VmAgents.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { captureRemotePreviewSnapshot } from "./preview/RemotePreviewCapture.ts";
+import {
+  listRemoteCredentials,
+  removeRemoteCredential,
+  saveRemoteCredential,
+} from "./preview/RemoteCredentialVault.ts";
 import { dispatchRemotePreviewInput } from "./preview/RemotePreviewInput.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
+import { classifyHostPaths } from "./workspace/hostPathExistence.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -561,6 +570,7 @@ const makeWsRpcLayer = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   remoteControlBroker: RemoteControlBroker.RemoteControlBroker["Service"],
+  tabAudioRelay: TabAudioRelay.TabAudioRelay["Service"],
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -572,6 +582,7 @@ const makeWsRpcLayer = (
       const threadSubscriptionRegistry =
         yield* ThreadSubscriptionRegistry.ThreadSubscriptionRegistry;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+      const commandReceipts = yield* OrchestrationCommandReceiptRepository;
       const threadPendingWorkSignal = yield* ThreadPendingWorkSignal.ThreadPendingWorkSignal;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
@@ -661,11 +672,15 @@ const makeWsRpcLayer = (
         currentSession.scopes.includes(requiredScope)
           ? stream
           : Stream.fail(authorizationError(requiredScope));
+      // The Solla Code desktop app talking to its own backend over the trusted
+      // bootstrap channel, as opposed to any paired client.
+      const isLocalDesktopSession =
+        currentSession.subject === "desktop-bootstrap" &&
+        currentSession.method === "bearer-access-token";
       const authorizeDesktopHostEffect = <A, E, R>(
         effect: Effect.Effect<A, E, R>,
       ): Effect.Effect<A, E | EnvironmentAuthorizationError, R> =>
-        currentSession.subject === "desktop-bootstrap" &&
-        currentSession.method === "bearer-access-token"
+        isLocalDesktopSession
           ? effect
           : Effect.fail(
               new EnvironmentAuthorizationError({
@@ -1256,7 +1271,24 @@ const makeWsRpcLayer = (
             });
 
           const bootstrapProgram = Effect.gen(function* () {
-            if (bootstrap?.createThread) {
+            const existingThread = bootstrap?.createThread
+              ? yield* projectionSnapshotQuery
+                  .getThreadShellById(command.threadId)
+                  .pipe(Effect.map(Option.getOrUndefined))
+              : undefined;
+            if (
+              existingThread &&
+              bootstrap?.createThread &&
+              existingThread.projectId !== bootstrap.createThread.projectId
+            ) {
+              return yield* new OrchestrationDispatchCommandError({
+                message: "The saved message's thread belongs to a different project.",
+              });
+            }
+            // A terminal launch or an interrupted bootstrap may already have
+            // created this exact preallocated thread. Its saved send still owns
+            // the same thread ID and must be allowed to finish.
+            if (bootstrap?.createThread && !existingThread) {
               yield* orchestrationEngine.dispatch({
                 type: "thread.create",
                 commandId: yield* serverCommandId("bootstrap-thread-create"),
@@ -1326,7 +1358,10 @@ const makeWsRpcLayer = (
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
-            ? dispatchBootstrapTurnStart(normalizedCommand)
+            ? replayOrBootstrapTurn(
+                normalizedCommand.commandId,
+                dispatchBootstrapTurnStart(normalizedCommand),
+              ).pipe(Effect.provideService(OrchestrationCommandReceiptRepository, commandReceipts))
             : orchestrationEngine
                 .dispatch(normalizedCommand)
                 .pipe(
@@ -2270,6 +2305,12 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.filesystemPathsExist]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.filesystemPathsExist,
+            classifyHostPaths(input.paths).pipe(Effect.map((entries) => ({ entries }))),
+            { "rpc.aggregate": "workspace" },
+          ),
         [WS_METHODS.assetsCreateUrl]: (input) =>
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,
@@ -2719,13 +2760,21 @@ const makeWsRpcLayer = (
             Effect.gen(function* () {
               const environmentId = yield* serverEnvironment.getEnvironmentId;
               const issuedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-              return yield* captureRemotePreviewSnapshot({
+              const frame = yield* captureRemotePreviewSnapshot({
                 broker: previewAutomationBroker,
                 environmentId,
                 sessionId: currentSessionId,
                 request: input,
                 issuedAt,
               });
+              // What the rendering desktop last reported, so every viewer of
+              // the frame can tell an agent has the tab.
+              const tab = (yield* previewManager.list({ threadId: input.threadId })).sessions.find(
+                (session) => session.tabId === input.tabId,
+              );
+              return tab?.agentControl === undefined
+                ? frame
+                : { ...frame, agentControl: tab.agentControl };
             }),
             { "rpc.aggregate": "preview" },
           ),
@@ -2745,6 +2794,37 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "preview" },
           ),
+        [WS_METHODS.previewTabAudioWatch]: (input) =>
+          observeRpcStream(WS_METHODS.previewTabAudioWatch, tabAudioRelay.listen(input), {
+            "rpc.aggregate": "preview",
+          }),
+        // Nothing to store: the listener's own account of playback lands in
+        // this RPC's trace span, next to the relay's spans for the same tab.
+        [WS_METHODS.previewTabAudioReport]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewTabAudioReport,
+            Effect.annotateCurrentSpan({
+              "tabAudio.threadId": input.threadId,
+              "tabAudio.tabId": input.tabId,
+              "tabAudio.batches": input.batches,
+              "tabAudio.batchesWhileLocked": input.batchesWhileLocked,
+              "tabAudio.packetsDecoded": input.packetsDecoded,
+              "tabAudio.framesOut": input.framesOut,
+              "tabAudio.buffersStarted": input.buffersStarted,
+              "tabAudio.lateDropped": input.lateDropped,
+              "tabAudio.contextState": input.contextState,
+              ...(input.lastError === undefined ? {} : { "tabAudio.lastError": input.lastError }),
+            }),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.previewTabAudioPublish]: (input) =>
+          observeRpcEffect(WS_METHODS.previewTabAudioPublish, tabAudioRelay.publish(input), {
+            "rpc.aggregate": "preview",
+          }),
+        [WS_METHODS.previewReportActivity]: (input) =>
+          observeRpcEffect(WS_METHODS.previewReportActivity, previewManager.reportActivity(input), {
+            "rpc.aggregate": "preview",
+          }),
         [WS_METHODS.previewReportStatus]: (input) =>
           observeRpcEffect(WS_METHODS.previewReportStatus, previewManager.reportStatus(input), {
             "rpc.aggregate": "preview",
@@ -2752,7 +2832,22 @@ const makeWsRpcLayer = (
         [WS_METHODS.previewAutomationConnect]: (input) =>
           observeRpcStreamEffect(
             WS_METHODS.previewAutomationConnect,
-            previewAutomationBroker.connect(input),
+            // Only the desktop on this machine may receive saved-password
+            // changes: a paired client claiming the role would be handed every
+            // new password typed into another device's settings.
+            previewAutomationBroker
+              .connect(
+                input.manageCredentials && !isLocalDesktopSession
+                  ? { ...input, manageCredentials: false }
+                  : input,
+              )
+              .pipe(
+                Effect.map((events) =>
+                  input.streamsTabAudio
+                    ? TabAudioRelay.withTabAudioDemand(events, tabAudioRelay.demand)
+                    : events,
+                ),
+              ),
             { "rpc.aggregate": "preview-automation" },
           ),
         [WS_METHODS.previewAutomationRespond]: (input) =>
@@ -2766,6 +2861,38 @@ const makeWsRpcLayer = (
             WS_METHODS.previewAutomationFocusHost,
             previewAutomationBroker.focusHost(input),
             { "rpc.aggregate": "preview-automation" },
+          ),
+        [WS_METHODS.previewCredentialsList]: () =>
+          observeRpcEffect(
+            WS_METHODS.previewCredentialsList,
+            Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
+              listRemoteCredentials({ broker: previewAutomationBroker, environmentId }),
+            ),
+            { "rpc.aggregate": "preview-credentials" },
+          ),
+        [WS_METHODS.previewCredentialsSave]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewCredentialsSave,
+            Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
+              saveRemoteCredential({
+                broker: previewAutomationBroker,
+                environmentId,
+                credential: input,
+              }),
+            ),
+            { "rpc.aggregate": "preview-credentials" },
+          ),
+        [WS_METHODS.previewCredentialsRemove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewCredentialsRemove,
+            Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
+              removeRemoteCredential({
+                broker: previewAutomationBroker,
+                environmentId,
+                request: input,
+              }),
+            ),
+            { "rpc.aggregate": "preview-credentials" },
           ),
         [WS_METHODS.remoteControlHostConnect]: (input) =>
           observeRpcStreamEffect(
@@ -2883,9 +3010,19 @@ const makeWsRpcLayer = (
         [WS_METHODS.vmAgentStart]: (input) =>
           observeRpcEffect(
             WS_METHODS.vmAgentStart,
-            vmManager
-              .setStatus(input.vmAgentId, "running")
-              .pipe(Effect.tap(() => vmAgentTaskScheduler.wake())),
+            Effect.gen(function* () {
+              const agent = yield* vmAgentStore.getById(input.vmAgentId).pipe(Effect.orDie);
+              if (Option.isSome(agent) && agent.value.status !== "running") {
+                const backlogCount = yield* vmAgentWorkspace.prepareResume(
+                  input.vmAgentId,
+                  input.backlog,
+                );
+                if (backlogCount > 0) return { backlogCount };
+              }
+              const started = yield* vmManager.setStatus(input.vmAgentId, "running");
+              yield* vmAgentTaskScheduler.wake();
+              return started;
+            }),
             { "rpc.aggregate": "vm" },
           ),
         [WS_METHODS.vmAgentStop]: (input) =>
@@ -3378,6 +3515,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const remoteControlBroker = yield* RemoteControlBroker.RemoteControlBroker;
+    const tabAudioRelay = yield* TabAudioRelay.TabAudioRelay;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     return HttpRouter.add(
       "GET",
@@ -3398,7 +3536,12 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           disableTracing: true,
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session, previewAutomationBroker, remoteControlBroker).pipe(
+            makeWsRpcLayer(
+              session,
+              previewAutomationBroker,
+              remoteControlBroker,
+              tabAudioRelay,
+            ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(ProviderAccountSwitch.layer),

@@ -340,6 +340,20 @@ describe("isTerminalProviderRefusal", () => {
     ).toBe(true);
   });
 
+  // OpenCode Zen's 402 is billing, not weather: no retry can clear it.
+  it("retires an OpenCode Zen billing refusal", () => {
+    expect(
+      isTerminalProviderRefusal(
+        "OpenCode Zen declined this request because the account has no credit left for the opencode/union-alpha model (HTTP 402 Payment Required). Add credit to your OpenCode Zen account at https://opencode.ai/zen, or switch this thread to a different model, then send the message again.",
+      ),
+    ).toBe(true);
+    expect(
+      isTerminalProviderRefusal(
+        "Streaming response failed: [api_error] upstream provider error (HTTP 402)",
+      ),
+    ).toBe(false);
+  });
+
   // A busy provider is a wait, not a refusal — retrying is correct there.
   it("leaves waits and transient failures to the retry path", () => {
     expect(isTerminalProviderRefusal("A browser turn is already active")).toBe(false);
@@ -347,13 +361,23 @@ describe("isTerminalProviderRefusal", () => {
     expect(isTerminalProviderRefusal("")).toBe(false);
   });
 
-  it("stops automatic retries after AGY rejects the account quota", () => {
+  it("lets AGY quota rejections fail over instead of retiring", () => {
     expect(
       isTerminalProviderRefusal(
         "Antigravity was rejected by Google with RESOURCE_EXHAUSTED (429). Check the account quota or switch accounts before retrying.",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(isTerminalProviderRefusal("HTTP 429: retry in one second")).toBe(false);
+  });
+
+  it("lets Muse progress timeouts restart instead of retiring", () => {
+    expect(
+      isTerminalProviderRefusal(
+        "[muse-progress-timeout] Muse stopped reporting progress after its recovery window. The turn was stopped; resume it when ready.",
+      ),
+    ).toBe(false);
+    expect(isTerminalProviderRefusal("Muse request timed out; retrying upstream")).toBe(false);
+    expect(isTerminalProviderRefusal("muse-progress-timeout was mentioned in the log")).toBe(false);
   });
 
   // Same guard as the authentication check: prose is not a status line.

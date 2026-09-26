@@ -5,6 +5,7 @@ import {
   EventId,
   IsoDateTime,
   MessageId,
+  NonNegativeInt,
   ProviderItemId,
   RuntimeTaskId,
   ThreadId,
@@ -40,6 +41,13 @@ export const ProviderPendingContextRecovery = Schema.Struct({
   sourceMessageId: Schema.NullOr(MessageId),
   providerInstanceId: ProviderInstanceId,
   createdAt: IsoDateTime,
+  /**
+   * Why the previous session's history was abandoned, when the failure named
+   * it (a context-window overflow, an oversized tool result). Carried into the
+   * recovery prompt so the fresh session does not repeat the step that ended
+   * the last one.
+   */
+  reason: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderPendingContextRecovery = typeof ProviderPendingContextRecovery.Type;
 
@@ -57,6 +65,8 @@ export const ProviderSession = Schema.Struct({
   resumeCursor: Schema.optional(Schema.Unknown),
   pendingContextRecovery: Schema.optional(ProviderPendingContextRecovery),
   activeTurnId: Schema.optional(TurnId),
+  /** Live adapter-owned jobs that can continue between foreground turns. */
+  activeBackgroundTaskCount: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),

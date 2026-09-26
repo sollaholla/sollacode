@@ -7,6 +7,7 @@
  *
  * @module CodexAdapterLive
  */
+import { CODEX_BACKGROUND_TASK_METHOD, codexBackgroundTaskId } from "./CodexSubagentRouting.ts";
 import {
   type CanonicalItemType,
   type CanonicalRequestType,
@@ -21,6 +22,7 @@ import {
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   RuntimeItemId,
+  RuntimeTaskId,
   RuntimeRequestId,
   ProviderApprovalDecision,
   ThreadId,
@@ -30,6 +32,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -40,6 +43,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
+import { stripSyntheticCodexRateLimitSnapshot } from "../codexRateLimitPlaceholders.ts";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
@@ -520,6 +524,67 @@ function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
 ): ReadonlyArray<ProviderRuntimeEvent> {
+  if (event.method === CODEX_BACKGROUND_TASK_METHOD) {
+    const task =
+      event.payload !== null && typeof event.payload === "object" && !Array.isArray(event.payload)
+        ? (event.payload as Record<string, unknown>)
+        : undefined;
+    const fieldText = (value: unknown) => (typeof value === "string" ? trimText(value) : undefined);
+    const nativeThreadId = fieldText(task?.providerThreadId);
+    const title = fieldText(task?.title);
+    if (!nativeThreadId || !title) return [];
+    const status = task?.status;
+    const totalTokens =
+      typeof task?.totalTokens === "number" &&
+      Number.isFinite(task.totalTokens) &&
+      task.totalTokens >= 0
+        ? task.totalTokens
+        : undefined;
+    const summary = fieldText(task?.summary);
+    const common = {
+      taskId: RuntimeTaskId.make(codexBackgroundTaskId(nativeThreadId)),
+      title,
+      ...(summary ? { summary } : {}),
+      ...(totalTokens !== undefined ? { usage: { total_tokens: totalTokens } } : {}),
+    };
+    const started: ProviderRuntimeEvent[] =
+      task?.discovered === true || task?.started === true
+        ? [
+            {
+              ...runtimeEventBase(event, canonicalThreadId),
+              eventId: EventId.make(`${event.id}:background-started`),
+              type: "task.started",
+              payload: { taskId: common.taskId, description: title, taskType: "local_agent" },
+            },
+          ]
+        : [];
+    return [
+      ...started,
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        ...(status === "completed" || status === "failed" || status === "stopped"
+          ? {
+              type: "task.completed" as const,
+              payload: {
+                ...common,
+                status,
+                ...(task?.metadataUpdated === true ? { metadataOnly: true } : {}),
+              },
+            }
+          : {
+              type: "task.progress" as const,
+              payload: {
+                ...common,
+                description: title,
+                ...(fieldText(task?.lastToolName)
+                  ? { lastToolName: fieldText(task?.lastToolName)! }
+                  : {}),
+              },
+            }),
+      },
+    ];
+  }
+
   if (event.kind === "error") {
     if (!event.message) {
       return [];
@@ -1149,7 +1214,24 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "account/rateLimits/updated") {
-    if (!readPayload(EffectCodexSchema.V2AccountRateLimitsUpdatedNotification, event.payload)) {
+    const payload = readPayload(
+      EffectCodexSchema.V2AccountRateLimitsUpdatedNotification,
+      event.payload,
+    );
+    if (!payload) {
+      return [];
+    }
+    // The same unfilled stand-in a cold `account/rateLimits/read` returns can
+    // arrive as an update. It is not a report; dropping it keeps the last real
+    // reading on the card and out of the usage guard.
+    const receivedAt = DateTime.make(event.createdAt);
+    const rateLimits = Option.isSome(receivedAt)
+      ? stripSyntheticCodexRateLimitSnapshot(
+          payload.rateLimits,
+          DateTime.toEpochMillis(receivedAt.value),
+        )
+      : payload.rateLimits;
+    if (rateLimits === null) {
       return [];
     }
     return [
@@ -1157,7 +1239,7 @@ function mapToRuntimeEvents(
         type: "account.rate-limits.updated",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          rateLimits: event.payload ?? {},
+          rateLimits: { ...payload, rateLimits },
         },
       },
     ];
@@ -1750,6 +1832,23 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
+  const stopTask: NonNullable<CodexAdapterShape["stopTask"]> = (threadId, taskId) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => {
+        if (!session.runtime.stopTask)
+          return Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "task/stop",
+              detail: "This Codex runtime cannot stop individual background tasks.",
+            }),
+          );
+        return session.runtime
+          .stopTask(taskId)
+          .pipe(Effect.mapError((cause) => mapCodexRuntimeError(threadId, "task/stop", cause)));
+      }),
+    );
+
   const readThread: CodexAdapterShape["readThread"] = (threadId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.readThread),
@@ -1871,10 +1970,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     capabilities: {
       sessionModelSwitch: "in-session",
       messageDeliveryReceipts: true,
+      taskStop: true,
     },
     startSession,
     sendTurn,
     interruptTurn,
+    stopTask,
     readThread,
     rollbackThread,
     respondToRequest,

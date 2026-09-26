@@ -35,7 +35,9 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
   const upsertProjectionThreadActivityRow = SqlSchema.void({
-    Request: ProjectionThreadActivity,
+    Request: ProjectionThreadActivity.mapFields(
+      Struct.assign({ preserveChronology: Schema.Boolean }),
+    ),
     execute: (row) =>
       sql`
             INSERT INTO projection_thread_activities (
@@ -68,8 +70,10 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
               kind = excluded.kind,
               summary = excluded.summary,
               payload_json = excluded.payload_json,
-              sequence = excluded.sequence,
-              created_at = excluded.created_at
+              sequence = CASE WHEN ${row.preserveChronology ? 1 : 0}
+                THEN projection_thread_activities.sequence ELSE excluded.sequence END,
+              created_at = CASE WHEN ${row.preserveChronology ? 1 : 0}
+                THEN projection_thread_activities.created_at ELSE excluded.created_at END
           `,
   });
 
@@ -107,8 +111,11 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
-  const upsert: ProjectionThreadActivityRepositoryShape["upsert"] = (row) =>
-    upsertProjectionThreadActivityRow(row).pipe(
+  const upsert: ProjectionThreadActivityRepositoryShape["upsert"] = (row, options) =>
+    upsertProjectionThreadActivityRow({
+      ...row,
+      preserveChronology: options?.preserveChronology === true,
+    }).pipe(
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "ProjectionThreadActivityRepository.upsert:query",

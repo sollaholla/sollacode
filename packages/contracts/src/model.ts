@@ -134,6 +134,7 @@ const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const ANTIGRAVITY_DRIVER_KIND = ProviderDriverKind.make("antigravity");
 const DEEPCODE_DRIVER_KIND = ProviderDriverKind.make("deepcode");
+const MUSE_DRIVER_KIND = ProviderDriverKind.make("muse");
 
 export const DEFAULT_MODEL = "gpt-5.6-sol";
 
@@ -164,6 +165,11 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
   [ANTIGRAVITY_DRIVER_KIND]: "gemini-3.1-pro-high",
   [DEEPCODE_DRIVER_KIND]: "deepseek-flash",
+  // Muse is deliberately absent. `session/start` takes the host's own default
+  // when `modelId` is omitted, and Muse's catalog is served by the account -
+  // it comes back empty when signed out - so naming a slug here would either
+  // duplicate a default we already get for free or pin one the account does
+  // not serve.
 };
 
 /** Per-provider text generation model defaults. */
@@ -189,7 +195,10 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "gpt-5.3-spark": "gpt-5.3-codex-spark",
   },
   [CLAUDE_DRIVER_KIND]: {
-    opus: "claude-opus-5",
+    opus: "claude-opus-5-5",
+    "opus-5.5": "claude-opus-5-5",
+    "opus-5-5": "claude-opus-5-5",
+    "claude-opus-5.5": "claude-opus-5-5",
     "opus-5": "claude-opus-5",
     "claude-opus-5.0": "claude-opus-5",
     "claude-opus-5-0": "claude-opus-5",
@@ -224,6 +233,13 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.5": "claude-opus-4-5",
   },
   [OPENCODE_DRIVER_KIND]: {},
+  [DEEPCODE_DRIVER_KIND]: {
+    // DeepSeek retired these slugs and now routes both to the model behind
+    // `deepseek-flash`. They stay resolvable for saved selections, but the
+    // picker offers only the current name.
+    "deepseek-v4-flash": "deepseek-flash",
+    "deepseek-v4-flash-vision-exp": "deepseek-flash",
+  },
 };
 
 // ── Provider display names ────────────────────────────────────────────
@@ -235,4 +251,5 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [GROK_DRIVER_KIND]: "Grok",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
   [DEEPCODE_DRIVER_KIND]: "Deep Code",
+  [MUSE_DRIVER_KIND]: "Muse Code",
 };

@@ -6,6 +6,7 @@ import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DEFAULT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderApiKeyAccountAction, ProviderApiKeyAccounts } from "./providerApiKeyAccounts.ts";
 import {
   DEFAULT_ORCHESTRATOR_VOICE_PROVIDER,
   OrchestratorVoiceProvider,
@@ -537,6 +538,51 @@ export const DeepCodeSettings = makeProviderSettingsSchema(
 export type DeepCodeSettings = typeof DeepCodeSettings.Type;
 
 /**
+ * Meta Muse Code CLI (`muse`) — Meta's terminal coding agent.
+ *
+ * Turns run against a long-lived `muse serve` host speaking MSP, a JSON-RPC
+ * session protocol over stdio, so a session survives between turns and a
+ * mid-turn message joins the running turn natively. Model, reasoning effort,
+ * and approval mode are negotiated on the wire per session rather than through
+ * environment variables; credentials stay in `~/.config/muse`.
+ */
+export const MuseSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("muse").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Muse Code CLI binary (muse).",
+        providerSettingsForm: { placeholder: "muse", clearWhenEmpty: "omit" },
+      }),
+    ),
+    /**
+     * Loads the workspace's own skills and rules into every session. Off by
+     * default: a repo's agent config is code the workspace can change, so it
+     * is opt-in per provider instance rather than assumed.
+     */
+    trustWorkspace: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Trust workspace config",
+        description: "Load each workspace's own Muse skills and rules.",
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "trustWorkspace"],
+  },
+);
+export type MuseSettings = typeof MuseSettings.Type;
+
+/**
  * Configuration for a user-owned external provider bridge speaking the
  * `solla.provider-bridge/1` application contract over MCP stdio.
  *
@@ -721,6 +767,11 @@ export const OrchestratorSettings = Schema.Struct({
   ),
   model: TrimmedString.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_REALTIME_MODEL)),
+  ),
+  // Resolves the named Personal Assistant in this environment. Workers
+  // inherit its configured model and rules through the existing delegation system.
+  liveAgentName: TrimmedNonEmptyString.check(Schema.isMaxLength(64)).pipe(
+    Schema.withDecodingDefault(Effect.succeed("Personal Assistant")),
   ),
   voice: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_VOICE))),
   language: TrimmedString.pipe(
@@ -907,7 +958,24 @@ export const UsageGuardProviderSettingsPatch = Schema.Struct({
 });
 export type UsageGuardProviderSettingsPatch = typeof UsageGuardProviderSettingsPatch.Type;
 
+/** Exact provider-instance/model pairs; an empty allowlist intentionally allows nothing. */
+export const ModelAccessPolicy = Schema.Struct({
+  mode: Schema.Literals(["all", "block", "allow"]),
+  models: Schema.Array(
+    Schema.Struct({ instanceId: ProviderInstanceId, model: TrimmedNonEmptyString }),
+  ),
+});
+export type ModelAccessPolicy = typeof ModelAccessPolicy.Type;
+export const DEFAULT_MODEL_ACCESS_POLICY: ModelAccessPolicy = { mode: "all", models: [] };
+
 export const ServerSettings = Schema.Struct({
+  fallbackModelPolicy: ModelAccessPolicy.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MODEL_ACCESS_POLICY)),
+  ),
+  /** A root agent chat policy is inherited by all of its side chats. */
+  threadModelPolicies: Schema.Record(TrimmedNonEmptyString, ModelAccessPolicy).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   attachmentRetentionHours: AttachmentRetentionHours.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ATTACHMENT_RETENTION_HOURS)),
   ),
@@ -971,6 +1039,7 @@ export const ServerSettings = Schema.Struct({
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     deepcode: DeepCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    muse: MuseSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -979,6 +1048,9 @@ export const ServerSettings = Schema.Struct({
   // See providerInstance.ts for the forward/backward compatibility invariant.
   providerInstances: Schema.Record(ProviderInstanceId, ProviderInstanceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  providerApiKeyAccounts: Schema.optionalKey(
+    Schema.Record(ProviderInstanceId, ProviderApiKeyAccounts),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   usageGuard: UsageGuardSettings,
@@ -1008,6 +1080,7 @@ export class ServerSettingsError extends Schema.TaggedErrorClass<ServerSettingsE
     operation: ServerSettingsOperation,
     providerInstanceId: Schema.optional(Schema.String),
     environmentVariable: Schema.optional(Schema.String),
+    detail: Schema.optional(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
@@ -1018,7 +1091,10 @@ export class ServerSettingsError extends Schema.TaggedErrorClass<ServerSettingsE
       this.environmentVariable === undefined
         ? ""
         : ` and environment variable ${this.environmentVariable}`;
-    return `Server settings ${this.operation} failed${provider}${variable} at ${this.settingsPath}.`;
+    return (
+      this.detail ??
+      `Server settings ${this.operation} failed${provider}${variable} at ${this.settingsPath}.`
+    );
   }
 }
 
@@ -1088,6 +1164,13 @@ const DeepCodeSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const MuseSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  trustWorkspace: Schema.optionalKey(Schema.Boolean),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const OrchestratorSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   // Legacy write-only field. Older clients save it into whichever provider is
@@ -1098,6 +1181,7 @@ const OrchestratorSettingsPatch = Schema.Struct({
   xaiApiKey: Schema.optionalKey(TrimmedString),
   provider: Schema.optionalKey(OrchestratorVoiceProvider),
   model: Schema.optionalKey(TrimmedString),
+  liveAgentName: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
   voice: Schema.optionalKey(TrimmedString),
   language: Schema.optionalKey(TrimmedString),
   activation: Schema.optionalKey(OrchestratorActivationMode),
@@ -1128,6 +1212,9 @@ const OrchestratorSettingsPatch = Schema.Struct({
 export type OrchestratorSettingsPatch = typeof OrchestratorSettingsPatch.Type;
 
 export const ServerSettingsPatch = Schema.Struct({
+  fallbackModelPolicy: Schema.optionalKey(ModelAccessPolicy),
+  // Merge individual thread entries, replacing each entire policy atomically.
+  threadModelPolicies: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, ModelAccessPolicy)),
   // Server settings
   attachmentRetentionHours: Schema.optionalKey(AttachmentRetentionHours),
   autoCompactionThresholdPercentage: Schema.optionalKey(AutoCompactionThresholdPercentage),
@@ -1172,6 +1259,7 @@ export const ServerSettingsPatch = Schema.Struct({
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       antigravity: Schema.optionalKey(AntigravitySettingsPatch),
       deepcode: Schema.optionalKey(DeepCodeSettingsPatch),
+      muse: Schema.optionalKey(MuseSettingsPatch),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual
@@ -1179,6 +1267,7 @@ export const ServerSettingsPatch = Schema.Struct({
   // patches risk leaving driver-specific config in a half-merged state.
   // The web UI sends a fully-formed map every time it edits this field.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
+  providerApiKeyAccountAction: Schema.optionalKey(ProviderApiKeyAccountAction),
   usageGuard: Schema.optionalKey(
     Schema.Struct({
       enabled: Schema.optionalKey(Schema.Boolean),

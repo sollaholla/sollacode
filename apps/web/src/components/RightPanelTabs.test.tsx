@@ -65,6 +65,51 @@ describe("right-panel artifact access", () => {
     );
   });
 
+  it("leaves closing the sheet to the one control in the header", () => {
+    // The sheet header used to carry a "Close panel" X on the left while the
+    // layout controls on the right already held "Toggle right panel", which
+    // runs the identical close path when the panel is open. Two controls, one
+    // job, on the layout with the least room for either.
+    const markup = renderToStaticMarkup(
+      <RightPanelTabs
+        mode="sheet"
+        surfaces={[]}
+        activeSurfaceId={null}
+        pendingSurfaceIds={new Set()}
+        previewSessions={{}}
+        floatingPreviewTabIds={undefined}
+        terminalLabelsById={new Map()}
+        sideChatStatusByThreadId={new Map()}
+        onActivate={vi.fn()}
+        onCloseSurface={vi.fn()}
+        onCloseOtherSurfaces={vi.fn()}
+        onCloseSurfacesToRight={vi.fn()}
+        onCloseAllSurfaces={vi.fn()}
+        onRenameSurface={vi.fn()}
+        onReorderSurface={vi.fn()}
+        onCopyFilePath={vi.fn()}
+        onCopySideChatId={vi.fn()}
+        onAddBrowser={vi.fn()}
+        onAddTerminal={vi.fn()}
+        onAddDiff={vi.fn()}
+        onAddFiles={vi.fn()}
+        onAddSideChat={vi.fn()}
+        browserAvailable
+        diffAvailable
+        filesAvailable
+        sideChatAvailable
+        layoutControls={<button type="button" aria-label="Toggle right panel" />}
+      >
+        <div />
+      </RightPanelTabs>,
+    );
+
+    expect(markup).not.toContain('aria-label="Close panel"');
+    // The remaining way out has to actually be rendered — dropping the X
+    // without it would trap the sheet open.
+    expect(markup).toContain('aria-label="Toggle right panel"');
+  });
+
   it("wires the artifact shelf into the empty surface picker", () => {
     const markup = renderToStaticMarkup(
       <RightPanelTabs

@@ -23,6 +23,7 @@ import {
   PreviewAutomationOpenResult,
   PreviewAutomationResizeInput,
   PreviewAutomationResizeResult,
+  PreviewAutomationScrollInput,
   PreviewAutomationStatus,
   PreviewAutomationTypeInput,
   PreviewAutomationUploadInput,
@@ -39,6 +40,7 @@ const decodeServer = Schema.decodeUnknownSync(DiscoveredLocalServer);
 const decodeViewport = Schema.decodeUnknownSync(PreviewViewportSetting);
 const decodeResizeInput = Schema.decodeUnknownSync(PreviewAutomationResizeInput);
 const decodeDragInput = Schema.decodeUnknownSync(PreviewAutomationDragInput);
+const decodeScrollInput = Schema.decodeUnknownSync(PreviewAutomationScrollInput);
 const decodeTypeInput = Schema.decodeUnknownSync(PreviewAutomationTypeInput);
 const decodeCredentialFillInput = Schema.decodeUnknownSync(PreviewAutomationCredentialFillInput);
 const decodeOpenInput = Schema.decodeUnknownSync(PreviewAutomationOpenInput);
@@ -367,6 +369,26 @@ describe("PreviewAutomationDragInput", () => {
     expect(
       decodeDragInput({ tabId: "tab-canvas", from: { x: 1, y: 1 }, to: { x: 2, y: 2 } }),
     ).toMatchObject({ tabId: "tab-canvas" });
+  });
+});
+
+describe("PreviewAutomationScrollInput", () => {
+  it("scrolls at a point, a container, or the viewport", () => {
+    expect(decodeScrollInput({ x: 200, y: 450, deltaY: 300 })).toEqual({
+      x: 200,
+      y: 450,
+      deltaY: 300,
+    });
+    expect(decodeScrollInput({ locator: "#panel", deltaY: 10 })).toMatchObject({
+      locator: "#panel",
+    });
+    expect(decodeScrollInput({ deltaX: -5 })).toEqual({ deltaX: -5 });
+  });
+
+  it("rejects a lone coordinate, a point with a container, and no delta", () => {
+    expect(() => decodeScrollInput({ x: 200, deltaY: 10 })).toThrow();
+    expect(() => decodeScrollInput({ x: 1, y: 1, locator: "#panel", deltaY: 10 })).toThrow();
+    expect(() => decodeScrollInput({ x: 1, y: 1 })).toThrow();
   });
 });
 

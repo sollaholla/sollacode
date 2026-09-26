@@ -33,6 +33,7 @@ export interface PersistedUiState {
   settledShelfExpanded?: boolean;
   agentsSectionExpanded?: boolean;
   threadsSectionExpanded?: boolean;
+  agentHeaderCollapsed?: boolean;
   threadChangedFilesExpansionVersion?: typeof THREAD_CHANGED_FILES_EXPANSION_VERSION;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
   /**
@@ -71,6 +72,15 @@ export interface UiSidebarSectionState {
   threadsSectionExpanded: boolean;
 }
 
+/**
+ * Whether an agent's header card is folded into the phone top bar as just its
+ * avatar. One choice for every agent: it is about how much screen the reader
+ * gives the header, not about any one agent.
+ */
+export interface UiAgentHeaderState {
+  agentHeaderCollapsed: boolean;
+}
+
 export interface UiState
   extends
     UiProjectState,
@@ -78,7 +88,8 @@ export interface UiState
     UiEndpointState,
     UiProviderUsageState,
     UiSidebarShelfState,
-    UiSidebarSectionState {}
+    UiSidebarSectionState,
+    UiAgentHeaderState {}
 
 const initialState: UiState = {
   projectExpandedById: {},
@@ -91,6 +102,7 @@ const initialState: UiState = {
   settledShelfExpanded: false,
   agentsSectionExpanded: true,
   threadsSectionExpanded: true,
+  agentHeaderCollapsed: false,
 };
 
 const LEGACY_PROJECT_CWD_PREFERENCE_PREFIX = "legacy-project-cwd:";
@@ -181,6 +193,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
     // Sidebar sections start open: absent means "never collapsed", not "collapsed".
     agentsSectionExpanded: parsed.agentsSectionExpanded !== false,
     threadsSectionExpanded: parsed.threadsSectionExpanded !== false,
+    agentHeaderCollapsed: parsed.agentHeaderCollapsed === true,
   };
 }
 
@@ -273,6 +286,7 @@ export function persistState(state: UiState): void {
         settledShelfExpanded: state.settledShelfExpanded,
         agentsSectionExpanded: state.agentsSectionExpanded,
         threadsSectionExpanded: state.threadsSectionExpanded,
+        agentHeaderCollapsed: state.agentHeaderCollapsed,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -481,6 +495,7 @@ interface UiStateStore extends UiState {
   setSettledShelfExpanded: (expanded: boolean) => void;
   setAgentsSectionExpanded: (expanded: boolean) => void;
   setThreadsSectionExpanded: (expanded: boolean) => void;
+  setAgentHeaderCollapsed: (collapsed: boolean) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
   reorderProjects: (
     currentProjectOrder: readonly string[],
@@ -522,6 +537,12 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
       state.threadsSectionExpanded === expanded
         ? state
         : { ...state, threadsSectionExpanded: expanded },
+    ),
+  setAgentHeaderCollapsed: (collapsed) =>
+    set((state) =>
+      state.agentHeaderCollapsed === collapsed
+        ? state
+        : { ...state, agentHeaderCollapsed: collapsed },
     ),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),

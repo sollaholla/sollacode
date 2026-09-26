@@ -231,6 +231,21 @@ export interface ProjectionSnapshotQueryShape {
    * Read the immutable start request for one projected user message. Durable
    * work uses this instead of retaining renderer or event-stream state.
    */
+  /**
+   * Message ids with a durable delivery receipt at or after `since`, read
+   * straight from the activity projection rather than a bounded snapshot.
+   *
+   * A message steered into an already-running turn starts no provider turn, so
+   * a receipt is its only proof of delivery. Reading that proof from the
+   * 200-row thread snapshot let it age out on a busy thread and the message was
+   * re-sent by every later turn; this query has no such bound. Optional for
+   * compatibility with narrow test doubles.
+   */
+  readonly getThreadDeliveredMessageIds?: (
+    threadId: ThreadId,
+    since: string,
+  ) => Effect.Effect<ReadonlySet<string>, ProjectionRepositoryError>;
+
   readonly getThreadTurnStartContext?: (
     threadId: ThreadId,
     messageId: MessageId,
@@ -294,6 +309,14 @@ export interface ProjectionSnapshotQueryShape {
     threadId: ThreadId,
     kind: string,
   ) => Effect.Effect<Option.Option<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /** Latest explicit client selection, including reselecting the same model. */
+  readonly getLatestClientModelSelection?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<
+    Option.Option<{ readonly sequence: number; readonly createdAt: string }>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read a single active thread detail snapshot by id.

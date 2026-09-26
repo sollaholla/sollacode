@@ -111,6 +111,7 @@ function createProviderServiceHarness(
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
+    discardSessionHistory: () => unsupported(),
     listSessions,
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     getInstanceInfo: (instanceId) =>
@@ -699,10 +700,20 @@ describe("CheckpointReactor", () => {
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
   });
 
-  it("captures pre-turn and completion checkpoints for claude runtime events", async () => {
+  it.each([
+    "codex",
+    "claudeAgent",
+    "muse",
+    "antigravity",
+    "deepcode",
+    "grok",
+    "opencode",
+    "cursor",
+    "future-provider",
+  ])("captures pre-turn and completion checkpoints for %s runtime events", async (providerName) => {
     const harness = await createHarness({
       seedFilesystemCheckpoints: false,
-      providerName: ProviderDriverKind.make("claudeAgent"),
+      providerName: ProviderDriverKind.make(providerName),
     });
     const createdAt = "2026-01-01T00:00:00.000Z";
 
@@ -714,7 +725,7 @@ describe("CheckpointReactor", () => {
         session: {
           threadId: ThreadId.make("thread-1"),
           status: "ready",
-          providerName: "claudeAgent",
+          providerName: ProviderDriverKind.make(providerName),
           runtimeMode: "approval-required",
           activeTurnId: null,
           lastError: null,
@@ -727,7 +738,7 @@ describe("CheckpointReactor", () => {
     harness.provider.emit({
       type: "turn.started",
       eventId: EventId.make("evt-turn-started-claude-1"),
-      provider: ProviderDriverKind.make("claudeAgent"),
+      provider: ProviderDriverKind.make(providerName),
       createdAt: "2026-01-01T00:00:00.000Z",
       threadId: ThreadId.make("thread-1"),
       turnId: asTurnId("turn-claude-1"),
@@ -741,7 +752,7 @@ describe("CheckpointReactor", () => {
     harness.provider.emit({
       type: "turn.completed",
       eventId: EventId.make("evt-turn-completed-claude-1"),
-      provider: ProviderDriverKind.make("claudeAgent"),
+      provider: ProviderDriverKind.make(providerName),
       createdAt: "2026-01-01T00:00:00.000Z",
       threadId: ThreadId.make("thread-1"),
       turnId: asTurnId("turn-claude-1"),

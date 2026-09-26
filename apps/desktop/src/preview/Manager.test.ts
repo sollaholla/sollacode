@@ -1,4 +1,5 @@
 import { it as effectIt } from "@effect/vitest";
+import { PREVIEW_USER_INPUT_CHANNEL } from "../ipc/channels.ts";
 import type { DesktopPreviewRecordingFrame, PreviewDownload } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
@@ -575,6 +576,201 @@ describe("PreviewManager", () => {
     ),
   );
 
+  const readBackText = (value: unknown) => JSON.stringify(value);
+
+  effectIt.effect("fills a saved password only into a password field and never reads it back", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const secret = 'hunter2 "s3cret"';
+        let fillTarget: Record<string, boolean> = { ok: true };
+        const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+          if (method === "Page.captureScreenshot") {
+            return { data: Buffer.from("frame").toString("base64") };
+          }
+          if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+          if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+          if (method === "Page.createIsolatedWorld") return { executionContextId: 77 };
+          if (method !== "Runtime.evaluate") return {};
+          const expression = String(params?.["expression"] ?? "");
+          if (expression.includes("const module = { exports: {} };")) {
+            return { result: { value: true } };
+          }
+          if (expression.includes('doc.execCommand("insertText"')) {
+            return { result: { value: fillTarget } };
+          }
+          if (expression === "readForm()") {
+            return {
+              result: {
+                value: {
+                  password: secret,
+                  serialized: JSON.stringify({ password: secret }),
+                  [secret]: "key",
+                },
+              },
+            };
+          }
+          // A page that echoes the password into its own text and a GET URL.
+          return {
+            result: {
+              value: {
+                url: `https://example.com/login?password=${encodeURIComponent(secret)}`,
+                title: "Sign in",
+                loading: false,
+                visibleText: `Your password is ${secret}`,
+                documentKind: "html",
+                viewportWidth: 1280,
+                viewportHeight: 800,
+                interactiveElements: [],
+                structuralElements: [],
+              },
+            },
+          };
+        });
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com/login",
+          getTitle: () => "Sign in",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          isFocused: () => true,
+          focus: vi.fn(),
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          session: {},
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+          invalidate: vi.fn(),
+          beginFrameSubscription: vi.fn(),
+          endFrameSubscription: vi.fn(),
+          capturePage: vi.fn(),
+        } as never);
+
+        yield* manager.createTab("tab_login");
+        yield* manager.registerWebview("tab_login", 42);
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          isFocused: () => true,
+          once: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          webContents: { isDestroyed: () => false, on: vi.fn(), off: vi.fn() },
+        } as never);
+
+        // Any target but <input type="password"> is refused before insertion.
+        fillTarget = { credentialFieldRejected: true };
+        const refused = yield* Effect.exit(
+          manager.automationFillCredential("tab_login", "password", {
+            text: secret,
+            locator: "role=textbox[name='Email']",
+            clear: true,
+          }),
+        );
+        expect(Exit.isFailure(refused)).toBe(true);
+        const refusal = Exit.isFailure(refused) ? Cause.squash(refused.cause) : undefined;
+        expect(refusal).toBeInstanceOf(PreviewManager.PreviewCredentialTargetRejectedError);
+        expect(String((refusal as Error).message)).toContain("only into a password input");
+        const lastEvaluation = () =>
+          String(
+            sendCommand.mock.calls.findLast(([method]) => method === "Runtime.evaluate")?.[1]?.[
+              "expression"
+            ],
+          );
+        expect(lastEvaluation()).toContain('const allowedInputTypes = ["password"];');
+
+        // A PIN or code may also land in the plain text boxes sites use for them.
+        const codeRefused = yield* Effect.exit(
+          manager.automationFillCredential("tab_login", "code", {
+            text: secret,
+            locator: "role=button[name='Pay']",
+            clear: true,
+          }),
+        );
+        const codeRefusal = Exit.isFailure(codeRefused)
+          ? Cause.squash(codeRefused.cause)
+          : undefined;
+        expect(codeRefusal).toBeInstanceOf(PreviewManager.PreviewCredentialTargetRejectedError);
+        expect(String((codeRefusal as Error).message)).toContain("saved PIN or code");
+        expect(lastEvaluation()).toContain(
+          'const allowedInputTypes = ["password","text","tel","number","search"];',
+        );
+
+        fillTarget = { ok: true };
+        yield* manager.automationType("tab_login", { text: "person@example.com" });
+        expect(lastEvaluation()).toContain("const allowedInputTypes = null;");
+
+        yield* manager.automationFillCredential("tab_login", "password", {
+          text: secret,
+          locator: "input[type=password]",
+          clear: true,
+        });
+
+        const evaluated = yield* manager.automationEvaluate("tab_login", {
+          expression: "readForm()",
+        });
+        expect(readBackText(evaluated)).not.toContain("hunter2");
+        expect(evaluated).toEqual({
+          password: "••••••••",
+          serialized: '{"password":"••••••••"}',
+          "••••••••": "key",
+        });
+
+        const snapshot = yield* manager.automationSnapshot("tab_login");
+        const { screenshot: _screenshot, ...readBack } = snapshot as typeof snapshot & {
+          readonly screenshot?: unknown;
+        };
+        expect(readBackText(readBack)).not.toContain("hunter2");
+        expect(snapshot.visibleText).toBe("Your password is ••••••••");
+        expect(snapshot.url).toBe("https://example.com/login?password=••••••••");
+        // The page script itself never returns a password field's value.
+        const snapshotExpression = String(
+          sendCommand.mock.calls.find(
+            ([method, params]) =>
+              method === "Runtime.evaluate" &&
+              String(params?.["expression"] ?? "").includes("const selectorFor"),
+          )?.[1]?.["expression"],
+        );
+        expect(snapshotExpression).toContain(
+          'element instanceof HTMLInputElement && element.type === "password"',
+        );
+      }),
+    ),
+  );
+
+  it("masks filled passwords in raw, JSON-escaped, and URL-encoded forms", () => {
+    const secrets = new Set(["a b&c", "a b"]);
+    expect(
+      PreviewManager.redactFilledSecrets(
+        {
+          raw: "x a b&c y",
+          query: "?p=a%20b%26c&q=a+b%26c",
+          list: ["a b", 3, null, true],
+        },
+        secrets,
+      ),
+    ).toEqual({
+      raw: "x •••••••• y",
+      query: "?p=••••••••&q=••••••••",
+      list: ["••••••••", 3, null, true],
+    });
+    const untouched = { value: "a b" };
+    expect(PreviewManager.redactFilledSecrets(untouched, undefined)).toBe(untouched);
+    expect(PreviewManager.redactFilledSecrets(untouched, new Set())).toBe(untouched);
+  });
+
   effectIt.effect("refuses a held download when the tab asking about it closes", () =>
     withManager((manager) =>
       Effect.gen(function* () {
@@ -745,6 +941,78 @@ describe("PreviewManager", () => {
         expect(loadURL).toHaveBeenCalledWith("http://localhost:3200/");
       }),
     ),
+  );
+
+  effectIt.effect(
+    "reports when a tab starts and stops making sound, and mints its capture id for the window showing it",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const listeners = new Map<string, (...args: never[]) => void>();
+          const embedder = { isDestroyed: () => false };
+          const getMediaSourceId = vi.fn(() => "tab-audio-source");
+          fromId.mockReturnValue({
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://music.example/",
+            getTitle: () => "Music",
+            isLoading: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            loadURL: vi.fn(async () => undefined),
+            executeJavaScript: vi.fn(() => new Promise(() => {})),
+            on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+              listeners.set(event, listener);
+            }),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            hostWebContents: embedder,
+            getMediaSourceId,
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand: vi.fn(async () => undefined),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never);
+          const audible: Array<boolean | undefined> = [];
+          yield* manager.subscribeStateChanges((tabId, state) =>
+            Effect.sync(() => {
+              if (tabId === "tab_audio") audible.push(state.audible);
+            }),
+          );
+
+          yield* manager.createTab("tab_audio");
+          yield* manager.registerWebview("tab_audio", 42);
+          yield* Effect.yieldNow;
+          const emitAudible = (value: boolean) =>
+            (
+              listeners.get("audio-state-changed") as
+                | ((event: { audible: boolean }) => void)
+                | undefined
+            )?.({
+              audible: value,
+            });
+
+          emitAudible(true);
+          yield* Effect.yieldNow;
+          // The same state again is not news.
+          emitAudible(true);
+          yield* Effect.yieldNow;
+          emitAudible(false);
+          yield* Effect.yieldNow;
+          expect(audible.filter((value) => value !== undefined)).toEqual([true, false]);
+
+          expect(yield* manager.getTabAudioSource("tab_audio")).toBe("tab-audio-source");
+          expect(getMediaSourceId).toHaveBeenCalledWith(embedder);
+          expect(yield* manager.getTabAudioSource("tab_missing")).toBeNull();
+        }),
+      ),
   );
 
   effectIt.effect("dispatches navigation without waiting for a background load to settle", () =>
@@ -2491,6 +2759,7 @@ describe("PreviewManager", () => {
         // The first timer has elapsed, but the newer input still owns the
         // indicator and its full debounce window.
         expect(stateChanges.at(-1)?.controller).toBe("human");
+        expect(stateChanges.at(-1)?.lastInteractionAt).toEqual(expect.any(String));
 
         yield* manager.registerWebview("tab_replaced_callbacks", 43);
         expect(stateChanges.at(-1)).toMatchObject({ webContentsId: 43, controller: "none" });
@@ -2705,6 +2974,106 @@ describe("PreviewManager", () => {
         expect(focusApp).toHaveBeenCalledOnce();
       }),
     ),
+  );
+
+  effectIt.effect(
+    "keeps the keyboard in a guest the user just clicked while its panel flickers",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let beforeMouse: ((event: unknown, mouse: Electron.MouseInputEvent) => void) | undefined;
+          let beforeInput: ((event: unknown, input: Electron.Input) => void) | undefined;
+          const focusApp = vi.fn();
+          const hostWebContents = {
+            isDestroyed: () => false,
+            focus: focusApp,
+            executeJavaScript: vi.fn(async () => true),
+            sendInputEvent: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+          };
+          yield* manager.setMainWindow({
+            isDestroyed: () => false,
+            focus: vi.fn(),
+            once: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            webContents: hostWebContents,
+          } as never);
+          const guest = {
+            id: 42,
+            hostWebContents,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com/sign-in",
+            getTitle: () => "Sign in",
+            isLoading: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            on: vi.fn((event: string, listener: unknown) => {
+              if (event === "before-mouse-event") beforeMouse = listener as typeof beforeMouse;
+              if (event === "before-input-event") beforeInput = listener as typeof beforeInput;
+            }),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            invalidate: vi.fn(),
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand: vi.fn(async () => undefined),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never;
+          fromId.mockReturnValue(guest);
+          yield* manager.createTab("tab_sign_in");
+          yield* manager.registerWebview("tab_sign_in", 42);
+          yield* manager.setUiActivity("tab_sign_in", "visible-surface", true);
+          getFocusedWebContents.mockReturnValue(guest);
+          const key: Electron.Input = {
+            type: "keyDown",
+            key: "a",
+            code: "KeyA",
+            isAutoRepeat: false,
+            isComposing: false,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+            location: 0,
+            modifiers: [],
+          };
+          const keyReclaimed = () => {
+            const event = { preventDefault: vi.fn() };
+            beforeInput?.(event, key);
+            return event.preventDefault.mock.calls.length > 0;
+          };
+
+          // Clicking the page's input focuses the <webview>; the host document
+          // blurs and the renderer reports the panel hidden for a few ms.
+          beforeMouse?.({}, { type: "mouseDown", x: 200, y: 120, button: "left" });
+          yield* manager.setUiActivity("tab_sign_in", "visible-surface", false);
+          yield* manager.setUiActivity("tab_sign_in", "visible-surface", false);
+          yield* manager.setUiActivity("tab_sign_in", "visible-surface", true);
+          expect(focusApp).not.toHaveBeenCalled();
+          expect(keyReclaimed()).toBe(false);
+          yield* TestClock.adjust(PreviewManager.GUEST_CLICK_SURFACE_SETTLE_MS + 1);
+          expect(focusApp).not.toHaveBeenCalled();
+          expect(keyReclaimed()).toBe(false);
+
+          // A panel that really does hide right after a click still hands the
+          // keyboard back once the click has settled.
+          beforeMouse?.({}, { type: "mouseDown", x: 200, y: 120, button: "left" });
+          yield* manager.setUiActivity("tab_sign_in", "visible-surface", false);
+          expect(focusApp).not.toHaveBeenCalled();
+          yield* TestClock.adjust(PreviewManager.GUEST_CLICK_SURFACE_SETTLE_MS + 1);
+          expect(focusApp).toHaveBeenCalledOnce();
+          expect(keyReclaimed()).toBe(true);
+        }),
+      ),
   );
 
   effectIt.effect("emits guest new-tab links without navigating the source tab", () =>
@@ -3110,6 +3479,7 @@ describe("PreviewManager", () => {
         popupHumanInput?.({}, { kind: "pointer", x: 20, y: 30, button: 0 });
         yield* Effect.yieldNow;
         expect(states.at(-1)?.controller).toBe("human");
+        expect(states.at(-1)?.lastInteractionAt).toEqual(expect.any(String));
 
         popupDestroyed = true;
         popupClosed?.();
@@ -3546,12 +3916,152 @@ describe("PreviewManager", () => {
           tabId: "tab_held",
         });
         expect((error as { waitedMs: number }).waitedMs).toBeGreaterThanOrEqual(2_500);
+        // The error names what kept the hold on, so a false hold can be told
+        // apart from a person typing without a debugger attached.
+        expect(error).toMatchObject({
+          source: "app-key",
+          pushToTalkActive: false,
+        });
+        expect((error as { renewals: number }).renewals).toBeGreaterThanOrEqual(5);
+        expect((error as { lastInputAgoMs: number }).lastInputAgoMs).toBeLessThan(
+          PreviewManager.USER_INPUT_DEFERRAL_MS,
+        );
+        expect((error as Error).message).toContain("held by app-key");
         // Nothing was ever dispatched to the page.
         expect(
           sendCommand.mock.calls.filter(([method]) => method === "Input.dispatchMouseEvent"),
         ).toEqual([]);
       }),
     ),
+  );
+
+  effectIt.effect.each(["renderer-fresh", "renderer-repeat", "native-repeat"] as const)(
+    "protects sustained %s and a later pointer takeover before permitting the click",
+    (source) =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          // A high-rate stream can be genuine input. It remains protected,
+          // including past the former ten-second cap; only quiet releases it.
+          const sendCommand = vi.fn<(method: string, params?: unknown) => Promise<unknown>>(
+            async (method) =>
+              method === "Runtime.evaluate"
+                ? { result: { value: { width: 1280, height: 800 } } }
+                : undefined,
+          );
+          const ipcListeners = new Map<string, (event: unknown, report?: unknown) => void>();
+          const nativeListeners = new Map<
+            string,
+            (event: Electron.Event, input: Electron.Input) => void
+          >();
+          const mainWebContents = {
+            sendInputEvent: vi.fn(),
+            on: vi.fn(
+              (event: string, listener: (event: Electron.Event, input: Electron.Input) => void) => {
+                nativeListeners.set(event, listener);
+              },
+            ),
+            off: vi.fn(),
+            isDestroyed: () => false,
+            ipc: {
+              on: vi.fn((channel: string, listener: (event: unknown, report?: unknown) => void) => {
+                ipcListeners.set(channel, listener);
+              }),
+              off: vi.fn(),
+            },
+          };
+          yield* manager.setMainWindow({
+            isDestroyed: () => false,
+            once: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            webContents: mainWebContents,
+          } as never);
+          fromId.mockReturnValue({
+            id: 42,
+            hostWebContents: mainWebContents,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            session: {},
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never);
+          yield* manager.createTab("tab_storm");
+          yield* manager.registerWebview("tab_storm", 42);
+          yield* TestClock.adjust(10_000);
+
+          const report = ipcListeners.get(PREVIEW_USER_INPUT_CHANNEL);
+          expect(report).toBeDefined();
+          const storm = () => {
+            if (source === "native-repeat") {
+              nativeListeners.get("before-input-event")?.({} as Electron.Event, {
+                type: "keyDown",
+                key: "ArrowDown",
+                code: "ArrowDown",
+                isAutoRepeat: true,
+                isComposing: false,
+                shift: false,
+                control: false,
+                alt: false,
+                meta: false,
+                location: 0,
+                modifiers: [],
+              });
+            } else {
+              report?.(undefined, {
+                eventType: "keydown",
+                repeat: source === "renderer-repeat",
+                key: "ArrowDown",
+              });
+            }
+          };
+          storm();
+          const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+          const click = yield* manager
+            .automationClick("tab_storm", { x: 120, y: 80 }, { expiresAt: now + 40_000 })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          // 25 events a second for 20 seconds straight.
+          for (let elapsed = 0; elapsed < 20_000; elapsed += 40) {
+            yield* TestClock.adjust(40);
+            storm();
+            yield* Effect.yieldNow;
+          }
+          expect(
+            sendCommand.mock.calls.filter(([method]) => method === "Input.dispatchMouseEvent"),
+          ).toEqual([]);
+          // A different input source takes over just before the old hold expires.
+          // Crossing the old deadline must not let the pending click through.
+          yield* TestClock.adjust(4_000);
+          report?.(undefined, { eventType: "pointerdown", pointerType: "mouse", button: 0 });
+          yield* TestClock.adjust(PreviewManager.USER_INPUT_DEFERRAL_MS - 500);
+          expect(
+            sendCommand.mock.calls.filter(([method]) => method === "Input.dispatchMouseEvent"),
+          ).toEqual([]);
+          yield* TestClock.adjust(700);
+          const exit = yield* Fiber.await(click);
+          if (Exit.isFailure(exit)) throw new Error(`click failed: ${Cause.pretty(exit.cause)}`);
+          expect(
+            sendCommand.mock.calls.filter(([method]) => method === "Input.dispatchMouseEvent")
+              .length,
+          ).toBeGreaterThan(0);
+        }),
+      ),
   );
 
   effectIt.effect("does not dereference the main WebContents after its window closes", () =>
@@ -6450,6 +6960,198 @@ describe("PreviewManager", () => {
       ),
   );
 
+  effectIt.effect(
+    "returns a remote right-click's menu as data and hands later right-clicks back to the native menu",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const listeners = new Map<string, (...args: unknown[]) => void>();
+          let pageShowsOwnMenu = false;
+          const menuParams = {
+            pageURL: "https://example.com/article",
+            linkURL: "https://example.com/next",
+            linkText: "Next",
+            srcURL: "",
+            mediaType: "none",
+            isEditable: false,
+            selectionText: "",
+            editFlags: { canUndo: false, canRedo: false, canSelectAll: true },
+          };
+          const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+            if (method === "Runtime.evaluate") {
+              return { result: { value: { width: 800, height: 600 } } };
+            }
+            if (
+              !pageShowsOwnMenu &&
+              method === "Input.dispatchMouseEvent" &&
+              params?.type === "mouseReleased" &&
+              params.button === "right"
+            ) {
+              listeners.get("context-menu")?.({}, menuParams);
+            }
+            return undefined;
+          });
+          const undo = vi.fn();
+          fromId.mockReturnValue({
+            id: 44,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com/article",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+              listeners.set(event, listener);
+            }),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            undo,
+            navigationHistory: { canGoBack: () => true, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never);
+          // The native menu's first step: a null window ends it without a popup.
+          const fromWebContents = vi.fn(() => null);
+          Object.assign(browserWindowConstructor, { fromWebContents });
+
+          yield* manager.createTab("tab_menu");
+          yield* manager.registerWebview("tab_menu", 44);
+
+          const captured = yield* manager
+            .automationContextMenu("tab_menu", { x: 120, y: 90 })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(2_000);
+          expect(yield* Fiber.join(captured)).toEqual({
+            menu: {
+              pageUrl: "https://example.com/article",
+              linkUrl: "https://example.com/next",
+              linkText: "Next",
+              srcUrl: "",
+              mediaType: "none",
+              isEditable: false,
+              selectionText: "",
+              canUndo: false,
+              canRedo: false,
+              canSelectAll: true,
+              canGoBack: true,
+              canGoForward: false,
+            },
+          });
+          expect(
+            sendCommand.mock.calls
+              .filter(([method]) => method === "Input.dispatchMouseEvent")
+              .map(([, params]) => [params?.type, params?.button]),
+          ).toContainEqual(["mousePressed", "right"]);
+          expect(fromWebContents).not.toHaveBeenCalled();
+
+          // A page that swallows the event draws its own menu into the frame.
+          pageShowsOwnMenu = true;
+          const swallowed = yield* manager
+            .automationContextMenu("tab_menu", { x: 10, y: 10 })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(2_000);
+          expect(yield* Fiber.join(swallowed)).toEqual({ menu: null });
+
+          // The expired waiter is gone: a desktop right-click opens the native menu.
+          listeners.get("context-menu")?.({}, menuParams);
+          yield* TestClock.adjust(0);
+          expect(fromWebContents).toHaveBeenCalledTimes(1);
+
+          expect(yield* manager.automationContextMenu("tab_menu", { command: "undo" })).toEqual({
+            menu: null,
+          });
+          expect(undo).toHaveBeenCalledTimes(1);
+          Object.assign(browserWindowConstructor, { fromWebContents: undefined });
+        }),
+      ),
+  );
+
+  effectIt.effect("keeps a right hold's context menu off the desktop", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const listeners = new Map<string, (...args: unknown[]) => void>();
+        const menuParams = {
+          pageURL: "https://example.com/game",
+          linkURL: "",
+          linkText: "",
+          srcURL: "",
+          mediaType: "canvas",
+          isEditable: false,
+          selectionText: "",
+          editFlags: { canUndo: false, canRedo: false, canSelectAll: false },
+        };
+        const sendCommand = vi.fn(async (method: string) =>
+          method === "Runtime.evaluate"
+            ? { result: { value: { width: 800, height: 600 } } }
+            : undefined,
+        );
+        fromId.mockReturnValue({
+          id: 45,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com/game",
+          getTitle: () => "Game",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            listeners.set(event, listener);
+          }),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+        const fromWebContents = vi.fn(() => null);
+        Object.assign(browserWindowConstructor, { fromWebContents });
+
+        yield* manager.createTab("tab_hold");
+        yield* manager.registerWebview("tab_hold", 45);
+
+        const hold = yield* manager
+          .automationDrag("tab_hold", {
+            from: { x: 100, y: 100 },
+            to: { x: 100, y: 100 },
+            button: "right",
+            holdMs: 600,
+          })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        // The press, eight steps and the hold take under a second.
+        yield* TestClock.adjust(1_000);
+        yield* Fiber.join(hold);
+        // Windows reports the menu after the release, once the drag is over.
+        listeners.get("context-menu")?.({}, menuParams);
+        yield* TestClock.adjust(0);
+        expect(fromWebContents).not.toHaveBeenCalled();
+
+        // Once the swallow window closes, a desktop right-click opens the native menu.
+        yield* TestClock.adjust(1_000);
+        listeners.get("context-menu")?.({}, menuParams);
+        yield* TestClock.adjust(0);
+        expect(fromWebContents).toHaveBeenCalledTimes(1);
+        Object.assign(browserWindowConstructor, { fromWebContents: undefined });
+      }),
+    ),
+  );
+
   effectIt.effect("keeps Playwright out of the main world and renews it after navigation", () =>
     withManager((manager) =>
       Effect.gen(function* () {
@@ -6571,12 +7273,78 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("scrolls at a point with a real wheel so inner panels move", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+          if (method !== "Runtime.evaluate") return undefined;
+          const expression = String(params?.["expression"] ?? "");
+          if (expression.includes("window.innerWidth")) {
+            return { result: { value: { width: 800, height: 600 } } };
+          }
+          return { result: { value: true } };
+        });
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+        yield* manager.createTab("tab_wheel");
+        yield* manager.registerWebview("tab_wheel", 42);
+
+        yield* manager.automationScroll("tab_wheel", { x: 200, y: 450, deltaY: 300 });
+
+        const wheels = sendCommand.mock.calls.filter(
+          ([method]) => method === "Input.dispatchMouseEvent",
+        );
+        expect(wheels).toEqual([
+          [
+            "Input.dispatchMouseEvent",
+            { type: "mouseWheel", x: 200, y: 450, deltaX: 0, deltaY: 300 },
+          ],
+        ]);
+        expect(
+          sendCommand.mock.calls.some(([, params]) =>
+            String(params?.["expression"] ?? "").includes("scrollBy"),
+          ),
+        ).toBe(false);
+
+        const outside = yield* Effect.exit(
+          manager.automationScroll("tab_wheel", { x: 900, y: 10, deltaY: 1 }),
+        );
+        expect(Exit.isFailure(outside) ? Cause.squash(outside.cause) : undefined).toMatchObject({
+          _tag: "PreviewAutomationCoordinatesOutsideViewportError",
+        });
+      }),
+    ),
+  );
+
   effectIt.effect(
     "keeps text edits inside the guest document and preserves explicit key cleanup",
     () =>
       withManager((manager) =>
         Effect.gen(function* () {
           let failKeyDown = false;
+          let keyUpFailuresRemaining = 0;
           let interruptText = false;
           let guestKey: ((event: Electron.Event, input: Electron.Input) => void) | undefined;
           let mainKey: ((event: Electron.Event, input: Electron.Input) => void) | undefined;
@@ -6601,6 +7369,14 @@ describe("PreviewManager", () => {
           } as never);
           let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
           const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+            if (
+              keyUpFailuresRemaining > 0 &&
+              method === "Input.dispatchKeyEvent" &&
+              params?.type === "keyUp"
+            ) {
+              keyUpFailuresRemaining -= 1;
+              throw new Error("key release failed");
+            }
             if (interruptText && method === "Runtime.enable") {
               mainKey?.(
                 {} as Electron.Event,
@@ -6728,12 +7504,12 @@ describe("PreviewManager", () => {
           const textEdits = calls.filter(
             ([method, params]) =>
               method === "Runtime.evaluate" &&
-              String(params?.expression).includes('document.execCommand("insertText"'),
+              String(params?.expression).includes('doc.execCommand("insertText"'),
           );
           expect(textEdits).toHaveLength(3);
           expect(textEdits[0]?.[1]?.expression).toContain('const text = "hello"');
-          expect(textEdits[1]?.[1]?.expression).toContain("document.elementFromPoint(120, 80)");
-          expect(textEdits[2]?.[1]?.expression).toContain('document.execCommand("delete"');
+          expect(textEdits[1]?.[1]?.expression).toContain('{"kind":"point","x":120,"y":80}');
+          expect(textEdits[2]?.[1]?.expression).toContain('doc.execCommand("delete"');
           expect(
             calls.filter(
               ([method, params]) => method === "Input.dispatchKeyEvent" && params?.type === "char",
@@ -6807,6 +7583,26 @@ describe("PreviewManager", () => {
             unmodifiedText: "!",
           });
           expect(restoreFocus).toHaveBeenCalledTimes(3);
+          // A rejected release must not report a successful press. Try the
+          // owned key's release again during cleanup, including when the
+          // transport also rejects that second attempt.
+          for (const failures of [1, 2]) {
+            sendCommand.mockClear();
+            keyUpFailuresRemaining = failures;
+            const failedRelease = yield* Effect.exit(
+              manager.automationPress("tab_input", { key: "ArrowDown" }),
+            );
+            expect(Exit.isFailure(failedRelease)).toBe(true);
+            expect(
+              sendCommand.mock.calls.filter(
+                ([method, params]) =>
+                  method === "Input.dispatchKeyEvent" && params?.type === "keyUp",
+              ),
+            ).toHaveLength(2);
+            expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+              enabled: false,
+            });
+          }
           sendCommand.mockClear();
           yield* manager.automationType("tab_input", {
             text: "Hello 🌌 café\nNext\r\nLast",
@@ -7212,8 +8008,31 @@ describe("PREVIEW_TYPED_TEXT_LANDED_JS", () => {
     expect(landed(new FakeTextArea("line one\nline two"), "line one\r\nline two")).toBe(true);
   });
 
+  it("accepts a rich editor that rendered a blank line as extra block breaks", () => {
+    // Gmail's body: `<div>a</div><div><br></div><div>b</div>` reads back as
+    // three newlines for the two requested (reported 2026-09-13 as a false
+    // "textDidNotReachGuest" with the whole email visibly in place).
+    expect(
+      landed(
+        { innerText: "Hello Dr. Rao,\n\n\nPlease find the SDP attached.\n" },
+        "Hello Dr. Rao,\n\nPlease find the SDP attached.",
+      ),
+    ).toBe(true);
+  });
+
+  it("still rejects text whose words did not land, whatever the spacing", () => {
+    expect(landed({ innerText: "Hello Dr. Rao,\n\n\n" }, "Hello Dr. Rao,\n\nPlease find")).toBe(
+      false,
+    );
+  });
+
   it("still reports text that never reached the guest", () => {
     expect(landed({ innerText: "", textContent: "" }, "line one\nline two")).toBe(false);
+  });
+
+  it("reads the value of an input that belongs to an iframe's realm", () => {
+    // Not an instance of this page's HTMLInputElement, and its innerText is empty.
+    expect(landed({ tagName: "INPUT", value: "4821", innerText: "" }, "4821")).toBe(true);
   });
 
   it("reads an input's value rather than its text content", () => {
@@ -7222,5 +8041,311 @@ describe("PREVIEW_TYPED_TEXT_LANDED_JS", () => {
 
   it("reports an element that exposes no readable text", () => {
     expect(landed({}, "typed")).toBe(false);
+  });
+});
+
+describe("PREVIEW_EDIT_TARGET_JS", () => {
+  interface FakeDocument {
+    readonly elementFromPoint?: (x: number, y: number) => unknown;
+    readonly activeElement?: unknown;
+    readonly frames?: readonly unknown[];
+  }
+  const fakeDocument = (spec: FakeDocument) => ({
+    elementFromPoint: spec.elementFromPoint ?? (() => null),
+    activeElement: spec.activeElement ?? null,
+    querySelectorAll: () => spec.frames ?? [],
+  });
+  // An iframe 100px from the left and 50px from the top, 2px border, 3px left padding.
+  const frame = (contentDocument: unknown) => ({
+    tagName: "IFRAME",
+    contentDocument,
+    clientLeft: 2,
+    clientTop: 2,
+    getBoundingClientRect: () => ({ left: 100, top: 50 }),
+    ownerDocument: {
+      defaultView: { getComputedStyle: () => ({ paddingLeft: "3px", paddingTop: "0px" }) },
+    },
+  });
+  const resolve = (
+    document: unknown,
+    target: unknown,
+    query: (part: string, root: unknown) => unknown = () => null,
+  ) =>
+    (
+      new Function("document", `return ${PreviewManager.PREVIEW_EDIT_TARGET_JS};`)(document) as (
+        target: unknown,
+        query: (part: string, root: unknown) => unknown,
+      ) => unknown
+    )(target, query);
+
+  it("descends through a same-origin frame under a point", () => {
+    const pin = { tagName: "INPUT" };
+    const inner = fakeDocument({
+      elementFromPoint: (x, y) => (x === 347 && y === 237 ? pin : null),
+    });
+    const top = fakeDocument({ elementFromPoint: () => frame(inner) });
+    expect(resolve(top, { kind: "point", x: 452, y: 289 })).toEqual({ element: pin });
+  });
+
+  it("reports a cross-origin frame instead of editing the iframe element", () => {
+    const top = fakeDocument({ elementFromPoint: () => frame(null) });
+    expect(resolve(top, { kind: "point", x: 452, y: 289 })).toEqual({ crossOriginFrame: true });
+    expect(resolve(fakeDocument({ activeElement: frame(null) }), { kind: "focused" })).toEqual({
+      crossOriginFrame: true,
+    });
+  });
+
+  it("follows focus into the focused frame", () => {
+    const pin = { tagName: "INPUT" };
+    const top = fakeDocument({ activeElement: frame(fakeDocument({ activeElement: pin })) });
+    expect(resolve(top, { kind: "focused" })).toEqual({ element: pin });
+  });
+
+  it("enters each frame a Playwright frame locator names", () => {
+    const pin = { tagName: "INPUT" };
+    const inner = fakeDocument({});
+    const payFrame = frame(inner);
+    const top = fakeDocument({});
+    const query = vi.fn((part: string, root: unknown) =>
+      part === "iframe#pay" && root === top
+        ? payFrame
+        : part === "#pin" && root === inner
+          ? pin
+          : null,
+    );
+    expect(resolve(top, { kind: "locator", parts: ["iframe#pay", "#pin"] }, query)).toEqual({
+      element: pin,
+    });
+    expect(resolve(top, { kind: "locator", parts: ["#pin", "#pin"] }, query)).toEqual({
+      notFound: true,
+    });
+  });
+
+  it("finds a field the page lacks inside its same-origin frames", () => {
+    const pin = { tagName: "INPUT" };
+    const inner = fakeDocument({});
+    const top = fakeDocument({ frames: [frame(null), frame(inner)] });
+    const query = vi.fn((part: string, root: unknown) =>
+      part === "#pin" && root === inner ? pin : null,
+    );
+    expect(resolve(top, { kind: "locator", parts: ["#pin"] }, query)).toEqual({ element: pin });
+    expect(resolve(top, { kind: "locator", parts: ["#missing"] }, query)).toEqual({
+      notFound: true,
+    });
+  });
+
+  it("splits Playwright's frame locator form and leaves other chains alone", () => {
+    expect(
+      PreviewManager.splitFrameLocator(
+        'iframe[id="rp-4910056-abc"] >> internal:control=enter-frame >> #Wh-subfourdigitPin',
+      ),
+    ).toEqual(['iframe[id="rp-4910056-abc"]', "#Wh-subfourdigitPin"]);
+    expect(PreviewManager.splitFrameLocator("role=textbox[name='PIN'] >> nth=0")).toEqual([
+      "role=textbox[name='PIN'] >> nth=0",
+    ]);
+  });
+});
+
+describe("PREVIEW_INSERT_TEXT_JS", () => {
+  const execute = (
+    element: { innerText: string; textContent: string },
+    insert: (command: string, showUi?: boolean, text?: string) => boolean,
+    paste?: (text: string) => void,
+    removeSelection?: () => void,
+  ) => {
+    let mutation: (() => void) | undefined;
+    const disconnect = vi.fn();
+    const execCommand = vi.fn(insert);
+    const dispatchEvent = vi.fn(
+      (event: {
+        clipboardData?: { getData: (type: string) => string };
+        inputType?: string;
+        defaultPrevented: boolean;
+      }) => {
+        if (paste && event.clipboardData) {
+          event.defaultPrevented = true;
+          paste(event.clipboardData.getData("text/plain"));
+        } else if (removeSelection && event.inputType === "deleteContentBackward") {
+          event.defaultPrevented = true;
+          removeSelection();
+        }
+        return !event.defaultPrevented;
+      },
+    );
+    Object.assign(element, { dispatchEvent });
+    const run = new Function(
+      "document",
+      "HTMLInputElement",
+      "HTMLTextAreaElement",
+      "MutationObserver",
+      "DataTransfer",
+      "ClipboardEvent",
+      "InputEvent",
+      `return ${PreviewManager.PREVIEW_INSERT_TEXT_JS};`,
+    )(
+      {
+        execCommand,
+        addEventListener: (_event: string, listener: () => void) => queueMicrotask(listener),
+        removeEventListener: vi.fn(),
+      },
+      class {},
+      class {},
+      class {
+        constructor(callback: () => void) {
+          mutation = callback;
+        }
+        observe() {}
+        disconnect = disconnect;
+      },
+      class {
+        text = "";
+        setData(_type: string, text: string) {
+          this.text = text;
+        }
+        getData() {
+          return this.text;
+        }
+      },
+      class {
+        defaultPrevented = false;
+        clipboardData: unknown;
+        constructor(_type: string, options: { clipboardData: unknown }) {
+          this.clipboardData = options.clipboardData;
+        }
+      },
+      class {
+        defaultPrevented = false;
+        inputType: string;
+        constructor(_type: string, options: { inputType: string }) {
+          this.inputType = options.inputType;
+        }
+      },
+    ) as (element: unknown, text: string, clear: boolean, textControl: boolean) => Promise<boolean>;
+    return {
+      run: (text = "typed note") => run(element, text, true, false),
+      execCommand,
+      dispatchEvent,
+      disconnect,
+      commit: () => mutation?.(),
+    };
+  };
+
+  it("lets the editor consume selectionchange before replacing existing content", async () => {
+    const element = { innerText: "old contents", textContent: "old contents" };
+    const fixture = execute(element, (_command, _showUi, text) => {
+      element.innerText = element.textContent = text ?? "";
+      return false;
+    });
+    const result = fixture.run();
+    expect(fixture.execCommand).not.toHaveBeenCalled();
+    expect(await result).toBe(true);
+    expect(element.innerText).toBe("typed note");
+    expect(fixture.execCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves blank paragraphs through a controlled paste without replaying native insertion", async () => {
+    const element = { innerText: "", textContent: "" };
+    const fixture = execute(
+      element,
+      () => false,
+      (text) => {
+        queueMicrotask(() => {
+          element.innerText = element.textContent = text;
+          fixture.commit();
+        });
+      },
+    );
+    expect(await fixture.run("first paragraph\n\nsecond paragraph")).toBe(true);
+    expect(element.innerText).toBe("first paragraph\n\nsecond paragraph");
+    expect(fixture.dispatchEvent).toHaveBeenCalledTimes(1);
+    expect(fixture.execCommand).not.toHaveBeenCalled();
+  });
+
+  it("clears an existing selection without dispatching an empty paste", async () => {
+    const element = { innerText: "old contents", textContent: "old contents" };
+    const fixture = execute(element, (command) => {
+      if (command === "delete") element.innerText = element.textContent = "";
+      return true;
+    });
+    expect(await fixture.run("")).toBe(true);
+    expect(fixture.execCommand).toHaveBeenCalledExactlyOnceWith("delete", false);
+    expect(fixture.dispatchEvent).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ inputType: "deleteContentBackward" }),
+    );
+  });
+
+  it("clears a controlled editor through beforeinput without native replay", async () => {
+    const element = { innerText: "old contents", textContent: "old contents" };
+    const fixture = execute(
+      element,
+      () => false,
+      undefined,
+      () => {
+        queueMicrotask(() => {
+          element.innerText = element.textContent = "";
+          fixture.commit();
+        });
+      },
+    );
+    expect(await fixture.run("")).toBe(true);
+    expect(fixture.execCommand).not.toHaveBeenCalled();
+    expect(fixture.dispatchEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay a cancelled paste whose editor never commits", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = execute(
+        { innerText: "", textContent: "" },
+        () => true,
+        () => {},
+      );
+      const result = fixture.run("missing text");
+      await vi.runAllTimersAsync();
+      expect(await result).toBe(false);
+      expect(fixture.dispatchEvent).toHaveBeenCalledTimes(1);
+      expect(fixture.execCommand).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("accepts a controlled editor that cancels native insertion but commits in a microtask", async () => {
+    const element = { innerText: "", textContent: "" };
+    const fixture = execute(element, () => {
+      queueMicrotask(() => {
+        element.innerText = element.textContent = "typed note";
+        fixture.commit();
+      });
+      return false;
+    });
+    expect(await fixture.run()).toBe(true);
+    expect(fixture.execCommand).toHaveBeenCalledTimes(1);
+    expect(fixture.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a later editor mutation without inserting a second time", async () => {
+    const element = { innerText: "", textContent: "" };
+    const fixture = execute(element, () => true);
+    const result = fixture.run();
+    await Promise.resolve();
+    element.innerText = element.textContent = "typed note";
+    fixture.commit();
+    expect(await result).toBe(true);
+    expect(fixture.execCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects missing content at the bounded deadline and cleans up observation", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = execute({ innerText: "", textContent: "" }, () => false);
+      const result = fixture.run();
+      await vi.runAllTimersAsync();
+      expect(await result).toBe(false);
+      expect(fixture.execCommand).toHaveBeenCalledTimes(1);
+      expect(fixture.disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -7,6 +7,7 @@ export interface McpProviderSessionConfig {
   readonly providerInstanceId: ProviderInstanceId;
   readonly endpoint: string;
   readonly authorizationHeader: string;
+  readonly shellBridgeInstructions?: string;
 }
 
 const sessionsByThread = new Map<ThreadId, McpProviderSessionConfig>();
@@ -25,4 +26,17 @@ export function clearMcpProviderSession(threadId: ThreadId): void {
 
 export function clearAllMcpProviderSessions(): void {
   sessionsByThread.clear();
+}
+
+export function listMcpProviderSessions(): ReadonlyArray<McpProviderSessionConfig> {
+  return [...sessionsByThread.values()];
+}
+
+/** Keep native one-line slash commands intact; they are parsed by the runtime. */
+export function appendMcpShellBridgeInstructions(
+  input: string | undefined,
+  instructions?: string,
+): string | undefined {
+  if (!instructions || !input || /^\s*\/[\w-]+(?:[ \t]+[^\r\n]*)?\s*$/.test(input)) return input;
+  return `${input}\n\n${instructions}`;
 }

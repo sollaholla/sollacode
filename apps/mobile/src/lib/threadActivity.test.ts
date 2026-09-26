@@ -56,6 +56,131 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("removes recovered error cards from the native feed while retaining the switch notice", () => {
+    const entries = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("recovered-thread"),
+        projectId: ProjectId.make("project-1"),
+        title: "Recovered",
+        activities: [
+          makeActivity({
+            id: EventId.make("agy:277"),
+            kind: "runtime.error",
+            tone: "error",
+            summary: "Runtime error",
+            createdAt: "2026-04-01T00:00:01.000Z",
+          }),
+          makeActivity({
+            id: EventId.make("agy:277:provider.failover.completed"),
+            kind: "provider.failover.completed",
+            summary: "usage exhausted · switched to Codex",
+            createdAt: "2026-04-01T00:00:01.000Z",
+          }),
+        ],
+      }),
+    );
+    const activities = entries.flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    );
+    expect(activities.map((activity) => activity.id)).toEqual([
+      "agy:277:provider.failover.completed",
+    ]);
+  });
+
+  it("hides a persisted 'Aborted' runtime error from the native feed", () => {
+    const entries = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("aborted-thread"),
+        projectId: ProjectId.make("project-1"),
+        title: "Aborted",
+        activities: [
+          makeActivity({
+            id: EventId.make("opencode-aborted"),
+            kind: "runtime.error",
+            tone: "error",
+            summary: "Runtime error",
+            payload: { message: "Aborted" },
+            createdAt: "2026-04-01T00:00:01.000Z",
+          }),
+          makeActivity({
+            id: EventId.make("real-error"),
+            kind: "runtime.error",
+            tone: "error",
+            summary: "Runtime error",
+            payload: { message: "permission denied" },
+            createdAt: "2026-04-01T00:00:02.000Z",
+          }),
+        ],
+      }),
+    );
+    const activities = entries.flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    );
+    expect(activities.map((activity) => activity.id)).toEqual(["real-error"]);
+  });
+
+  it("carries a saved Deep Code ReadImage path into the native feed", () => {
+    const path = String.raw`D:\TerraGen\Assets\Temp\nf_probe_100.png`;
+    const entries = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-deepcode-image"),
+        projectId: ProjectId.make("project-1"),
+        title: "Image",
+        activities: [
+          makeActivity({
+            id: EventId.make("deepcode-read-image"),
+            kind: "tool.completed",
+            tone: "tool",
+            summary: "Image view",
+            createdAt: "2026-04-01T00:00:01.000Z",
+            payload: {
+              itemType: "image_view",
+              title: "Image view",
+              detail: `ReadImage: ${path}`,
+              data: { toolName: "ReadImage", params: path },
+            },
+          }),
+        ],
+      }),
+    );
+    const group = entries.find((entry) => entry.type === "activity-group");
+    expect(group?.type === "activity-group" && group.activities[0]).toMatchObject({
+      readImagePath: path,
+      readImageSourceActivityId: "deepcode-read-image",
+    });
+  });
+
+  it("carries Muse read-image paths and their authorizing activity into the native feed", () => {
+    const entries = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-image"),
+        projectId: ProjectId.make("project-1"),
+        title: "Image",
+        activities: [
+          makeActivity({
+            id: EventId.make("muse-read-image"),
+            kind: "tool.completed",
+            tone: "tool",
+            summary: "Tool",
+            createdAt: "2026-04-01T00:00:01.000Z",
+            payload: {
+              itemType: "dynamic_tool_call",
+              title: "Tool",
+              detail:
+                "Read image file `screenshots/plateau_edge_to_bay.png` as model-visible image output.\nmedia_type: image/png\nsource_bytes: 4173209",
+            },
+          }),
+        ],
+      }),
+    );
+    const group = entries.find((entry) => entry.type === "activity-group");
+    expect(group?.type === "activity-group" && group.activities[0]).toMatchObject({
+      readImagePath: "screenshots/plateau_edge_to_bay.png",
+      readImageSourceActivityId: "muse-read-image",
+      summary: "Read image",
+    });
+  });
+
   it("carries a thought outside the activity group and splits the tool-call chain", () => {
     // A thought explains the calls around it, so it has to be readable without
     // opening the work disclosure. Grouped with the calls it was folded behind
@@ -167,6 +292,13 @@ describe("buildThreadFeed", () => {
       projectId: ProjectId.make("project-1"),
       title: "Provider usage activity",
       activities: [
+        makeActivity({
+          id: EventId.make("muse-polling"),
+          createdAt: "2026-04-01T00:00:00.000Z",
+          kind: "runtime.warning",
+          summary:
+            "Muse live streaming is unavailable for this saved session. Activity will refresh every five seconds.",
+        }),
         makeActivity({
           id: EventId.make("provider-usage"),
           kind: "provider.usage.updated",
@@ -557,6 +689,84 @@ describe("buildThreadFeed", () => {
     expect(collapsed.find((entry) => entry.type === "turn-fold")).toMatchObject({
       turnId: firstTurnId,
       label: "Worked for 12s",
+    });
+  });
+
+  it("keeps the follow-up label after the next turn starts", () => {
+    const firstTurnId = TurnId.make("turn-1");
+    const secondTurnId = TurnId.make("turn-2");
+    const thread = makeThread({
+      id: ThreadId.make("thread-steered"),
+      projectId: ProjectId.make("project-1"),
+      title: "Steered work",
+      latestTurn: {
+        turnId: secondTurnId,
+        state: "running",
+        requestedAt: "2026-04-01T00:00:14.000Z",
+        startedAt: "2026-04-01T00:00:14.000Z",
+        completedAt: null,
+        assistantMessageId: MessageId.make("assistant-next"),
+      },
+      messages: [
+        {
+          id: MessageId.make("user-1"),
+          role: "user",
+          text: "Do it once more.",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+        },
+        {
+          id: MessageId.make("assistant-commentary"),
+          role: "assistant",
+          text: "Kicking off call 1.",
+          turnId: firstTurnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:09.000Z",
+          updatedAt: "2026-04-01T00:00:09.000Z",
+        },
+        {
+          id: MessageId.make("user-2"),
+          role: "user",
+          text: "Actually do 15.",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:14.000Z",
+          updatedAt: "2026-04-01T00:00:14.000Z",
+        },
+        {
+          id: MessageId.make("assistant-next"),
+          role: "assistant",
+          text: "One down - adjusting.",
+          turnId: secondTurnId,
+          streaming: true,
+          createdAt: "2026-04-01T00:00:17.000Z",
+          updatedAt: "2026-04-01T00:00:17.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("work-1"),
+          kind: "turn.follow-up",
+          tone: "info",
+          summary: "Continuing with your follow-up",
+          createdAt: "2026-04-01T00:00:12.000Z",
+          turnId: firstTurnId,
+          payload: {
+            title: "Ran command",
+            itemType: "command_execution",
+            status: "completed",
+          },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    const collapsed = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
+    expect(collapsed.find((entry) => entry.type === "turn-fold")).toMatchObject({
+      turnId: firstTurnId,
+      label: "Continued with your follow-up after 12s",
     });
   });
 

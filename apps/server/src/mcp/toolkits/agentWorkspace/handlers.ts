@@ -92,9 +92,11 @@ export const handleAgentWorkspace = Effect.fn("AgentWorkspace.handle")(function*
         status:
           task.approvalState === "pending"
             ? "Task saved as a draft and is waiting for user approval."
-            : task.schedule?.kind === "interval"
-              ? "Task created and activated (auto-approved: this chat runs in Agent mode)."
-              : "Task created and queued when due.",
+            : agent.value.status !== "running"
+              ? "Task saved, but this agent is stopped. It will not run until the agent is started; do not report it as scheduled to execute."
+              : task.schedule?.kind === "interval"
+                ? "Task created and activated (auto-approved: this chat runs in Agent mode)."
+                : "Task created and queued when due.",
         task,
       };
     }
@@ -136,11 +138,14 @@ export const handleAgentWorkspace = Effect.fn("AgentWorkspace.handle")(function*
       yield* scheduler.wake();
       return {
         action: input.action,
-        status: recurring
-          ? autoApproved
-            ? "Recurring task updated and active (auto-approved: this chat runs in Agent mode)."
-            : "Recurring task update saved and is waiting for user approval."
-          : "Task updated.",
+        status:
+          task.approvalState !== "pending" && agent.value.status !== "running"
+            ? "Task updated, but this agent is stopped. It will not run until the agent is started; do not report it as scheduled to execute."
+            : recurring
+              ? autoApproved
+                ? "Recurring task updated and active (auto-approved: this chat runs in Agent mode)."
+                : "Recurring task update saved and is waiting for user approval."
+              : "Task updated.",
         task,
       };
     }

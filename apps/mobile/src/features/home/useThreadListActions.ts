@@ -53,7 +53,7 @@ function actionFailureTitle(action: ThreadListAction): string {
   return "Could not delete thread";
 }
 
-/** Resolves to true iff the action was dispatched and succeeded. */
+/** Resolves to true when the action was accepted locally or by the host. */
 function useThreadActionExecutor(
   onCompleted?: (action: ThreadListAction, thread: EnvironmentThreadShell) => void,
 ) {
@@ -132,6 +132,14 @@ function useThreadActionExecutor(
         if (result._tag === "Failure") {
           Alert.alert(actionFailureTitle(action), actionFailureMessage(action, result.cause));
           return false;
+        }
+        if (result.value._tag === "Deferred") {
+          Alert.alert(
+            "Request queued",
+            "Will apply when this device reconnects. Keep this client available to deliver the request.",
+          );
+          onCompleted?.(action, thread);
+          return true;
         }
         // Settled threads stay in the live shell stream; only the archive
         // lifecycle still feeds the archived-snapshot surface.

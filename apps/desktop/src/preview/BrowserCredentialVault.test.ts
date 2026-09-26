@@ -85,6 +85,93 @@ describe("BrowserCredentialVault", () => {
     ),
   );
 
+  it.effect("edits an entry without resending its password", () =>
+    withVault(
+      Effect.gen(function* () {
+        const vault = yield* BrowserCredentialVault.BrowserCredentialVault;
+        const saved = yield* vault.save({
+          label: "Example login",
+          origin: "https://example.com",
+          username: "old@example.com",
+          secret: "kept-secret",
+        });
+
+        const edited = yield* vault.save({
+          id: saved.id,
+          label: "Work login",
+          origin: "https://accounts.example.com/signin",
+          username: "new@example.com",
+        });
+        assert.strictEqual(edited.id, saved.id);
+        assert.strictEqual(edited.label, "Work login");
+        assert.strictEqual(edited.origin, "https://accounts.example.com");
+        assert.strictEqual(edited.username, "new@example.com");
+        assert.strictEqual(edited.createdAt, saved.createdAt);
+        assert.deepStrictEqual(yield* vault.list, [edited]);
+
+        const resolved = yield* vault.resolveForUrl(saved.id, "https://accounts.example.com/x");
+        assert.strictEqual(resolved.secret, "kept-secret");
+
+        const orphan = yield* Effect.flip(
+          vault.save({
+            id: "missing" as typeof saved.id,
+            label: "Nothing to keep",
+            origin: "https://example.com",
+          }),
+        );
+        assert.strictEqual(orphan._tag, "BrowserCredentialNotFoundError");
+        const unkeyed = yield* Effect.flip(
+          vault.save({ label: "No password", origin: "https://example.com" }),
+        );
+        assert.strictEqual(unkeyed._tag, "BrowserCredentialNotFoundError");
+      }),
+    ),
+  );
+
+  it.effect("keeps a PIN's kind across edits and reads older entries as passwords", () =>
+    withVault(
+      Effect.gen(function* () {
+        const vault = yield* BrowserCredentialVault.BrowserCredentialVault;
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        // A vault written before kinds existed.
+        yield* fileSystem.makeDirectory(
+          environment.path.dirname(environment.browserCredentialVaultPath),
+          { recursive: true },
+        );
+        const encryptedSecret = Buffer.from("protected:old").toString("base64");
+        yield* fileSystem.writeFileString(
+          environment.browserCredentialVaultPath,
+          `{"version":1,"credentials":[{"id":"legacy","label":"Legacy login","origin":"https://example.com","createdAt":"2026-09-23T00:00:00.000Z","updatedAt":"2026-09-23T00:00:00.000Z","encryptedSecret":"${encryptedSecret}"}]}\n`,
+        );
+        const [legacy] = yield* vault.list;
+        assert.strictEqual(legacy?.kind, "password");
+
+        const pin = yield* vault.save({
+          label: "Payments PIN",
+          origin: "https://example.com",
+          kind: "code",
+          secret: "4821",
+        });
+        assert.strictEqual(pin.kind, "code");
+        const renamed = yield* vault.save({ id: pin.id, label: "Rent PIN", origin: pin.origin });
+        assert.strictEqual(renamed.kind, "code");
+
+        // Switching the legacy entry to a code keeps its secret.
+        const switched = yield* vault.save({
+          id: legacy!.id,
+          label: legacy!.label,
+          origin: legacy!.origin,
+          kind: "code",
+        });
+        assert.strictEqual(switched.kind, "code");
+        const resolved = yield* vault.resolveForUrl(legacy!.id, "https://example.com/pay");
+        assert.strictEqual(resolved.secret, "old");
+        assert.strictEqual(resolved.summary.kind, "code");
+      }),
+    ),
+  );
+
   it.effect("refuses to save when operating-system encryption is unavailable", () =>
     withVault(
       Effect.gen(function* () {

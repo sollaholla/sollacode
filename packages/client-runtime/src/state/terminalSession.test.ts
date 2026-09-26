@@ -31,6 +31,33 @@ const BASE_SNAPSHOT: TerminalSessionSnapshot = {
 };
 
 describe("terminal session reducers", () => {
+  it("replays the complete parsed screen instead of a truncated diagnostic log", () => {
+    const data = "\x1b[?1049h\x1b[31mready\x1b[12;4H";
+    const state = applyTerminalAttachStreamEvent(
+      EMPTY_TERMINAL_BUFFER_STATE,
+      {
+        type: "snapshot",
+        snapshot: { ...BASE_SNAPSHOT, history: "1;91;91m", screen: { data, cols: 80, rows: 24 } },
+      },
+      8,
+    );
+    expect(state.buffer).toBe(data);
+    expect(state.replayComplete).toBe(true);
+    expect(state.replayGeometry).toEqual({ cols: 80, rows: 24 });
+    const output = applyTerminalAttachStreamEvent(
+      state,
+      {
+        type: "output",
+        threadId: TARGET.threadId,
+        terminalId: TARGET.terminalId,
+        data: "next",
+      },
+      8,
+    );
+    expect(output.replayComplete).toBe(false);
+    expect(output.streamCursor?.offset).toBe(data.length + 4);
+    expect(output.streamCursor?.generation).toBe(state.streamCursor?.generation);
+  });
   it("prefers live attach status over stale metadata after the attach stream starts", () => {
     const summary = applyTerminalMetadataStreamEvent([], {
       type: "snapshot",
@@ -207,5 +234,73 @@ describe("terminal session reducers", () => {
     );
 
     expect(state.buffer).toBe("🙂");
+  });
+});
+
+describe("terminal stream positions", () => {
+  it("keeps an absolute character offset across bounded UTF-8 history trims", () => {
+    const initial = applyTerminalAttachStreamEvent(
+      EMPTY_TERMINAL_BUFFER_STATE,
+      {
+        type: "snapshot",
+        snapshot: { ...BASE_SNAPSHOT, history: "😀abcd" },
+      },
+      8,
+    );
+    const next = applyTerminalAttachStreamEvent(
+      initial,
+      {
+        type: "output",
+        threadId: TARGET.threadId,
+        terminalId: TARGET.terminalId,
+        data: "123456",
+      },
+      8,
+    );
+    expect(next.buffer).toBe("cd123456");
+    expect(next.streamCursor).toEqual({ generation: initial.streamCursor?.generation, offset: 12 });
+  });
+  it("advances revision and generation on replacement snapshots", () => {
+    const event = { type: "snapshot", snapshot: BASE_SNAPSHOT } as const;
+    const first = applyTerminalAttachStreamEvent(EMPTY_TERMINAL_BUFFER_STATE, event);
+    const second = applyTerminalAttachStreamEvent(first, event);
+    expect(second.version).toBe(first.version + 1);
+    expect(second.streamCursor?.generation).not.toBe(first.streamCursor!.generation);
+  });
+});
+
+describe("bounded terminal append accounting", () => {
+  it("matches UTF-8 byte limits over many small multilingual chunks", () => {
+    let state = EMPTY_TERMINAL_BUFFER_STATE;
+    const encode = new TextEncoder();
+    const chunks = ["hello", "😀", "\x1b[2J", "界", "\r\n"];
+    let expected = "";
+    for (let i = 0; i < 300; i++) {
+      const data = chunks[i % chunks.length]!;
+      expected += data;
+      while (encode.encode(expected).length > 31)
+        expected = expected.slice(expected.codePointAt(0)! > 0xffff ? 2 : 1);
+      state = applyTerminalAttachStreamEvent(
+        state,
+        { type: "output", threadId: TARGET.threadId, terminalId: TARGET.terminalId, data },
+        31,
+      );
+      expect(state.buffer).toBe(expected);
+      expect(state.bufferBytes).toBe(encode.encode(expected).length);
+    }
+  });
+  it("accounts for a surrogate pair split across reads", () => {
+    let state = applyTerminalAttachStreamEvent(
+      EMPTY_TERMINAL_BUFFER_STATE,
+      { type: "output", threadId: TARGET.threadId, terminalId: TARGET.terminalId, data: "a\ud83d" },
+      8,
+    );
+    state = applyTerminalAttachStreamEvent(
+      state,
+      { type: "output", threadId: TARGET.threadId, terminalId: TARGET.terminalId, data: "\ude00" },
+      8,
+    );
+    expect(state.buffer).toBe("a😀");
+    expect(state.bufferBytes).toBe(5);
   });
 });

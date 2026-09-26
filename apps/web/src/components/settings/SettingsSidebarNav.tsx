@@ -8,13 +8,14 @@ import {
   BotIcon,
   GitBranchIcon,
   KeyboardIcon,
+  KeyRoundIcon,
   Link2Icon,
   MonitorSmartphoneIcon,
   PaletteIcon,
   ShieldCheckIcon,
   Settings2Icon,
 } from "lucide-react";
-import { useCanGoBack, useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 
 import {
   SidebarContent,
@@ -25,11 +26,13 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "../ui/sidebar";
+import { useNavigateBackWithinApp } from "../navigateBackWithinApp";
 import { searchSettings, type SettingsSearchResult } from "./settingsSearchIndex";
 
 export type SettingsSectionPath =
   | "/settings/general"
   | "/settings/permissions"
+  | "/settings/credentials"
   | "/settings/appearance"
   | "/settings/keybindings"
   | "/settings/providers"
@@ -46,6 +49,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   icon: ComponentType<{ className?: string }>;
 }> = [
   { label: "General", to: "/settings/general", icon: Settings2Icon },
+  { label: "Credentials", to: "/settings/credentials", icon: KeyRoundIcon },
   { label: "Appearance", to: "/settings/appearance", icon: PaletteIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
@@ -56,7 +60,17 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
 ];
 
-function visibleSettingsNavItems(): ReadonlyArray<(typeof SETTINGS_NAV_ITEMS)[number]> {
+/**
+ * The sections this build actually has, in order.
+ *
+ * Permissions only exists when the desktop bridge does, so it is spliced in
+ * rather than living in the constant. Exported so the mobile tab strip and the
+ * sidebar list cannot drift apart — they are two presentations of one nav.
+ */
+export function visibleSettingsNavItems(): ReadonlyArray<(typeof SETTINGS_NAV_ITEMS)[number]> {
+  // Guarded rather than bare: this is read during render by both the sidebar
+  // and the mobile tab strip, so it has to survive a server/static render too.
+  if (typeof window === "undefined") return SETTINGS_NAV_ITEMS;
   if (window.desktopBridge?.permissions === undefined) return SETTINGS_NAV_ITEMS;
   return [
     SETTINGS_NAV_ITEMS[0]!,
@@ -67,7 +81,6 @@ function visibleSettingsNavItems(): ReadonlyArray<(typeof SETTINGS_NAV_ITEMS)[nu
 
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navigate = useNavigate();
-  const canGoBack = useCanGoBack();
   const { isMobile, setOpenMobile } = useSidebar();
   const [query, setQuery] = useState("");
   const results = useMemo(
@@ -96,16 +109,13 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
     },
     [isMobile, navigate, setOpenMobile],
   );
+  const goBack = useNavigateBackWithinApp();
   const handleBackClick = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
     }
-    if (canGoBack) {
-      window.history.back();
-      return;
-    }
-    void navigate({ to: "/" });
-  }, [canGoBack, isMobile, navigate, setOpenMobile]);
+    goBack();
+  }, [goBack, isMobile, setOpenMobile]);
 
   return (
     <>

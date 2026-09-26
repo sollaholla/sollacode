@@ -1,8 +1,13 @@
 import type { EnvironmentId, VmAgent, VmAgentStatus } from "@t3tools/contracts";
+import { agentPresence } from "@t3tools/client-runtime/state/agent-appearance";
 import { LoaderCircleIcon, PowerIcon } from "lucide-react";
 import { useState } from "react";
 
+import { chooseInApp } from "../ui/appConfirm";
+import { ToolbarControl } from "../ui/toolbar-control";
+
 import { cn } from "../../lib/utils";
+import { useEnvironment } from "../../state/environments";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 
@@ -62,9 +67,24 @@ export function useAgentPowerToggle(environmentId: EnvironmentId) {
     if (busyAgentId !== null || !agentPowerSwitchable(agent.status)) return;
     setBusyAgentId(agent.vmAgentId);
     try {
-      await (agent.status === "running" ? stopAgent : startAgent)({
+      if (agent.status === "running") {
+        await stopAgent({ environmentId, input: { vmAgentId: agent.vmAgentId } });
+        return;
+      }
+      const result = await startAgent({ environmentId, input: { vmAgentId: agent.vmAgentId } });
+      if (result._tag !== "Success" || !("backlogCount" in result.value)) return;
+      const choice = await chooseInApp(
+        `${result.value.backlogCount} overdue tasks are waiting. Combine them into one catch-up message, or skip those occurrences and resume future schedules. Original task instructions are retained.`,
+        {
+          confirmLabel: "Combine and start",
+          alternateLabel: "Skip backlog and start",
+          cancelLabel: "Cancel",
+        },
+      );
+      if (choice === "cancel") return;
+      await startAgent({
         environmentId,
-        input: { vmAgentId: agent.vmAgentId },
+        input: { vmAgentId: agent.vmAgentId, backlog: choice === "confirm" ? "combine" : "skip" },
       });
     } finally {
       setBusyAgentId(null);
@@ -75,7 +95,7 @@ export function useAgentPowerToggle(environmentId: EnvironmentId) {
 
 /**
  * The header switch: a pill reading "● Running · Stop" or "○ Stopped · Start".
- * The stopped state carries the gold tint so the way back on is the thing
+ * The stopped state carries a gold outline so the way back on is the thing
  * that stands out.
  */
 export function AgentPowerToggle(props: {
@@ -84,33 +104,38 @@ export function AgentPowerToggle(props: {
   readonly className?: string;
 }) {
   const { agent } = props;
+  const environment = useEnvironment(props.environmentId);
+  const connected = environment?.connection.phase === "connected";
+  const presence = agentPresence(agent.status, connected);
   const { toggle, busyAgentId } = useAgentPowerToggle(props.environmentId);
   const busy = busyAgentId === agent.vmAgentId;
   const running = agent.status === "running";
   const switchable = agentPowerSwitchable(agent.status);
   return (
-    <button
+    <ToolbarControl
       type="button"
       aria-pressed={running}
       aria-label={`${agentPowerActionLabel(agent.status)} ${agent.name}`}
       aria-busy={busy || undefined}
-      title={agentPowerTitle(agent)}
+      title={`${presence.description}. ${agentPowerTitle(agent)}`}
       data-agent-power={agent.status}
-      disabled={busy || !switchable}
+      disabled={busy || !switchable || !connected}
       onClick={() => void toggle(agent)}
       className={cn(
-        "inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-[12px] font-medium outline-hidden transition-[background-color,border-color,color] duration-150 focus-visible:ring-2 focus-visible:ring-gold-500/40 disabled:cursor-default disabled:opacity-60",
         running
-          ? "border-[var(--line)] bg-surface-row text-foreground hover:bg-surface-hover"
-          : "border-[var(--gold-line)] bg-[var(--gold-tint)] text-foreground hover:bg-gold-500/20",
+          ? "border-[var(--line)] bg-transparent text-foreground hover:border-foreground/40"
+          : "border-[var(--gold-line)] bg-transparent text-foreground hover:border-gold-500",
         props.className,
       )}
     >
       <span
         aria-hidden
-        className={cn("size-1.5 shrink-0 rounded-full", agentStatusDotClass(agent.status))}
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          presence.online ? "bg-ok" : "bg-muted-foreground/50",
+        )}
       />
-      <span>{agentStatusLabel(agent.status)}</span>
+      <span>{connected ? agentStatusLabel(agent.status) : "Offline"}</span>
       {switchable ? (
         <>
           <span aria-hidden className="text-muted-foreground/70">
@@ -126,6 +151,6 @@ export function AgentPowerToggle(props: {
           </span>
         </>
       ) : null}
-    </button>
+    </ToolbarControl>
   );
 }

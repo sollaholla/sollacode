@@ -11,7 +11,7 @@ import {
   hasTrailingPathSeparator,
   isFilesystemBrowseQuery,
 } from "./projects.ts";
-import { createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import { createEnvironmentRpcCommand, createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
 
 export function getFilesystemBrowsePath(query: string, platform = "", enabled = true) {
   const isBrowsing = enabled && isFilesystemBrowseQuery(query, platform);
@@ -78,6 +78,14 @@ export function createFilesystemEnvironmentAtoms<R, E>(
     browse: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:filesystem:browse",
       tag: WS_METHODS.filesystemBrowse,
+    }),
+    // One-shot existence probe for absolute host paths, batched by the caller.
+    // Imperative rather than a query atom: the chat renderer asks once per
+    // message and keeps its own cache, so there is nothing for an atom to
+    // hold or refresh.
+    pathsExistNow: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:filesystem:paths-exist",
+      tag: WS_METHODS.filesystemPathsExist,
     }),
   };
 }

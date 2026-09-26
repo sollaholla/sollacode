@@ -936,8 +936,21 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         </div>
       ) : null}
 
-      <Dialog open={pending !== null}>
-        <DialogPopup showCloseButton={false}>
+      {/*
+        Dismissible on purpose. This dialog used to have no close button and no
+        onOpenChange, so Escape and an outside click did nothing: if the asking
+        device vanished without ending its session, the modal stayed up forever
+        and took the whole app with it. Dismissing DECLINES - it never approves
+        - so the consent this prompt exists to obtain is unchanged; the only
+        thing removed is the owner's inability to say no.
+      */}
+      <Dialog
+        open={pending !== null}
+        onOpenChange={(open) => {
+          if (!open && !isResponding) void answerRequest("decline");
+        }}
+      >
+        <DialogPopup>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <MonitorUpIcon className="size-5" />

@@ -11,7 +11,7 @@ export type ComposerTouchMoveDisposition = "allow-editor-scroll" | "block";
 export const COMPOSER_SWIPE_DOWN_DISMISS_PX = 64;
 
 /**
- * Whether a downward drag on the composer should put the keyboard away.
+ * Whether a downward drag on an unfocused composer should put it away.
  *
  * Only when the editor has nothing left to scroll up into: with text above the
  * fold, a downward drag is the user reading what they have written, and
@@ -33,6 +33,9 @@ export function shouldDismissComposerOnSwipeDown(input: {
 }
 
 const SCROLL_EDGE_EPSILON = 1;
+const COMPOSER_CONTROL_SELECTOR =
+  'button, [role="button"], [data-chat-composer-footer], [data-chat-composer-actions]';
+const COMPOSER_EDITABLE_SELECTOR = 'textarea, input, [contenteditable="true"]';
 const COMPOSER_SCROLL_CONTAINER_SELECTOR = '[data-chat-composer-scroll-container="true"]';
 
 export function composerTouchMoveDisposition(input: {
@@ -91,6 +94,9 @@ export function installMobileComposerTouchBoundary(
         lastY: number;
         startY: number;
         dismissed: boolean;
+        focusedAtStart: boolean;
+        editorOwnsTouch: boolean;
+        controlOwnsTouch: boolean;
         editorScrollElement: HTMLElement | null;
       }
     | undefined;
@@ -108,6 +114,13 @@ export function installMobileComposerTouchBoundary(
       lastY: touch.clientY,
       startY: touch.clientY,
       dismissed: false,
+      focusedAtStart: root.contains(root.ownerDocument.activeElement),
+      editorOwnsTouch:
+        target instanceof Element && target.closest(COMPOSER_EDITABLE_SELECTOR) !== null,
+      controlOwnsTouch:
+        target instanceof Element &&
+        target.closest(COMPOSER_EDITABLE_SELECTOR) === null &&
+        target.closest(COMPOSER_CONTROL_SELECTOR) !== null,
       editorScrollElement:
         editorScrollElement && root.contains(editorScrollElement) ? editorScrollElement : null,
     };
@@ -117,6 +130,16 @@ export function installMobileComposerTouchBoundary(
     if (!activeTouch) return;
     const touch = findTouch(event.touches, activeTouch.identifier);
     if (!touch) return;
+
+    const protectsEditing =
+      activeTouch.focusedAtStart || root.contains(root.ownerDocument.activeElement);
+    // While editing, Safari owns caret placement, selection handles and text
+    // scrolling. A gesture that began focused stays protected even if a native
+    // selection operation temporarily moves focus away.
+    if (activeTouch.editorOwnsTouch && protectsEditing) {
+      event.stopPropagation();
+      return;
+    }
 
     const deltaY = touch.clientY - activeTouch.lastY;
     activeTouch.lastY = touch.clientY;
@@ -130,6 +153,7 @@ export function installMobileComposerTouchBoundary(
 
     if (
       !activeTouch.dismissed &&
+      !protectsEditing &&
       options.onSwipeDownDismiss &&
       shouldDismissComposerOnSwipeDown({
         totalDeltaY: touch.clientY - activeTouch.startY,
@@ -143,7 +167,11 @@ export function installMobileComposerTouchBoundary(
       options.onSwipeDownDismiss();
     }
 
-    if (disposition === "block" && event.cancelable) {
+    if (
+      disposition === "block" &&
+      (!activeTouch.editorOwnsTouch || activeTouch.dismissed) &&
+      event.cancelable
+    ) {
       event.preventDefault();
     }
     // The history list and document must never inherit a gesture that started
@@ -151,17 +179,32 @@ export function installMobileComposerTouchBoundary(
     event.stopPropagation();
   };
 
+  const preventControlSelection = (event: Event) => {
+    const target = event.target;
+    // Safari may target the surrounding form when a held control starts a
+    // selection. The gesture origin disambiguates that from editor handles.
+    const editable =
+      target instanceof Element && target.closest(COMPOSER_EDITABLE_SELECTOR) !== null;
+    const control = target instanceof Element && target.closest(COMPOSER_CONTROL_SELECTOR) !== null;
+    if (editable || (!control && !activeTouch?.controlOwnsTouch)) return;
+    if (event.cancelable) event.preventDefault();
+  };
+
   const clearActiveTouch = (event: TouchEvent) => {
     if (!activeTouch || !findTouch(event.changedTouches, activeTouch.identifier)) return;
     activeTouch = undefined;
   };
 
+  root.addEventListener("selectstart", preventControlSelection);
+  root.addEventListener("contextmenu", preventControlSelection);
   root.addEventListener("touchstart", onTouchStart, { passive: true });
   root.addEventListener("touchmove", onTouchMove, { passive: false });
   root.addEventListener("touchend", clearActiveTouch, { passive: true });
   root.addEventListener("touchcancel", clearActiveTouch, { passive: true });
 
   return () => {
+    root.removeEventListener("selectstart", preventControlSelection);
+    root.removeEventListener("contextmenu", preventControlSelection);
     root.removeEventListener("touchstart", onTouchStart);
     root.removeEventListener("touchmove", onTouchMove);
     root.removeEventListener("touchend", clearActiveTouch);

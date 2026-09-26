@@ -29,6 +29,16 @@ export class ElectronShell extends Context.Service<
   {
     readonly openExternal: (rawUrl: unknown) => Effect.Effect<boolean>;
     readonly revealFile: (path: string) => Effect.Effect<void>;
+    /**
+     * Hand a file to whatever the OS has registered for it.
+     *
+     * Distinct from revealFile, which only highlights it in Finder/Explorer.
+     * This is the answer for formats the in-app panel cannot render - a .docx,
+     * a ProRes .mov, a .psd - where the useful behaviour is the user's own
+     * application, not an apology. Resolves to the OS error string, or empty
+     * on success, which is Electron's own contract for openPath.
+     */
+    readonly openPath: (path: string) => Effect.Effect<string>;
     readonly copyText: (text: string) => Effect.Effect<void>;
     readonly writeComposerClipboard: (input: {
       readonly text: string;
@@ -51,6 +61,10 @@ export const make = ElectronShell.of({
         ),
     }),
   revealFile: (path) => Effect.sync(() => Electron.shell.showItemInFolder(path)),
+  openPath: (path) =>
+    Effect.promise(() => Electron.shell.openPath(path)).pipe(
+      Effect.orElseSucceed(() => "Could not open the file."),
+    ),
   copyText: (text) =>
     Effect.sync(() => {
       Electron.clipboard.writeText(text);

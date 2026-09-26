@@ -4,6 +4,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import { readLocalApi } from "./localApi";
 import { appAtomRegistry } from "./rpc/atomRegistry";
 import { environmentThreadDetails } from "./state/threads";
+import { confirmInApp } from "./components/ui/appConfirm";
 import {
   countThreadTurns,
   LARGE_THREAD_EXPORT_TURN_THRESHOLD,
@@ -75,7 +76,8 @@ export async function exportThreadJson(threadRef: ScopedThreadRef): Promise<stri
   if (turnCount > LARGE_THREAD_EXPORT_TURN_THRESHOLD) {
     const message = `This conversation contains ${turnCount} turns. The JSON handoff may be large and take longer to export. Continue?`;
     const api = readLocalApi();
-    const confirmed = api ? await api.dialogs.confirm(message) : window.confirm(message);
+    // Both branches used to open a native dialog, which stops the renderer.
+    const confirmed = api ? await api.dialogs.confirm(message) : await confirmInApp(message);
     if (!confirmed) return null;
   }
 

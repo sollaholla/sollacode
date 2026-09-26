@@ -6,6 +6,8 @@ import {
   buildXaiRealtimeWebsocketUrl,
   xaiClientSecretProtocol,
 } from "@t3tools/contracts";
+import { createLiveVoiceSession } from "./liveSession";
+import type { LiveVoiceUsage } from "./liveUsageStore";
 import {
   REALTIME_PCM_SAMPLE_RATE,
   createStreamingLinearResampler,
@@ -234,6 +236,8 @@ export interface VoiceSessionCallbacks {
   readonly onEndedByVoice?: () => void;
   /** Tokens a completed response consumed, straight from the API. */
   readonly onUsage?: (usage: RealtimeUsage) => void;
+  /** GPT-Live reports cumulative seconds, separately from backend/token usage. */
+  readonly onLiveUsage?: (usage: LiveVoiceUsage) => void;
 }
 
 export interface VoiceSessionOptions {
@@ -241,6 +245,7 @@ export interface VoiceSessionOptions {
   readonly httpBaseUrl: string;
   /** Bearer token for remote environments; null uses the session cookie. */
   readonly bearerToken: string | null;
+  readonly model?: string;
   readonly authority: OrchestratorAuthority;
   readonly confirmDestructiveActions: boolean;
   /** ISO-639-1 code pinned into instructions and input transcription. */
@@ -368,6 +373,7 @@ export function createVoiceSession(
   options: VoiceSessionOptions,
   callbacks: VoiceSessionCallbacks,
 ): VoiceSession {
+  if (options.model === "gpt-live-1") return createLiveVoiceSession(options, callbacks);
   let peer: RTCPeerConnection | null = null;
   let channel: RTCDataChannel | null = null;
   let socket: WebSocket | null = null;

@@ -1,4 +1,5 @@
 import {
+  AGENTS_PROJECT_ID,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
@@ -152,6 +153,36 @@ function singleEventOfType<T extends TypedPlannedEvent["type"]>(
 }
 
 it.layer(NodeServices.layer)("decider deletion flows", (it) => {
+  it.effect("rejects promotion of agent side chats, including deleted ones", () =>
+    Effect.gen(function* () {
+      const seeded = yield* seedReadModel;
+      for (const deletedAt of [null, "2026-01-01T00:01:00.000Z"]) {
+        const readModel = {
+          ...seeded,
+          threads: seeded.threads.map((thread) => ({
+            ...thread,
+            projectId: AGENTS_PROJECT_ID,
+            isSideChat: true,
+            sideChatParentThreadId: asThreadId("agent-parent"),
+            deletedAt,
+          })),
+        };
+        const error = yield* Effect.flip(
+          decideOrchestrationCommand({
+            command: {
+              type: "thread.meta.update",
+              commandId: asCommandId(`agent-promote-${deletedAt}`),
+              threadId: asThreadId("thread-delete-1"),
+              isSideChat: false,
+            },
+            readModel,
+          }),
+        );
+        expect(error.message).toContain("Side chats belonging to agents cannot be promoted");
+      }
+    }),
+  );
+
   it.effect("rejects deleting a non-empty project without force", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel;

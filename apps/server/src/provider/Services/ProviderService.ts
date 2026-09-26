@@ -76,7 +76,16 @@ export interface ProviderServiceSendTurnOptions {
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
+/** What `discardSessionHistory` did with a history the provider rejected. */
+export type ProviderHistoryRecoveryOutcome = "compacted" | "discarded" | false;
+
 export interface ProviderServiceShape {
+  /** Reads saved transcript only; never starts a session or changes its durable binding. */
+  readonly replayStoredTranscript?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+  }) => Effect.Effect<number, ProviderServiceError>;
+
   /**
    * Start a provider session.
    */
@@ -135,6 +144,26 @@ export interface ProviderServiceShape {
   readonly stopSession: (
     input: ProviderStopSessionInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Forget the provider's own transcript for a thread.
+   *
+   * For a history the provider can no longer accept -- a request body past
+   * its size limit, reasoning records minted under a route it no longer runs
+   * on -- retrying on the same session fails the same way every time. When
+   * the adapter can compact its own session in place, that runs first and
+   * keeps the session ("compacted"). Otherwise this stops the live session
+   * and clears its resume cursor so the next start is a fresh session
+   * carrying a bounded digest of the thread and a reminder that the full
+   * record is still on disk ("discarded"). Resolves to false when the thread
+   * has no provider binding to forget.
+   */
+  readonly discardSessionHistory: (input: {
+    readonly threadId: ThreadId;
+    readonly sourceMessageId: MessageId | null;
+    /** Why the history is unusable; carried into the next session's recovery prompt. */
+    readonly reason?: string;
+  }) => Effect.Effect<ProviderHistoryRecoveryOutcome, ProviderServiceError>;
 
   /**
    * List active provider sessions.

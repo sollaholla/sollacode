@@ -54,6 +54,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.previewAutomationConnect
   | typeof WS_METHODS.remoteControlHostConnect
   | typeof WS_METHODS.remoteControlWatch
+  | typeof WS_METHODS.previewTabAudioWatch
   | typeof WS_METHODS.subscribeVcsStatus
   | typeof WS_METHODS.terminalAttach
   | typeof WS_METHODS.vmAgentSubscribe
@@ -248,10 +249,17 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                           const hasOnlyExpectedFailures =
                             cause.reasons.length > 0 &&
                             cause.reasons.every((reason) => reason._tag === "Fail");
+                          // Closing a session's scope ends its open streams
+                          // with an interrupt rather than an RpcClientError (the
+                          // supervisor dropping a lease it judged dead). Failing
+                          // on that killed the subscription for good, so a
+                          // thread sat in "Catching up…" until a page refresh.
                           const isTransportFailure =
-                            hasOnlyExpectedFailures &&
+                            cause.reasons.length > 0 &&
                             cause.reasons.every(
-                              (reason) => reason._tag === "Fail" && isRpcClientError(reason.error),
+                              (reason) =>
+                                Cause.isInterruptReason(reason) ||
+                                (reason._tag === "Fail" && isRpcClientError(reason.error)),
                             );
                           if (isTransportFailure) {
                             return Stream.fromEffect(

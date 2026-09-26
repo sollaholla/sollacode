@@ -1,12 +1,4 @@
-import {
-  CheckCircle2,
-  ChevronDown,
-  CircleHelp,
-  CircleStop,
-  CircleX,
-  MinusCircle,
-  X,
-} from "lucide-react";
+import { CheckCircle2, CircleHelp, CircleStop, CircleX, MinusCircle, X } from "lucide-react";
 import { useState } from "react";
 
 import { THREAD_PANEL_AGENTS_TASKS, useUiStateStore } from "../uiStateStore";
@@ -23,6 +15,8 @@ import {
 } from "../providerTasks";
 import { useProviderTaskDismissalStore } from "../providerTaskDismissalStore";
 import { cn } from "~/lib/utils";
+import { ComposerStackPanelHeader } from "./chat/ComposerStackPanelHeader";
+import { COMPOSER_STACK_SURFACE_CLASS_NAME } from "./chat/composerStackSurface";
 
 function TaskStatusIcon({ task }: { readonly task: ProviderTask }) {
   if (isProviderTaskActive(task)) {
@@ -58,11 +52,6 @@ function TaskStatusIcon({ task }: { readonly task: ProviderTask }) {
  */
 export function ProviderTaskPanel(props: {
   readonly tasks: ReadonlyArray<ProviderTask>;
-  /**
-   * Driver behind the thread's session, used to decide whether a running row
-   * can actually be killed. `null` when no session is bound yet.
-   */
-  readonly driverKind?: string | null;
   /** Sends the per-task stop. Omitted where no stop channel is wired. */
   readonly onStopTask?: (taskId: string) => void;
   /**
@@ -74,10 +63,8 @@ export function ProviderTaskPanel(props: {
   const activeCount = countActiveProviderTasks(props.tasks);
   const dismissTasks = useProviderTaskDismissalStore((state) => state.dismissTasks);
   const canClear = hasDismissableProviderTasks(props.tasks);
-  const driverKind = props.driverKind ?? null;
   const onStopTask = props.onStopTask;
-  const canStop = (task: ProviderTask) =>
-    onStopTask !== undefined && canStopProviderTask({ task, driverKind });
+  const canStop = (task: ProviderTask) => onStopTask !== undefined && canStopProviderTask({ task });
   const [collapsedOverride, setCollapsedOverride] = useState<boolean | null>(null);
   // Remembered per thread, and collapsed until this thread says otherwise —
   // the local override alone was forgotten on every remount, so a reader who
@@ -104,54 +91,39 @@ export function ProviderTaskPanel(props: {
       aria-label="Background tasks"
       data-provider-task-placement="composer"
       className={cn(
-        "mx-auto mt-1 flex min-h-0 w-[calc(100%-2.75rem)] max-w-[calc(48rem-2.75rem)] shrink-0 flex-col-reverse overflow-hidden rounded-xl border border-border/70 bg-background/95 shadow-sm backdrop-blur",
+        COMPOSER_STACK_SURFACE_CLASS_NAME,
+        "mt-1 flex min-h-0 shrink-0 flex-col-reverse",
         collapsed ? "max-h-none" : "max-h-[min(38dvh,22rem)]",
       )}
     >
-      <header className="relative flex min-h-9 shrink-0 items-center gap-2 bg-muted/20 px-3">
-        <button
-          type="button"
-          aria-expanded={!collapsed}
-          aria-label={`${collapsed ? "Expand" : "Collapse"} background tasks`}
-          onClick={() => setCollapsed(!collapsed)}
-          className="peer absolute inset-0 cursor-pointer text-left text-xs font-medium text-muted-foreground hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-        />
-        <div className="pointer-events-none z-10 flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-medium text-muted-foreground peer-hover:text-foreground peer-focus-visible:text-foreground">
-          <ChevronDown
-            aria-hidden
-            className={cn("size-3.5 shrink-0 transition-transform", collapsed && "rotate-180")}
-          />
-          {activeCount > 0 ? (
-            <span
-              aria-hidden
-              className="size-2 shrink-0 rounded-full bg-sky-500 ring-2 ring-sky-500/15"
-            />
-          ) : null}
-          <h2 className="truncate">
-            {activeCount > 0 ? `Background tasks · ${activeCount} running` : "Background tasks"}
-          </h2>
-        </div>
-        <div className="z-10 flex shrink-0 items-center gap-1.5">
-          {/*
+      <ComposerStackPanelHeader
+        label="background tasks"
+        title={activeCount > 0 ? `Background tasks · ${activeCount} active` : "Background tasks"}
+        active={activeCount > 0}
+        collapsed={collapsed}
+        onToggle={setCollapsed}
+        actions={
+          /*
            * Clears finished, failed, stopped and stale rows — never running
            * ones. A bulk control gets used without reading the list, so it must
            * not be able to hide work that is still going.
-           */}
-          {canClear ? (
+           */
+          canClear ? (
             <button
               type="button"
               onClick={() => dismissTasks(dismissableProviderTaskIds(props.tasks))}
-              className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+              // The pseudo-element stretches the hit area to the header's full
+              // height: a near miss on the small label used to land on the
+              // collapse toggle underneath and fold the panel instead.
+              className="relative rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground before:absolute before:-inset-x-1 before:-inset-y-2 before:content-[''] hover:bg-muted hover:text-foreground"
               title="Dismiss finished, failed and stale tasks. Running work is kept."
             >
               Clear
             </button>
-          ) : null}
-          <span className="pointer-events-none rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground tabular-nums peer-hover:text-foreground peer-focus-visible:text-foreground">
-            {props.tasks.length}
-          </span>
-        </div>
-      </header>
+          ) : null
+        }
+        count={props.tasks.length}
+      />
 
       {collapsed ? null : (
         <ul className="min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain border-b border-border/60 p-2">
@@ -163,7 +135,16 @@ export function ProviderTaskPanel(props: {
                   <p className="truncate text-xs font-medium">{task.title}</p>
                   <p className="text-[11px] text-muted-foreground">
                     {providerTaskTypeLabel(task)} · {providerTaskStatusLabel(task)}
-                    {task.toolUses !== null ? ` · ${task.toolUses} tool uses` : ""}
+                    {task.taskType !== "local_bash" && task.taskType !== "local_monitor" ? (
+                      <>
+                        {task.toolUses !== null ? ` · ${task.toolUses} tool uses` : ""}
+                        {task.totalTokens != null
+                          ? ` · ${task.totalTokens.toLocaleString()} tokens`
+                          : task.taskType === "local_agent" || task.taskType === "remote_agent"
+                            ? " · tokens unknown"
+                            : ""}
+                      </>
+                    ) : null}
                   </p>
                   {task.summary && task.summary !== task.title ? (
                     <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">

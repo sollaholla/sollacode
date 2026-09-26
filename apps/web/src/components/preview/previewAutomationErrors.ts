@@ -283,6 +283,10 @@ const DESKTOP_FAILURE_GUIDANCE: Readonly<Record<string, string>> = {
     "Use a Playwright locator such as role=button[name='Send'] or text=Continue, or a plain CSS selector",
   PreviewAutomationTargetNotEditableError:
     "Focus or locate a textbox, textarea, or contenteditable and retry; for a <select> use preview_select_option",
+  PreviewCredentialTargetRejectedError:
+    "Type the username with preview_type, then pass the locator of the field this entry is for from preview_snapshot to preview_fill_credential; only an entry of kind code fills text or number boxes",
+  PreviewAutomationTargetInCrossOriginFrameError:
+    "For ordinary text, click the field and type it with preview_press; a saved credential cannot be filled there, so ask the user to enter it on the page",
   PreviewAutomationDevToolsOpenError: "Ask the user to close DevTools on that tab, then retry",
   PreviewAutomationDebuggerAttachedError:
     "Retry after a moment; if it persists, close and reopen the tab with preview_close and preview_open",
@@ -418,7 +422,20 @@ const desktopFailureReason = (cause: unknown): string | undefined => {
       return `browser control was interrupted by human input${tab ? ` in tab ${tab}` : ""}. The user is using the tab; retry after a moment`;
     case "PreviewAutomationDeferredToUserInputError": {
       const waited = num("waitedMs");
-      return `the action was held for ${waited === undefined ? "the whole request" : `${Math.round(waited / 1000)}s`} because the user is typing or clicking, and never reached the page${tab ? ` (tab ${tab})` : ""}. Nothing on the page failed. Wait about ten seconds and retry the same action unchanged rather than changing approach`;
+      // The desktop names which observer kept the hold on. Without it a stale
+      // signal re-arming the gate for hours reads exactly like a person typing.
+      const source = typeof record.source === "string" ? record.source : undefined;
+      const renewals = num("renewals");
+      const lastInputAgo = num("lastInputAgoMs");
+      const pushToTalk = record.pushToTalkActive === true;
+      const ignored = num("ignored");
+      const ignoredReason =
+        typeof record.ignoredReason === "string" ? record.ignoredReason : "runaway";
+      const detail =
+        source === undefined
+          ? ""
+          : ` (held by ${source}, ${renewals ?? 0} re-arms, last ${Math.round(lastInputAgo ?? 0)}ms ago${ignored !== undefined && ignored > 0 ? `, ${ignored} ignored as ${ignoredReason}` : ""}${pushToTalk ? ", push-to-talk chord held" : ""})`;
+      return `the action was held for ${waited === undefined ? "the whole request" : `${Math.round(waited / 1000)}s`} because the user is typing or clicking${detail}, and never reached the page${tab ? ` (tab ${tab})` : ""}. Nothing on the page failed. Wait about ten seconds and retry the same action unchanged rather than changing approach`;
     }
     case "PreviewOperationError": {
       const operation =

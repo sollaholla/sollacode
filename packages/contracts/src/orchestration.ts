@@ -190,9 +190,32 @@ const UploadChatImageAttachment = Schema.Struct({
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment]);
+export const PROVIDER_SEND_TURN_MAX_AUDIO_BYTES = 4 * 1024 * 1024;
+
+const VoiceNoteFields = {
+  type: Schema.Literal("audio"),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: Schema.Literal("audio/wav"),
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_AUDIO_BYTES)),
+  durationMs: NonNegativeInt.check(Schema.isLessThanOrEqualTo(120_000)),
+};
+
+export const ChatAudioAttachment = Schema.Struct({
+  ...VoiceNoteFields,
+  id: ChatAttachmentId,
+  /** Produced on the environment host from the recording, never supplied by the client. */
+  transcript: Schema.optional(Schema.String.check(Schema.isMaxLength(32_000))),
+});
+export type ChatAudioAttachment = typeof ChatAudioAttachment.Type;
+
+const UploadChatAudioAttachment = Schema.Struct({
+  ...VoiceNoteFields,
+  dataUrl: TrimmedNonEmptyString.check(Schema.isMaxLength(6_000_000)),
+});
+
+export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatAudioAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
-const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+const UploadChatAttachment = Schema.Union([UploadChatImageAttachment, UploadChatAudioAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -206,6 +229,8 @@ export const ProjectScriptIcon = Schema.Literals([
 export type ProjectScriptIcon = typeof ProjectScriptIcon.Type;
 
 export const ProjectScript = Schema.Struct({
+  /** Agent actions belong to one dedicated thread within the shared Agents project. */
+  ownerThreadId: Schema.optional(ThreadId),
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
   command: TrimmedNonEmptyString,
@@ -250,6 +275,8 @@ export const OrchestrationMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
+  senderThreadId: Schema.optional(ThreadId),
+  senderThreadTitle: Schema.optional(Schema.String),
   /** Server-owned correlation for bounded VM-agent delegated work. */
   delegationId: Schema.optional(VmAgentDelegationId),
   // True for orchestrator voice-conversation rows recorded outside any turn.
@@ -893,6 +920,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
     role: Schema.Literal("user"),
     text: Schema.String,
     inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
+    senderThreadId: Schema.optional(ThreadId),
+    senderThreadTitle: Schema.optional(Schema.String),
     delegationId: Schema.optional(VmAgentDelegationId),
     attachments: Schema.Array(ChatAttachment),
   }),
@@ -929,6 +958,25 @@ const ClientThreadTurnStartCommand = Schema.Struct({
 
 const ThreadQueuedMessageRemoveCommand = Schema.Struct({
   type: Schema.Literal("thread.queued-message.remove"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Send one queued message immediately, ahead of whatever the thread is doing.
+ *
+ * Deliberately one command rather than "interrupt, then send". Stop cancels
+ * every undelivered queued message on the thread it ends
+ * (`settleUndeliveredQueuedDeliveries` under `user-stop`), so a client that
+ * issued those two commands in sequence destroyed the very message it was
+ * trying to push through — and a message a previous Stop already parked has
+ * no live obligation for a plain re-send to drive. Both halves have to happen
+ * under one per-thread lane, which is what this command buys.
+ */
+const ThreadQueuedMessageSendNowCommand = Schema.Struct({
+  type: Schema.Literal("thread.queued-message.send-now"),
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
@@ -1058,6 +1106,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnInterruptCommand,
   ThreadQueuedTurnPromoteCommand,
   ThreadQueuedMessageRemoveCommand,
+  ThreadQueuedMessageSendNowCommand,
   ThreadTaskStopCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1089,6 +1138,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadTurnInterruptCommand,
   ThreadQueuedTurnPromoteCommand,
   ThreadQueuedMessageRemoveCommand,
+  ThreadQueuedMessageSendNowCommand,
   ThreadTaskStopCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1133,11 +1183,13 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   delta: Schema.String,
+  textMode: Schema.optional(Schema.Literal("replace")),
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 
 const ThreadMessageAssistantCompleteCommand = Schema.Struct({
+  historicalReplay: Schema.optional(Schema.Literal(true)),
   type: Schema.Literal("thread.message.assistant.complete"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1173,6 +1225,7 @@ const ThreadActivityAppendCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   activity: OrchestrationThreadActivity,
+  historicalReplay: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 
@@ -1221,6 +1274,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
   "thread.queued-turn-promote-requested",
+  "thread.queued-message-send-now-requested",
   "thread.task-stop-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
@@ -1370,11 +1424,15 @@ export const ThreadInteractionModeSetPayload = Schema.Struct({
 });
 
 export const ThreadMessageSentPayload = Schema.Struct({
+  historicalReplay: Schema.optional(Schema.Literal(true)),
   threadId: ThreadId,
   messageId: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
+  textMode: Schema.optional(Schema.Literal("replace")),
   inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
+  senderThreadId: Schema.optional(ThreadId),
+  senderThreadTitle: Schema.optional(Schema.String),
   delegationId: Schema.optional(VmAgentDelegationId),
   voiceTranscript: Schema.optional(Schema.Boolean),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
@@ -1406,6 +1464,12 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
 export const ThreadQueuedTurnPromoteRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   messageIds: Schema.optional(Schema.Array(MessageId)),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadQueuedMessageSendNowRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
   createdAt: IsoDateTime,
 });
 
@@ -1475,6 +1539,7 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
 export const ThreadActivityAppendedPayload = Schema.Struct({
   threadId: ThreadId,
   activity: OrchestrationThreadActivity,
+  historicalReplay: Schema.optional(Schema.Literal(true)),
 });
 
 export const OrchestrationEventMetadata = Schema.Struct({
@@ -1594,6 +1659,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.queued-turn-promote-requested"),
     payload: ThreadQueuedTurnPromoteRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.queued-message-send-now-requested"),
+    payload: ThreadQueuedMessageSendNowRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

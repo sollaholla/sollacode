@@ -43,6 +43,227 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("keeps task lifecycles outside the activity window without skipping history", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("task-window-thread");
+      yield* sql`INSERT INTO projection_projects (
+        project_id, title, workspace_root, scripts_json, created_at, updated_at
+      ) VALUES ('task-window-project', 'Tasks', '/tmp/tasks', '[]',
+        '2026-09-15T20:00:00.000Z', '2026-09-15T20:00:00.000Z')`;
+      yield* sql`INSERT INTO projection_threads (
+        thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+        created_at, updated_at
+      ) VALUES (${threadId}, 'task-window-project', 'Tasks',
+        '{"instanceId":"claudeAgent","model":"claude-sonnet-4-6"}', 'full-access', 'agent',
+        '2026-09-15T20:00:00.000Z', '2026-09-15T20:00:00.000Z')`;
+      for (const [index, taskId, kind] of [
+        [1, "capture", "task.started"],
+        [2, "capture", "task.progress"],
+        [3, "apply", "task.started"],
+        [4, "apply", "task.completed"],
+      ] as const) {
+        yield* sql`INSERT INTO projection_thread_activities (
+          activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at
+        ) VALUES (${`task-window-${index}`}, ${threadId}, 'info', ${kind}, ${taskId},
+          ${encodeUnknownJson({
+            taskId,
+            taskType: "local_bash",
+            detail: taskId,
+            ...(kind === "task.completed" ? { status: "completed" } : {}),
+          })},
+          ${index}, ${`2026-09-15T20:00:0${index}.000Z`})`;
+      }
+      yield* sql`WITH RECURSIVE numbers(value) AS (
+        SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 205
+      ) INSERT INTO projection_thread_activities (
+        activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at
+      ) SELECT printf('task-window-noise-%04d', value), ${threadId}, 'info',
+        'runtime.note', 'Activity', '{}', value + 10, '2026-09-15T20:01:00.000Z' FROM numbers`;
+      const snapshot = yield* query.getThreadDetailSnapshot(threadId);
+      assert.isTrue(Option.isSome(snapshot));
+      if (Option.isNone(snapshot)) return;
+      const tasks = snapshot.value.thread.activities.filter((activity) =>
+        activity.kind.startsWith("task."),
+      );
+      assert.deepEqual(
+        tasks.map((activity) => activity.id),
+        [1, 2, 3, 4].map((n) => `task-window-${n}`),
+      );
+      assert.equal(
+        snapshot.value.thread.activities.length,
+        THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 4,
+      );
+      assert.equal(snapshot.value.history?.activityCursor?.activityId, "task-window-noise-0006");
+    }),
+  );
+
+  it.effect(
+    "finds durable explicit selections behind later server writes and unrelated metadata",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+        const lookup = snapshotQuery.getLatestClientModelSelection;
+        if (!lookup) return yield* Effect.die("missing client selection query");
+        const threadId = ThreadId.make("explicit-selection-history");
+        const modelSelection = { instanceId: "antigravity", model: "gemini-3.8-flash" };
+        const rows = [
+          { actor: "client", payload: { modelSelection } },
+          { actor: "client", payload: { modelSelection } },
+          { actor: "server", payload: { modelSelection } },
+          { actor: "provider", payload: { modelSelection } },
+          { actor: "client", payload: { title: "New title" } },
+        ];
+        let expectedSequence = 0;
+        for (const [index, row] of rows.entries()) {
+          const result = yield* sql<{ sequence: number }>`
+          INSERT INTO orchestration_events (
+            event_id, aggregate_kind, stream_id, stream_version, event_type,
+            occurred_at, command_id, causation_event_id, correlation_id,
+            actor_kind, payload_json, metadata_json
+          ) VALUES (
+            ${`explicit-selection-${index}`}, 'thread', ${threadId}, ${index + 1},
+            'thread.meta-updated', '2026-09-13T14:54:03.129Z', NULL, NULL, NULL,
+            ${row.actor}, ${encodeUnknownJson(row.payload)}, '{}'
+          ) RETURNING sequence
+        `;
+          if (index === 1) expectedSequence = result[0]!.sequence;
+        }
+        assert.deepEqual(Option.getOrNull(yield* lookup(threadId)), {
+          sequence: expectedSequence,
+          createdAt: "2026-09-13T14:54:03.129Z",
+        });
+        assert.isTrue(Option.isNone(yield* lookup(ThreadId.make("no-explicit-selection"))));
+      }),
+  );
+
+  /**
+   * The duplicate-message defect: a message steered into an already-running
+   * turn starts no provider turn of its own, so a `message.delivered` activity
+   * is its ONLY proof of delivery. The carry walk used to read that proof from
+   * the thread snapshot, which is bounded to the newest
+   * THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT rows — on a tool-heavy thread that is
+   * minutes against a 45-minute carry window. Once the receipt scrolled out the
+   * message looked undelivered again and was re-folded into every later turn,
+   * so the same text reached the provider two, three, N times.
+   *
+   * This asserts the property that fixes it: the receipt is still found when it
+   * sits far outside the snapshot bound.
+   */
+  it.effect("finds delivery receipts buried beyond the thread snapshot bound", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const getDelivered = snapshotQuery.getThreadDeliveredMessageIds;
+      if (getDelivered === undefined) {
+        return yield* Effect.die("getThreadDeliveredMessageIds is not configured");
+      }
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-carry', 'Carry', '/tmp/carry', NULL, '[]',
+          '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, latest_turn_id, latest_user_message_at, pending_approval_count,
+          pending_user_input_count, has_actionable_proposed_plan, created_at, updated_at, deleted_at
+        ) VALUES (
+          'thread-carry', 'project-carry', 'Carry Thread',
+          '{"provider":"claudeAgent","model":"claude-opus-5"}', 'full-access', 'agent',
+          NULL, NULL, NULL, NULL, 0, 0, 0,
+          '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', NULL
+        )
+      `;
+
+      // The receipt for the steered message, written first so every later
+      // activity buries it deeper than the snapshot would ever hydrate.
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        ) VALUES (
+          'activity-receipt', 'thread-carry', NULL, 'info', 'message.delivered',
+          'delivered', '{"messageId":"message-steered"}', 1, '2026-09-11T00:10:00.000Z'
+        )
+      `;
+      // A promotion receipt covers a batch, so it carries an id ARRAY.
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        ) VALUES (
+          'activity-promoted', 'thread-carry', NULL, 'info', 'provider.queue.promoted',
+          'promoted', '{"messageIds":["message-held"]}', 2, '2026-09-11T00:10:01.000Z'
+        )
+      `;
+      // Tool-call noise: more than a full snapshot window of later activities.
+      yield* sql`
+        WITH RECURSIVE activity_numbers(value) AS (
+          SELECT 1
+          UNION ALL
+          SELECT value + 1
+          FROM activity_numbers
+          WHERE value < ${THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 50}
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        )
+        SELECT
+          printf('activity-noise-%04d', value),
+          'thread-carry', NULL, 'info', 'runtime.note',
+          printf('noise %d', value), '{}', value + 10, '2026-09-11T00:20:00.000Z'
+        FROM activity_numbers
+      `;
+
+      const delivered = yield* getDelivered(
+        ThreadId.make("thread-carry"),
+        "2026-09-11T00:00:00.000Z",
+      );
+
+      // Both receipt shapes survive, however deeply buried.
+      assert.isTrue(
+        delivered.has("message-steered"),
+        "a steered message's receipt must outlive the snapshot bound",
+      );
+      assert.isTrue(delivered.has("message-held"), "promotion receipts cover their id array");
+      assert.isFalse(delivered.has("message-never-sent"), "only real receipts count");
+
+      // Receipts older than the carry window are irrelevant and must not be
+      // read: the window start is the whole point of the query being cheap.
+      const narrow = yield* getDelivered(ThreadId.make("thread-carry"), "2026-09-11T00:15:00.000Z");
+      assert.isFalse(
+        narrow.has("message-steered"),
+        "a receipt before the window start is outside the carry window",
+      );
+
+      // The defect itself: the bounded thread snapshot — the source the carry
+      // walk used to trust — no longer contains that receipt at all. If this
+      // ever starts finding it, the snapshot got big enough to hide the bug
+      // rather than the bug being fixed, and the durable query above is what
+      // must keep the guarantee.
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-carry"), {
+        activityLimit: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+      });
+      assert.isTrue(Option.isSome(detail), "seeded thread must hydrate");
+      const snapshotKinds = Option.isSome(detail)
+        ? detail.value.activities.map((activity) => activity.kind)
+        : [];
+      assert.isFalse(
+        snapshotKinds.includes("message.delivered"),
+        "the bounded snapshot loses the receipt — this is the defect the durable query fixes",
+      );
+    }),
+  );
+
   it.effect("bounds activity hydration for transport thread snapshots", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -2704,6 +2925,65 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (Option.isSome(absorbedIntoSourceTurn)) {
         assert.isFalse(absorbedIntoSourceTurn.value.hasLaterRealUserTurn);
       }
+
+      // Recovery can start another native turn from the same source message.
+      // The older turn's delivery receipts must not decide the new turn's
+      // supersession: a follow-up may have joined only the recovered turn.
+      const recoveredTurnId = TurnId.make("turn-recovered-from-same-message");
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, assistant_message_id, state,
+          requested_at, started_at, completed_at, checkpoint_files_json
+        ) VALUES (
+          ${threadId}, ${recoveredTurnId}, ${sourceMessageId}, NULL, 'incomplete',
+          '2026-08-25T23:35:00.000Z', '2026-08-25T23:35:00.000Z',
+          '2026-08-25T23:36:00.000Z', '[]'
+        )
+      `;
+      const deliveredOnlyToOldTurn = Option.getOrThrow(
+        yield* getThreadTurnStartContext(threadId, sourceMessageId),
+      );
+      assert.equal(deliveredOnlyToOldTurn.providerTurnId, recoveredTurnId);
+      assert.isTrue(deliveredOnlyToOldTurn.hasLaterRealUserTurn);
+
+      yield* sql`
+        UPDATE projection_thread_activities SET turn_id = ${recoveredTurnId}
+        WHERE activity_id = 'activity-delivered-later-user-intent'
+      `;
+      const deliveredToRecoveredTurn = Option.getOrThrow(
+        yield* getThreadTurnStartContext(threadId, sourceMessageId),
+      );
+      assert.equal(deliveredToRecoveredTurn.providerTurnId, recoveredTurnId);
+      assert.isFalse(deliveredToRecoveredTurn.hasLaterRealUserTurn);
+
+      yield* sql`
+        DELETE FROM projection_thread_activities
+        WHERE activity_id = 'activity-delivered-later-user-intent'
+      `;
+      const unhandledFollowup = Option.getOrThrow(
+        yield* getThreadTurnStartContext(threadId, sourceMessageId),
+      );
+      assert.isTrue(unhandledFollowup.hasLaterRealUserTurn);
+
+      // Equal timestamps still select the later durable attempt consistently.
+      yield* sql`
+        UPDATE projection_turns
+        SET requested_at = '2026-08-25T23:32:41.000Z',
+          started_at = '2026-08-25T23:32:41.000Z'
+        WHERE thread_id = ${threadId} AND turn_id = ${recoveredTurnId}
+      `;
+      const tiedAttempts = Option.getOrThrow(
+        yield* getThreadTurnStartContext(threadId, sourceMessageId),
+      );
+      assert.equal(tiedAttempts.providerTurnId, recoveredTurnId);
+      assert.deepStrictEqual(
+        Option.getOrThrow(yield* getThreadProviderTurnForMessage(threadId, sourceMessageId)),
+        {
+          turnId: recoveredTurnId,
+          state: "incomplete",
+          sourceMessageId,
+        },
+      );
     }),
   );
 });

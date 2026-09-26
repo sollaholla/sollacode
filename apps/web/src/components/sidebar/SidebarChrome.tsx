@@ -1,6 +1,6 @@
 import { SettingsIcon } from "lucide-react";
 import { memo, useCallback } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 
 import { APP_BASE_NAME } from "../../branding";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
@@ -91,12 +91,16 @@ function SidebarBrand() {
 
 export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const navigate = useNavigate();
+  const router = useRouter();
+  const preloadSettings = useCallback(() => {
+    void router.preloadRoute({ to: "/settings/general" }).catch(() => {});
+  }, [router]);
   const { isMobile, setOpenMobile } = useSidebar();
   const handleSettingsClick = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
     }
-    void navigate({ to: "/settings" });
+    void navigate({ to: "/settings/general" });
   }, [isMobile, navigate, setOpenMobile]);
 
   return (
@@ -104,7 +108,12 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
       <SidebarProviderUpdatePill />
       <SidebarMenu>
         <SidebarMenuItem>
-          <SidebarMenuButton onClick={handleSettingsClick}>
+          <SidebarMenuButton
+            onClick={handleSettingsClick}
+            onPointerEnter={preloadSettings}
+            onPointerDown={preloadSettings}
+            onFocus={preloadSettings}
+          >
             <SettingsIcon />
             <span>Settings</span>
           </SidebarMenuButton>

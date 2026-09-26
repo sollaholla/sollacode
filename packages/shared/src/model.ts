@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   MODEL_SLUG_ALIASES_BY_PROVIDER,
+  PROVIDER_DISPLAY_NAMES,
   type ModelCapabilities,
   type ModelSelection,
   ProviderDriverKind,
@@ -12,6 +13,17 @@ import {
 } from "@t3tools/contracts";
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
+
+/**
+ * A provider as people name it in notices: the instance's configured name,
+ * else the driver's product name ("Claude", not the `claudeAgent` id).
+ */
+export function providerDisplayLabel(
+  displayName: string | null | undefined,
+  driverKind: ProviderDriverKind,
+): string {
+  return displayName?.trim() || PROVIDER_DISPLAY_NAMES[driverKind] || String(driverKind);
+}
 
 export interface SelectableModelOption {
   slug: string;

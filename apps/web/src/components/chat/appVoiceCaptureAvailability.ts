@@ -8,7 +8,9 @@ export function shouldOfferAppVoiceCapture(input: {
    * the only route - and that one edits the composer's DOM behind our back.
    */
   readonly hasNativeSpeechDictation?: boolean;
+  readonly hasAudioCapture?: boolean;
 }): boolean {
+  if (input.hasAudioCapture === true) return true;
   if (input.isDesktopElectron || !input.hasCoarsePointer) return true;
   return input.hasNativeSpeechDictation === true;
 }

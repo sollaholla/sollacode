@@ -1,3 +1,4 @@
+import { ModelPolicyEditor, useSaveModelPolicy } from "./ModelPolicyEditor";
 import {
   ArchiveIcon,
   ArchiveX,
@@ -119,9 +120,9 @@ import {
   hasOneClickUpdateProviderCandidate,
   isProviderInstallActive,
   isProviderUpdateActive,
-  type ProviderUpdateCandidate,
 } from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { ProviderApiKeyAccountsSettings } from "./ProviderApiKeyAccounts";
 import {
   IDLE_PROVIDER_USAGE_REFRESH_STATE,
   ProviderSettingsUsage,
@@ -447,10 +448,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
-      ...(settings.autoSendVoiceTranscription !==
-      DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription
-        ? ["Voice transcription auto-send"]
-        : []),
       ...(settings.voiceTranscriptionCorrectionEnabled !==
       DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled
         ? ["Contextual transcription correction"]
@@ -488,7 +485,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       isTextGenerationModelDirty,
       isBackgroundActivityDirty,
       settings.autoOpenPlanSidebar,
-      settings.autoSendVoiceTranscription,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.addProjectBaseDirectory,
@@ -1728,36 +1724,14 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection title="Voice input">
-        <SettingsRow
-          title="Auto-send transcription"
-          description="Send immediately after local transcription and optional correction finish. Off leaves the transcript in the composer for review."
-          resetAction={
-            settings.autoSendVoiceTranscription !==
-            DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription ? (
-              <SettingResetButton
-                label="voice transcription auto-send"
-                onClick={() =>
-                  updateSettings({
-                    autoSendVoiceTranscription: DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.autoSendVoiceTranscription}
-              onCheckedChange={(checked) =>
-                updateSettings({ autoSendVoiceTranscription: Boolean(checked) })
-              }
-              aria-label="Automatically send voice transcriptions"
-            />
-          }
-        />
+        <p className="text-sm text-muted-foreground">
+          Chat recordings stay as voice-note attachments until you press Send. Transcription happens
+          on the connected host.
+        </p>
 
         <SettingsRow
           title="Contextual transcription correction"
-          description="Use a brief recent conversation snapshot to correct likely names, punctuation, and recognition errors before inserting or sending. If correction is slow or fails, the local transcript is used unchanged."
+          description="Correct likely names, punctuation, and recognition errors in terminal dictation. Chat voice notes retain the host transcript. If correction fails, the original terminal transcript is used."
           resetAction={
             settings.voiceTranscriptionCorrectionEnabled !==
             DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled ? (
@@ -1864,6 +1838,7 @@ export function ProviderSettingsPanel() {
   const setShowProviderUsageBar = useUiStateStore((state) => state.setShowProviderUsageBar);
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
   const primaryEnvironment = usePrimaryEnvironment();
+  const saveModelPolicy = useSaveModelPolicy(primaryEnvironment?.environmentId ?? null);
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -2306,6 +2281,18 @@ export function ProviderSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsSection id="setting-fallback-models" title="Automatic fallback models">
+        <p className="mb-4 text-sm text-muted-foreground">
+          Choose which models automatic fallback and quota-reset restoration may use. Thread and
+          agent restrictions also apply. When no allowed model is available, work waits instead of
+          switching. Manual model selection is unaffected by this global rule.
+        </p>
+        <ModelPolicyEditor
+          policy={settings.fallbackModelPolicy}
+          providers={serverProviders}
+          onSave={(policy) => saveModelPolicy({ fallbackModelPolicy: policy })}
+        />
+      </SettingsSection>
       <SettingsSection
         id="setting-providers"
         title="Providers"
@@ -2408,6 +2395,14 @@ export function ProviderSettingsPanel() {
               key={row.instanceId}
               instanceId={row.instanceId}
               instance={row.instance}
+              apiKeyAccounts={
+                row.driver === "deepcode" && primaryEnvironment ? (
+                  <ProviderApiKeyAccountsSettings
+                    environmentId={primaryEnvironment.environmentId}
+                    instanceId={row.instanceId}
+                  />
+                ) : undefined
+              }
               driverOption={driverOption}
               liveProvider={liveProvider}
               isExpanded={openInstanceDetails[row.instanceId] ?? false}

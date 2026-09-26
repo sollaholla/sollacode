@@ -29,6 +29,8 @@ describe("PreviewActivityLeases", () => {
     expect(leases.has("tab-1", PreviewActivityConsumer.Automation)).toBe(true);
     expect(leases.has("tab-1", PreviewActivityConsumer.Recording)).toBe(true);
     expect(leases.has("tab-1", PreviewActivityConsumer.PictureInPicture)).toBe(true);
+    expect(leases.holds("tab-1", "ui:surface")).toBe(false);
+    expect(leases.holds("tab-1", "pip:active")).toBe(true);
     expect(leases.snapshot("tab-1").total).toBe(3);
   });
 

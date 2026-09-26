@@ -1,4 +1,6 @@
 import * as NodeModule from "node:module";
+import * as NodeOS from "node:os";
+import type { TerminalWindowsPty } from "@t3tools/contracts";
 
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -69,9 +71,12 @@ const ensureNodePtySpawnHelperExecutable = Effect.fn(function* () {
 
 class NodePtyProcess implements PtyAdapter.PtyProcess {
   private readonly process: import("node-pty").IPty;
+  private windowsKillRequested = false;
+  readonly windowsPty: TerminalWindowsPty | undefined;
 
-  constructor(process: import("node-pty").IPty) {
+  constructor(process: import("node-pty").IPty, windowsPty?: TerminalWindowsPty) {
     this.process = process;
+    this.windowsPty = windowsPty;
   }
 
   get pid(): number {
@@ -86,8 +91,21 @@ class NodePtyProcess implements PtyAdapter.PtyProcess {
     this.process.resize(cols, rows);
   }
 
+  pause(): void {
+    this.process.pause();
+  }
+
+  resume(): void {
+    this.process.resume();
+  }
+
   kill(signal?: string): void {
-    this.process.kill(signal);
+    // Windows node-pty rejects POSIX signal names; kill() closes ConPTY and its tree.
+    if (this.windowsPty) {
+      if (this.windowsKillRequested) return;
+      this.process.kill();
+      this.windowsKillRequested = true;
+    } else this.process.kill(signal);
   }
 
   onData(callback: (data: string) => void): () => void {
@@ -162,7 +180,18 @@ export const make = Effect.fn("NodePtyAdapter.make")(function* (
             cause,
           }),
       });
-      return new NodePtyProcess(ptyProcess);
+      const windowsPty =
+        platform === "win32"
+          ? yield* Effect.sync(() => {
+              const buildNumber = Number.parseInt(NodeOS.release().split(".")[2] ?? "0", 10) || 0;
+              // node-pty uses ConPTY by default starting at this Windows build.
+              return {
+                backend: buildNumber >= 18309 ? ("conpty" as const) : ("winpty" as const),
+                buildNumber,
+              };
+            })
+          : undefined;
+      return new NodePtyProcess(ptyProcess, windowsPty);
     }),
   });
 });

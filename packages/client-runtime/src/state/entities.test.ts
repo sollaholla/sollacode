@@ -229,6 +229,37 @@ describe("environment entity projections", () => {
     expect(merged?.messages).toBe(messages);
   });
 
+  it.each([
+    ["cleared", null],
+    ["omitted by an older server", undefined],
+    [
+      "replaced by current work",
+      { kind: "startup-resume", state: "pending", since: "2026-09-13T16:00:00.000Z" },
+    ],
+  ] as const)("uses shell pending work when it is %s after reconnect", (_label, pendingWork) => {
+    const detail = {
+      ...THREAD_SHELL,
+      environmentId: ENVIRONMENT_ID,
+      pendingWork: {
+        kind: "active-turn-recovery",
+        state: "executing",
+        since: "2026-09-13T15:57:46.339Z",
+      },
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    } satisfies OrchestrationThread & { readonly environmentId: EnvironmentId };
+    const shell = { ...THREAD_SHELL, environmentId: ENVIRONMENT_ID, pendingWork };
+
+    const merged = mergeEnvironmentThread(detail, shell);
+
+    expect(merged?.pendingWork).toEqual(pendingWork);
+    expect(merged?.messages).toBe(detail.messages);
+    expect(detail.pendingWork.state).toBe("executing");
+  });
+
   it("preserves untouched project and thread identities across unrelated shell updates", () => {
     const harness = makeHarness();
     const projectRefsAtom = harness.projects.environmentProjectRefsAtom(ENVIRONMENT_ID);

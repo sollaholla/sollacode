@@ -15,7 +15,6 @@ import { OrchestrationEngineService } from "../../../orchestration/Services/Orch
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { VmAgentCollaborationStore } from "../../../persistence/Services/VmAgentCollaborations.ts";
-import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import * as ThreadHistoryQuery from "../history/ThreadHistoryQuery.ts";
 import { relatedChatSummary, resolveRelatedChats } from "./relationships.ts";
 import { ThreadCollaborationToolkit } from "./tools.ts";
@@ -52,7 +51,6 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
   const history = yield* ThreadHistoryQuery.ThreadHistoryQuery;
   const crypto = yield* Crypto.Crypto;
   const agentCollaboration = yield* VmAgentCollaborationStore;
-  const vmAgents = yield* VmAgentStore;
 
   const readFamily = Effect.fn("ThreadCollaboration.readFamily")(function* () {
     const snapshot = yield* projection
@@ -165,19 +163,10 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
     }
 
     case "create_side_chat": {
-      const callingVmAgent = yield* vmAgents
-        .getByThreadId(invocation.threadId)
-        .pipe(
-          Effect.mapError(() =>
-            toOperationError("checking VM-agent delegation routing", invocation.threadId),
-          ),
-        );
-      if (Option.isSome(callingVmAgent)) {
-        return yield* toOperationError(
-          "VM agents must use agent_collaboration.delegate instead of create_side_chat",
-          invocation.threadId,
-        );
-      }
+      // Custom agents fork side chats like any other chat; the side chat
+      // inherits the agent's browser and consulting rights (see
+      // resolveOwningVmAgent). Bounded delegated workers stay on
+      // agent_collaboration.delegate and may not fork further.
       const delegated = yield* agentCollaboration
         .hasActiveTargetThread(invocation.threadId)
         .pipe(
@@ -229,6 +218,8 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
           message: {
             messageId: MessageId.make(yield* randomId),
             role: "user",
+            senderThreadId: invocation.threadId,
+            senderThreadTitle: source.title,
             text: input.task,
             attachments: [],
           },

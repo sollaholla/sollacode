@@ -1,5 +1,5 @@
 import { type TurnId } from "@t3tools/contracts";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
 import { type TurnDiffFileChange } from "../../types";
 import {
   buildTurnDiffTree,
@@ -28,6 +28,7 @@ import {
 const EMPTY_DIRECTORY_OVERRIDES: Record<string, boolean> = {};
 
 export const ChangedFilesCard = memo(function ChangedFilesCard(props: {
+  references?: ReactNode;
   turnId: TurnId;
   files: ReadonlyArray<TurnDiffFileChange>;
   expanded: boolean;
@@ -112,7 +113,7 @@ export const ChangedFilesCard = memo(function ChangedFilesCard(props: {
                     aria-label={
                       allDirectoriesExpanded ? "Collapse all folders" : "Expand all folders"
                     }
-                    data-scroll-anchor-ignore
+                    aria-expanded={allDirectoriesExpanded}
                     onClick={onToggleAllDirectories}
                   />
                 }
@@ -197,6 +198,7 @@ export const ChangedFilesCard = memo(function ChangedFilesCard(props: {
           </div>
         </div>
       ) : null}
+      {props.references}
     </div>
   );
 });

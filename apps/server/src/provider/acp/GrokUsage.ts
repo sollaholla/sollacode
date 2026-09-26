@@ -56,16 +56,18 @@ export function parseGrokSubscription(raw: unknown): GrokSubscriptionProbe | und
   };
 }
 
+/**
+ * Absence is not zero. Grok's billing response is protobuf-shaped, so a
+ * `creditUsagePercent` of 0 really is omitted — but so is the field once the
+ * account's balance runs out: on 2026-09-18 the same CLI build reported 47,
+ * 48, 49 then 52 all afternoon, and from the moment prompts started failing
+ * with "Grok Build usage balance exhausted" the field simply stopped
+ * appearing. Reading that omission as an authoritative 0% put a confident
+ * "0%" on the usage bar for a provider that was refusing every turn, which is
+ * the worst of both readings. Unknown stays unknown and the chip hides.
+ */
 export function grokWeeklyUsagePercent(raw: unknown): number | undefined {
-  const config = grokBillingConfig(raw);
-  const reported = finiteNumber(config?.creditUsagePercent);
-  if (reported !== undefined) return reported;
-
-  // Grok's billing response is protobuf-shaped. At the start of a billing
-  // period the scalar percentage has its default value (zero), so the JSON
-  // encoder omits `creditUsagePercent` altogether. An advertised current
-  // period makes that omission an authoritative 0%, rather than missing data.
-  return asRecord(config?.currentPeriod) !== null ? 0 : undefined;
+  return finiteNumber(grokBillingConfig(raw)?.creditUsagePercent);
 }
 
 export function grokWeeklyResetAtMs(raw: unknown): number | undefined {
@@ -180,4 +182,23 @@ export function grokOnDemandUsage(raw: unknown):
   const cap = moneyValue(config?.onDemandCap);
   if (used === undefined || cap === undefined || cap <= 0) return undefined;
   return { used, cap };
+}
+
+/**
+ * Grok's own words for an exhausted account are "API error (status 402
+ * Payment Required): Grok Build usage balance exhausted" — accurate, and
+ * unreadable to anyone who does not already know that Grok Build bills
+ * against a weekly balance. Say what ran out and what to do about it, and
+ * keep the phrase "usage balance exhausted" in the text so the shared
+ * terminal-refusal check retires the retry loop instead of spending eight
+ * attempts on a balance that no retry can refill.
+ */
+export function grokUsageExhaustedMessage(detail: string): string | undefined {
+  if (!/usage balance exhausted/iu.test(detail)) return undefined;
+  return (
+    "Grok Build's usage balance is exhausted, so xAI declined this turn " +
+    "(HTTP 402, usage balance exhausted). The balance refills when your weekly " +
+    "period resets, or you can add credit at https://grok.com, or switch this " +
+    "thread to a different provider and send the message again."
+  );
 }

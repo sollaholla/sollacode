@@ -1,4 +1,10 @@
 import {
+  deferredThreadCommandChanges,
+  projectDeferredThreadSnapshot,
+  rememberThreadShells,
+} from "../operations/deferredThreadCommandState.ts";
+import { DeferredThreadCommandStore } from "../platform/persistence.ts";
+import {
   ORCHESTRATION_WS_METHODS,
   type EnvironmentId,
   type OrchestrationShellSnapshot,
@@ -439,13 +445,36 @@ export function createEnvironmentServerConfigsAtom(input: {
 
 export function createEnvironmentShellAtoms<R, E>(
   runtime: Atom.AtomRuntime<
-    EnvironmentRegistry | EnvironmentCacheStore | ShellSnapshotLoader | R,
+    | EnvironmentRegistry
+    | EnvironmentCacheStore
+    | ShellSnapshotLoader
+    | DeferredThreadCommandStore
+    | R,
     E
   >,
 ) {
-  const stateAtom = Atom.family((environmentId: EnvironmentId) =>
+  const rawStateAtom = Atom.family((environmentId: EnvironmentId) =>
     runtime.atom(shellStateChanges(environmentId), {
       initialValue: EMPTY_SHELL_STATE,
+    }),
+  );
+
+  const deferredAtom = Atom.family((environmentId: EnvironmentId) =>
+    runtime.atom(deferredThreadCommandChanges(environmentId), { initialValue: [] }),
+  );
+  const stateAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) => {
+      const pending = Option.getOrElse(
+        AsyncResult.value(get(deferredAtom(environmentId))),
+        () => [],
+      );
+      return AsyncResult.map(get(rawStateAtom(environmentId)), (state) => ({
+        ...state,
+        snapshot: Option.map(state.snapshot, (snapshot) => {
+          rememberThreadShells(environmentId, snapshot.threads);
+          return projectDeferredThreadSnapshot(snapshot, pending, false);
+        }),
+      }));
     }),
   );
 
@@ -458,6 +487,7 @@ export function createEnvironmentShellAtoms<R, E>(
   return {
     stateAtom,
     stateValueAtom,
+    deferredAtom,
   };
 }
 

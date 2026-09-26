@@ -105,6 +105,8 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
 }
 
 export const PersistedComposerImageAttachment = Schema.Struct({
+  type: Schema.optional(Schema.Literals(["image", "audio"])),
+  durationMs: Schema.optional(Schema.Number),
   id: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,
@@ -113,10 +115,13 @@ export const PersistedComposerImageAttachment = Schema.Struct({
 });
 export type PersistedComposerImageAttachment = typeof PersistedComposerImageAttachment.Type;
 
-export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl"> {
+export type ComposerImageAttachment = (
+  | ChatImageAttachment
+  | (Omit<ChatImageAttachment, "type"> & { type: "audio"; durationMs: number })
+) & {
   previewUrl: string;
   file: File;
-}
+};
 
 const PersistedTerminalContextDraft = Schema.Struct({
   id: Schema.String,
@@ -1127,6 +1132,12 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
     mimeType,
     sizeBytes,
     dataUrl,
+    ...(candidate.type === "audio"
+      ? {
+          type: "audio" as const,
+          durationMs: typeof candidate.durationMs === "number" ? candidate.durationMs : 0,
+        }
+      : {}),
   };
 }
 
@@ -2150,10 +2161,15 @@ export function hydrateImagesFromPersisted(
 
     return [
       {
-        type: "image" as const,
+        ...(attachment.type === "audio"
+          ? {
+              type: "audio" as const,
+              mimeType: attachment.mimeType,
+              durationMs: attachment.durationMs ?? 0,
+            }
+          : { type: "image" as const, mimeType: attachment.mimeType }),
         id: attachment.id,
         name: attachment.name,
-        mimeType: attachment.mimeType,
         sizeBytes: attachment.sizeBytes,
         previewUrl: attachment.dataUrl,
         file,

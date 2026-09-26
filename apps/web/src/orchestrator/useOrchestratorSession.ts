@@ -83,6 +83,7 @@ import {
 import { MAX_TOOL_LOG_ENTRIES, type OrchestratorToolLogEntry } from "./toolRegistry";
 import type { ThreadHistoryActivityInput, ThreadHistoryMessageInput } from "./threadHistory";
 import { appendUsage, clearUsage, loadUsageDays } from "./usageStore";
+import { useLiveUsageStore } from "./liveUsageStore";
 import {
   dailyBuckets,
   estimateVoiceMinutes,
@@ -420,7 +421,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();
   const orchestratorTarget = useOrchestratorThread();
-  const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const startThreadTurn = useAtomCommand(threadEnvironment.enqueueTurn, { reportFailure: false });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -1856,6 +1857,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
 
       const session = createVoiceSession(
         {
+          model: orchestrator.model,
           httpBaseUrl: prepared.httpBaseUrl,
           bearerToken: prepared.httpAuthorization?.token ?? null,
           authority: orchestrator.authority,
@@ -1877,6 +1879,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
         },
         {
           onStateChange: (next) => {
+            if (generation !== startGenerationRef.current) return;
             setState(next);
             // Up and listening: the drop is over, so the next one starts its
             // own budget rather than inheriting a spent one.
@@ -1893,8 +1896,11 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
               for (const line of lines) sessionRef.current?.announce(line);
             }
           },
-          onError: setError,
+          onError: (message) => {
+            if (generation === startGenerationRef.current) setError(message);
+          },
           onWorkingChange: (isWorking) => {
+            if (generation !== startGenerationRef.current) return;
             bubbleWorkingRef.current = isWorking;
             setWorking(isWorking);
             // Republish immediately: the session state has not changed, so
@@ -1902,8 +1908,11 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
             // the next transition.
             publishBubbleStatus(stateRef.current);
           },
-          onSessionReady: setActiveSession,
+          onSessionReady: (info) => {
+            if (generation === startGenerationRef.current) setActiveSession(info);
+          },
           onEndedByVoice: () => {
+            if (generation !== startGenerationRef.current) return;
             // Spoken "goodbye" is as deliberate as pressing stop, so nothing may
             // reopen the microphone afterwards.
             sessionRef.current = null;
@@ -1914,6 +1923,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
             publishBubbleStatus("idle");
           },
           onConnectionLost: () => {
+            if (generation !== startGenerationRef.current) return;
             sessionRef.current = null;
             setState("idle");
             const decision = decideReconnect({
@@ -1943,6 +1953,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
             }, decision.delayMs);
           },
           onIdleTimeout: () => {
+            if (generation !== startGenerationRef.current) return;
             // Not an error: say plainly why the microphone closed, so it does
             // not look like a dropped connection.
             setNotice(
@@ -1960,7 +1971,10 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
             const model = activeSessionRef.current?.model ?? orchestrator.model;
             setUsageDays(appendUsage({ model, usage, now: new Date() }));
           },
-          onLevels: publishBubbleLevels,
+          onLiveUsage: (usage) => useLiveUsageStore.getState().record(usage),
+          onLevels: (levels) => {
+            if (generation === startGenerationRef.current) publishBubbleLevels(levels);
+          },
           onTranscript: (entry) => {
             // The user is here and talking, so the app is demonstrably not
             // waking itself into an empty room; the wake budget resets.

@@ -175,7 +175,7 @@ export const PreviewTypeTool = browserTool(
 export const PreviewCredentialsTool = readonlyBrowserTool(
   Tool.make("preview_credentials", {
     description:
-      "List OS-encrypted credentials whose saved origin exactly matches the active tab. Returns labels and opaque IDs only; passwords never enter the tool response, server, WebSocket, or logs.",
+      "List the saved logins, PINs, and codes (Settings → Credentials) whose origin exactly matches the active tab. Returns labels, usernames, kinds, and opaque IDs only; secrets never enter the tool response, server, WebSocket, or logs. Type the username yourself with preview_type, then fill the secret with preview_fill_credential. kind password fills a password input; kind code (a PIN or similar) also fills a text, tel, number, or search input.",
     parameters: PreviewAutomationCredentialListInput,
     success: PreviewAutomationCredentialListResult,
     failure: PreviewAutomationError,
@@ -186,7 +186,7 @@ export const PreviewCredentialsTool = readonlyBrowserTool(
 export const PreviewFillCredentialTool = browserTool(
   Tool.make("preview_fill_credential", {
     description:
-      "Fill one password field with a credential selected by opaque credentialId. The desktop verifies the tab's exact origin and decrypts directly into trusted keyboard input; the password never crosses the server or appears in tool arguments, output, or logs. Use preview_credentials first. Prefer a snapshot-derived locator; set clear=true to replace the field.",
+      "Fill one field with a saved credential selected by opaque credentialId: a password input (input type=password) for a password, or a single-line text, tel, number, search, or password input for a PIN or code (kind code). The desktop verifies the tab's exact origin and decrypts straight into that field; the secret never crosses the server or appears in tool arguments, output, or logs, and later snapshots, evaluations, and status reads of the tab return it masked. Any other target is refused, so type the username with preview_type. Fields inside same-origin iframes (embedded payment and PIN forms) are reached by the same selector, a frame locator, or coordinates. Use preview_credentials first and pass the field's locator from preview_snapshot; clear defaults to true.",
     parameters: PreviewAutomationCredentialFillInput,
     success: PreviewAutomationCredentialFillResult,
     failure: PreviewAutomationError,
@@ -230,7 +230,7 @@ export const PreviewPressTool = browserTool(
 export const PreviewScrollTool = safeBrowserTool(
   Tool.make("preview_scroll", {
     description:
-      "Scroll the tab selected by tabId, or this thread's current tab when omitted. Positive deltaY scrolls down and positive deltaX scrolls right; a locator/selector targets a container.",
+      "Scroll the tab selected by tabId, or this thread's current tab when omitted. Positive deltaY scrolls down and positive deltaX scrolls right; a locator/selector targets a container. An x/y pair (viewport CSS pixels) turns a real mouse wheel at that point instead, so whatever panel sits under it scrolls: use it for web apps that scroll an inner pane rather than the page.",
     parameters: PreviewAutomationScrollInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,

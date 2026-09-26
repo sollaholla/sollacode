@@ -38,6 +38,28 @@ describe("provider overload retry normalization", () => {
   });
 });
 
+describe("hasRetryableUpstreamStatus", () => {
+  it("honours a provider's structured isRetryable verdict without a known status", () => {
+    // OpenCode's gateway: "Upstream request failed: Endpoint is unavailable"
+    // arrives as an APIError with isRetryable set and no 5xx status.
+    expect(
+      hasRetryableUpstreamStatus({
+        name: "APIError",
+        data: { message: "Upstream request failed: Endpoint is unavailable.", isRetryable: true },
+      }),
+    ).toBe(true);
+    expect(
+      hasRetryableUpstreamStatus({
+        name: "APIError",
+        data: { message: "Invalid request", isRetryable: false, statusCode: 400 },
+      }),
+    ).toBe(false);
+    // Only the boolean counts; prose or a string never moves lifecycle.
+    expect(hasRetryableUpstreamStatus({ data: { isRetryable: "true" } })).toBe(false);
+    expect(hasRetryableUpstreamStatus({ message: "isRetryable: true" })).toBe(false);
+  });
+});
+
 describe("isRetryableUpstreamStatus", () => {
   it("covers the gateway failures the CLI already retries, not just 529", () => {
     // Treating only 529 as a retry left a 502 storm retrying in silence and then

@@ -40,6 +40,7 @@ import { toastManager } from "../ui/toast";
 import { ResourceTelemetryDiagnostics } from "./ResourceTelemetryDiagnostics";
 import { SettingsPageContainer, SettingsSection, useRelativeTimeTick } from "./settingsLayout";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { confirmInApp } from "../ui/appConfirm";
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
 
@@ -896,12 +897,6 @@ export function DiagnosticsSettingsPanel() {
   const isProcessInitialLoading = isProcessPending && processData === null;
   const signalProcess = useCallback(
     (pid: number, signal: ServerProcessSignal) => {
-      if (
-        signal === "SIGKILL" &&
-        !window.confirm(`Send SIGKILL to process ${pid}? This cannot be handled by the process.`)
-      ) {
-        return;
-      }
       if (environmentId === null) {
         return;
       }
@@ -910,8 +905,20 @@ export function DiagnosticsSettingsPanel() {
         return;
       }
 
-      setSignalingPid(pid);
       void (async () => {
+        // Asked without freezing the renderer. A native confirm would stop the
+        // page's JavaScript thread outright, which is how one unanswered dialog
+        // wedged the whole app - and preview automation with it.
+        if (
+          signal === "SIGKILL" &&
+          !(await confirmInApp(
+            `Send SIGKILL to process ${pid}? This cannot be handled by the process.`,
+            { confirmLabel: "Send SIGKILL" },
+          ))
+        ) {
+          return;
+        }
+        setSignalingPid(pid);
         const result = await signalServerProcess({
           environmentId,
           input: { pid, startTimeMs: process.startTimeMs, signal },

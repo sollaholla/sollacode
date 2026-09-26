@@ -27,6 +27,8 @@ import { ThreadCollaborationToolkit } from "./toolkits/collaboration/tools.ts";
 import { ThreadHistoryToolkitHandlersLive } from "./toolkits/history/handlers.ts";
 import * as ThreadHistoryQuery from "./toolkits/history/ThreadHistoryQuery.ts";
 import { ThreadHistoryToolkit } from "./toolkits/history/tools.ts";
+import { JevToolkit } from "./toolkits/jev/tools.ts";
+import { JevToolkitHandlersLive } from "./toolkits/jev/handlers.ts";
 import { ThreadTerminalsToolkitHandlersLive } from "./toolkits/terminals/handlers.ts";
 import { ThreadTerminalsToolkit } from "./toolkits/terminals/tools.ts";
 import { WorkspaceConsultToolkitHandlersLive } from "./toolkits/consult/handlers.ts";
@@ -328,6 +330,10 @@ export const ThreadHistoryToolkitRegistrationLive = McpServer.toolkit(ThreadHist
   Layer.provide(ThreadHistoryQuery.layer),
 );
 
+export const JevToolkitRegistrationLive = McpServer.toolkit(JevToolkit).pipe(
+  Layer.provide(JevToolkitHandlersLive),
+);
+
 export const ThreadCollaborationToolkitRegistration = McpServer.toolkit(
   ThreadCollaborationToolkit,
 ).pipe(Layer.provide(ThreadCollaborationToolkitHandlersLive));
@@ -380,6 +386,7 @@ const McpTransportLive = McpServer.layerHttp({
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
 export const layer = Layer.mergeAll(
+  JevToolkitRegistrationLive,
   PreviewToolkitRegistrationLive,
   ThreadHistoryToolkitRegistrationLive,
   ThreadCollaborationToolkitRegistrationLive,

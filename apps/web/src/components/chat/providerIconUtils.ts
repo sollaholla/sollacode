@@ -9,6 +9,7 @@ import {
   Icon,
   OpenAI,
   OpenCodeIcon,
+  MuseIcon,
 } from "../Icons";
 import { PROVIDER_OPTIONS } from "../../session-logic";
 
@@ -18,6 +19,7 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>
   [ProviderDriverKind.make("opencode")]: OpenCodeIcon,
   [ProviderDriverKind.make("antigravity")]: AntigravityIcon,
   [ProviderDriverKind.make("deepcode")]: DeepCodeIcon,
+  [ProviderDriverKind.make("muse")]: MuseIcon,
   [ProviderDriverKind.make("cursor")]: CursorIcon,
   [ProviderDriverKind.make("grok")]: GrokIcon,
   [ProviderDriverKind.make("mcpBridge")]: ExternalProviderIcon,

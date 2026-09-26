@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  remoteContextMenuTarget,
   buildPreviewContextMenuTemplate,
   webSearchUrl,
   type PreviewContextMenuActions,
@@ -249,5 +250,64 @@ describe("webSearchUrl", () => {
     expect(webSearchUrl(" moose  & elk ")).toBe(
       "https://www.google.com/search?q=moose%20%26%20elk",
     );
+  });
+});
+
+describe("remoteContextMenuTarget", () => {
+  const base = {
+    pageURL: "https://example.com/",
+    linkURL: "",
+    linkText: "",
+    srcURL: "",
+    mediaType: "none",
+    isEditable: false,
+    selectionText: "",
+    editFlags: { canUndo: false, canRedo: true, canSelectAll: true },
+  };
+
+  it("carries what the viewer needs to draw the menu", () => {
+    expect(
+      remoteContextMenuTarget(
+        { ...base, linkURL: "https://example.com/a", linkText: "A" },
+        { canGoBack: true, canGoForward: false },
+      ),
+    ).toEqual({
+      pageUrl: "https://example.com/",
+      linkUrl: "https://example.com/a",
+      linkText: "A",
+      srcUrl: "",
+      mediaType: "none",
+      isEditable: false,
+      selectionText: "",
+      canUndo: false,
+      canRedo: true,
+      canSelectAll: true,
+      canGoBack: true,
+      canGoForward: false,
+    });
+  });
+
+  it("drops an oversized data: image and truncates a whole-page selection", () => {
+    const target = remoteContextMenuTarget(
+      {
+        ...base,
+        srcURL: `data:image/png;base64,${"A".repeat(20_000)}`,
+        mediaType: "image",
+        selectionText: "x".repeat(50_000),
+      },
+      { canGoBack: false, canGoForward: false },
+    );
+    expect(target.srcUrl).toBe("");
+    expect(target.mediaType).toBe("image");
+    expect(target.selectionText).toHaveLength(20_000);
+  });
+
+  it("folds media types the viewer does not know into none", () => {
+    expect(
+      remoteContextMenuTarget(
+        { ...base, mediaType: "somethingNew" },
+        { canGoBack: false, canGoForward: false },
+      ).mediaType,
+    ).toBe("none");
   });
 });

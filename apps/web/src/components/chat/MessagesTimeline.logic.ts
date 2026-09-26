@@ -590,17 +590,35 @@ function deriveTurnFolds(input: {
               lastEntryEnd,
           );
     const duration = elapsedMs !== null ? formatDuration(elapsedMs) : null;
-    const label = isLatestInterruptedTurn
+    const continuedWithFollowUp = group.entries.some(
+      (entry) => entry.kind === "work" && entry.entry.sourceActivityKind === "turn.follow-up",
+    );
+    // A turn that Send now ended was interrupted, so it takes the same
+    // interrupted state as Stop -- but the person did not press Stop, and
+    // telling them they did misreads their own action back to them.
+    const stoppedToSendQueued = group.entries.some(
+      (entry) =>
+        entry.kind === "work" && entry.entry.sourceActivityKind === "queue.message-send-now",
+    );
+    const label = continuedWithFollowUp
       ? duration
-        ? `You stopped after ${duration}`
-        : "You stopped this response"
-      : isLatestIncompleteTurn
+        ? `Continued with your follow-up after ${duration}`
+        : "Continued with your follow-up"
+      : stoppedToSendQueued
         ? duration
-          ? `Response ended unexpectedly after ${duration}`
-          : "Response ended unexpectedly"
-        : duration
-          ? `Worked for ${duration}`
-          : "Worked";
+          ? `Stopped after ${duration} to send your queued message`
+          : "Stopped to send your queued message"
+        : isLatestInterruptedTurn
+          ? duration
+            ? `You stopped after ${duration}`
+            : "You stopped this response"
+          : isLatestIncompleteTurn
+            ? duration
+              ? `Response ended unexpectedly after ${duration}`
+              : "Response ended unexpectedly"
+            : duration
+              ? `Worked for ${duration}`
+              : "Worked";
 
     foldsByAnchorEntryId.set(firstEntry.id, {
       turnId,
@@ -945,21 +963,45 @@ export type WorkCardEdge = "solo" | "start" | "middle" | "end";
 
 /**
  * The agent's side of the conversation lives in a box: its commentary and
- * replies, its tool work, the show-more/fewer toggle, and the live working
- * indicator. User messages, transitions, folds, and plans sit outside it and
- * therefore split one box from the next.
+ * replies, its thinking, its tool work, the show-more/fewer toggle, and the
+ * live working indicator. User messages, transitions, folds, and plans sit
+ * outside it and therefore split one box from the next.
+ *
+ * A thought belongs to the box for the same reason the commentary around it
+ * does: it is the agent talking. Left out, every thought punched a hole in the
+ * card - the paragraph drew full-bleed with no border, and the tool calls on
+ * either side of it became two separate boxes - so a turn that thought between
+ * each call rendered as a stack of loose cards instead of one (seen live
+ * 2026-09-10, Deep Code).
  */
 export function isWorkCardRow(row: MessagesTimelineRow): boolean {
   switch (row.kind) {
     case "work":
     case "work-toggle":
     case "working":
+    case "thought":
       return true;
     case "message":
       return row.message.role === "assistant";
-    default:
+    case "turn-fold":
+    case "proposed-plan":
+    case "provider-transition":
+    case "conversation-boundary":
       return false;
+    default:
+      // Every row kind is listed above on purpose - no `default: return false`.
+      // That default is how the thought row ended up outside the card: a kind
+      // added later inherited "not the agent's" without anyone deciding, and
+      // the miss is invisible in code review because the symptom only shows up
+      // as a hole in a box on screen. Adding a kind now fails to typecheck
+      // here until it is put on one side or the other.
+      return assertNeverRowKind(row);
   }
+}
+
+function assertNeverRowKind(row: never): false {
+  void row;
+  return false;
 }
 
 export function deriveWorkCardEdges(

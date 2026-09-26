@@ -1,3 +1,4 @@
+import { it as effectIt } from "@effect/vitest";
 import {
   CommandId,
   EventId,
@@ -40,6 +41,67 @@ function makeEvent(input: {
 }
 
 describe("orchestration projector", () => {
+  effectIt.effect("preserves historical activity chronology in the in-memory projection", () =>
+    Effect.gen(function* () {
+      const now = "2026-09-13T18:00:00.000Z";
+      let model = yield* projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: null,
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "History",
+            modelSelection: { provider: ProviderDriverKind.make("muse"), model: "muse" },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+      for (const [index, id] of ["old", "new", "old"].entries()) {
+        model = yield* projectEvent(
+          model,
+          makeEvent({
+            sequence: index + 2,
+            type: "thread.activity-appended",
+            aggregateKind: "thread",
+            aggregateId: "thread-1",
+            occurredAt: `2026-09-13T2${index}:00:00.000Z`,
+            commandId: null,
+            payload: {
+              threadId: "thread-1",
+              ...(index === 2 ? { historicalReplay: true } : {}),
+              activity: {
+                id,
+                tone: "tool",
+                kind: index === 2 ? "tool.completed" : "tool.started",
+                summary: "Tool",
+                payload: {},
+                turnId: null,
+                sequence: index + 10,
+                createdAt: `2026-09-13T2${index}:00:00.000Z`,
+              },
+            },
+          }),
+        );
+      }
+      expect(model.threads[0]?.activities.map((activity) => activity.id)).toEqual(["old", "new"]);
+      expect(model.threads[0]?.activities[0]).toMatchObject({
+        createdAt: "2026-09-13T20:00:00.000Z",
+        sequence: 10,
+        kind: "tool.completed",
+      });
+    }),
+  );
+
   it("applies thread.created events", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);
@@ -960,7 +1022,14 @@ describe("orchestration projector", () => {
     expect(message?.updatedAt).toBe(completeAt);
   });
 
-  it("preserves a line boundary when assistant prose resumes after AGENT_STOP", async () => {
+  it.each([
+    {
+      textMode: undefined,
+      expected:
+        "Please test the garment.\n\nAGENT_STOP\n\nPinch is working, so I’ll inspect the doors next.",
+    },
+    { textMode: "replace" as const, expected: "Pinch is working, so I’ll inspect the doors next." },
+  ])("applies assistant stream mode $textMode after AGENT_STOP", async ({ textMode, expected }) => {
     const createdAt = "2026-08-25T22:55:15.000Z";
     const afterCreate = await Effect.runPromise(
       projectEvent(
@@ -1028,6 +1097,7 @@ describe("orchestration projector", () => {
             messageId,
             role: "assistant",
             text: "Pinch is working, so I’ll inspect the doors next.",
+            ...(textMode ? { textMode } : {}),
             turnId: "turn-1",
             streaming: true,
             createdAt,
@@ -1037,9 +1107,7 @@ describe("orchestration projector", () => {
       ),
     );
 
-    expect(resumedDelta.threads[0]?.messages[0]?.text).toBe(
-      "Please test the garment.\n\nAGENT_STOP\n\nPinch is working, so I’ll inspect the doors next.",
-    );
+    expect(resumedDelta.threads[0]?.messages[0]?.text).toBe(expected);
   });
 
   it("prunes reverted turn messages from in-memory thread snapshot", async () => {

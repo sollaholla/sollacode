@@ -31,6 +31,19 @@ Grok models advertise reasoning-effort levels in ACP model metadata (`_meta.supp
 
 Deep Code runs `deepcode --exec --prompt` per turn and resumes with `--resume <sessionId>` after reading `~/.deepcode/projects/<projectCode>/sessions-index.json`. Model and effort ride on `DEEPCODE_MODEL` / `DEEPCODE_REASONING_EFFORT`. The CLI prints the final assistant reply only; there is no streamed tool protocol, and exec cannot confirm permission prompts.
 
+Claude sessions reach the API through a per-session relay (`ClaudeTokenOptimizerProxy`) on a
+loopback address. Claude Code keys first-party behavior off `ANTHROPIC_BASE_URL`: native 1M windows
+for models without a `[1m]` id, honoring `autoCompactWindow`, and deferring MCP tools behind tool
+search. `claudeSessionProxyEnvironment` (`packages/shared/src/claudeEnvironment.ts`) therefore sets
+`_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` when the relay's upstream is unset or
+`https://api.anthropic.com`. It is never set for gateways or when any `CLAUDE_CODE_USE_*` provider
+mode is on; those flags are read with the CLI's own boolean rules.
+`restoreInheritedClaudeEnvironment` strips it with the rest of the relay tags, so descendant launches
+start from the configured upstream. The relay passes `defer_loading` tools and non-text
+`tool_result` blocks, such as `tool_reference`, through unchanged. The window applies to resumed
+sessions too, but Claude Code latches a resumed conversation's declared tools, so a session that
+started without tool search keeps sending every MCP schema; only new sessions defer them.
+
 ## External MCP provider driver
 
 `mcpBridge` launches one user-configured local executable per enabled provider instance with the official MCP TypeScript SDK `StdioClientTransport`. All Solla threads for that instance are multiplexed over the one stdio process, but every application operation includes an explicit Solla thread/session ID. MCP supplies transport and JSON-RPC; `solla.provider-bridge/1` is Solla’s separately versioned provider lifecycle and event contract.
@@ -58,8 +71,51 @@ status, work obligation, and MCP credential. A failed native resume gets a new M
 the fresh fallback is spawned. Explicit Stop also checks live adapters when the projected chat status
 is already stopped, so a disconnected chat cannot leave its CLI running unnoticed.
 
+Startup recovery messages have one dispatcher: the durable work scheduler. The ordinary
+turn-request worker only wakes it; processing that same synthetic message as live steering can
+interrupt the recovery turn that the scheduler just started. Exhausted recovery retries leave a
+durable session error explaining why automatic resumption paused.
+
+A fork copies its parent's provider conversation on the reactor's event worker. The scheduler
+delivers the fork's first message independently and can claim it during the copy. So the reactor
+registers the pending fork when `thread.forked` arrives, before the event is queued. Until the fork
+handler settles:
+
+- the `active-turn-recovery` handler hands its claim back with a sleeping reason;
+- `ensureSessionForThread` waits on the pending fork, for up to two minutes.
+
+Settling makes handed-back deliveries due and wakes the scheduler. If a turn still wins the race,
+neither side overwrites it. The fork handler skips its session write when the session is running
+or has an active turn. `forkSessionBinding` returns a live target session instead of binding the
+copy over it, both before and after the copy.
+
+Runtime ingestion rejects lifecycle events from an outgoing provider or provider instance once
+its replacement owns the session. It also rejects an exit generated before the current session
+and conditionally writes against the session it read, so queued teardown cannot overwrite a
+concurrent handoff. Rejected exits do not clear the replacement's buffered turn state.
+
 ## Antigravity headless sessions
 
 The Antigravity driver discovers models through `agy models` and starts one scoped `agy` subprocess for each turn. The native conversation ID is retained as the resume cursor for subsequent turns. A pure mapper translates stream-JSON frames into provider runtime events. Assistant deltas include text on both ACTIVE and DONE frames; the final result does not duplicate streamed text.
 
 Interrupt marks the turn canceled before interrupting its fiber and closing the child process scope. A child that ignores graceful termination is forcibly terminated after two seconds. Late frames cannot override an interrupted terminal result. See [Antigravity](../providers/antigravity.md) for unsupported operations.
+
+## Host tools for every provider
+
+`ProviderService` issues each session a thread-scoped MCP credential and prepares a private shell client before the adapter starts. Every ordinary turn receives instructions for that client at the final dispatch boundary, after routing or recovery has selected the active session. This keeps tool access available even when an adapter has no native MCP transport. Native MCP remains preferred; standalone provider slash commands are sent unchanged. Session replacement and teardown revoke the credential and remove its helper file.
+
+A new provider integration must verify authenticated tool discovery and a history call through its actual runtime, as well as fresh start, resume, and failed-resume fallback. Configuration acceptance is not proof of access: Muse 1.2.1 accepts MCP settings without granting the native capability. Common service tests cover fallback injection independently of adapter-specific configuration, and the real Muse probe exercises the provider's shell tool against an isolated MCP server.
+
+Access-mode acceptance must also exercise a real filesystem operation in a disposable workspace,
+including a restricted countercheck. Approval mode and sandbox posture are separate controls:
+Muse fixes its sandbox when `muse serve` starts, so changing session approval mode alone cannot
+implement Full access. Its adapter owns a scoped host per thread, starts Full access with the
+matching sandbox flag, and replaces the host when that grant changes. A dead host invalidates
+the session and emits a recoverable exit; restarting resumes its saved cursor. New adapters
+must verify host-exit recovery and permission downgrade as well as successful initial startup.
+
+## Muse activity and terminal ordering
+
+Muse's session lifecycle notifications can continue even when a saved session cannot materialize a live view sidecar. In that mode, view/page is authoritative for transcript delivery and is read through the catalog host, which never loads or owns the thread session. A successful page response from the owning host can still be a stale loaded view. The read-only host must not resume, admit a turn, or acquire the session writer lease. A live terminal is not proof that earlier assistant items have reached Solla. It must not advance the transcript cursor past unread items or stop reconciliation before the final snapshot is delivered.
+
+Provider acceptance must cover the complete lifecycle: admission, intermediate activity, final assistant snapshot, terminal receipt, and settled client state. Include a terminal arriving before a paged final, a terminal during an outstanding page, replay overlap, a frozen owning-host view with advancing durable output, and a failed page. Seeing a working timer or one tool result is insufficient evidence of completed-message delivery.

@@ -54,6 +54,8 @@ describe("composer swipe-down wiring", () => {
       body,
       "a swipe during voice capture would blur the composer and unmount the recorder mid-take",
     ).toContain("pushToTalkStatus");
-    expect(body).toContain("blurFocusedComposerElement");
+    expect(body).toContain("document.activeElement");
+    expect(body).toContain("isInsideComposerFloatingLayer");
+    expect(body).not.toContain("blurFocusedComposerElement");
   });
 });

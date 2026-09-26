@@ -81,6 +81,33 @@ describe("PreviewAutomationOperationError.fromCause", () => {
     expect(reason).toContain("never reached the page");
     expect(reason).toContain("retry the same action unchanged");
     expect(reason).not.toContain("timed out");
+  });
+
+  it("names what kept a deferred action on hold when the desktop reports it", () => {
+    // 2026-09-12: every action in a fleet was held for the full deadline for
+    // hours. "The user is typing" was all anyone could read; whether a person
+    // typed or a stale signal re-armed the gate was invisible from outside.
+    const error = PreviewAutomationOperationError.fromCause({
+      ...context,
+      cause: {
+        _tag: "PreviewAutomationDeferredToUserInputError",
+        operation: "click",
+        tabId: "tab_1",
+        waitedMs: 49_867,
+        source: "app-typing",
+        renewals: 12,
+        lastInputAgoMs: 812,
+        ignored: 1190,
+        ignoredReason: "storm",
+        pushToTalkActive: true,
+      },
+    });
+    const reason =
+      (serializePreviewAutomationHostError(error).detail as { reason?: string } | undefined)
+        ?.reason ?? "";
+    expect(reason).toContain(
+      "held by app-typing, 12 re-arms, last 812ms ago, 1190 ignored as storm, push-to-talk chord held",
+    );
 
     const overIpc = PreviewAutomationOperationError.fromCause({
       ...context,
@@ -113,6 +140,37 @@ describe("PreviewAutomationOperationError.fromCause", () => {
       "Click coordinates (587.9, 3000) are outside the 1279x799 preview viewport for tab tab_740cf117-3455-4fc5-9de1-800306436855",
     );
     expect(reason).toContain("preview_scroll");
+    expect(reason.length).toBeLessThanOrEqual(400);
+  });
+
+  it("tells the agent a credential fill needs a field of the entry's kind", () => {
+    const error = PreviewAutomationOperationError.fromCause({
+      ...context,
+      cause: new Error(
+        "Error invoking remote method 'desktop:preview-credential-fill': PreviewCredentialTargetRejectedError: Preview credential fill puts a saved password only into a password input (input type=password), and the locator (27 chars) in tab tab_1 is not one",
+      ),
+    });
+    const reason =
+      (serializePreviewAutomationHostError(error).detail as { reason?: string } | undefined)
+        ?.reason ?? "";
+    expect(reason).toContain("only into a password input");
+    expect(reason).toContain("preview_type");
+    expect(reason).toContain("kind code");
+    expect(reason).not.toContain("PreviewCredentialTargetRejectedError");
+  });
+
+  it("tells the agent a field in another site's frame cannot take a credential", () => {
+    const error = PreviewAutomationOperationError.fromCause({
+      ...context,
+      cause: new Error(
+        "Error invoking remote method 'desktop:preview-credential-fill': PreviewAutomationTargetInCrossOriginFrameError: Preview automation credential fill reached the focused element inside a frame from another site in tab tab_1, whose fields it cannot edit",
+      ),
+    });
+    const reason =
+      (serializePreviewAutomationHostError(error).detail as { reason?: string } | undefined)
+        ?.reason ?? "";
+    expect(reason).toContain("frame from another site");
+    expect(reason).toContain("ask the user to enter it on the page");
     expect(reason.length).toBeLessThanOrEqual(400);
   });
 

@@ -5,6 +5,7 @@ import {
   expandDeliveredMessageIds,
   deriveDeliveredMessageIds,
   derivePromotedQueuedMessageIds,
+  deriveUnsentMessage,
   messageDeliveryLabel,
   messageDeliveryState,
   shouldShowDeliveryIndicator,
@@ -232,5 +233,78 @@ describe("expandDeliveredMessageIds", () => {
   it("is unchanged when every message is already receipted", () => {
     const expanded = expandDeliveredMessageIds(["m1", "m2"], new Set(["m1", "m2"]));
     expect([...expanded].sort()).toEqual(["m1", "m2"]);
+  });
+});
+
+describe("deriveUnsentMessage", () => {
+  const newestUserMessage = { id: "m1", createdAt: "2026-08-01T00:00:00.000Z" };
+  const failure = (payload: unknown, createdAt = "2026-08-01T00:00:05.000Z") => ({
+    ...activity("provider.turn.start.failed", payload),
+    createdAt,
+  });
+  const derive = (
+    activities: ReadonlyArray<OrchestrationThreadActivity>,
+    overrides: Partial<Parameters<typeof deriveUnsentMessage>[0]> = {},
+  ) =>
+    deriveUnsentMessage({
+      activities,
+      newestUserMessage,
+      delivered: new Set(),
+      deliveryInFlight: false,
+      answeredAfter: false,
+      ...overrides,
+    });
+
+  it("reports a delivery the server cancelled for good", () => {
+    // The Pawstalgia regression: a failed provider switch cancelled the turn,
+    // and the row kept promising "Queued for Claude".
+    expect(
+      derive([failure({ detail: "Invalid params", messageId: "m1", deliveryCancelled: true })]),
+    ).toEqual({ messageId: "m1", detail: "Invalid params" });
+  });
+
+  it("stays quiet while a tagged failure is still being retried", () => {
+    expect(
+      derive([failure({ detail: "Overloaded", messageId: "m1", deliveryCancelled: false })]),
+    ).toBeNull();
+  });
+
+  it("lets a later retrying failure supersede an earlier cancelled one", () => {
+    expect(
+      derive([
+        failure({ detail: "Invalid params", messageId: "m1", deliveryCancelled: true }),
+        failure(
+          { detail: "Overloaded", messageId: "m1", deliveryCancelled: false },
+          "2026-08-01T00:00:09.000Z",
+        ),
+      ]),
+    ).toBeNull();
+  });
+
+  it("ignores failures tagged for another message or from before it was sent", () => {
+    expect(
+      derive([
+        failure({ detail: "x", messageId: "m0", deliveryCancelled: true }),
+        failure({ detail: "y" }, "2026-07-31T23:59:59.000Z"),
+      ]),
+    ).toBeNull();
+  });
+
+  it("reads an untagged failure from an older server as unsent once nothing can deliver it", () => {
+    const legacy = [failure({ detail: "Invalid params" })];
+    expect(derive(legacy)).toEqual({ messageId: "m1", detail: "Invalid params" });
+    expect(derive(legacy, { deliveryInFlight: true })).toBeNull();
+    expect(derive(legacy, { answeredAfter: true })).toBeNull();
+    expect(derive(legacy, { delivered: new Set(["m1"]) })).toBeNull();
+  });
+
+  it("falls back to the activity summary when the payload has no detail", () => {
+    expect(derive([failure({ messageId: "m1", deliveryCancelled: true })])?.detail).toBe(
+      "provider.turn.start.failed",
+    );
+  });
+
+  it("has nothing to report without a user message", () => {
+    expect(derive([failure({ detail: "x" })], { newestUserMessage: undefined })).toBeNull();
   });
 });

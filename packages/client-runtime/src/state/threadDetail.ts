@@ -61,6 +61,9 @@ export function mergeEnvironmentThread(
     settledAt: shell.settledAt,
     snoozedUntil: shell.snoozedUntil,
     snoozedAt: shell.snoozedAt,
+    // Scheduler corrections arrive on the shell stream, not the detail stream.
+    // Copy null/undefined too so cached recovery work cannot survive its removal.
+    pendingWork: shell.pendingWork,
     session: shell.session,
   };
 }

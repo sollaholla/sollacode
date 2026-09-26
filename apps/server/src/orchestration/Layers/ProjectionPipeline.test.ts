@@ -7987,6 +7987,110 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       }),
     );
 
+    it.effect("exposes a delivered handoff whose turn was lost without replaying it", () =>
+      Effect.gen(function* () {
+        const pipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        for (const scenario of ["lost", "shutdown", "stopped", "newer", "projected"] as const) {
+          const threadId = `lost-handoff-${scenario}`;
+          const messageId = `message-${threadId}`;
+          const targetTurnId = `agy-${threadId}`;
+          const startAt = "2026-03-02T10:00:06.000Z";
+          yield* seedThread({
+            threadId,
+            turnId: `old-${threadId}`,
+            assistantMessageId: `assistant-${threadId}`,
+            turnState: "completed",
+            isStreaming: 0,
+            sessionStatus: "stopped",
+            activeTurnId: null,
+            completedAt: "2026-03-02T10:00:05.000Z",
+            assistantText: "Previous reply",
+          });
+          yield* sql`UPDATE projection_threads SET model_selection_json = '{"instanceId":"antigravity","model":"gemini"}' WHERE thread_id = ${threadId}`;
+          yield* sql`
+            INSERT INTO provider_session_runtime (thread_id, provider_name, provider_instance_id, adapter_key, runtime_mode, status, last_seen_at, resume_cursor_json, runtime_payload_json)
+            VALUES (${threadId}, 'antigravity', 'antigravity', 'antigravity', 'full-access', ${scenario === "shutdown" ? "stopped" : "running"}, ${startAt}, '{}', json_object('activeTurnId', ${targetTurnId}, 'lastRuntimeEvent', ${scenario === "shutdown" ? "provider.stopAll" : "provider.sendTurn"}))
+          `;
+          yield* sql`
+            INSERT INTO thread_work_obligations (obligation_id, thread_id, source_turn_id, kind, state, provider_instance_id, attempt, blocked_reason, created_at, updated_at)
+            VALUES (${`work-${threadId}`}, ${threadId}, ${`turn-start:${messageId}`}, 'active-turn-recovery', 'cancelled', 'antigravity', 1, 'provider session stopped', ${startAt}, ${startAt})
+          `;
+          yield* sql`
+            INSERT INTO projection_thread_activities (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at)
+            VALUES (${`receipt-${threadId}`}, ${threadId}, ${targetTurnId}, 'info', 'message.delivered', 'Delivered', json_object('messageId', ${messageId}), ${startAt})
+          `;
+          yield* eventStore.append({
+            type: "thread.turn-start-requested",
+            eventId: EventId.make(`start-${threadId}`),
+            aggregateKind: "thread",
+            aggregateId: ThreadId.make(threadId),
+            occurredAt: startAt,
+            commandId: CommandId.make(`start-${threadId}`),
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            payload: {
+              threadId: ThreadId.make(threadId),
+              messageId: MessageId.make(messageId),
+              runtimeMode: "full-access",
+              createdAt: startAt,
+            },
+          });
+          if (scenario === "stopped")
+            yield* eventStore.append({
+              type: "thread.session-stop-requested",
+              eventId: EventId.make(`stop-${threadId}`),
+              aggregateKind: "thread",
+              aggregateId: ThreadId.make(threadId),
+              occurredAt: startAt,
+              commandId: CommandId.make(`stop-${threadId}`),
+              causationEventId: null,
+              correlationId: null,
+              metadata: {},
+              payload: { threadId: ThreadId.make(threadId), createdAt: startAt },
+            });
+          if (scenario === "newer")
+            yield* eventStore.append({
+              type: "thread.turn-start-requested",
+              eventId: EventId.make(`next-${threadId}`),
+              aggregateKind: "thread",
+              aggregateId: ThreadId.make(threadId),
+              occurredAt: startAt,
+              commandId: CommandId.make(`next-${threadId}`),
+              causationEventId: null,
+              correlationId: null,
+              metadata: {},
+              payload: {
+                threadId: ThreadId.make(threadId),
+                messageId: MessageId.make(`newer-${messageId}`),
+                runtimeMode: "full-access",
+                createdAt: startAt,
+              },
+            });
+          if (scenario === "projected")
+            yield* sql`
+            INSERT INTO projection_turns (thread_id, turn_id, pending_message_id, state, requested_at, checkpoint_files_json)
+            VALUES (${threadId}, ${targetTurnId}, ${messageId}, 'completed', ${startAt}, '[]')
+          `;
+          yield* pipeline.reconcileOrphanedInFlightWork;
+          const [session] = yield* sql<{
+            readonly status: string;
+            readonly last_error: string | null;
+          }>`SELECT status, last_error FROM projection_thread_sessions WHERE thread_id = ${threadId}`;
+          if (scenario === "lost" || scenario === "shutdown") {
+            assert.equal(session?.status, "error");
+            assert.include(session?.last_error, "Use Resume");
+          } else assert.equal(session?.status, "stopped");
+          const work = yield* sql<{
+            readonly state: string;
+          }>`SELECT state FROM thread_work_obligations WHERE thread_id = ${threadId}`;
+          assert.deepEqual(work, [{ state: "cancelled" }]);
+        }
+      }),
+    );
+
     // The 2026-08-05 incident: a hard kill (deploy/SIGKILL) projects no
     // session-set, so the turn stays "running" — invisible to the recovery
     // scan, which only considers settled turns. It sat "running" for 95

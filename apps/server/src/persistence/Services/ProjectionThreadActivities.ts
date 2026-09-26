@@ -68,6 +68,7 @@ export interface ProjectionThreadActivityRepositoryShape {
    */
   readonly upsert: (
     row: ProjectionThreadActivity,
+    options?: { readonly preserveChronology?: boolean },
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**

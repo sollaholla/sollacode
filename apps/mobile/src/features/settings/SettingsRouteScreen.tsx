@@ -1,3 +1,6 @@
+import type { EnvironmentId } from "@t3tools/contracts";
+import { useServerConfigs } from "../../state/entities";
+import { ModelPolicyModal } from "./ModelPolicyModal";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import Constants from "expo-constants";
 import * as Updates from "expo-updates";
@@ -68,6 +71,8 @@ function LocalSettingsRouteScreen() {
   const insets = useSafeAreaInsets();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const environmentCount = Object.keys(savedConnectionsById).length;
+  const configs = useServerConfigs();
+  const [policyEnvironment, setPolicyEnvironment] = useState<EnvironmentId | null>(null);
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
@@ -88,8 +93,31 @@ function LocalSettingsRouteScreen() {
             target="SettingsEnvironments"
           />
           <SettingsRow icon="person.2" label="Agents" fullScreenTarget="Agents" />
+          <SettingsRow icon="key" label="Credentials" target="SettingsCredentials" />
         </SettingsSection>
 
+        <SettingsSection title="Automatic fallback models">
+          {[...configs.entries()].map(([environmentId, config]) => (
+            <Pressable
+              key={environmentId}
+              accessibilityRole="button"
+              className="p-4"
+              onPress={() => setPolicyEnvironment(environmentId)}
+            >
+              <Text>{config.cwd} — Model restrictions</Text>
+            </Pressable>
+          ))}
+          {configs.size === 0 && (
+            <Text className="p-4">Connect an environment to manage its fallback models.</Text>
+          )}
+        </SettingsSection>
+        {policyEnvironment && (
+          <ModelPolicyModal
+            environmentId={policyEnvironment}
+            visible
+            onClose={() => setPolicyEnvironment(null)}
+          />
+        )}
         <GeneralSettingsSection />
 
         <OrchestratorSettingsSection />

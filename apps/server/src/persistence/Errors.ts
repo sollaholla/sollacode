@@ -27,6 +27,35 @@ export const PersistenceErrorCorrelation = Schema.Union([
 ]);
 export type PersistenceErrorCorrelation = typeof PersistenceErrorCorrelation.Type;
 
+/** Explain storage failures across the SQL adapter's nested causes without exposing query data. */
+function storageFailureMessage(cause: unknown): string | undefined {
+  const seen = new Set<object>();
+  for (let depth = 0; depth < 16 && typeof cause === "object" && cause !== null; depth++) {
+    if (seen.has(cause)) break;
+    seen.add(cause);
+    const code = "code" in cause ? cause.code : undefined;
+    const errcode = "errcode" in cause ? cause.errcode : undefined;
+    const primaryCode = typeof errcode === "number" ? errcode & 0xff : undefined;
+    const message = "message" in cause ? cause.message : undefined;
+    if (
+      code === "SQLITE_FULL" ||
+      code === "ENOSPC" ||
+      primaryCode === 13 ||
+      message === "database or disk is full"
+    ) {
+      return "Solla's database or disk is full. Free disk space on the machine running Solla, then try again.";
+    }
+    if (
+      code === "SQLITE_CANTOPEN" ||
+      primaryCode === 14 ||
+      message === "unable to open database file"
+    ) {
+      return "Solla couldn't open its database. Check free disk space and folder permissions on the machine running Solla, then try again.";
+    }
+    cause = "cause" in cause ? cause.cause : undefined;
+  }
+}
+
 export class PersistenceSqlError extends Schema.TaggedErrorClass<PersistenceSqlError>()(
   "PersistenceSqlError",
   {
@@ -37,6 +66,8 @@ export class PersistenceSqlError extends Schema.TaggedErrorClass<PersistenceSqlE
   },
 ) {
   override get message(): string {
+    const storageMessage = storageFailureMessage(this.cause);
+    if (storageMessage !== undefined) return storageMessage;
     return this.detail === undefined
       ? `SQL error in ${this.operation}`
       : `SQL error in ${this.operation}: ${this.detail}`;

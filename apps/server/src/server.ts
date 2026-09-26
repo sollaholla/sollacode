@@ -1,3 +1,5 @@
+import * as PreviewExpiry from "./preview/Expiry.ts";
+import { OrchestratorLiveLayer } from "./orchestrator/OrchestratorLive.ts";
 import { EnvironmentHttpApi } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -11,14 +13,17 @@ import * as HttpResponseCompression from "./httpCompression/HttpResponseCompress
 import {
   otlpTracesProxyRouteLayer,
   orchestratorRealtimeTokenRouteLayer,
+  orchestratorLiveRouteLayer,
   orchestratorRunCommandRouteLayer,
   assetRouteLayer,
+  fileViewRouteLayer,
   serverEnvironmentHttpApiLayer,
   staticAndDevRouteLayer,
   browserApiCorsLayer,
   httpCompressionLayer,
 } from "./http.ts";
 import { fixPath } from "./os-jank.ts";
+import { voiceNoteRuntimeStartupLayer } from "./voiceNoteRuntimeStartup.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
@@ -47,6 +52,7 @@ import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DesktopAppUpdater from "./mcp/toolkits/appUpdate/DesktopAppUpdater.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
+import * as TabAudioRelay from "./preview/TabAudioRelay.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
@@ -319,7 +325,8 @@ const TerminalLayerLive = TerminalManager.layer.pipe(
   Layer.provide(PortScannerLayerLive),
 );
 
-const PreviewLayerLive = Layer.empty.pipe(
+const PreviewLayerLive = PreviewExpiry.layer.pipe(
+  Layer.provide(PersistenceLayerLive),
   Layer.provideMerge(
     PreviewManager.layer.pipe(
       // Tab durability: sessions are rehydrated from SQLite at boot so open
@@ -465,8 +472,10 @@ export const makeRoutesLayer = Layer.mergeAll(
     ),
     otlpTracesProxyRouteLayer,
     orchestratorRealtimeTokenRouteLayer,
+    orchestratorLiveRouteLayer,
     orchestratorRunCommandRouteLayer,
     assetRouteLayer,
+    fileViewRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
@@ -476,10 +485,12 @@ export const makeRoutesLayer = Layer.mergeAll(
   ),
 ).pipe(
   HttpRouter.provideRequest(ThreadArtifactLayerLive),
+  HttpRouter.provideRequest(OrchestratorLiveLayer),
   Layer.provide(ActionApprovalBroker.layer),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(DesktopAppUpdater.layer),
   Layer.provide(RemoteControlBroker.layer),
+  Layer.provide(TabAudioRelay.layer),
   Layer.provide(ServerSelfUpdate.layer),
   Layer.provide(browserApiCorsLayer),
   Layer.provide(httpCompressionLayer),
@@ -577,6 +588,11 @@ export const makeServerLayer = Layer.unwrap(
       httpListeningLayer,
       runtimeStateLayer,
       tailscaleServeLayer,
+      voiceNoteRuntimeStartupLayer({
+        baseDir: config.baseDir,
+        desktop: config.desktopBootstrapToken !== undefined,
+        development: config.devUrl !== undefined,
+      }),
       ActivityPayloadCompactionLive,
     );
 

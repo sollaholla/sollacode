@@ -326,6 +326,29 @@ export const revealFile = DesktopIpc.makeIpcMethod({
   }),
 });
 
+/**
+ * Open a file with the system's default application.
+ *
+ * Answers a reason string rather than a bare false: "no application is
+ * registered for .foo" and "the file is gone" need different words in front of
+ * the user, and Electron already distinguishes them.
+ */
+export const openPath = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.OPEN_PATH_CHANNEL,
+  payload: Schema.String,
+  result: Schema.String,
+  handler: Effect.fn("desktop.ipc.window.openPath")(function* (requestedPath) {
+    const path = yield* Path.Path;
+    if (!path.isAbsolute(requestedPath)) return "That path is not absolute.";
+    const fileSystem = yield* FileSystem.FileSystem;
+    if (!(yield* fileSystem.exists(requestedPath))) {
+      return "The file no longer exists on this computer.";
+    }
+    const electronShell = yield* ElectronShell.ElectronShell;
+    return yield* electronShell.openPath(requestedPath);
+  }),
+});
+
 export const writeComposerClipboard = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.WRITE_COMPOSER_CLIPBOARD_CHANNEL,
   payload: DesktopComposerClipboardInputSchema,

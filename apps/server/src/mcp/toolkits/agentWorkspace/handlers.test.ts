@@ -367,3 +367,26 @@ it.effect("set_icon without an icon is an invalid input, not a silent no-op", ()
     assert.strictEqual(harness.icons.length, 0);
   }),
 );
+
+it.effect("reports stopped scheduling instead of promising execution", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness({ ...agent, status: "stopped" });
+    const result = yield* run(
+      handleAgentWorkspace({
+        action: "create_task",
+        title: "Resume tomorrow",
+        prompt: "Continue the work.",
+        schedule: { kind: "once", runAt: "2026-08-22T20:00:00.000Z" },
+      }),
+      harness.layer,
+    );
+    assert.include(result.status, "agent is stopped");
+    assert.include(result.status, "will not run");
+    assert.strictEqual(result.task?.status, "active");
+    const updated = yield* run(
+      handleAgentWorkspace({ action: "update_task", taskId: "recurring-task" }),
+      harness.layer,
+    );
+    assert.include(updated.status, "approval");
+  }),
+);

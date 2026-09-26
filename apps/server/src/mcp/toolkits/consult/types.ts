@@ -2,6 +2,18 @@ import { IsoDateTime, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 /**
+ * A number that also accepts its decimal string form.
+ *
+ * Models do not always emit JSON numbers for numeric tool arguments: on
+ * 2026-09-17 OpenCode's union-alpha passed `waitMs: "5000.0"`, and the strict
+ * `Schema.Number` rejected the whole call ("Expected number | undefined, got
+ * \"5000.0\""). The string branch decodes through `Number()`, so "5000.0"
+ * becomes 5000; non-numeric strings still fail (`FiniteFromString`, so "soon"
+ * does not slip through as NaN).
+ */
+const LenientNumber = Schema.Union([Schema.Number, Schema.FiniteFromString]);
+
+/**
  * One flat multi-action input for the `workspace_consult` tool. Flat rather than
  * a discriminated union at the schema root because a raw `Schema.Union` root
  * breaks the whole MCP `tools/list`; the handler validates per-action fields.
@@ -26,11 +38,11 @@ export const WorkspaceConsultInput = Schema.Struct({
   title: Schema.optional(Schema.String.check(Schema.isMaxLength(120))).annotate({
     description: "Title for the thread `ask` creates. Defaults to a summary of the question.",
   }),
-  waitMs: Schema.optional(Schema.Number).annotate({
+  waitMs: Schema.optional(LenientNumber).annotate({
     description:
       "How long `ask` waits for an answer before returning early, in milliseconds. Clamped server-side. If it returns still working, poll `read_thread` for the reply.",
   }),
-  limit: Schema.optional(Schema.Number).annotate({
+  limit: Schema.optional(LenientNumber).annotate({
     description: "How many recent messages `read_thread` returns. Defaults to 10.",
   }),
 });

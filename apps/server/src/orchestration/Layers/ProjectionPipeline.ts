@@ -1,3 +1,5 @@
+import { repairMuseActivityChronology } from "./repairMuseActivityChronology.ts";
+import { repairPromotedAgentSideChats } from "./repairPromotedAgentSideChats.ts";
 import { isUsageGuardYield } from "../usageGuardYield.ts";
 import {
   ApprovalRequestId,
@@ -38,6 +40,7 @@ import { ProjectionPendingApprovalRepository } from "../../persistence/Services/
 import {
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
   ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON,
+  STOPPED_BEFORE_SEND_REASON,
   ThreadWorkObligationRepository,
 } from "../../persistence/Services/ThreadWorkObligations.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
@@ -1212,6 +1215,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const nextText = Option.match(existingMessage, {
             onNone: () => event.payload.text,
             onSome: (message) => {
+              if (event.payload.textMode === "replace") return event.payload.text;
               if (event.payload.streaming) {
                 return appendAgentStreamText(message.text, event.payload.text);
               }
@@ -1233,6 +1237,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             turnId: event.payload.turnId,
             role: event.payload.role,
             text: nextText,
+            ...(event.payload.senderThreadId !== undefined
+              ? { senderThreadId: event.payload.senderThreadId }
+              : {}),
+            ...(event.payload.senderThreadTitle !== undefined
+              ? { senderThreadTitle: event.payload.senderThreadTitle }
+              : {}),
             ...(event.payload.inputOrigin !== undefined
               ? { inputOrigin: event.payload.inputOrigin }
               : previousMessage?.inputOrigin !== undefined
@@ -1403,19 +1413,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.activity-appended": {
-          yield* projectionThreadActivityRepository.upsert({
-            activityId: event.payload.activity.id,
-            threadId: event.payload.threadId,
-            turnId: event.payload.activity.turnId,
-            tone: event.payload.activity.tone,
-            kind: event.payload.activity.kind,
-            summary: event.payload.activity.summary,
-            payload: event.payload.activity.payload,
-            ...(event.payload.activity.sequence !== undefined
-              ? { sequence: event.payload.activity.sequence }
-              : {}),
-            createdAt: event.payload.activity.createdAt,
-          });
+          yield* projectionThreadActivityRepository.upsert(
+            {
+              activityId: event.payload.activity.id,
+              threadId: event.payload.threadId,
+              turnId: event.payload.activity.turnId,
+              tone: event.payload.activity.tone,
+              kind: event.payload.activity.kind,
+              summary: event.payload.activity.summary,
+              payload: event.payload.activity.payload,
+              ...(event.payload.activity.sequence !== undefined
+                ? { sequence: event.payload.activity.sequence }
+                : {}),
+              createdAt: event.payload.activity.createdAt,
+            },
+            { preserveChronology: event.payload.historicalReplay === true },
+          );
           // A completion supersedes its call's progressive tool.updated
           // frames — each one is a second stored copy of text the completed
           // row already carries (33% of a heavy snapshot when measured, and
@@ -1461,7 +1474,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadActivityRepository.deleteByThreadId({
             threadId: event.payload.threadId,
           });
-          yield* Effect.forEach(keptRows, projectionThreadActivityRepository.upsert, {
+          yield* Effect.forEach(keptRows, (row) => projectionThreadActivityRepository.upsert(row), {
             concurrency: 1,
           }).pipe(Effect.asVoid);
           return;
@@ -1705,9 +1718,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               sourceTurnId: activeTurnWorkSourceId(MessageId.make(id)),
               kind: "active-turn-recovery",
             });
+            // A row Stop parked is already `cancelled`, but it is NOT done
+            // with: the snapshot still reports its message as "queued" so the
+            // person can re-send it, which means Remove is the only way they
+            // can ever get rid of it. Gating this on the live states alone made
+            // Remove a silent no-op on exactly those rows -- the message stayed
+            // in the panel forever, and (before the release-loop fix in
+            // ProviderCommandReactor) kept tearing down every new turn with
+            // nothing the person could click to stop it. Discarding a parked
+            // row is the whole point of Remove, so let it through.
+            const parkedByStop =
+              Option.isSome(owner) &&
+              owner.value.state === "cancelled" &&
+              owner.value.blockedReason === STOPPED_BEFORE_SEND_REASON;
             if (
               Option.isSome(owner) &&
-              ["pending", "sleeping", "claimed"].includes(owner.value.state)
+              (["pending", "sleeping", "claimed"].includes(owner.value.state) || parkedByStop)
             ) {
               yield* threadWorkObligationRepository.transition({
                 obligationId: owner.value.obligationId,
@@ -2426,6 +2452,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         // re-runs this gate, so deferring never drops a continuation.
         if (assistantMessage === undefined || assistantMessage.isStreaming) return;
 
+        // A ready refresh can interleave replayed progress and final segments.
+        // Persisted replay provenance keeps every continuation entry point from
+        // treating transcript restoration as authorization for another turn.
+        const finalized = yield* sql<{ readonly historicalReplay: number | null }>`
+          SELECT json_extract(payload_json, '$.historicalReplay') AS "historicalReplay"
+          FROM orchestration_events
+          WHERE aggregate_kind = 'thread' AND stream_id = ${input.threadId}
+            AND event_type = 'thread.message-sent'
+            AND json_extract(payload_json, '$.messageId') = ${assistantMessage.messageId}
+            AND json_extract(payload_json, '$.streaming') = 0
+          ORDER BY sequence DESC LIMIT 1
+        `.pipe(Effect.mapError(toPersistenceSqlError("ProjectionPipeline.replayProvenance:query")));
+        if (finalized[0]?.historicalReplay === 1) return;
+
         if (isProviderAuthenticationFailure(assistantMessage.text)) return;
         // A later fragment on the same turn must not hide an earlier AGENT_STOP.
         if (agentLoopSignedOffSinceUserIntent(messages)) return;
@@ -2707,6 +2747,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         event.payload.turnId !== null &&
         !event.payload.streaming
       ) {
+        if (event.payload.historicalReplay) return;
         yield* completeResumeOwnerForTurn({
           threadId: event.payload.threadId,
           turnId: event.payload.turnId,
@@ -3436,6 +3477,58 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       // settled, so it could not see them. Re-run it now that they have.
       // Obligation inserts are ON CONFLICT DO NOTHING, so this is idempotent.
       yield* backfillCurrentThreadWork;
+      // Older handoffs could accept the replacement message, lose its turn to
+      // an outgoing session exit, then cancel its owner. A receipt proves
+      // delivery, not whether that unseen turn finished. Preserve that boundary:
+      // surface a durable Resume error instead of silently replaying the message.
+      const lostHandoffs = yield* sql<{
+        readonly threadId: string;
+        readonly providerName: string;
+        readonly providerInstanceId: string;
+      }>`
+        SELECT DISTINCT work.thread_id AS "threadId", runtime.provider_name AS "providerName", runtime.provider_instance_id AS "providerInstanceId"
+        FROM thread_work_obligations AS work
+        CROSS JOIN projection_threads AS thread ON thread.thread_id = work.thread_id
+        CROSS JOIN provider_session_runtime AS runtime ON runtime.thread_id = work.thread_id
+        CROSS JOIN projection_thread_activities AS receipt
+          ON receipt.thread_id = work.thread_id AND receipt.kind = 'message.delivered'
+          AND json_extract(receipt.payload_json, '$.messageId') =
+            substr(work.source_turn_id, length('turn-start:') + 1)
+        CROSS JOIN orchestration_events AS start INDEXED BY idx_orch_events_turn_start_message
+          ON start.aggregate_kind = 'thread' AND start.stream_id = work.thread_id
+          AND start.event_type = 'thread.turn-start-requested'
+          AND json_extract(start.payload_json, '$.messageId') =
+            substr(work.source_turn_id, length('turn-start:') + 1)
+        WHERE work.kind = 'active-turn-recovery' AND work.state = 'cancelled'
+          AND work.blocked_reason = 'provider session stopped'
+          AND thread.deleted_at IS NULL AND thread.archived_at IS NULL
+          AND COALESCE(thread.settled_override, '') != 'settled'
+          AND runtime.provider_instance_id = json_extract(thread.model_selection_json, '$.instanceId')
+          AND runtime.provider_instance_id = work.provider_instance_id
+          AND receipt.turn_id IS NOT NULL AND receipt.created_at >= start.occurred_at
+          AND (runtime.status = 'running' OR
+            (runtime.status = 'stopped' AND json_extract(runtime.runtime_payload_json, '$.lastRuntimeEvent') = 'provider.stopAll'))
+          AND NOT EXISTS (SELECT 1 FROM projection_turns AS turn
+            WHERE turn.thread_id = work.thread_id AND turn.turn_id = receipt.turn_id)
+          AND NOT EXISTS (SELECT 1 FROM thread_work_obligations AS active
+            WHERE active.thread_id = work.thread_id AND active.state NOT IN ('completed', 'cancelled'))
+          AND NOT EXISTS (
+            SELECT 1 FROM orchestration_events AS later
+            WHERE later.aggregate_kind = 'thread' AND later.stream_id = work.thread_id
+              AND later.sequence > start.sequence
+              AND later.event_type IN ('thread.session-stop-requested', 'thread.turn-interrupt-requested', 'thread.turn-start-requested')
+          )
+      `;
+      for (const lost of lostHandoffs) {
+        yield* sql`
+          UPDATE projection_thread_sessions
+          SET status = 'error', active_turn_id = NULL,
+            provider_name = ${lost.providerName}, provider_instance_id = ${lost.providerInstanceId},
+            last_error = 'The provider received your message, but its turn state was lost during a provider switch. Your message has been preserved. Use Resume to continue.',
+            failure_kind = NULL, updated_at = ${settledAt}
+          WHERE thread_id = ${lost.threadId}
+        `;
+      }
     }).pipe(
       Effect.catchTag("SqlError", (sqlError) =>
         Effect.fail(
@@ -4032,6 +4125,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),
+      Effect.andThen(
+        repairMuseActivityChronology().pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ),
+      Effect.andThen(
+        repairPromotedAgentSideChats().pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ),
       Effect.andThen(backfillCurrentThreadWork),
       Effect.asVoid,
       Effect.tap(() =>

@@ -4,6 +4,7 @@ import {
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
+  type PreviewCredentialVaultCommand,
   PreviewTabId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -849,6 +850,175 @@ describe("previewAutomationRequestConsumer", () => {
       },
     });
     expect(JSON.stringify(responses[0])).not.toContain("do-not-return");
+    registry.dispose();
+  });
+
+  it("answers saved-password changes sent from other devices without waking the guests", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial<PreviewAutomationStreamEvent, Error>(false),
+    );
+    const responses: PreviewAutomationResponse[] = [];
+    const renewForeground = vi.fn(async () => undefined);
+    const handleRequest = vi.fn(async () => undefined);
+    const summary = {
+      id: "credential-1",
+      label: "Work GitHub",
+      origin: "https://github.com",
+      createdAt: "2026-09-23T00:00:00.000Z",
+      updatedAt: "2026-09-23T00:00:00.000Z",
+    };
+    const handleCredentialVault = vi.fn(async (command: PreviewCredentialVaultCommand) => {
+      if (command.action === "list") return [summary];
+      if (command.action === "remove") {
+        throw new Error(
+          "Error invoking remote method 'desktop:preview-credential-remove': BrowserCredentialNotFoundError: The saved browser credential no longer exists.",
+        );
+      }
+      throw new Error(
+        "Error invoking remote method 'desktop:preview-credential-save': SchemaError: Expected a string, got \"hunter2-do-not-return\"",
+      );
+    });
+    const state = consumerState(handleRequest);
+    const consumerAtom = createPreviewAutomationRequestConsumerAtom({
+      requestsAtom,
+      clientId,
+      connectionAtom: state.connectionAtom,
+      environmentId,
+      requestHandlerAtom: state.requestHandlerAtom,
+      handleCredentialVault,
+      renewAutomationForeground: renewForeground,
+      respond: async (response) => {
+        responses.push(response);
+      },
+      label: "test:preview-automation-credential-vault",
+    });
+    const registry = AtomRegistry.make();
+    registry.mount(consumerAtom);
+
+    const vaultEvent = (
+      requestId: string,
+      command: PreviewCredentialVaultCommand,
+      expiresAt = Date.now() + 15_000,
+    ): PreviewAutomationStreamEvent => ({
+      type: "credentialVault",
+      connectionId,
+      request: { requestId, command, expiresAt },
+    });
+
+    registry.set(requestsAtom, AsyncResult.success(vaultEvent("vault-1", { action: "list" })));
+    await vi.waitFor(() => expect(responses).toHaveLength(1));
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(vaultEvent("vault-2", { action: "remove", id: "credential-1" })),
+    );
+    await vi.waitFor(() => expect(responses).toHaveLength(2));
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(
+        vaultEvent("vault-3", {
+          action: "save",
+          credential: { label: "Work GitHub", origin: "https://github.com", secret: "hunter2" },
+        }),
+      ),
+    );
+    await vi.waitFor(() => expect(responses).toHaveLength(3));
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(vaultEvent("vault-expired", { action: "list" }, Date.now() - 1)),
+    );
+
+    expect(responses).toEqual([
+      { clientId, connectionId, requestId: "vault-1", ok: true, result: [summary] },
+      {
+        clientId,
+        connectionId,
+        requestId: "vault-2",
+        ok: false,
+        error: {
+          _tag: "PreviewCredentialVaultError",
+          message: "The saved browser credential no longer exists.",
+        },
+      },
+      {
+        clientId,
+        connectionId,
+        requestId: "vault-3",
+        ok: false,
+        error: {
+          _tag: "PreviewCredentialVaultError",
+          message: "The desktop app could not change the saved passwords.",
+        },
+      },
+    ]);
+    expect(JSON.stringify(responses)).not.toContain("hunter2");
+    expect(handleCredentialVault).toHaveBeenCalledTimes(3);
+    expect(handleRequest).not.toHaveBeenCalled();
+    expect(renewForeground).not.toHaveBeenCalled();
+    registry.dispose();
+  });
+
+  it("hands tab-audio demand to the host and never mistakes it for an agent request", async () => {
+    const demand = [{ threadId, tabId }];
+    const requestsAtom = Atom.make(
+      AsyncResult.success<PreviewAutomationStreamEvent, Error>({
+        type: "audioDemand",
+        connectionId,
+        tabs: demand,
+      }),
+    );
+    const respond = vi.fn(async () => undefined);
+    const handle = vi.fn(async () => undefined);
+    const handleAudioDemand = vi.fn();
+    const state = consumerState(handle);
+    const consumerAtom = createPreviewAutomationRequestConsumerAtom({
+      requestsAtom,
+      clientId,
+      connectionAtom: state.connectionAtom,
+      environmentId,
+      requestHandlerAtom: state.requestHandlerAtom,
+      handleAudioDemand,
+      renewAutomationForeground,
+      respond,
+      label: "test:preview-automation-audio-demand",
+    });
+    const registry = AtomRegistry.make();
+    registry.mount(consumerAtom);
+
+    await vi.waitFor(() => expect(handleAudioDemand).toHaveBeenCalledWith(demand));
+    expect(handle).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
+    registry.dispose();
+  });
+
+  it("leaves saved-password changes unanswered on a host that cannot make them", async () => {
+    const requestsAtom = Atom.make(
+      AsyncResult.success<PreviewAutomationStreamEvent, Error>({
+        type: "credentialVault",
+        connectionId,
+        request: {
+          requestId: "vault-1",
+          command: { action: "list" },
+          expiresAt: Date.now() + 15_000,
+        },
+      }),
+    );
+    const respond = vi.fn(async () => undefined);
+    const state = consumerState(async () => undefined);
+    const consumerAtom = createPreviewAutomationRequestConsumerAtom({
+      requestsAtom,
+      clientId,
+      connectionAtom: state.connectionAtom,
+      environmentId,
+      requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground,
+      respond,
+      label: "test:preview-automation-credential-vault-unsupported",
+    });
+    const registry = AtomRegistry.make();
+    registry.mount(consumerAtom);
+
+    await Promise.resolve();
+    expect(respond).not.toHaveBeenCalled();
     registry.dispose();
   });
 });

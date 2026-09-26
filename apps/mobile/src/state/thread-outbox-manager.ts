@@ -129,10 +129,11 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
           cause,
         });
       }
-      setMessages([
-        ...currentMessages().filter((candidate) => candidate.messageId !== message.messageId),
-        message,
-      ]);
+      setMessages(
+        currentMessages().map((candidate) =>
+          candidate.messageId === message.messageId ? message : candidate,
+        ),
+      );
       return true;
     });
 

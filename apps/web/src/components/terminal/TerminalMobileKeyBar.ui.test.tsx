@@ -116,5 +116,15 @@ describe("TerminalMobileKeyBar", () => {
       button?.dispatchEvent(mouseDown);
     });
     expect(mouseDown.defaultPrevented).toBe(true);
+    const touchDown = new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      pointerType: "touch",
+    });
+    act(() => {
+      button?.dispatchEvent(touchDown);
+    });
+    expect(touchDown.defaultPrevented).toBe(true);
+    expect(onSend).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   resolveLinkedFileAbsolutePath,
   resolveLinkedFilePrimaryAction,
+  resolveLocalFileFallback,
   shouldRevealLinkedFileByDefault,
 } from "./linkedFileBehavior";
 
@@ -48,13 +49,18 @@ describe("resolveLinkedFilePrimaryAction", () => {
     canRevealOnThisDevice: true,
   };
 
-  it("reveals local media instead of feeding it to the text preview", () => {
-    expect(resolveLinkedFilePrimaryAction(base)).toBe("reveal");
+  // Was "reveal" until the panel learned to play video. Revealing a file the
+  // app can now show in place is strictly less useful, so this expectation
+  // changed with the capability rather than with the rule.
+  it("plays local video in the panel now that the panel can render it", () => {
+    expect(resolveLinkedFilePrimaryAction(base)).toBe("preview");
   });
 
   it("never sends a remote media path to the local file explorer", () => {
+    // Still the point of this test: not "reveal". A phone has no file explorer
+    // and no editor, and the old "editor" answer is what made the click dead.
     expect(resolveLinkedFilePrimaryAction({ ...base, canRevealOnThisDevice: false })).toBe(
-      "editor",
+      "preview",
     );
   });
 
@@ -94,6 +100,29 @@ describe("resolveLinkedFilePrimaryAction", () => {
   });
 });
 
+describe("resolveLocalFileFallback", () => {
+  // The reported "sometimes it says the file is not found": reveal and openPath
+  // speak for THIS machine, but the workspace may be on a remote host, in WSL,
+  // or in a worktree, where the file is present. Reaching for the panel turns a
+  // wrong denial into the file the user asked for.
+  it("prefers the environment-backed panel over reporting a local miss", () => {
+    expect(
+      resolveLocalFileFallback({ hasThreadRef: true, workspaceRelativePath: "src/app.ts" }),
+    ).toBe("preview");
+  });
+
+  it("reports only when there is genuinely nowhere else to look", () => {
+    // No workspace-relative path: the file is outside the workspace, so the
+    // panel cannot read it either and saying so is the honest answer.
+    expect(resolveLocalFileFallback({ hasThreadRef: true, workspaceRelativePath: null })).toBe(
+      "report",
+    );
+    expect(
+      resolveLocalFileFallback({ hasThreadRef: false, workspaceRelativePath: "src/app.ts" }),
+    ).toBe("report");
+  });
+});
+
 describe("resolveLinkedFileAbsolutePath", () => {
   it("resolves a relative tool path against the workspace before desktop reveal", () => {
     expect(resolveLinkedFileAbsolutePath("captures/frame.png", "/repo/project")).toBe(
@@ -104,5 +133,102 @@ describe("resolveLinkedFileAbsolutePath", () => {
   it("preserves absolute paths and rejects unscoped relative paths", () => {
     expect(resolveLinkedFileAbsolutePath("/tmp/frame.png", "/repo/project")).toBe("/tmp/frame.png");
     expect(resolveLinkedFileAbsolutePath("captures/frame.png", undefined)).toBeNull();
+  });
+
+  /**
+   * The reported defect: "clicking the link does absolutely nothing".
+   *
+   * mp4/mov/webm sit in the reveal table from when nothing could display them.
+   * On a phone `canRevealOnThisDevice` is false, so the resolver fell through
+   * to "editor" - and on a phone there is no editor to open, so the click ended
+   * in silence. Media now has a panel that renders it, so it routes there.
+   */
+  it("sends video to the panel instead of a reveal a phone cannot perform", () => {
+    for (const filePath of ["clip.mp4", "demo.mov", "loop.webm", "doc.pdf"]) {
+      expect(
+        resolveLinkedFilePrimaryAction({
+          filePath,
+          workspaceRelativePath: filePath,
+          hasImageAction: false,
+          hasBrowserAction: false,
+          canRevealOnThisDevice: false,
+        }),
+      ).toBe("preview");
+      // Same answer on desktop: the panel can draw it, so revealing its folder
+      // is strictly less useful than showing it.
+      expect(
+        resolveLinkedFilePrimaryAction({
+          filePath,
+          workspaceRelativePath: filePath,
+          hasImageAction: false,
+          hasBrowserAction: false,
+          canRevealOnThisDevice: true,
+        }),
+      ).toBe("preview");
+    }
+  });
+
+  it("sends audio to the panel instead of a reveal a phone cannot perform", () => {
+    for (const filePath of ["song.mp3", "note.wav", "take.m4a", "loop.ogg"]) {
+      expect(
+        resolveLinkedFilePrimaryAction({
+          filePath,
+          workspaceRelativePath: filePath,
+          hasImageAction: false,
+          hasBrowserAction: false,
+          canRevealOnThisDevice: false,
+        }),
+      ).toBe("preview");
+      // Same answer on desktop: the panel can play it, so revealing its folder
+      // is strictly less useful than showing it.
+      expect(
+        resolveLinkedFilePrimaryAction({
+          filePath,
+          workspaceRelativePath: filePath,
+          hasImageAction: false,
+          hasBrowserAction: false,
+          canRevealOnThisDevice: true,
+        }),
+      ).toBe("preview");
+    }
+  });
+
+  it("opens a genuinely unrenderable file in its own application", () => {
+    expect(
+      resolveLinkedFilePrimaryAction({
+        filePath: "report.docx",
+        workspaceRelativePath: "report.docx",
+        hasImageAction: false,
+        hasBrowserAction: false,
+        canRevealOnThisDevice: true,
+        canOpenInDefaultApp: true,
+      }),
+    ).toBe("default-app");
+    // Without the bridge, locating it is still better than nothing.
+    expect(
+      resolveLinkedFilePrimaryAction({
+        filePath: "report.docx",
+        workspaceRelativePath: "report.docx",
+        hasImageAction: false,
+        hasBrowserAction: false,
+        canRevealOnThisDevice: true,
+        canOpenInDefaultApp: false,
+      }),
+    ).toBe("reveal");
+  });
+
+  it("never leaves a click with nowhere to go", () => {
+    // A phone: cannot reveal, cannot launch an app, cannot render a .docx.
+    // The panel at least names the file and says why, which beats silence.
+    expect(
+      resolveLinkedFilePrimaryAction({
+        filePath: "report.docx",
+        workspaceRelativePath: "report.docx",
+        hasImageAction: false,
+        hasBrowserAction: false,
+        canRevealOnThisDevice: false,
+        canOpenInDefaultApp: false,
+      }),
+    ).toBe("preview");
   });
 });

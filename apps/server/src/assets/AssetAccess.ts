@@ -17,10 +17,16 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import {
+  isWorkspaceAudioPreviewPath,
+  workspaceAudioMimeType,
+  WORKSPACE_AUDIO_PREVIEW_EXTENSIONS,
   isWorkspaceImagePreviewPath,
   isWorkspacePreviewEntryPath,
+  isWorkspaceVideoPreviewPath,
+  workspaceVideoMimeType,
   WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
   WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
+  WORKSPACE_VIDEO_PREVIEW_EXTENSIONS,
 } from "@t3tools/shared/filePreview";
 import { normalizeEmbeddedWindowsAbsolutePath } from "@t3tools/shared/path";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
@@ -57,6 +63,8 @@ const PROJECT_FAVICON_VERSION_PREFIX = "v";
 const PREVIEW_ASSET_EXTENSIONS = new Set([
   ...WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
   ...WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
+  ...WORKSPACE_VIDEO_PREVIEW_EXTENSIONS,
+  ...WORKSPACE_AUDIO_PREVIEW_EXTENSIONS,
   ".css",
   ".js",
   ".mjs",
@@ -153,25 +161,19 @@ export function detectWorkspaceRasterMimeType(bytes: Uint8Array): WorkspaceRaste
   return null;
 }
 
-function extensionMatchesRasterMime(extension: string, mimeType: WorkspaceRasterMimeType): boolean {
-  switch (extension) {
-    case ".png":
-      return mimeType === "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return mimeType === "image/jpeg";
-    case ".gif":
-      return mimeType === "image/gif";
-    case ".webp":
-      return mimeType === "image/webp";
-    case ".avif":
-      return mimeType === "image/avif";
-    case ".ico":
-      return mimeType === "image/vnd.microsoft.icon";
-    default:
-      return false;
-  }
-}
+/**
+ * A workspace file is served as a raster when its BYTES carry a raster
+ * signature. The extension gate above keeps the URL an image URL and the
+ * signature gate keeps arbitrary bytes (HTML, SVG, scripts) from ever being
+ * served under one; requiring the two to agree served neither purpose and hid
+ * every misnamed screenshot instead (2026-09-17: `sips --out shot.jpg` keeps
+ * the PNG format, so the Open World agent's whole roadshots/ set rendered as
+ * "Image preview unavailable"). The response carries the sniffed type so the
+ * browser decodes the real format rather than the name's.
+ */
+type WorkspaceRasterValidity =
+  | { readonly valid: true; readonly contentType?: WorkspaceRasterMimeType }
+  | { readonly valid: false };
 
 const AssetClaimsSchema = Schema.Union([
   Schema.Struct({
@@ -344,8 +346,7 @@ const validateWorkspaceRasterImage = Effect.fn("AssetAccess.validateWorkspaceRas
           }),
       ),
     );
-    const mimeType = detectWorkspaceRasterMimeType(bytes);
-    if (!mimeType || !extensionMatchesRasterMime(input.extension, mimeType)) {
+    if (detectWorkspaceRasterMimeType(bytes) === null) {
       return yield* new AssetPreviewMimeTypeValidationError({
         resource: input.resource,
       });
@@ -353,15 +354,17 @@ const validateWorkspaceRasterImage = Effect.fn("AssetAccess.validateWorkspaceRas
   },
 );
 
-const workspaceRasterImageIsStillValid = Effect.fn("AssetAccess.workspaceRasterImageIsStillValid")(
+const workspaceRasterImageValidity = Effect.fn("AssetAccess.workspaceRasterImageValidity")(
   function* (canonicalFile: string, extension: string) {
-    if (!WORKSPACE_RASTER_IMAGE_EXTENSIONS.has(extension)) return true;
+    if (!WORKSPACE_RASTER_IMAGE_EXTENSIONS.has(extension)) return { valid: true };
     const fileSystem = yield* FileSystem.FileSystem;
     const info = yield* optionOnNotFound(fileSystem.stat(canonicalFile));
-    if (Option.isNone(info) || info.value.size > WORKSPACE_RASTER_IMAGE_MAX_BYTES) return false;
+    if (Option.isNone(info) || info.value.size > WORKSPACE_RASTER_IMAGE_MAX_BYTES) {
+      return { valid: false };
+    }
     const bytes = yield* fileSystem.readFile(canonicalFile);
     const mimeType = detectWorkspaceRasterMimeType(bytes);
-    return mimeType !== null && extensionMatchesRasterMime(extension, mimeType);
+    return mimeType === null ? { valid: false } : { valid: true, contentType: mimeType };
   },
 );
 
@@ -574,7 +577,12 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
               }),
           ),
         );
-      if (!isWorkspacePreviewEntryPath(resolved.relativePath)) {
+      // Media players use the same workspace authorization as other previews.
+      if (
+        !isWorkspacePreviewEntryPath(resolved.relativePath) &&
+        !isWorkspaceVideoPreviewPath(resolved.relativePath) &&
+        !isWorkspaceAudioPreviewPath(resolved.relativePath)
+      ) {
         return yield* new AssetPreviewTypeValidationError({
           resource: input.resource,
         });
@@ -839,6 +847,13 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     if (Option.isNone(info) || info.value.type !== "File") return null;
 
     const extension = path.extname(attachmentPath).toLowerCase();
+    if (extension === ".wav") {
+      return {
+        kind: "file",
+        path: attachmentPath,
+        contentType: "audio/wav",
+      } satisfies ResolvedAsset;
+    }
     if (extension !== ".heic" && extension !== ".heif") {
       return { kind: "file", path: attachmentPath } satisfies ResolvedAsset;
     }
@@ -896,16 +911,22 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   if (claims.kind === "external-image-exact") {
     if (decodedPath !== path.basename(claims.canonicalFile)) return null;
     const extension = path.extname(claims.canonicalFile).toLowerCase();
-    const isValid = yield* workspaceRasterImageIsStillValid(claims.canonicalFile, extension).pipe(
+    const validity = yield* workspaceRasterImageValidity(claims.canonicalFile, extension).pipe(
       Effect.tapError((cause) =>
         Effect.logError("Failed to revalidate external image asset.", {
           path: claims.canonicalFile,
           cause,
         }),
       ),
-      Effect.orElseSucceed(() => false),
+      Effect.orElseSucceed((): WorkspaceRasterValidity => ({ valid: false })),
     );
-    return isValid ? ({ kind: "file", path: claims.canonicalFile } satisfies ResolvedAsset) : null;
+    return validity.valid
+      ? ({
+          kind: "file",
+          path: claims.canonicalFile,
+          ...(validity.contentType ? { contentType: validity.contentType } : {}),
+        } satisfies ResolvedAsset)
+      : null;
   }
   if (claims.kind === "workspace-file-exact") {
     if (decodedPath !== path.basename(claims.relativePath)) return null;
@@ -915,16 +936,22 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     });
     if (!exactWorkspaceFile) return null;
     const extension = path.extname(claims.relativePath).toLowerCase();
-    const isValid = yield* workspaceRasterImageIsStillValid(exactWorkspaceFile, extension).pipe(
+    const validity = yield* workspaceRasterImageValidity(exactWorkspaceFile, extension).pipe(
       Effect.tapError((cause) =>
         Effect.logError("Failed to revalidate workspace image asset.", {
           path: exactWorkspaceFile,
           cause,
         }),
       ),
-      Effect.orElseSucceed(() => false),
+      Effect.orElseSucceed((): WorkspaceRasterValidity => ({ valid: false })),
     );
-    return isValid ? ({ kind: "file", path: exactWorkspaceFile } satisfies ResolvedAsset) : null;
+    return validity.valid
+      ? ({
+          kind: "file",
+          path: exactWorkspaceFile,
+          ...(validity.contentType ? { contentType: validity.contentType } : {}),
+        } satisfies ResolvedAsset)
+      : null;
   }
   const segments = decodedPath.split(/[\\/]/);
   if (
@@ -941,5 +968,13 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     workspaceRoot: claims.workspaceRoot,
     relativePath: joinedRelativePath,
   });
-  return workspaceFile ? ({ kind: "file", path: workspaceFile } satisfies ResolvedAsset) : null;
+  if (!workspaceFile) return null;
+  // Name the video type explicitly. Extension tables disagree about QuickTime,
+  // and a `<video>` given the wrong type refuses to decode a file it could
+  // otherwise play.
+  const mediaContentType =
+    workspaceVideoMimeType(workspaceFile) ?? workspaceAudioMimeType(workspaceFile);
+  return mediaContentType
+    ? ({ kind: "file", path: workspaceFile, contentType: mediaContentType } satisfies ResolvedAsset)
+    : ({ kind: "file", path: workspaceFile } satisfies ResolvedAsset);
 });

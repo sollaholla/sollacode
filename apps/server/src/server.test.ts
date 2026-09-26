@@ -93,6 +93,7 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import { ThreadSubscriptionRegistryLive } from "./orchestration/Layers/ThreadSubscriptionRegistry.ts";
 import * as ThreadPendingWorkSignal from "./persistence/Services/ThreadPendingWorkSignal.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import { OrchestrationCommandReceiptRepository } from "./persistence/Services/OrchestrationCommandReceipts.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
@@ -362,6 +363,7 @@ const buildAppUnderTest = (options?: {
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
     vmManager?: Partial<VmManager.VmManager["Service"]>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
+    commandReceipts?: Partial<OrchestrationCommandReceiptRepository["Service"]>;
     threadPendingWorkSignal?: Partial<ThreadPendingWorkSignal.ThreadPendingWorkSignal["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
@@ -811,6 +813,13 @@ const buildAppUnderTest = (options?: {
       );
 
     const appLayer = servedRoutesLayer.pipe(
+      Layer.provide(
+        Layer.mock(OrchestrationCommandReceiptRepository)({
+          getByCommandId: () => Effect.succeed(Option.none()),
+          upsert: () => Effect.void,
+          ...options?.layers?.commandReceipts,
+        }),
+      ),
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(
         Layer.mock(BrowserTraceCollector.BrowserTraceCollector)({
@@ -1380,6 +1389,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
       assert.equal(response.headers["content-encoding"], "gzip");
       assert.equal(response.headers.vary, "Accept-Encoding");
       assert.deepEqual(body, descriptor);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("compresses the web app's scripts and keeps them cacheable", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const staticDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-router-gzip-" });
+      yield* fileSystem.makeDirectory(path.join(staticDir, "assets"));
+      const script = `export const chat = "${"chat view ".repeat(500)}";\n`;
+      yield* fileSystem.writeFileString(path.join(staticDir, "assets", "ChatView-abc.js"), script);
+      yield* buildAppUnderTest({ config: { staticDir } });
+
+      const url = yield* getHttpServerUrl("/assets/ChatView-abc.js");
+      const response = yield* fetchEffect(url, { headers: { "accept-encoding": "gzip" } });
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers["content-encoding"], "gzip");
+      assert.equal(response.headers["cache-control"], "public, max-age=31536000, immutable");
+      assert.equal(yield* response.text, script);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -2910,6 +2939,72 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
         assert.equal(replacementEvent.type, "connected");
         assert.notEqual(replacementEvent.connectionId, firstConnectionId);
         assert.isTrue(Option.isSome(firstStreamClosed));
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("relays saved-password changes only to the desktop app on this machine", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* buildAppUnderTest();
+
+        const summary = {
+          id: "credential-1",
+          label: "Work GitHub",
+          origin: "https://github.com",
+          createdAt: "2026-09-23T00:00:00.000Z",
+          updatedAt: "2026-09-23T00:00:00.000Z",
+        };
+        const host = (clientId: string) =>
+          ({
+            clientId,
+            environmentId: testEnvironmentDescriptor.environmentId,
+            environmentLocal: true,
+            manageCredentials: true,
+          }) as const;
+        const serveVault = (wsUrl: string, clientId: string, connected: Deferred.Deferred<void>) =>
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.previewAutomationConnect](host(clientId)).pipe(
+              Stream.runForEach((event) => {
+                if (event.type === "connected") return Deferred.succeed(connected, undefined);
+                if (event.type !== "credentialVault") return Effect.void;
+                return client[WS_METHODS.previewAutomationRespond]({
+                  clientId,
+                  connectionId: event.connectionId,
+                  requestId: event.request.requestId,
+                  ok: true,
+                  result: [summary],
+                });
+              }),
+            ),
+          ).pipe(Effect.forkScoped);
+        const cookieWsUrl = yield* getWsServerUrl("/ws");
+        const listFromRemote = withWsRpcClient(cookieWsUrl, (client) =>
+          client[WS_METHODS.previewCredentialsList]({}),
+        );
+
+        // A browser session claiming the role is ignored: it would otherwise
+        // be handed every new password typed into another device's settings.
+        const browserConnected = yield* Deferred.make<void>();
+        yield* serveVault(cookieWsUrl, "browser-claiming-vault", browserConnected);
+        yield* Deferred.await(browserConnected);
+        const unavailable = yield* Effect.flip(listFromRemote);
+        assert.equal(unavailable._tag, "PreviewCredentialVaultError");
+        if (unavailable._tag === "PreviewCredentialVaultError") {
+          assert.equal(unavailable.reason, "desktopUnavailable");
+        }
+
+        const bearerToken = yield* getAuthenticatedBearerSessionToken();
+        const wsTicketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+          headers: { authorization: `Bearer ${bearerToken}` },
+        });
+        const wsTicketBody = (yield* wsTicketResponse.json) as { readonly ticket: string };
+        const desktopWsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(wsTicketBody.ticket)}`;
+        const desktopConnected = yield* Deferred.make<void>();
+        yield* serveVault(desktopWsUrl, "local-desktop", desktopConnected);
+        yield* Deferred.await(desktopConnected);
+
+        assert.deepEqual(yield* listFromRemote, [summary]);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -6355,6 +6450,91 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
           assert.equal(finalCommand.bootstrap, undefined);
         }
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("bootstrap retries reuse an existing thread and honor a persisted receipt", () =>
+    Effect.gen(function* () {
+      const dispatched: OrchestrationCommand[] = [];
+      const threadId = ThreadId.make("existing-outbox-thread");
+      const commandId = CommandId.make("existing-outbox-send");
+      let acknowledged = false;
+      yield* buildAppUnderTest({
+        layers: {
+          commandReceipts: {
+            getByCommandId: () =>
+              Effect.succeed(
+                acknowledged
+                  ? Option.some({
+                      commandId,
+                      aggregateKind: "thread" as const,
+                      aggregateId: threadId,
+                      acceptedAt: DateTime.formatIso(TEST_EPOCH),
+                      resultSequence: 17,
+                      status: "accepted" as const,
+                      error: null,
+                    })
+                  : Option.none(),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getThreadShellById: () =>
+              Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell({ id: threadId }))),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatched.push(command);
+                acknowledged = true;
+                return { sequence: 17 };
+              }),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const command = {
+        type: "thread.turn.start" as const,
+        commandId,
+        threadId,
+        message: {
+          messageId: MessageId.make("existing-outbox-message"),
+          role: "user" as const,
+          text: "Saved before navigation",
+          attachments: [],
+        },
+        modelSelection: defaultModelSelection,
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        createdAt: DateTime.formatIso(TEST_EPOCH),
+        bootstrap: {
+          createThread: {
+            projectId: defaultProjectId,
+            title: "Saved message",
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access" as const,
+            interactionMode: "default" as const,
+            branch: null,
+            worktreePath: null,
+            createdAt: DateTime.formatIso(TEST_EPOCH),
+          },
+        },
+      };
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            assert.deepEqual(yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command), {
+              sequence: 17,
+            });
+            assert.deepEqual(yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command), {
+              sequence: 17,
+            });
+          }),
+        ),
+      );
+      assert.deepEqual(
+        dispatched.map((command) => command.type),
+        ["thread.turn.start"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("records setup-script failures without aborting bootstrap turn start", () =>

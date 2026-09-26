@@ -29,7 +29,9 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { expect } from "vite-plus/test";
+import { Terminal } from "@xterm/headless";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as TerminalManager from "./Manager.ts";
@@ -47,6 +49,7 @@ class WaitForConditionError extends Data.TaggedError("WaitForConditionError")<{
 }> {}
 
 class FakePtyProcess implements PtyAdapter.PtyProcess {
+  windowsPty?: import("@t3tools/contracts").TerminalWindowsPty;
   readonly writes: string[] = [];
   readonly resizeCalls: Array<{ cols: number; rows: number }> = [];
   readonly killSignals: Array<string | undefined> = [];
@@ -214,6 +217,9 @@ const multiTerminalHistoryLogPath = (
   );
 
 interface CreateManagerOptions {
+  resolveProviderEnvironment?: (
+    environment: NodeJS.ProcessEnv,
+  ) => Effect.Effect<NodeJS.ProcessEnv, PtyAdapter.PtySpawnError>;
   /** Boot over an existing directory (e.g. pre-seeded launch/resume files). */
   logsDir?: string;
   historyByteLimit?: number;
@@ -275,6 +281,9 @@ const createManager = (
           ? { pendingProcessEventByteLimit: options.pendingProcessEventByteLimit }
           : {}),
         ptyAdapter,
+        ...(options.resolveProviderEnvironment
+          ? { resolveProviderEnvironment: options.resolveProviderEnvironment }
+          : {}),
         ...(options.shellResolver !== undefined ? { shellResolver: options.shellResolver } : {}),
         ...(options.env !== undefined ? { env: options.env } : {}),
         ...(options.subprocessInspector !== undefined
@@ -324,6 +333,97 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect("attaches an exact screen after log truncation without resizing the live process", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5_000, { historyByteLimit: 96 });
+      yield* manager.open(openInput({ cols: 60, rows: 12 }));
+      const received = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "output" && event.data.endsWith("\x1b[10;3H")
+          ? Deferred.succeed(received, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      const process = ptyAdapter.processes[0]!;
+      process.emitData(
+        "\x1b[?1049h\x1b[2J\x1b[H\x1b[32mCodex\x1b[0m" + "\x1b[5;1Hworking\x1b[10;3H".repeat(100),
+      );
+      yield* Deferred.await(received);
+      const events: TerminalAttachStreamEvent[] = [];
+      const detach = yield* manager.attachStream(openInput({ cols: 20, rows: 5 }), (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(detach));
+      const attached = events.find((event) => event.type === "snapshot");
+      assert.isDefined(attached);
+      if (!attached || attached.type !== "snapshot") return;
+      expect(attached.snapshot.history).toContain("Earlier terminal output truncated");
+      const screen = attached.snapshot.screen;
+      assert.isDefined(screen);
+      if (!screen) return;
+      const viewer = new Terminal({ cols: screen.cols, rows: screen.rows, allowProposedApi: true });
+      yield* Effect.addFinalizer(() => Effect.sync(() => viewer.dispose()));
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => viewer.write(screen.data, resolve)),
+      );
+      expect(viewer.buffer.active.getLine(0)?.translateToString(true)).toBe("Codex");
+      expect(viewer.buffer.active.getLine(4)?.translateToString(true)).toBe("working");
+      expect(viewer.buffer.active.cursorY).toBe(9);
+      expect(viewer.buffer.active.cursorX).toBe(2);
+      expect(process.resizeCalls).toEqual([]);
+    }),
+  );
+
+  it.effect("pauses a flow-controlled PTY instead of cutting queued control sequences", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager(5_000, {
+        pendingProcessEventByteLimit: 128,
+      });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0]!;
+      let paused = false;
+      const resumed = yield* Deferred.make<void>();
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const controls: PtyAdapter.PtyProcess = process;
+      controls.pause = () => {
+        paused = true;
+      };
+      controls.resume = () => {
+        paused = false;
+      };
+      let first = true;
+      const detach = yield* manager.subscribe((event) => {
+        if (event.type !== "output") return Effect.void;
+        if (first) {
+          first = false;
+          return Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)));
+        }
+        return event.data.includes("last-frame")
+          ? Deferred.succeed(resumed, undefined).pipe(Effect.asVoid)
+          : Effect.void;
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(detach));
+      process.emitData("first-frame");
+      yield* Deferred.await(entered);
+      const queued = "\x1b[31m" + "x".repeat(256) + "\x1b[0mlast-frame";
+      process.emitData(queued);
+      expect(paused).toBe(true);
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.await(resumed);
+      const output = (yield* getEvents)
+        .filter((event) => event.type === "output")
+        .map((event) => event.data)
+        .join("");
+      expect(output).toBe("first-frame" + queued);
+      expect(output).not.toContain("truncated");
+      yield* manager.read({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID });
+      expect(paused).toBe(false);
+    }),
+  );
+
   it.effect("derives every terminal subtree from one POSIX process snapshot", () =>
     Effect.sync(() => {
       const rows = TerminalManager.parsePosixProcessSnapshot(`
@@ -368,6 +468,37 @@ it.layer(
       assert.equal(second.threadId, "thread-1");
       assert.equal(third.threadId, "thread-1");
       expect(ptyAdapter.spawnInputs).toHaveLength(1);
+    }),
+  );
+
+  it.effect("resolves named API keys only for spawned terminals and never persists them", () =>
+    Effect.gen(function* () {
+      const key = yield* Ref.make("fixture-terminal-one");
+      const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+        resolveProviderEnvironment: (environment) =>
+          Ref.get(key).pipe(Effect.map((value) => ({ ...environment, DEEPCODE_API_KEY: value }))),
+      });
+      const fs = yield* FileSystem.FileSystem;
+      yield* manager.open({ ...openInput(), env: { SOLLA_API_KEY_ACCOUNT_INSTANCE: "deepcode" } });
+      yield* Ref.set(key, "fixture-terminal-two");
+      yield* manager.open({ ...openInput(), env: { SOLLA_API_KEY_ACCOUNT_INSTANCE: "deepcode" } });
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+      expect(ptyAdapter.spawnInputs[0]?.env?.DEEPCODE_API_KEY).toBe("fixture-terminal-one");
+      yield* manager.open({
+        ...openInput(),
+        terminalId: "terminal-2",
+        env: { SOLLA_API_KEY_ACCOUNT_INSTANCE: "deepcode" },
+      });
+      expect(ptyAdapter.spawnInputs[1]?.env?.DEEPCODE_API_KEY).toBe("fixture-terminal-two");
+      const launchFiles = (yield* fs.readDirectory(logsDir)).filter((file) =>
+        file.endsWith(".launch.json"),
+      );
+      expect(launchFiles).toHaveLength(2);
+      for (const file of launchFiles) {
+        const text = yield* fs.readFileString(`${logsDir}/${file}`);
+        expect(text).not.toContain("fixture-terminal-");
+        expect(text).not.toContain("DEEPCODE_API_KEY");
+      }
     }),
   );
 
@@ -417,6 +548,7 @@ it.layer(
       const { manager, ptyAdapter } = yield* createManager();
 
       yield* manager.open(openInput());
+      ptyAdapter.processes[0]!.windowsPty = { backend: "conpty", buildNumber: 26100 };
       const attachEvents = yield* Ref.make<ReadonlyArray<TerminalAttachStreamEvent>>([]);
       const unsubscribe = yield* manager.attachStream(
         {
@@ -434,6 +566,11 @@ it.layer(
       if (!snapshot || snapshot.type !== "snapshot") return;
       assert.equal(snapshot.snapshot.threadId, "thread-1");
       assert.equal(snapshot.snapshot.terminalId, DEFAULT_TERMINAL_ID);
+      expect(snapshot.snapshot.windowsPty).toEqual({ backend: "conpty", buildNumber: 26100 });
+      expect((yield* manager.list({ threadId: "thread-1" }))[0]?.windowsPty).toEqual({
+        backend: "conpty",
+        buildNumber: 26100,
+      });
       expect(ptyAdapter.spawnInputs).toHaveLength(1);
       expect(ptyAdapter.processes[0]?.resizeCalls).toEqual([]);
     }),
@@ -792,6 +929,18 @@ it.layer(
         }),
       );
 
+      // Renderer-generated replies omit clientId and must not take the grid.
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "\x1b[24;80R",
+      });
+      expect(
+        metadataEvents.some(
+          (event) => event.type === "upsert" && event.terminal.geometryOwner !== "machine-a",
+        ),
+      ).toBe(false);
+
       yield* manager.write({
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
@@ -823,6 +972,81 @@ it.layer(
         clientId: "machine-b",
       });
       expect(process.resizeCalls).toEqual([{ cols: 90, rows: 22 }]);
+    }),
+  );
+
+  it.effect(
+    "a deliberate layout resize takes ownership and passive viewers cannot resize it back",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        yield* manager.open(openInput({ clientId: "windows" }));
+        const metadataEvents: TerminalMetadataStreamEvent[] = [];
+        const unsubscribe = yield* manager.subscribeMetadata((event) =>
+          Effect.sync(() => {
+            metadataEvents.push(event);
+          }),
+        );
+        yield* manager.resize({
+          threadId: "thread-1",
+          terminalId: DEFAULT_TERMINAL_ID,
+          cols: 120,
+          rows: 30,
+          clientId: "mac-viewer",
+          claimGeometry: true,
+        });
+        yield* manager.resize({
+          threadId: "thread-1",
+          terminalId: DEFAULT_TERMINAL_ID,
+          cols: 100,
+          rows: 24,
+          clientId: "windows",
+        });
+        // Anonymous callers cannot bypass the lease by setting the flag.
+        yield* manager.resize({
+          threadId: "thread-1",
+          terminalId: DEFAULT_TERMINAL_ID,
+          cols: 100,
+          rows: 24,
+          claimGeometry: true,
+        });
+        unsubscribe();
+        expect(ptyAdapter.processes[0]?.resizeCalls).toEqual([{ cols: 120, rows: 30 }]);
+        expect(metadataEvents.filter((event) => event.type === "upsert")).toEqual([
+          expect.objectContaining({
+            terminal: expect.objectContaining({ geometryOwner: "mac-viewer", cols: 120, rows: 30 }),
+          }),
+        ]);
+      }),
+  );
+
+  it.effect("broadcasts same-size ownership transfers without repainting the PTY", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput({ clientId: "windows" }));
+      const metadataEvents: TerminalMetadataStreamEvent[] = [];
+      const unsubscribe = yield* manager.subscribeMetadata((event) =>
+        Effect.sync(() => {
+          metadataEvents.push(event);
+        }),
+      );
+      const input = {
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 100,
+        rows: 24,
+        clientId: "mac-viewer",
+        claimGeometry: true,
+      };
+      yield* manager.resize(input);
+      yield* manager.resize(input);
+      unsubscribe();
+      expect(ptyAdapter.processes[0]?.resizeCalls).toEqual([]);
+      expect(metadataEvents.filter((event) => event.type === "upsert")).toEqual([
+        expect.objectContaining({
+          terminal: expect.objectContaining({ geometryOwner: "mac-viewer" }),
+        }),
+      ]);
     }),
   );
 
@@ -2751,6 +2975,58 @@ it.layer(
       assert.equal(process.killSignals[0], "SIGTERM");
       expect(process.killSignals).toContain("SIGKILL");
     }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("shutdown captures a Windows Codex identity inside the ordinary lookup cooldown", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "terminal-codex-final-poll-" });
+      const firstLookup = yield* Deferred.make<void>();
+      const sessionId = "01a0a102-5658-7091-a8e4-9326caf7d7b7";
+      let ownerLookups = 0;
+      const runner = ProcessRunner.ProcessRunner.of({
+        run: (input) =>
+          Effect.gen(function* () {
+            let stdout = "9010\u001f9000\u001fcodex.exe\u001fcodex";
+            if (input.args.some((arg) => arg.includes("SollaCodexFileOwners"))) {
+              ownerLookups += 1;
+              stdout =
+                ownerLookups === 1
+                  ? "[]"
+                  : '[ { "pid": 9010, "sessionId": "01a0a102-5658-7091-a8e4-9326caf7d7b7" } ]';
+              yield* Deferred.succeed(firstLookup, undefined);
+            }
+            return {
+              stdout,
+              stderr: "",
+              code: ChildProcessSpawner.ExitCode(0),
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            };
+          }),
+      });
+      const scope = yield* Scope.make();
+      const logsDir = path.join(directory, "logs");
+      const { manager } = yield* createManager(5, {
+        logsDir,
+        env: { CODEX_HOME: directory },
+        subprocessPollIntervalMs: 1,
+      }).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.provideService(ProcessRunner.ProcessRunner, runner),
+        Effect.provide(withHostPlatform("win32")),
+      );
+      yield* manager.open(openInput());
+      yield* Deferred.await(firstLookup);
+      yield* Scope.close(scope, Exit.void);
+      const logPath = yield* historyLogPath(logsDir);
+      expect(ownerLookups).toBeGreaterThanOrEqual(2);
+      expect(
+        parseAgentCliResumeState(yield* fs.readFileString(resumeStateFilePath(logPath))),
+      ).toMatchObject({ command: "codex", sessionId, resumeOnRestore: true });
+    }),
   );
 
   it.effect("captures a newly started agent CLI during shutdown", () =>

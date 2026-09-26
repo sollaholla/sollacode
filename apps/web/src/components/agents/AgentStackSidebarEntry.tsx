@@ -47,12 +47,11 @@ import { useSidebarRowSwipe } from "../useSidebarRowSwipe";
 import type { SidebarSwipeDirection } from "../sidebarRowSwipe";
 import type { SidebarThreadSummary } from "../../types";
 import { AgentGlyph } from "./AgentGlyph";
+import { agentPresence } from "@t3tools/client-runtime/state/agent-appearance";
 import {
   agentPowerActionLabel,
   agentPowerSwitchable,
   agentPowerTitle,
-  agentStatusDotClass,
-  agentStatusLabel,
   useAgentPowerToggle,
 } from "./AgentPowerToggle";
 import { CreateAgentDialog } from "./CreateAgentDialog";
@@ -400,8 +399,8 @@ function AgentSidebarRow(props: {
     agent.threadId ? { environmentId: props.environmentId, threadId: agent.threadId } : null,
   );
   const rowEnvironment = useEnvironment(props.environmentId);
-  const environmentUnreachable =
-    rowEnvironment != null && rowEnvironment.connection.phase !== "connected";
+  const environmentUnreachable = rowEnvironment?.connection.phase !== "connected";
+  const presence = agentPresence(agent.status, !environmentUnreachable);
   // An agent delegates its real work to side chats, and its own chat thread
   // sits "ready" while they run — so reading only its own shell lit nothing at
   // all while the agent was plainly busy. An ordinary thread row already gets
@@ -487,7 +486,7 @@ function AgentSidebarRow(props: {
         type="button"
         isActive={props.isActive}
         onClick={handleOpen}
-        aria-label={`Open ${agent.name} on ${props.environmentLabel}${needsApproval ? ", waiting for your approval" : needsInput ? ", waiting for your input" : ""}${props.unreadNotifications > 0 ? `, ${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "alert" : "alerts"}` : ""}`}
+        aria-label={`Open ${agent.name} on ${props.environmentLabel}, ${presence.description}${needsApproval ? ", waiting for your approval" : needsInput ? ", waiting for your input" : ""}${props.unreadNotifications > 0 ? `, ${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "alert" : "alerts"}` : ""}`}
         data-testid="agent-sidebar-entry"
         className={cn(
           "group/agent-row",
@@ -501,7 +500,11 @@ function AgentSidebarRow(props: {
         }
         {...swipe.handlers}
       >
-        <AgentGlyph name={agent.name} icon={agent.icon} />
+        <AgentGlyph
+          agentId={agent.vmAgentId}
+          avatarColor={agent.avatarColor}
+          online={presence.online}
+        />
         <span className="flex-1 truncate text-left">{agent.name}</span>
         {/* Deliberately identical to the thread rows' working indicator, minus
             their "Working 4m" label — same CircleDashedIcon, same sky tint,
@@ -580,13 +583,18 @@ function AgentSidebarRow(props: {
             centred geometry, so the two line up in the gutter. */}
         <span
           aria-hidden="true"
-          title={agentStatusLabel(agent.status)}
+          title={presence.description}
           className={cn(
             "flex shrink-0 items-center justify-center",
             !usesTouch && "-mr-0.5 size-5",
           )}
         >
-          <span className={cn("size-1.5 rounded-full", agentStatusDotClass(agent.status))} />
+          <span
+            className={cn(
+              "size-1.5 rounded-full",
+              presence.online ? "bg-ok" : "bg-muted-foreground/50",
+            )}
+          />
         </span>
         {/* The on/off switch shares the X's reveal rules below: hidden until
             the row is hovered or focused, reachable but undrawn on touch. */}

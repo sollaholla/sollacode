@@ -1,4 +1,9 @@
-import { createFileRoute, lazyRouteComponent, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+
+import {
+  SettingsRouteLayout,
+  SettingsRoutePending,
+} from "../components/settings/SettingsRouteLayout";
 
 export const Route = createFileRoute("/settings")({
   beforeLoad: async ({ context, location }) => {
@@ -13,8 +18,8 @@ export const Route = createFileRoute("/settings")({
       throw redirect({ to: "/settings/general", replace: true });
     }
   },
-  component: lazyRouteComponent(
-    () => import("../components/settings/SettingsRouteLayout"),
-    "SettingsRouteLayout",
-  ),
+  component: SettingsRouteLayout,
+  pendingComponent: SettingsRoutePending,
+  pendingMs: 0,
+  pendingMinMs: 0,
 });

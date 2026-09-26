@@ -1,4 +1,5 @@
 import { WS_METHODS } from "@t3tools/contracts";
+import * as Stream from "effect/Stream";
 import { Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -23,6 +24,13 @@ export function createPreviewEnvironmentAtoms<R, E>(
   const lifecycleScheduler = createAtomCommandScheduler();
   const statusScheduler = createAtomCommandScheduler();
   const automationScheduler = createAtomCommandScheduler();
+  const credentialScheduler = createAtomCommandScheduler();
+  // Saved-password changes relay to one desktop's vault; applying them in
+  // order keeps a delete from overtaking the save it follows.
+  const credentialChangeConcurrency = {
+    mode: "serial" as const,
+    key: ({ environmentId }: { environmentId: string }) => environmentId,
+  };
   const lifecycleConcurrency = {
     mode: "serial" as const,
     key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
@@ -90,12 +98,52 @@ export function createPreviewEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.threadId, input.tabId]),
       },
     }),
+    // One element per arrival batch, never just the batch's last: a stream
+    // atom keeps only the newest value, and audio needs every packet.
+    tabAudio: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:preview:tab-audio",
+      tag: WS_METHODS.previewTabAudioWatch,
+      idleTtlMs: 0,
+      transform: (stream) => Stream.chunks(stream),
+    }),
+    tabAudioReport: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:tab-audio-report",
+      tag: WS_METHODS.previewTabAudioReport,
+      scheduler: statusScheduler,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, input.tabId]),
+      },
+    }),
+    // In capture order: a later batch overtaking an earlier one would play
+    // the sound out of order.
+    tabAudioPublish: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:tab-audio-publish",
+      tag: WS_METHODS.previewTabAudioPublish,
+      scheduler: automationScheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, input.tabId]),
+      },
+    }),
     remoteInput: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:remote-input",
       tag: WS_METHODS.previewRemoteInput,
       scheduler: automationScheduler,
       // Input must arrive in gesture order and never be coalesced: "latest"
       // would silently drop the first of two quick taps.
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, input.tabId]),
+      },
+    }),
+    reportActivity: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:report-activity",
+      tag: WS_METHODS.previewReportActivity,
+      scheduler: statusScheduler,
       concurrency: {
         mode: "serial",
         key: ({ environmentId, input }) =>
@@ -130,6 +178,27 @@ export function createPreviewEnvironmentAtoms<R, E>(
         mode: "latest",
         key: previewAutomationHostFocusConcurrencyKey,
       },
+    }),
+    listCredentials: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:credentials-list",
+      tag: WS_METHODS.previewCredentialsList,
+      scheduler: credentialScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
+    saveCredential: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:credentials-save",
+      tag: WS_METHODS.previewCredentialsSave,
+      scheduler: credentialScheduler,
+      concurrency: credentialChangeConcurrency,
+    }),
+    removeCredential: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:credentials-remove",
+      tag: WS_METHODS.previewCredentialsRemove,
+      scheduler: credentialScheduler,
+      concurrency: credentialChangeConcurrency,
     }),
   };
 }

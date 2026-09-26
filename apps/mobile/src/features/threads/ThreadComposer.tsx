@@ -1,3 +1,12 @@
+import { useAtomValue } from "@effect/atom-react";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import {
+  modelAccessPoliciesAllow,
+  threadModelPolicyChain,
+} from "@t3tools/shared/modelAccessPolicy";
+import { serverEnvironment } from "../../state/server";
+import { useThreadShells } from "../../state/entities";
+import { ModelPolicyModal } from "../settings/ModelPolicyModal";
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import { selectModelWithHighEffort } from "@t3tools/client-runtime/state/model-selection";
 import type {
@@ -328,6 +337,35 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     onExpandedChange?.(false);
   }, [onExpandedChange]);
   const currentModelSelection = props.selectedThread.modelSelection;
+  const [modelPolicyOpen, setModelPolicyOpen] = useState(false);
+  const policySettings =
+    useAtomValue(serverEnvironment.settingsValueAtom(props.environmentId)) ??
+    DEFAULT_SERVER_SETTINGS;
+  const policyThreads = useThreadShells();
+  const modelPolicyChain = useMemo(
+    () =>
+      threadModelPolicyChain({
+        threadId: props.selectedThread.id,
+        policies: policySettings.threadModelPolicies,
+        getParent: (id) => {
+          const thread =
+            id === props.selectedThread.id
+              ? props.selectedThread
+              : policyThreads.find(
+                  (entry) => entry.environmentId === props.environmentId && entry.id === id,
+                );
+          return thread ? (thread.sideChatParentThreadId ?? null) : undefined;
+        },
+      }),
+    [props.selectedThread, props.environmentId, policySettings.threadModelPolicies, policyThreads],
+  );
+  const isModelAllowed = useCallback(
+    (selection: ModelSelection) =>
+      (modelPolicyChain.complete || Object.keys(policySettings.threadModelPolicies).length === 0) &&
+      modelAccessPoliciesAllow(modelPolicyChain.policies, selection),
+    [modelPolicyChain, policySettings.threadModelPolicies],
+  );
+  const selectedModelBlocked = !isModelAllowed(currentModelSelection);
   const currentRuntimeMode = props.selectedThread.runtimeMode;
   const currentInteractionMode = props.selectedThread.interactionMode ?? "default";
   const connectionStatus = composerConnectionStatus({
@@ -536,6 +574,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   } = props;
 
   const handleSend = useCallback(async () => {
+    if (selectedModelBlocked) return;
     const submitAction = resolveThreadComposerSubmitAction({ hasContent, hasQueuedSendNow });
     if (submitAction === "promote-queued") {
       onPromoteQueuedMessages();
@@ -551,6 +590,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       inFlightThreadIdsRef.current.delete(threadKey);
     }
   }, [
+    selectedModelBlocked,
     hasContent,
     hasQueuedSendNow,
     onPromoteQueuedMessages,
@@ -638,6 +678,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         subactions: group.models.map((option) => ({
           id: `model:${option.key}`,
           title: option.label,
+          attributes: { disabled: !isModelAllowed(option.selection) },
           state:
             option.selection.instanceId === currentModelSelection.instanceId &&
             option.selection.model === currentModelSelection.model
@@ -645,7 +686,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               : undefined,
         })),
       })),
-    [providerGroups, currentModelSelection],
+    [providerGroups, currentModelSelection, isModelAllowed],
   );
 
   // ── Options menu ─────────────────────────────────────────
@@ -699,12 +740,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
 
   // ── Menu handlers ────────────────────────────────────────
   function handleModelMenuAction(event: string) {
+    if (event === "model-restrictions") {
+      setModelPolicyOpen(true);
+      return;
+    }
     if (!event.startsWith("model:")) {
       return;
     }
     const modelKey = event.slice("model:".length);
     const option = modelOptions.find((o) => o.key === modelKey);
-    if (option) {
+    if (option && isModelAllowed(option.selection)) {
       props.onUpdateModelSelection(
         selectModelWithHighEffort(currentModelSelection, option.selection, option.capabilities),
       );
@@ -743,6 +788,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           : "linear-gradient(to bottom, rgba(255,255,255,0) 0%, rgba(255,255,255,0.6) 55%, rgba(255,255,255,0.9) 100%)",
       }}
     >
+      {selectedModelBlocked && (
+        <Text accessibilityRole="alert" className="mb-2 text-sm">
+          This model is blocked. Choose an allowed model or change Model restrictions.
+        </Text>
+      )}
+      <ModelPolicyModal
+        environmentId={props.environmentId}
+        threadId={props.selectedThread.id}
+        parentThreadId={props.selectedThread.sideChatParentThreadId}
+        visible={modelPolicyOpen}
+        onClose={() => setModelPolicyOpen(false)}
+      />
       <Animated.View
         className="relative w-full self-center"
         layout={COMPOSER_LAYOUT_TRANSITION}
@@ -880,7 +937,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 <ControlPill
                   icon="arrow.up"
                   variant="primary"
-                  disabled={!canSend}
+                  disabled={!canSend || selectedModelBlocked}
                   onPress={handleSend}
                 />
               )}
@@ -921,7 +978,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   showChevron={false}
                 />
                 <ControlPillMenu
-                  actions={modelMenuActions}
+                  actions={[
+                    { id: "model-restrictions", title: "Model restrictions…" },
+                    ...modelMenuActions,
+                  ]}
                   onPressAction={({ nativeEvent }) => handleModelMenuAction(nativeEvent.event)}
                 >
                   <ComposerToolbarTrigger
@@ -956,7 +1016,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 accessibilityLabel={sendLabel}
                 icon="arrow.up"
                 variant="primary"
-                disabled={!canSend}
+                disabled={!canSend || selectedModelBlocked}
                 onPress={handleSend}
                 showChevron={false}
               />

@@ -171,14 +171,14 @@ describe("swipe down to put the composer away", () => {
     expect(shouldCollapseMobileComposer({ ...baseInput, swipeDismissed: true })).toBe(true);
   });
 
-  it("collapses a focused composer, keyboard and all", () => {
+  it("never collapses a focused composer, even with a previous dismissal", () => {
     expect(
       shouldCollapseMobileComposer({
         ...baseInput,
         isComposerFocused: true,
         swipeDismissed: true,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("never wins over live voice capture", () => {

@@ -176,6 +176,7 @@ describe("ProviderSessionReaper", () => {
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
       stopSession,
+      discardSessionHistory: () => unsupported(),
       listSessions: () => Effect.succeed(input.liveSessions ?? []),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
       getInstanceInfo: (instanceId) => {
@@ -373,6 +374,62 @@ describe("ProviderSessionReaper", () => {
           snapshot.state.count >= 2,
       ),
     ).toBe(true);
+  });
+
+  it("keeps native background work and recent activity alive after the last user send ages out", async () => {
+    const old = "2026-01-01T00:00:00.000Z";
+    const ids = ["native-running", "background-command", "recent-output", "idle-control"].map(
+      (id) => ThreadId.make(id),
+    );
+    const harness = await createHarness({
+      readModel: makeReadModel(
+        ids.map((id) => ({
+          id,
+          session: {
+            threadId: id,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: old,
+          },
+        })),
+      ),
+      liveSessions: ids.map((threadId, index) => ({
+        threadId,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        status: index === 0 ? "running" : "ready",
+        createdAt: old,
+        updatedAt: index === 2 ? DateTime.formatIso(DateTime.nowUnsafe()) : old,
+        ...(index === 1 ? { activeBackgroundTaskCount: 2 } : {}),
+      })),
+    });
+    await runtime!.runPromise(
+      Effect.gen(function* () {
+        const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+        for (const threadId of ids) {
+          yield* repository.upsert({
+            threadId,
+            providerName: "claudeAgent",
+            providerInstanceId: null,
+            adapterKey: "claudeAgent",
+            runtimeMode: "full-access",
+            status: "running",
+            lastSeenAt: old,
+            resumeCursor: null,
+            runtimePayload: null,
+          });
+        }
+        const reaper = yield* ProviderSessionReaper;
+        scope = yield* Scope.make("sequential");
+        yield* reaper.start().pipe(Scope.provide(scope));
+      }),
+    );
+    await waitFor(() => harness.stoppedThreadIds.has(ids[3]!));
+    expect([...harness.stoppedThreadIds]).toEqual([ids[3]]);
   });
 
   it("does not reap a quiet session while a runtime lease proves background work", async () => {

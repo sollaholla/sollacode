@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./state/opencode-usage": {
+      "types": "./src/state/openCodeUsage.ts",
+      "default": "./src/state/openCodeUsage.ts"
+    },
     "./connection": {
       "types": "./src/connection/index.ts",
       "default": "./src/connection/index.ts"
@@ -51,17 +55,33 @@
       "types": "./src/preview/remoteCommandCoordinator.ts",
       "default": "./src/preview/remoteCommandCoordinator.ts"
     },
+    "./preview/credential-form": {
+      "types": "./src/preview/credentialForm.ts",
+      "default": "./src/preview/credentialForm.ts"
+    },
     "./relay": {
       "types": "./src/relay/index.ts",
       "default": "./src/relay/index.ts"
+    },
+    "./state/model-selection-sync": {
+      "types": "./src/state/modelSelectionSync.ts",
+      "default": "./src/state/modelSelectionSync.ts"
     },
     "./state/auth": {
       "types": "./src/state/auth.ts",
       "default": "./src/state/auth.ts"
     },
+    "./state/turn-file-references": {
+      "types": "./src/state/turnFileReferences.ts",
+      "default": "./src/state/turnFileReferences.ts"
+    },
     "./state/assets": {
       "types": "./src/state/assets.ts",
       "default": "./src/state/assets.ts"
+    },
+    "./state/read-image-preview": {
+      "types": "./src/state/readImagePreview.ts",
+      "default": "./src/state/readImagePreview.ts"
     },
     "./state/thread-artifacts": {
       "types": "./src/state/threadArtifacts.ts",
@@ -98,6 +118,14 @@
     "./state/presentation": {
       "types": "./src/state/presentation.ts",
       "default": "./src/state/presentation.ts"
+    },
+    "./state/agent-appearance": {
+      "types": "./src/state/agentAppearance.ts",
+      "default": "./src/state/agentAppearance.ts"
+    },
+    "./state/agent-avatar-motion": {
+      "types": "./src/state/agentAvatarMotion.ts",
+      "default": "./src/state/agentAvatarMotion.ts"
     },
     "./state/vmAgents": {
       "types": "./src/state/vmAgents.ts",

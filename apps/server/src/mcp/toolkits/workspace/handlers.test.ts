@@ -477,6 +477,8 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
       expect(command.threadId).toBe(workingThreadId);
       expect(command.message.text).toBe("status please");
       expect(command.message.role).toBe("user");
+      expect(command.message.senderThreadId).toBe(ORCHESTRATOR_THREAD_ID);
+      expect(command.message.senderThreadTitle).toBe("Orchestrator");
     }),
   );
 

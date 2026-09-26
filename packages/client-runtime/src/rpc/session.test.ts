@@ -98,6 +98,13 @@ const PREPARED: PreparedConnection = {
   target: TARGET,
 };
 
+/** The desktop renderer's own server, on this machine. */
+const LOCAL_PREPARED: PreparedConnection = {
+  ...PREPARED,
+  httpBaseUrl: "http://127.0.0.1:3773",
+  socketUrl: "ws://127.0.0.1:3773/ws?wsTicket=test",
+};
+
 const SERVER_CONFIG: ServerConfigType = {
   environment: {
     environmentId: TARGET.environmentId,
@@ -291,7 +298,7 @@ describe("RpcSessionFactory", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const { factory, sockets } = yield* makeFactory();
-        const session = yield* factory.connect(PREPARED);
+        const session = yield* factory.connect(LOCAL_PREPARED);
         const readyFiber = yield* Effect.forkChild(session.ready);
         const socket = yield* awaitSocket(sockets);
         socket.open();
@@ -313,6 +320,44 @@ describe("RpcSessionFactory", () => {
       }),
     ).pipe(Effect.provide(TestClock.layer())),
   );
+
+  it.effect("closes a network-reached primary session whose heartbeat goes unanswered", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // A phone opening the host's Tailscale URL talks to the primary
+        // environment over the network. A socket that stopped delivering
+        // must close so the supervisor reconnects; without the heartbeat
+        // every thread resubscribed on the dead socket forever.
+        const { factory, sockets } = yield* makeFactory();
+        const session = yield* factory.connect(PREPARED);
+        const readyFiber = yield* Effect.forkChild(session.ready);
+        const socket = yield* awaitSocket(sockets);
+        socket.open();
+        yield* completeInitialConfig(socket);
+        yield* Fiber.join(readyFiber);
+
+        const closedFiber = yield* Effect.forkChild(Effect.flip(session.closed));
+        yield* TestClock.adjust("11 seconds");
+        yield* Effect.yieldNow;
+
+        expect(yield* Fiber.join(closedFiber)).toMatchObject({ reason: "transport" });
+      }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it("treats only a loopback primary socket as local", () => {
+    expect(RpcSession.isLocalPrimarySocket(LOCAL_PREPARED)).toBe(true);
+    expect(
+      RpcSession.isLocalPrimarySocket({ ...LOCAL_PREPARED, socketUrl: "ws://[::1]:3773/ws" }),
+    ).toBe(true);
+    expect(RpcSession.isLocalPrimarySocket(PREPARED)).toBe(false);
+    expect(
+      RpcSession.isLocalPrimarySocket({
+        ...PREPARED,
+        socketUrl: "wss://host.tail0b929e.ts.net/ws",
+      }),
+    ).toBe(false);
+  });
 
   it.effect("reaches ready when a newer server sends unknown config members", () =>
     Effect.gen(function* () {

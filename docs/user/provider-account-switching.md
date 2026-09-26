@@ -37,3 +37,10 @@ The Antigravity account control shows the email confirmed by its native status c
 account can still have no Gemini quota remaining. If Google rejects a turn with `RESOURCE_EXHAUSTED
 (429)`, Solla keeps the error in the conversation and stops automatic recovery retries. Switch to an
 account with available quota or wait for its quota to reset before sending again.
+
+### Model choice across devices
+
+Selecting a model in the composer stages it locally and shows **Apply changes**. Apply, Send, and
+Resume persist that selection on the host as part of starting work with it; other connected devices
+then receive the accepted settings. A picker choice alone does not change the running agent or
+pretend it has already applied. Typed and voice messages use the composer's selected model.

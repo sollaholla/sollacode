@@ -98,13 +98,40 @@ function hasStructuredStatus(value: unknown, matches: (status: unknown) => boole
 }
 
 /**
+ * A provider's own structured verdict that the failure is transient.
+ *
+ * OpenCode's `APIError` carries `data.isRetryable` from the AI SDK; its gateway
+ * for the free `opencode/*` models answers "Upstream request failed: Endpoint
+ * is unavailable" with that flag set and no status code Solla recognises, so
+ * every flap was surfacing as a hard error row (2026-09-17, union-alpha).
+ * Only the boolean `true` counts: prose is never inspected.
+ */
+export function hasStructuredRetryableFlag(value: unknown): boolean {
+  const seen = new Set<unknown>();
+  const queue: Array<unknown> = [value];
+  for (let visited = 0; queue.length > 0 && visited < MAX_STRUCTURED_ERROR_NODES; visited += 1) {
+    const node = queue.shift();
+    if (node === null || typeof node !== "object" || seen.has(node)) continue;
+    seen.add(node);
+    const record = node as Record<string, unknown>;
+    if (record["isRetryable"] === true) return true;
+    for (const nested of Object.values(record)) {
+      if (nested !== null && typeof nested === "object") queue.push(nested);
+    }
+  }
+  return false;
+}
+
+/**
  * Classifies only structured upstream status fields. This is safe to use for
  * lifecycle decisions because provider/model prose is never inspected.
  */
 export function hasRetryableUpstreamStatus(value: unknown): boolean {
-  return hasStructuredStatus(
-    value,
-    (candidate) => isRetryableUpstreamStatus(candidate) || isRetryableNetworkCode(candidate),
+  return (
+    hasStructuredStatus(
+      value,
+      (candidate) => isRetryableUpstreamStatus(candidate) || isRetryableNetworkCode(candidate),
+    ) || hasStructuredRetryableFlag(value)
   );
 }
 

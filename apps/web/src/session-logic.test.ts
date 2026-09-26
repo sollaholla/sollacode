@@ -768,6 +768,71 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("hides only the runtime error with a successful failover receipt", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "agy:277",
+        kind: "runtime.error",
+        tone: "error",
+        summary: "Runtime error",
+        payload: { message: "truncated provider logs..." },
+      }),
+      makeActivity({
+        id: "agy:277:provider.failover.completed",
+        kind: "provider.failover.completed",
+        summary: "usage exhausted · switched to Codex",
+      }),
+      makeActivity({
+        id: "unrelated",
+        kind: "runtime.error",
+        tone: "error",
+        summary: "Runtime error",
+        payload: { message: "permission denied" },
+      }),
+    ]);
+    expect(entries.map((entry) => entry.id).sort()).toEqual([
+      "agy:277:provider.failover.completed",
+      "unrelated",
+    ]);
+  });
+
+  it("hides a persisted 'Aborted' runtime error: it is our own interrupt, not a failure", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "opencode-aborted",
+        kind: "runtime.error",
+        tone: "error",
+        summary: "Runtime error",
+        payload: { message: "Aborted" },
+      }),
+      makeActivity({
+        id: "real-error",
+        kind: "runtime.error",
+        tone: "error",
+        summary: "Runtime error",
+        payload: { message: "Aborted by policy: file too large" },
+      }),
+    ]);
+    expect(entries.map((entry) => entry.id)).toEqual(["real-error"]);
+  });
+
+  it("keeps the provider retry marker out of the log — the Working row already says it", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "provider-upstream-retry:thread-1:turn-1",
+        kind: "provider.overload.retrying",
+        summary: "Provider slow — retrying shortly",
+        payload: { reason: "provider_overloaded:retrying;attempt=2;delay_ms=1000" },
+      }),
+      makeActivity({
+        id: "tool-done",
+        kind: "tool.completed",
+        summary: "grep",
+      }),
+    ]);
+    expect(entries.map((entry) => entry.id)).toEqual(["tool-done"]);
+  });
+
   it("renders Grok thought-chunk activities as thinking, not as a finished tool", () => {
     const [entry] = deriveWorkLogEntries([
       makeActivity({
@@ -838,6 +903,12 @@ describe("deriveWorkLogEntries", () => {
 
   it("hides provider usage refresh success activities while keeping other activity rows", () => {
     const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "muse-polling",
+        kind: "runtime.warning",
+        summary:
+          "Muse live streaming is unavailable for this saved session. Activity will refresh every five seconds.",
+      }),
       makeActivity({
         id: "provider-usage",
         kind: "provider.usage.updated",
@@ -1431,6 +1502,28 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("previews Muse image-read receipts already persisted as generic tool output", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "muse-read-image",
+        kind: "tool.completed",
+        summary: "Tool",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool",
+          detail:
+            "Read image file `screenshots/plateau_edge_to_bay.png` as model-visible image output.\nmedia_type: image/png\nsource_bytes: 4173209",
+        },
+      }),
+    ]);
+    expect(entry).toMatchObject({
+      readImagePath: "screenshots/plateau_edge_to_bay.png",
+      readImageSourceActivityId: "muse-read-image",
+      toolTitle: "Read image",
+    });
+    expect(entry?.detail).toBeUndefined();
+  });
+
   it("preserves a structured raster path for inline read-tool previews", () => {
     const [entry] = deriveWorkLogEntries([
       makeActivity({
@@ -1495,6 +1588,29 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.readImageSourceActivityId).toBe("codex-image-generation-complete");
   });
 
+  it("uses the persisted Deep Code ReadImage receipt instead of its display label", () => {
+    const path = String.raw`D:\TerraGen\Assets\Temp\nf_probe_100.png`;
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "deepcode-image-complete",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          itemType: "image_view",
+          title: "Image view",
+          detail: `ReadImage: ${path}`,
+          data: {
+            toolName: "ReadImage",
+            params: path,
+            result: `<path>${path}</path>\n<type>image</type>`,
+          },
+        },
+      }),
+    ]);
+    expect(entry?.readImagePath).toBe(path);
+    expect(entry?.readImageSourceActivityId).toBe("deepcode-image-complete");
+  });
+
   it("recovers image previews from Claude Read invocation details", () => {
     const [entry] = deriveWorkLogEntries([
       makeActivity({
@@ -1514,6 +1630,44 @@ describe("deriveWorkLogEntries", () => {
       readImagePath: "/Users/example/project/build/renders/stairdoor_in.png",
     });
     expect(entry?.detail).toBeUndefined();
+  });
+
+  it("keeps the image the read tool returned, which outlives the file it read", () => {
+    const base64 = "iVBORw0KGgoAAAANSUhEUg";
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "claude-scratch-read-start",
+        kind: "tool.started",
+        summary: "Tool call",
+        payload: { itemType: "dynamic_tool_call", title: "Tool call", detail: "Read: {}" },
+      }),
+      makeActivity({
+        id: "claude-scratch-read-complete",
+        kind: "tool.completed",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          detail: 'Read: {"file_path":"/tmp/shots-before/jacket-right-thumb.png"}',
+          data: {
+            toolName: "Read",
+            input: { file_path: "/tmp/shots-before/jacket-right-thumb.png" },
+            result: {
+              type: "tool_result",
+              content: [
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: base64 },
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entry?.readImagePath).toBe("/tmp/shots-before/jacket-right-thumb.png");
+    expect(entry?.readImageInlineSrc).toBe(`data:image/png;base64,${base64}`);
   });
 
   it("recovers an absolute Windows image path from a malformed project-prefixed tool path", () => {

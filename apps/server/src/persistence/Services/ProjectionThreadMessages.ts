@@ -30,6 +30,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
+  senderThreadId: Schema.optional(ThreadId),
+  senderThreadTitle: Schema.optional(Schema.String),
   delegationId: Schema.optional(VmAgentDelegationId),
   voiceTranscript: Schema.optional(Schema.Boolean),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),

@@ -3,6 +3,26 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./modelAccessPolicy": {
+      "types": "./src/modelAccessPolicy.ts",
+      "import": "./src/modelAccessPolicy.ts"
+    },
+    "./nativeVoice/VoiceProcess": {
+      "types": "./src/nativeVoice/VoiceProcess.ts",
+      "import": "./src/nativeVoice/VoiceProcess.ts"
+    },
+    "./nativeVoice/MacSpeechTranscription": {
+      "types": "./src/nativeVoice/MacSpeechTranscription.ts",
+      "import": "./src/nativeVoice/MacSpeechTranscription.ts"
+    },
+    "./nativeVoice/WindowsSpeechTranscription": {
+      "types": "./src/nativeVoice/WindowsSpeechTranscription.ts",
+      "import": "./src/nativeVoice/WindowsSpeechTranscription.ts"
+    },
+    "./nativeVoice/WindowsSpeechScript": {
+      "types": "./src/nativeVoice/WindowsSpeechScript.ts",
+      "import": "./src/nativeVoice/WindowsSpeechScript.ts"
+    },
     "./claudeEnvironment": {
       "types": "./src/claudeEnvironment.ts",
       "import": "./src/claudeEnvironment.ts"
@@ -239,6 +259,10 @@
       "types": "./src/devProxy.ts",
       "import": "./src/devProxy.ts"
     },
+    "./fileView": {
+      "types": "./src/fileView.ts",
+      "import": "./src/fileView.ts"
+    },
     "./previewComputerControl": {
       "types": "./src/previewComputerControl.ts",
       "import": "./src/previewComputerControl.ts"
@@ -259,6 +283,10 @@
     "./providerDrivers": {
       "types": "./src/providerDrivers.ts",
       "import": "./src/providerDrivers.ts"
+    },
+    "./deepcodeUsage": {
+      "types": "./src/deepcodeUsage.ts",
+      "import": "./src/deepcodeUsage.ts"
     }
   },
   "scripts": {

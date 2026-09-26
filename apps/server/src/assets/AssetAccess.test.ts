@@ -236,6 +236,40 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("issues and resolves workspace audio without granting paths outside its root", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-audio-asset-" });
+      yield* fs.writeFileString(path.join(root, "sample.wav"), "RIFF test fixture");
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: "sample.wav",
+        },
+        workspaceRoot: root,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+      expect(yield* resolveAsset(token, "sample.wav")).toEqual({
+        kind: "file",
+        path: yield* fs.realPath(path.join(root, "sample.wav")),
+        contentType: "audio/wav",
+      });
+      expect(yield* resolveAsset(token, "../sample.wav")).toBeNull();
+      const rejected = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: "../outside.wav",
+        },
+        workspaceRoot: root,
+      }).pipe(Effect.flip);
+      expect(rejected._tag).toBe("AssetWorkspacePathValidationError");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects workspace files outside the authorized root", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -343,6 +377,7 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "icon.png")).toEqual({
         kind: "file",
         path: canonicalImagePath,
+        contentType: "image/png",
       });
       expect(yield* resolveAsset(token, "other.png")).toBeNull();
       expect(yield* resolveAsset(token, "../icon.png")).toBeNull();
@@ -383,6 +418,7 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "preview.png")).toEqual({
         kind: "file",
         path: canonicalImagePath,
+        contentType: "image/png",
       });
       expect(yield* resolveAsset(token, "other.png")).toBeNull();
 
@@ -483,6 +519,40 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  // 2026-09-17: `sips --out shot.jpg` keeps the PNG format, so an agent's whole
+  // screenshot set was refused for having the "wrong" extension. Real raster
+  // bytes are an image whatever the name; the response says which format.
+  it.effect("serves a misnamed raster with its sniffed content type", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-misnamed-image-workspace-",
+      });
+      const misnamedPath = path.join(root, "shot.jpg");
+      const pngBytes = new Uint8Array(64);
+      pngBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+      yield* fileSystem.writeFile(misnamedPath, pngBytes);
+
+      const issued = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: misnamedPath,
+        },
+        workspaceRoot: root,
+      });
+      const suffix = issued.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+      const canonicalMisnamedPath = yield* fileSystem.realPath(misnamedPath);
+      expect(yield* resolveAsset(token, "shot.jpg")).toEqual({
+        kind: "file",
+        path: canonicalMisnamedPath,
+        contentType: "image/png",
+      });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects mismatched and oversized raster workspace assets", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -543,6 +613,26 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "ignored.png")).toEqual({
         kind: "file",
         path: attachmentPath,
+      });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("serves a signed voice-note attachment with a playable audio type", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000003";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.wav`);
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFile(attachmentPath, new Uint8Array([82, 73, 70, 70]));
+      const result = yield* issueAssetUrl({ resource: { _tag: "attachment", attachmentId } });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+      expect(yield* resolveAsset(token, "recording.wav")).toEqual({
+        kind: "file",
+        path: attachmentPath,
+        contentType: "audio/wav",
       });
     }).pipe(Effect.provide(testLayer)),
   );

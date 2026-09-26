@@ -1,3 +1,4 @@
+import { isTerminalProviderRefusal } from "@t3tools/shared/agentMode";
 import { describe, expect, it } from "@effect/vitest";
 
 import {
@@ -8,6 +9,7 @@ import {
   grokTokenUsageFromSessionUsage,
   grokTokenUsageFromUsageUpdate,
   grokWeeklyResetAtMs,
+  grokUsageExhaustedMessage,
   grokWeeklyUsagePercent,
   parseGrokSubscription,
 } from "./GrokUsage.ts";
@@ -39,12 +41,30 @@ describe("Grok usage parsers", () => {
     expect(grokOnDemandUsage(liveBilling)).toBeUndefined();
   });
 
-  it("treats an omitted weekly percentage in an active period as zero usage", () => {
-    const { creditUsagePercent: _creditUsagePercent, ...zeroUsageConfig } = liveBilling.config;
+  // 2026-09-18: xAI stopped sending creditUsagePercent the moment the account
+  // could no longer serve a turn, so reading the omission as 0% showed a
+  // confident "0%" for a provider refusing everything. Unknown stays unknown.
+  it("reports an omitted weekly percentage as unknown, not zero", () => {
+    const { creditUsagePercent: _creditUsagePercent, ...omittedPercentConfig } = liveBilling.config;
 
-    expect(grokWeeklyUsagePercent({ config: zeroUsageConfig })).toBe(0);
-    expect(grokBillingIsExhausted({ config: zeroUsageConfig })).toBe(false);
+    expect(grokWeeklyUsagePercent({ config: omittedPercentConfig })).toBeUndefined();
+    expect(grokBillingIsExhausted({ config: omittedPercentConfig })).toBe(false);
     expect(grokWeeklyUsagePercent({ config: { prepaidBalance: { val: 0 } } })).toBeUndefined();
+    expect(
+      grokWeeklyUsagePercent({ config: { ...omittedPercentConfig, creditUsagePercent: 0 } }),
+    ).toBe(0);
+  });
+
+  it("explains an exhausted Grok balance in words a user can act on", () => {
+    const raw = "API error (status 402 Payment Required): Grok Build usage balance exhausted";
+    const message = grokUsageExhaustedMessage(raw);
+
+    expect(message).toMatch(/usage balance is exhausted/u);
+    expect(message).toMatch(/grok\.com/u);
+    // Keeps the provider's phrase so the shared terminal-refusal check retires
+    // the retry loop rather than spending eight attempts on it.
+    expect(isTerminalProviderRefusal(message ?? "")).toBe(true);
+    expect(grokUsageExhaustedMessage("Streaming response failed")).toBeUndefined();
   });
 
   it("treats a 100% weekly pool as exhausted", () => {

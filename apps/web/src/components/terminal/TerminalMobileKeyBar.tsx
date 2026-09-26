@@ -53,11 +53,14 @@ export function TerminalMobileKeyBar(props: {
             className={cn(
               "inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-[6px] px-2",
               "border border-[var(--line)] bg-surface text-xs font-medium text-foreground",
-              "active:bg-surface-hover",
+              "active:bg-surface-hover touch-manipulation select-none",
             )}
             data-terminal-mobile-key={key.id}
             // The terminal keeps focus, so the keyboard does not collapse and
             // reopen between presses.
+            onPointerDown={(event) => {
+              event.preventDefault();
+            }}
             onMouseDown={(event) => {
               event.preventDefault();
             }}

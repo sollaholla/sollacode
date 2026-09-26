@@ -3,6 +3,7 @@ import type { ContextMenuItem, LocalApi } from "@t3tools/contracts";
 import { resetRequestLatencyStateForTests } from "./rpc/requestLatencyState";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
+import { confirmInApp } from "./components/ui/appConfirm";
 
 let cachedApi: LocalApi | undefined;
 
@@ -13,12 +14,10 @@ function createBrowserLocalApi(): LocalApi {
         if (!window.desktopBridge) return null;
         return window.desktopBridge.pickFolder(options);
       },
-      confirm: async (message) => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.confirm(message);
-        }
-        return window.confirm(message);
-      },
+      // Both former branches opened a NATIVE dialog - `window.confirm` in the
+      // browser and Electron's message box over the bridge - and both stop the
+      // renderer until answered. Solla shows its own dialog instead.
+      confirm: async (message) => confirmInApp(message),
     },
     shell: {
       openExternal: async (url) => {

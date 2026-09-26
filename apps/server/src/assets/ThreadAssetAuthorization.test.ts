@@ -39,6 +39,27 @@ function makeImageActivity(
 }
 
 describe("activityAuthorizesExternalImagePath", () => {
+  it("authorizes only the exact image in a persisted Muse read receipt", () => {
+    const payload = {
+      itemType: "dynamic_tool_call",
+      title: "Tool",
+      detail:
+        "Read image file `/tmp/render with spaces.png` as model-visible image output.\nmedia_type: image/png\nsource_bytes: 4173209",
+    };
+    const activity = makeImageActivity({
+      summary: "Tool",
+      payload,
+    });
+    expect(activityAuthorizesExternalImagePath(activity, "/tmp/render with spaces.png")).toBe(true);
+    expect(activityAuthorizesExternalImagePath(activity, "/tmp/sibling.png")).toBe(false);
+    expect(
+      activityAuthorizesExternalImagePath(
+        { ...activity, payload: { ...payload, itemType: "command_execution" } },
+        "/tmp/render with spaces.png",
+      ),
+    ).toBe(false);
+  });
+
   it("authorizes an image Codex GENERATED, which reports savedPath not path", () => {
     // Codex emits itemType `image_view` for both viewing an image and for its
     // own image-generation tool. Generation writes the file and reports
@@ -75,6 +96,22 @@ describe("activityAuthorizesExternalImagePath", () => {
         "D:/TerraGen/Temp/BillboardNormalValidation/conifer_22_5.png",
       ),
     ).toBe(true);
+  });
+
+  it("authorizes the actual file from a saved Deep Code ReadImage receipt", () => {
+    const path = String.raw`D:\TerraGen\Assets\Temp\nf_probe_100.png`;
+    const activity = makeImageActivity({
+      payload: {
+        itemType: "image_view",
+        title: "Image view",
+        detail: `ReadImage: ${path}`,
+        data: { toolName: "ReadImage", params: path },
+      },
+    });
+    expect(activityAuthorizesExternalImagePath(activity, path)).toBe(true);
+    expect(activityAuthorizesExternalImagePath(activity, "D:/TerraGen/Assets/Temp/other.png")).toBe(
+      false,
+    );
   });
 
   it("does not authorize a sibling path or an unrelated tool activity", () => {

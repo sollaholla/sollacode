@@ -1,8 +1,12 @@
+import { enqueueThreadTurn } from "../operations/messageOutbox.ts";
+import { deferredThreadCommandChanges } from "../operations/deferredThreadCommandState.ts";
+import { compactDeferredThreadCommands } from "../operations/deferredThreadCommands.ts";
 import {
   type ClientOrchestrationCommand,
   CommandId,
   type DesktopSshEnvironmentTarget,
   EnvironmentId,
+  MessageId,
   ORCHESTRATION_WS_METHODS,
   type OrchestrationShellSnapshot,
   ThreadId,
@@ -258,7 +262,10 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     enqueue: (environmentId, entry) =>
       Ref.update(deferredThreadCommands, (current) => {
         const next = new Map(current);
-        next.set(environmentId, [...(next.get(environmentId) ?? []), entry]);
+        next.set(
+          environmentId,
+          compactDeferredThreadCommands(next.get(environmentId) ?? [], entry),
+        );
         return next;
       }),
     remove: (environmentId, commandId) =>
@@ -397,6 +404,7 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     storedRemoteTokens,
     disconnectedSshTargets,
     deferredThreadCommands,
+    deferredThreadCommandStore,
     dispatchedThreadCommand,
     deferredThreadCommandRemoved,
     networkStatus,
@@ -490,8 +498,8 @@ describe("EnvironmentRegistry", () => {
     Effect.gen(function* () {
       const queued: Persistence.DeferredThreadCommandEntry = {
         command: {
-          type: "thread.archive",
-          commandId: CommandId.make("queued-archive"),
+          type: "thread.delete",
+          commandId: CommandId.make("queued-delete"),
           threadId: ThreadId.make("thread-1"),
         },
         enqueuedAt: "2026-06-06T00:00:00.000Z",
@@ -509,6 +517,53 @@ describe("EnvironmentRegistry", () => {
         expect(
           (yield* Ref.get(harness.deferredThreadCommands)).get(BEARER_TARGET.environmentId),
         ).toEqual([]);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("delivers newly queued messages after connection without mounting a chat", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([BEARER_TARGET]);
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        yield* registry.start;
+        yield* awaitConnectionState(
+          registry,
+          BEARER_TARGET.environmentId,
+          (state) => state.phase === "connected",
+        );
+        yield* registry.run(
+          BEARER_TARGET.environmentId,
+          enqueueThreadTurn({
+            threadId: ThreadId.make("collapsed-side-chat"),
+            message: {
+              messageId: MessageId.make("background-message"),
+              role: "user",
+              text: "Survive navigation",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          }).pipe(
+            Effect.provideService(
+              Persistence.DeferredThreadCommandStore,
+              harness.deferredThreadCommandStore,
+            ),
+          ),
+        );
+        const accepted = yield* deferredThreadCommandChanges(BEARER_TARGET.environmentId).pipe(
+          Stream.filter((entries) => entries.some((entry) => entry.accepted)),
+          Stream.runHead,
+          Effect.provideService(
+            Persistence.DeferredThreadCommandStore,
+            harness.deferredThreadCommandStore,
+          ),
+        );
+        expect(Option.getOrThrow(accepted)[0]?.command).toMatchObject({
+          type: "thread.turn.start",
+          threadId: "collapsed-side-chat",
+          message: { messageId: "background-message" },
+        });
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );

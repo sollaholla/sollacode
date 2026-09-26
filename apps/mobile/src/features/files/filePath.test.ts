@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  isAudioPreviewFile,
   isBrowserPreviewFile,
+  isExternalMediaPreviewFile,
   isImagePreviewFile,
   isSvgImagePreviewFile,
+  isVideoPreviewFile,
   resolveWorkspaceRelativeFilePath,
 } from "./filePath";
 
@@ -39,5 +42,18 @@ describe("file preview types", () => {
   it("identifies SVG images that need web rendering", () => {
     expect(isSvgImagePreviewFile("assets/diagram.svg#icon")).toBe(true);
     expect(isSvgImagePreviewFile("assets/photo.png")).toBe(false);
+  });
+
+  it("routes audio and video to the external system player", () => {
+    for (const path of ["song.mp3", "Voice Note.WAV", "take.m4a", "loop.ogg"]) {
+      expect(isAudioPreviewFile(path)).toBe(true);
+      expect(isExternalMediaPreviewFile(path)).toBe(true);
+    }
+    for (const path of ["clip.mp4", "Screen Recording.MOV", "loop.webm"]) {
+      expect(isVideoPreviewFile(path)).toBe(true);
+      expect(isExternalMediaPreviewFile(path)).toBe(true);
+    }
+    expect(isExternalMediaPreviewFile("assets/icon.png")).toBe(false);
+    expect(isExternalMediaPreviewFile("src/index.ts")).toBe(false);
   });
 });

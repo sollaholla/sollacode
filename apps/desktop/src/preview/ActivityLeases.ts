@@ -80,6 +80,10 @@ export class PreviewActivityLeases {
     return false;
   }
 
+  holds(tabId: string, leaseId: string): boolean {
+    return this.#leasesByTab.get(tabId)?.has(leaseId) ?? false;
+  }
+
   snapshot(tabId?: string): PreviewActivitySnapshot {
     if (tabId !== undefined) {
       const leases = this.#leasesByTab.get(tabId);

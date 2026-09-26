@@ -266,6 +266,7 @@ function makeTestLayer(input: {
               return true;
             }),
           revealFile: () => Effect.void,
+          openPath: () => Effect.succeed(""),
           copyText: () => Effect.void,
           writeComposerClipboard: () => Effect.succeed(true),
         } satisfies ElectronShell.ElectronShell["Service"]),
@@ -364,6 +365,7 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
           Layer.succeed(ElectronShell.ElectronShell, {
             openExternal: () => Effect.succeed(true),
             revealFile: () => Effect.void,
+            openPath: () => Effect.succeed(""),
             copyText: () => Effect.void,
             writeComposerClipboard: () => Effect.succeed(true),
           } satisfies ElectronShell.ElectronShell["Service"]),

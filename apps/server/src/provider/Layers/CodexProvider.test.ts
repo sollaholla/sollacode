@@ -9,6 +9,7 @@ import {
   applyPreferredCodexDefaultModel,
   CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT,
   mapCodexModelCapabilities,
+  codexUsageStatusFor,
   settleOptionalCodexRateLimits,
 } from "./CodexProvider.ts";
 
@@ -19,7 +20,30 @@ it.effect("does not let optional rate limits block Codex readiness", () =>
     yield* TestClock.adjust(CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT);
 
     const result = yield* Fiber.join(fiber);
-    assert.isTrue(Option.isNone(result));
+    // Times out without failing the probe - and says so. It used to answer
+    // `None`, indistinguishable from "this account reports no usage", which
+    // is how a slow network answer aged a card into "Stale" with no reason.
+    assert.equal(result.kind, "timeout");
+    assert.equal(codexUsageStatusFor(result).state, "error");
+  }),
+);
+
+it.effect("reports a rejected usage request as a reason, not as absent usage", () =>
+  Effect.gen(function* () {
+    const result = yield* settleOptionalCodexRateLimits(
+      Effect.fail({ _tag: "CodexRequestError" as const, message: "method not found" }),
+    );
+    assert.equal(result.kind, "failed");
+    assert.equal(codexUsageStatusFor(result).state, "error");
+  }),
+);
+
+it.effect("passes a real reading straight through as available", () =>
+  Effect.gen(function* () {
+    const payload = { rateLimits: [] } as never;
+    const result = yield* settleOptionalCodexRateLimits(Effect.succeed(payload));
+    assert.equal(result.kind, "ok");
+    assert.equal(codexUsageStatusFor(result).state, "available");
   }),
 );
 

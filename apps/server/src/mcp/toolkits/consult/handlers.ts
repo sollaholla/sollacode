@@ -17,6 +17,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
+import { resolveOwningVmAgent } from "../../../vm/owningAgent.ts";
 import { WorkspaceConsultToolkit } from "./tools.ts";
 import {
   WorkspaceConsultFailedError,
@@ -62,8 +63,13 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
   const crypto = yield* Crypto.Crypto;
 
   // Only VM agents get this door, mirroring how the orchestrator's toolkit is
-  // gated on its reserved thread id.
-  const callerAgent = yield* store.getByThreadId(invocation.threadId).pipe(
+  // gated on its reserved thread id. An agent's side chats (at any depth) act
+  // on the agent's behalf, so the lookup walks the side-chat chain.
+  const callerAgent = yield* resolveOwningVmAgent({
+    threadId: invocation.threadId,
+    getAgentByThreadId: store.getByThreadId,
+    getThreadShellById: projection.getThreadShellById,
+  }).pipe(
     Effect.mapError(
       () =>
         new WorkspaceConsultFailedError({
@@ -231,6 +237,8 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
             message: {
               messageId: MessageId.make(yield* randomId),
               role: "user",
+              senderThreadId: invocation.threadId,
+              senderThreadTitle: callerAgent.value.name,
               text: question,
               attachments: [],
             },
@@ -298,6 +306,8 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
             message: {
               messageId: MessageId.make(yield* randomId),
               role: "user",
+              senderThreadId: invocation.threadId,
+              senderThreadTitle: callerAgent.value.name,
               text: question,
               attachments: [],
             },

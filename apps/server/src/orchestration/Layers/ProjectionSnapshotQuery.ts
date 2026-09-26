@@ -15,7 +15,6 @@ import {
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadHistoryPage,
-  type OrchestrationThreadHistoryPageInput,
   type OrchestrationThreadPendingWork,
   ProjectScript,
   TurnId,
@@ -45,6 +44,7 @@ import {
 import { HELD_MESSAGE_PREFIX, isHeldMessageId } from "@t3tools/shared/heldMessages";
 import { STOPPED_BEFORE_SEND_REASON } from "../../persistence/Services/ThreadWorkObligations.ts";
 import * as Arr from "effect/Array";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -107,6 +107,8 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
     inputOrigin: Schema.NullOr(OrchestrationMessageInputOrigin),
+    senderThreadId: Schema.NullOr(ThreadId),
+    senderThreadTitle: Schema.NullOr(Schema.String),
     delegationId: Schema.NullOr(VmAgentDelegationId),
     voiceTranscript: Schema.Number,
   }),
@@ -215,6 +217,10 @@ const ThreadMessageLookupInput = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
 });
+const ThreadDeliveredMessagesInput = Schema.Struct({
+  threadId: ThreadId,
+  since: Schema.String,
+});
 const ThreadTurnLookupInput = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
@@ -227,6 +233,10 @@ const ProjectionThreadTurnStartContextRowSchema = Schema.Struct({
   providerTurnState: Schema.NullOr(
     Schema.Literals(["running", "interrupted", "incomplete", "completed", "error"]),
   ),
+});
+const ProjectionDeliveredMessageRowSchema = Schema.Struct({
+  kind: Schema.String,
+  payload: Schema.fromJsonString(Schema.Unknown),
 });
 const ProjectionProviderTurnForMessageRowSchema = Schema.Struct({
   turnId: TurnId,
@@ -430,6 +440,8 @@ function mapMessageRow(
     role: row.role,
     text: row.text,
     ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
+    ...(row.senderThreadId != null ? { senderThreadId: row.senderThreadId } : {}),
+    ...(row.senderThreadTitle != null ? { senderThreadTitle: row.senderThreadTitle } : {}),
     ...(row.delegationId !== null ? { delegationId: row.delegationId } : {}),
     ...(row.voiceTranscript === 1 ? { voiceTranscript: true } : {}),
     turnId: row.turnId,
@@ -797,6 +809,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          sender_thread_id AS "senderThreadId",
+          sender_thread_title AS "senderThreadTitle",
           delegation_id AS "delegationId",
           voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
@@ -1293,6 +1307,36 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  /**
+   * Delivery receipts straight from the activity projection, unbounded.
+   *
+   * The carry walk in ProviderCommandReactor decides "was this message already
+   * delivered?" and its other answer - did the message start a provider turn -
+   * is durable. A message steered into an ALREADY-RUNNING turn never starts one,
+   * so its only proof is a `message.delivered` (or `provider.queue.promoted`)
+   * activity, and reading that from the bounded thread snapshot made the proof
+   * age out: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT is 200 rows, which on a
+   * tool-heavy thread is minutes against a 45-minute carry window. Once the
+   * receipt scrolled out the message looked undelivered again and was re-folded
+   * into every later turn, so the same text arrived two, three, N times.
+   *
+   * Indexed by (thread_id, kind, created_at, activity_id) - migration 036.
+   */
+  const getDeliveredMessageRows = SqlSchema.findAll({
+    Request: ThreadDeliveredMessagesInput,
+    Result: ProjectionDeliveredMessageRowSchema,
+    execute: ({ threadId, since }) =>
+      sql`
+        SELECT
+          kind,
+          payload_json AS "payload"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind IN ('message.delivered', 'provider.queue.promoted')
+          AND created_at >= ${since}
+      `,
+  });
+
   const getThreadTurnStartContextRow = SqlSchema.findOneOption({
     Request: ThreadMessageLookupInput,
     Result: ProjectionThreadTurnStartContextRowSchema,
@@ -1346,9 +1390,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           source_turn.state AS "providerTurnState"
         FROM orchestration_events AS events
         LEFT JOIN projection_turns AS source_turn
-          ON source_turn.thread_id = events.stream_id
-          AND source_turn.pending_message_id = json_extract(events.payload_json, '$.messageId')
-          AND source_turn.turn_id IS NOT NULL
+          -- One source message can have several native attempts after recovery.
+          -- Match the latest attempt, as getThreadProviderTurnForMessage does,
+          -- so its absorbed follow-ups cannot falsely supersede its own resume.
+          ON source_turn.row_id = (
+            SELECT candidate.row_id
+            FROM projection_turns AS candidate
+            WHERE candidate.thread_id = events.stream_id
+              AND candidate.pending_message_id = json_extract(events.payload_json, '$.messageId')
+              AND candidate.turn_id IS NOT NULL
+            ORDER BY COALESCE(candidate.started_at, candidate.requested_at) DESC, candidate.row_id DESC
+            LIMIT 1
+          )
         WHERE events.aggregate_kind = 'thread'
           AND events.stream_id = ${threadId}
           AND events.event_type = 'thread.turn-start-requested'
@@ -1426,6 +1479,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          sender_thread_id AS "senderThreadId",
+          sender_thread_title AS "senderThreadTitle",
           delegation_id AS "delegationId",
           voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
@@ -1450,6 +1505,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          sender_thread_id AS "senderThreadId",
+          sender_thread_title AS "senderThreadTitle",
           delegation_id AS "delegationId",
           voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
@@ -1502,6 +1559,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          sender_thread_id AS "senderThreadId",
+          sender_thread_title AS "senderThreadTitle",
           delegation_id AS "delegationId",
           voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
@@ -1561,6 +1620,22 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           created_at ASC,
           activity_id ASC
       `,
+  });
+
+  const getLatestClientModelSelectionRow = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: Schema.Struct({ sequence: NonNegativeInt, createdAt: IsoDateTime }),
+    execute: ({ threadId }) => sql`
+      SELECT sequence, occurred_at AS "createdAt"
+      FROM orchestration_events
+      WHERE aggregate_kind = 'thread'
+        AND stream_id = ${threadId}
+        AND event_type = 'thread.meta-updated'
+        AND actor_kind = 'client'
+        AND json_type(payload_json, '$.modelSelection') = 'object'
+      ORDER BY sequence DESC
+      LIMIT 1
+    `,
   });
 
   const getLatestThreadActivityRowByKind = SqlSchema.findOneOption({
@@ -1647,6 +1722,36 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  // Task status must survive a busy transcript's 200-activity window. Keep
+  // one row per lifecycle kind, not every progress update, with a bounded
+  // task roster. Preserve terminal rows as well so reload cannot revive work.
+  const listThreadTaskLifecycleRows = SqlSchema.findAll({
+    Request: Schema.Struct({ threadId: ThreadId, since: IsoDateTime }),
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, since }) => sql`
+      WITH task_events AS (
+        SELECT *, json_extract(payload_json, '$.taskId') AS task_id
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind IN ('task.started', 'task.progress', 'task.completed')
+          AND created_at >= ${since}
+          AND json_type(payload_json, '$.taskId') = 'text'
+      ), recent_tasks AS (
+        SELECT task_id FROM task_events
+        GROUP BY task_id ORDER BY MAX(sequence) DESC LIMIT 200
+      ), ranked AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY task_id, kind ORDER BY sequence DESC, created_at DESC, activity_id DESC
+        ) AS lifecycle_rank
+        FROM task_events WHERE task_id IN (SELECT task_id FROM recent_tasks)
+      )
+      SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
+        tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
+      FROM ranked WHERE lifecycle_rank = 1
+      ORDER BY sequence ASC, created_at ASC, activity_id ASC
+    `,
+  });
+
   const getThreadHistoryCountsRow = SqlSchema.findOne({
     Request: ThreadIdLookupInput,
     Result: ThreadHistoryCountsRowSchema,
@@ -1693,6 +1798,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          sender_thread_id AS "senderThreadId",
+          sender_thread_title AS "senderThreadTitle",
           delegation_id AS "delegationId",
           voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
@@ -1979,6 +2086,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   role: row.role,
                   text: row.text,
                   ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
+                  ...(row.senderThreadId != null ? { senderThreadId: row.senderThreadId } : {}),
+                  ...(row.senderThreadTitle != null
+                    ? { senderThreadTitle: row.senderThreadTitle }
+                    : {}),
                   ...(row.voiceTranscript === 1 ? { voiceTranscript: true } : {}),
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   turnId: row.turnId,
@@ -2931,6 +3042,34 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const getThreadDeliveredMessageIds: NonNullable<
+    ProjectionSnapshotQueryShape["getThreadDeliveredMessageIds"]
+  > = (threadId, since) =>
+    getDeliveredMessageRows({ threadId, since }).pipe(
+      Effect.map((rows) => {
+        const delivered = new Set<string>();
+        for (const row of rows) {
+          if (typeof row.payload !== "object" || row.payload === null) continue;
+          const payload = row.payload as Record<string, unknown>;
+          if (row.kind === "message.delivered") {
+            if (typeof payload.messageId === "string") delivered.add(payload.messageId);
+            continue;
+          }
+          if (!Array.isArray(payload.messageIds)) continue;
+          for (const messageId of payload.messageIds) {
+            if (typeof messageId === "string") delivered.add(messageId);
+          }
+        }
+        return delivered as ReadonlySet<string>;
+      }),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getThreadDeliveredMessageIds:query",
+          "ProjectionSnapshotQuery.getThreadDeliveredMessageIds:decodeRow",
+        ),
+      ),
+    );
+
   const getThreadTurnStartContext: NonNullable<
     ProjectionSnapshotQueryShape["getThreadTurnStartContext"]
   > = (threadId, messageId) =>
@@ -3277,7 +3416,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }
-          const [{ snapshotSequence }, counts] = yield* Effect.all([
+          const [{ snapshotSequence }, counts, taskRows] = yield* Effect.all([
             getSnapshotSequence(),
             getThreadHistoryCountsRow({ threadId }).pipe(
               Effect.mapError(
@@ -3287,12 +3426,38 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
             ),
+            listThreadTaskLifecycleRows({
+              threadId,
+              since: DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { hours: 24 })),
+            }).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getThreadDetailSnapshot:listTasks:query",
+                  "ProjectionSnapshotQuery.getThreadDetailSnapshot:listTasks:decodeRows",
+                ),
+              ),
+            ),
           ]);
+          const activities = Array.from(
+            new Map(
+              [...taskRows.map(mapActivityRow), ...thread.value.activities].map((activity) => [
+                activity.id,
+                activity,
+              ]),
+            ).values(),
+          ).sort(
+            (left, right) =>
+              (left.sequence ?? 0) - (right.sequence ?? 0) ||
+              left.createdAt.localeCompare(right.createdAt) ||
+              left.id.localeCompare(right.id),
+          );
+          // History cursors describe the contiguous transcript window, not
+          // the older task metadata pinned above; otherwise paging skips gaps.
           const oldestMessage = thread.value.messages[0];
           const oldestActivity = thread.value.activities[0];
           return Option.some({
             snapshotSequence,
-            thread: thread.value,
+            thread: { ...thread.value, activities },
             history: {
               totalMessages: counts.totalMessages,
               totalActivities: counts.totalActivities,
@@ -3433,6 +3598,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
 
+  const getLatestClientModelSelection: NonNullable<
+    ProjectionSnapshotQueryShape["getLatestClientModelSelection"]
+  > = (threadId) =>
+    getLatestClientModelSelectionRow({ threadId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getLatestClientModelSelection:query",
+          "ProjectionSnapshotQuery.getLatestClientModelSelection:decodeRow",
+        ),
+      ),
+    );
+
   const getLatestThreadActivityByKind: NonNullable<
     ProjectionSnapshotQueryShape["getLatestThreadActivityByKind"]
   > = (threadId, kind) =>
@@ -3462,12 +3639,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadShellById,
     getThreadLatestTurnStartContext,
     getThreadTurnStartContext,
+    getThreadDeliveredMessageIds,
     getThreadProviderTurnForMessage,
     getThreadProviderTurnById,
     getActiveTurnDelegation,
     getThreadIngestionContext,
     getThreadAssetSource,
     getLatestThreadActivityByKind,
+    getLatestClientModelSelection,
     getThreadDetailById,
     getThreadDetailSnapshot,
     getThreadHistoryPage,

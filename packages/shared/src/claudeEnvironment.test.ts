@@ -43,6 +43,48 @@ describe("Claude session environment inheritance", () => {
     },
   );
 
+  it.each([undefined, "", "https://api.anthropic.com", "https://api.anthropic.com/"])(
+    "keeps the CLI's first-party behavior behind the relay for upstream %s",
+    (upstream) => {
+      const env = claudeSessionProxyEnvironment(
+        { ANTHROPIC_BASE_URL: upstream },
+        "http://127.0.0.1:53347",
+      );
+      expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBe("1");
+    },
+  );
+
+  it.each([
+    { ANTHROPIC_BASE_URL: "https://gateway.example/api" },
+    { ANTHROPIC_BASE_URL: "http://127.0.0.1:8080" },
+    { ANTHROPIC_BASE_URL: "http://api.anthropic.com" },
+    { ANTHROPIC_BASE_URL: "not a url" },
+    { CLAUDE_CODE_USE_BEDROCK: "1" },
+    { CLAUDE_CODE_USE_VERTEX: "true" },
+    { CLAUDE_CODE_USE_GATEWAY: "on" },
+    { CLAUDE_CODE_USE_ANTHROPIC_AWS: "yes" },
+  ])("does not claim first-party behavior for %o", (upstream) => {
+    const env = claudeSessionProxyEnvironment(upstream, "http://127.0.0.1:53347");
+    expect(env).not.toHaveProperty("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL");
+  });
+
+  it("reads provider selection flags the way Claude Code does", () => {
+    const env = claudeSessionProxyEnvironment(
+      { CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "false" },
+      "http://127.0.0.1:53347",
+    );
+    expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBe("1");
+  });
+
+  it("does not leak the first-party claim into descendant launches", () => {
+    const env: Record<string, string | undefined> = {
+      PATH: "/bin",
+      ...claudeSessionProxyEnvironment({}, "http://127.0.0.1:53347"),
+    };
+    restoreInheritedClaudeEnvironment(env);
+    expect(env).toEqual({ PATH: "/bin" });
+  });
+
   it("preserves a deliberate endpoint change made inside a session", () => {
     const env = {
       ...claudeSessionProxyEnvironment({}, "http://127.0.0.1:53347"),

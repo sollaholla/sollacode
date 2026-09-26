@@ -1,3 +1,8 @@
+import {
+  isRoutineMusePollingNotice,
+  isProviderInterruptionErrorActivity,
+  recoveredRuntimeErrorIds,
+} from "@t3tools/client-runtime/state/thread-activity";
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
 import {
@@ -12,7 +17,11 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import {
+  inlineToolImageDataUrl,
+  isWorkspaceImagePreviewPath,
+  readImageToolOutputPath,
+} from "@t3tools/shared/filePreview";
 import {
   MESSAGE_DELIVERED_ACTIVITY_KIND,
   QUEUED_MESSAGES_PROMOTED_ACTIVITY_KIND,
@@ -64,6 +73,12 @@ export const PROVIDER_OPTIONS: Array<{
     pickerSidebarBadge: "new",
   },
   {
+    value: ProviderDriverKind.make("muse"),
+    label: "Muse Code",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
+  {
     value: ProviderDriverKind.make("mcpBridge"),
     label: "MCP Bridge",
     available: true,
@@ -99,6 +114,12 @@ export interface WorkLogEntry {
    * lifecycle updates, so this can differ from the final row id.
    */
   readImageSourceActivityId?: string;
+  /**
+   * The image the tool returned to the model, as a `data:` URL. Tools that
+   * shoot into a scratch directory routinely rewrite or delete the file
+   * behind `readImagePath`, and this copy is then the only one left.
+   */
+  readImageInlineSrc?: string;
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
@@ -698,8 +719,11 @@ export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const recoveredErrors = recoveredRuntimeErrorIds(activities);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
+    if (activity.kind === "runtime.error" && recoveredErrors.has(activity.id)) continue;
+    if (isProviderInterruptionErrorActivity(activity)) continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
@@ -715,6 +739,10 @@ export function deriveWorkLogEntries(
       continue;
     }
     if (activity.kind === "provider.usage.updated") continue;
+    // The retry marker already drives the Working row's "provider slow" label;
+    // a second line in the log for the same fact was reported as noise.
+    if (activity.kind === "provider.overload.retrying") continue;
+    if (isRoutineMusePollingNotice(activity)) continue;
     // "Generating" is only the provider saying the turn is still alive. The
     // existing Working row already communicates that, so rendering another
     // activity row adds noise without new information.
@@ -858,7 +886,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (title) {
     entry.toolTitle =
-      readImagePath && normalizeCompactToolLabel(title).toLowerCase() === "tool call"
+      readImagePath &&
+      ["tool", "tool call"].includes(normalizeCompactToolLabel(title).toLowerCase())
         ? "Read image"
         : title;
   }
@@ -877,6 +906,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (readImagePath) {
     entry.readImagePath = readImagePath;
     entry.readImageSourceActivityId = activity.id;
+    const inlineSrc = inlineToolImageDataUrl(payload);
+    if (inlineSrc) {
+      entry.readImageInlineSrc = inlineSrc;
+    }
   }
   if (toolCallId) {
     entry.toolCallId = toolCallId;
@@ -943,6 +976,7 @@ function mergeDerivedWorkLogEntries(
   const readImageSourceActivityId = next.readImagePath
     ? next.readImageSourceActivityId
     : previous.readImageSourceActivityId;
+  const readImageInlineSrc = next.readImageInlineSrc ?? previous.readImageInlineSrc;
   const changedFiles = readImagePath
     ? []
     : mergeChangedFiles(previous.changedFiles, next.changedFiles);
@@ -968,6 +1002,7 @@ function mergeDerivedWorkLogEntries(
     ...(requestKind ? { requestKind } : {}),
     ...(readImagePath ? { readImagePath } : {}),
     ...(readImageSourceActivityId ? { readImageSourceActivityId } : {}),
+    ...(readImageInlineSrc ? { readImageInlineSrc } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
@@ -1310,6 +1345,7 @@ function extractReadImagePath(
   const normalizedTitle = metadata.title.toLowerCase();
   const detail = asTrimmedString(payload?.detail);
   const detailReadPath = readPathFromInvocationDetail(detail);
+  const outputImagePath = readImageToolOutputPath(payload);
   const titleImagePath = readImagePathFromText(metadata.title);
   const detailImagePath = readImagePathFromText(detail);
   const hasExplicitReadTitle =
@@ -1324,7 +1360,8 @@ function extractReadImagePath(
     kind === "read" ||
     kind === "view" ||
     hasExplicitReadTitle ||
-    detailReadPath !== null;
+    detailReadPath !== null ||
+    outputImagePath !== null;
   if (!isReadCall) return null;
 
   return (
@@ -1334,6 +1371,7 @@ function extractReadImagePath(
     structuredReadPath(item) ??
     structuredReadPath(payloadInput) ??
     structuredReadPath(data) ??
+    outputImagePath ??
     titleImagePath ??
     detailImagePath ??
     detailReadPath

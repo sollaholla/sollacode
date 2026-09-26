@@ -68,6 +68,8 @@ import type {
 } from "./preview.ts";
 import {
   PreviewAutomationClickInput,
+  PreviewAutomationContextMenuInput,
+  PreviewAutomationContextMenuResult,
   PreviewAutomationDragInput,
   PreviewAutomationEvaluateInput,
   PreviewAutomationHost,
@@ -82,6 +84,9 @@ import {
   PreviewAutomationCredentialFillInput,
   PreviewAutomationCredentialFillResult,
   PreviewCredentialId,
+  PreviewCredentialKind,
+  PreviewCredentialRemoveInput,
+  PreviewCredentialSaveInput,
   PreviewCredentialSummary,
   PreviewAutomationSelectOptionInput,
   PreviewAutomationSelectOptionResult,
@@ -550,6 +555,7 @@ export const DesktopPreviewColorSchemeSchema: Schema.Codec<DesktopPreviewColorSc
 
 export interface DesktopPreviewTabState {
   tabId: string;
+  lastInteractionAt?: string;
   webContentsId: number | null;
   /**
    * Transient main-process request for the renderer to give this guest an
@@ -584,6 +590,8 @@ export interface DesktopPreviewTabState {
   downloads: ReadonlyArray<PreviewDownload>;
   /** Downloads paused until the user allows or denies the site. */
   pendingDownloadApprovals: ReadonlyArray<PreviewDownloadApproval>;
+  /** Whether the page is making sound right now; absent until it first does. */
+  audible?: boolean;
   updatedAt: string;
 }
 
@@ -658,6 +666,7 @@ export const DesktopPreviewNavStatusSchema = Schema.Union([
 
 export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  lastInteractionAt: Schema.optionalKey(Schema.String),
   webContentsId: Schema.NullOr(Schema.Int),
   snapshotStageId: Schema.NullOr(Schema.String),
   navStatus: DesktopPreviewNavStatusSchema,
@@ -670,6 +679,7 @@ export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> 
   agentActive: Schema.Boolean,
   downloads: Schema.Array(PreviewDownload),
   pendingDownloadApprovals: Schema.Array(PreviewDownloadApproval),
+  audible: Schema.optionalKey(Schema.Boolean),
   updatedAt: Schema.String,
 });
 
@@ -1102,27 +1112,21 @@ export const DesktopPreviewAutomationDragInputSchema = Schema.Struct({
   ...DesktopPreviewAutomationExpiryFields,
 });
 
+export const DesktopPreviewAutomationContextMenuInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  input: PreviewAutomationContextMenuInput,
+  ...DesktopPreviewAutomationExpiryFields,
+});
+
 export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationTypeInput,
   ...DesktopPreviewAutomationExpiryFields,
 });
 
-export const DesktopPreviewCredentialSaveInputSchema = Schema.Struct({
-  id: Schema.optional(PreviewCredentialId),
-  label: Schema.String.check(Schema.isTrimmed())
-    .check(Schema.isNonEmpty())
-    .check(Schema.isMaxLength(128)),
-  origin: Schema.String.check(Schema.isTrimmed())
-    .check(Schema.isNonEmpty())
-    .check(Schema.isMaxLength(2048)),
-  username: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
-  secret: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(4096)),
-});
+export const DesktopPreviewCredentialSaveInputSchema = PreviewCredentialSaveInput;
 
-export const DesktopPreviewCredentialRemoveInputSchema = Schema.Struct({
-  id: PreviewCredentialId,
-});
+export const DesktopPreviewCredentialRemoveInputSchema = PreviewCredentialRemoveInput;
 
 export const DesktopPreviewCredentialListForTabInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
@@ -1235,6 +1239,9 @@ export type DesktopRemoteControlInput = typeof DesktopRemoteControlInputSchema.T
 export const DesktopRemoteControlInputResultSchema = Schema.Struct({
   delivered: Schema.Boolean,
   blocked: Schema.optional(RemoteControlHostStatusReason),
+  // Windows only: whether UAC still draws on its secure desktop. Separates a
+  // block the owner can act on from one no setting will change.
+  secureDesktopPrompt: Schema.optional(Schema.Boolean),
 });
 export type DesktopRemoteControlInputResult = typeof DesktopRemoteControlInputResultSchema.Type;
 
@@ -1243,6 +1250,9 @@ export const DesktopRemoteControlHostStateSchema = Schema.Struct({
   blocked: Schema.optional(RemoteControlHostStatusReason),
   // Host OS cursor shape as a CSS cursor keyword; absent when unknown.
   cursor: Schema.optional(RemoteControlCursorShape),
+  // Windows only: whether UAC still draws on its secure desktop. Separates a
+  // block the owner can act on from one no setting will change.
+  secureDesktopPrompt: Schema.optional(Schema.Boolean),
 });
 export type DesktopRemoteControlHostState = typeof DesktopRemoteControlHostStateSchema.Type;
 
@@ -1352,6 +1362,11 @@ export interface DesktopBridge {
   }) => Promise<string>;
   /** Returns false when the path is missing or is not absolute on this desktop host. */
   revealFile: (path: string) => Promise<boolean>;
+  /**
+   * Open a file with the system's default application. Resolves to an empty
+   * string on success, or a human-readable reason it could not be opened.
+   */
+  openPath: (path: string) => Promise<string>;
   writeComposerClipboard: (input: DesktopComposerClipboardInput) => Promise<boolean>;
   setVoiceCaptureSystemAudioMuted: (input: {
     readonly owner: "dictation" | "orchestrator";
@@ -1502,8 +1517,11 @@ export interface DesktopPreviewBridge {
       id?: PreviewCredentialId;
       label: string;
       origin: string;
+      /** Omit with an existing `id` to keep that entry's kind. */
+      kind?: PreviewCredentialKind;
       username?: string;
-      secret: string;
+      /** Omit with an existing `id` to keep that entry's saved password. */
+      secret?: string;
     }) => Promise<PreviewCredentialSummary>;
     remove: (id: PreviewCredentialId) => Promise<void>;
     listForTab: (tabId: string) => Promise<readonly PreviewCredentialSummary[]>;
@@ -1545,6 +1563,12 @@ export interface DesktopPreviewBridge {
   /** Cancel an in-flight preview annotation session. */
   cancelPickElement: (tabId: string) => Promise<void>;
   captureScreenshot: (tabId: string) => Promise<DesktopPreviewScreenshotArtifact>;
+  /**
+   * A one-shot id for capturing the tab's sound in the window that shows it
+   * (`getUserMedia` with `chromeMediaSource: "tab"`). Valid for about ten
+   * seconds; null when the tab has no live page.
+   */
+  getTabAudioSource?: (tabId: string) => Promise<string | null>;
   revealArtifact: (path: string) => Promise<void>;
   /** Show a finished download in Finder / File Explorer. */
   revealPreviewDownload: (path: string) => Promise<void>;
@@ -1581,6 +1605,12 @@ export interface DesktopPreviewBridge {
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput, expiresAt?: number) => Promise<void>;
     drag: (tabId: string, input: PreviewAutomationDragInput, expiresAt?: number) => Promise<void>;
+    /** Remote-viewer right-click: returns the guest's menu target instead of a native host menu. */
+    contextMenu: (
+      tabId: string,
+      input: PreviewAutomationContextMenuInput,
+      expiresAt?: number,
+    ) => Promise<PreviewAutomationContextMenuResult>;
     type: (tabId: string, input: PreviewAutomationTypeInput, expiresAt?: number) => Promise<void>;
     upload: (
       tabId: string,

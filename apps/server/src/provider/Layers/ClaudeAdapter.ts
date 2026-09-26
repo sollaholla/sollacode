@@ -116,6 +116,7 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { isTodoWriteTool, planStepsFromTodoInput, type TodoPlanStep } from "../todoPlanSteps.ts";
 import {
   CLAUDE_PROXY_FIRST_BYTE_TIMEOUT_MS,
   CLAUDE_PROXY_API_TIMEOUT_MS,
@@ -245,6 +246,8 @@ interface ClaudeSessionContext {
     items: Array<unknown>;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  readonly monitorToolUseIds: Set<string>;
+  readonly activeBackgroundTaskIds: Set<string>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
@@ -270,6 +273,17 @@ interface ClaudeSessionContext {
   stopped: boolean;
 }
 
+function rememberMonitorTool(context: ClaudeSessionContext, id: string, name: string): void {
+  if (name !== "Monitor") return;
+  // A task start can follow the tool result, after inFlightTools has removed it.
+  // Keep a bounded identity cache across turns for that later SDK message.
+  context.monitorToolUseIds.add(id);
+  if (context.monitorToolUseIds.size > 256) {
+    const oldest = context.monitorToolUseIds.values().next().value;
+    if (oldest !== undefined) context.monitorToolUseIds.delete(oldest);
+  }
+}
+
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly interrupt: () => Promise<void>;
   readonly setModel: (model?: string) => Promise<void>;
@@ -286,6 +300,10 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
 }
 
 export interface ClaudeAdapterLiveOptions {
+  readonly supportsThinkingDisplay?: () => boolean;
+  readonly getModelCapabilities?: (
+    model: string | null | undefined,
+  ) => ReturnType<typeof getClaudeModelCapabilities> | undefined;
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
   readonly createQuery?: (input: {
@@ -540,10 +558,14 @@ function maxClaudeContextWindowFromModelUsage(
 function selectedClaudeContextWindow(
   modelSelection: ModelSelection | undefined,
 ): number | undefined {
+  if (modelSelection?.model.endsWith("[1m]")) return 1_000_000;
   switch (modelSelection?.model) {
+    case "claude-opus-5-5":
     case "claude-opus-4-8":
     case "claude-opus-4-7":
-      // Always 1M at the API; these models expose no contextWindow option.
+      // Always 1M at the API; these models expose no contextWindow option. The
+      // CLI only agrees while it sees a first-party endpoint, which is why the
+      // relay environment claims one (claudeSessionProxyEnvironment).
       return 1_000_000;
   }
 
@@ -891,36 +913,7 @@ function classifyRequestType(toolName: string): CanonicalRequestType {
       : "dynamic_tool_call";
 }
 
-function isTodoTool(toolName: string): boolean {
-  return toolName.toLowerCase().includes("todowrite");
-}
-
-type PlanStep = {
-  step: string;
-  status: "pending" | "inProgress" | "completed";
-};
-
-function extractPlanStepsFromTodoInput(input: Record<string, unknown>): PlanStep[] | null {
-  // TodoWrite format: { todos: [{ content, status, activeForm? }] }
-  const todos = input.todos;
-  if (!Array.isArray(todos) || todos.length === 0) {
-    return null;
-  }
-  return todos
-    .filter((t): t is Record<string, unknown> => t !== null && typeof t === "object")
-    .map((todo) => ({
-      step:
-        typeof todo.content === "string" && todo.content.trim().length > 0
-          ? todo.content.trim()
-          : "Task",
-      status:
-        todo.status === "completed"
-          ? "completed"
-          : todo.status === "in_progress"
-            ? "inProgress"
-            : "pending",
-    }));
-}
+type PlanStep = TodoPlanStep;
 
 function isClaudeTaskTool(toolName: string): boolean {
   return toolName === "TaskCreate" || toolName === "TaskUpdate" || toolName === "TaskList";
@@ -1541,11 +1534,36 @@ function sdkNativeMethod(message: SDKMessage): string {
  * - `vcs_state_changed`: announces a commit, push or branch switch the agent
  *   just made. The work log already shows the command that did it, so the
  *   notice adds nothing except, until now, an error row for a successful push.
+ * - `dev_intent`: the CLI's project scan guessing what kind of project this
+ *   is (`kind: ios_app`, `trigger: project_scan`) for its own suggestions.
  */
 const IGNORED_WIRE_ONLY_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set([
   "background_tasks_changed",
   "vcs_state_changed",
+  "dev_intent",
 ]);
+
+/**
+ * Message kinds this process has already logged as unrecognised. A new CLI
+ * release's message is news for us once, not a row for the user every turn.
+ */
+const loggedUnknownSdkMessageKinds = new Set<string>();
+
+/**
+ * Note a Claude message the adapter does not model yet. It goes to the server
+ * log, not the work log: a new kind of CLI message is almost always a status
+ * notice, and showing each one as a warning filled threads with rows that
+ * meant nothing to the user. Failures reach the user through the result and
+ * error paths, which do not come through here.
+ */
+const logUnknownSdkMessage = (kind: string, message: unknown) =>
+  Effect.suspend(() => {
+    if (loggedUnknownSdkMessageKinds.has(kind)) return Effect.void;
+    loggedUnknownSdkMessageKinds.add(kind);
+    return Effect.logInfo("Claude sent a message kind the adapter does not model yet.").pipe(
+      Effect.annotateLogs({ kind, preview: describeUnknownSdkMessage(kind, message) }),
+    );
+  });
 
 const SDK_MESSAGE_NOISE_KEYS = new Set([
   "type",
@@ -1622,6 +1640,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   options?: ClaudeAdapterLiveOptions,
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("claudeAgent");
+  const modelCapabilities = (model: string | null | undefined) =>
+    options?.getModelCapabilities?.(model) ?? getClaudeModelCapabilities(model);
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
@@ -2530,8 +2550,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
 
         // Emit plan update when TodoWrite input is parsed
-        if (parsedInput && isTodoTool(nextTool.toolName)) {
-          const planSteps = extractPlanStepsFromTodoInput(parsedInput);
+        if (parsedInput && isTodoWriteTool(nextTool.toolName)) {
+          const planSteps = planStepsFromTodoInput(parsedInput);
           if (planSteps && planSteps.length > 0) {
             const planStamp = yield* makeEventStamp();
             yield* offerRuntimeEvent({
@@ -2579,6 +2599,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ? (block.input as Record<string, unknown>)
           : {};
       const itemId = block.id;
+      rememberMonitorTool(context, itemId, toolName);
       const detail = summarizeToolRequest(toolName, toolInput);
       const inputFingerprint =
         Object.keys(toolInput).length > 0 ? toolInputFingerprint(toolInput) : undefined;
@@ -2844,6 +2865,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           name?: unknown;
           input?: unknown;
         };
+        if (
+          toolUse.type === "tool_use" &&
+          typeof toolUse.id === "string" &&
+          typeof toolUse.name === "string"
+        ) {
+          rememberMonitorTool(context, toolUse.id, toolUse.name);
+        }
         if (toolUse.type !== "tool_use" || toolUse.name !== "ExitPlanMode") {
           continue;
         }
@@ -3024,13 +3052,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_started":
+        context.activeBackgroundTaskIds.add(message.task_id);
         yield* offerRuntimeEvent({
           ...base,
           type: "task.started",
           payload: {
             taskId: RuntimeTaskId.make(message.task_id),
             description: message.description,
-            ...(message.task_type ? { taskType: message.task_type } : {}),
+            ...(message.tool_use_id && context.monitorToolUseIds.has(message.tool_use_id)
+              ? { taskType: "local_monitor" }
+              : message.task_type
+                ? { taskType: message.task_type }
+                : {}),
           },
         });
         return;
@@ -3055,12 +3088,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
-      // Task state patch (status/backgrounded/end_time). No runtime mapping
-      // yet — the terminal task_notification reports the outcome — but it
-      // must not surface as an unknown-subtype warning row.
-      case "task_updated":
+      case "task_updated": {
+        const status = message.patch.status;
+        if (status !== "completed" && status !== "failed" && status !== "killed") return;
+        context.activeBackgroundTaskIds.delete(message.task_id);
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "task.completed",
+          payload: {
+            taskId: RuntimeTaskId.make(message.task_id),
+            status: status === "killed" ? "stopped" : status,
+            ...(message.patch.description?.trim()
+              ? { title: message.patch.description.trim() }
+              : {}),
+            ...(message.patch.error?.trim() ? { summary: message.patch.error.trim() } : {}),
+          },
+        });
         return;
+      }
       case "task_notification":
+        context.activeBackgroundTaskIds.delete(message.task_id);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -3133,6 +3180,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         return;
       case "session_state_changed":
         // Authoritative turn-over signal from the CLI.
+        context.session = {
+          ...context.session,
+          status: message.state === "idle" ? "ready" : "running",
+          updatedAt: yield* nowIso,
+        };
         yield* offerRuntimeEvent({
           ...base,
           type: "session.state.changed",
@@ -3185,16 +3237,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       default: {
         // Exhaustiveness guard: every subtype in the SDK's typed union is
         // handled above, so `message` narrows to never here — a new SDK
-        // release adding a subtype fails this typecheck instead of silently
-        // warning at runtime. The runtime fallback still catches undeclared
-        // wire-only subtypes (like background_tasks_changed used to be).
+        // release adding a subtype fails this typecheck. Undeclared wire-only
+        // subtypes still arrive at runtime and are only logged.
         message satisfies never;
         const unknownMessage = message as never as { subtype: string };
-        yield* emitRuntimeWarning(
-          context,
-          describeUnknownSdkMessage(`Claude system message '${unknownMessage.subtype}'`, message),
-          message,
-        );
+        yield* logUnknownSdkMessage(`Claude system message '${unknownMessage.subtype}'`, message);
         return;
       }
     }
@@ -3279,6 +3326,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
   ) {
+    context.session = { ...context.session, updatedAt: yield* nowIso };
     yield* logNativeSdkMessage(context, message);
     yield* ensureThreadId(context, message);
 
@@ -3312,11 +3360,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // message types fail typecheck here instead of warning at runtime.
         message satisfies never;
         const unknownMessage = message as never as { type: string };
-        yield* emitRuntimeWarning(
-          context,
-          describeUnknownSdkMessage(`Claude SDK message '${unknownMessage.type}'`, message),
-          message,
-        );
+        yield* logUnknownSdkMessage(`Claude SDK message '${unknownMessage.type}'`, message);
         return;
       }
     }
@@ -3466,10 +3510,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const streamFiber = context.streamFiber;
     context.streamFiber = undefined;
-    if (streamFiber && streamFiber.pollUnsafe() === undefined) {
-      yield* Fiber.interrupt(streamFiber);
-    }
-
+    // Closing the SDK releases its pending iterator read. Joining the stream
+    // first waits for iterator.return(), which itself waits for that read and
+    // can deadlock an idle session's Stop or provider handoff.
     yield* Effect.try({
       try: () => context.query.close(),
       catch: (cause) =>
@@ -3489,6 +3532,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }),
       ),
     );
+
+    if (streamFiber && streamFiber.pollUnsafe() === undefined) {
+      yield* Fiber.interrupt(streamFiber);
+    }
 
     const mcpProxy = context.mcpProxy;
     if (mcpProxy) {
@@ -3512,6 +3559,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const updatedAt = yield* nowIso;
+    for (const taskId of context.activeBackgroundTaskIds) {
+      const stamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        type: "task.completed",
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: context.session.threadId,
+        payload: {
+          taskId: RuntimeTaskId.make(taskId),
+          status: "stopped",
+          summary: "Provider session ended before this task finished.",
+        },
+        providerRefs: nativeProviderRefs(context),
+      });
+    }
+    context.activeBackgroundTaskIds.clear();
     context.session = {
       ...context.session,
       status: "closed",
@@ -4170,9 +4234,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const extraArgs = parseCliArgs(claudeSettings.launchArgs).flags;
       const modelSelection =
         input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
-      const caps = getClaudeModelCapabilities(modelSelection?.model);
+      const caps = modelCapabilities(modelSelection?.model);
       const descriptors = getProviderOptionDescriptors({ caps });
       const apiModelId = modelSelection ? resolveClaudeApiModelId(modelSelection) : undefined;
+      if (
+        (options?.supportsThinkingDisplay?.() || modelSelection?.model === "claude-opus-5-5") &&
+        !("thinking-display" in extraArgs)
+      ) {
+        // New models put progress updates in thinking blocks. Set this for all
+        // sessions on a supporting CLI so mid-session model switches work too.
+        extraArgs["thinking-display"] = "summarized";
+      }
+
       const initialContextWindow = selectedClaudeContextWindow(modelSelection);
       const autoCompactionBaseWindow = resolveClaudeUsableContextWindow(initialContextWindow);
       const autoCompactWindow = resolveAutoCompactionTokenThreshold({
@@ -4525,6 +4598,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         pendingUserInputs,
         turns: [],
         inFlightTools,
+        monitorToolUseIds: new Set(),
+        activeBackgroundTaskIds: new Set(),
         claudeTasks,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
@@ -4703,7 +4778,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ? input.modelSelection
         : undefined;
     const fastModeSupported = getProviderOptionDescriptors({
-      caps: getClaudeModelCapabilities(modelSelection?.model),
+      caps: modelCapabilities(modelSelection?.model),
     }).some((descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode");
     const selectedFastMode = getModelSelectionBooleanOptionValue(modelSelection, "fastMode");
     const fastMode =
@@ -4972,7 +5047,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   );
 
   const listSessions: ClaudeAdapterShape["listSessions"] = () =>
-    Effect.sync(() => Array.from(sessions.values(), ({ session }) => ({ ...session })));
+    Effect.sync(() =>
+      Array.from(sessions.values(), ({ session, activeBackgroundTaskIds }) => ({
+        ...session,
+        activeBackgroundTaskCount: activeBackgroundTaskIds.size,
+      })),
+    );
 
   const hasSession: ClaudeAdapterShape["hasSession"] = (threadId) =>
     Effect.sync(() => {

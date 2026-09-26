@@ -86,19 +86,55 @@ describe("host status text", () => {
     expect(text).toMatch(/resumes on its own/u);
   });
 
+  it("offers the secure-desktop remedy only when it would actually help", () => {
+    // UAC still on its own desktop: this machine is one setting away from at
+    // least showing the prompt, and the bare copy reads as "nothing can be
+    // done", so the remedy is worth naming.
+    const fixable = describeHostStatus({
+      state: "interrupted",
+      reason: "secure-desktop",
+      secureDesktopPrompt: true,
+    });
+    expect(fixable).toMatch(/PromptOnSecureDesktop/u);
+    // Never oversold: it weakens UAC and may still not accept clicks.
+    expect(fixable).toMatch(/weaken/u);
+    expect(fixable).toMatch(/may still refuse/u);
+
+    // Already off, so the block is the lock screen, Ctrl+Alt+Del, or UIPI.
+    // Pointing at the setting here would send someone down a dead end.
+    expect(
+      describeHostStatus({
+        state: "interrupted",
+        reason: "secure-desktop",
+        secureDesktopPrompt: false,
+      }),
+    ).not.toMatch(/PromptOnSecureDesktop/u);
+
+    // macOS, or a host predating the field: say nothing extra rather than guess.
+    expect(describeHostStatus({ state: "interrupted", reason: "secure-desktop" })).not.toMatch(
+      /PromptOnSecureDesktop/u,
+    );
+
+    // The remedy is explanation, not a control: the elevation it needs prompts
+    // on the very desktop this session cannot reach.
+    expect(fixable).not.toMatch(/click here|press the button/iu);
+  });
+
   it("says nothing when the host is healthy", () => {
     expect(describeHostStatus({ state: "ok" })).toBeNull();
   });
 
-  it("names every reason so a new one cannot ship without text", () => {
-    for (const reason of [
-      "secure-desktop",
-      "elevated-window",
-      "secure-input",
-      "capture-interrupted",
-    ] as const) {
+  it("names every reason worth reporting so a new one cannot ship without text", () => {
+    for (const reason of ["secure-desktop", "elevated-window", "capture-interrupted"] as const) {
       expect(describeHostStatus({ state: "interrupted", reason })).toBeTruthy();
     }
+  });
+
+  it("says nothing about a macOS password field", () => {
+    // Disabled at the owner's request. The host no longer reports it at all;
+    // the literal survives only so an older host can still send it without
+    // failing to decode, and it must stay silent when it does.
+    expect(describeHostStatus({ state: "interrupted", reason: "secure-input" })).toBeNull();
   });
 
   it("collapses a repeated condition so a held prompt is reported once", () => {

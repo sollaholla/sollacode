@@ -21,6 +21,7 @@ import {
   type PreviewOpenInput,
   type PreviewRefreshInput,
   type PreviewReportStatusInput,
+  type PreviewReportActivityInput,
   type PreviewResizeInput,
   FILL_PREVIEW_VIEWPORT,
   PreviewSessionLookupError,
@@ -50,6 +51,13 @@ export class PreviewManager extends Context.Service<
     readonly navigate: (
       input: PreviewNavigateInput,
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
+    readonly reportActivity: (
+      input: PreviewReportActivityInput,
+    ) => Effect.Effect<void, PreviewError>;
+    /** Rechecks activity under the mutation lock before closing any candidate. */
+    readonly expireIdle: (
+      protectedTabIds: ReadonlySet<string>,
+    ) => Effect.Effect<ReadonlyArray<string>>;
     readonly reportStatus: (input: PreviewReportStatusInput) => Effect.Effect<void, PreviewError>;
     readonly resize: (
       input: PreviewResizeInput,
@@ -68,6 +76,7 @@ interface PreviewSessionState {
   readonly threadId: string;
   readonly tabId: string;
   readonly snapshot: PreviewSessionSnapshot;
+  readonly lastActivityPersistedAt: string;
 }
 
 interface ManagerState {
@@ -82,6 +91,8 @@ type PreviewEventDraft = PreviewEvent extends infer Event
     ? Omit<Event, "revision" | "serverEpoch">
     : never
   : never;
+
+export const PREVIEW_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 const compositeKey = (threadId: string, tabId: string): string => `${threadId}\u0000${tabId}`;
 
@@ -138,6 +149,7 @@ const buildLoadingSnapshot = (input: {
   canGoForward: false,
   viewport: FILL_PREVIEW_VIEWPORT,
   updatedAt: input.updatedAt,
+  lastActivityAt: input.updatedAt,
 });
 
 const buildIdleSnapshot = (input: {
@@ -152,9 +164,12 @@ const buildIdleSnapshot = (input: {
   canGoForward: false,
   viewport: FILL_PREVIEW_VIEWPORT,
   updatedAt: input.updatedAt,
+  lastActivityAt: input.updatedAt,
 });
 
-const durablePreviewSnapshot = (snapshot: PreviewSessionSnapshot): PreviewSessionSnapshot => {
+const durablePreviewSnapshot = (current: PreviewSessionSnapshot): PreviewSessionSnapshot => {
+  // Who drives a tab is live desktop state: after a restart nobody does.
+  const { agentControl: _live, ...snapshot } = current;
   if (snapshot.navStatus._tag === "Idle") return snapshot;
   const url = restartSafePreviewUrl(snapshot.navStatus.url);
   if (url === snapshot.navStatus.url) return snapshot;
@@ -213,6 +228,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           threadId: session.threadId,
           tabId: session.tabId,
           snapshot: session.snapshot,
+          lastActivityPersistedAt: session.snapshot.lastActivityAt ?? session.snapshot.updatedAt,
         } satisfies PreviewSessionState,
       ]),
     ),
@@ -321,7 +337,16 @@ export const make = Effect.gen(function* PreviewManagerMake() {
               } as PreviewEvent);
             }
             const sessions = new Map(state.sessions);
-            sessions.set(compositeKey(threadId, tabId), next);
+            sessions.set(
+              compositeKey(threadId, tabId),
+              persist
+                ? {
+                    ...next,
+                    lastActivityPersistedAt:
+                      next.snapshot.lastActivityAt ?? next.snapshot.updatedAt,
+                  }
+                : next,
+            );
             return [{ kind: "ok", result } as ModifyResult, { sessions, revision }] as readonly [
               ModifyResult,
               ManagerState,
@@ -356,6 +381,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             threadId: input.threadId,
             tabId,
             snapshot,
+            lastActivityPersistedAt: snapshot.lastActivityAt ?? snapshot.updatedAt,
           });
           yield* persistSnapshot(snapshot);
           yield* PubSub.publish(eventsPubSub, {
@@ -386,8 +412,8 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             session.snapshot.navStatus._tag === "Idle" ? "" : session.snapshot.navStatus.title;
           const resolvedTitle = input.resolvedTitle ?? previousTitle;
           const snapshot: PreviewSessionSnapshot = {
-            threadId: session.threadId,
-            tabId: session.tabId,
+            ...session.snapshot,
+            lastActivityAt: updatedAt,
             navStatus: { _tag: "Success", url, title: resolvedTitle },
             canGoBack: session.snapshot.canGoBack,
             canGoForward: session.snapshot.canGoForward,
@@ -420,8 +446,8 @@ export const make = Effect.gen(function* PreviewManagerMake() {
       Effect.fn("PreviewManager.reportSessionStatus")(function* (session) {
         const updatedAt = yield* currentIsoTimestamp;
         const snapshot: PreviewSessionSnapshot = {
-          threadId: session.threadId,
-          tabId: session.tabId,
+          ...session.snapshot,
+          lastActivityAt: session.snapshot.lastActivityAt ?? session.snapshot.updatedAt,
           navStatus: input.navStatus,
           canGoBack: input.canGoBack,
           canGoForward: input.canGoForward,
@@ -457,6 +483,102 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     ).pipe(Effect.asVoid);
   });
 
+  const reportActivity: PreviewManager["Service"]["reportActivity"] = Effect.fn(
+    "PreviewManager.reportActivity",
+  )(function* (input) {
+    yield* mutateExistingSession(
+      input.threadId,
+      input.tabId,
+      Effect.fn(function* (session) {
+        const now = yield* currentIsoTimestamp;
+        const attentionChanged =
+          input.attentionRequired !== undefined &&
+          input.attentionRequired !== (session.snapshot.attentionRequired ?? false);
+        const controlChanged =
+          input.agentControl !== undefined &&
+          input.agentControl !== (session.snapshot.agentControl ?? "none");
+        const { agentControl: _previous, ...uncontrolled } = session.snapshot;
+        const agentControl = input.agentControl ?? session.snapshot.agentControl ?? "none";
+        const snapshot = {
+          ...uncontrolled,
+          ...(agentControl === "none" ? {} : { agentControl }),
+          ...(input.interacted || attentionChanged ? { lastActivityAt: now } : {}),
+          ...(input.attentionRequired === undefined
+            ? {}
+            : { attentionRequired: input.attentionRequired }),
+        };
+        return {
+          next: { ...session, snapshot },
+          // Clients other than the rendering desktop learn who drives the
+          // tab only from this event, so the change has to be broadcast.
+          emit: controlChanged
+            ? {
+                type: "navigated",
+                threadId: session.threadId,
+                tabId: session.tabId,
+                createdAt: now,
+                snapshot,
+              }
+            : null,
+          persist:
+            attentionChanged ||
+            (input.interacted &&
+              Date.parse(now) - Date.parse(session.lastActivityPersistedAt) >= 15_000),
+          result: undefined,
+        };
+      }),
+    );
+  });
+
+  const expireIdle: PreviewManager["Service"]["expireIdle"] = Effect.fn(
+    "PreviewManager.expireIdle",
+  )(function* (protectedTabIds) {
+    return yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
+      Effect.gen(function* () {
+        const now = yield* currentIsoTimestamp;
+        const cutoff = Date.parse(now) - PREVIEW_IDLE_TIMEOUT_MS;
+        const sessions = new Map(state.sessions);
+        const closedTabIds: string[] = [];
+        let revision = state.revision;
+        for (const [key, session] of sessions) {
+          const lastActivity = Date.parse(
+            session.snapshot.lastActivityAt ?? session.snapshot.updatedAt,
+          );
+          if (session.snapshot.attentionRequired || protectedTabIds.has(session.tabId)) {
+            // Start a fresh inactivity window when the card is resolved.
+            const snapshot = { ...session.snapshot, lastActivityAt: now };
+            sessions.set(key, { ...session, snapshot });
+            yield* persistSnapshot(snapshot);
+          } else if (!Number.isFinite(lastActivity)) {
+            // Legacy or malformed timestamps get one full window, never immortality.
+            const snapshot = { ...session.snapshot, lastActivityAt: now };
+            sessions.set(key, { ...session, snapshot });
+            yield* persistSnapshot(snapshot);
+          } else if (lastActivity <= cutoff) {
+            const removed = yield* sessionStore
+              .deleteSession({ threadId: session.threadId, tabId: session.tabId })
+              .pipe(Effect.result);
+            if (removed._tag === "Failure") {
+              yield* Effect.logWarning("preview.expiry-delete-failed", { error: removed.failure });
+              continue;
+            }
+            sessions.delete(key);
+            closedTabIds.push(session.tabId);
+            yield* PubSub.publish(eventsPubSub, {
+              type: "closed",
+              threadId: session.threadId,
+              tabId: session.tabId,
+              createdAt: now,
+              serverEpoch,
+              revision: ++revision,
+            });
+          }
+        }
+        return [closedTabIds, { sessions, revision }] as const;
+      }),
+    );
+  });
+
   const resize: PreviewManager["Service"]["resize"] = Effect.fn("PreviewManager.resize")(
     function* (input) {
       return yield* mutateExistingSession(
@@ -488,6 +610,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
 
   const refresh: PreviewManager["Service"]["refresh"] = Effect.fn("PreviewManager.refresh")(
     function* (input) {
+      yield* reportActivity({ ...input, interacted: true });
       // Verify the session exists; the desktop bridge handles the actual reload
       // and will report progress back via `reportStatus`. No event emitted.
       yield* mutateExistingSession(input.threadId, input.tabId, (session) =>
@@ -568,6 +691,8 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     open,
     navigate,
     reportStatus,
+    reportActivity,
+    expireIdle,
     resize,
     refresh,
     close,

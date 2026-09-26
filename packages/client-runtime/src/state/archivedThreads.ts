@@ -1,3 +1,8 @@
+import {
+  projectDeferredThreadSnapshot,
+  rememberThreadShells,
+} from "../operations/deferredThreadCommandState.ts";
+import type { DeferredThreadCommandEntry } from "../platform/persistence.ts";
 import { EnvironmentId, type OrchestrationShellSnapshot } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
@@ -42,6 +47,12 @@ export function createArchivedThreadSnapshotsAtomFamily<E>(options: {
     environmentId: EnvironmentId,
   ) => Atom.Atom<AsyncResult.AsyncResult<OrchestrationShellSnapshot, E>>;
   readonly labelPrefix: string;
+  readonly getPendingAtom?: (
+    environmentId: EnvironmentId,
+  ) => Atom.Atom<AsyncResult.AsyncResult<readonly DeferredThreadCommandEntry[], unknown>>;
+  readonly getActiveSnapshotAtom?: (
+    environmentId: EnvironmentId,
+  ) => Atom.Atom<OrchestrationShellSnapshot | null>;
 }) {
   return Atom.family((environmentKey: string) =>
     Atom.make((get): ArchivedThreadSnapshotsState => {
@@ -51,14 +62,29 @@ export function createArchivedThreadSnapshotsAtomFamily<E>(options: {
 
       for (const environmentId of parseArchivedThreadsEnvironmentKey(environmentKey)) {
         const result = get(options.getSnapshotAtom(environmentId));
-        isLoading ||= result.waiting;
 
-        const snapshot = Option.getOrNull(AsyncResult.value(result));
+        const pending = options.getPendingAtom
+          ? Option.getOrElse(
+              AsyncResult.value(get(options.getPendingAtom(environmentId))),
+              () => [],
+            )
+          : [];
+        isLoading ||= result.waiting && pending.length === 0;
+        const remoteSnapshot = Option.getOrNull(AsyncResult.value(result));
+        if (remoteSnapshot) rememberThreadShells(environmentId, remoteSnapshot.threads);
+        const active = options.getActiveSnapshotAtom
+          ? get(options.getActiveSnapshotAtom(environmentId))
+          : null;
+        const snapshot =
+          remoteSnapshot ?? (active && pending.length ? { ...active, threads: [] } : null);
         if (snapshot !== null) {
-          snapshots.push({ environmentId, snapshot });
+          snapshots.push({
+            environmentId,
+            snapshot: projectDeferredThreadSnapshot(snapshot, pending, true),
+          });
         }
 
-        if (error === null && result._tag === "Failure") {
+        if (error === null && result._tag === "Failure" && !pending.length) {
           error = "Failed to load archived threads.";
         }
       }

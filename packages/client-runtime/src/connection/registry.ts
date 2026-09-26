@@ -1,3 +1,5 @@
+import * as Schedule from "effect/Schedule";
+import { deferredThreadCommandChanges } from "../operations/deferredThreadCommandState.ts";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -255,8 +257,12 @@ export const make = Effect.gen(function* () {
             Scope.provide(scope),
             Effect.onError(() => Scope.close(scope, Exit.void)),
           );
-          yield* SubscriptionRef.changes(supervisor.session).pipe(
-            Stream.filter(Option.isSome),
+          yield* Stream.merge(
+            SubscriptionRef.changes(supervisor.session).pipe(Stream.filter(Option.isSome)),
+            deferredThreadCommandChanges(environmentId).pipe(
+              Stream.provideService(Persistence.DeferredThreadCommandStore, deferredThreadCommands),
+            ),
+          ).pipe(
             Stream.runForEach(() =>
               drainDeferredThreadCommands(environmentId).pipe(
                 Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
@@ -264,6 +270,7 @@ export const make = Effect.gen(function* () {
                   Persistence.DeferredThreadCommandStore,
                   deferredThreadCommands,
                 ),
+                Effect.retry(Schedule.spaced("5 seconds")),
                 Effect.catchCause((cause) =>
                   Effect.logWarning("Could not drain deferred thread commands.", {
                     environmentId,
