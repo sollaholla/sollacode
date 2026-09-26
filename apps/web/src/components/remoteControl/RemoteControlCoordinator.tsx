@@ -1,5 +1,7 @@
 "use client";
 
+import { pollRemoteControlPointer } from "./pollRemoteControlPointer";
+
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
@@ -298,11 +300,10 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         // just leaves the controller in absolute-pointer mode.
       }
     };
-    void poll();
-    const timer = setInterval(() => void poll(), 100);
+    const stopPolling = pollRemoteControlPointer(poll);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      stopPolling();
       pointerLockedRef.current = false;
     };
   }, [active, bridge, hostInputScheduler, syncHostStatus]);
