@@ -27,6 +27,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { previewEnvironment } from "../../state/preview";
 import { closeRemoteBrowserTab, openRemoteBrowserTab } from "./threadBrowserRouteActions";
 import { AgentCursorGlyph, RemoteAgentCursor } from "./RemoteAgentCursor";
+import { watchBrowserFrames } from "./watchBrowserFrames";
 import {
   FRAME_TAP_SLOP_PX,
   resolveFrameGesture,
@@ -175,18 +176,16 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
 
   useFocusEffect(
     useCallback(() => {
-      let active = true;
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      const tick = async () => {
-        await capture();
-        if (active) timer = setTimeout(() => void tick(), frameIntervalRef.current);
-      };
-      void tick();
-      return () => {
-        active = false;
-        if (timer !== null) clearTimeout(timer);
-      };
-    }, [capture]),
+      if (selectedTabId === null) return;
+      return watchBrowserFrames({
+        capture,
+        intervalMs: () => frameIntervalRef.current,
+        onPause: () => {
+          coordinatorRef.current.reset();
+          setFrame(null);
+        },
+      });
+    }, [capture, selectedTabId]),
   );
 
   const dispatchInput = useCallback(
