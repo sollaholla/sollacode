@@ -214,26 +214,3 @@ export const resolveRemoteWebSocketConnectionUrl = Effect.fn(
   url.searchParams.set("wsTicket", issued.ticket);
   return url.toString();
 });
-
-export const resolveRemoteDpopWebSocketConnectionUrl = Effect.fn(
-  "clientRuntime.authorization.resolveRemoteDpopWebSocketConnectionUrl",
-)(function* (input: {
-  readonly wsBaseUrl: string;
-  readonly httpBaseUrl: string;
-  readonly accessToken: string;
-  readonly dpopProof: string;
-  readonly timeoutMs?: number;
-}) {
-  const issued = yield* issueRemoteDpopWebSocketTicket({
-    httpBaseUrl: input.httpBaseUrl,
-    accessToken: input.accessToken,
-    dpopProof: input.dpopProof,
-    ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
-  });
-  const url = new URL(input.wsBaseUrl);
-  if (url.pathname === "" || url.pathname === "/") {
-    url.pathname = "/ws";
-  }
-  url.searchParams.set("wsTicket", issued.ticket);
-  return url.toString();
-});
