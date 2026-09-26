@@ -1,3 +1,4 @@
+import { bytesToBase64 } from "@t3tools/shared/base64";
 import { randomUUID } from "./lib/utils";
 import type { UploadChatAttachment } from "@t3tools/contracts";
 import type { ComposerImageAttachment } from "./composerDraftStore";
@@ -59,16 +60,13 @@ export async function prepareVoiceNoteForSend(file: File): Promise<UploadChatAtt
   view.setUint16(34, 16, true);
   view.setUint32(40, pcm.length, true);
   wav.set(pcm, 44);
-  let binary = "";
-  for (let i = 0; i < wav.length; i += 0x8000)
-    binary += String.fromCharCode(...wav.subarray(i, i + 0x8000));
   return {
     type: "audio",
     name: `${file.name}.wav`,
     mimeType: "audio/wav",
     sizeBytes: wav.length,
     durationMs: Math.round(audio.length / 16),
-    dataUrl: `data:audio/wav;base64,${btoa(binary)}`,
+    dataUrl: `data:audio/wav;base64,${bytesToBase64(wav)}`,
   };
 }
 
