@@ -97,16 +97,3 @@ export function resolveAttachmentPathById(input: {
   }
   return null;
 }
-
-export function parseAttachmentIdFromRelativePath(relativePath: string): string | null {
-  const normalized = normalizeAttachmentRelativePath(relativePath);
-  if (!normalized || normalized.includes("/")) {
-    return null;
-  }
-  const extensionIndex = normalized.lastIndexOf(".");
-  if (extensionIndex <= 0) {
-    return null;
-  }
-  const id = normalized.slice(0, extensionIndex);
-  return id.length > 0 && !id.includes(".") ? id : null;
-}

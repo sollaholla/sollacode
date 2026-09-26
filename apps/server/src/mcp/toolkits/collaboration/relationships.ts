@@ -102,19 +102,3 @@ export const resolveRelatedChats = (
 
   return { caller, related };
 };
-
-export const findAuthorizedRelatedChat = (
-  threads: ReadonlyArray<OrchestrationThreadShell>,
-  callerThreadId: ThreadId,
-  targetThreadId: ThreadId,
-):
-  | {
-      readonly caller: OrchestrationThreadShell;
-      readonly target: OrchestrationThreadShell;
-    }
-  | undefined => {
-  const family = resolveRelatedChats(threads, callerThreadId);
-  if (!family) return undefined;
-  const target = family.related.find((thread) => thread.id === targetThreadId);
-  return target ? { caller: family.caller, target } : undefined;
-};
