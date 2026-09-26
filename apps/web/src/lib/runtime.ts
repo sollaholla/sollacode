@@ -37,8 +37,6 @@ type RuntimeLayerSource =
   | typeof Socket.layerWebSocketConstructorGlobal
   | typeof browserCryptoLayer;
 
-export const remoteHttpRuntime = ManagedRuntime.make(httpClientLayer);
-
 const primaryHttpRuntime = ManagedRuntime.make(
   PrimaryEnvironmentHttpClient.layer.pipe(Layer.provide(primaryEnvironmentHttpLayer)),
 );
