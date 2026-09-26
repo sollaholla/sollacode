@@ -147,14 +147,10 @@ import { buildExpandedImagePreview, type ExpandedImagePreview } from "./Expanded
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
 import { Separator } from "../ui/separator";
+import { observeComposerMenuPosition, type ComposerMenuPosition } from "./composerMenuPosition";
 
 function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children: ReactNode }) {
-  const [position, setPosition] = useState<{
-    bottom: number;
-    left: number;
-    maxHeight: number;
-    width: number;
-  } | null>(null);
+  const [position, setPosition] = useState<ComposerMenuPosition | null>(null);
 
   useLayoutEffect(() => {
     const anchor = props.anchor;
@@ -163,29 +159,7 @@ function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children:
       return;
     }
 
-    const updatePosition = () => {
-      const rect = anchor.getBoundingClientRect();
-      setPosition({
-        bottom: window.innerHeight - rect.top + 8,
-        left: rect.left,
-        maxHeight: Math.max(96, rect.top - 24),
-        width: rect.width,
-      });
-    };
-
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-
-    const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updatePosition);
-    observer?.observe(anchor);
-
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
+    return observeComposerMenuPosition(anchor, setPosition);
   }, [props.anchor]);
 
   if (!position) return null;
