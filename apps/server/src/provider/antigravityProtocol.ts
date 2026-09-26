@@ -1,3 +1,29 @@
+/**
+ * Antigravity CLI (`agy`) stream-json wire protocol.
+ *
+ * `agy --input-format stream-json --output-format stream-json -p=` is a
+ * long-lived bidirectional session: one NDJSON object per line in on stdin,
+ * one NDJSON event per line out on stdout, and closing stdin ends the session
+ * with exit 0. That is the same shape the other CLI-backed drivers use, so it
+ * maps onto `ProviderAdapter` without a side channel.
+ *
+ * Everything here is derived from the live binary (v1.1.24), not from the
+ * docs, because the two disagree in three places that would each have shipped
+ * a bug:
+ *
+ *   1. `conversation_id` sits on the **top-level envelope** of `init`, but
+ *      **inside the payload** of `step_update` and `result`. A parser that
+ *      reads one location loses the session id for the other events.
+ *   2. Framing errors (`missing "event" field`, bad JSON) are reported as a
+ *      normal `result` event on **stdout** with `status: "ERROR"` — the docs
+ *      say diagnostics go to stderr. In stream-json mode stderr stayed empty.
+ *   3. `-p` takes the *next token* as its prompt, so `-p --input-format …`
+ *      silently consumes the flag. Spawn argv must contain `-p=` without
+ *      literal quote characters. See `buildAntigravityStreamArgs`.
+ *
+ * @module provider/antigravityProtocol
+ */
+
 const TERMINAL_FAILURE_STATUSES: ReadonlySet<string> = new Set([
   "ERROR",
   "CANCELED",
