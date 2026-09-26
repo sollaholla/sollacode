@@ -2,9 +2,6 @@ import type { ThreadTokenUsageSnapshot } from "@t3tools/contracts";
 
 export const GROK_BILLING_METHOD = "x.ai/billing";
 export const GROK_SESSION_INFO_METHOD = "x.ai/session/info";
-export const GROK_SESSION_USAGE_METHOD = "x.ai/session/usage";
-export const GROK_CHECK_SUBSCRIPTION_METHOD = "x.ai/auth/check_subscription";
-
 export interface GrokSubscriptionProbe {
   readonly authenticated: boolean;
   readonly email?: string;
