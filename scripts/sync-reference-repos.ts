@@ -98,8 +98,6 @@ export const ReferenceRepoSyncError = Schema.Union([
   ReferenceRepoGitSubtreeError,
 ]);
 export type ReferenceRepoSyncError = typeof ReferenceRepoSyncError.Type;
-export const isReferenceRepoSyncError = Schema.is(ReferenceRepoSyncError);
-
 const decodeJsonSource = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 const decodeYamlSource = Schema.decodeEffect(fromYaml(Schema.Unknown));
 
