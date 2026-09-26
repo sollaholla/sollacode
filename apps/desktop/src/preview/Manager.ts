@@ -4318,13 +4318,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           );
         }
       } else {
-        runFork(
-          dispatchNavigation(tabId, wc, pendingUrl, sequence).pipe(
-            Effect.catch((failure) =>
-              settleDispatchedNavigation(tabId, wc, pendingUrl, sequence, failure),
-            ),
-          ),
-        );
+        runFork(dispatchNavigation(tabId, wc, pendingUrl, sequence));
       }
     }
     if (Exit.isFailure(activation) && !isAutomationDebuggerOwnershipConflict(activation.cause)) {
@@ -6270,14 +6264,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               ? [yield* captureFrameAccessibility()]
               : yield* Effect.forEach(frameIds, (frameId) => captureFrameAccessibility(frameId));
           return mergeAccessibilityTrees(trees);
-        }).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning(
-              "Preview accessibility capture was unavailable; returning the DOM snapshot.",
-              { tabId, cause },
-            ).pipe(Effect.as({ nodes: [] })),
-          ),
-        );
+        });
       const captureBracket = Effect.fn("PreviewManager.captureAutomationSnapshotBracket")(
         function* (openingPage: AutomationSnapshotPage) {
           page = openingPage;
@@ -8481,7 +8468,6 @@ export const PreviewManagerError = Schema.Union([
 ]);
 export type PreviewManagerError = typeof PreviewManagerError.Type;
 
-export const isPreviewManagerError = Schema.is(PreviewManagerError);
 export const isPreviewAutomationControlInterruptedError = Schema.is(
   PreviewAutomationControlInterruptedError,
 );
