@@ -73,6 +73,8 @@ import {
   createRemoteControlVideoSink,
   describeUnsupportedCodec,
   formatVideoStats,
+  VIDEO_MAX_QUEUED_BYTES,
+  VIDEO_MAX_QUEUED_CHUNKS,
   type RemoteControlVideoSink,
 } from "./remoteControlPlayer";
 
@@ -137,6 +139,7 @@ export function RemoteControlViewerDialog(props: {
   const videoSinkRef = useRef<RemoteControlVideoSink | null>(null);
   const videoMimeTypeRef = useRef<string | null>(null);
   const pendingChunksRef = useRef<RemoteControlVideoChunk[]>([]);
+  const pendingChunkBytesRef = useRef(0);
   // Set once video is confirmed undecodable here, which permanently hands the
   // session back to the JPEG frames the host also understands.
   //
@@ -149,7 +152,6 @@ export function RemoteControlViewerDialog(props: {
   const [videoUnavailable, setVideoUnavailable] = useState<string | null>(null);
   const videoUnavailableRef = useRef<string | null>(null);
   videoUnavailableRef.current = videoUnavailable;
-  const decodedRef = useRef(false);
   // Whether anything has actually been painted yet, by either path. Until this
   // flips, the surface is a black rectangle that looks broken.
   const [hasRenderedFrame, setHasRenderedFrame] = useState(false);
@@ -249,6 +251,14 @@ export function RemoteControlViewerDialog(props: {
    */
   const appendVideoChunk = useCallback((chunk: RemoteControlVideoChunk) => {
     if (videoUnavailableRef.current) return;
+    if (Math.ceil((chunk.data.length * 3) / 4) > VIDEO_MAX_QUEUED_BYTES) {
+      pendingChunksRef.current = [];
+      pendingChunkBytesRef.current = 0;
+      setVideoUnavailable(
+        "A video chunk exceeded the playback budget. Falling back to image frames.",
+      );
+      return;
+    }
     // EVERY init segment supersedes the current container, same codec or not:
     // a host encoder restart (watcher joined, monitor switch, capture
     // recovery) restarts timestamps at zero, and appending a second WebM
@@ -260,6 +270,7 @@ export function RemoteControlViewerDialog(props: {
       videoSinkRef.current = null;
       videoMimeTypeRef.current = chunk.mimeType;
       pendingChunksRef.current = [chunk];
+      pendingChunkBytesRef.current = Math.ceil((chunk.data.length * 3) / 4);
       setVideoMimeType(chunk.mimeType);
       // The mime is often unchanged across restarts, so a separate nonce is
       // what actually re-runs the sink-attach effect.
@@ -270,9 +281,21 @@ export function RemoteControlViewerDialog(props: {
       videoSinkRef.current.append(chunk);
       return;
     }
-    // Still waiting on the element; keep only what is decodable from the last
-    // init segment so the backlog cannot grow without bound.
-    if (pendingChunksRef.current.length > 0) pendingChunksRef.current.push(chunk);
+    // The element may not mount promptly in a throttled/background renderer.
+    if (pendingChunksRef.current.length > 0) {
+      const bytes = Math.ceil((chunk.data.length * 3) / 4);
+      if (
+        pendingChunksRef.current.length >= VIDEO_MAX_QUEUED_CHUNKS ||
+        pendingChunkBytesRef.current + bytes > VIDEO_MAX_QUEUED_BYTES
+      ) {
+        pendingChunksRef.current = [];
+        pendingChunkBytesRef.current = 0;
+        setVideoUnavailable("The video surface fell behind. Falling back to image frames.");
+        return;
+      }
+      pendingChunksRef.current.push(chunk);
+      pendingChunkBytesRef.current += bytes;
+    }
   }, []);
 
   // Attaches the sink once the element for this codec has mounted; re-runs per
@@ -287,9 +310,9 @@ export function RemoteControlViewerDialog(props: {
     const video = frameVideoRef.current;
     if (!video) return;
     const sink = createRemoteControlVideoSink(videoMimeType, video, (detail) => {
-      // Only a failure before anything decoded is fatal; a mid-stream hiccup
-      // resynchronises on the next init segment.
-      if (!decodedRef.current) setVideoUnavailable(detail);
+      // A failed sink cannot resume without a new container. The image path
+      // keeps control usable even when a decoder stalls after its first frame.
+      setVideoUnavailable(detail);
     });
     if (!sink) {
       setVideoUnavailable(`This client could not start video playback (${videoMimeType}).`);
@@ -299,6 +322,7 @@ export function RemoteControlViewerDialog(props: {
     video.src = sink.url;
     for (const pending of pendingChunksRef.current) sink.append(pending);
     pendingChunksRef.current = [];
+    pendingChunkBytesRef.current = 0;
   }, [videoEpoch, videoMimeType]);
 
   /**
@@ -311,7 +335,6 @@ export function RemoteControlViewerDialog(props: {
     const timer = window.setTimeout(() => {
       const video = frameVideoRef.current;
       if (video && video.videoWidth > 0) {
-        decodedRef.current = true;
         return;
       }
       const stats = videoSinkRef.current?.stats();
@@ -450,6 +473,8 @@ export function RemoteControlViewerDialog(props: {
     if (!videoUnavailable) return;
     videoSinkRef.current?.dispose();
     videoSinkRef.current = null;
+    pendingChunksRef.current = [];
+    pendingChunkBytesRef.current = 0;
     enqueueInput({ type: "request-image-fallback" });
   }, [enqueueInput, videoUnavailable]);
 
@@ -1384,7 +1409,6 @@ export function RemoteControlViewerDialog(props: {
                     // decoded, which is also what the 5s watchdog is waiting to
                     // hear about — marking it here spares the fallback.
                     onLoadedData={() => {
-                      decodedRef.current = true;
                       setHasRenderedFrame(true);
                     }}
                     onPlaying={() => setHasRenderedFrame(true)}
