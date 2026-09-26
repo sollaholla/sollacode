@@ -159,10 +159,10 @@ export const forkThread: (input: ForkThreadInput) => CommandEffect = Effect.fn(
   });
 });
 
-export const deleteThread: (input: DeleteThreadInput) => CommandEffect = Effect.fn(
-  "EnvironmentCommands.deleteThread",
-)(function* (input) {
-  return yield* dispatch({
+export const deleteThread = Effect.fn("EnvironmentCommands.deleteThread")(function* (
+  input: DeleteThreadInput,
+) {
+  return yield* dispatchOrDeferThreadCommand({
     ...input,
     type: "thread.delete",
     commandId: yield* commandId(input),
@@ -268,6 +268,14 @@ export const removeQueuedMessage: (input: RemoveQueuedMessageInput) => CommandEf
 )(function* (input) {
   const metadata = yield* timestampedCommandMetadata(input);
   return yield* dispatch({ ...input, ...metadata, type: "thread.queued-message.remove" });
+});
+
+export type SendQueuedMessageNowInput = CommandInput<"thread.queued-message.send-now">;
+export const sendQueuedMessageNow: (input: SendQueuedMessageNowInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.sendQueuedMessageNow",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({ ...input, ...metadata, type: "thread.queued-message.send-now" });
 });
 
 export const startThreadTurn: (input: StartThreadTurnInput) => CommandEffect = Effect.fn(

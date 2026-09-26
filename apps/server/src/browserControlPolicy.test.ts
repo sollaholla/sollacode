@@ -28,6 +28,15 @@ describe("T3 browser control policy", () => {
     // Sign-in still stays inside preview rather than switching surfaces.
     expect(T3_BROWSER_CONTROL_POLICY).toContain("Authentication, login");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("blocker or user-input flow");
+    // Saved logins are filled by the desktop, so the password never reaches
+    // the agent or the chat.
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("call `preview_credentials` first");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("`preview_fill_credential`");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain(
+      "Never ask the user to paste a password, PIN, or code into chat",
+    );
+    // A PIN prompt gets the same saved-entry treatment as a sign-in.
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("for a PIN or code, call `preview_credentials`");
     // Unchanged operational guidance survives. Agents no longer own dedicated
     // browsers (scrapped in 0.1.214); ownership is per thread, so the
     // hands-off rule is now phrased against threads rather than agents.

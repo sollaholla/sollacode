@@ -6,6 +6,7 @@ import {
   type PreviewAutomationSnapshot,
   type PreviewRemoteSnapshotInput,
   type PreviewRemoteSnapshotResult,
+  type PreviewRemoteViewSnapshotInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -38,7 +39,7 @@ export function captureRemotePreviewSnapshot(input: {
         issuedAt: input.issuedAt,
       },
       operation: "snapshot",
-      input: {},
+      input: { includeAgentPointer: true } satisfies PreviewRemoteViewSnapshotInput,
       tabId: input.request.tabId,
       timeoutMs: 10_000,
     })
@@ -81,6 +82,9 @@ export function captureRemotePreviewSnapshot(input: {
                 ...(snapshot.pendingDownloadApprovals === undefined
                   ? {}
                   : { pendingDownloadApprovals: snapshot.pendingDownloadApprovals }),
+                ...(snapshot.agentPointer === undefined
+                  ? {}
+                  : { agentPointer: snapshot.agentPointer }),
               }),
       ),
     );

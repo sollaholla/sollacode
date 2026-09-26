@@ -49,6 +49,21 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
+  if (props.provider === "muse") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        {/* Meta's loop mark, stroked so it stays legible at icon size. */}
+        <Path
+          d="M4.3 12c0-2.2 1.3-3.7 3-3.7 1.4 0 2.4 1 3.3 2.3l2.8 4.1c.9 1.3 1.9 2.3 3.3 2.3 1.7 0 3-1.5 3-3.7S18.4 9 16.7 9c-1.4 0-2.4 1-3.3 2.3l-2.8 4.1c-.9 1.3-1.9 2.3-3.3 2.3-1.7 0-3-1.5-3-3.7Z"
+          stroke="#0082FB"
+          strokeWidth={1.9}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </Svg>
+    );
+  }
+
   if (props.provider === "deepcode") {
     return (
       <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">

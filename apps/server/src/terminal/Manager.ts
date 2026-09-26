@@ -1,3 +1,9 @@
+import {
+  windowsCodexSessionOwnersCommand,
+  parseCodexSessionOwners,
+  codexSessionForProcesses,
+  type CodexSessionOwner,
+} from "./windowsCodexSessions.ts";
 /**
  * TerminalManager - Terminal session orchestration service interface.
  *
@@ -67,6 +73,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as ServerConfig from "../config.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import type { McpProviderSessionConfig } from "../mcp/McpProviderSession.ts";
 import { TERMINAL_AGENT_PROVIDER_INSTANCE_ID } from "../mcp/McpServerInstructions.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
@@ -78,6 +85,7 @@ import {
 import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
+import { TerminalScreen } from "./TerminalScreen.ts";
 import {
   GROK_TERMINAL_MCP_OVERLAY,
   injectTerminalAgentAwareness,
@@ -164,7 +172,7 @@ const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
 const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
-const FINAL_SUBPROCESS_POLL_TIMEOUT_MS = 2_000;
+const FINAL_SUBPROCESS_POLL_TIMEOUT_MS = 5_000;
 const DEFAULT_OPEN_COLS = 120;
 const DEFAULT_OPEN_ROWS = 30;
 /** Floor under accepted PTY resizes; smaller grids are transient client layout. */
@@ -423,11 +431,13 @@ export interface TerminalSessionState {
   status: TerminalSessionStatus;
   pid: number | null;
   history: string;
+  screen?: TerminalScreen;
   pendingHistoryControlSequence: string;
   pendingProcessEvents: Array<PendingProcessEvent>;
   pendingProcessEventIndex: number;
   pendingProcessEventBytes: number;
   processEventDrainRunning: boolean;
+  outputPaused?: boolean;
   exitCode: number | null;
   exitSignal: number | null;
   updatedAt: string;
@@ -479,6 +489,7 @@ type DrainProcessEventAction =
       history: string | null;
       data: string;
       workingChanged: boolean;
+      screenParsed: Promise<void> | undefined;
     }
   | {
       type: "exit";
@@ -560,8 +571,9 @@ function terminalWireLabel(session: TerminalSessionState): string {
   return truncateTerminalWireLabel(getTerminalLabel(session.terminalId));
 }
 
-function snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
-  return {
+const snapshot = Effect.fn("terminal.snapshot")(function* (session: TerminalSessionState) {
+  const result: TerminalSessionSnapshot = {
+    ...(session.process?.windowsPty ? { windowsPty: session.process.windowsPty } : {}),
     threadId: session.threadId,
     terminalId: session.terminalId,
     cwd: session.cwd,
@@ -577,10 +589,15 @@ function snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
     cols: session.cols,
     rows: session.rows,
   };
-}
+  const pendingControlSequence = session.pendingHistoryControlSequence;
+  if (!session.screen) return result;
+  const screen = yield* Effect.promise(() => session.screen!.capture(DEFAULT_HISTORY_BYTE_LIMIT));
+  return { ...result, screen: { ...screen, data: screen.data + pendingControlSequence } };
+});
 
 function summary(session: TerminalSessionState): TerminalSummary {
   return {
+    ...(session.process?.windowsPty ? { windowsPty: session.process.windowsPty } : {}),
     threadId: session.threadId,
     terminalId: session.terminalId,
     cwd: session.cwd,
@@ -662,6 +679,8 @@ function cleanupProcessHandles(session: TerminalSessionState): void {
   session.unsubscribeData = null;
   session.unsubscribeExit?.();
   session.unsubscribeExit = null;
+  if (session.outputPaused) session.process?.resume?.();
+  session.outputPaused = false;
 }
 
 function terminalUtf8ByteLength(value: string): number {
@@ -732,7 +751,14 @@ function enqueueProcessEvent(
   session.pendingProcessEvents.push(event);
   if (event.type !== "exit") {
     session.pendingProcessEventBytes += terminalUtf8ByteLength(event.data);
-    boundPendingOutputEvents(session, maxPendingBytes);
+    if (session.process.pause && session.process.resume) {
+      if (session.pendingProcessEventBytes >= maxPendingBytes && !session.outputPaused) {
+        session.process.pause();
+        session.outputPaused = true;
+      }
+    } else {
+      boundPendingOutputEvents(session, maxPendingBytes);
+    }
   }
   if (session.processEventDrainRunning) {
     return false;
@@ -1479,6 +1505,10 @@ function normalizedRuntimeEnv(
 }
 
 interface TerminalManagerOptions {
+  /** Resolves server-owned credentials at spawn; never stores them in launch context. */
+  resolveProviderEnvironment?: (
+    environment: NodeJS.ProcessEnv,
+  ) => Effect.Effect<NodeJS.ProcessEnv, PtyAdapter.PtySpawnError>;
   logsDir: string;
   historyLineLimit?: number;
   historyByteLimit?: number;
@@ -1513,13 +1543,46 @@ interface TerminalManagerOptions {
   touchTerminalAgentMcpCredential?: (providerSessionId: string) => Effect.Effect<void>;
 }
 
+const decodeApiKeyInstanceId = Schema.decodeUnknownOption(ProviderInstanceId);
+
 export const make = Effect.fn("TerminalManager.make")(function* () {
   const { terminalLogsDir } = yield* ServerConfig.ServerConfig;
   const ptyAdapter = yield* PtyAdapter.PtyAdapter;
   const portDiscovery = yield* PortScanner.PortDiscovery;
+  const settings = yield* ServerSettingsService;
   return yield* makeWithOptions({
     logsDir: terminalLogsDir,
     ptyAdapter,
+    resolveProviderEnvironment: Effect.fn("terminal.resolveProviderEnvironment")(
+      function* (environment) {
+        const rawInstanceId = environment.SOLLA_API_KEY_ACCOUNT_INSTANCE;
+        if (!rawInstanceId) return environment;
+        const instanceId = decodeApiKeyInstanceId(rawInstanceId);
+        if (Option.isNone(instanceId))
+          return yield* new PtyAdapter.PtySpawnError({
+            adapter: "terminal-manager",
+            cause: new Error("Invalid API-key provider instance."),
+          });
+        const selected = yield* settings.getProviderApiKey(instanceId.value).pipe(
+          Effect.mapError(
+            () =>
+              new PtyAdapter.PtySpawnError({
+                adapter: "terminal-manager",
+                cause: new Error(
+                  "The selected API key could not be loaded. Check Providers settings.",
+                ),
+              }),
+          ),
+        );
+        return selected
+          ? {
+              ...environment,
+              DEEPCODE_API_KEY: selected.apiKey,
+              DEEPCODE_BASE_URL: selected.account.baseUrl,
+            }
+          : environment;
+      },
+    ),
     registerTerminalProcesses: portDiscovery.registerTerminalProcesses,
     unregisterTerminal: portDiscovery.unregisterTerminal,
     issueTerminalAgentMcpCredential: ({ threadId }) =>
@@ -2122,6 +2185,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     session: TerminalSessionState,
   ) {
     session.history = "";
+    session.screen?.reset();
     session.pendingHistoryControlSequence = "";
     session.pendingProcessEvents = [];
     session.pendingProcessEventIndex = 0;
@@ -2547,6 +2611,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         const toEvict = inactiveSessions.length - maxRetainedInactiveSessions;
         for (const session of inactiveSessions.slice(0, toEvict)) {
           const key = toSessionKey(session.threadId, session.terminalId);
+          session.screen?.dispose();
           sessions.delete(key);
         }
 
@@ -2611,6 +2676,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             data,
           );
           session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
+          const screenParsed = session.screen?.write(sanitized.visibleText);
           if (sanitized.visibleText.length > 0) {
             session.history = capHistory(
               `${session.history}${sanitized.visibleText}`,
@@ -2630,6 +2696,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             history: sanitized.visibleText.length > 0 ? session.history : null,
             data,
             workingChanged,
+            screenParsed,
           } as const;
         }
 
@@ -2682,6 +2749,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }
 
       if (action.type === "output") {
+        if (action.screenParsed) yield* Effect.promise(() => action.screenParsed!);
+        if (session.pid !== expectedPid || session.status !== "running") return;
         if (action.history !== null) {
           yield* queuePersist(action.threadId, action.terminalId, action.history);
         }
@@ -2693,6 +2762,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           sequence: action.sequence,
           data: action.data,
         });
+        if (
+          session.outputPaused &&
+          session.pendingProcessEventBytes < pendingProcessEventByteLimit / 2
+        ) {
+          session.outputPaused = false;
+          session.process?.resume?.();
+        }
         if (action.workingChanged) {
           const activity = yield* modifyManagerState((state) => {
             const live = state.sessions.get(toSessionKey(action.threadId, action.terminalId));
@@ -2755,6 +2831,22 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const updatedAt = yield* nowIso;
     yield* modifyManagerState((state) => {
       cleanupProcessHandles(session);
+      // Closing can race an asynchronous parser/subscriber. Preserve output
+      // already read from the PTY before discarding the live delivery queue.
+      for (const event of session.pendingProcessEvents.slice(session.pendingProcessEventIndex)) {
+        if (event.type === "exit") continue;
+        const sanitized = sanitizeTerminalHistoryChunk(
+          session.pendingHistoryControlSequence,
+          event.data,
+        );
+        session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
+        session.screen?.write(sanitized.visibleText);
+        session.history = capHistory(
+          session.history + sanitized.visibleText,
+          historyLineLimit,
+          historyByteLimit,
+        );
+      }
       session.process = null;
       session.pid = null;
       session.hasRunningSubprocess = false;
@@ -2839,7 +2931,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const createAgentAwareSpawnEnv = Effect.fn("terminal.createAgentAwareSpawnEnv")(function* (
     session: TerminalSessionState,
   ) {
-    const terminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv);
+    const baseTerminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv);
+    const terminalEnv = options.resolveProviderEnvironment
+      ? yield* options.resolveProviderEnvironment(baseTerminalEnv)
+      : baseTerminalEnv;
     if (!terminalAgentLaunchersReady) {
       return terminalEnv;
     }
@@ -2894,6 +2989,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     });
 
     const startingAt = yield* nowIso;
+    session.screen?.dispose();
+    session.screen = new TerminalScreen({
+      cols: input.cols,
+      rows: input.rows,
+      scrollback: historyLineLimit,
+    });
+    session.screen.write(session.history);
     yield* modifyManagerState((state) => {
       session.status = "starting";
       session.cwd = input.cwd;
@@ -2928,6 +3030,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             const terminalEnv = yield* createAgentAwareSpawnEnv(session);
             const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
             ptyProcess = spawnResult.process;
+            if (ptyProcess.windowsPty) {
+              // The screen must use the host's ConPTY resize semantics too.
+              session.screen?.dispose();
+              session.screen = new TerminalScreen({
+                cols: input.cols,
+                rows: input.rows,
+                scrollback: historyLineLimit,
+                windowsPty: ptyProcess.windowsPty,
+              });
+              session.screen.write(session.history);
+            }
             startedShell = spawnResult.shellLabel;
 
             const processPid = ptyProcess.pid;
@@ -2977,7 +3090,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               threadId: session.threadId,
               terminalId: session.terminalId,
               sequence: eventStamp.sequence,
-              snapshot: snapshot(session),
+              snapshot: yield* snapshot(session),
             });
           }),
         ),
@@ -3063,6 +3176,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       yield* stopProcess(session.value);
       yield* unregisterTerminal({ threadId, terminalId });
       yield* persistHistory(threadId, terminalId, session.value.history);
+      session.value.screen?.dispose();
     }
 
     yield* flushPersist(threadId, terminalId);
@@ -3094,7 +3208,60 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     }
   });
 
-  const pollSubprocessActivity = Effect.fn("terminal.pollSubprocessActivity")(function* () {
+  let windowsCodexOwnerCache: { key: string; owners: ReadonlyArray<CodexSessionOwner> } | null =
+    null;
+  let windowsCodexOwnerAttemptAt = -Infinity;
+  const readWindowsCodexOwners = Effect.fn("terminal.readWindowsCodexOwners")(function* (
+    processIds: ReadonlyArray<number>,
+    force = false,
+  ) {
+    if (processIds.length === 0) return [] as ReadonlyArray<CodexSessionOwner>;
+    const home = (baseEnv.CODEX_HOME ?? "").trim() || path.join(resolveHomeDir(baseEnv), ".codex");
+    const directory = path.join(home, "thread-writer-locks");
+    const names = yield* fileSystem
+      .readDirectory(directory)
+      .pipe(Effect.catch(() => Effect.succeed([] as string[])));
+    const key =
+      names
+        .filter((name) => /^[\da-f-]+\.lock$/i.test(name))
+        .sort()
+        .join(",") +
+      ":" +
+      [...processIds].sort((a, b) => a - b).join(",");
+    const cachedOwners = windowsCodexOwnerCache;
+    if (
+      cachedOwners?.key === key &&
+      processIds.every((pid) => cachedOwners.owners.some((owner) => owner.pid === pid))
+    )
+      return cachedOwners.owners;
+    const now = yield* nowMillis;
+    if (!force && now - windowsCodexOwnerAttemptAt < 3_000)
+      return [] as ReadonlyArray<CodexSessionOwner>;
+    windowsCodexOwnerAttemptAt = now;
+    const result = yield* processRunner
+      .run({
+        command: "powershell.exe",
+        args: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          windowsCodexSessionOwnersCommand(directory),
+        ],
+        timeout: "3 seconds",
+        maxOutputBytes: 65_536,
+        outputMode: "truncate",
+        timeoutBehavior: "timedOutResult",
+      })
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+    if (result?.code !== 0) return [] as ReadonlyArray<CodexSessionOwner>;
+    const owners = parseCodexSessionOwners(result.stdout);
+    windowsCodexOwnerCache = { key, owners };
+    return owners;
+  });
+
+  const pollSubprocessActivity = Effect.fn("terminal.pollSubprocessActivity")(function* (
+    force = false,
+  ) {
     const state = yield* readManagerState;
     const runningSessions = [...state.sessions.values()].filter(
       (session): session is TerminalSessionState & { pid: number } =>
@@ -3117,6 +3284,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const applySubprocessInspect = Effect.fn("terminal.applySubprocessInspect")(function* (
       session: TerminalSessionState & { pid: number },
       inspectResult: Option.Option<TerminalSubprocessInspectResult>,
+      windowsSessionId?: string | null,
     ) {
       if (Option.isNone(inspectResult)) {
         return;
@@ -3175,12 +3343,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       const nextIsAgent = next.hasRunningSubprocess && isAgentCliCommand(next.childCommand);
       const previousSessionId = session.agentCliSessionId;
       const sessionId = nextIsAgent
-        ? ((yield* resolveAgentCliSessionId({
+        ? (windowsSessionId ??
+          (yield* resolveAgentCliSessionId({
             command: next.childCommand,
             processIds: next.processIds,
             processArgs: next.processArgs ?? null,
             preferredSessionId: previousSessionId,
-          })) ?? previousSessionId)
+          })) ??
+          previousSessionId)
         : null;
       if (
         nextIsAgent &&
@@ -3232,16 +3402,29 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       if (Option.isNone(snapshot)) {
         return;
       }
+      const inspected = runningSessions.map((session) => ({
+        session,
+        result: truncateWindowsInspectResult(
+          inspectWindowsSubprocessFromRows(session.pid, snapshot.value),
+        ),
+      }));
+      const codexPids = snapshot.value
+        .filter(
+          (row) =>
+            agentCliCommandFromProcess(normalizeChildCommandName(row.name), row.commandLine) ===
+            "codex",
+        )
+        .map((row) => row.pid);
+      const codexOwners = yield* readWindowsCodexOwners(codexPids, force);
       yield* Effect.forEach(
-        runningSessions,
-        (session) =>
+        inspected,
+        ({ session, result }) =>
           applySubprocessInspect(
             session,
-            Option.some(
-              truncateWindowsInspectResult(
-                inspectWindowsSubprocessFromRows(session.pid, snapshot.value),
-              ),
-            ),
+            Option.some(result),
+            result.childCommand === "codex"
+              ? codexSessionForProcesses(codexOwners, result.processIds)
+              : null,
           ),
         { concurrency: "unbounded", discard: true },
       );
@@ -3301,7 +3484,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       // Capture a CLI that started after the last periodic scan. Without this
       // final bounded pass, a fast app shutdown can preserve the shell launch
       // context but miss the provider session ID needed to resume its TUI.
-      const finalPoll = yield* pollSubprocessActivity().pipe(
+      const finalPoll = yield* pollSubprocessActivity(true).pipe(
         Effect.timeoutOption(FINAL_SUBPROCESS_POLL_TIMEOUT_MS),
       );
       if (Option.isNone(finalPoll)) {
@@ -3348,6 +3531,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           yield* revokeTerminalAgentMcpCredential(agentMcpProviderSessionId);
         }
         cleanupProcessHandles(session);
+        session.screen?.dispose();
         if (!session.process) return;
         yield* clearKillFiber(session.process);
         yield* runKillEscalation(session.process, session.threadId, session.terminalId);
@@ -3449,7 +3633,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         "started",
         restoreAgentCli,
       );
-      return snapshot(session);
+      return yield* snapshot(session);
     }
 
     const liveSession = existing.value;
@@ -3515,7 +3699,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         "started",
         restoreAgentCli,
       );
-      return snapshot(liveSession);
+      return yield* snapshot(liveSession);
     }
 
     if (liveSession.cols !== targetCols || liveSession.rows !== targetRows) {
@@ -3525,13 +3709,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       if (geometryOwnerAllowsResize(liveSession, input.clientId, openNowMs)) {
         claimGeometryOwner(liveSession, input.clientId, openNowMs);
         yield* resizePtyProcess(liveSession, liveSession.process, targetCols, targetRows);
+        liveSession.screen?.resize(targetCols, targetRows);
         liveSession.cols = targetCols;
         liveSession.rows = targetRows;
         liveSession.updatedAt = yield* nowIso;
       }
     }
 
-    return snapshot(liveSession);
+    return yield* snapshot(liveSession);
   });
 
   const open: TerminalManager["Service"]["open"] = (input) =>
@@ -3713,7 +3898,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         // Attach streams output to another viewer. Do not let that viewer's
         // grid (a phone, a narrow pane) resize the shared PTY — desktop
         // geometry stays authoritative until something calls resize().
-        return snapshot(session);
+        return yield* snapshot(session);
       }),
     );
 
@@ -3975,7 +4160,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   const read: TerminalManager["Service"]["read"] = Effect.fn("terminal.read")(function* (input) {
     const session = yield* requireSession(input.threadId, input.terminalId);
-    return snapshot(session);
+    return yield* snapshot(session);
   });
 
   const write: TerminalManager["Service"]["write"] = Effect.fn("terminal.write")(function* (input) {
@@ -4031,23 +4216,25 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     if (input.cols < MIN_PTY_RESIZE_COLS || input.rows < MIN_PTY_RESIZE_ROWS) {
       return;
     }
-    // Only the geometry owner may resize; see TERMINAL_GEOMETRY_OWNER_STALE_MS.
+    // A deliberate layout change, like typing, transfers control. Passive
+    // ResizeObserver traffic still obeys the current owner's lease.
     const resizeNowMs = yield* nowMillis;
-    if (!geometryOwnerAllowsResize(session.value, input.clientId, resizeNowMs)) {
+    const explicitClaim = input.claimGeometry === true && input.clientId !== undefined;
+    if (!explicitClaim && !geometryOwnerAllowsResize(session.value, input.clientId, resizeNowMs)) {
       return;
     }
-    claimGeometryOwner(session.value, input.clientId, resizeNowMs);
     const geometryChanged = session.value.cols !== input.cols || session.value.rows !== input.rows;
     // Same-size re-asserts must not reach the PTY: POSIX would swallow them,
     // but ConPTY re-renders on every resize call regardless of the size.
-    if (!geometryChanged) {
-      return;
-    }
-    yield* resizePtyProcess(session.value, process, input.cols, input.rows);
-    session.value.cols = input.cols;
-    session.value.rows = input.rows;
-    session.value.updatedAt = yield* nowIso;
     if (geometryChanged) {
+      yield* resizePtyProcess(session.value, process, input.cols, input.rows);
+      session.value.screen?.resize(input.cols, input.rows);
+      session.value.cols = input.cols;
+      session.value.rows = input.rows;
+    }
+    const ownerChanged = claimGeometryOwner(session.value, input.clientId, resizeNowMs);
+    if (geometryChanged || ownerChanged) {
+      session.value.updatedAt = yield* nowIso;
       // Passive viewers must adopt the new grid or absolute cursor
       // addressing from full-screen programs lands on the wrong rows.
       const upsert: TerminalMetadataStreamEvent = {
@@ -4160,7 +4347,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           },
           "restarted",
         );
-        return snapshot(session);
+        return yield* snapshot(session);
       }),
     );
 

@@ -710,6 +710,65 @@ it.effect("ProviderServiceLive writes canonical events to the emitting thread se
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("stored transcript repair preserves stopped bindings and rejects changed owners", () =>
+  Effect.gen(function* () {
+    const muse = makeFakeCodexAdapter(ProviderDriverKind.make("muse"));
+    const replayStoredTranscript = vi.fn(() => Effect.succeed(2));
+    const registry = makeAdapterRegistryMock({
+      [ProviderDriverKind.make("muse")]: { ...muse.adapter, replayStoredTranscript },
+    });
+    const runtimeLayer = ProviderSessionRuntime.layer.pipe(Layer.provide(SqlitePersistenceMemory));
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeLayer));
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("stopped-stored-repair");
+      const instanceId = ProviderInstanceId.make("muse");
+      yield* directory.upsert({
+        threadId,
+        provider: ProviderDriverKind.make("muse"),
+        providerInstanceId: instanceId,
+        status: "stopped",
+        resumeCursor: { sessionId: "saved-native", viewCursor: "past-final" },
+        runtimePayload: { activeTurnId: null, userStopped: true },
+      });
+      const before = yield* directory.getBinding(threadId);
+      assert.equal(
+        yield* provider.replayStoredTranscript!({ threadId, providerInstanceId: instanceId }),
+        2,
+      );
+      assert.deepEqual(replayStoredTranscript.mock.calls, [
+        [{ threadId, sessionId: "saved-native" }],
+      ]);
+      assert.deepEqual(yield* directory.getBinding(threadId), before);
+      assert.equal(
+        yield* provider.replayStoredTranscript!({
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("changed-owner"),
+        }),
+        0,
+      );
+      assert.equal(replayStoredTranscript.mock.calls.length, 1);
+      assert.equal(muse.startSession.mock.calls.length, 0);
+      assert.equal(muse.sendTurn.mock.calls.length, 0);
+      assert.equal(muse.interruptTurn.mock.calls.length, 0);
+      assert.deepEqual(yield* provider.listSessions(), []);
+    }).pipe(Effect.provide(Layer.mergeAll(providerLayer, directoryLayer)));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", () =>
   Effect.gen(function* () {
     const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-service-"));
@@ -908,6 +967,48 @@ it.effect(
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+const mcpRouting = makeProviderServiceLayer();
+mcpRouting.layer("ProviderServiceLive common MCP dispatch", (it) => {
+  for (const [providerName, adapter] of [
+    ["codex", mcpRouting.codex],
+    ["claudeAgent", mcpRouting.claude],
+    ["cursor", mcpRouting.cursor],
+  ] as const) {
+    it.effect(`includes host MCP access at the common ${providerName} dispatch boundary`, () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const threadId = asThreadId(`mcp-common-${providerName}`);
+        const instanceId = ProviderInstanceId.make(providerName);
+        yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make(providerName),
+          providerInstanceId: instanceId,
+          threadId,
+          cwd: "/tmp/mcp-common",
+          runtimeMode: "full-access",
+        });
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("test"),
+          threadId,
+          providerInstanceId: instanceId,
+          providerSessionId: `test-${providerName}`,
+          endpoint: "http://127.0.0.1:1/mcp",
+          authorizationHeader: "Bearer private",
+          shellBridgeInstructions: "[Solla host tools] test-client [/Solla host tools]",
+        });
+        try {
+          yield* provider.sendTurn({ threadId, input: "read earlier history" });
+          assert.include(adapter.sendTurn.mock.calls.at(-1)?.[0].input, "test-client");
+          assert.notInclude(adapter.sendTurn.mock.calls.at(-1)?.[0].input, "Bearer private");
+          yield* provider.sendTurn({ threadId, input: "/compact preserve details" });
+          assert.equal(adapter.sendTurn.mock.calls.at(-1)?.[0].input, "/compact preserve details");
+        } finally {
+          McpProviderSession.clearMcpProviderSession(threadId);
+        }
+      }),
+    );
+  }
+});
+
 routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("materializes a frozen side-chat fork before its first turn", () =>
     Effect.gen(function* () {
@@ -975,6 +1076,69 @@ routing.layer("ProviderServiceLive routing", (it) => {
       routing.codex.startSession.mockClear();
       routing.codex.sendTurn.mockClear();
       routing.codex.stopSession.mockClear();
+    }),
+  );
+
+  it.effect("keeps a side chat's live session when its fork finishes copying late", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const sourceThreadId = asThreadId("thread-late-fork-source");
+      const threadId = asThreadId("thread-late-fork-side-chat");
+      yield* provider.startSession(sourceThreadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId: sourceThreadId,
+        cwd: "/tmp/project-late-fork",
+        runtimeMode: "full-access",
+      });
+      // The side chat's first turn starts while the parent conversation is
+      // still being copied (2026-09-25: 1.5 s for a long agent conversation).
+      const forkSession = vi.fn(() =>
+        provider
+          .startSession(threadId, {
+            provider: CLAUDE_AGENT_DRIVER,
+            providerInstanceId: claudeAgentInstanceId,
+            threadId,
+            resumeCursor: { opaque: "side-chat-own-conversation" },
+            runtimeMode: "full-access",
+          })
+          .pipe(
+            Effect.orDie,
+            Effect.as({
+              threadId,
+              provider: CLAUDE_AGENT_DRIVER,
+              providerInstanceId: claudeAgentInstanceId,
+              status: "closed" as const,
+              runtimeMode: "full-access" as const,
+              resumeCursor: { opaque: "copy-of-parent-conversation" },
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            }),
+          ),
+      );
+      Object.assign(routing.claude.adapter, { forkSession });
+      try {
+        const forked = yield* provider.forkSessionBinding!({
+          sourceThreadId,
+          targetThreadId: threadId,
+          runtimeMode: "full-access",
+        });
+        assert.equal(forkSession.mock.calls.length, 1);
+        assert.deepEqual(forked?.resumeCursor, { opaque: "side-chat-own-conversation" });
+        assert.equal(forked?.status, "ready");
+
+        // The next turn continues the side chat's own conversation, not the copy.
+        routing.claude.startSession.mockClear();
+        yield* provider.sendTurn({ threadId, input: "Keep going.", attachments: [] });
+        assert.equal(routing.claude.startSession.mock.calls.length, 0);
+      } finally {
+        Reflect.deleteProperty(routing.claude.adapter, "forkSession");
+        yield* provider.stopSession({ threadId });
+        yield* provider.stopSession({ threadId: sourceThreadId });
+        routing.claude.startSession.mockClear();
+        routing.claude.sendTurn.mockClear();
+        routing.claude.stopSession.mockClear();
+      }
     }),
   );
 
@@ -4235,3 +4399,176 @@ validation.layer("ProviderServiceLive validation", (it) => {
     }),
   );
 });
+
+it.effect(
+  "ProviderServiceLive discards a session's history so the next start is fresh with a digest",
+  () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-service-discard-"),
+      );
+      const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+      const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+        Layer.provide(persistenceLayer),
+      );
+      const codex = makeFakeCodexAdapter();
+      const registry = makeAdapterRegistryMock({
+        [ProviderDriverKind.make("codex")]: codex.adapter,
+      });
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+
+      const threadId = asThreadId("thread-discard");
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+          threadId,
+        });
+        codex.updateSession(threadId, (existing) => ({
+          ...existing,
+          status: "ready",
+          resumeCursor: { opaque: "history-the-provider-rejects" },
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        }));
+        codex.stopSession.mockClear();
+
+        // Deep Code's HTTP 413 and Muse's route-incompatible replay both mean
+        // the transcript itself is what fails; forgetting it is the recovery.
+        const discarded = yield* provider.discardSessionHistory({
+          threadId,
+          sourceMessageId: MessageId.make("message-1"),
+          reason: "Prompt too long: the maximum context length is 262144 tokens",
+        });
+        assert.equal(discarded, "discarded");
+        assert.equal(codex.stopSession.mock.calls.length, 1);
+        assert.equal(
+          yield* provider.discardSessionHistory({
+            threadId: asThreadId("thread-without-binding"),
+            sourceMessageId: null,
+          }),
+          false,
+        );
+      }).pipe(Effect.provide(providerLayer));
+
+      const binding = yield* Effect.gen(function* () {
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        return yield* directory.getBinding(threadId);
+      }).pipe(Effect.provide(directoryLayer));
+      assert.equal(Option.isSome(binding), true);
+      if (Option.isSome(binding)) {
+        // No cursor to resume from, and a recovery note naming the message
+        // whose delivery lifts it: exactly the state a timed-out resume leaves.
+        assert.equal(binding.value.resumeCursor ?? null, null);
+        const payload = binding.value.runtimePayload as {
+          readonly pendingContextRecovery?: {
+            readonly kind?: string;
+            readonly sourceMessageId?: string | null;
+            readonly reason?: string;
+          };
+        };
+        assert.equal(payload.pendingContextRecovery?.kind, "native-resume-timeout");
+        assert.equal(payload.pendingContextRecovery?.sourceMessageId, "message-1");
+        // The cause rides along so the fresh session knows what not to repeat.
+        assert.equal(
+          payload.pendingContextRecovery?.reason,
+          "Prompt too long: the maximum context length is 262144 tokens",
+        );
+      }
+
+      NodeFS.rmSync(tempDir, { recursive: true, force: true });
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("ProviderServiceLive compacts a session in place before falling back to a reset", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-service-compact-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const codex = makeFakeCodexAdapter();
+    const compactSessionHistory = vi.fn(() => Effect.succeed(true));
+    const registry = makeAdapterRegistryMock({
+      [ProviderDriverKind.make("codex")]: { ...codex.adapter, compactSessionHistory },
+    });
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+
+    const threadId = asThreadId("thread-compact");
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+        threadId,
+      });
+      codex.updateSession(threadId, (existing) => ({
+        ...existing,
+        status: "ready",
+        resumeCursor: { opaque: "history-the-provider-rejects" },
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      }));
+      codex.stopSession.mockClear();
+
+      // Compaction keeps the session: no stop, no cursor reset, and the
+      // adapter is asked exactly once for this thread.
+      const outcome = yield* provider.discardSessionHistory({
+        threadId,
+        sourceMessageId: MessageId.make("message-1"),
+        reason: "Prompt too long: the maximum context length is 262144 tokens",
+      });
+      assert.equal(outcome, "compacted");
+      assert.equal(compactSessionHistory.mock.calls.length, 1);
+      assert.equal(codex.stopSession.mock.calls.length, 0);
+    }).pipe(Effect.provide(providerLayer));
+
+    const binding = yield* Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      return yield* directory.getBinding(threadId);
+    }).pipe(Effect.provide(directoryLayer));
+    assert.equal(Option.isSome(binding), true);
+    if (Option.isSome(binding)) {
+      assert.deepEqual(binding.value.resumeCursor, { opaque: "history-the-provider-rejects" });
+      const payload = binding.value.runtimePayload as {
+        readonly pendingContextRecovery?: unknown;
+      };
+      assert.equal(payload.pendingContextRecovery ?? undefined, undefined);
+    }
+
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

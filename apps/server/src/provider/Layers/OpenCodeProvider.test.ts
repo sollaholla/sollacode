@@ -141,6 +141,37 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
     }),
   );
 
+  it.effect("keeps Jev decision models out of the coding picker, including custom entries", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: ["opencode"],
+          default: {},
+          all: [
+            {
+              id: "opencode",
+              name: "OpenCode Zen",
+              models: {
+                "big-pickle": { id: "big-pickle", name: "Big Pickle" },
+                "jev-1.13-free": { id: "jev-1.13-free", name: "Jev Free" },
+                "jev-1.13": { id: "jev-1.13", name: "Jev" },
+              },
+            },
+          ],
+        },
+        agents: [],
+      };
+      const settings = makeOpenCodeSettings({
+        customModels: ["openrouter/typesafe/jev-latest", "custom/coder"],
+      });
+      const snapshot = yield* checkOpenCodeProviderStatus(settings, process.cwd());
+      NodeAssert.deepEqual(snapshot.models.map((model) => model.slug).sort(), [
+        "custom/coder",
+        "opencode/big-pickle",
+      ]);
+    }),
+  );
+
   it.effect("hides generic Effect.tryPromise text for local CLI probe failures", () =>
     Effect.gen(function* () {
       runtimeMock.state.runVersionError = new Error("An error occurred in Effect.tryPromise");

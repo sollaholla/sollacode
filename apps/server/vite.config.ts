@@ -8,6 +8,7 @@ import packageJson from "./package.json" with { type: "json" };
 const bundledPackagePrefixes = [
   "@pierre/diffs",
   "@t3tools/",
+  "@xterm/",
   "effect-acp",
   "effect-codex-app-server",
 ];

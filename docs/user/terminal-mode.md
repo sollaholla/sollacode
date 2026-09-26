@@ -90,18 +90,28 @@ project `.mcp.json`. On Windows, Solla passes Claude a short-lived generated con
 instead of inline JSON, avoiding PowerShell argument quoting failures without storing the bearer
 credential in that file.
 
-Terminal mode is available on web and desktop. Mobile shows terminal-mode
-threads as regular chat threads.
+Terminal mode is available on web and desktop. On mobile, a thread's
+terminals open as a fullscreen tabbed screen instead: the thread-list
+sidebar hides while the terminal is open and is restored when you leave,
+and the tab strip above the surface switches between shells when more
+than one terminal is open. Mobile has no multi-pane split view; web and
+desktop keep their splits, panels, and per-pane fullscreen controls.
 
 ## Rendering notes
 
-Reattaching to a running full-screen program (a TUI) used to show stale or
-garbled output until the window was resized. The app now nudges the PTY with a
-one-column resize detour when a terminal is first attached or revealed, which
-makes the program repaint at the correct size automatically. Live output -
-including history the client has prefix-trimmed to stay inside its buffer cap -
-is written as a tail, not replayed, so a busy TUI cannot reset the viewport on
-every frame. Phone viewers do not resize the shared PTY.
+The host keeps a parsed terminal screen, including colors, cursor position,
+the alternate screen, and input modes. Reattaching restores that screen at
+the host's grid dimensions. Older diagnostic output can be truncated without
+cutting escape sequences out of the screen replay. This requires an updated
+host as well as an updated viewer, including when a Mac views Windows terminals.
+
+Live output appends without resetting the viewport. When a hidden pane's
+cached replay has exceeded its limit, it obtains a fresh screen from the host
+before remounting. Attaching or revealing a pane does not nudge the shared PTY
+through artificial size changes. Only a real size change from the controlling
+client resizes it. The cursor does not blink by default; a CLI can choose its
+own cursor behavior. Slow subscribers apply backpressure to PTY reads so control
+bytes are retained through output bursts.
 
 Inactive terminal viewports are destroyed to avoid retaining hidden xterm/WebGL renderers; their
 server-side PTYs keep running. When a pane is mounted again, its own restoring overlay hides the
@@ -123,8 +133,7 @@ because their repaints never touch scrollback. Terminals therefore launch with
 `CLAUDE_CODE_NO_FLICKER=1` by default, which starts Claude Code in its
 fullscreen (alternate-screen) renderer automatically; set the variable
 yourself (in a project's runtime env or your shell profile) to override.
-Terminal rendering uses the WebGL renderer when available, which removes the
-per-chunk repaint flicker fullscreen TUIs otherwise show while scrolling.
+Terminal rendering uses the WebGL renderer when available, with a DOM fallback.
 OSC 10/11/12 _queries_ are still dropped (they retry with no emulator reply
 and flicker); color _sets_ are kept so palettes survive replay. Integrated
 PTYs also default `COLORTERM=truecolor` and `COLORFGBG=15;0` so TUIs that
@@ -134,8 +143,8 @@ A terminal's PTY is shared across devices so everyone sees the same text, but
 size and layout stay local. Opening or rotating a phone does not resize the
 shared PTY or rewrite pane splits on the desktop; the desktop (or last
 explicit desktop resize) keeps the column count. When only a shell is in the
-foreground, stale mouse/focus tracking left behind by an
-exited TUI is reset locally after buffer replay, and mouse/focus report
+foreground, stale mouse/focus tracking in legacy history is reset locally
+after buffer replay. Parsed screens preserve the running program's modes. Mouse/focus report
 payloads are dropped at the input boundary so cursor movement can't type
 escape codes into the prompt. Repeated write failures are reported once
 instead of per event, and a terminal whose session the server no longer knows
@@ -168,3 +177,35 @@ If a pane cannot resume (no session id, or the provider has no id-specific
 resume command), its leftover TUI history is cleared on the next launch so you
 get a fresh shell instead of a garbled alt-screen. A CLI you had already
 exited back to a shell is left alone.
+
+## Launching installed CLIs
+
+The **Launch terminals** picker includes Claude, Codex, Grok, Cursor, OpenCode, Antigravity (`agy`),
+and Deep Code (`deepcode`) when each is installed, enabled and available in the thread's environment.
+Choose the CLIs and the number of panes per CLI. The picker limits selections to the group's pane
+capacity and remains scrollable on short screens. Nothing selected opens plain shells.
+
+A background shell command that was stopped during a provider restart is labeled **Stopped** in the
+work log. It is not a completed check. Provider startup and an active turn keep the chat's working
+indicator and Stop control visible, including when an earlier result arrives during a resumed start.
+
+Batch launches persist their complete split layout before opening shells. Six panes use two columns and three rows, including when restoring separate older groups. CLI launch sends an Enter keystroke (carriage return) so PowerShell executes it instead of entering continuation mode. Recreated terminal views repaint their current snapshot without waiting for another client or new output; attach failures uncover the error instead of leaving the restoring overlay in place.
+
+### Phones and shared terminals
+
+Narrow screens show one terminal at full width with a horizontally scrollable tab bar. Switching back to a wider screen restores the saved split layout; opening a phone view does not rewrite it. The keyboard inset leaves room for the terminal controls and prompt in portrait and landscape. Terminal keys preserve keyboard focus.
+
+When several devices view a terminal, typing or deliberately changing a pane or window size transfers control of its dimensions. Divider drags preview the new layout while held, then commit the terminal grid once after release; unchanged grids do not trigger a host repaint. Automatic cursor-position and capability replies do not transfer control, and passive viewers do not send duplicate replies. History is initially rendered at the server's terminal dimensions before the active client fits it to its pane. Restored output appears after a short parse-settle window, rather than a multi-second loading delay.
+
+### Multiple viewers and terminal recovery
+
+The client receiving real keyboard input or a deliberate layout resize controls the shared terminal dimensions. Other devices render the host grid without resizing the running CLI. Windows panes carry their ConPTY version with the snapshot so the renderer uses the host’s wrapping behavior. New output appends to the displayed buffer even when older scrollback is trimmed.
+
+Codex terminal recovery uses the exact session owned by that pane, including current Codex writer-lock files on Windows. It does not select the latest unrelated session in the same project. Persisted panes start on the host before a viewer opens the thread.
+
+Windows Codex panes stabilize the visible cursor during synchronized redraws. Codex's
+animation can briefly leave the Windows output cursor at a painted particle before
+restoring the input position. Solla keeps the input caret steady through that gap,
+including when viewing Windows from a Mac. Text and ordinary character typing update immediately;
+a cursor jump reported only by a synchronized frame settles for up to 80 ms. Ordinary
+shells and other CLIs keep their normal cursor behavior.

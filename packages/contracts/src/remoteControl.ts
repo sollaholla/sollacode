@@ -219,8 +219,12 @@ export const REMOTE_CONTROL_ACCESSIBILITY_PERMISSION_HELP =
  *   see it or type into it, by design; it must be answered at the machine.
  * - `elevated-window`: the foreground window runs at a higher integrity level
  *   than Solla Code, so UIPI silently discards injected input.
- * - `secure-input`: macOS has secure event input enabled, which a password
- *   field or authorization dialog turns on; synthetic key events are dropped.
+ * - `secure-input`: no longer produced. macOS secure event input - what a
+ *   password field or authorization dialog turns on - was detected here and
+ *   first refused, then warned about; both were removed at the owner's
+ *   request, since someone driving their own Mac from a phone has no keyboard
+ *   to fall back to. The literal stays so a host on an older build can still
+ *   report it without failing to decode, and the viewer says nothing for it.
  * - `capture-interrupted`: the screen-capture pipeline dropped and is being
  *   rebuilt. A desktop switch invalidates the duplication surface, so this is
  *   normally what the viewer sees while a UAC prompt is up.
@@ -238,6 +242,17 @@ export const RemoteControlHostStatus = Schema.Struct({
   state: Schema.Literals(["ok", "interrupted"]),
   reason: Schema.optional(RemoteControlHostStatusReason),
   detail: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(400))),
+  /**
+   * Windows only: whether UAC still draws its prompt on the secure desktop.
+   *
+   * Splits `secure-desktop` into the two cases that deserve different answers.
+   * True (the Windows default) means the prompt is on a desktop nothing else
+   * can reach, and the machine is one setting away from at least showing it.
+   * False means UAC already draws on the ordinary desktop, so a block is the
+   * lock screen, Ctrl+Alt+Del, or UIPI - and changing that setting will not
+   * help. Absent on macOS and on hosts predating this field.
+   */
+  secureDesktopPrompt: Schema.optional(Schema.Boolean),
 });
 export type RemoteControlHostStatus = typeof RemoteControlHostStatus.Type;
 

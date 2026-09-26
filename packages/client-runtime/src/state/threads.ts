@@ -10,6 +10,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -59,6 +60,15 @@ function formatThreadError(cause: Cause.Cause<unknown>): string {
  * renders at all.
  */
 const PREPARED_CONNECTION_WAIT = Duration.seconds(5);
+
+/**
+ * Pause before restarting a thread subscription that ended on its own. Only a
+ * defect or a stray interrupt ends one, so this is a safety net, not a retry
+ * loop; the pause also keeps a thread closing normally from logging a restart.
+ */
+const SUBSCRIPTION_RESTART_DELAY = Duration.seconds(1);
+/** Unconfirmed resubscribes before the socket itself is replaced. */
+const TRANSPORT_RESET_AFTER_STALLS = 3;
 
 function shouldPersistThread(thread: OrchestrationThread): boolean {
   const status = thread.session?.status;
@@ -125,16 +135,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }),
   );
   const resubscribeRequests = yield* Queue.sliding<void>(1);
-  // Stall-watchdog bookkeeping: when the stream last made observable progress
-  // (any delivered chunk zeroes the stall counter; a fresh subscribe attempt
-  // restarts only the timing window).
-  const lastStreamProgressAt = yield* Ref.make(0);
+  // Catch-up finishes only when the server confirms it. Receiving replay or
+  // live events cannot extend this deadline: a lost completion marker would
+  // otherwise leave an actively updating thread synchronizing forever.
+  const synchronizationStartedAt = yield* Ref.make<number | null>(null);
   const consecutiveStalls = yield* Ref.make(0);
-  const stampStreamProgress = Clock.currentTimeMillis.pipe(
-    Effect.flatMap((now) =>
-      Ref.set(lastStreamProgressAt, now).pipe(Effect.andThen(Ref.set(consecutiveStalls, 0))),
-    ),
-  );
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
@@ -172,6 +177,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.flatMap((connectionState) =>
       Ref.set(synchronizedGeneration, Option.some(connectionState.generation)),
     ),
+    Effect.andThen(Ref.set(synchronizationStartedAt, null)),
+    Effect.andThen(Ref.set(consecutiveStalls, 0)),
   );
   const setConnectionSynchronizing = (connectionState: SupervisorConnectionState) =>
     Ref.get(synchronizedGeneration).pipe(
@@ -356,7 +363,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const applyChunk = Effect.fn("EnvironmentThreadState.applyChunk")(function* (
     items: ReadonlyArray<OrchestrationThreadStreamItem>,
   ) {
-    yield* stampStreamProgress;
     let pending: Array<ThreadEventItem> = [];
     for (const item of items) {
       if (item.kind === "event") {
@@ -419,121 +425,146 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       ),
   });
 
-  // Mobile Safari can strand a subscription silently: the tab returns from the
-  // background with a zombie socket the supervisor still believes in, no
-  // transport error surfaces, and the thread sits on "Loading conversation…" /
-  // "Catching up…" until the user fully reloads the page. While the UI is in a
-  // waiting phase, watch for the stream making no progress and force a
-  // resubscribe; after two consecutive stalls assume the resume cursor or the
-  // socket itself is poisoned and reload from a fresh snapshot. The interval
-  // and threshold sit far above the TestClock adjustments the sync tests make
-  // (≤500ms), so the watchdog is inert there.
+  // Recover an unfinished synchronization handshake, including streams that
+  // keep delivering messages without their completion marker. Resume from the
+  // latest applied cursor first; two unconfirmed attempts request a fresh
+  // snapshot. The overlay clears only after real synchronization succeeds.
   const watchdogTick = Effect.gen(function* () {
     yield* Effect.sleep(Duration.seconds(5));
     const current = yield* SubscriptionRef.get(state);
     if (current.status !== "synchronizing") return;
     const session = yield* SubscriptionRef.get(supervisor.session);
     if (Option.isNone(session)) return;
-    const last = yield* Ref.get(lastStreamProgressAt);
+    const startedAt = yield* Ref.get(synchronizationStartedAt);
     const now = yield* Clock.currentTimeMillis;
-    if (last === 0 || now - last < 15_000) return;
+    if (startedAt === null || now - startedAt < 15_000) return;
     const stalls = (yield* Ref.get(consecutiveStalls)) + 1;
     yield* Ref.set(consecutiveStalls, stalls);
-    yield* Ref.set(lastStreamProgressAt, now);
+    yield* Ref.set(synchronizationStartedAt, now);
     if (stalls >= 2) {
       yield* Ref.set(forceSnapshot, true);
     }
     yield* Effect.logWarning(
-      "Thread subscription stalled while synchronizing; forcing a resubscribe.",
+      "Thread synchronization did not complete; resubscribing from the latest applied state.",
     ).pipe(Effect.annotateLogs({ threadId, stalls, forcedSnapshot: stalls >= 2 }));
+    // Resubscribing on a socket that stopped delivering can never succeed:
+    // the server receives every request and its answers never arrive (a
+    // phone looped ~70 times over nine minutes on one socket). After a fresh
+    // snapshot also went unconfirmed, the socket is the suspect, so ask for a
+    // new connection — once per stuck episode, so a thread-specific failure
+    // cannot keep tearing down every other thread's connection.
+    if (stalls === TRANSPORT_RESET_AFTER_STALLS) {
+      yield* supervisor.retryNow;
+    }
     yield* Queue.offer(resubscribeRequests, undefined);
   });
   yield* Effect.forkScoped(Effect.forever(watchdogTick));
 
   yield* setSynchronizing;
-  yield* Effect.forkScoped(
-    subscribeDynamic(
-      ORCHESTRATION_WS_METHODS.subscribeThread,
-      Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (session) {
-        const supportsCompletionMarker = yield* session.initialConfig.pipe(
-          Effect.map((config) => config.threadResumeCompletionMarker === true),
-          Effect.orElseSucceed(() => false),
-        );
-        yield* Ref.set(synchronizedGeneration, Option.none());
-        yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
-        yield* setSynchronizing;
-        // A fresh attempt restarts the stall window without erasing the
-        // escalation count — repeated silent attempts must still escalate.
-        yield* Clock.currentTimeMillis.pipe(
-          Effect.flatMap((now) => Ref.set(lastStreamProgressAt, now)),
-        );
+  const subscription = subscribeDynamic(
+    ORCHESTRATION_WS_METHODS.subscribeThread,
+    Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (session) {
+      const supportsCompletionMarker = yield* session.initialConfig.pipe(
+        Effect.map((config) => config.threadResumeCompletionMarker === true),
+        Effect.orElseSucceed(() => false),
+      );
+      yield* Ref.set(synchronizedGeneration, Option.none());
+      yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
+      yield* setSynchronizing;
+      // A fresh attempt restarts the stall window without erasing the
+      // escalation count — repeated silent attempts must still escalate.
+      yield* Clock.currentTimeMillis.pipe(
+        Effect.flatMap((now) => Ref.set(synchronizationStartedAt, now)),
+      );
 
-        let current = yield* SubscriptionRef.get(state);
-        const mustLoadSnapshot = yield* Ref.get(forceSnapshot);
-        if ((mustLoadSnapshot || Option.isNone(current.data)) && current.status !== "deleted") {
-          // Bounded, and never fatal. `Stream.runHead` yields `None` when the
-          // supervisor's scope closes mid-reconnect, and `Option.getOrThrow`
-          // turned that into a defect that killed this fiber for good — leaving
-          // the thread in `synchronizing` with no request ever reaching the
-          // server, which the UI renders as a permanent "Syncing messages...".
-          // Falling back to `None` just skips the optimisation and lets the
-          // subscription's first frame carry the snapshot instead.
-          const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
-            Effect.flatMap(
-              Option.match({
-                onSome: (value) => Effect.succeed(Option.some(value)),
-                onNone: () =>
-                  SubscriptionRef.changes(supervisor.prepared).pipe(
-                    Stream.filter(Option.isSome),
-                    Stream.map((value) => value.value),
-                    Stream.runHead,
-                  ),
-              }),
-            ),
-            Effect.timeoutOption(PREPARED_CONNECTION_WAIT),
-            Effect.map(Option.flatten),
-            Effect.orElseSucceed(() => Option.none<PreparedConnection>()),
-          );
-          if (Option.isSome(prepared)) {
-            const httpSnapshot = yield* snapshotLoader.load(prepared.value, threadId);
-            if (Option.isSome(httpSnapshot)) {
-              yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
-              current = yield* SubscriptionRef.get(state);
-            }
+      let current = yield* SubscriptionRef.get(state);
+      const mustLoadSnapshot = yield* Ref.get(forceSnapshot);
+      if ((mustLoadSnapshot || Option.isNone(current.data)) && current.status !== "deleted") {
+        // Bounded, and never fatal. `Stream.runHead` yields `None` when the
+        // supervisor's scope closes mid-reconnect, and `Option.getOrThrow`
+        // turned that into a defect that killed this fiber for good — leaving
+        // the thread in `synchronizing` with no request ever reaching the
+        // server, which the UI renders as a permanent "Syncing messages...".
+        // Falling back to `None` just skips the optimisation and lets the
+        // subscription's first frame carry the snapshot instead.
+        const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
+          Effect.flatMap(
+            Option.match({
+              onSome: (value) => Effect.succeed(Option.some(value)),
+              onNone: () =>
+                SubscriptionRef.changes(supervisor.prepared).pipe(
+                  Stream.filter(Option.isSome),
+                  Stream.map((value) => value.value),
+                  Stream.runHead,
+                ),
+            }),
+          ),
+          Effect.timeoutOption(PREPARED_CONNECTION_WAIT),
+          Effect.map(Option.flatten),
+          Effect.orElseSucceed(() => Option.none<PreparedConnection>()),
+        );
+        if (Option.isSome(prepared)) {
+          const httpSnapshot = yield* snapshotLoader.load(prepared.value, threadId);
+          if (Option.isSome(httpSnapshot)) {
+            yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
+            current = yield* SubscriptionRef.get(state);
           }
         }
+      }
 
-        const sequence = yield* SubscriptionRef.get(lastSequence);
-        const canResume = Option.isSome(current.data) && !(yield* Ref.get(forceSnapshot));
-        if (!supportsCompletionMarker && canResume) {
-          yield* markCurrentGenerationSynchronized;
-          yield* SubscriptionRef.update(state, (value) => ({
-            ...value,
-            status: value.status === "deleted" ? value.status : ("live" as const),
-            error: Option.none(),
-          }));
-        }
+      const sequence = yield* SubscriptionRef.get(lastSequence);
+      const canResume = Option.isSome(current.data) && !(yield* Ref.get(forceSnapshot));
+      if (!supportsCompletionMarker && canResume) {
+        yield* markCurrentGenerationSynchronized;
+        yield* SubscriptionRef.update(state, (value) => ({
+          ...value,
+          status: value.status === "deleted" ? value.status : ("live" as const),
+          error: Option.none(),
+        }));
+      }
 
-        return {
-          threadId,
-          ...(canResume ? { afterSequence: sequence } : {}),
-          ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
-        };
-      }),
-      {
-        onExpectedFailure: setStreamError,
-        retryExpectedFailureAfter: "250 millis",
-        resubscribe: Stream.merge(
-          Stream.fromQueue(resubscribeRequests) as Stream.Stream<unknown>,
-          foregroundResubscriptions,
+      return {
+        threadId,
+        ...(canResume ? { afterSequence: sequence } : {}),
+        ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
+      };
+    }),
+    {
+      onExpectedFailure: setStreamError,
+      retryExpectedFailureAfter: "250 millis",
+      resubscribe: Stream.merge(
+        Stream.fromQueue(resubscribeRequests) as Stream.Stream<unknown>,
+        foregroundResubscriptions,
+      ),
+    },
+  ).pipe(
+    // Rechunk oversized catch-up frames so a long replay yields between
+    // bounded folds instead of monopolizing Safari's renderer for seconds.
+    // A live event is still applied immediately as a chunk of one.
+    Stream.chunks,
+    Stream.runForEach(applyNaturalChunk),
+  );
+  // The subscription outlives every reconnect. If it ends anyway, the thread
+  // would sit in "Catching up…" until a page refresh, so restart it from a
+  // fresh snapshot. Closing this scope interrupts the pause, so a thread that
+  // is simply going away never logs a restart.
+  yield* Effect.forkScoped(
+    subscription.pipe(
+      Effect.exit,
+      Effect.flatMap((exit) =>
+        Effect.sleep(SUBSCRIPTION_RESTART_DELAY).pipe(
+          Effect.andThen(
+            Effect.logWarning("Thread subscription ended; restarting from a fresh snapshot.").pipe(
+              Effect.annotateLogs({
+                threadId,
+                cause: Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "completed",
+              }),
+            ),
+          ),
+          Effect.andThen(Ref.set(forceSnapshot, true)),
         ),
-      },
-    ).pipe(
-      // Rechunk oversized catch-up frames so a long replay yields between
-      // bounded folds instead of monopolizing Safari's renderer for seconds.
-      // A live event is still applied immediately as a chunk of one.
-      Stream.chunks,
-      Stream.runForEach(applyNaturalChunk),
+      ),
+      Effect.forever,
     ),
   );
 

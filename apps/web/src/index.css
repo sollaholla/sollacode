@@ -503,10 +503,14 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     container-type: inline-size;
   }
 
+  /* The side chips never shrink below their content; the usage pill, which
+     wraps, is what gives way. With a 0 floor the auto middle column grew to
+     its full one-line width first and squeezed the side-chat chip narrower
+     than its icon and count, so the count spilled out past its border. */
   .chat-composer-status-rail {
     display: grid;
     grid-template-areas: "voice usage actions";
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-columns: minmax(min-content, 1fr) auto minmax(min-content, 1fr);
     align-items: center;
     gap: 0.5rem;
     min-height: 2rem;
@@ -1501,6 +1505,29 @@ label:has(> select#reasoning-effort) select {
   text-decoration: none;
 }
 
+/* A slash command the provider runs because the message starts with it: link
+   coloured with the dotted underline links show on hover, and tappable for an
+   explanation. The composer marks its command text with an inline style whose
+   custom property is matched here. */
+.provider-slash-command-link,
+.composer-provider-slash-command,
+[style*="--solla-slash-command"] {
+  color: var(--info-foreground);
+  background-image: radial-gradient(circle, currentcolor 0.75px, transparent 1px);
+  background-position: left bottom;
+  background-repeat: repeat-x;
+  background-size: 4px 2px;
+  cursor: pointer;
+}
+
+.provider-slash-command-link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background-color: transparent;
+  font: inherit;
+}
+
 .chat-markdown a:not(.chat-markdown-file-link):hover,
 .chat-markdown a:not(.chat-markdown-file-link):focus-visible {
   background-image: radial-gradient(circle, currentcolor 0.75px, transparent 1px);
@@ -2129,4 +2156,30 @@ label:has(> select#reasoning-effort) select {
   .working-pillars > path {
     animation: none;
   }
+}
+
+/* Enabled header actions share one contrast level; disabled buttons keep their
+   existing reduced opacity. Menus render outside these action rows. */
+[data-chat-header-actions] button:not(:disabled):not([aria-disabled="true"]) svg {
+  color: var(--foreground);
+  opacity: 1;
+}
+
+/* Toolbar chrome must never become Safari's long-press text selection target.
+   Keep this separate from the editable surface and its native range handles. */
+[data-chat-composer-form]
+  :is(button, [role="button"], [data-chat-composer-footer], [data-chat-composer-actions]) {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+[data-chat-composer-form] :is(textarea, input, [contenteditable="true"]) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* App surfaces own pinch gestures; keep native single-finger panning. */
+html {
+  touch-action: pan-x pan-y;
 }

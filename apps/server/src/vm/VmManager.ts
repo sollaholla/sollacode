@@ -139,7 +139,7 @@ export const make = Effect.gen(function* () {
       yield* store.insert(agent).pipe(Effect.orDie);
       yield* publishAgents();
 
-      return agent;
+      return yield* requireAgent(vmAgentId).pipe(Effect.orDie);
     });
 
   const deleteAgent: VmManagerShape["deleteAgent"] = (vmAgentId) =>

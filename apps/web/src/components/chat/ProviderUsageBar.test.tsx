@@ -16,6 +16,7 @@ import {
   ProviderUsagePlacementRow,
   claudePopupWindows,
   compactProviderUsageMetric,
+  museUsageWindows,
   deriveProviderUsageReports,
   deriveProviderUsageSummaries,
   formatUsageWindowPaceDelta,
@@ -34,6 +35,8 @@ import {
   mergeProviderUsageEntry,
   providerUsageAccountKey,
   pruneStaleUsageWindows,
+  retireUnreportedWindows,
+  retireSyntheticCodexWindows,
 } from "../../providerUsageStore";
 
 const makeProvider = (driver: string, instanceId = driver, email?: string): ServerProvider => ({
@@ -73,6 +76,361 @@ const usageActivity = (
 });
 
 describe("provider usage summaries", () => {
+  it("shows OpenCode session cost for free models without requiring account authentication or a quota", () => {
+    const provider = { ...makeProvider("opencode"), auth: { status: "unauthenticated" as const } };
+    const [summary] = deriveProviderUsageSummaries(
+      [provider],
+      [
+        usageActivity("oc", "opencode", "opencode", {
+          source: "opencode-session",
+          sessionId: "one",
+          sessionCost: 0,
+        }),
+      ],
+      {},
+      Date.parse("2026-07-30T15:00:00.000Z"),
+    );
+    expect(summary?.state).toBe("available");
+    expect(compactProviderUsageMetric(summary!)).toMatchObject({
+      label: "Cost",
+      window: { detail: "$0.00", usedPercent: null },
+    });
+    const markup = renderToStaticMarkup(
+      <ProviderUsageBadgeDetails summary={summary!} onRefreshProvider={async () => undefined} />,
+    );
+    expect(markup).toContain("Session Cost");
+    expect(markup).toContain("$0.00");
+    expect(markup).toContain("estimate");
+    expect(markup).not.toContain('role="progressbar"');
+    expect(markup).not.toContain("Refresh opencode usage");
+    const bar = renderToStaticMarkup(
+      <ProviderUsageBar
+        environmentId={localEnvironmentId}
+        providers={[provider]}
+        activities={[
+          usageActivity("oc", "opencode", "opencode", {
+            source: "opencode-session",
+            sessionId: "one",
+            sessionCost: 0,
+          }),
+        ]}
+      />,
+    );
+    expect(bar).toContain("$0.00");
+  });
+
+  it("keeps OpenCode cost bound to the current thread and provider instance", () => {
+    const provider = {
+      ...makeProvider("opencode"),
+      accountUsageReportedAt: "2026-07-29T15:05:00.000Z",
+      accountUsage: { source: "opencode-session", sessionId: "other", sessionCost: 99 },
+    };
+    const activity = usageActivity("oc", "opencode", "opencode", {
+      source: "opencode-session",
+      sessionId: "one",
+      sessionCost: 1.25,
+    });
+    const persisted = deriveProviderUsageReports(
+      [provider],
+      [
+        usageActivity(
+          "other",
+          "opencode",
+          "opencode",
+          provider.accountUsage,
+          provider.accountUsageReportedAt,
+        ),
+      ],
+    );
+    const [current] = deriveProviderUsageSummaries([provider], [activity], persisted);
+    expect(current?.windows[0]?.detail).toBe("$1.25");
+    const [empty] = deriveProviderUsageSummaries([provider], [], persisted);
+    expect(empty?.windows).toEqual([]);
+    expect(empty?.state).toBe("unavailable");
+    expect(compactProviderUsageMetric(empty!)).toEqual({ label: "Cost", window: null });
+    expect(deriveProviderUsageReports([provider], [])).toEqual({});
+    const [first, second] = deriveProviderUsageSummaries(
+      [provider, makeProvider("opencode", "opencode-two")],
+      [activity],
+    );
+    expect(first?.windows[0]?.detail).toBe("$1.25");
+    expect(second?.windows).toEqual([]);
+    const markup = renderToStaticMarkup(<ProviderUsageBadgeDetails summary={empty!} />);
+    expect(markup).toContain("Session usage");
+    expect(markup).not.toContain("Account-level provider usage");
+  });
+
+  it("shows Deep Code credit and billing state without a percentage", () => {
+    const provider: ServerProvider = {
+      ...makeProvider("deepcode"),
+      accountUsageIdentity: "account-one",
+      accountUsageReportedAt: "2026-07-29T15:00:00.000Z",
+      accountUsage: {
+        is_available: true,
+        balance_infos: [
+          {
+            currency: "USD",
+            total_balance: "12.50",
+            granted_balance: "2.50",
+            topped_up_balance: "10",
+          },
+        ],
+      },
+    };
+    const [summary] = deriveProviderUsageSummaries(
+      [provider],
+      [],
+      {},
+      Date.parse(provider.checkedAt),
+    );
+    expect(summary?.state).toBe("available");
+    expect(compactProviderUsageMetric(summary!)?.window).toMatchObject({
+      detail: "$12.5",
+      usedPercent: null,
+    });
+    const markup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        name="Deep Code"
+        state={summary!.state}
+        windows={summary!.windows}
+        reportedAt={summary!.reportedAt}
+      />,
+    );
+    expect(markup).toContain("$12.5");
+    expect(markup).toContain("$2.5 granted");
+    expect(markup).not.toContain('role="progressbar"');
+    const reports = deriveProviderUsageReports([provider], []);
+    // A failed refresh explains the card; it does not age the reading. One
+    // slow round trip used to paint "Stale" on a number seconds old.
+    const [failedRefresh] = deriveProviderUsageSummaries(
+      [{ ...provider, accountUsageStatus: { state: "error", message: "Could not refresh" } }],
+      [],
+      reports,
+      Date.parse(provider.checkedAt),
+    );
+    expect(failedRefresh?.state).toBe("available");
+    expect(failedRefresh?.message).toBe("Could not refresh");
+    const [stale] = deriveProviderUsageSummaries(
+      [{ ...provider, accountUsageStatus: { state: "error", message: "Could not refresh" } }],
+      [],
+      reports,
+      Date.parse(provider.checkedAt) + 21 * 60_000,
+    );
+    expect(stale?.state).toBe("stale");
+    const { accountUsage: _, accountUsageReportedAt: __, ...changed } = provider;
+    const [other] = deriveProviderUsageSummaries(
+      [{ ...changed, accountUsageIdentity: "account-two" }],
+      [],
+      reports,
+      Date.parse(provider.checkedAt),
+    );
+    expect(other?.windows).toEqual([]);
+  });
+  it("keeps Deep Code visible when credentials or endpoint usage are unavailable", () => {
+    const provider: ServerProvider = {
+      ...makeProvider("deepcode"),
+      auth: { status: "unauthenticated" },
+      accountUsageStatus: { state: "unavailable", message: "Configure credentials" },
+    };
+    const [summary] = deriveProviderUsageSummaries([provider], []);
+    expect(summary?.message).toBe("Configure credentials");
+    expect(compactProviderUsageMetric(summary!)).toEqual({ label: "Credit", window: null });
+    expect(providerUsageExternalLink(provider.driver)?.href).toBe(
+      "https://platform.deepseek.com/usage",
+    );
+  });
+  /**
+   * Muse cannot report account usage at all -- Meta serves credits to its
+   * dashboard, and neither the CLI nor the MSP schema exposes a quota call. It
+   * still belongs in the strip: a signed-in provider that renders no chip
+   * beside four that each show a number reads as one that is broken.
+   */
+  it("gives Muse a usage chip that reports no number rather than no chip", () => {
+    const provider: ServerProvider = {
+      ...makeProvider("muse"),
+      accountUsageStatus: {
+        state: "unsupported",
+        message: "Muse serves account credits only to its dashboard, not to the CLI.",
+      },
+    };
+    const [summary] = deriveProviderUsageSummaries([provider], []);
+    expect(summary?.state).toBe("unsupported");
+    const metric = compactProviderUsageMetric(summary!);
+    expect(metric).toEqual({ label: "usage", window: null });
+    // No invented denominator: the badge renders this as "not reported".
+    expect(metric?.window?.usedPercent ?? null).toBeNull();
+  });
+
+  /**
+   * Muse serves no balance, but it serves prices and per-completion tokens,
+   * so what the session has spent is a real figure -- the one a
+   * pay-as-you-go account is charged by. The probe still answers
+   * `unsupported` (it has no quota call to make); a reading wins over that.
+   */
+  it("shows Muse's session spend on the chip and in the card", () => {
+    const provider: ServerProvider = {
+      ...makeProvider("muse", "muse", "spark@example.com"),
+      accountUsageStatus: { state: "unsupported", message: "Balance is on the dashboard." },
+    };
+    const [summary] = deriveProviderUsageSummaries(
+      [provider],
+      [
+        usageActivity(
+          "usage-muse",
+          "muse",
+          "muse",
+          {
+            source: "muse-spend",
+            currency: "USD",
+            sessionSpend: "1.234567",
+            unpricedCompletions: 0,
+          },
+          "2026-07-29T15:00:00.000Z",
+        ),
+      ],
+      {},
+      Date.parse("2026-07-29T15:01:00.000Z"),
+    );
+    expect(summary?.state).toBe("available");
+    expect(summary?.windows).toHaveLength(1);
+    expect(summary?.windows[0]).toMatchObject({
+      key: "session-spend",
+      usedPercent: null,
+      detail: "$1.23",
+    });
+    expect(compactProviderUsageMetric(summary!)).toMatchObject({
+      label: "Spend",
+      window: { detail: "$1.23" },
+    });
+  });
+
+  /**
+   * Muse's spend is per session, but the server keeps every Muse session's
+   * last report in the one per-provider slot, and the persisted store is
+   * shared by every thread. A thread switching between two Muse chats
+   * flickered between the two sessions' figures. Only the current thread's
+   * own report may paint its chip.
+   */
+  it("keeps Muse's session spend scoped to the current thread", () => {
+    const accountKey = "environment-local\0muse:account:spark@example.com";
+    const provider: ServerProvider = {
+      ...makeProvider("muse", "muse", "spark@example.com"),
+      // Another Muse session reported later, into the shared provider slot.
+      accountUsage: { source: "muse-spend", currency: "USD", sessionSpend: "9.99" },
+      accountUsageReportedAt: "2026-07-29T15:05:00.000Z",
+    };
+    const persisted = {
+      [accountKey]: {
+        accountKey,
+        driver: ProviderDriverKind.make("muse"),
+        reportedAt: "2026-07-29T15:06:00.000Z",
+        windows: [
+          {
+            key: "session-spend",
+            label: "Session spend",
+            usedPercent: null,
+            resetAt: null,
+            detail: "$7.77",
+          },
+        ],
+      },
+    };
+    const thisThread = [
+      usageActivity(
+        "usage-muse",
+        "muse",
+        "muse",
+        { source: "muse-spend", currency: "USD", sessionSpend: "1.23", unpricedCompletions: 0 },
+        "2026-07-29T15:00:00.000Z",
+      ),
+    ];
+    const [summary] = deriveProviderUsageSummaries(
+      [provider],
+      thisThread,
+      persisted,
+      Date.parse("2026-07-29T15:07:00.000Z"),
+      EnvironmentId.make("environment-local"),
+    );
+    expect(summary?.windows.map((window) => window.detail)).toEqual(["$1.23"]);
+    // A thread with no Muse report of its own shows none, not a neighbour's.
+    const [empty] = deriveProviderUsageSummaries(
+      [provider],
+      [],
+      persisted,
+      Date.parse("2026-07-29T15:07:00.000Z"),
+      EnvironmentId.make("environment-local"),
+    );
+    expect(empty?.windows).toEqual([]);
+    // And the thread's report never enters the shared store's inputs.
+    expect(
+      deriveProviderUsageReports([provider], [], EnvironmentId.make("environment-local")),
+    ).toEqual({});
+  });
+
+  it("marks a spend that could not price every completion, and refuses unknown shapes", () => {
+    expect(
+      museUsageWindows({ source: "muse-spend", sessionSpend: "0.50", unpricedCompletions: 2 })[0],
+    ).toMatchObject({ detail: "$0.50+" });
+    expect(museUsageWindows({ source: "muse-spend", sessionSpend: "0.004" })[0]?.detail).toBe(
+      "$<0.01",
+    );
+    expect(museUsageWindows({ sessionSpend: "5" })).toEqual([]);
+    expect(museUsageWindows({ source: "muse-spend", sessionSpend: "lots" })).toEqual([]);
+  });
+
+  /**
+   * The phone after 0.1.539: the previous build's Muse report had persisted
+   * "session-tokens" and "context" windows, and the new build -- which
+   * reports only spend -- left them on the card, because a persisted window
+   * is only ever replaced by a newer report with the same key.
+   */
+  it("retires Muse windows the current build no longer reports", () => {
+    const accountKey = "environment-local\0muse:account:spark@example.com";
+    const stale = {
+      [accountKey]: {
+        accountKey,
+        driver: ProviderDriverKind.make("muse"),
+        reportedAt: "2026-09-12T10:43:00.000Z",
+        windows: [
+          { key: "session-tokens", label: "Session tokens", usedPercent: null, resetAt: null },
+          { key: "context", label: "Context window", usedPercent: 4, resetAt: null },
+          { key: "session-spend", label: "Session spend", usedPercent: null, resetAt: null },
+        ],
+      },
+    };
+    // On load: only the key the build still reports survives.
+    expect(retireUnreportedWindows(stale)[accountKey]?.windows.map((w) => w.key)).toEqual([
+      "session-spend",
+    ]);
+    // On a newer report: Muse's spend is the whole figure, so unseen keys go.
+    const merged = mergeProviderUsageEntry(stale, {
+      accountKey,
+      driver: ProviderDriverKind.make("muse"),
+      reportedAt: "2026-09-12T11:10:00.000Z",
+      windows: [
+        {
+          key: "session-spend",
+          label: "Session spend",
+          usedPercent: null,
+          resetAt: null,
+          detail: "$0.02",
+        },
+      ],
+    });
+    expect(merged[accountKey]?.windows.map((w) => w.key)).toEqual(["session-spend"]);
+    // Other drivers keep the key-merge they rely on.
+    const codexKey = "environment-local\0codex:account:test@example.com";
+    const codex = {
+      [codexKey]: {
+        accountKey: codexKey,
+        driver: ProviderDriverKind.make("codex"),
+        reportedAt: "2026-09-12T10:43:00.000Z",
+        windows: [{ key: "weekly", label: "Weekly", usedPercent: 10, resetAt: null }],
+      },
+    };
+    expect(retireUnreportedWindows(codex)).toEqual(codex);
+  });
+
   it("latches a freshly reported reset until the user acts and never resurrects that credit", () => {
     const accountKey = "environment-local\0codex:account:test@example.com";
     const resetCredit = {
@@ -141,6 +499,114 @@ describe("provider usage summaries", () => {
     expect(providerUsageExternalLink(ProviderDriverKind.make("codex"))).toBeNull();
   });
 
+  it("links Muse billing to Meta Account Center, the only place the charge is shown", () => {
+    // Checked against muse 1.1.1: /status prints the billing mode, /upgrade
+    // the subscription state, /usage and /cost the session estimate. None
+    // prints the billed amount, and neither does the MSP.
+    expect(providerUsageExternalLink(ProviderDriverKind.make("muse"))).toEqual({
+      href: "https://accountscenter.meta.com/muse_code/",
+      label: "View Muse billing in Meta Account Center",
+    });
+  });
+
+  it("drops Codex's cold-start stand-in windows and keeps the real reading beside them", () => {
+    // What a fresh `codex app-server` answered on 2026-09-12: 0% used with a
+    // reset exactly one window after the report itself. The account was in
+    // fact at 100% until Sep 14; rendering the stand-in read as a reset.
+    const reportedAt = "2026-09-12T18:10:47.000Z";
+    const reportedAtSeconds = Math.floor(Date.parse(reportedAt) / 1000);
+    const codex = {
+      ...makeProvider("codex"),
+      accountUsage: {
+        rateLimits: {
+          primary: {
+            usedPercent: 0,
+            windowDurationMins: 300,
+            resetsAt: reportedAtSeconds + 300 * 60 + 40,
+          },
+          secondary: {
+            usedPercent: 100,
+            windowDurationMins: 10_080,
+            resetsAt: reportedAtSeconds + 2 * 24 * 3600,
+          },
+        },
+      },
+      accountUsageReportedAt: reportedAt,
+    } satisfies ServerProvider;
+    const [report] = Object.values(deriveProviderUsageReports([codex], []));
+    expect(report?.windows.map((window) => [window.key, window.usedPercent])).toEqual([
+      ["weekly", 100],
+    ]);
+
+    // A genuinely fresh window is not a stand-in: its reset no longer tracks
+    // the clock once any time has passed, and any usage at all rules it out.
+    const fresh = {
+      ...codex,
+      accountUsage: {
+        rateLimits: {
+          primary: {
+            usedPercent: 1,
+            windowDurationMins: 300,
+            resetsAt: reportedAtSeconds + 300 * 60,
+          },
+          secondary: {
+            usedPercent: 0,
+            windowDurationMins: 10_080,
+            resetsAt: reportedAtSeconds + 10_080 * 60 - 3 * 3600,
+          },
+        },
+      },
+    } satisfies ServerProvider;
+    const [freshReport] = Object.values(deriveProviderUsageReports([fresh], []));
+    // (The 5-hour window is hidden from the card by design; only the weekly
+    // reading is reported either way.)
+    expect(freshReport?.windows.map((window) => [window.key, window.usedPercent])).toEqual([
+      ["weekly", 0],
+    ]);
+  });
+
+  it("retires a stand-in Codex window already persisted from before the filter", () => {
+    const reportedAt = "2026-09-12T18:10:47.000Z";
+    const reportedAtMs = Date.parse(reportedAt);
+    const standIn = {
+      key: "weekly",
+      label: "Weekly",
+      usedPercent: 0,
+      resetAt: reportedAtMs + 10_080 * 60_000,
+      windowDurationMs: 10_080 * 60_000,
+      lastSeenAt: reportedAt,
+    };
+    const real = {
+      key: "5h",
+      label: "5h",
+      usedPercent: 40,
+      resetAt: reportedAtMs + 2 * 3600_000,
+      windowDurationMs: 300 * 60_000,
+      lastSeenAt: reportedAt,
+    };
+    const entries = {
+      "codex:account": {
+        accountKey: "codex:account",
+        driver: ProviderDriverKind.make("codex"),
+        windows: [standIn, real],
+        reportedAt,
+      },
+      // Other drivers are never judged by Codex's stand-in shape.
+      "grok:account": {
+        accountKey: "grok:account",
+        driver: ProviderDriverKind.make("grok"),
+        windows: [{ ...standIn, key: "weekly" }],
+        reportedAt,
+      },
+    };
+    const retired = retireSyntheticCodexWindows(entries);
+    expect(retired["codex:account"]?.windows).toEqual([real]);
+    expect(retired["grok:account"]).toBe(entries["grok:account"]);
+    // Untouched entries keep their identity so callers can cheaply diff.
+    const clean = { "codex:account": { ...entries["codex:account"], windows: [real] } };
+    expect(retireSyntheticCodexWindows(clean)["codex:account"]).toBe(clean["codex:account"]);
+  });
+
   it("surfaces available Codex usage reset credits without inventing an action for Grok", () => {
     const codex = {
       ...makeProvider("codex"),
@@ -207,6 +673,59 @@ describe("provider usage summaries", () => {
     );
   });
 
+  it("shows Claude's banked reset and keeps it across a rate-limit event that omits it", () => {
+    const claude = {
+      ...makeProvider("claudeAgent", "claudeAgent", "fixture@example.com"),
+      accountUsage: {
+        rate_limits_available: true,
+        rate_limits: { five_hour: { utilization: 100, resets_at: "2026-09-22T20:00:00Z" } },
+        rateLimitResetCredits: {
+          availableCount: 2,
+          credits: [
+            {
+              id: "grant_1",
+              status: "available",
+              title: "Usage limit reset",
+              description: "Usable once you reach a usage limit.",
+              expiresAt: null,
+            },
+          ],
+        },
+      },
+      accountUsageReportedAt: "2026-09-22T15:00:00.000Z",
+    } satisfies ServerProvider;
+    const now = Date.parse("2026-09-22T15:01:00.000Z");
+
+    const persisted = deriveProviderUsageReports([claude], []);
+    const [summary] = deriveProviderUsageSummaries([claude], [], persisted, now);
+    expect(summary?.resetCredits).toEqual({
+      availableCount: 2,
+      credits: [
+        expect.objectContaining({
+          id: "grant_1",
+          description: "Usable once you reach a usage limit.",
+        }),
+      ],
+    });
+
+    // A live rate-limit event says nothing about the bank.
+    const [afterEvent] = deriveProviderUsageSummaries(
+      [claude],
+      [
+        usageActivity(
+          "rl",
+          "claudeAgent",
+          "claudeAgent",
+          { rate_limits: { five_hour: { utilization: 40 } } },
+          "2026-09-22T15:00:30.000Z",
+        ),
+      ],
+      persisted,
+      now,
+    );
+    expect(afterEvent?.resetCredits?.credits[0]?.id).toBe("grant_1");
+  });
+
   it("turns AGY remaining-percent family rows into used-percent windows", () => {
     const provider = {
       ...makeProvider("antigravity", "antigravity", "fixture@example.com"),
@@ -265,6 +784,64 @@ describe("provider usage summaries", () => {
       label: "Claude and GPT",
       window: expect.objectContaining({ key: "claude-gpt", usedPercent: 0 }),
     });
+  });
+
+  it("defaults AGY to Gemini and follows only that instance's explicit model selection", () => {
+    const provider = makeProvider("antigravity");
+    const summary = {
+      provider,
+      state: "available" as const,
+      reportedAt: null,
+      windows: [
+        { key: "gemini", label: "Gemini", usedPercent: 12, resetAt: null },
+        { key: "claude-gpt", label: "Claude and GPT", usedPercent: 97, resetAt: null },
+      ],
+    };
+    const gemini = {
+      label: "Gemini",
+      window: expect.objectContaining({ key: "gemini", usedPercent: 12 }),
+    };
+    expect(compactProviderUsageMetric(summary)).toEqual(gemini);
+    for (const model of ["gemini-3.8-flash-low", "unknown-custom-model"]) {
+      expect(
+        compactProviderUsageMetric(summary, { instanceId: provider.instanceId, model }),
+      ).toEqual(gemini);
+    }
+    for (const model of ["claude-fable-5", "claude-opus-5", "gpt-6"]) {
+      expect(
+        compactProviderUsageMetric(summary, { instanceId: provider.instanceId, model }),
+      ).toEqual({
+        label: "Claude and GPT",
+        window: expect.objectContaining({ key: "claude-gpt", usedPercent: 97 }),
+      });
+      expect(
+        compactProviderUsageMetric(summary, {
+          instanceId: ProviderInstanceId.make("another-agy-account"),
+          model,
+        }),
+      ).toEqual(gemini);
+    }
+    expect(compactProviderUsageMetric(summary)).toEqual(gemini);
+  });
+
+  it("does not substitute another AGY pool when the displayed family is unreported", () => {
+    const provider = makeProvider("antigravity");
+    const summary = {
+      provider,
+      state: "available" as const,
+      reportedAt: null,
+      windows: [{ key: "claude-gpt", label: "Claude and GPT", usedPercent: 97, resetAt: null }],
+    };
+    expect(compactProviderUsageMetric(summary)).toEqual({ label: "Gemini", window: null });
+    expect(
+      compactProviderUsageMetric(
+        {
+          ...summary,
+          windows: [{ key: "gemini", label: "Gemini", usedPercent: 12, resetAt: null }],
+        },
+        { instanceId: provider.instanceId, model: "claude-fable-5" },
+      ),
+    ).toEqual({ label: "Claude and GPT", window: null });
   });
 
   it("titles Antigravity usage as AGY so the card heading stays on one line", () => {
@@ -358,7 +935,11 @@ describe("provider usage summaries", () => {
     expect(compactProviderUsageMetric(summaries[0]!)?.label).toBe("Pay as you go");
   });
 
-  it("replaces persisted Grok usage with zero when a new active period omits the scalar", () => {
+  // The point of this case is that a finished period's number must not linger.
+  // It used to be replaced with a fabricated 0%; now it is replaced with the
+  // honest "unknown", because an omitted scalar also means an exhausted
+  // account (2026-09-18) and the two are indistinguishable in the payload.
+  it("replaces persisted Grok usage when a new active period omits the scalar", () => {
     const grok = {
       ...makeProvider("grok"),
       displayName: "Grok",
@@ -404,7 +985,8 @@ describe("provider usage summaries", () => {
     expect(summaries[0]?.windows).toEqual([
       expect.objectContaining({
         key: "weekly",
-        usedPercent: 0,
+        usedPercent: null,
+        detail: "Not reported",
         resetAt: Date.parse("2026-09-01T17:24:28.593003+00:00"),
       }),
     ]);
@@ -1960,5 +2542,42 @@ describe("stale usage windows", () => {
       windows: [window("weekly")],
     });
     expect(later[accountKey]?.windows.map((entry) => entry.key)).toEqual(["weekly"]);
+  });
+});
+
+describe("Grok weekly usage", () => {
+  const grokWith = (config: Record<string, unknown>) =>
+    ({
+      ...makeProvider("grok"),
+      accountUsage: { config },
+      accountUsageReportedAt: "2026-09-18T18:30:00.000Z",
+    }) satisfies ServerProvider;
+  const period = {
+    type: "USAGE_PERIOD_TYPE_WEEKLY",
+    start: "2026-09-15T17:24:28+00:00",
+    end: "2026-09-22T17:24:28+00:00",
+  };
+  const windowsFor = (config: Record<string, unknown>) =>
+    deriveProviderUsageSummaries(
+      [grokWith(config)],
+      [],
+      {},
+      Date.parse("2026-09-18T18:31:00.000Z"),
+    )[0]?.windows ?? [];
+
+  // 2026-09-18: xAI stopped sending creditUsagePercent the moment the account
+  // could no longer serve a turn, and the bar read a confident "0%" for a
+  // provider refusing everything.
+  it("reports an omitted percentage as unknown rather than zero", () => {
+    const [weekly] = windowsFor({ currentPeriod: period });
+
+    expect(weekly?.usedPercent).toBeNull();
+    expect(weekly?.detail).toBe("Not reported");
+    expect(weekly?.resetAt).toBe(Date.parse("2026-09-22T17:24:28+00:00"));
+  });
+
+  it("still shows a genuine zero and a real percentage", () => {
+    expect(windowsFor({ creditUsagePercent: 0, currentPeriod: period })[0]?.usedPercent).toBe(0);
+    expect(windowsFor({ creditUsagePercent: 52, currentPeriod: period })[0]?.usedPercent).toBe(52);
   });
 });

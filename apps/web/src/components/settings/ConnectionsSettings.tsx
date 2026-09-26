@@ -552,13 +552,11 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
       setIsRevealDialogOpen(false);
       return;
     }
-    if (
-      confirmSensitiveReveal(
-        "Reveal this pairing secret? Anyone who can see it may be able to connect to Solla Code.",
-      )
-    ) {
-      setIsRevealDialogOpen(true);
-    }
+    void confirmSensitiveReveal(
+      "Reveal this pairing secret? Anyone who can see it may be able to connect to Solla Code.",
+    ).then((confirmed) => {
+      if (confirmed) setIsRevealDialogOpen(true);
+    });
   }, []);
 
   const handleQrOpenChange = useCallback((open: boolean) => {
@@ -566,13 +564,11 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
       setIsQrOpen(false);
       return;
     }
-    if (
-      confirmSensitiveReveal(
-        "Reveal this pairing QR code? Anyone who scans it may be able to connect to Solla Code.",
-      )
-    ) {
-      setIsQrOpen(true);
-    }
+    void confirmSensitiveReveal(
+      "Reveal this pairing QR code? Anyone who scans it may be able to connect to Solla Code.",
+    ).then((confirmed) => {
+      if (confirmed) setIsQrOpen(true);
+    });
   }, []);
 
   const currentOriginPairingUrl = useMemo(
@@ -1344,13 +1340,11 @@ function TailscaleHttpsQrControl({ endpoint }: { endpoint: AdvertisedEndpoint })
           setOpen(false);
           return;
         }
-        if (
-          confirmSensitiveReveal(
-            "Reveal this private network address and QR code? Make sure nobody else can see your screen.",
-          )
-        ) {
-          setOpen(true);
-        }
+        void confirmSensitiveReveal(
+          "Reveal this private network address and QR code? Make sure nobody else can see your screen.",
+        ).then((confirmed) => {
+          if (confirmed) setOpen(true);
+        });
       }}
     >
       <PopoverTrigger

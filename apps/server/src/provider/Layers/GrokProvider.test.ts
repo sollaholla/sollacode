@@ -11,11 +11,11 @@ import * as Schema from "effect/Schema";
 import { GrokSettings } from "@t3tools/contracts";
 import { shellQuote } from "../../terminal/agentCliResume.ts";
 
+import { grokReasoningEffortLevelsFromModelMeta } from "../acp/GrokAcpSupport.ts";
 import {
   buildInitialGrokProviderSnapshot,
   checkGrokProviderStatus,
   grokModelStateFromInitializeMeta,
-  grokReasoningEffortLevelsFromModelMeta,
 } from "./GrokProvider.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);

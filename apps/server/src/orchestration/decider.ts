@@ -796,6 +796,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.isSideChat === false && isAgentsProjectId(thread.projectId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Side chats belonging to agents cannot be promoted to standalone threads.",
+        });
+      }
       const restoresDeletedSideChat =
         thread.deletedAt !== null && thread.isSideChat === true && command.isSideChat === false;
       if (thread.deletedAt !== null && !restoresDeletedSideChat) {
@@ -938,6 +944,39 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.queued-message.send-now": {
+      yield* requireThreadNotDeleted({
+        command,
+        readModel,
+        threadId: command.threadId,
+      });
+      // Any message id: besides a queued message, this is "Send again" for a
+      // delivery that failed for good, and those have ordinary ids. The
+      // reactor revives only a queued message or a cancelled delivery.
+      //
+      // No "is it still queued?" check, for the same reason the remove case
+      // above skips one: the command read model boots with empty message
+      // lists, so any message from before the last restart reads as absent and
+      // the command would fail as an invariant violation — and a long-parked
+      // queued message is exactly what someone reaches for this button to
+      // rescue. The reactor re-reads durable state and no-ops if there is
+      // nothing left to send.
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.queued-message-send-now-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.turn.start": {
       const targetThread = yield* requireThreadNotDeleted({
         readModel,
@@ -991,6 +1030,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           messageId: command.message.messageId,
           role: "user",
           text: command.message.text,
+          ...(command.message.senderThreadId !== undefined
+            ? { senderThreadId: command.message.senderThreadId }
+            : {}),
+          ...(command.message.senderThreadTitle !== undefined
+            ? { senderThreadTitle: command.message.senderThreadTitle }
+            : {}),
           ...(command.message.inputOrigin !== undefined
             ? { inputOrigin: command.message.inputOrigin }
             : {}),
@@ -1416,6 +1461,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           messageId: command.messageId,
           role: "assistant",
           text: command.delta,
+          ...(command.textMode === "replace" ? { textMode: "replace" as const } : {}),
           turnId: command.turnId ?? null,
           streaming: true,
           createdAt: command.createdAt,
@@ -1445,6 +1491,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: "",
           turnId: command.turnId ?? null,
           streaming: false,
+          ...(command.historicalReplay ? { historicalReplay: true as const } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -1549,6 +1596,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           // every byte stored here lands in BOTH the event store and the
           // activity projection, forever.
           activity: trimActivityToolRawOutputForStorage(command.activity),
+          ...(command.historicalReplay ? { historicalReplay: true as const } : {}),
         },
       };
       // An approval or user-input request is blocked-on-you work — it must

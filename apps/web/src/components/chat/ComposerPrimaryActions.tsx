@@ -13,7 +13,6 @@ import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { isElectron } from "../../env";
-import { getSpeechRecognitionConstructor } from "~/speechDictation";
 import { shouldOfferAppVoiceCapture } from "./appVoiceCaptureAvailability";
 import {
   beginMicrophoneHold,
@@ -93,14 +92,12 @@ export const formatPushToTalkActionLabel = (
   status: "recording" | "loading" | "transcribing" | "refining" | null,
   platform: string | undefined,
   disabledReason?: string | null,
-  autoSend = false,
+  _autoSend = false,
 ): string => {
   const shortcut = platform?.toLowerCase().includes("mac") === true ? "Cmd+D" : "Ctrl+D";
   switch (status) {
     case "recording":
-      return `Mute microphone — release to ${
-        autoSend ? "transcribe and send" : "transcribe"
-      } (${shortcut})`;
+      return `Release to attach voice note (${shortcut})`;
     case "loading":
       return `Loading local transcription model (${shortcut})`;
     case "transcribing":
@@ -111,7 +108,7 @@ export const formatPushToTalkActionLabel = (
       if (disabledReason) {
         return `${disabledReason} (${shortcut})`;
       }
-      return `Unmute microphone — hold to record (${shortcut})`;
+      return `Hold to record a voice note (${shortcut})`;
   }
 };
 
@@ -178,10 +175,11 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const showAppMicrophone = shouldOfferAppVoiceCapture({
     isDesktopElectron: isElectron,
     hasCoarsePointer,
-    // Safari's own recogniser makes the microphone worth showing on a phone,
-    // where it used to be hidden because the only fallback was a downloaded
-    // model.
-    hasNativeSpeechDictation: getSpeechRecognitionConstructor() !== undefined,
+    // Phones record the attachment locally; transcription runs on the connected host.
+    hasAudioCapture:
+      typeof MediaRecorder !== "undefined" &&
+      typeof navigator !== "undefined" &&
+      typeof navigator.mediaDevices?.getUserMedia === "function",
   });
   const isSendDisabled = sendDisabledReason !== null;
   const pushToTalkActive = pushToTalkStatus === "recording";
@@ -192,7 +190,6 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     microphoneDisabled ? pushToTalkDisabledReason : null,
     pushToTalkAutoSend,
   );
-  const settingsUpdateIconOnly = compact || isRunning;
   const microphoneHoldRef = useRef<MicrophoneHold | null>(null);
   const stopPushToTalkRef = useRef(onPushToTalkStop);
   stopPushToTalkRef.current = onPushToTalkStop;
@@ -286,12 +283,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         render={
           <Button
             type="button"
-            size={settingsUpdateIconOnly ? "icon-sm" : "sm"}
+            size="sm"
             variant="outline"
-            className={cn(
-              "rounded-full",
-              settingsUpdateIconOnly ? "size-9 p-0 sm:size-8" : "h-9 px-3 sm:h-8",
-            )}
+            className={cn("h-9 shrink-0 rounded-full sm:h-8", compact ? "w-9 px-0 sm:w-8" : "px-3")}
             {...pointerFocusProps}
             disabled={
               isApplyingSettings ||
@@ -311,9 +305,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         ) : (
           <RefreshCwIcon className="size-3.5" aria-hidden="true" />
         )}
-        {!settingsUpdateIconOnly ? (
-          <span>{isApplyingSettings ? "Applying…" : "Apply changes"}</span>
-        ) : null}
+        <span className={compact ? "sr-only" : undefined}>
+          {isApplyingSettings ? "Applying…" : "Apply changes"}
+        </span>
       </TooltipTrigger>
       <TooltipPopup side="top">{settingsUpdateLabel}</TooltipPopup>
     </Tooltip>

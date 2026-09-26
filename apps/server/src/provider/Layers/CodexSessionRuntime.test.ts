@@ -20,6 +20,7 @@ import {
   buildTurnStartParams,
   CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS,
   hasConfiguredMcpServer,
+  hydrateCodexBackgroundTaskMetadata,
   isRecoverableThreadResumeError,
   mcpFormElicitationContent,
   mcpFormElicitationQuestions,
@@ -718,6 +719,54 @@ describe("reasoning effort default", () => {
         interactionMode: "default",
       });
       NodeAssert.equal(params.collaborationMode?.settings.reasoning_effort, "low");
+    }),
+  );
+});
+
+describe("Codex child metadata hydration", () => {
+  it.effect("uses the observed child identity and retains lifecycle on a late response", () =>
+    Effect.gen(function* () {
+      const tasks = new Map<string, import("./CodexSubagentRouting.ts").CodexBackgroundTask>([
+        [
+          "child",
+          {
+            providerThreadId: "child",
+            title: "Codex subagent child",
+            status: "completed",
+            totalTokens: 123,
+          },
+        ],
+      ]);
+      const result = yield* hydrateCodexBackgroundTaskMetadata({
+        providerThreadId: "child",
+        tasks,
+        readThread: (threadId) => {
+          NodeAssert.equal(threadId, "child");
+          return Effect.succeed({
+            thread: {
+              id: threadId,
+              source: { subAgent: { thread_spawn: { agent_path: "/root/probe" } } },
+            },
+          });
+        },
+      });
+      NodeAssert.equal(result?.title, "Codex subagent /root/probe");
+      NodeAssert.equal(result?.status, "completed");
+      NodeAssert.equal(result?.totalTokens, 123);
+    }),
+  );
+  it.effect("contains metadata failure without losing the background task", () =>
+    Effect.gen(function* () {
+      const tasks = new Map<string, import("./CodexSubagentRouting.ts").CodexBackgroundTask>();
+      NodeAssert.equal(
+        yield* hydrateCodexBackgroundTaskMetadata({
+          providerThreadId: "child",
+          tasks,
+          readThread: () =>
+            Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound("thread/read")),
+        }),
+        null,
+      );
     }),
   );
 });

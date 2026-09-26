@@ -1,40 +1,45 @@
-import { RotateCcwIcon } from "lucide-react";
 import { Outlet, useCanGoBack, useLocation, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
-import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
-import { Button } from "../ui/button";
+import {
+  COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+  COLLAPSED_SIDEBAR_TITLEBAR_INSET_MD_CLASS,
+} from "../../workspaceTitlebar";
 import { SidebarInset } from "../ui/sidebar";
-import { useSettingsRestore } from "./SettingsPanels";
+import { SettingsMobileTabs, useSettingsMobileTabs } from "./SettingsMobileTabs";
+import { SettingsMobileSearch } from "./SettingsMobileSearch";
 
 // Preview webviews live outside the router so they survive navigation and are
 // presented at z-index 30. Keep settings in a higher stacking context so a
 // still-releasing agent preview cannot paint over the newly selected route.
 export const SETTINGS_ROUTE_SURFACE_Z_INDEX = 40;
 
-function RestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
-  const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
+const RestoreDefaultsButton = lazy(() =>
+  import("./SettingsRestoreDefaultsButton").then((module) => ({
+    default: module.SettingsRestoreDefaultsButton,
+  })),
+);
 
+export function SettingsPanelPending() {
   return (
-    <Button
-      size="xs"
-      variant="ghost"
-      disabled={changedSettingLabels.length === 0}
-      onClick={() => void restoreDefaults()}
-    >
-      <RotateCcwIcon className="mx-1 size-3.5" />
-      Restore defaults
-    </Button>
+    <div role="status" className="p-5 text-sm text-muted-foreground">
+      Loading settings…
+    </div>
   );
 }
 
-export function SettingsRouteLayout() {
+export function SettingsRoutePending() {
+  return <SettingsRouteLayout pending />;
+}
+
+export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) {
   const location = useLocation();
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const [restoreSignal, setRestoreSignal] = useState(0);
+  const showMobileTabs = useSettingsMobileTabs();
   const showRestoreDefaults = location.pathname === "/settings/general";
   const handleRestored = () => setRestoreSignal((value) => value + 1);
   const navigateBackWithinApp = useCallback(() => {
@@ -109,14 +114,20 @@ export function SettingsRouteLayout() {
           <header
             className={cn(
               "workspace-topbar px-3 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5",
-              COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+              // Phones have no sidebar rail to clear, so the desktop inset only
+              // applies from `md` up. Below it the title sits flush left with
+              // the tabs and the panel beneath it.
+              COLLAPSED_SIDEBAR_TITLEBAR_INSET_MD_CLASS,
             )}
           >
             <div className="flex w-full items-center gap-2">
-              <span className="text-sm font-medium text-foreground">Settings</span>
+              <span className="shrink-0 text-sm font-medium text-foreground">Settings</span>
+              {showMobileTabs ? <SettingsMobileSearch /> : null}
               {showRestoreDefaults ? (
                 <div className="ms-auto flex items-center gap-2">
-                  <RestoreDefaultsButton onRestored={handleRestored} />
+                  <Suspense fallback={null}>
+                    <RestoreDefaultsButton onRestored={handleRestored} />
+                  </Suspense>
                 </div>
               ) : null}
             </div>
@@ -135,14 +146,18 @@ export function SettingsRouteLayout() {
             </span>
             {showRestoreDefaults ? (
               <div className="ms-auto flex items-center gap-2">
-                <RestoreDefaultsButton onRestored={handleRestored} />
+                <Suspense fallback={null}>
+                  <RestoreDefaultsButton onRestored={handleRestored} />
+                </Suspense>
               </div>
             ) : null}
           </div>
         )}
 
+        {showMobileTabs ? <SettingsMobileTabs pathname={location.pathname} /> : null}
+
         <div key={restoreSignal} className="min-h-0 flex flex-1 flex-col">
-          <Outlet />
+          {pending ? <SettingsPanelPending /> : <Outlet />}
         </div>
       </div>
     </SidebarInset>

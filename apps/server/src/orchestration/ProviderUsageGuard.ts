@@ -120,7 +120,7 @@ const DAY_MS = 24 * HOUR_MS;
  * full context of every call is input), audited 2026-09-06:
  *
  * Claude (baseline Sonnet 5 at $2/MTok input): Fable 5.1 and Mythos 5.1 $10,
- * Opus 5 / 4.8 / 4.7 $5, Sonnet 4.6 / 4.5 $3, Haiku 4.5 $1.
+ * Opus 5.5 $4 (updated 2026-09-22), Opus 5 / 4.8 / 4.7 $5, Sonnet 4.6 / 4.5 $3, Haiku 4.5 $1.
  *   Source: https://platform.claude.com/docs/en/about-claude/pricing
  *
  * Codex (baseline GPT-6 Astra at 250 credits/MTok input): Daybreak Red 312.5,
@@ -144,6 +144,7 @@ const DAY_MS = 24 * HOUR_MS;
 const MODEL_COST_MULTIPLIERS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, number]>>> = {
   claudeAgent: [
     [/fable|mythos/i, 5],
+    [/opus-5[.-]5(?:$|[^0-9])/i, 2],
     [/opus/i, 2.5],
     [/sonnet-4/i, 1.5],
     [/sonnet/i, 1],

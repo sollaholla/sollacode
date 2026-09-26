@@ -310,7 +310,45 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
-    it("appends text for streaming messages", () => {
+    it("retains sender attribution on the live message event", () => {
+      const result = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: "2026-04-01T06:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-1"),
+          role: "user",
+          text: "Hello, world!",
+          senderThreadId: ThreadId.make("source-thread"),
+          senderThreadTitle: "Engineer",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T06:00:00.000Z",
+          updatedAt: "2026-04-01T06:00:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages).toHaveLength(1);
+        expect(result.thread.messages[0]?.senderThreadId).toBe("source-thread");
+        expect(result.thread.messages[0]?.senderThreadTitle).toBe("Engineer");
+      }
+    });
+
+    it.each([
+      { textMode: undefined, text: ", world!", expected: "Hello, world!" },
+      {
+        textMode: "replace" as const,
+        text: "Recovered complete text",
+        expected: "Recovered complete text",
+      },
+      { textMode: "replace" as const, text: "", expected: "" },
+    ])("applies streaming text with mode $textMode", ({ textMode, text, expected }) => {
       const threadWithMessage: OrchestrationThread = {
         ...baseThread,
         messages: [
@@ -337,7 +375,8 @@ describe("applyThreadDetailEvent", () => {
           threadId: ThreadId.make("thread-1"),
           messageId: MessageId.make("msg-2"),
           role: "assistant",
-          text: ", world!",
+          text,
+          ...(textMode ? { textMode } : {}),
           turnId: TurnId.make("turn-1"),
           streaming: true,
           createdAt: "2026-04-01T06:00:00.000Z",
@@ -348,7 +387,7 @@ describe("applyThreadDetailEvent", () => {
       expect(result.kind).toBe("updated");
       if (result.kind === "updated") {
         expect(result.thread.messages).toHaveLength(1);
-        expect(result.thread.messages[0]?.text).toBe("Hello, world!");
+        expect(result.thread.messages[0]?.text).toBe(expected);
       }
     });
 
@@ -588,6 +627,62 @@ describe("applyThreadDetailEvent", () => {
   });
 
   describe("thread.activity-appended", () => {
+    it("repairs historical activity content without moving it after live work", () => {
+      const original = {
+        id: EventId.make("old-tool"),
+        tone: "tool" as const,
+        kind: "tool.started",
+        summary: "Running",
+        payload: {},
+        turnId: TurnId.make("turn-1"),
+        sequence: 10,
+        createdAt: "2026-09-13T20:43:26.208Z",
+      };
+      const newer = { ...original, id: EventId.make("new-tool"), sequence: 20 };
+      const apply = (historicalReplay: true | undefined, id = original.id) =>
+        applyThreadDetailEvent(
+          { ...baseThread, activities: [original, newer] },
+          {
+            ...baseEventFields,
+            sequence: 30,
+            occurredAt: "2026-09-13T21:26:02.431Z",
+            aggregateKind: "thread",
+            aggregateId: baseThread.id,
+            type: "thread.activity-appended",
+            payload: {
+              threadId: baseThread.id,
+              ...(historicalReplay ? { historicalReplay } : {}),
+              activity: {
+                ...original,
+                id,
+                sequence: 30,
+                kind: "tool.completed",
+                createdAt: "2026-09-13T21:26:02.431Z",
+              },
+            },
+          },
+        );
+      const replay = apply(true);
+      expect(replay.kind).toBe("updated");
+      if (replay.kind === "updated") {
+        expect(replay.thread.activities.map((row) => row.id)).toEqual([original.id, newer.id]);
+        expect(replay.thread.activities[0]).toMatchObject({
+          createdAt: original.createdAt,
+          sequence: 10,
+          kind: "tool.completed",
+        });
+      }
+      const missing = apply(true, EventId.make("missing-tool"));
+      if (missing.kind === "updated") expect(missing.thread.activities).toHaveLength(3);
+      const live = apply(undefined);
+      if (live.kind === "updated")
+        expect(live.thread.activities.at(-1)).toMatchObject({
+          id: original.id,
+          sequence: 30,
+          createdAt: "2026-09-13T21:26:02.431Z",
+        });
+    });
+
     it("adds an activity", () => {
       const result = applyThreadDetailEvent(baseThread, {
         ...baseEventFields,

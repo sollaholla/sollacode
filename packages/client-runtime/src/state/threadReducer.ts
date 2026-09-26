@@ -241,6 +241,12 @@ export function applyThreadDetailEvent(
         // Provenance flags must survive the live path, not just snapshots:
         // the "Transcribed" badge and the voice-row delivery exemption key on
         // them the moment the row appears.
+        ...(event.payload.senderThreadId !== undefined
+          ? { senderThreadId: event.payload.senderThreadId }
+          : {}),
+        ...(event.payload.senderThreadTitle !== undefined
+          ? { senderThreadTitle: event.payload.senderThreadTitle }
+          : {}),
         ...(event.payload.inputOrigin !== undefined
           ? { inputOrigin: event.payload.inputOrigin }
           : {}),
@@ -261,16 +267,25 @@ export function applyThreadDetailEvent(
               ? entry
               : {
                   ...entry,
-                  text: message.streaming
-                    ? `${entry.text}${message.text}`
-                    : message.text.length > 0
+                  text:
+                    event.payload.textMode === "replace"
                       ? message.text
-                      : entry.text,
+                      : message.streaming
+                        ? `${entry.text}${message.text}`
+                        : message.text.length > 0
+                          ? message.text
+                          : entry.text,
                   streaming: message.streaming,
                   ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
                   ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
                   // Sticky, matching the server projection's upsert: an event
                   // that omits the flags never strips them from the row.
+                  ...(message.senderThreadId !== undefined
+                    ? {
+                        senderThreadId: message.senderThreadId,
+                        senderThreadTitle: message.senderThreadTitle,
+                      }
+                    : {}),
                   ...(message.inputOrigin !== undefined
                     ? { inputOrigin: message.inputOrigin }
                     : {}),
@@ -534,10 +549,19 @@ export function applyThreadDetailEvent(
       // event over thousands of activities — on a catch-up replay of hundreds
       // of events that alone pinned the CPU. Drop any previous copy in one
       // pass, then insert at the sorted position scanning back from the tail.
-      const appended = event.payload.activity;
+      let appended = event.payload.activity;
       const activities: Array<OrchestrationThreadActivity> = [];
       for (const activity of thread.activities) {
-        if (activity.id !== appended.id) activities.push(activity);
+        if (activity.id !== appended.id) {
+          activities.push(activity);
+        } else if (event.payload.historicalReplay) {
+          const { sequence: _replayedSequence, ...replayed } = appended;
+          appended = {
+            ...replayed,
+            createdAt: activity.createdAt,
+            ...(activity.sequence !== undefined ? { sequence: activity.sequence } : {}),
+          };
+        }
       }
       let insertAt = activities.length;
       while (insertAt > 0 && activityOrder(appended, activities[insertAt - 1]!) < 0) {

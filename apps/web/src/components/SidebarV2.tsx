@@ -3084,7 +3084,7 @@ export default function SidebarV2() {
                         {/* The toggle and Clear are siblings, not nested: a
                           button inside a button is invalid and swallows the
                           inner click in some browsers. */}
-                        <div className="group/settled-shelf mb-1 mt-3 flex w-full items-center gap-2 px-2.5">
+                        <div className="mb-1 mt-3 flex w-full items-center gap-2 px-2.5">
                           <button
                             type="button"
                             onClick={toggleSettledShelf}
@@ -3106,16 +3106,13 @@ export default function SidebarV2() {
                               )}
                             />
                           </button>
-                          {/* Only revealed on hover/focus of the shelf: this
-                            archives every settled thread, which is not
-                            something to leave one stray click away. */}
                           <button
                             type="button"
                             onClick={clearSettledThreads}
                             disabled={clearingSettled}
                             data-testid="sidebar-v2-settled-shelf-clear"
                             title={`Archive all ${settledThreads.length} settled threads`}
-                            className="shrink-0 cursor-pointer rounded px-1 text-xs font-medium text-muted-foreground/40 opacity-0 transition-opacity hover:text-sidebar-foreground focus-visible:opacity-100 disabled:cursor-default disabled:opacity-40 group-hover/settled-shelf:opacity-100 pointer-coarse:opacity-100"
+                            className="shrink-0 cursor-pointer rounded px-1 text-xs font-medium text-muted-foreground hover:text-sidebar-foreground disabled:cursor-default disabled:opacity-40"
                           >
                             {clearingSettled ? "Clearing…" : "Clear"}
                           </button>

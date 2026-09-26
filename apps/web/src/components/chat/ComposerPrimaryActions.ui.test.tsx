@@ -109,7 +109,7 @@ describe("composer push-to-talk action", () => {
     try {
       await act(async () => root.render(render(false)));
       const mic = container.querySelector<HTMLButtonElement>(
-        'button[aria-label^="Unmute microphone"]',
+        'button[aria-label^="Hold to record a voice note"]',
       );
       expect(mic).not.toBeNull();
       const down = new PointerEvent("pointerdown", {
@@ -165,7 +165,7 @@ describe("composer push-to-talk action", () => {
     const onStop = vi.fn();
     await act(async () => root.render(actions({ onPushToTalkStop: onStop })));
     const mic = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Unmute microphone"]',
+      'button[aria-label^="Hold to record a voice note"]',
     );
     await act(async () =>
       mic?.dispatchEvent(
@@ -182,9 +182,7 @@ describe("composer push-to-talk action", () => {
   it("renders the microphone immediately before the send button", () => {
     const markup = renderActions();
 
-    const microphoneIndex = markup.indexOf(
-      'aria-label="Unmute microphone — hold to record (Cmd+D)"',
-    );
+    const microphoneIndex = markup.indexOf('aria-label="Hold to record a voice note (Cmd+D)"');
     const sendIndex = markup.indexOf('aria-label="Send message"');
     expect(microphoneIndex).toBeGreaterThan(-1);
     expect(sendIndex).toBeGreaterThan(microphoneIndex);
@@ -196,8 +194,8 @@ describe("composer push-to-talk action", () => {
       pushToTalkDisabled: true,
     });
 
-    expect(markup).toContain('aria-label="Mute microphone — release to transcribe (Cmd+D)"');
-    expect(markup).toContain('title="Mute microphone — release to transcribe (Cmd+D)"');
+    expect(markup).toContain('aria-label="Release to attach voice note (Cmd+D)"');
+    expect(markup).toContain('title="Release to attach voice note (Cmd+D)"');
     expect(markup).toContain('aria-pressed="true"');
     expect(markup.match(/disabled=""/g)).toHaveLength(1);
   });
@@ -252,9 +250,7 @@ describe("composer push-to-talk action", () => {
       pushToTalkDisabledReason: null,
     });
 
-    const microphoneIndex = markup.indexOf(
-      'aria-label="Unmute microphone — hold to record (Cmd+D)"',
-    );
+    const microphoneIndex = markup.indexOf('aria-label="Hold to record a voice note (Cmd+D)"');
     const stopIndex = markup.indexOf('aria-label="Stop generation"');
     expect(microphoneIndex).toBeGreaterThan(-1);
     expect(stopIndex).toBeGreaterThan(microphoneIndex);
@@ -388,9 +384,7 @@ describe("composer push-to-talk action", () => {
       isRunning: false,
     });
 
-    const microphoneIndex = markup.indexOf(
-      'aria-label="Unmute microphone — hold to record (Cmd+D)"',
-    );
+    const microphoneIndex = markup.indexOf('aria-label="Hold to record a voice note (Cmd+D)"');
     const submitIndex = markup.indexOf("Submit answer");
     expect(microphoneIndex).toBeGreaterThan(-1);
     expect(submitIndex).toBeGreaterThan(microphoneIndex);
@@ -407,13 +401,13 @@ describe("composer push-to-talk action", () => {
       hasSendableContent: false,
     });
 
-    expect(refineMarkup.indexOf('aria-label="Unmute microphone')).toBeGreaterThan(-1);
+    expect(refineMarkup.indexOf('aria-label="Hold to record a voice note')).toBeGreaterThan(-1);
     expect(refineMarkup.indexOf(">Refine</button>")).toBeGreaterThan(
-      refineMarkup.indexOf('aria-label="Unmute microphone'),
+      refineMarkup.indexOf('aria-label="Hold to record a voice note'),
     );
-    expect(implementMarkup.indexOf('aria-label="Unmute microphone')).toBeGreaterThan(-1);
+    expect(implementMarkup.indexOf('aria-label="Hold to record a voice note')).toBeGreaterThan(-1);
     expect(implementMarkup.indexOf(">Implement</button>")).toBeGreaterThan(
-      implementMarkup.indexOf('aria-label="Unmute microphone'),
+      implementMarkup.indexOf('aria-label="Hold to record a voice note'),
     );
   });
 
@@ -454,7 +448,7 @@ describe("composer push-to-talk action", () => {
     expect(markup).toContain(">Apply changes</span>");
   });
 
-  it("uses an icon-only Apply action while running so composer tools do not get squished", () => {
+  it("keeps Apply changes labeled while an agent is running", () => {
     const markup = renderActions({
       isRunning: true,
       settingsUpdateLabel: "GPT-5.6-Sol with high effort · Plan mode",
@@ -464,9 +458,25 @@ describe("composer push-to-talk action", () => {
     expect(markup).toContain(
       'aria-label="Apply conversation changes: GPT-5.6-Sol with high effort · Plan mode"',
     );
-    expect(markup).not.toContain(">Apply changes</span>");
+    expect(markup).toContain(">Apply changes</span>");
     expect(markup).not.toContain(">Apply</span>");
-    expect(markup).toContain("size-9 p-0 sm:size-8");
+    expect(markup).toContain('aria-label="Stop generation"');
+  });
+
+  it("shows Apply as an icon-only button on compact composers", () => {
+    const markup = renderActions({
+      compact: true,
+      isRunning: true,
+      settingsUpdateLabel: "gpt-6-astra with high effort",
+      onApplySettings: vi.fn(),
+    });
+    expect(markup).not.toContain("<span>Apply changes</span>");
+    expect(markup).toContain('class="sr-only">Apply changes</span>');
+    expect(markup).toContain("w-9 px-0 sm:w-8");
+    expect(markup).toContain(
+      'aria-label="Apply conversation changes: gpt-6-astra with high effort"',
+    );
+    expect(markup).toContain('aria-label="Stop generation"');
   });
 
   it("shows an interrupting state after Stop is pressed", () => {
@@ -484,13 +494,13 @@ describe("composer push-to-talk action", () => {
 
   it("shows the dedicated push-to-talk chord for each platform", () => {
     expect(formatPushToTalkActionLabel(null, "MacIntel")).toBe(
-      "Unmute microphone — hold to record (Cmd+D)",
+      "Hold to record a voice note (Cmd+D)",
     );
     expect(formatPushToTalkActionLabel("recording", "MacIntel")).toBe(
-      "Mute microphone — release to transcribe (Cmd+D)",
+      "Release to attach voice note (Cmd+D)",
     );
     expect(formatPushToTalkActionLabel("recording", "MacIntel", null, true)).toBe(
-      "Mute microphone — release to transcribe and send (Cmd+D)",
+      "Release to attach voice note (Cmd+D)",
     );
     expect(formatPushToTalkActionLabel("transcribing", "Win32")).toBe(
       "Transcribing voice message (Ctrl+D)",

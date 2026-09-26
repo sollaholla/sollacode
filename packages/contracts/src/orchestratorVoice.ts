@@ -6,6 +6,7 @@
  * official xAI Speech-to-Speech API.
  */
 import * as Schema from "effect/Schema";
+import { OPENAI_LIVE_MODEL } from "./orchestratorLive.ts";
 
 export const OrchestratorVoiceProvider = Schema.Literals(["openai", "xai"]);
 export type OrchestratorVoiceProvider = typeof OrchestratorVoiceProvider.Type;
@@ -94,6 +95,7 @@ export const XAI_REALTIME_VOICES = [
 ] as const;
 
 export const OPENAI_REALTIME_MODELS = [
+  OPENAI_LIVE_MODEL,
   "gpt-realtime-2.1",
   "gpt-realtime-2.1-mini",
   "gpt-realtime-2",
@@ -109,7 +111,7 @@ export const ORCHESTRATOR_VOICE_PROVIDERS: Record<
   openai: {
     id: "openai",
     label: "OpenAI",
-    description: "OpenAI Realtime over WebRTC.",
+    description: "OpenAI GPT-Live and Realtime over WebRTC.",
     defaultModel: "gpt-realtime",
     defaultVoice: "marin",
     fallbackVoice: "alloy",

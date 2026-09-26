@@ -7,6 +7,7 @@ import {
   type ErrorComponentProps,
   useLocation,
   useNavigate,
+  useRouter,
 } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useEffectEvent, useRef, useState } from "react";
 
@@ -19,6 +20,7 @@ import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLa
 import { StartupResumeCoordinator } from "../components/StartupResumeCoordinator";
 import { LanPairingCoordinator } from "../components/LanPairingCoordinator";
 import { Button } from "../components/ui/button";
+import { AppConfirmHost } from "../components/ui/appConfirm";
 import {
   AnchoredToastProvider,
   stackedThreadToast,
@@ -35,7 +37,11 @@ import {
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import { configureClientTracing } from "../observability/clientTracing";
-import { resolveInitialServerAuthGateState } from "../environments/primary";
+import {
+  isPrimaryEnvironmentRequestError,
+  isTransientBootstrapError,
+  resolveInitialServerAuthGateState,
+} from "../environments/primary";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { shellEnvironment } from "../state/shell";
 import { useAtomValue } from "@effect/atom-react";
@@ -48,7 +54,12 @@ import {
   primaryServerConfigEventAtom,
   primaryServerWelcomeAtom,
 } from "../state/server";
-import { readProject, setActiveEnvironmentId, useActiveEnvironmentId } from "../state/entities";
+import {
+  readProject,
+  setActiveEnvironmentId,
+  useActiveEnvironmentId,
+  useAllEnvironmentShellsBootstrapped,
+} from "../state/entities";
 import {
   createKeybindingsUpdateToastController,
   type KeybindingsUpdateToastController,
@@ -62,6 +73,9 @@ import {
   reloadWithFreshAppShell,
   shouldAutoRecoverDynamicImportFailure,
 } from "./-rootErrorRecovery.logic";
+import { installRootErrorAutoRetry } from "./-rootErrorRetry.logic";
+import { LazyChatView } from "../lazyChatView";
+import { finishStartup, setStartupStage, startupRouteShowsChatView } from "../startupSplash";
 
 const SshPasswordPromptDialog = lazy(() =>
   import("../components/desktop/SshPasswordPromptDialog").then((module) => ({
@@ -92,6 +106,11 @@ export const Route = createRootRoute({
       };
     }
 
+    // The chat view is most of what a first screen downloads; start it now so
+    // it arrives alongside the sign-in check instead of after it.
+    if (startupRouteShowsChatView(location.pathname)) {
+      void LazyChatView.preload?.().catch(() => undefined);
+    }
     const authGateState = await resolveInitialServerAuthGateState();
     return {
       authGateState,
@@ -160,6 +179,7 @@ function RootRouteView() {
   if (pathname === "/pair" || pathname === "/connect" || pathname.startsWith("/connect/")) {
     return (
       <>
+        <StartupSplashDone />
         <DocumentTitleSync />
         <Outlet />
       </>
@@ -169,6 +189,7 @@ function RootRouteView() {
   if (authGateState.status !== "authenticated" && authGateState.status !== "hosted-static") {
     return (
       <>
+        <StartupSplashDone />
         <DocumentTitleSync />
         <Outlet />
       </>
@@ -191,6 +212,10 @@ function RootRouteView() {
   return (
     <ToastProvider>
       <AnchoredToastProvider>
+        {/* Mounted unconditionally: a confirmation that cannot render is a
+            caller left hanging, which is the failure this replaces. */}
+        <AppConfirmHost />
+        <StartupSplashGate />
         <DocumentTitleSync />
         <GlassAppearanceSync />
         <DesktopPermissionsGate>
@@ -215,6 +240,45 @@ function RootRouteView() {
       </AnchoredToastProvider>
     </ToastProvider>
   );
+}
+
+/**
+ * Keeps the startup splash up until the first screen can render: the
+ * workspace (cached or live) and, when that screen is the chat view, its code.
+ * Runs once — the splash never comes back after it is gone.
+ */
+function StartupSplashGate() {
+  const bootstrapped = useAllEnvironmentShellsBootstrapped();
+  const initialPathname = useRef(useLocation({ select: (location) => location.pathname }));
+
+  useEffect(() => {
+    if (!bootstrapped) {
+      setStartupStage("connecting");
+      return;
+    }
+    let cancelled = false;
+    const firstScreenReady = startupRouteShowsChatView(initialPathname.current)
+      ? (setStartupStage("opening"), LazyChatView.preload?.() ?? Promise.resolve())
+      : Promise.resolve();
+    void firstScreenReady
+      .catch(() => undefined)
+      .then(() => {
+        if (!cancelled) finishStartup();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapped]);
+
+  return null;
+}
+
+/** Screens with nothing to wait for (pairing, sign-in, errors) end startup at once. */
+function StartupSplashDone() {
+  useEffect(() => {
+    finishStartup();
+  }, []);
+  return null;
 }
 
 function GlassAppearanceSync() {
@@ -272,15 +336,23 @@ function HostedStaticEnvironmentBootstrap() {
   return null;
 }
 
-function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
+function RootRouteErrorView({ error }: ErrorComponentProps) {
+  const router = useRouter();
   const dynamicImportFailure = isDynamicImportFailure(error);
+  // The server was out of reach, not broken: try again on our own.
+  const unreachable = isPrimaryEnvironmentRequestError(error) && isTransientBootstrapError(error);
   const autoRecoverDynamicImportFailure = shouldAutoRecoverDynamicImportFailure({
     dynamicImportFailure,
     desktopBridgeAvailable: window.desktopBridge !== undefined,
   });
+  // The desktop app's own server is on the same machine, so its message is
+  // about a second copy holding the port; a phone just lost its connection.
+  const unreachableFromAnotherDevice = unreachable && window.desktopBridge === undefined;
   const message = dynamicImportFailure
     ? "This page could not load part of the app. Reload to fetch the current version."
-    : errorMessage(error);
+    : unreachableFromAnotherDevice
+      ? "Solla Code can't reach its server right now. It keeps trying and loads as soon as the connection is back."
+      : errorMessage(error);
   const details = errorDetails(error);
 
   useEffect(() => {
@@ -297,8 +369,18 @@ function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
     });
   }, [autoRecoverDynamicImportFailure, error]);
 
+  useEffect(() => {
+    if (!unreachable) return;
+    return installRootErrorAutoRetry({
+      window,
+      document,
+      retry: () => void router.invalidate(),
+    });
+  }, [unreachable, router]);
+
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
+      <StartupSplashDone />
       <div className="pointer-events-none absolute inset-0 opacity-80">
         <div className="absolute inset-x-0 top-0 h-44 bg-[radial-gradient(44rem_16rem_at_top,color-mix(in_srgb,var(--color-red-500)_16%,transparent),transparent)]" />
         <div className="absolute inset-0 bg-[linear-gradient(145deg,color-mix(in_srgb,var(--background)_90%,var(--color-black))_0%,var(--background)_55%)]" />
@@ -309,7 +391,7 @@ function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
           {APP_DISPLAY_NAME}
         </p>
         <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-          Something went wrong.
+          {unreachableFromAnotherDevice ? "Waiting for the connection" : "Something went wrong."}
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{message}</p>
 
@@ -321,7 +403,9 @@ function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
                 reloadWithFreshAppShell(window.location, Date.now());
                 return;
               }
-              reset();
+              // `reset` alone only re-renders this boundary; a failure while
+              // the root route loaded needs the route to run again.
+              void router.invalidate();
             }}
           >
             {dynamicImportFailure ? "Reload app" : "Try again"}

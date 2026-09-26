@@ -11,6 +11,12 @@ its native history because that history is unavailable or inconsistent, Solla st
 session and tells the agent to query the parent before relying on earlier decisions. Other startup
 failures show an error and leave the chat available for a new message.
 
+Copying a long conversation can take a few seconds. A first message sent in that time, including
+one sent by the chat that opened the side chat, waits for the copy and then starts from it. Before
+version 0.1.651 that message could start without the copy. The copy then landed on the running turn
+and marked it done, so the side chat looked finished while its agent kept working in the
+background.
+
 Side-chat agents receive private concurrency guidance. They know they are working beside a main
 conversation and avoid workspace changes that could interfere with it unless the user explicitly
 asks for those changes in the side chat.
@@ -18,8 +24,16 @@ asks for those changes in the side chat.
 Closing a side chat always asks for confirmation. Confirming closes its panel tab and archives the
 backing conversation instead of deleting it, so it can be restored later from Archived. Cancelling
 leaves both the tab and conversation untouched. A side chat that is still running must be stopped
-before it can be archived. Promote it to keep it as a normal thread; promoted threads appear in the
-project sidebar and retain their independent provider conversation.
+before it can be archived. In an ordinary project, promote it to keep it as a normal thread;
+promoted threads appear in the project sidebar and retain their independent provider conversation.
+Side chats belonging to custom agents stay attached to their agent and cannot be promoted.
+Previously promoted agent side chats are reattached to their original agent when the server starts,
+preserving the existing conversation.
+
+If archiving reports a full database or disk, free space on the machine running Solla, then retry.
+For a remote connection, this is the server's disk, not your phone's storage. A database-open error
+also calls out folder permissions as a possible cause. A failed archive leaves the conversation
+available and the confirmation open so you can retry.
 
 The orchestrator can tell a side chat apart from an ordinary thread and will say so when it
 describes one, naming the conversation it hangs off. It could not before: side chats carry the flag

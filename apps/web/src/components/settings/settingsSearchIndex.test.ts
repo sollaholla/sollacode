@@ -15,6 +15,7 @@ describe("settingsSearchIndex", () => {
     const navPaths = new Set<string>([
       ...SETTINGS_NAV_ITEMS.map((item) => item.to),
       "/settings/permissions",
+      "/settings/credentials",
     ]);
     for (const entry of SETTINGS_SEARCH_INDEX) {
       expect(navPaths.has(entry.tab)).toBe(true);
@@ -51,5 +52,9 @@ describe("settingsSearchIndex", () => {
         (result) => result.tab === "/settings/permissions",
       ),
     ).toBe(true);
+  });
+
+  it("finds saved passwords on every client, since any device can manage them", () => {
+    expect(searchSettings("saved passwords")[0]?.tab).toBe("/settings/credentials");
   });
 });

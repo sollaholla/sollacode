@@ -21,6 +21,7 @@ export function restoreInheritedClaudeEnvironment(env: Environment): void {
     // Explicit provider overrides are applied after this inherited env cleanup.
     delete env.ANTHROPIC_BASE_URL;
   }
+  if (sessionProxy) delete env[ASSUME_FIRST_PARTY_ENDPOINT];
   delete env.T3CODE_CLAUDE_PROXY_BASE_URL;
   delete env.T3CODE_CLAUDE_PROXY_UPSTREAM;
   delete env.CLAUDECODE;
@@ -28,11 +29,48 @@ export function restoreInheritedClaudeEnvironment(env: Environment): void {
   delete env.CLAUDE_AGENT_SDK_VERSION;
 }
 
-/** Tag a temporary proxy so descendant app launches can recover its upstream. */
+// Claude Code treats any ANTHROPIC_BASE_URL other than api.anthropic.com as a
+// third-party gateway: it caps models without a [1m] id at a 200k window, ignores
+// autoCompactWindow, and loads every MCP tool schema up front instead of deferring
+// them behind tool search. The relay only forwards to Anthropic, so say so.
+const ASSUME_FIRST_PARTY_ENDPOINT = "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL";
+const THIRD_PARTY_PROVIDER_FLAGS = [
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+  "CLAUDE_CODE_USE_MANTLE",
+  "CLAUDE_CODE_USE_GATEWAY",
+] as const;
+
+function isFirstPartyAnthropicEndpoint(env: Environment): boolean {
+  if (THIRD_PARTY_PROVIDER_FLAGS.some((flag) => isTruthyFlag(env[flag]))) return false;
+  const endpoint = env.ANTHROPIC_BASE_URL?.trim();
+  if (!endpoint) return true;
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === "https:" && url.hostname === "api.anthropic.com";
+  } catch {
+    return false;
+  }
+}
+
+// Claude Code's own reading of a boolean environment flag.
+function isTruthyFlag(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes(value?.trim().toLowerCase() ?? "");
+}
+
+/**
+ * Environment for a Claude CLI routed through a temporary local relay. Tags the
+ * relay so descendant app launches can recover its upstream, and keeps the CLI's
+ * first-party behavior when that upstream is Anthropic's own API.
+ */
 export function claudeSessionProxyEnvironment(env: Environment, baseUrl: string) {
   return {
     ANTHROPIC_BASE_URL: baseUrl,
     T3CODE_CLAUDE_PROXY_BASE_URL: baseUrl,
     T3CODE_CLAUDE_PROXY_UPSTREAM: env.ANTHROPIC_BASE_URL ?? "",
+    ...(isFirstPartyAnthropicEndpoint(env) ? { [ASSUME_FIRST_PARTY_ENDPOINT]: "1" } : {}),
   };
 }

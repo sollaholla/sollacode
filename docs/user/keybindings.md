@@ -43,57 +43,48 @@ For most up to date defaults, see [`DEFAULT_KEYBINDINGS` in `apps/server/src/key
 
 ## Push to talk
 
-Hold **Cmd+D** on macOS or **Ctrl+D** on Windows and Linux while a send-capable chat composer is
-open. Solla Code records for the full time the shortcut is physically held and begins its input
-cooldown only after the key is released. It then transcribes the recording locally. With automatic
-voice sending off, the text is inserted into the draft and a one-line result chip appears above the
-composer; hover or focus expands the full transcript, **Send** submits it, and the close button
-dismisses the chip. If you leave that chat before transcription finishes, a notification in the
-upper-right shows a preview of the transcript with **Send**, so you can submit it without going
-back. With automatic sending on, the completed transcript is sent immediately. The
-microphone button beside the composer provides the same behavior. Sent voice messages show a
-**Transcribed** badge at the bottom-left of the user bubble.
+Hold **Cmd+D** on macOS or **Ctrl+D** on Windows and Linux, or hold the microphone
+button, to record a voice note. Releasing it adds a playable attachment to the current draft.
+The text field stays separate: add written instructions, remove the recording, or send them
+together. Voice notes are never automatically submitted by the automatic dictation setting.
 
-On current macOS releases, Solla Code first uses Apple's on-device SpeechAnalyzer. Windows desktop
-first tries the installed Windows speech recognizer for your language. It processes the recording
-locally, with no account or model download. Missing language support, uncertain recognition, errors,
-or a timeout fall back to AI using the entire original recording. The native Windows attempt has a
-duration-scaled deadline of at most 30 seconds, plus three seconds for process startup and shutdown.
+When you press **Send**, the connected host transcribes the recording. The sent message keeps
+its audio player and a collapsible **Transcribed** chip. Providers receive an explicitly labeled
+voice transcript followed by your typed text, plus the original recording's host file path.
+This also works with text-only coding providers; it does not require native model audio support.
 
-Clients without usable native recognition download the quantized `onnx-community/distil-small.en`
-model at pinned revision `69be759f982d1d4c5b8a987d4140752742619bd0` and retain it in the
-browser or Electron cache. Local model inference does not use the selected coding provider. The
-fallback model's first use therefore requires internet access, while subsequent use can work from
-the cache. The AI fallback prefers WebGPU where available and retries on WebAssembly if GPU loading
-or inference fails. It keeps the loaded model for subsequent recordings. Windows' newer Windows AI
-speech API is not used by the current installer; this native path uses the installed SAPI recognizer.
+Apple Silicon desktop hosts prepare a high-quality [Parakeet speech model](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) automatically in the
+background. This one-time download includes a private runtime and approximately 2.3 GB of model
+data; it survives app updates. Recordings use the prepared model locally. During setup, or if that
+model is unavailable, macOS uses Apple's on-device speech recognizer. Windows uses its installed
+speech recognizer. The remaining fallback is the local CPU model `onnx-community/distil-small.en` at revision
+`69be759f982d1d4c5b8a987d4140752742619bd0`. The fallback downloads once into the host's
+voice-model cache. The recording is not uploaded to a cloud transcription service. On a remote
+connection, the host is the computer running Solla Code, rather than the phone recording the note.
+Transcription can still mishear names or ambiguous words; the retained recording lets you check
+the original speech.
 
-Microphone permission is requested on first use. Losing window focus stops the recording, as does
-releasing the key. Recordings are capped at two minutes. If microphone recording, audio decoding,
-the one-time model download, or local inference is unavailable, the composer remains unchanged
-and Solla Code shows an error instead of sending an unverified transcript.
+The model is NVIDIA Parakeet TDT 0.6B v3, converted for MLX by MLX Community and provided under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Solla downloads the pinned model without
+changing its weights.
 
-While push-to-talk is active, Solla Code temporarily mutes device playback so a notification,
-video, or another tab cannot be transcribed back into the composer. The mute is scoped to the
-recording and is released on either half of the shortcut chord, a real window blur, page hide,
-timeout, cancellation, or teardown. A composer re-render or an arriving message does not end the
-recording or steal its insertion target; focus returns to the original input when recording ends.
+Microphone permission is requested on first use. Releasing the shortcut, losing window focus,
+or reaching approximately two minutes stops recording. Audio preparation and host transcription
+have bounded deadlines. If preparation or transcription fails, the note stays in the unsent draft
+and the error is shown. Only one host transcription runs at once; a simultaneous send reports
+that the host is busy so the recording can be retried.
 
-**Settings → General → Contextual transcription correction** can pass a completed local transcript
-through a fast Utility AI model before insertion. The status changes from **Transcribing…** to
-**Refining…** while that pass runs. Correction receives only a bounded recent-conversation snapshot,
-has a twenty-second deadline, and falls back to the local transcript on any timeout, provider
-failure, or implausible rewrite. A dedicated model can be selected there; when the override is off,
-correction uses the global **Utility AI model**.
+While recording in the desktop app, Solla Code temporarily mutes device playback and restores it
+when recording ends. Microphone input is unavailable while answering a structured provider question;
+use that question's text controls. The iOS keyboard's own dictation still edits the text field normally.
 
-**Cmd+D** and **Ctrl+D** are reserved exclusively for voice transcription and cannot be assigned
-to configurable commands. Existing command rules using `mod+d` are removed during startup.
+Terminal dictation continues to insert recognized text into the terminal. Its optional contextual
+correction applies to that text workflow. They do not rewrite or submit
+chat voice notes. Native mobile clients can play received recordings and expand their transcripts;
+recording a new note is currently available in desktop and supported web browsers.
 
-The microphone action remains available beside plan-question **Next/Submit** controls and plan
-follow-up **Refine/Implement** controls. Dictation is inserted into whichever input is visibly
-active. In particular, a plan question receives the transcript as its custom answer rather than
-leaving the text in the conversation draft behind the question. When automatic voice sending is
-enabled, Solla Code waits for that answer update to render before advancing or submitting it.
+**Cmd+D** and **Ctrl+D** are reserved exclusively for voice input and cannot be assigned to
+configurable commands. Existing command rules using `mod+d` are removed during startup.
 
 ## Configuration
 

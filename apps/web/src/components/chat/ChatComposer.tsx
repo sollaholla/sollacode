@@ -1,3 +1,5 @@
+import { ThreadModelPolicyDialog, useThreadModelPolicy } from "./ThreadModelPolicyDialog";
+import { VoiceNoteChip } from "./VoiceNoteChip";
 import type {
   ApprovalRequestId,
   EnvironmentId,
@@ -51,7 +53,11 @@ import {
   resolveVoiceTranscriptInputUpdate,
   type VoiceTranscriptInputTarget,
 } from "../../pushToTalkTranscription";
-import { deriveComposerSendState, readFileAsDataUrl } from "../ChatView.logic";
+import {
+  deriveComposerSendState,
+  describeComposerSettingsUpdate,
+  readFileAsDataUrl,
+} from "../ChatView.logic";
 import {
   dataTransferHasComposerMention,
   makeComposerMentionDragHandlers,
@@ -241,6 +247,8 @@ import {
 } from "../../composerQuote";
 import { interactionModeConfig, interactionModeOptions } from "./interactionModes";
 import { runtimeModeConfig, runtimeModeDangerClasses, runtimeModeOptions } from "./runtimeModes";
+
+const EMPTY_PROVIDER_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-slot="popover-popup"]',
@@ -805,7 +813,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
-    isServerThread: _isServerThread,
+    isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     forceExpandedOnMobile,
     acceptUntargetedQuotes = false,
@@ -884,6 +892,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onExpandImage,
     persistModelSelectionAsDefault,
   } = props;
+  const [modelRestrictionsOpen, setModelRestrictionsOpen] = useState(false);
+  const modelPolicy = useThreadModelPolicy(environmentId, isServerThread ? activeThreadId : null);
   const updateEnvironmentSettings = useUpdateEnvironmentSettings(environmentId);
   const refreshThreadPlanCommand = useAtomCommand(threadEnvironment.refreshPlan, "plan refresh");
   const onAutoCompactionThresholdChange = useCallback(
@@ -907,11 +917,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Prefer the caller's reason (sign-in, catch-up); otherwise explain the
   // length, so a disabled send button always says why it is disabled instead
   // of the turn failing later inside the provider.
-  const effectiveSendDisabledReason = currentEditorPromptTooLong
-    ? (sendDisabledReason ??
-      `Message is over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString()} character limit`)
-    : sendDisabledReason;
-  const isSendDisabled = effectiveSendDisabledReason !== null;
   const composerImages = composerDraft.images;
   const composerTerminalContexts = composerDraft.terminalContexts;
   const composerElementContexts = composerDraft.elementContexts;
@@ -1044,7 +1049,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // A local draft only carries a preference from its source thread. It has
     // no provider session to preserve and must remain selectable if that
     // preferred account was disabled or removed.
-    if (_isServerThread && authoritativeInstanceId) {
+    if (isServerThread && authoritativeInstanceId) {
       return authoritativeInstanceId;
     }
     const projectDefaultEntry = providerInstanceEntries.find(
@@ -1070,7 +1075,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       NO_PROVIDER_MODEL_SELECTION.instanceId
     );
   }, [
-    _isServerThread,
+    isServerThread,
     activeProjectDefaultModelSelection?.instanceId,
     activeThread?.session?.providerInstanceId,
     activeThreadModelSelection?.instanceId,
@@ -1157,47 +1162,33 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
   );
+  const selectedModelBlockedReason = modelPolicy.disabledReason(selectedInstanceId, selectedModel);
+  const effectiveSendDisabledReason =
+    selectedModelBlockedReason ??
+    (currentEditorPromptTooLong
+      ? (sendDisabledReason ??
+        `Message is over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString()} character limit`)
+      : sendDisabledReason);
+  const isSendDisabled = effectiveSendDisabledReason !== null;
+
   const settingsUpdateLabel = useMemo(() => {
-    if (!activeThread || !_isServerThread) return null;
-    const changes: string[] = [];
-    const currentSelection = activeThread.modelSelection;
-    if (currentSelection.instanceId !== selectedModelSelection.instanceId) {
-      changes.push(`provider to ${selectedProviderEntry?.displayName ?? selectedProvider}`);
-    }
-    if (
-      currentSelection.model !== selectedModelSelection.model ||
-      JSON.stringify(currentSelection.options ?? null) !==
-        JSON.stringify(selectedModelSelection.options ?? null)
-    ) {
-      const effort = selectedModelSelection.options?.find(
-        (option) => option.id === "effort" || option.id === "reasoningEffort",
-      )?.value;
-      changes.push(
-        typeof effort === "string"
-          ? `${selectedModelSelection.model} with ${effort} effort`
-          : selectedModelSelection.model,
-      );
-    }
-    if (activeThread.runtimeMode !== runtimeMode) {
-      changes.push(runtimeMode === "full-access" ? "Full access" : "Approval required");
-    }
-    if (activeThread.interactionMode !== interactionMode) {
-      // Read from the shared config so a new mode cannot silently render as
-      // "Build mode", which is how Agent was mislabelled here.
-      changes.push(`${interactionModeConfig[interactionMode].label} mode`);
-    }
-    return changes.length > 0 ? changes.join(" · ") : null;
+    if (!activeThread || !isServerThread) return null;
+    return describeComposerSettingsUpdate({
+      thread: activeThread,
+      modelSelection: composerDraft.modelSelectionByProvider[selectedInstanceId],
+      runtimeMode,
+      interactionMode,
+    });
   }, [
-    _isServerThread,
+    isServerThread,
     activeThread,
+    composerDraft.modelSelectionByProvider,
+    selectedInstanceId,
     interactionMode,
     runtimeMode,
-    selectedModelSelection,
-    selectedProvider,
-    selectedProviderEntry?.displayName,
   ]);
   const revertSettingsToThread = useCallback(() => {
-    if (!activeThread || !_isServerThread) return;
+    if (!activeThread || !isServerThread) return;
     revertComposerSettingsToThread({
       composerTarget: composerDraftTarget,
       thread: activeThread,
@@ -1207,7 +1198,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     });
     scheduleComposerFocus();
   }, [
-    _isServerThread,
+    isServerThread,
     activeThread,
     composerDraftTarget,
     scheduleComposerFocus,
@@ -1843,6 +1834,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               const dataUrl = await readFileAsDataUrl(image.file);
               stagedAttachmentById.set(image.id, {
                 id: image.id,
+                type: image.type,
+                ...(image.type === "audio" ? { durationMs: image.durationMs } : {}),
                 name: image.name,
                 mimeType: image.mimeType,
                 sizeBytes: image.sizeBytes,
@@ -2308,7 +2301,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   /**
-   * Swipe down on the composer to put the keyboard away.
+   * Swipe down on an unfocused composer to put it away.
    *
    * Read through a ref so the listeners are installed once per viewport rather
    * than re-bound every time the voice status or focus changes - re-installing
@@ -2319,12 +2312,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // Not while the microphone is live: blurring during capture unmounts the
     // recorder controls, which is the one thing the collapse rules already go
     // out of their way to avoid.
-    if (pushToTalkStatus !== null) return;
-    // Deliberately not gated on focus. Swiping a composer that is merely open
-    // - keyboard already down - still has to put it away, or the gesture only
-    // works in half the states it is offered in.
+    const activeElement = document.activeElement;
+    if (
+      pushToTalkStatus !== null ||
+      (activeElement instanceof Element &&
+        (composerSurfaceRef.current?.contains(activeElement) ||
+          isInsideComposerFloatingLayer(activeElement)))
+    ) {
+      return;
+    }
+    // The expand animation can defer the blur state update by two frames.
+    // A gesture confirmed unfocused by the boundary and live DOM owns collapse.
+    setIsComposerFocused(false);
     setSwipeDismissedMobileComposer(true);
-    blurFocusedComposerElement();
   };
 
   useEffect(() => {
@@ -2687,6 +2687,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const oversizedImageNames: string[] = [];
       const unreadableImageNames: string[] = [];
       for (const image of images) {
+        if (image.type === "audio") {
+          candidateAttachments.push({
+            id: image.id,
+            type: "audio",
+            durationMs: image.durationMs,
+            name: image.name,
+            mimeType: image.mimeType,
+            sizeBytes: image.sizeBytes,
+            dataUrl: await readFileAsDataUrl(image.file),
+          });
+          continue;
+        }
         const result = await compressImageForStash(image.file);
         if (!result.ok) {
           // "too large" and "could not be read" are distinct outcomes; the
@@ -3109,15 +3121,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (!isMobileViewport) {
       return;
     }
-    if (mobileComposerExpandInFlightRef.current) {
-      return;
-    }
     if (composerBlurFrameRef.current !== null) {
       window.cancelAnimationFrame(composerBlurFrameRef.current);
     }
-    composerBlurFrameRef.current = window.requestAnimationFrame(() => {
+    const reconcileFocus = () => {
       composerBlurFrameRef.current = null;
       if (mobileComposerExpandInFlightRef.current) {
+        // Expansion protects its own scheduled focus, but must not discard a
+        // real blur that arrives before the release frame finishes.
+        composerBlurFrameRef.current = window.requestAnimationFrame(reconcileFocus);
         return;
       }
       const composerSurface = composerSurfaceRef.current;
@@ -3133,7 +3145,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
       setIsComposerFocused(false);
-    });
+    };
+    composerBlurFrameRef.current = window.requestAnimationFrame(reconcileFocus);
   }, [isMobileViewport]);
 
   useEffect(() => {
@@ -3324,6 +3337,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       className="chat-composer-measure min-w-0 overscroll-none"
       data-chat-composer-form="true"
     >
+      {selectedModelBlockedReason && (
+        <p role="status" className="mb-2 text-xs text-muted-foreground">
+          This model is blocked. Choose an allowed model or change Model restrictions.
+        </p>
+      )}
+      {activeThreadId && (
+        <ThreadModelPolicyDialog
+          key={activeThreadId}
+          environmentId={environmentId}
+          threadId={activeThreadId}
+          open={modelRestrictionsOpen}
+          onOpenChange={setModelRestrictionsOpen}
+        />
+      )}
       <div
         className={cn(
           "group rounded-[16px] p-px transition-colors duration-200",
@@ -3652,66 +3679,75 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           (annotation) => annotation.id === image.id,
                         ),
                     )
-                    .map((image) => (
-                      <div
-                        key={image.id}
-                        className="relative h-16 w-16 overflow-hidden rounded-lg border border-border bg-background"
-                      >
-                        {image.previewUrl ? (
-                          <button
-                            type="button"
-                            className="h-full w-full cursor-zoom-in"
-                            aria-label={`Preview ${image.name}`}
-                            onClick={() => {
-                              const preview = buildExpandedImagePreview(composerImages, image.id);
-                              if (!preview) return;
-                              onExpandImage(preview);
-                            }}
-                          >
-                            <img
-                              src={image.previewUrl}
-                              alt={image.name}
-                              className="h-full w-full object-cover"
-                            />
-                          </button>
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-muted-foreground/70">
-                            {image.name}
-                          </div>
-                        )}
-                        {nonPersistedComposerImageIdSet.has(image.id) && (
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <span
-                                  role="img"
-                                  aria-label="Draft attachment may not persist"
-                                  className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
-                                >
-                                  <CircleAlertIcon className="size-3" />
-                                </span>
-                              }
-                            />
-                            <TooltipPopup
-                              side="top"
-                              className="max-w-64 whitespace-normal leading-tight"
-                            >
-                              Draft attachment could not be saved locally and may be lost on
-                              navigation.
-                            </TooltipPopup>
-                          </Tooltip>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
-                          onClick={() => removeComposerImage(image.id)}
-                          aria-label={`Remove ${image.name}`}
+                    .map((image) =>
+                      image.type === "audio" ? (
+                        <VoiceNoteChip
+                          key={image.id}
+                          src={image.previewUrl}
+                          durationMs={image.durationMs}
+                          onRemove={() => removeComposerImage(image.id)}
+                        />
+                      ) : (
+                        <div
+                          key={image.id}
+                          className="relative h-16 w-16 overflow-hidden rounded-lg border border-border bg-background"
                         >
-                          <XIcon />
-                        </Button>
-                      </div>
-                    ))}
+                          {image.previewUrl ? (
+                            <button
+                              type="button"
+                              className="h-full w-full cursor-zoom-in"
+                              aria-label={`Preview ${image.name}`}
+                              onClick={() => {
+                                const preview = buildExpandedImagePreview(composerImages, image.id);
+                                if (!preview) return;
+                                onExpandImage(preview);
+                              }}
+                            >
+                              <img
+                                src={image.previewUrl}
+                                alt={image.name}
+                                className="h-full w-full object-cover"
+                              />
+                            </button>
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-muted-foreground/70">
+                              {image.name}
+                            </div>
+                          )}
+                          {nonPersistedComposerImageIdSet.has(image.id) && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span
+                                    role="img"
+                                    aria-label="Draft attachment may not persist"
+                                    className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
+                                  >
+                                    <CircleAlertIcon className="size-3" />
+                                  </span>
+                                }
+                              />
+                              <TooltipPopup
+                                side="top"
+                                className="max-w-64 whitespace-normal leading-tight"
+                              >
+                                Draft attachment could not be saved locally and may be lost on
+                                navigation.
+                              </TooltipPopup>
+                            </Tooltip>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
+                            onClick={() => removeComposerImage(image.id)}
+                            aria-label={`Remove ${image.name}`}
+                          >
+                            <XIcon />
+                          </Button>
+                        </div>
+                      ),
+                    )}
                 </div>
               )}
 
@@ -3732,6 +3768,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     : []
                 }
                 skills={selectedProviderStatus?.skills ?? []}
+                providerSlashCommands={
+                  isComposerApprovalState || activePendingProgress
+                    ? EMPTY_PROVIDER_SLASH_COMMANDS
+                    : (selectedProviderStatus?.slashCommands ?? EMPTY_PROVIDER_SLASH_COMMANDS)
+                }
                 className={cn(
                   showMobilePendingAnswerActions && "max-sm:pb-11",
                   showComposerCutButton && "pr-16",
@@ -3898,8 +3939,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onOpenChange={(open) => {
                       setIsComposerModelPickerOpen(open);
                     }}
-                    {...(getModelDisabledReason ? { getModelDisabledReason } : {})}
+                    getModelDisabledReason={(instanceId, model) =>
+                      modelPolicy.disabledReason(instanceId, model) ??
+                      getModelDisabledReason?.(instanceId, model) ??
+                      null
+                    }
+                    {...(isServerThread && activeThreadId
+                      ? { onManageModelRestrictions: () => setModelRestrictionsOpen(true) }
+                      : {})}
                     onInstanceModelChange={onProviderModelSelect}
+                    onSwitchProviderAccount={props.onSwitchProviderAccount}
                   />
                 )}
 

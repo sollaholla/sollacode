@@ -117,6 +117,10 @@ Controls how assistant text reaches the thread timeline. In [the contracts][1], 
 
 An ACP `agent_thought_chunk` - the model's private reasoning before it writes assistant text. Grok 4.6 and Grok Build emit these for a long stretch at high effort. The adapter keeps them out of the assistant message and surfaces one collapsed "Thinking" activity so the chat is visibly proceeding. See [GrokAdapter.ts][29] and [AcpRuntimeModel.ts][30].
 
+#### Usage limit reset
+
+A provider-granted credit that clears the current usage limits on demand. Codex reports earned resets over its app-server; Claude's banked resets (`cedar_ember`) are read from the Claude OAuth usage endpoint with the CLI's stored sign-in and redeemed with an idempotent request id. Both reach clients as `rateLimitResetCredits` inside the provider's account usage and are redeemed through the driver's `usageReset` capability. See [ClaudeBankedResets.ts](../../apps/server/src/provider/Drivers/ClaudeBankedResets.ts) and [provider-usage.md](../user/provider-usage.md).
+
 #### Snapshot
 
 A point-in-time view of state. The word is used in multiple layers, including orchestration, provider, and checkpointing. See [ProjectionSnapshotQuery.ts][10], [ProviderAdapter.ts][15], and [CheckpointStore.ts][19].
@@ -126,6 +130,36 @@ A point-in-time view of state. The word is used in multiple layers, including or
 #### Custom agent
 
 A named Agent Stack identity with one dedicated chat thread whose browser keeps persistent logins. It is not a generic provider agent or an ordinary project thread. See [the user guide](../user/custom-agents.md).
+
+#### Credential vault
+
+The desktop's store of saved website logins, PINs, and codes, managed in Settings → Credentials.
+Each entry has a kind: a `password` fills only a password input, and a `code` (a PIN or similar)
+also fills a single-line text, tel, number, or search input. Entries saved before kinds existed are
+passwords. Secrets are encrypted by the operating system and are only ever decrypted in the Electron
+main process, straight into an allowed field of a preview tab whose origin exactly matches the entry,
+including a field inside a same-origin iframe. Agents see labels, usernames, kinds, and opaque IDs
+through `preview_credentials` and fill with `preview_fill_credential`; the tab then masks that
+secret in every snapshot, evaluation, and status it returns. Web and mobile
+clients manage it remotely: the `previewCredentials.*` RPCs relay one list, save, or remove through
+the preview automation broker to the environment's own desktop host, which registers with
+`manageCredentials` (honoured only for the local desktop session). See
+[BrowserCredentialVault.ts](../../apps/desktop/src/preview/BrowserCredentialVault.ts),
+[RemoteCredentialVault.ts](../../apps/server/src/preview/RemoteCredentialVault.ts), and
+[remote-browser-control.md](../user/remote-browser-control.md#saved-passwords-and-pins-for-agents).
+
+#### Tab audio relay
+
+How a browser tab's sound reaches a remote viewer. Viewers open `preview.tabAudioWatch` for the tab
+they show; the server's relay counts listeners per tab and sends the set of listened-to tabs as
+`audioDemand` to every desktop browser host that registered with `streamsTabAudio`. The desktop
+window that renders the tab captures it (Chromium tab capture, then Opus via WebCodecs) only while
+it is listened to and audible, and publishes 100 ms batches with `preview.tabAudioPublish`. Silence
+and closed viewers send nothing. See
+[TabAudioRelay.ts](../../apps/server/src/preview/TabAudioRelay.ts),
+[tabAudioStreamer.ts](../../apps/web/src/components/preview/tabAudioStreamer.ts),
+[tabAudioPlayback.ts](../../apps/web/src/components/preview/tabAudioPlayback.ts), and
+[remote-browser-control.md](../user/remote-browser-control.md#hearing-the-tab).
 
 #### Agent task
 

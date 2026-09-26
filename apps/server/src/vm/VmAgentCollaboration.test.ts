@@ -104,6 +104,54 @@ const makeAgentSummary = (delegation: VmAgentDelegation): VmAgentCollaborationAg
   canReceiveDelegation: true,
 });
 
+for (const status of ["queued", "pending-approval"] as const) {
+  it.effect(`handles a correction to ${status} work without bypassing approval`, () => {
+    let delegation: VmAgentDelegation = {
+      ...makeDelegation(),
+      status,
+      followupCount: 0,
+      completedAt: null,
+    };
+    const messages: string[] = [];
+    const dependencies = Layer.mergeAll(
+      Layer.mock(VmAgentStore)({}),
+      Layer.mock(ProjectionSnapshotQuery)({}),
+      Layer.mock(OrchestrationEngineService)({}),
+      Layer.mock(VmAgentCollaborationStore)({
+        getById: () => Effect.succeed(Option.some(delegation)),
+        appendMessage: (input) =>
+          Effect.sync(() => {
+            messages.push(input.text);
+            assert.strictEqual(input.delivery, "pending");
+            assert.strictEqual(input.nextStatus, "queued");
+            delegation = {
+              ...delegation,
+              status: "queued",
+              followupCount: delegation.followupCount + 1,
+              revision: delegation.revision + 1,
+            };
+            return { ...input, sequence: delegation.revision };
+          }),
+      }),
+    );
+    return Effect.gen(function* () {
+      const service = yield* VmAgentCollaboration;
+      const result = yield* service
+        .sendMessage(
+          { kind: "user" },
+          {
+            delegationId: delegation.delegationId,
+            message: "Thursday, not Friday",
+          },
+        )
+        .pipe(Effect.result);
+      assert.strictEqual(result._tag, status === "queued" ? "Success" : "Failure");
+      assert.deepStrictEqual(messages, status === "queued" ? ["Thursday, not Friday"] : []);
+      assert.strictEqual(delegation.status, status);
+    }).pipe(Effect.provide(VmAgentCollaborationLive.pipe(Layer.provide(dependencies))));
+  });
+}
+
 it("bounds delegation snapshot fields and omits full work payloads", () => {
   const delegation = makeDelegation();
   const item = delegationListItem(delegation);

@@ -25,18 +25,34 @@ const CALL_SITES = [
 
 describe("app voice capture wiring", () => {
   it("asks the same question at every call site", () => {
-    for (const file of CALL_SITES) {
+    const argumentKeysByFile = CALL_SITES.map((file) => {
       const source = NodeFS.readFileSync(file, "utf8");
       const calls = source.split("shouldOfferAppVoiceCapture({").slice(1);
       expect(calls.length, `${NodePath.basename(file)} no longer calls it`).toBeGreaterThan(0);
-      for (const call of calls) {
-        const args = call.slice(0, call.indexOf("})"));
-        expect(
-          args,
-          `${NodePath.basename(file)} decides microphone availability without asking whether the ` +
-            `browser can transcribe, so its answer can disagree with the other call site`,
-        ).toContain("hasNativeSpeechDictation");
-      }
+      const keys = calls.flatMap((call) => {
+        const args = call
+          .slice(0, call.indexOf("})"))
+          .replace(/\/\/[^\n]*/g, "")
+          .replace(/\/\*[\s\S]*?\*\//g, "");
+        return [...args.matchAll(/(?:^|[,{])\s*([A-Za-z][A-Za-z\d]*)\s*:/g)].map(
+          (match) => match[1] as string,
+        );
+      });
+      expect(keys.length, `${NodePath.basename(file)} passes no arguments`).toBeGreaterThan(0);
+      return { file: NodePath.basename(file), keys: [...new Set(keys)].sort() };
+    });
+
+    // The names, not the values: a site that stops asking about one input can
+    // answer differently from the other, which is how a phone once rendered a
+    // microphone whose push-to-talk effect had already returned early.
+    const [first, ...rest] = argumentKeysByFile;
+    expect(first).toBeDefined();
+    for (const other of rest) {
+      expect(
+        other.keys,
+        `${other.file} and ${first?.file} decide microphone availability from different inputs, ` +
+          `so their answers can disagree`,
+      ).toEqual(first?.keys);
     }
   });
 

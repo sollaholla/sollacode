@@ -18,6 +18,7 @@ export {
   fetchSessionState,
   isPrimaryEnvironmentPairingCredentialRejectedError,
   isPrimaryEnvironmentRequestError,
+  isTransientBootstrapError,
   listServerClientSessions,
   listServerPairingLinks,
   peekPairingTokenFromUrl,

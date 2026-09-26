@@ -110,12 +110,17 @@ const makeHarness = (options: {
   readonly threads?: ReadonlyArray<unknown>;
   readonly shellById?: unknown;
   readonly messages?: ReadonlyArray<unknown>;
+  /** When set, only this thread id is the agent's own chat. */
+  readonly agentOwnThreadId?: string;
 }) => {
   const commands: OrchestrationCommand[] = [];
   const storeLayer = Layer.mock(VmAgentStore)({
-    getByThreadId: () =>
+    getByThreadId: (threadId) =>
       Effect.succeed(
-        options.boundAgent === null ? Option.none() : Option.some(options.boundAgent ?? agent),
+        options.boundAgent === null ||
+          (options.agentOwnThreadId !== undefined && threadId !== options.agentOwnThreadId)
+          ? Option.none()
+          : Option.some(options.boundAgent ?? agent),
       ),
   });
   const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
@@ -184,6 +189,18 @@ it.effect("refuses a chat that is not a VM agent", () =>
       run(handleWorkspaceConsult({ action: "list_projects" }), layer),
     );
     assert.strictEqual(error._tag, "WorkspaceConsultNotAnAgentError");
+  }),
+);
+
+it.effect("admits a side chat forked from the agent's chat as the agent", () =>
+  Effect.gen(function* () {
+    const parentId = ThreadId.make("thread-scout-parent");
+    const { layer } = makeHarness({
+      agentOwnThreadId: parentId,
+      shellById: threadShell({ id: agentThreadId, sideChatParentThreadId: parentId }),
+    });
+    const result = yield* run(handleWorkspaceConsult({ action: "list_projects" }), layer);
+    assert.strictEqual(result.action, "list_projects");
   }),
 );
 

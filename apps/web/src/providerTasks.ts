@@ -72,6 +72,8 @@ export interface ProviderTask {
   readonly startedAt: string;
   readonly updatedAt: string;
   readonly toolUses: number | null;
+  /** Provider-reported cumulative task tokens; absent means unknown. */
+  readonly totalTokens?: number | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -89,6 +91,12 @@ function toolUseCount(payload: Record<string, unknown> | null): number | null {
   const usage = asRecord(payload?.usage);
   const value = usage?.tool_uses;
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function taskTokenCount(payload: Record<string, unknown> | null): number | null {
+  const usage = asRecord(payload?.usage);
+  const value = usage?.total_tokens;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function toStatus(value: unknown): ProviderTaskStatus {
@@ -125,6 +133,8 @@ export function deriveProviderTasks(
      * on a chat the user can plainly see is stopped.
      */
     readonly providerSessionEnded?: boolean;
+    /** When the session actually ended, so a long task gets a visible stopped state. */
+    readonly providerSessionEndedAt?: string;
   },
 ): ReadonlyArray<ProviderTask> {
   const nowMs = options?.nowMs ?? Date.now();
@@ -159,12 +169,15 @@ export function deriveProviderTasks(
       status:
         activity.kind === "task.completed"
           ? toStatus(payload?.status)
-          : existing?.status === "running" || existing === undefined
+          : activity.kind === "task.started" ||
+              existing?.status === "running" ||
+              existing === undefined
             ? "running"
             : existing.status,
       startedAt: existing?.startedAt ?? activity.createdAt,
       updatedAt: activity.createdAt,
       toolUses: toolUseCount(payload) ?? existing?.toolUses ?? null,
+      totalTokens: taskTokenCount(payload) ?? existing?.totalTokens ?? null,
     });
   }
 
@@ -186,7 +199,11 @@ export function deriveProviderTasks(
     // makes the row age out and become dismissable like any other finished work.
     const settled =
       options?.providerSessionEnded === true && !isFinished(task.status)
-        ? { ...task, status: "stopped" as const }
+        ? {
+            ...task,
+            status: "stopped" as const,
+            updatedAt: options.providerSessionEndedAt ?? task.updatedAt,
+          }
         : task;
 
     if (isFinished(settled.status)) {
@@ -194,7 +211,7 @@ export function deriveProviderTasks(
         settled.status === "failed"
           ? PROVIDER_TASK_FAILED_RETENTION_MS
           : PROVIDER_TASK_COMPLETED_RETENTION_MS;
-      if (ageMs > retentionMs) continue;
+      if (nowMs - Date.parse(settled.updatedAt) > retentionMs) continue;
       aged.push(settled);
       continue;
     }
@@ -232,28 +249,24 @@ export function isProviderTaskActive(task: ProviderTask): boolean {
 }
 
 /**
- * Provider drivers whose runtime can kill one task by id.
+ * Whether the panel may offer to stop this row.
  *
- * Claude and Grok expose a per-task kill; the others can end a turn but not a
- * single task inside it. The panel's stop control is gated on this so it never
- * claims to reach work it cannot.
- */
-const TASK_STOP_CAPABLE_DRIVER_KINDS: ReadonlySet<string> = new Set(["claudeAgent", "grok"]);
-
-/**
- * Whether the panel may offer to actually stop this row.
+ * Not gated on the thread's current driver any more. Only Claude and Grok
+ * announce tasks at all, and both can kill one by id, so a running row facing
+ * any other provider is a leftover from a session that has since been replaced
+ * -- its runtime is gone, and Stop is the only control that can clear the row.
+ * Reading the *current* driver hid the button exactly there: switching a thread
+ * to Muse left its running rows advertising live work forever, with nothing to
+ * press. The server makes the same distinction on the other side, killing the
+ * task where a runtime still owns it and settling the row where none does.
  *
  * `plan-refresh` is excluded deliberately: it is server-side work synthesised
- * into the same activity stream, so there is no provider task behind the id
- * and a stop request would fail on a task the user can plainly see running.
+ * into the same activity stream, so there is no provider task behind the id.
  */
-export function canStopProviderTask(input: {
-  readonly task: ProviderTask;
-  readonly driverKind: string | null;
-}): boolean {
+export function canStopProviderTask(input: { readonly task: ProviderTask }): boolean {
   if (input.task.status !== "running") return false;
   if (input.task.taskType === "plan-refresh") return false;
-  return input.driverKind !== null && TASK_STOP_CAPABLE_DRIVER_KINDS.has(input.driverKind);
+  return true;
 }
 
 /**
@@ -332,6 +345,7 @@ export function countActiveProviderTasks(tasks: ReadonlyArray<ProviderTask>): nu
 const TASK_TYPE_LABELS: Record<string, string> = {
   local_agent: "Sub-agent",
   local_bash: "Background command",
+  local_monitor: "Monitor",
   remote_agent: "Remote agent",
 };
 
@@ -354,6 +368,7 @@ function formatSilence(ms: number): string {
 export function providerTaskStatusLabel(task: ProviderTask, nowMs: number = Date.now()): string {
   switch (task.status) {
     case "running":
+      if (task.taskType === "local_monitor") return "Watching";
       return task.lastToolName ? `Running · ${task.lastToolName}` : "Running";
     case "stale": {
       const updatedMs = Date.parse(task.updatedAt);

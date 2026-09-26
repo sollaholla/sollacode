@@ -1,4 +1,4 @@
-import type { ProjectScript } from "@t3tools/contracts";
+import { isAgentsProjectId, type ProjectScript } from "@t3tools/contracts";
 
 interface ProjectScriptRuntimeEnvInput {
   project: {
@@ -33,5 +33,16 @@ export function projectScriptRuntimeEnv(
 }
 
 export function setupProjectScript(scripts: readonly ProjectScript[]): ProjectScript | null {
-  return scripts.find((script) => script.runOnWorktreeCreate) ?? null;
+  return scripts.find((script) => !script.ownerThreadId && script.runOnWorktreeCreate) ?? null;
+}
+
+/** Unowned legacy actions in the shared Agents project must not leak to every agent. */
+export function scriptsForThread(
+  scripts: readonly ProjectScript[],
+  projectId: string,
+  threadId: string | null,
+): readonly ProjectScript[] {
+  return scripts.filter((script) =>
+    script.ownerThreadId ? script.ownerThreadId === threadId : !isAgentsProjectId(projectId),
+  );
 }

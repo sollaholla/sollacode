@@ -33,6 +33,7 @@ import {
   FileSearchIcon,
   FolderIcon,
   FolderPlusIcon,
+  KeyRoundIcon,
   LinkIcon,
   ServerIcon,
   MessageSquareIcon,
@@ -1537,6 +1538,26 @@ function OpenCommandPaletteDialog(props: {
     icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/settings" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:saved-passwords",
+    searchTerms: [
+      "credentials",
+      "saved passwords",
+      "login",
+      "username",
+      "sign in",
+      "autofill",
+      "pin",
+      "code",
+    ],
+    title: "Saved passwords and PINs",
+    icon: <KeyRoundIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings/credentials" });
     },
   });
 

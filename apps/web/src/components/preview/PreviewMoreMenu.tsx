@@ -183,7 +183,7 @@ export function PreviewMoreMenu({
           <MenuSeparator />
           <MenuItem onClick={() => setCredentialsOpen(true)} disabled={tabDisabled}>
             <KeyRound />
-            Saved passwords…
+            Save password or PIN…
           </MenuItem>
           <MenuItem onClick={() => void bridge.clearCookies().catch(() => undefined)}>
             Clear cookies

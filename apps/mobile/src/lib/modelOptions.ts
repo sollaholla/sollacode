@@ -37,6 +37,7 @@ function providerDisplayLabel(provider: {
   if (provider.driver === "codex") return "Codex";
   if (provider.driver === "claudeAgent") return "Claude";
   if (provider.driver === "deepcode") return "Deep Code";
+  if (provider.driver === "muse") return "Muse Code";
   return provider.instanceId;
 }
 

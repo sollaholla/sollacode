@@ -623,3 +623,43 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 });
+
+describe("isAppTabAudioCapture", () => {
+  // Chromium's request for the app capturing a guest tab's sound, as logged
+  // from Electron 41: it arrives at the guest's session with the app window
+  // as the security origin and no media types.
+  const appCapture = {
+    isMainFrame: true,
+    mediaTypes: [],
+    requestingUrl: "https://www.youtube.com/watch?v=example",
+    securityOrigin: "sollacode://app",
+  };
+
+  it("lets the app capture a tab's sound for a remote listener", () => {
+    assert.isTrue(BrowserSession.isAppTabAudioCapture("media", appCapture));
+    assert.isTrue(
+      BrowserSession.isAppTabAudioCapture("media", {
+        ...appCapture,
+        securityOrigin: "t3code-dev://app",
+      }),
+    );
+  });
+
+  it("still refuses a page's own microphone or camera", () => {
+    assert.isFalse(
+      BrowserSession.isAppTabAudioCapture("media", {
+        ...appCapture,
+        mediaTypes: ["audio"],
+        securityOrigin: "https://www.youtube.com",
+      }),
+    );
+    assert.isFalse(
+      BrowserSession.isAppTabAudioCapture("media", { ...appCapture, mediaTypes: ["video"] }),
+    );
+    assert.isFalse(BrowserSession.isAppTabAudioCapture("geolocation", appCapture));
+    assert.isFalse(
+      BrowserSession.isAppTabAudioCapture("media", { ...appCapture, securityOrigin: "not a url" }),
+    );
+    assert.isFalse(BrowserSession.isAppTabAudioCapture("media", undefined));
+  });
+});

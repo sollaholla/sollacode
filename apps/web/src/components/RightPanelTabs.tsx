@@ -134,7 +134,6 @@ interface RightPanelTabsProps {
    * no visible backdrop to click and the guest webview paints over the body —
    * without this the panel can read as an unescapable takeover.
    */
-  onCloseSheet?: () => void;
   /** Thread artifacts shown at the top of the empty surface picker. */
   artifactShelf?: ReactNode;
   /** Artifact choices shown in the new-surface menu. */
@@ -1011,23 +1010,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         style={{ zIndex: RIGHT_PANEL_HEADER_Z_INDEX }}
         data-right-panel-tabbar
       >
-        {props.mode === "sheet" && props.onCloseSheet ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                  aria-label="Close panel"
-                  onClick={props.onCloseSheet}
-                >
-                  <X className="size-4" />
-                </button>
-              }
-            />
-            <TooltipPopup side="bottom">Back to chat</TooltipPopup>
-          </Tooltip>
-        ) : null}
         <ScrollArea
           ref={tabListRef}
           hideScrollbars

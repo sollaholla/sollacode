@@ -554,3 +554,65 @@ it.layer(stores())("VmAgentWorkspaceStore: blockers", (it) => {
     }),
   );
 });
+
+for (const policy of ["combine", "skip"] as const) {
+  it.effect(`resolves overdue occurrences atomically with ${policy}`, () =>
+    Effect.gen(function* () {
+      const original = yield* givenTask({ kind: "once", runAt: createdAt }, createdAt);
+      const store = yield* VmAgentWorkspaceStore;
+      const agents = yield* VmAgentStore;
+      yield* agents.updateStatus({ vmAgentId, status: "stopped", updatedAt: createdAt });
+      yield* store.createTask({
+        ...original,
+        taskId: VmAgentTaskId.make("recurring"),
+        schedule: { kind: "interval", everyMinutes: 60 },
+        createdAt,
+      });
+      yield* store.createTask({
+        ...original,
+        taskId: VmAgentTaskId.make("manual"),
+        schedule: null,
+        nextRunAt: null,
+        createdAt,
+      });
+      yield* store.createTask({
+        ...original,
+        taskId: VmAgentTaskId.make("future"),
+        schedule: { kind: "once", runAt: "2026-08-23T20:00:00.000Z" },
+        nextRunAt: "2026-08-23T20:00:00.000Z",
+        createdAt,
+      });
+      const now = "2026-08-22T20:00:00.000Z";
+      const catchUpTaskId = VmAgentTaskId.make("catch-up");
+      assert.strictEqual(yield* store.prepareResume({ vmAgentId, now, catchUpTaskId }), 2);
+      assert.strictEqual(
+        (yield* store.snapshot(vmAgentId)).tasks.filter((t) => t.nextRunAt === createdAt).length,
+        2,
+      );
+      yield* store.prepareResume({ vmAgentId, now, catchUpTaskId, policy });
+      const snapshot = yield* store.snapshot(vmAgentId);
+      assert.strictEqual(snapshot.tasks.find((t) => t.taskId === taskId)?.status, "paused");
+      assert.strictEqual(
+        snapshot.tasks.find((t) => t.taskId === "recurring")?.nextRunAt,
+        "2026-08-22T21:00:00.000Z",
+      );
+      assert.strictEqual(snapshot.tasks.find((t) => t.taskId === "manual")?.status, "active");
+      assert.strictEqual(
+        snapshot.tasks.find((t) => t.taskId === "future")?.nextRunAt,
+        "2026-08-23T20:00:00.000Z",
+      );
+      const combined = snapshot.tasks.find((t) => t.taskId === catchUpTaskId);
+      if (policy === "combine") {
+        assert.include(combined?.prompt ?? "", original.prompt);
+        assert.include(combined?.prompt ?? "", "Completion criteria: Reported");
+      } else assert.isUndefined(combined);
+      yield* agents.updateStatus({ vmAgentId, status: "running", updatedAt: now });
+      const claimed = yield* store.claimNextDue({
+        runId: VmAgentTaskRunId.make("catch-up-run"),
+        now,
+      });
+      assert.strictEqual(Option.isSome(claimed), policy === "combine");
+      if (Option.isSome(claimed)) assert.strictEqual(claimed.value.task.taskId, catchUpTaskId);
+    }).pipe(Effect.provide(stores())),
+  );
+}

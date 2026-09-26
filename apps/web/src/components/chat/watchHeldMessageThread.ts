@@ -32,7 +32,10 @@ export function watchHeldMessageThread(
       current.session?.status !== "starting" &&
       current.latestTurn?.state !== "running";
     const usagePaused = isUsageGuardPauseActive({
-      notice: findUsageGuardPauseNotice(thread.activities),
+      notice: findUsageGuardPauseNotice(
+        thread.activities,
+        thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
+      ),
       pendingWork: current.pendingWork,
       isWorking: !idle,
     });

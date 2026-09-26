@@ -97,6 +97,13 @@ export function AgentTasksPanel(props: {
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
+      {props.agent.status !== "running" ? (
+        <p className="text-xs text-muted-foreground">
+          This agent is stopped. Scheduled work will wait until it is started, including overdue
+          tasks.
+        </p>
+      ) : null}
+
       <TaskAutoApprovalControl
         environmentId={props.environmentId}
         preferences={props.workspace?.notificationPreferences ?? null}
@@ -118,9 +125,15 @@ export function AgentTasksPanel(props: {
                     <h3 className="min-w-0 truncate text-sm font-medium">{task.title}</h3>
                     <Badge
                       className="shrink-0"
-                      variant={task.status === "active" ? "success" : "secondary"}
+                      variant={
+                        task.status === "active" && props.agent.status === "running"
+                          ? "success"
+                          : "secondary"
+                      }
                     >
-                      {task.status}
+                      {task.status === "active" && props.agent.status !== "running"
+                        ? "waiting for agent"
+                        : task.status}
                     </Badge>
                     {task.approvalState === "pending" ? (
                       <Badge className="shrink-0" variant="warning">

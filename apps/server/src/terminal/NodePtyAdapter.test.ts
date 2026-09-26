@@ -14,12 +14,15 @@ const spawn = vi.fn(() => ({
   pid: 42,
   write: vi.fn(),
   resize: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
   kill: vi.fn(),
   onData: vi.fn(() => ({ dispose: vi.fn() })),
   onExit: vi.fn(() => ({ dispose: vi.fn() })),
 }));
 
 vi.mock("node-pty", () => ({ spawn }));
+vi.mock("node:os", () => ({ release: () => "10.0.26100" }));
 
 const testLayer = NodePtyAdapter.layer.pipe(
   Layer.provide(
@@ -44,6 +47,14 @@ it.effect("spawns through the public adapter with the provided host references",
     });
 
     assert.equal(process.pid, 42);
+    assert.deepEqual(process.windowsPty, { backend: "conpty", buildNumber: 26100 });
+    process.pause?.();
+    process.resume?.();
+    assert.equal(spawn.mock.results[0]?.value.pause.mock.calls.length, 1);
+    assert.equal(spawn.mock.results[0]?.value.resume.mock.calls.length, 1);
+    process.kill("SIGTERM");
+    process.kill("SIGKILL");
+    assert.deepEqual(spawn.mock.results[0]?.value.kill.mock.calls, [[]]);
     assert.equal(spawn.mock.calls.length, 1);
     assert.deepEqual(spawn.mock.calls[0], [
       "powershell.exe",

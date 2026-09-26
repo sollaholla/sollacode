@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolvePreviewTabAgentIndicator } from "./previewTabAgentIndicator.ts";
+import {
+  previewAgentControlFromIndicator,
+  previewControllerFromAgentControl,
+  resolvePreviewTabAgentIndicator,
+} from "./previewTabAgentIndicator.ts";
 
 describe("resolvePreviewTabAgentIndicator", () => {
   it("badges the tab an agent is mid-command in", () => {
@@ -32,5 +36,26 @@ describe("resolvePreviewTabAgentIndicator", () => {
   it("shows nothing for an idle tab no agent has touched", () => {
     expect(resolvePreviewTabAgentIndicator({ controller: "none", agentActive: false })).toBeNull();
     expect(resolvePreviewTabAgentIndicator(undefined)).toBeNull();
+  });
+});
+
+describe("remote agent control", () => {
+  it("round-trips the desktop's badge through the server to a remote tab strip", () => {
+    for (const overlay of [
+      { controller: "agent", agentActive: true },
+      { controller: "none", agentActive: true },
+      { controller: "waiting-for-user", agentActive: false },
+      { controller: "human", agentActive: true },
+      { controller: "none", agentActive: false },
+    ] as const) {
+      const reported = previewAgentControlFromIndicator(resolvePreviewTabAgentIndicator(overlay));
+      expect(resolvePreviewTabAgentIndicator(previewControllerFromAgentControl(reported))).toBe(
+        resolvePreviewTabAgentIndicator(overlay),
+      );
+    }
+    expect(previewControllerFromAgentControl(undefined)).toEqual({
+      controller: "none",
+      agentActive: false,
+    });
   });
 });

@@ -3,6 +3,7 @@ import { type EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  THREAD_TERMINAL_SURFACE_ID,
   migratePersistedRightPanelState,
   resolveRightPanelThreadFocus,
   selectActiveRightPanel,
@@ -63,7 +64,7 @@ describe("rightPanelStore", () => {
     });
   });
 
-  it("upgrades saved single-session terminal surfaces to split-capable surfaces", () => {
+  it("folds saved per-terminal surfaces onto the one shared terminal surface", () => {
     expect(
       migratePersistedRightPanelState({
         byThreadKey: {
@@ -78,10 +79,10 @@ describe("rightPanelStore", () => {
       byThreadKey: {
         "env-1:thread-A": {
           isOpen: true,
-          activeSurfaceId: "terminal:term-1",
+          activeSurfaceId: THREAD_TERMINAL_SURFACE_ID,
           surfaces: [
             {
-              id: "terminal:term-1",
+              id: THREAD_TERMINAL_SURFACE_ID,
               kind: "terminal",
               resourceId: "term-1",
               terminalIds: ["term-1"],
@@ -91,6 +92,41 @@ describe("rightPanelStore", () => {
         },
       },
     });
+  });
+
+  it("folds several saved terminal surfaces into one, keeping order and selection", () => {
+    // The case every existing panel hits on upgrade: a surface per terminal,
+    // one of them active, with other kinds interleaved around them.
+    const migrated = migratePersistedRightPanelState({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "terminal:term-2",
+          surfaces: [
+            { id: "browser:tab-a", kind: "preview", resourceId: "tab-a" },
+            { id: "terminal:term-1", kind: "terminal", resourceId: "term-1" },
+            { id: "diff", kind: "diff" },
+            { id: "terminal:term-2", kind: "terminal", resourceId: "term-2" },
+          ],
+        },
+      },
+    });
+    const thread = migrated.byThreadKey["env-1:thread-A"];
+
+    // One terminal surface, left where the first one sat so the tab strip does
+    // not visibly reshuffle, and carrying both shells as tabs.
+    expect(thread?.surfaces.map((surface) => surface.id)).toEqual([
+      "browser:tab-a",
+      THREAD_TERMINAL_SURFACE_ID,
+      "diff",
+    ]);
+    expect(thread?.surfaces[1]).toMatchObject({
+      kind: "terminal",
+      terminalIds: ["term-1", "term-2"],
+    });
+    // The active terminal tab was a terminal, so the selection survives the id
+    // change rather than silently emptying.
+    expect(thread?.activeSurfaceId).toBe(THREAD_TERMINAL_SURFACE_ID);
   });
 
   it("upgrades saved file surfaces with neutral reveal state", () => {
@@ -621,33 +657,39 @@ describe("rightPanelStore", () => {
     ).toEqual([]);
   });
 
-  it("tracks one surface per terminal session", () => {
+  it("keeps every terminal on one surface and focuses the one just opened", () => {
     useRightPanelStore.getState().openTerminal(refA, "term-1");
     useRightPanelStore.getState().openTerminal(refA, "term-2");
 
+    // One surface, not one per shell: the panel and the terminals view show the
+    // same terminals, and the surface's own tab strip names them.
     const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
     expect(state.surfaces).toEqual([
       {
-        id: "terminal:term-1",
-        kind: "terminal",
-        resourceId: "term-1",
-        terminalIds: ["term-1"],
-        activeTerminalId: "term-1",
-      },
-      {
-        id: "terminal:term-2",
+        id: THREAD_TERMINAL_SURFACE_ID,
         kind: "terminal",
         resourceId: "term-2",
-        terminalIds: ["term-2"],
+        terminalIds: ["term-1", "term-2"],
         activeTerminalId: "term-2",
       },
     ]);
-    expect(state.activeSurfaceId).toBe("terminal:term-2");
+    expect(state.activeSurfaceId).toBe(THREAD_TERMINAL_SURFACE_ID);
+  });
+
+  it("selects a terminal the surface has not recorded yet", () => {
+    // Terminals created in the terminals view reach the panel through the
+    // thread's live session list, so the stored surface has never seen them.
+    useRightPanelStore.getState().openTerminal(refA, "term-1");
+    useRightPanelStore.getState().activateTerminal(refA, THREAD_TERMINAL_SURFACE_ID, "term-9");
+
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({ activeTerminalId: "term-9" });
   });
 
   it("persists trimmed tab names and resets an empty name to the live default", () => {
     useRightPanelStore.getState().openTerminal(refA, "term-1");
-    useRightPanelStore.getState().renameSurface(refA, "terminal:term-1", "  Deployment  ");
+    useRightPanelStore.getState().renameSurface(refA, THREAD_TERMINAL_SURFACE_ID, "  Deployment  ");
 
     const renamedState = selectThreadRightPanelState(
       useRightPanelStore.getState().byThreadKey,
@@ -655,57 +697,34 @@ describe("rightPanelStore", () => {
     );
     expect(renamedState.surfaces[0]).toMatchObject({ customTitle: "Deployment" });
 
-    useRightPanelStore.getState().renameSurface(refA, "terminal:term-1", "Deployment");
+    useRightPanelStore.getState().renameSurface(refA, THREAD_TERMINAL_SURFACE_ID, "Deployment");
     expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toBe(
       renamedState,
     );
 
-    useRightPanelStore.getState().renameSurface(refA, "terminal:term-1", "   ");
+    useRightPanelStore.getState().renameSurface(refA, THREAD_TERMINAL_SURFACE_ID, "   ");
     expect(
       selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces[0],
     ).not.toHaveProperty("customTitle");
   });
 
-  it("tracks split panes and the active pane within a terminal surface", () => {
+  it("closes one terminal tab without taking the surface with it", () => {
     useRightPanelStore.getState().openTerminal(refA, "term-1");
-    useRightPanelStore.getState().splitTerminal(refA, "terminal:term-1", "term-2");
+    useRightPanelStore.getState().openTerminal(refA, "term-2");
+    useRightPanelStore.getState().closeTerminal(refA, THREAD_TERMINAL_SURFACE_ID, "term-2");
 
     expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
-      id: "terminal:term-1",
+      id: THREAD_TERMINAL_SURFACE_ID,
       kind: "terminal",
-      resourceId: "term-1",
-      terminalIds: ["term-1", "term-2"],
-      activeTerminalId: "term-2",
-    });
-
-    useRightPanelStore.getState().activateTerminal(refA, "terminal:term-1", "term-1");
-    useRightPanelStore.getState().closeTerminal(refA, "terminal:term-1", "term-1");
-    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
-      id: "terminal:term-1",
-      kind: "terminal",
-      resourceId: "term-1",
-      terminalIds: ["term-2"],
-      activeTerminalId: "term-2",
-    });
-  });
-
-  it("tracks vertical layout for a terminal surface", () => {
-    useRightPanelStore.getState().openTerminal(refA, "term-1");
-    useRightPanelStore.getState().splitTerminal(refA, "terminal:term-1", "term-2", "vertical");
-
-    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
-      id: "terminal:term-1",
-      kind: "terminal",
-      resourceId: "term-1",
-      terminalIds: ["term-1", "term-2"],
-      activeTerminalId: "term-2",
-      splitDirection: "vertical",
+      resourceId: "term-2",
+      terminalIds: ["term-1"],
+      activeTerminalId: "term-1",
     });
   });
 
   it("closing the final terminal pane removes its surface but keeps the panel open", () => {
     useRightPanelStore.getState().openTerminal(refA, "term-1");
-    useRightPanelStore.getState().closeTerminal(refA, "terminal:term-1", "term-1");
+    useRightPanelStore.getState().closeTerminal(refA, THREAD_TERMINAL_SURFACE_ID, "term-1");
 
     // The agents & tasks section lives in this column and outlives every tab,
     // so emptying the tabs must not take the column with it.
@@ -719,7 +738,7 @@ describe("rightPanelStore", () => {
   it("closing the active surface activates a neighboring surface", () => {
     useRightPanelStore.getState().openBrowser(refA, "tab-a");
     useRightPanelStore.getState().openTerminal(refA, "term-1");
-    useRightPanelStore.getState().closeSurface(refA, "terminal:term-1");
+    useRightPanelStore.getState().closeSurface(refA, THREAD_TERMINAL_SURFACE_ID);
 
     expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
       "browser:tab-a",
@@ -728,7 +747,7 @@ describe("rightPanelStore", () => {
 
   it("closing the final surface keeps the panel open", () => {
     useRightPanelStore.getState().openTerminal(refA, "term-1");
-    useRightPanelStore.getState().closeSurface(refA, "terminal:term-1");
+    useRightPanelStore.getState().closeSurface(refA, THREAD_TERMINAL_SURFACE_ID);
 
     expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
       isOpen: true,
@@ -796,6 +815,6 @@ describe("rightPanelStore", () => {
       selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.map(
         (surface) => surface.id,
       ),
-    ).toEqual(["terminal:term-1", "browser:tab-b", "browser:tab-c"]);
+    ).toEqual([THREAD_TERMINAL_SURFACE_ID, "browser:tab-b", "browser:tab-c"]);
   });
 });

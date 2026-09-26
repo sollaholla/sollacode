@@ -21,6 +21,10 @@ vi.mock("../../rpc/atomRegistry", () => ({
               pendingWork: null,
               session: { status: "ready", activeTurnId: null },
               latestTurn: null,
+              // The watcher falls back to the thread's own selection when the
+              // session has no provider instance, so a detail without one is
+              // not a shape this code ever sees.
+              modelSelection: { model: "claude-opus-5", instanceId: "claude-primary" },
               activities: [
                 {
                   id: "pause",

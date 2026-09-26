@@ -29,7 +29,7 @@ const status: PreviewAutomationStatus = {
 
 function run(
   action: PreviewRemoteInputInput["action"],
-  options?: { readonly status?: PreviewAutomationStatus },
+  options?: { readonly status?: PreviewAutomationStatus; readonly actionResult?: unknown },
 ) {
   const requests: PreviewAutomationInvokeInput[] = [];
   const effect = dispatchRemotePreviewInput({
@@ -37,7 +37,9 @@ function run(
       invoke: <A = unknown>(request: PreviewAutomationInvokeInput) => {
         requests.push(request);
         return Effect.succeed(
-          (request.operation === "status" ? (options?.status ?? status) : {}) as A,
+          (request.operation === "status"
+            ? (options?.status ?? status)
+            : (options?.actionResult ?? {})) as A,
         );
       },
     },
@@ -50,6 +52,62 @@ function run(
 }
 
 describe("dispatchRemotePreviewInput", () => {
+  it.effect("turns a press-and-hold into a held drag in place", () =>
+    Effect.gen(function* () {
+      const { effect, requests } = run({
+        kind: "drag",
+        from: { x: 0.5, y: 0.5 },
+        to: { x: 0.5, y: 0.5 },
+        button: "right",
+        holdMs: 900,
+      });
+      yield* effect;
+
+      expect(requests[1]).toMatchObject({
+        operation: "drag",
+        input: { from: { x: 640, y: 400 }, to: { x: 640, y: 400 }, button: "right", holdMs: 900 },
+      });
+    }),
+  );
+
+  it.effect("returns the host's context menu target to the viewer", () =>
+    Effect.gen(function* () {
+      const menu = {
+        pageUrl: "https://example.com/",
+        linkUrl: "https://example.com/a",
+        linkText: "A",
+        srcUrl: "",
+        mediaType: "none",
+        isEditable: false,
+        selectionText: "",
+        canUndo: false,
+        canRedo: false,
+        canSelectAll: true,
+        canGoBack: false,
+        canGoForward: false,
+      };
+      const { effect, requests } = run(
+        { kind: "contextMenu", position: { x: 0.25, y: 0.5 } },
+        { actionResult: { menu } },
+      );
+      const result = yield* effect;
+
+      expect(requests[1]).toMatchObject({ operation: "contextMenu", input: { x: 320, y: 400 } });
+      expect(result).toEqual({ contextMenu: menu, deliveredAt: "2026-08-31T00:00:00.000Z" });
+    }),
+  );
+
+  it.effect("runs an edit command without measuring the viewport", () =>
+    Effect.gen(function* () {
+      const { effect, requests } = run({ kind: "editCommand", command: "selectAll" });
+      const result = yield* effect;
+
+      expect(requests.map((request) => request.operation)).toEqual(["contextMenu"]);
+      expect(requests[0]).toMatchObject({ input: { command: "selectAll" } });
+      expect(result).toEqual({ deliveredAt: "2026-08-31T00:00:00.000Z" });
+    }),
+  );
+
   it.effect("converts click fractions to CSS pixels against the measured viewport", () =>
     Effect.gen(function* () {
       const { effect, requests } = run({ kind: "click", position: { x: 0.25, y: 0.5 } });
@@ -100,6 +158,24 @@ describe("dispatchRemotePreviewInput", () => {
       expect(requests[1]).toMatchObject({
         operation: "scroll",
         input: { deltaX: 640, deltaY: -200 },
+      });
+      expect(requests[1]?.input).not.toHaveProperty("x");
+    }),
+  );
+
+  it.effect("scrolls at the finger so the panel under it moves, not just the page", () =>
+    Effect.gen(function* () {
+      const { effect, requests } = run({
+        kind: "scroll",
+        deltaX: 0,
+        deltaY: 0.5,
+        position: { x: 0.25, y: 1 },
+      });
+      yield* effect;
+
+      expect(requests[1]).toMatchObject({
+        operation: "scroll",
+        input: { deltaX: 0, deltaY: 400, x: 320, y: 799.5 },
       });
     }),
   );

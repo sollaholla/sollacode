@@ -206,12 +206,172 @@ public static class SollaRemoteInput {
     assert.include(source, "case 0xA5:");
   });
 
-  it("reports macOS secure event input instead of dropping keys silently", () => {
+  it("types a shifted character instead of posting its bare key code", () => {
+    // A touch keyboard sends no Shift key of its own: "@" arrives as a single
+    // event with key "@" and code Digit2. Posting that code produced "2", and
+    // "!" produced "1", because the code table is the unshifted US layout.
     const source = remoteInputScriptSource("darwin");
-    assert.include(source, "IsSecureEventInputEnabled");
-    assert.include(source, "secure-input");
-    // Carbon is optional: a failed top-level import would take the helper down.
-    assert.include(source, 'ObjC.import("Carbon")');
+    const lift = (name: string) => {
+      const start = source.indexOf(`function ${name}(`);
+      assert.isAtLeast(start, 0, `missing ${name}`);
+      let depth = 0;
+      for (let index = source.indexOf("{", start); index < source.length; index += 1) {
+        if (source[index] === "{") depth += 1;
+        else if (source[index] === "}") {
+          depth -= 1;
+          if (depth === 0) return source.slice(start, index + 1);
+        }
+      }
+      throw new Error(`unbalanced ${name}`);
+    };
+    const table = /var unshiftedChars = \{[\s\S]*?\n\};/u.exec(source);
+    const modifiers = /var MODIFIER_KINDS = \{[\s\S]*?\n\};/u.exec(source);
+    assert.isNotNull(table);
+    assert.isNotNull(modifiers);
+    const harness = new Function(`
+      var pressedKeys = {};
+      ${modifiers?.[0]}
+      ${table?.[0]}
+      ${lift("hasNonShiftModifierHeld")}
+      ${lift("needsLiteralText")}
+      return { needsLiteralText: needsLiteralText, setHeld: function (h) { pressedKeys = h; } };
+    `)() as {
+      needsLiteralText: (input: { action: string; code: string; key: string }) => boolean;
+      setHeld: (held: Record<string, number>) => void;
+    };
+
+    const check = (
+      input: { action: string; code: string; key: string },
+      held: Record<string, number>,
+      expected: boolean,
+      why: string,
+    ) => {
+      harness.setHeld(held);
+      assert.strictEqual(harness.needsLiteralText(input), expected, why);
+    };
+
+    check({ action: "down", code: "Digit2", key: "@" }, {}, true, "@ must be typed, not posted");
+    check({ action: "down", code: "Digit1", key: "!" }, {}, true, "! must be typed, not posted");
+    check({ action: "down", code: "KeyW", key: "W" }, {}, true, "a capital needs the character");
+    check({ action: "down", code: "Digit2", key: "2" }, {}, false, "a plain 2 is just the key");
+    // A held key must stay on the key path: typing it as text fires once, so a
+    // game holding W to walk would take a single step and stop.
+    check({ action: "down", code: "KeyW", key: "w" }, {}, false, "held keys keep their down edge");
+    check({ action: "up", code: "Digit2", key: "@" }, {}, false, "an up edge never types");
+    // Shortcuts are not typing: Cmd+2 must remain Cmd+2.
+    check(
+      { action: "down", code: "Digit2", key: "@" },
+      { MetaLeft: 55 },
+      false,
+      "cmd is a shortcut",
+    );
+    check(
+      { action: "down", code: "Digit2", key: "@" },
+      { ControlLeft: 59 },
+      false,
+      "ctrl is a shortcut",
+    );
+    check(
+      { action: "down", code: "Digit2", key: "@" },
+      { ShiftLeft: 56 },
+      true,
+      "shift alone still types",
+    );
+    check(
+      { action: "down", code: "Enter", key: "Enter" },
+      {},
+      false,
+      "named keys are not characters",
+    );
+  });
+
+  it("types a shifted character on Windows instead of posting its bare key code", function () {
+    if (!pwshAvailable) return;
+    // Same defect as the macOS case above, and the same rule: SendInput's key
+    // path takes a virtual key, which is the unshifted layout, so a touch
+    // keyboard's "@" landed as "2". KEYEVENTF_UNICODE already existed for the
+    // text channel; shifted characters are routed to it.
+    const source = remoteInputScriptSource("win32");
+    const open = source.indexOf("Add-Type @'");
+    const close = source.indexOf("'@", open);
+    assert.isAbove(close, open);
+
+    const recorder = `
+using System;
+using System.Collections.Generic;
+public static class SollaRemoteInput {
+  public static List<string> Calls = new List<string>();
+  public static void Pointer(double x, double y, uint flags, int data) { }
+  public static void MoveRelative(int dx, int dy) { }
+  public static void Mouse(uint flags, int data) { }
+  public static void Key(ushort vk, bool down) { Calls.Add("Key:" + vk + ":" + down); }
+  public static void Text(string value) { Calls.Add("Text:" + value); }
+  public static bool CursorLocked() { return false; }
+  public static string CursorShape() { return "default"; }
+  public static void RestorePointerMode() { }
+  public static string BlockReason() { return null; }
+}
+`;
+    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "solla-ps-keys-"));
+    const script = NodePath.join(directory, "keys.ps1");
+    NodeFS.writeFileSync(
+      script,
+      `${source.slice(0, open)}Add-Type @'${recorder}'@${source.slice(close + 2)}
+[Console]::Error.WriteLine("CALLS " + ([SollaRemoteInput]::Calls -join " | "))
+`,
+    );
+
+    const key = (code: string, character: string) =>
+      `{"id":1,"kind":"input","input":{"type":"key","action":"down","code":"${code}","key":"${character}","repeat":false}}`;
+    const feed = (lines: ReadonlyArray<string>) => {
+      const run = NodeChildProcess.spawnSync("pwsh", ["-NoProfile", "-File", script], {
+        input: `${lines.join("\n")}\n`,
+        encoding: "utf8",
+        timeout: 120_000,
+      });
+      return String(run.stderr);
+    };
+
+    // Shifted characters, sent alone so the key path can be asserted absent.
+    const shifted = feed([key("Digit2", "@"), key("Digit1", "!"), key("KeyA", "A")]);
+    assert.include(shifted, "Text:@", "@ must be typed");
+    assert.include(shifted, "Text:!", "! must be typed");
+    // PowerShell compares case-insensitively by default, so a capital would
+    // otherwise look identical to its unshifted letter and take the key path.
+    assert.include(shifted, "Text:A", "a capital needs the character");
+    assert.notInclude(shifted, "Key:50:True", "Digit2 must not be posted for @");
+    assert.notInclude(shifted, "Key:49:True", "Digit1 must not be posted for !");
+
+    // Characters the bare key really does produce stay on the key path, so held
+    // keys keep the down edge that games and key repeat depend on.
+    const plain = feed([key("Digit2", "2"), key("KeyA", "a")]);
+    assert.include(plain, "Key:50:True", "a plain 2 is just the key");
+    assert.include(plain, "Key:65:True", "a lowercase a is just the key");
+    assert.notInclude(plain, "Text:", "nothing unshifted may be typed as text");
+
+    NodeFS.rmSync(directory, { recursive: true, force: true });
+  }, 180_000);
+
+  it("never inspects or reports secure event input on macOS", () => {
+    // Removed at the owner's request. They control their own Mac from a phone,
+    // where there is no keyboard to fall back to, so neither refusing to inject
+    // nor warning about their own password field helped them - both only stood
+    // between them and the prompt they were trying to answer.
+    const source = remoteInputScriptSource("darwin");
+    assert.notInclude(source, "IsSecureEventInputEnabled");
+    assert.notInclude(source, "secure-input");
+    assert.notInclude(source, "blockReason");
+    // Carbon was imported only for that check.
+    assert.notInclude(source, 'ObjC.import("Carbon")');
+  });
+
+  it("still refuses the Windows secure desktop, where keys would land elsewhere", () => {
+    // Not the same thing as the macOS check: UAC, the lock screen and
+    // Ctrl+Alt+Del own a desktop this process cannot open, so SendInput would
+    // deliver the keystrokes to whatever window is focused on OUR desktop -
+    // typing a password there in the clear.
+    const source = remoteInputScriptSource("win32");
+    assert.include(source, "blocked -eq 'secure-desktop'");
   });
 
   it("launches the Windows helper from a script file instead of an oversized command", () => {

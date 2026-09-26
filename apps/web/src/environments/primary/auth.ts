@@ -10,6 +10,7 @@ import type {
 import { EnvironmentHttpCommonError, PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
 import type { EnvironmentHttpCommonError as EnvironmentHttpCommonErrorType } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { HttpClientError } from "effect/unstable/http";
@@ -219,6 +220,10 @@ export async function fetchSessionState(): Promise<AuthSessionState> {
       return await runPrimaryHttp(
         PrimaryEnvironmentHttpClient.pipe(
           Effect.flatMap((client) => client.auth.session({ headers: {} })),
+          // The first thing the app waits for. On a flaky phone connection the
+          // request can stall without ever failing, which held the startup
+          // logo on screen for good; abandon it and let the retry send a new one.
+          Effect.timeout(SESSION_STATE_ATTEMPT_TIMEOUT),
         ),
       );
     } catch (error) {
@@ -304,6 +309,7 @@ async function waitForAuthenticatedSessionAfterBootstrap(): Promise<AuthSessionS
 }
 
 const TRANSIENT_BOOTSTRAP_STATUS_CODES = new Set([502, 503, 504]);
+const SESSION_STATE_ATTEMPT_TIMEOUT = Duration.seconds(6);
 const BOOTSTRAP_RETRY_TIMEOUT_MS = 15_000;
 const BOOTSTRAP_RETRY_STEP_MS = 500;
 
@@ -332,7 +338,7 @@ function waitForBootstrapRetry(delayMs: number): Promise<void> {
   });
 }
 
-function isTransientBootstrapError(error: unknown): boolean {
+export function isTransientBootstrapError(error: unknown): boolean {
   if (isPrimaryEnvironmentRequestError(error)) {
     // A server that never answered is the "not started yet" case this retry
     // window exists for. `fromCause` files it as status 500 with `unreachable`

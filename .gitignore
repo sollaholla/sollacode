@@ -49,3 +49,7 @@ wiki/
 # and apps/marketing/public/media.
 tools/*/out/
 .remotion/
+
+# Local tool caches
+.pnpm-store/
+.playwright-cli/

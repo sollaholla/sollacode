@@ -57,7 +57,8 @@ import {
   DialogPopup,
   DialogTitle,
 } from "./ui/dialog";
-import { Group, GroupSeparator } from "./ui/group";
+import { Group } from "./ui/group";
+import { ToolbarControl, ToolbarControlSeparator } from "./ui/toolbar-control";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import {
@@ -375,9 +376,7 @@ export default function ProjectScriptsControl({
           <Tooltip>
             <TooltipTrigger
               render={
-                <Button
-                  size="xs"
-                  variant="outline"
+                <ToolbarControl
                   aria-label={`Run ${primaryScript.name}`}
                   onClick={() => onRunScript(primaryScript)}
                 />
@@ -390,15 +389,13 @@ export default function ProjectScriptsControl({
             </TooltipTrigger>
             <TooltipPopup side="top">Run {primaryScript.name}</TooltipPopup>
           </Tooltip>
-          <GroupSeparator className="hidden @3xl/header-actions:block" />
+          <ToolbarControlSeparator className="hidden @3xl/header-actions:block" />
           <Menu
             highlightItemOnHover={false}
             open={actionsMenuOpen.scripts}
             onOpenChange={(open) => setScriptMenuOpen("scripts", open)}
           >
-            <MenuTrigger
-              render={<Button size="icon-xs" variant="outline" aria-label="Script actions" />}
-            >
+            <MenuTrigger render={<ToolbarControl size="icon-xs" aria-label="Script actions" />}>
               <ChevronDownIcon className="size-4" />
             </MenuTrigger>
             <MenuPopup align="end">
@@ -459,7 +456,7 @@ export default function ProjectScriptsControl({
           open={actionsMenuOpen.imports}
           onOpenChange={(open) => setScriptMenuOpen("imports", open)}
         >
-          <MenuTrigger render={<Button size="xs" variant="outline" aria-label="Actions" />}>
+          <MenuTrigger render={<ToolbarControl aria-label="Actions" />}>
             <ZapIcon className="size-3.5" />
             <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
               Actions

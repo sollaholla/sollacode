@@ -2,6 +2,8 @@ import { useRef, useState } from "react";
 import {
   DEFAULT_UNIFIED_SETTINGS,
   ORCHESTRATOR_VOICE_PROVIDERS,
+  OPENAI_LIVE_MODEL,
+  OPENAI_LIVE_VOICES,
   type OrchestratorActivationMode,
   type OrchestratorAuthority,
   type OrchestratorVoiceProvider,
@@ -28,6 +30,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { confirmInApp } from "../ui/appConfirm";
 
 const ACTIVATION_OPTIONS: Record<OrchestratorActivationMode, { label: string; hint: string }> = {
   toggle: {
@@ -148,12 +151,13 @@ export function OrchestratorSettingsPanel() {
   const defaults = DEFAULT_UNIFIED_SETTINGS.orchestrator;
   const voice = useOrchestratorSessionContext();
   const catalog = ORCHESTRATOR_VOICE_PROVIDERS[orchestrator.provider];
+  const isLive = orchestrator.provider === "openai" && orchestrator.model === OPENAI_LIVE_MODEL;
   const interruptionForcedOff = orchestrator.interruptWhileSpeaking && isEchoProneDevice();
 
   // A value already in settings that is not in the list stays selectable, so
   // upgrading the app never silently rewrites someone's configured model.
   const catalogModels = catalog.models as ReadonlyArray<string>;
-  const catalogVoices = catalog.voices as ReadonlyArray<string>;
+  const catalogVoices: ReadonlyArray<string> = isLive ? OPENAI_LIVE_VOICES : catalog.voices;
   const modelOptions = catalogModels.includes(orchestrator.model)
     ? catalogModels
     : [orchestrator.model, ...catalogModels];
@@ -185,8 +189,9 @@ export function OrchestratorSettingsPanel() {
   // stop and start voice to switch" — permanently, which read as a warning
   // about the whole feature rather than a note about one setting.
   const activeModel = voice?.activeModel ?? null;
-  const modelStatus =
-    activeModel === null
+  const modelStatus = isLive
+    ? `GPT-Live delegates work to ${orchestrator.liveAgentName}, using that agent’s configured model and rules.`
+    : activeModel === null
       ? "Used for voice only. Typed chat uses the model picked in the composer."
       : `Voice is running on ${activeModel}. Typed chat uses the model picked in the composer.`;
 
@@ -291,8 +296,11 @@ export function OrchestratorSettingsPanel() {
                 size="sm"
                 className="text-muted-foreground"
                 onClick={() => {
-                  if (!window.confirm("Remove the stored OpenAI API key?")) return;
-                  updateSettings({ orchestrator: { openAiApiKey: "" } });
+                  void confirmInApp("Remove the stored OpenAI API key?", {
+                    confirmLabel: "Remove",
+                  }).then((confirmed) => {
+                    if (confirmed) updateSettings({ orchestrator: { openAiApiKey: "" } });
+                  });
                 }}
               >
                 Remove stored key
@@ -336,8 +344,11 @@ export function OrchestratorSettingsPanel() {
                 size="sm"
                 className="text-muted-foreground"
                 onClick={() => {
-                  if (!window.confirm("Remove the stored Grok Voice API key?")) return;
-                  updateSettings({ orchestrator: { xaiApiKey: "" } });
+                  void confirmInApp("Remove the stored Grok Voice API key?", {
+                    confirmLabel: "Remove",
+                  }).then((confirmed) => {
+                    if (confirmed) updateSettings({ orchestrator: { xaiApiKey: "" } });
+                  });
                 }}
               >
                 Remove stored key
@@ -470,7 +481,7 @@ export function OrchestratorSettingsPanel() {
           description={
             orchestrator.provider === "xai"
               ? "The Grok Voice model used for spoken conversation. It does not affect typing to the orchestrator — its thread picks a model in the composer, like any other thread."
-              : "The OpenAI Realtime model used for spoken conversation. It does not affect typing to the orchestrator — its thread picks a model in the composer, like any other thread."
+              : "GPT-Live keeps the voice conversation open while your assistant handles delegated work. Realtime models use the orchestrator’s direct voice tools. Typed chat keeps its composer model."
           }
           status={modelStatus}
           resetAction={
@@ -486,7 +497,13 @@ export function OrchestratorSettingsPanel() {
               value={orchestrator.model}
               onValueChange={(value) => {
                 if (typeof value !== "string" || value === orchestrator.model) return;
-                applyRealtime({ model: value });
+                applyRealtime({
+                  model: value,
+                  ...(value === OPENAI_LIVE_MODEL &&
+                  !(OPENAI_LIVE_VOICES as readonly string[]).includes(orchestrator.voice)
+                    ? { voice: "marin" }
+                    : {}),
+                });
               }}
             >
               <SelectTrigger className="w-full sm:w-56" aria-label="Orchestrator model">
@@ -504,20 +521,48 @@ export function OrchestratorSettingsPanel() {
         />
       </SettingsSection>
 
+      {isLive ? (
+        <SettingsSection title="GPT-Live delegation">
+          <SettingsRow
+            title="Assistant agent"
+            description="The named agent in the primary environment handles GPT-Live requests through the delegation system. Its model, workspace, rules and approvals carry into each worker. Corrections go to the active worker."
+            control={
+              <Input
+                key={orchestrator.liveAgentName}
+                defaultValue={orchestrator.liveAgentName}
+                maxLength={64}
+                aria-label="GPT-Live assistant agent"
+                onBlur={(event) => {
+                  const name = event.currentTarget.value.trim();
+                  if (name && name !== orchestrator.liveAgentName)
+                    updateSettings({ orchestrator: { liveAgentName: name } });
+                }}
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
       <SettingsSection title="Interruptions">
         <SettingsRow
           title="Let me interrupt by talking over it"
           description={
-            interruptionForcedOff
-              ? "Your saved preference is on, but interruption is paused on this handheld because its speaker is close enough to the microphone to make the orchestrator hear and answer itself. The microphone reopens as soon as it finishes speaking; headphones or a desktop can use talk-over interruption."
-              : "On: you can cut the orchestrator off mid-sentence by speaking, and the microphone stays open the whole time. Off: it always finishes what it is saying, and the microphone is closed while it speaks — which is the only reliable way to stop it hearing its own voice through a speaker and answering itself. Turn this off if it keeps interrupting itself or replying to things you did not say."
+            isLive
+              ? "GPT-Live listens while speaking using its native full-duplex conversation. Browser echo cancellation remains enabled; headphones provide the clearest separation."
+              : interruptionForcedOff
+                ? "Your saved preference is on, but interruption is paused on this handheld because its speaker is close enough to the microphone to make the orchestrator hear and answer itself. The microphone reopens as soon as it finishes speaking; headphones or a desktop can use talk-over interruption."
+                : "On: you can cut the orchestrator off mid-sentence by speaking, and the microphone stays open the whole time. Off: it always finishes what it is saying, and the microphone is closed while it speaks — which is the only reliable way to stop it hearing its own voice through a speaker and answering itself. Turn this off if it keeps interrupting itself or replying to things you did not say."
           }
           status={
-            interruptionForcedOff ? "Paused on this handheld to prevent echo loops" : undefined
+            isLive
+              ? "Native GPT-Live interruption"
+              : interruptionForcedOff
+                ? "Paused on this handheld to prevent echo loops"
+                : undefined
           }
           control={
             <Switch
-              checked={orchestrator.interruptWhileSpeaking}
+              disabled={isLive}
+              checked={isLive || orchestrator.interruptWhileSpeaking}
               onCheckedChange={(checked) =>
                 updateSettings({ orchestrator: { interruptWhileSpeaking: Boolean(checked) } })
               }

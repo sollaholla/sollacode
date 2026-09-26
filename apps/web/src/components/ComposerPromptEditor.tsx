@@ -5,7 +5,7 @@ import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
 import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
 import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
 import { PlainTextPlugin } from "@lexical/react/LexicalPlainTextPlugin";
-import { type ServerProviderSkill } from "@t3tools/contracts";
+import { type ServerProviderSkill, type ServerProviderSlashCommand } from "@t3tools/contracts";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import {
   $applyNodeReplacement,
@@ -83,6 +83,10 @@ import { FILE_TAG_CHIP_CLASS_NAME, FileTagChipContent } from "./chat/FileTagChip
 import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTerminalContexts";
 import { formatProviderSkillDisplayName } from "~/providerSkillPresentation";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import {
+  ComposerProviderSlashCommandPlugin,
+  useNativeComposerSlashCommandOverlay,
+} from "./ComposerProviderSlashCommands";
 import { registerComposerInlineTokenPaste } from "./composerInlineTokenPaste";
 import {
   COMPOSER_DICTATION_SETTLE_MS,
@@ -902,6 +906,8 @@ interface ComposerPromptEditorProps {
   cursor: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   skills: ReadonlyArray<ServerProviderSkill>;
+  /** The provider's slash commands; a message that opens with one shows it as a link. */
+  providerSlashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   disabled: boolean;
   placeholder: string;
   className?: string;
@@ -922,6 +928,7 @@ interface ComposerPromptEditorProps {
   editorRef: React.RefObject<ComposerPromptEditorHandle | null>;
 }
 
+const NO_PROVIDER_SLASH_COMMANDS: ReadonlyArray<ServerProviderSlashCommand> = [];
 const NATIVE_COMPOSER_MIN_HEIGHT_PX = 70;
 const NATIVE_COMPOSER_MAX_HEIGHT_PX = 200;
 
@@ -946,6 +953,7 @@ function NativeIOSComposerPromptEditor(props: ComposerPromptEditorProps) {
     value,
     cursor,
     terminalContexts,
+    providerSlashCommands = NO_PROVIDER_SLASH_COMMANDS,
     disabled,
     placeholder,
     className,
@@ -957,6 +965,12 @@ function NativeIOSComposerPromptEditor(props: ComposerPromptEditorProps) {
     editorRef,
   } = props;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // The textarea owns its text; this copy only feeds the command overlay.
+  const [nativeText, setNativeText] = useState(() => composerPromptToNativeText(value));
+  const slashCommandOverlay = useNativeComposerSlashCommandOverlay({
+    text: nativeText,
+    commands: providerSlashCommands,
+  });
   const onChangeRef = useRef(onChange);
   const emittedEchoesRef = useRef<readonly ComposerEmittedEcho[]>([]);
   const snapshotRef = useRef({
@@ -1071,11 +1085,15 @@ function NativeIOSComposerPromptEditor(props: ComposerPromptEditorProps) {
 
     if (visibleTextChanged) {
       element.value = nextNativeText;
+      setNativeText(nextNativeText);
       const nativeCursor = promptOffsetToNativeComposerOffset(value, nextExpandedCursor);
       element.setSelectionRange(nativeCursor, nativeCursor);
     }
     onTextPresenceChange?.(nextNativeText.trim().length > 0);
-    resizeTextarea(element);
+    // Selection updates also render this effect. Toggling height to "auto"
+    // during a native selection drag changes the geometry under Safari's
+    // handles, even though the text has not changed.
+    if (visibleTextChanged || element.style.height === "") resizeTextarea(element);
   }, [
     cursor,
     onTextPresenceChange,
@@ -1154,44 +1172,52 @@ function NativeIOSComposerPromptEditor(props: ComposerPromptEditorProps) {
           ))}
         </div>
       ) : null}
-      <textarea
-        ref={textareaRef}
-        defaultValue={composerPromptToNativeText(value)}
-        disabled={disabled}
-        placeholder={terminalContexts.length > 0 ? "" : placeholder}
-        aria-label={placeholder}
-        data-chat-composer-scroll-container="true"
-        data-testid="composer-editor"
-        autoCapitalize="sentences"
-        autoCorrect="on"
-        spellCheck
-        rows={1}
-        className={cn(
-          "block min-h-17.5 w-full resize-none overflow-y-hidden overscroll-y-contain whitespace-pre-wrap bg-transparent text-[16px] leading-relaxed text-foreground outline-none touch-auto",
-          className,
-        )}
-        onInput={(event) => {
-          resizeTextarea(event.currentTarget);
-          emitTextareaSnapshot(event.currentTarget, true);
-        }}
-        onSelect={(event) => emitTextareaSnapshot(event.currentTarget, false)}
-        onKeyDown={(event) => {
-          if (
-            event.key !== "ArrowDown" &&
-            event.key !== "ArrowUp" &&
-            event.key !== "Enter" &&
-            event.key !== "Tab"
-          ) {
-            return;
-          }
-          if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-          if (onCommandKeyDown?.(event.key, event.nativeEvent)) {
-            event.preventDefault();
-            event.stopPropagation();
-          }
-        }}
-        onPaste={onPaste}
-      />
+      <div className="relative">
+        {slashCommandOverlay.overlay(className)}
+        <textarea
+          ref={textareaRef}
+          defaultValue={composerPromptToNativeText(value)}
+          disabled={disabled}
+          placeholder={terminalContexts.length > 0 ? "" : placeholder}
+          aria-label={placeholder}
+          data-chat-composer-scroll-container="true"
+          data-testid="composer-editor"
+          autoCapitalize="sentences"
+          autoCorrect="on"
+          spellCheck
+          rows={1}
+          className={cn(
+            "relative block min-h-17.5 w-full resize-none overflow-y-hidden overscroll-y-contain whitespace-pre-wrap bg-transparent text-[16px] leading-relaxed text-foreground outline-none touch-auto",
+            slashCommandOverlay.active && "text-transparent caret-foreground",
+            className,
+          )}
+          onInput={(event) => {
+            resizeTextarea(event.currentTarget);
+            setNativeText(event.currentTarget.value);
+            emitTextareaSnapshot(event.currentTarget, true);
+          }}
+          onScroll={(event) => slashCommandOverlay.onScroll(event.currentTarget)}
+          onClick={(event) => slashCommandOverlay.onClick(event)}
+          onSelect={(event) => emitTextareaSnapshot(event.currentTarget, false)}
+          onKeyDown={(event) => {
+            if (
+              event.key !== "ArrowDown" &&
+              event.key !== "ArrowUp" &&
+              event.key !== "Enter" &&
+              event.key !== "Tab"
+            ) {
+              return;
+            }
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+            if (onCommandKeyDown?.(event.key, event.nativeEvent)) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
+          onPaste={onPaste}
+        />
+      </div>
+      {slashCommandOverlay.infoPopover}
     </div>
   );
 }
@@ -1826,6 +1852,7 @@ function ComposerPromptEditorInner({
   cursor,
   terminalContexts,
   skills,
+  providerSlashCommands = NO_PROVIDER_SLASH_COMMANDS,
   disabled,
   placeholder,
   className,
@@ -2270,6 +2297,7 @@ function ComposerPromptEditorInner({
         <ComposerInlineTokenBackspacePlugin />
         <ComposerInlineTokenPastePlugin />
         <ComposerChipSelectionPlugin />
+        <ComposerProviderSlashCommandPlugin commands={providerSlashCommands} />
         <HistoryPlugin />
       </div>
     </ComposerTerminalContextActionsContext>
@@ -2281,6 +2309,7 @@ function LexicalComposerPromptEditor({
   cursor,
   terminalContexts,
   skills,
+  providerSlashCommands = NO_PROVIDER_SLASH_COMMANDS,
   disabled,
   placeholder,
   className,
@@ -2320,6 +2349,7 @@ function LexicalComposerPromptEditor({
         cursor={cursor}
         terminalContexts={terminalContexts}
         skills={skills}
+        providerSlashCommands={providerSlashCommands}
         disabled={disabled}
         placeholder={placeholder}
         onRemoveTerminalContext={onRemoveTerminalContext}

@@ -24,6 +24,7 @@ import {
   ProjectId,
   ProviderItemId,
   RuntimeRequestId,
+  RuntimeItemId,
   type ServerSettings,
   ThreadId,
   TurnId,
@@ -37,6 +38,7 @@ import * as Option from "effect/Option";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -295,7 +297,7 @@ describe("provider overload retry activity projection", () => {
       expect.objectContaining({
         id: "provider-upstream-retry:thread-overload:turn-overload",
         kind: "provider.overload.retrying",
-        summary: "Provider unavailable — retrying shortly",
+        summary: "Provider slow — retrying shortly",
         turnId: "turn-overload",
       }),
     ]);
@@ -401,24 +403,54 @@ describe("provider overload retry activity projection", () => {
     expect((activity?.payload as { detail?: string } | undefined)?.detail).toBe(detail);
   });
 
-  it("does not append a visible error row for a durable upstream retry", () => {
-    expect(
-      runtimeEventToActivities({
-        eventId: asEventId("retryable-runtime-error"),
-        provider: ProviderDriverKind.make("codex"),
-        createdAt: "2026-07-29T15:00:00.000Z",
-        threadId: asThreadId("thread-overload"),
-        turnId: asTurnId("turn-overload"),
-        type: "runtime.error",
-        payload: {
-          message: "pxpipe upstream unreachable",
-          class: "provider_error",
-          failureKind: "retryable-upstream",
-        },
-        providerRefs: {},
-      }),
-    ).toEqual([]);
+  it("keeps a multi-paragraph thought whole instead of ellipsising it", () => {
+    // A thought is drawn in the timeline as full markdown, so truncating it
+    // leaves a visible "..." mid-sentence in the transcript.
+    const detail = "A thought that runs long. ".repeat(300).trim();
+    expect(detail.length).toBeGreaterThan(600);
+    const [activity] = runtimeEventToActivities({
+      eventId: asEventId("bridge-thought-paragraphs"),
+      provider: ProviderDriverKind.make("mcpBridge"),
+      createdAt: "2026-09-10T22:50:00.000Z",
+      threadId: asThreadId("thread-bridge"),
+      turnId: asTurnId("turn-bridge"),
+      type: "item.updated",
+      itemId: "turn-bridge:thought:9" as never,
+      payload: { itemType: "reasoning", status: "inProgress", detail },
+    });
+    const rendered = (activity?.payload as { detail?: string } | undefined)?.detail;
+    expect(rendered).toBe(detail);
+    expect(rendered).not.toContain("...");
   });
+
+  it.each([
+    { provider: "codex", message: "pxpipe upstream unreachable" },
+    {
+      provider: "opencode",
+      message:
+        "OpenCode's model (opencode/union-alpha) returned 15 empty responses in a row; its upstream endpoint is not answering. Resume to try again.",
+    },
+  ])(
+    "does not append a visible error row for a durable $provider upstream retry",
+    ({ provider, message }) => {
+      expect(
+        runtimeEventToActivities({
+          eventId: asEventId("retryable-runtime-error"),
+          provider: ProviderDriverKind.make(provider),
+          createdAt: "2026-07-29T15:00:00.000Z",
+          threadId: asThreadId("thread-overload"),
+          turnId: asTurnId("turn-overload"),
+          type: "runtime.error",
+          payload: {
+            message,
+            class: "provider_error",
+            failureKind: "retryable-upstream",
+          },
+          providerRefs: {},
+        }),
+      ).toEqual([]);
+    },
+  );
 });
 
 function makeProviderSnapshot(input: {
@@ -426,6 +458,7 @@ function makeProviderSnapshot(input: {
   readonly driver: string;
   readonly model: string;
   readonly models?: ReadonlyArray<string>;
+  readonly accountUsage?: unknown;
 }): ServerProvider {
   const slugs = input.models ?? [input.model];
   return {
@@ -437,6 +470,7 @@ function makeProviderSnapshot(input: {
     status: "ready",
     auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
+    ...(input.accountUsage === undefined ? {} : { accountUsage: input.accountUsage }),
     models: slugs.map((slug, index) => ({
       slug,
       name: slug,
@@ -572,6 +606,7 @@ function createProviderServiceHarness() {
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
+    discardSessionHistory: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     getInstanceInfo: (instanceId) => {
@@ -719,6 +754,7 @@ describe("ProviderRuntimeIngestion", () => {
     const provider = createProviderServiceHarness();
     const runtimeObservations: Array<Parameters<ThreadWorkSchedulerShape["observeRuntime"]>[0]> =
       [];
+    const activeThreadsRef: Array<ThreadId> = [];
     const threadWorkSchedulerLayer = Layer.succeed(ThreadWorkScheduler, {
       start: () => Effect.void,
       wake: () => Effect.void,
@@ -731,14 +767,14 @@ describe("ProviderRuntimeIngestion", () => {
         }),
       runtimeLivenessAt: () => Effect.succeed(Option.none()),
       setAdmissionParked: () => Effect.void,
-      snapshot: Effect.succeed({
-        activeGlobal: 0,
+      snapshot: Effect.sync(() => ({
+        activeGlobal: activeThreadsRef.length,
         activeByProvider: {},
         activeRecoveryByProvider: {},
-        activeThreads: [],
+        activeThreads: [...activeThreadsRef],
         schedulerWindowSize: 0,
         runtimeByThread: {},
-      }),
+      })),
     } satisfies ThreadWorkSchedulerShape);
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -882,6 +918,10 @@ describe("ProviderRuntimeIngestion", () => {
       holdNextSendTurn: provider.holdNextSendTurn,
       heldSendTurns: provider.heldSendTurns,
       runtimeObservations,
+      setActiveThreads: (threadIds: ReadonlyArray<ThreadId>) => {
+        activeThreadsRef.length = 0;
+        activeThreadsRef.push(...threadIds);
+      },
       openPreviewTab,
       readBrowserTabCleanupState: (threadId: ThreadId) =>
         managedRuntime.runPromise(
@@ -1489,6 +1529,24 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness({ interactionMode: "agent" });
     const threadId = asThreadId("thread-1");
     const turnId = asTurnId("turn-browser-agent-stopped");
+    // The active session must belong to the provider emitting this turn.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("seed-grok-agent-stop-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-08-25T14:59:00.000Z",
+        },
+        createdAt: "2026-08-25T14:59:00.000Z",
+      }),
+    );
     harness.openPreviewTab(threadId);
 
     harness.emit({
@@ -1720,6 +1778,786 @@ describe("ProviderRuntimeIngestion", () => {
     expect(handoff.kind).toBe("t3.provider-handoff");
     expect(handoff.handoff?.from?.instanceId).toBe("codex");
     expect(handoff.handoff?.to?.instanceId).toBe("claudeAgent");
+  });
+
+  it("stays silent when the turn a failover replaced reports its own exhaustion error", async () => {
+    // Reported twice by the user, most recently with a screenshot: a red
+    // "Runtime error" card sitting directly beneath "claude-fable-5-1 usage
+    // exhausted · switched to claude-opus-5", for an exhaustion the system had
+    // already handled perfectly. The failover points the session at its new
+    // handoff turn, so the dying turn's error — which arrives after — matched
+    // neither the session's provider instance nor its active turn id, and the
+    // suppression declined on that mismatch. An exhausted model must produce no
+    // error output at all; the error belongs only to the case where there is
+    // nowhere left to fall back to.
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({ instanceId: "codex", driver: "codex", model: "gpt-5-codex" }),
+        makeProviderSnapshot({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          model: "claude-sonnet",
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    const threadId = asThreadId("thread-1");
+    const exhaustedTurnId = asTurnId("turn-superseded-by-failover");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-superseded-turn"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: exhaustedTurnId,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: exhaustedTurnId,
+      cwd: process.cwd(),
+      resumeCursor: { threadId: "codex-native-thread" },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "account.rate-limits.updated" as const,
+      eventId: asEventId("evt-superseded-limit"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: now,
+      turnId: exhaustedTurnId,
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 100, resetsAt: 1_800_000_000 },
+          },
+        },
+      },
+    });
+
+    const movedThread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.providerInstanceId === "claudeAgent" &&
+        entry.activities.some((activity) => activity.kind === "provider.failover.completed"),
+      10_000,
+    );
+    // The session now names the handoff turn, not the one that was exhausted —
+    // the exact condition that used to defeat suppression.
+    expect(movedThread.session?.activeTurnId).not.toBe(exhaustedTurnId);
+
+    // The dying turn's error arrives late, from the provider it was exhausted on.
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-superseded-turn-error"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: "2026-01-01T00:00:12.000Z",
+      turnId: exhaustedTurnId,
+      payload: {
+        message:
+          "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 19th, 2026 6:19 PM.",
+      },
+    });
+
+    await harness.drain();
+    const settled = await harness.readModel();
+    const thread = settled.threads.find((entry) => entry.id === threadId);
+    expect(thread?.activities.filter((activity) => activity.kind === "runtime.error")).toEqual([]);
+    // The switch notice is the whole story the user should see.
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.failover.completed"),
+    ).toBe(true);
+  });
+
+  it("fails over when a Codex usage-limit refusal names a spent quota window", async () => {
+    // Observed 2026-09-14: Codex refused the turn with "You've hit your usage
+    // limit …" while its rate-limit snapshot read 100% with no typed refusal
+    // signal (rateLimitReachedType: null). Failover only listened to typed
+    // signals, so nothing moved and the thread stalled until a manual switch.
+    // The refusal text plus the spent window must fail over; neither alone may.
+    const spentCodexUsage = {
+      rateLimits: {
+        credits: { balance: "0", hasCredits: false, unlimited: false },
+        planType: "pro",
+        primary: { usedPercent: 100, resetsAt: 1_800_000_000, windowDurationMins: 10080 },
+        rateLimitReachedType: null,
+        secondary: null,
+        spendControlReached: null,
+      },
+    };
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+          accountUsage: spentCodexUsage,
+        }),
+        makeProviderSnapshot({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          model: "claude-sonnet",
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-codex-refused");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-codex-for-refusal"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: turnId,
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // The spent window alone must not move the thread: accounts with fallback
+    // credit keep serving past 100%.
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-codex-window-spent-no-typed-signal"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: now,
+      turnId,
+      payload: { rateLimits: spentCodexUsage },
+    });
+    await harness.drain();
+    const beforeRefusal = (await harness.readModel()).threads.find(
+      (entry) => entry.id === threadId,
+    );
+    expect(
+      beforeRefusal?.activities.some((activity) => activity.kind === "provider.failover.completed"),
+    ).toBe(false);
+    expect(beforeRefusal?.modelSelection.instanceId).toBe("codex");
+
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-codex-usage-limit-refusal"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: now,
+      turnId,
+      payload: {
+        message:
+          "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 19th, 2026 6:19 PM.",
+        class: "provider_error",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.modelSelection.instanceId === "claudeAgent" &&
+        entry.session?.providerInstanceId === "claudeAgent" &&
+        entry.activities.some((activity) => activity.kind === "provider.failover.completed"),
+      10_000,
+    );
+    expect(harness.startSessionCalls).toHaveLength(1);
+    expect(harness.sendTurnCalls).toHaveLength(1);
+    expect(thread.session?.status).not.toBe("error");
+  });
+
+  it("ignores a Codex runtime error that is not a usage-limit refusal", async () => {
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+          accountUsage: {
+            rateLimits: {
+              credits: { balance: "0", hasCredits: false, unlimited: false },
+              primary: { usedPercent: 100, resetsAt: 1_800_000_000 },
+              rateLimitReachedType: null,
+              secondary: null,
+              spendControlReached: null,
+            },
+          },
+        }),
+        makeProviderSnapshot({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          model: "claude-sonnet",
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-codex-crashed");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-codex-for-crash"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: turnId,
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-codex-unrelated-error"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: now,
+      turnId,
+      payload: {
+        message: "Codex process exited unexpectedly (signal SIGKILL).",
+        class: "provider_error",
+      },
+    });
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.failover.completed"),
+    ).toBe(false);
+    expect(thread?.modelSelection.instanceId).toBe("codex");
+    expect(harness.startSessionCalls).toHaveLength(0);
+  });
+
+  it("ignores a usage-limit refusal when the quota window still has room", async () => {
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+          accountUsage: {
+            rateLimits: {
+              credits: { balance: "0", hasCredits: false, unlimited: false },
+              primary: { usedPercent: 40, resetsAt: 1_800_000_000 },
+              rateLimitReachedType: null,
+              secondary: null,
+              spendControlReached: null,
+            },
+          },
+        }),
+        makeProviderSnapshot({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          model: "claude-sonnet",
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-codex-flaky-refusal");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-codex-for-flaky-refusal"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: turnId,
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-codex-flaky-refusal"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: now,
+      turnId,
+      payload: {
+        message: "You've hit your usage limit. Try again in a few minutes.",
+        class: "provider_error",
+      },
+    });
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.failover.completed"),
+    ).toBe(false);
+    expect(thread?.modelSelection.instanceId).toBe("codex");
+    expect(harness.startSessionCalls).toHaveLength(0);
+  });
+
+  effectIt.effect.each([true, false])(
+    "fails over within Antigravity from a 429 pool to Gemini first",
+    (supervised) =>
+      Effect.gen(function* () {
+        // Observed 2026-09-14: Antigravity rejected the turn with
+        // RESOURCE_EXHAUSTED (429) and the thread errored with a manual Resume
+        // instead of falling back, even though the Gemini pool had quota. The
+        // 429 must move the thread, and the surviving Gemini pool must win over
+        // any other model.
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            providers: [
+              makeProviderSnapshot({
+                instanceId: "antigravity",
+                driver: "antigravity",
+                model: "claude-opus-4-8",
+                models: ["claude-opus-4-8", "gemini-3.8-flash"],
+                accountUsage: {
+                  windows: [
+                    {
+                      key: "gemini",
+                      family: "gemini",
+                      label: "Gemini",
+                      remainingPercent: 60,
+                      usedPercent: 40,
+                      resetsAt: "2026-09-11T18:00:00Z",
+                      windowDurationMs: null,
+                    },
+                    {
+                      key: "claude-gpt",
+                      family: "claude-gpt",
+                      label: "Claude and GPT",
+                      remainingPercent: 0,
+                      usedPercent: 100,
+                      resetsAt: "2026-09-11T18:00:00Z",
+                      windowDurationMs: null,
+                    },
+                  ],
+                },
+              }),
+              makeProviderSnapshot({
+                instanceId: "claudeAgent",
+                driver: "claudeAgent",
+                model: "claude-sonnet",
+              }),
+            ],
+          }),
+        );
+        const now = "2026-09-10T18:00:10.000Z";
+        const threadId = asThreadId("thread-1");
+        const turnId = asTurnId("turn-agy-429");
+        yield* harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("cmd-model-antigravity-opus"),
+          threadId,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("antigravity"),
+            model: "claude-opus-4-8",
+          },
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-active-antigravity"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "antigravity",
+            providerInstanceId: ProviderInstanceId.make("antigravity"),
+            runtimeMode: "approval-required",
+            activeTurnId: turnId,
+            updatedAt: now,
+            lastError: null,
+          },
+          createdAt: now,
+        });
+        harness.setProviderSession({
+          provider: ProviderDriverKind.make("antigravity"),
+          providerInstanceId: ProviderInstanceId.make("antigravity"),
+          status: "running",
+          runtimeMode: "approval-required",
+          threadId,
+          activeTurnId: turnId,
+          cwd: process.cwd(),
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        // Both a supervised turn and its unsupervised handoff must recover
+        // without leaving a runtime-error card behind.
+        harness.setActiveThreads(supervised ? [threadId] : []);
+        if (supervised) {
+          harness.emit({
+            type: "turn.completed",
+            eventId: asEventId("evt-agy-429-turn-failed"),
+            provider: ProviderDriverKind.make("antigravity"),
+            providerInstanceId: ProviderInstanceId.make("antigravity"),
+            threadId,
+            createdAt: now,
+            turnId,
+            payload: {
+              state: "failed",
+              errorMessage:
+                "Antigravity was rejected by Google with RESOURCE_EXHAUSTED (429). Check the account quota or switch accounts before retrying.",
+            },
+          });
+          yield* Effect.promise(harness.drain);
+          const afterTurnFailed = (yield* Effect.promise(harness.readModel)).threads.find(
+            (entry) => entry.id === threadId,
+          );
+          expect(afterTurnFailed?.session?.status).toBe("running");
+          expect(afterTurnFailed?.session?.lastError).toBeNull();
+        }
+        const receipt = yield* Stream.toQueue(
+          harness.engine.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "thread.activity-appended" &&
+                event.payload.activity.kind === "provider.failover.completed",
+            ),
+          ),
+          { capacity: "unbounded" },
+        ).pipe(Scope.provide(scope!));
+        harness.emit({
+          type: "runtime.error",
+          eventId: asEventId("evt-agy-429"),
+          provider: ProviderDriverKind.make("antigravity"),
+          providerInstanceId: ProviderInstanceId.make("antigravity"),
+          threadId,
+          createdAt: now,
+          turnId,
+          payload: {
+            message:
+              "Antigravity was rejected by Google with RESOURCE_EXHAUSTED (429). Check the account quota or switch accounts before retrying.",
+          },
+        });
+
+        yield* Effect.promise(harness.drain);
+        yield* Queue.take(receipt);
+        const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+          (entry) => entry.id === threadId,
+        )!;
+        expect(thread.modelSelection.model).toBe("gemini-3.8-flash");
+        expect(thread.session?.providerInstanceId).toBe("antigravity");
+        expect(thread.session?.lastError).toBeNull();
+        expect(thread.activities.some((activity) => activity.kind === "runtime.error")).toBe(false);
+        expect(harness.startSessionCalls).toHaveLength(1);
+        expect(harness.sendTurnCalls).toHaveLength(1);
+      }),
+  );
+
+  effectIt.effect(
+    "reports exhaustion once through the unavailable notice without a scheduler obligation",
+    () =>
+      Effect.gen(function* () {
+        // A direct CLI turn still has ingestion-owned failover. When no target
+        // exists, its unavailable receipt is the actionable error.
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            providers: [
+              makeProviderSnapshot({
+                instanceId: "antigravity",
+                driver: "antigravity",
+                model: "claude-opus-4-8",
+              }),
+            ],
+          }),
+        );
+        const now = "2026-09-10T18:00:10.000Z";
+        const threadId = asThreadId("thread-1");
+        const turnId = asTurnId("turn-agy-429-unowned");
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-active-antigravity-unowned"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "antigravity",
+            providerInstanceId: ProviderInstanceId.make("antigravity"),
+            runtimeMode: "approval-required",
+            activeTurnId: turnId,
+            updatedAt: now,
+            lastError: null,
+          },
+          createdAt: now,
+        });
+
+        yield* harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("cmd-unowned-agy-model"),
+          threadId,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("antigravity"),
+            model: "claude-opus-4-8",
+          },
+        });
+        const receipt = yield* Stream.toQueue(
+          harness.engine.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "thread.activity-appended" &&
+                event.payload.activity.kind === "provider.failover.unavailable",
+            ),
+          ),
+          { capacity: "unbounded" },
+        ).pipe(Scope.provide(scope!));
+        harness.emit({
+          type: "runtime.error",
+          eventId: asEventId("evt-agy-429-unowned"),
+          provider: ProviderDriverKind.make("antigravity"),
+          providerInstanceId: ProviderInstanceId.make("antigravity"),
+          threadId,
+          createdAt: now,
+          turnId,
+          payload: {
+            message:
+              "Antigravity was rejected by Google with RESOURCE_EXHAUSTED (429). Check the account quota or switch accounts before retrying.",
+          },
+        });
+        yield* Effect.promise(harness.drain);
+        yield* Queue.take(receipt);
+        const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+          (entry) => entry.id === threadId,
+        );
+        expect(thread?.activities.some((activity) => activity.kind === "runtime.error")).toBe(
+          false,
+        );
+        expect(
+          thread?.activities.some(
+            (activity) =>
+              activity.kind === "provider.failover.unavailable" && activity.tone === "error",
+          ),
+        ).toBe(true);
+      }),
+  );
+
+  effectIt.effect("does not start an available fallback model denied by global restrictions", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          serverSettings: { fallbackModelPolicy: { mode: "allow", models: [] } },
+          providers: [
+            makeProviderSnapshot({ instanceId: "codex", driver: "codex", model: "gpt-5-codex" }),
+            makeProviderSnapshot({
+              instanceId: "claudeAgent",
+              driver: "claudeAgent",
+              model: "claude-opus-4-8",
+            }),
+          ],
+        }),
+      );
+      const threadId = asThreadId("thread-1");
+      const turnId = asTurnId("turn-model-policy-exhausted");
+      const now = "2026-09-22T18:00:00.000Z";
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-policy-active"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      });
+      const receipt = yield* Stream.toQueue(
+        harness.engine.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "thread.session-set" && event.payload.session.status === "error",
+          ),
+        ),
+        { capacity: "unbounded" },
+      ).pipe(Scope.provide(scope!));
+      harness.emit({
+        type: "account.rate-limits.updated",
+        eventId: asEventId("evt-policy-exhaustion"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        createdAt: now,
+        turnId,
+        payload: {
+          rateLimits: {
+            rateLimits: {
+              rateLimitReachedType: "rate_limit_reached",
+              primary: { usedPercent: 100, resetsAt: 1_800_000_000 },
+            },
+          },
+        },
+      });
+      yield* Effect.promise(harness.drain);
+      yield* Queue.take(receipt);
+      const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+      expect(harness.startSessionCalls).toHaveLength(0);
+      expect(harness.sendTurnCalls).toHaveLength(0);
+      expect(thread.modelSelection.instanceId).toBe("codex");
+      expect(
+        thread.activities.some((activity) => activity.kind === "provider.failover.unavailable"),
+      ).toBe(true);
+      expect(thread.session?.activeTurnId).toBeNull();
+      expect(thread.session?.status).toBe("error");
+      expect(thread.session?.lastError).toContain("Model restrictions");
+    }),
+  );
+
+  it("keeps a finished-but-unverified Muse delivery silent while recovery is live", async () => {
+    // Observed 2026-09-14: the watchdog's "delivery of its final reply could
+    // not be verified" failure flashed a warning even though the turn had
+    // finished and a resume recovers the saved response. While an obligation
+    // supervises the turn, the failure must leave no error output behind.
+    const deliveryFailure =
+      "[muse-progress-timeout] Muse finished, but delivery of its final reply could not be verified. Resume to recover the saved response.";
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "muse",
+          driver: "muse",
+          model: "muse-spark",
+        }),
+      ],
+    });
+    const now = "2026-09-10T18:00:10.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-muse-unverified");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-muse-unverified"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "muse",
+          providerInstanceId: ProviderInstanceId.make("muse"),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("muse"),
+      providerInstanceId: ProviderInstanceId.make("muse"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: turnId,
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.setActiveThreads([threadId]);
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-muse-unverified-turn-failed"),
+      provider: ProviderDriverKind.make("muse"),
+      providerInstanceId: ProviderInstanceId.make("muse"),
+      threadId,
+      createdAt: now,
+      turnId,
+      payload: {
+        state: "failed",
+        errorMessage: deliveryFailure,
+      },
+    });
+    await harness.drain();
+    const afterTurnFailed = (await harness.readModel()).threads.find(
+      (entry) => entry.id === threadId,
+    );
+    expect(afterTurnFailed?.session?.status).toBe("running");
+    expect(afterTurnFailed?.session?.lastError).toBeNull();
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-muse-unverified"),
+      provider: ProviderDriverKind.make("muse"),
+      providerInstanceId: ProviderInstanceId.make("muse"),
+      threadId,
+      createdAt: now,
+      turnId,
+      payload: {
+        message: deliveryFailure,
+      },
+    });
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.lastError).toBeNull();
+    expect(thread?.activities.some((activity) => activity.kind === "runtime.error")).toBe(false);
   });
 
   it("keeps ingesting runtime events while a failover handoff turn is still running", async () => {
@@ -2526,6 +3364,77 @@ describe("ProviderRuntimeIngestion", () => {
     expect(stopped?.session?.lastError).toBe("provider crashed");
   });
 
+  it.each([
+    { oldDriver: "claudeAgent", oldInstance: "claudeAgent", exitedAt: "2026-01-01T00:00:03.000Z" },
+    { oldDriver: "codex", oldInstance: "other-codex", exitedAt: "2026-01-01T00:00:03.000Z" },
+    { oldDriver: "codex", oldInstance: "codex", exitedAt: "2026-01-01T00:00:01.000Z" },
+  ])(
+    "keeps the new session starting when a replaced session exits ($oldDriver/$oldInstance)",
+    async ({ oldDriver, oldInstance, exitedAt }) => {
+      const harness = await createHarness();
+      const threadId = asThreadId("thread-1");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("handoff-pending-command"),
+          threadId,
+          message: {
+            messageId: MessageId.make("handoff-pending-message"),
+            role: "user",
+            text: "continue with this provider",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("handoff-target-starting"),
+          threadId,
+          session: {
+            threadId,
+            status: "starting",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+      );
+      harness.emit({
+        type: "session.exited",
+        eventId: asEventId("replaced-session-exited"),
+        provider: ProviderDriverKind.make(oldDriver),
+        providerInstanceId: ProviderInstanceId.make(oldInstance),
+        threadId,
+        createdAt: exitedAt,
+      });
+      await harness.drain();
+      let thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      expect(thread?.session?.status).toBe("starting");
+      expect(thread?.session?.providerInstanceId).toBe("codex");
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("replacement-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        turnId: asTurnId("replacement-turn"),
+        createdAt: "2026-01-01T00:00:04.000Z",
+      });
+      await harness.drain();
+      thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      expect(thread?.session?.status).toBe("running");
+      expect(thread?.session?.activeTurnId).toBe("replacement-turn");
+    },
+  );
+
   it("clears active turn when provider session becomes ready", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -2572,7 +3481,7 @@ describe("ProviderRuntimeIngestion", () => {
   });
 
   effectIt.effect(
-    "keeps a reconnecting pending turn starting while ready clears stale active state",
+    "keeps native ready separate from pending launch ownership while clearing stale active state",
     () =>
       Effect.gen(function* () {
         const harness = yield* Effect.promise(() => createHarness());
@@ -2621,10 +3530,10 @@ describe("ProviderRuntimeIngestion", () => {
         let thread = yield* Effect.promise(() =>
           waitForThread(
             harness.readModel,
-            (entry) => entry.session?.status === "starting" && entry.session.activeTurnId === null,
+            (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
           ),
         );
-        expect(thread.session?.status).toBe("starting");
+        expect(thread.session?.status).toBe("ready");
         expect(thread.session?.activeTurnId).toBeNull();
 
         harness.emit({
@@ -2638,7 +3547,7 @@ describe("ProviderRuntimeIngestion", () => {
         thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
           (entry) => entry.id === threadId,
         )!;
-        expect(thread.session?.status).toBe("starting");
+        expect(thread.session?.status).toBe("ready");
         expect(thread.session?.activeTurnId).toBeNull();
 
         harness.emit({
@@ -2758,6 +3667,26 @@ describe("ProviderRuntimeIngestion", () => {
         const threadId = asThreadId("thread-1");
         const stoppedAt = "2026-01-01T00:00:02.000Z";
         yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("pending-before-user-stop"),
+          threadId,
+          message: {
+            messageId: MessageId.make("pending-before-user-stop"),
+            role: "user",
+            text: "Begin",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("actual-user-stop-clears-pending"),
+          threadId,
+          createdAt: stoppedAt,
+        });
+        yield* harness.engine.dispatch({
           type: "thread.session.set",
           commandId: CommandId.make("cmd-stop-before-late-events"),
           threadId,
@@ -2850,6 +3779,153 @@ describe("ProviderRuntimeIngestion", () => {
         expect(thread?.session?.status).toBe("running");
         expect(thread?.session?.activeTurnId).toBe("turn-new-after-stop");
       }),
+  );
+
+  it.each(["starting", "ready"] as const)(
+    "keeps an approval restart running after an interrupted turn and startup ready events (%s)",
+    async (initialStatus) => {
+      const harness = await createHarness();
+      const threadId = asThreadId("thread-1");
+      const oldTurnId = asTurnId("turn-before-approval");
+      const newTurnId = asTurnId("turn-after-approval");
+      const base = { provider: ProviderDriverKind.make("codex"), threadId };
+      harness.emit({
+        ...base,
+        type: "turn.started",
+        eventId: asEventId("approval-old-start"),
+        turnId: oldTurnId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      await harness.drain();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("approval-old-stop"),
+          threadId,
+          turnId: oldTurnId,
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("approval-new-request"),
+          threadId,
+          message: {
+            messageId: MessageId.make("action-approval-response:test"),
+            role: "user",
+            text: "Proceed with the approved action",
+            attachments: [],
+          },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:03.000Z",
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("approval-new-session"),
+          threadId,
+          session: {
+            threadId,
+            status: initialStatus,
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:03.000Z",
+          },
+          createdAt: "2026-01-01T00:00:03.000Z",
+        }),
+      );
+      harness.emit({
+        ...base,
+        type: "session.started",
+        eventId: asEventId("approval-session-start"),
+        createdAt: "2026-01-01T00:00:04.000Z",
+      });
+      harness.emit({
+        ...base,
+        type: "session.state.changed",
+        eventId: asEventId("approval-session-ready"),
+        payload: { state: "ready" },
+        createdAt: "2026-01-01T00:00:04.001Z",
+      });
+      harness.emit({
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("approval-startup-result"),
+        payload: { state: "completed" },
+        createdAt: "2026-01-01T00:00:04.002Z",
+      });
+      harness.emit({
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("approval-old-result"),
+        turnId: oldTurnId,
+        payload: { state: "completed" },
+        createdAt: "2026-01-01T00:00:04.003Z",
+      });
+      await harness.drain();
+      expect(
+        (await harness.readModel()).threads.find((t) => t.id === threadId)?.session?.status,
+      ).toBe("ready");
+      harness.setProviderSession({
+        ...base,
+        status: "running",
+        runtimeMode: "approval-required",
+        activeTurnId: newTurnId,
+        createdAt: "2026-01-01T00:00:04.000Z",
+        updatedAt: "2026-01-01T00:00:05.000Z",
+      });
+      harness.emit({
+        ...base,
+        type: "turn.started",
+        eventId: asEventId("approval-new-start"),
+        turnId: newTurnId,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      });
+      await harness.drain();
+      const thread = (await harness.readModel()).threads.find((t) => t.id === threadId);
+      expect(thread?.session?.status).toBe("running");
+      expect(thread?.session?.activeTurnId).toBe(newTurnId);
+      expect(thread?.latestTurn?.state).toBe("running");
+      harness.emit({
+        ...base,
+        type: "content.delta",
+        eventId: asEventId("approval-commentary"),
+        turnId: newTurnId,
+        itemId: asItemId("approval-commentary"),
+        payload: { streamKind: "assistant_text", delta: "Let me read the exact page." },
+        createdAt: "2026-01-01T00:00:06.000Z",
+      });
+      harness.emit({
+        ...base,
+        type: "item.completed",
+        eventId: asEventId("approval-commentary-done"),
+        turnId: newTurnId,
+        itemId: asItemId("approval-commentary"),
+        payload: { itemType: "assistant_message", status: "completed" },
+        createdAt: "2026-01-01T00:00:07.000Z",
+      });
+      await harness.drain();
+      const afterCommentary = (await harness.readModel()).threads.find((t) => t.id === threadId);
+      expect(afterCommentary?.session?.status).toBe("running");
+      expect(afterCommentary?.latestTurn?.completedAt).toBeNull();
+      harness.emit({
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("approval-actual-done"),
+        turnId: newTurnId,
+        payload: { state: "completed" },
+        createdAt: "2026-01-01T00:00:08.000Z",
+      });
+      await harness.drain();
+      expect(
+        (await harness.readModel()).threads.find((t) => t.id === threadId)?.session?.status,
+      ).toBe("ready");
+    },
   );
 
   it("does not clear active turn when session/thread started arrives mid-turn", async () => {
@@ -4508,6 +5584,434 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(false);
   });
 
+  effectIt.live("preserves historical Muse activity chronology through persisted ingestion", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = ThreadId.make("thread-1");
+      const originalTime = "2026-09-13T18:00:00.000Z";
+      const old = {
+        type: "item.completed" as const,
+        eventId: EventId.make("muse:chronology:old"),
+        provider: ProviderDriverKind.make("muse"),
+        threadId,
+        itemId: RuntimeItemId.make("old-tool"),
+        createdAt: originalTime,
+        payload: { itemType: "mcp_tool_call" as const, title: "Read file", detail: "complete" },
+      };
+      harness.emit(old);
+      yield* Effect.promise(harness.drain);
+      harness.emit({
+        ...old,
+        eventId: EventId.make("muse:chronology:new"),
+        itemId: RuntimeItemId.make("new-tool"),
+        createdAt: "2026-09-13T19:00:00.000Z",
+      });
+      yield* Effect.promise(harness.drain);
+      const before = (yield* Effect.promise(harness.readModel)).threads.find(
+        (thread) => thread.id === threadId,
+      )!;
+      const original = before.activities.find((activity) => activity.id === old.eventId)!;
+      expect(original).toBeDefined();
+      harness.emit({
+        ...old,
+        historicalReplay: true,
+        createdAt: "2026-09-13T20:00:00.000Z",
+        payload: { ...old.payload, detail: "recovered detail" },
+      });
+      yield* Effect.promise(harness.drain);
+      const after = (yield* Effect.promise(harness.readModel)).threads.find(
+        (thread) => thread.id === threadId,
+      )!;
+      expect(after.activities.map((activity) => activity.id)).toEqual(
+        before.activities.map((activity) => activity.id),
+      );
+      expect(after.activities.find((activity) => activity.id === old.eventId)).toMatchObject({
+        createdAt: original.createdAt,
+        kind: original.kind,
+      });
+    }),
+  );
+
+  effectIt.live.each([
+    { enableAssistantStreaming: true, stopped: false },
+    { enableAssistantStreaming: false, stopped: false },
+    { enableAssistantStreaming: true, stopped: true },
+    { enableAssistantStreaming: false, stopped: true },
+  ])(
+    "restores historical Muse progress and final without authorizing continuation (%j)",
+    ({ enableAssistantStreaming, stopped }) =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            interactionMode: "agent",
+            serverSettings: { enableAssistantStreaming },
+          }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const turnId = TurnId.make("muse-historical-repair-turn");
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("historical-start"),
+          threadId,
+          message: {
+            messageId: MessageId.make("historical-user"),
+            role: "user",
+            text: "Complete the work.",
+            attachments: [],
+          },
+          interactionMode: "agent",
+          runtimeMode: "approval-required",
+          createdAt: "2026-09-13T18:00:00.000Z",
+        });
+        for (const status of ["running", stopped ? "stopped" : "ready"] as const) {
+          const createdAt =
+            status === "running" ? "2026-09-13T18:00:01.000Z" : "2026-09-13T18:00:02.000Z";
+          yield* harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`historical-${status}`),
+            threadId,
+            session: {
+              threadId,
+              status,
+              providerName: "muse",
+              runtimeMode: "approval-required",
+              activeTurnId: status === "running" ? turnId : null,
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          });
+        }
+        const restored: string[] = [];
+        for (const [index, text] of [
+          "Checking the final details.",
+          "The completed report is ready.",
+        ].entries()) {
+          const itemId = RuntimeItemId.make(`historical-segment-${index}`);
+          harness.emit({
+            type: "item.completed",
+            eventId: EventId.make(`historical-snapshot-${index}`),
+            provider: ProviderDriverKind.make("muse"),
+            threadId,
+            turnId,
+            itemId,
+            historicalReplay: true,
+            createdAt: `2026-09-13T18:00:0${3 + index * 2}.000Z`,
+            payload: { itemType: "assistant_message", detail: text },
+          });
+          yield* Effect.promise(harness.drain);
+          restored.push(text);
+          const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+            (entry) => entry.id === threadId,
+          )!;
+          expect(thread.session).toMatchObject({
+            status: stopped ? "stopped" : "ready",
+            activeTurnId: null,
+          });
+          expect(
+            thread.messages
+              .filter((message) => message.role === "assistant")
+              .map((message) => message.text),
+          ).toEqual(restored);
+          expect(
+            (yield* Effect.promise(() => harness.readThreadWork(threadId))).filter(
+              (work) => work.kind === "agent-continuation",
+            ),
+          ).toEqual([]);
+          // A ready refresh interleaved between history segments must not turn
+          // restored progress into fresh model work, even without AGENT_STOP.
+          const createdAt = `2026-09-13T18:00:0${4 + index * 2}.000Z`;
+          yield* harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`historical-refresh-${index}`),
+            threadId,
+            session: {
+              threadId,
+              status: stopped ? "stopped" : "ready",
+              providerName: "muse",
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          });
+          expect(
+            (yield* Effect.promise(() => harness.readThreadWork(threadId))).filter(
+              (work) => work.kind === "agent-continuation",
+            ),
+          ).toEqual([]);
+        }
+        expect(harness.sendTurnCalls).toEqual([]);
+        expect(harness.interruptTurnCalls).toEqual([]);
+        // Live output still has its ordinary continuation semantics.
+        harness.emit({
+          type: "item.completed",
+          eventId: EventId.make("historical-control-live"),
+          provider: ProviderDriverKind.make("muse"),
+          threadId,
+          turnId,
+          itemId: RuntimeItemId.make("historical-control-live"),
+          createdAt: "2026-09-13T18:00:07.000Z",
+          payload: { itemType: "assistant_message", detail: "Continuing the authorized work." },
+        });
+        yield* Effect.promise(harness.drain);
+        expect(
+          (yield* Effect.promise(() => harness.readThreadWork(threadId))).filter(
+            (work) => work.kind === "agent-continuation",
+          ),
+        ).toHaveLength(stopped ? 0 : 1);
+      }),
+  );
+
+  effectIt.effect.each([true, false])(
+    "reconciles Muse durable snapshots without duplicate text (streaming=%s)",
+    (enableAssistantStreaming) =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            serverSettings: { enableAssistantStreaming },
+          }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const turnId = TurnId.make("muse-snapshot-turn");
+        const itemId = RuntimeItemId.make("muse-snapshot-item");
+        const createdAt = "2026-09-13T18:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("muse-snapshot-session"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "muse",
+            runtimeMode: "approval-required",
+            activeTurnId: turnId,
+            updatedAt: createdAt,
+            lastError: null,
+          },
+          createdAt,
+        });
+        const base = {
+          provider: ProviderDriverKind.make("muse"),
+          threadId,
+          turnId,
+          itemId,
+          createdAt,
+        };
+        const emitAndDrain = (event: ProviderRuntimeEvent) =>
+          Effect.gen(function* () {
+            harness.emit(event);
+            yield* Effect.promise(harness.drain);
+          });
+        yield* emitAndDrain({
+          ...base,
+          eventId: EventId.make("muse-live-prefix"),
+          type: "content.delta",
+          payload: { streamKind: "assistant_text", delta: "Partial" },
+        });
+        const snapshot = {
+          ...base,
+          eventId: EventId.make("muse-open-snapshot"),
+          type: "item.updated" as const,
+          payload: { itemType: "assistant_message" as const, detail: "Partial recovered" },
+        };
+        yield* emitAndDrain(snapshot);
+        yield* emitAndDrain(snapshot);
+        let thread = (yield* Effect.promise(harness.readModel)).threads.find(
+          (entry) => entry.id === threadId,
+        )!;
+        expect(thread.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
+        expect(
+          thread.messages.find((message) => message.id === "assistant:muse-snapshot-item"),
+        ).toMatchObject({
+          text: "Partial recovered",
+          streaming: true,
+        });
+        yield* emitAndDrain({
+          ...base,
+          eventId: EventId.make("muse-live-suffix"),
+          type: "content.delta",
+          payload: { streamKind: "assistant_text", delta: " suffix" },
+        });
+        const complete = {
+          ...base,
+          eventId: EventId.make("muse-final-snapshot"),
+          type: "item.completed" as const,
+          payload: {
+            itemType: "assistant_message" as const,
+            detail: "Partial recovered suffix and final",
+          },
+        };
+        yield* emitAndDrain(complete);
+        yield* emitAndDrain(complete);
+        // An older open item replay cannot reopen or truncate the completed row.
+        yield* emitAndDrain(snapshot);
+        thread = (yield* Effect.promise(harness.readModel)).threads.find(
+          (entry) => entry.id === threadId,
+        )!;
+        expect(thread.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
+        expect(
+          thread.messages.find((message) => message.id === "assistant:muse-snapshot-item"),
+        ).toMatchObject({
+          text: "Partial recovered suffix and final",
+          streaming: false,
+        });
+        expect(thread.session?.activeTurnId).toBe(turnId);
+        expect(thread.session?.status).toBe("running");
+        yield* emitAndDrain({
+          ...complete,
+          eventId: EventId.make("muse-final-corrected"),
+          payload: { itemType: "assistant_message", detail: "Partial recovered" },
+        });
+        thread = (yield* Effect.promise(harness.readModel)).threads.find(
+          (entry) => entry.id === threadId,
+        )!;
+        expect(
+          thread.messages.find((message) => message.id === "assistant:muse-snapshot-item")?.text,
+        ).toBe("Partial recovered");
+      }),
+  );
+
+  effectIt.effect.each(["snapshot-first", "terminal-first"] as const)(
+    "recovers a Muse final snapshot around terminal delivery without duplicates (%s)",
+    (deliveryOrder) =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() => createHarness());
+        const threadId = ThreadId.make("thread-1");
+        const turnId = TurnId.make("01a09bf9-133d-7681-9a33-e4698bea4fb4");
+        const itemId = RuntimeItemId.make("7a025cd6-aa3e-4ca0-bc37-7bd4ea3a830c");
+        const startedAt = "2026-09-13T18:13:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("muse-terminal-recovery-session"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "muse",
+            runtimeMode: "approval-required",
+            activeTurnId: turnId,
+            updatedAt: startedAt,
+            lastError: null,
+          },
+          createdAt: startedAt,
+        });
+        const base = { provider: ProviderDriverKind.make("muse"), threadId, turnId };
+        const finalText =
+          "All work is complete and verified. Final report:\n\nThe changes are ready.";
+        const snapshot: ProviderRuntimeEvent = {
+          ...base,
+          itemId,
+          eventId: EventId.make("muse:recovery:1468:item.completed"),
+          type: "item.completed",
+          createdAt: "2026-09-13T18:39:00.000Z",
+          payload: { itemType: "assistant_message", detail: finalText },
+        };
+        const terminal: ProviderRuntimeEvent = {
+          ...base,
+          eventId: EventId.make("muse:recovery:1476:turn.completed"),
+          type: "turn.completed",
+          createdAt: "2026-09-13T18:39:18.000Z",
+          payload: { state: "completed" },
+        };
+        const first = deliveryOrder === "snapshot-first" ? snapshot : terminal;
+        const second = deliveryOrder === "snapshot-first" ? terminal : snapshot;
+        harness.emit(first);
+        yield* Effect.promise(harness.drain);
+        if (deliveryOrder === "terminal-first") {
+          const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+            (entry) => entry.id === threadId,
+          )!;
+          expect(thread.messages.filter((message) => message.role === "assistant")).toHaveLength(0);
+          expect(thread.session).toMatchObject({ status: "ready", activeTurnId: null });
+        }
+        harness.emit(second);
+        yield* Effect.promise(harness.drain);
+        // Page overlap may repeat the same stable snapshot after completion.
+        harness.emit(snapshot);
+        yield* Effect.promise(harness.drain);
+        const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+          (entry) => entry.id === threadId,
+        )!;
+        expect(thread.messages.filter((message) => message.role === "assistant")).toEqual([
+          expect.objectContaining({
+            id: `assistant:${itemId}`,
+            turnId,
+            text: finalText,
+            streaming: false,
+          }),
+        ]);
+        expect(thread.session).toMatchObject({
+          status: "ready",
+          activeTurnId: null,
+          lastError: null,
+        });
+      }),
+  );
+
+  effectIt.effect("keeps newer buffered Muse text when an older open snapshot replays", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          serverSettings: { enableAssistantStreaming: false },
+        }),
+      );
+      const threadId = ThreadId.make("thread-1");
+      const turnId = TurnId.make("muse-buffered-turn");
+      const createdAt = "2026-09-13T18:00:00.000Z";
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("muse-buffered-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "muse",
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          updatedAt: createdAt,
+          lastError: null,
+        },
+        createdAt,
+      });
+      const base = {
+        provider: ProviderDriverKind.make("muse"),
+        threadId,
+        turnId,
+        itemId: RuntimeItemId.make("muse-buffered-item"),
+        createdAt,
+      };
+      harness.emit({
+        ...base,
+        type: "content.delta",
+        eventId: EventId.make("muse-buffered-live"),
+        payload: { streamKind: "assistant_text", delta: "Hello world" },
+      });
+      yield* Effect.promise(harness.drain);
+      harness.emit({
+        ...base,
+        type: "item.updated",
+        eventId: EventId.make("muse-buffered-old-page"),
+        payload: { itemType: "assistant_message", detail: "Hello" },
+      });
+      yield* Effect.promise(harness.drain);
+      harness.emit({
+        ...base,
+        type: "item.completed",
+        eventId: EventId.make("muse-buffered-complete"),
+        payload: { itemType: "assistant_message" },
+      });
+      yield* Effect.promise(harness.drain);
+      const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+      expect(
+        thread.messages.find((message) => message.id === "assistant:muse-buffered-item"),
+      ).toMatchObject({ text: "Hello world", streaming: false });
+    }),
+  );
+
   effectIt.effect(
     "starts a new buffered assistant message segment after approval and completes without duplication",
     () =>
@@ -5102,6 +6606,56 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("runtime exploded");
   });
 
+  it("keeps a retryable upstream turn failure off the session error banner", async () => {
+    // 2026-09-17 16:03: OpenCode's gateway 503 closed the turn as failed with
+    // failureKind retryable-upstream. The reactor retried silently, but the
+    // session carried the provider text as lastError for the whole backoff,
+    // which the clients render as a red banner with a Resume button.
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-retryable"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-retryable-503"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-retryable-503",
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-failed-retryable"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-retryable-503"),
+      payload: {
+        state: "failed",
+        errorMessage:
+          "The provider remained overloaded after its bounded retries. Try this turn again shortly. Streaming response failed: [api_error] upstream provider error (HTTP 503)",
+        failureKind: "retryable-upstream",
+      },
+    });
+
+    await harness.drain();
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === null,
+    );
+    expect(thread.session?.status).toBe("error");
+    // The failure kind (persisted by the SQL projection; this harness's read
+    // model omits it) routes the reactor to its silent retry; the provider's
+    // text stays off the session so no client draws a banner.
+    expect(thread.session?.lastError ?? null).toBeNull();
+  });
+
   it("records runtime.error activities from the typed payload message", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -5131,6 +6685,42 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(activity?.kind).toBe("runtime.error");
     expect(activityPayload?.message).toBe("runtime activity exploded");
+  });
+
+  it("hides a provider's raw context-overflow error because the history reset owns it", async () => {
+    // Open World side chat, 2026-09-17 14:41: OpenCode answered
+    // `{"type":"invalid_request_error","message":"… Prompt too long: the
+    // maximum context length is 262144 tokens …"}`. The reactor discards the
+    // history and resumes in a fresh session with a digest, appending its own
+    // `provider.history.reset` notice; the raw card on top of it was noise.
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-runtime-error-context-overflow"),
+      // The harness thread's session is a codex session; the classifier is
+      // provider-agnostic and the live case was OpenCode.
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-context-overflow"),
+      payload: {
+        message:
+          "Streaming response failed: [invalid_request_error] Prompt too long: the maximum context length is 262144 tokens including the completion",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "error" &&
+        (entry.session?.lastError ?? "").includes("maximum context length"),
+    );
+    // The session still records the failure so the recovery path can read
+    // and classify it; only the feed card is withheld.
+    expect(thread.session?.lastError).toContain("Prompt too long");
+    expect(thread.activities.filter((activity) => activity.kind === "runtime.error")).toEqual([]);
   });
 
   it("keeps the session running when a runtime.warning arrives during an active turn", async () => {
@@ -5781,6 +7371,78 @@ describe("ProviderRuntimeIngestion", () => {
     expect(completedPayload?.summary).toBe("Typecheck finished without errors.");
     expect(completedPayload?.detail).toBe("Typecheck finished without errors.");
   });
+
+  it.each([false, true])(
+    "persists Codex task identity with terminal status across late metadata (after completion: %s)",
+    async (afterCompletion) => {
+      const harness = await createHarness();
+      const base = {
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("codex-parent"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      const taskId = "codex-subagent:child";
+      const title = "Codex subagent /root/installed_task_probe";
+      harness.emit({
+        ...base,
+        type: "task.started",
+        eventId: asEventId("identity-start"),
+        payload: { taskId, description: "Codex subagent child", taskType: "local_agent" },
+      });
+      if (!afterCompletion)
+        harness.emit({
+          ...base,
+          type: "task.progress",
+          eventId: asEventId("identity-progress"),
+          payload: { taskId, title, description: "Running command" },
+        });
+      harness.emit({
+        ...base,
+        type: "task.completed",
+        eventId: asEventId("identity-complete"),
+        payload: {
+          taskId,
+          status: "completed",
+          summary: "Verified",
+          usage: { total_tokens: 1234 },
+        },
+      });
+      await harness.drain();
+      const observationsBeforeMetadata = harness.runtimeObservations.length;
+      if (afterCompletion) {
+        harness.emit({
+          ...base,
+          createdAt: "2026-01-01T00:00:01.000Z",
+          type: "task.completed",
+          eventId: asEventId("identity-metadata"),
+          payload: {
+            taskId,
+            title,
+            status: "completed",
+            metadataOnly: true,
+            summary: "Verified",
+            usage: { total_tokens: 1234 },
+          },
+        });
+        await harness.drain();
+        expect(harness.runtimeObservations).toHaveLength(observationsBeforeMetadata);
+      }
+      // Read a fresh SQL-backed projection: progress/completion replace by activity ID.
+      // No in-memory task state from before the metadata update participates in this read.
+      const thread = (await harness.readModel()).threads.find(
+        (thread) => thread.id === base.threadId,
+      )!;
+      const lifecycle = thread.activities.filter(
+        (row) => row.id === "task:thread-1:codex-subagent:child",
+      );
+      expect(lifecycle).toHaveLength(1);
+      expect(lifecycle[0]?.kind).toBe("task.completed");
+      expect(lifecycle[0]?.payload).toMatchObject({ title, status: "completed" });
+      expect(lifecycle[0]?.payload).toMatchObject({ usage: { total_tokens: 1234 } });
+      expect(harness.sendTurnCalls).toHaveLength(0);
+    },
+  );
 
   it("titles task completion from task.started when no progress event carried the name", async () => {
     const harness = await createHarness();

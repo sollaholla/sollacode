@@ -29,6 +29,7 @@ import {
   ACTION_APPROVAL_QUESTION_ID,
 } from "@t3tools/shared/actionApproval";
 import { createModelSelection } from "@t3tools/shared/model";
+import { mergeClaudeDiscoveredModels } from "./ClaudeProvider.ts";
 import { assert, describe, it } from "@effect/vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as Context from "effect/Context";
@@ -217,6 +218,8 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 }
 
 function makeHarness(config?: {
+  readonly supportsThinkingDisplay?: ClaudeAdapterLiveOptions["supportsThinkingDisplay"];
+  readonly getModelCapabilities?: ClaudeAdapterLiveOptions["getModelCapabilities"];
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: ClaudeAdapterLiveOptions["nativeEventLogger"];
   readonly cwd?: string;
@@ -236,6 +239,10 @@ function makeHarness(config?: {
     | undefined;
 
   const adapterOptions: ClaudeAdapterLiveOptions = {
+    ...(config?.supportsThinkingDisplay
+      ? { supportsThinkingDisplay: config.supportsThinkingDisplay }
+      : {}),
+    ...(config?.getModelCapabilities ? { getModelCapabilities: config.getModelCapabilities } : {}),
     ...(config?.instanceId ? { instanceId: config.instanceId } : {}),
     createQuery: (input) => {
       createInput = input;
@@ -492,6 +499,8 @@ describe("ClaudeAdapterLive", () => {
         createInput?.options.env?.ANTHROPIC_BASE_URL,
       );
       assert.equal(createInput?.options.env?.T3CODE_CLAUDE_PROXY_UPSTREAM, "");
+      // Without this the CLI caps Opus 5.5 at 200k and loads every MCP tool schema.
+      assert.equal(createInput?.options.env?._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL, "1");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -792,6 +801,141 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "enables progress before a later model switch and preserves explicit launch flags",
+    () => {
+      const harness = makeHarness({
+        supportsThinkingDisplay: () => true,
+        claudeConfig: { launchArgs: "--thinking-display omitted" },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-sonnet-5",
+          ),
+          runtimeMode: "full-access",
+        });
+        assert.equal(
+          harness.getLastCreateQueryInput()?.options.extraArgs?.["thinking-display"],
+          "omitted",
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("enables progress on modern CLI sessions before switching to Opus", () => {
+    const harness = makeHarness({ supportsThinkingDisplay: () => true });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-5",
+        ),
+        runtimeMode: "full-access",
+      });
+      assert.equal(
+        harness.getLastCreateQueryInput()?.options.extraArgs?.["thinking-display"],
+        "summarized",
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  for (const effort of [undefined, "xhigh"] as const) {
+    it.effect(`uses discovered model options at ${effort ?? "provider default"} effort`, () => {
+      const [model] = mergeClaudeDiscoveredModels(
+        [],
+        [
+          {
+            value: "claude-opus-6[1m]",
+            supportsEffort: true,
+            supportedEffortLevels: ["low", "xhigh"],
+            supportsFastMode: true,
+          },
+        ],
+      );
+      const harness = makeHarness({
+        getModelCapabilities: (slug) =>
+          slug === model?.slug ? (model?.capabilities ?? undefined) : undefined,
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-opus-6[1m]",
+            [...(effort ? [{ id: "effort", value: effort }] : []), { id: "fastMode", value: true }],
+          ),
+          autoCompactionThresholdPercentage: 80,
+          runtimeMode: "full-access",
+        });
+        const opts = harness.getLastCreateQueryInput()?.options;
+        assert.equal(opts?.model, "claude-opus-6[1m]");
+        assert.equal(opts?.effort, effort);
+        assert.deepEqual(opts?.settings, {
+          fastMode: true,
+          autoCompactEnabled: true,
+          autoCompactWindow: 640_000,
+        });
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
+
+  for (const effort of [undefined, "xhigh", "max"] as const) {
+    it.effect(`configures Opus 5.5 at ${effort ?? "default"} effort with a fixed 1M window`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-opus-5-5",
+            [
+              ...(effort ? [{ id: "effort", value: effort }] : []),
+              { id: "fastMode", value: true },
+              { id: "thinking", value: false },
+              { id: "contextWindow", value: "200k" },
+            ],
+          ),
+          autoCompactionThresholdPercentage: 80,
+          runtimeMode: "full-access",
+        });
+        const opts = harness.getLastCreateQueryInput()?.options;
+        assert.equal(opts?.model, "claude-opus-5-5");
+        assert.equal(opts?.effort, effort ?? "medium");
+        assert.deepEqual(opts?.settings, {
+          fastMode: true,
+          autoCompactEnabled: true,
+          autoCompactWindow: 640_000,
+        });
+        assert.equal(opts?.includePartialMessages, true);
+        assert.equal(opts?.extraArgs?.["thinking-display"], "summarized");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
 
   it.effect("preserves xhigh effort for Claude Opus 5", () => {
     const harness = makeHarness();
@@ -2601,6 +2745,50 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("closes the SDK before joining an idle iterator shutdown", () => {
+    const query = new FakeClaudeQuery();
+    const reading = Promise.withResolvers<void>();
+    const returning = Promise.withResolvers<void>();
+    const closed = Promise.withResolvers<IteratorResult<SDKMessage>>();
+    let closeCallsWhenReturning = -1;
+    const close = query.close;
+    (query as { close: () => void }).close = () => {
+      close();
+      closed.resolve({ done: true, value: undefined });
+    };
+    query[Symbol.asyncIterator] = () => ({
+      next: () => {
+        reading.resolve();
+        return closed.promise;
+      },
+      return: () => {
+        closeCallsWhenReturning = query.closeCalls;
+        returning.resolve();
+        return closed.promise;
+      },
+    });
+    const harness = makeHarness({ createQuery: () => query });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* Effect.promise(() => reading.promise);
+      const stopping = yield* adapter.stopSession(THREAD_ID).pipe(Effect.forkChild);
+      yield* Effect.promise(() => returning.promise);
+      // Release the old implementation's deadlock so the regression fails on
+      // the shutdown ordering, without relying on a test timeout.
+      if (query.closeCalls === 0) query.close();
+      yield* Fiber.join(stopping);
+      assert.equal(closeCallsWhenReturning, 1);
+      assert.equal(query.closeCalls, 1);
+      assert.equal((yield* adapter.listSessions()).length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("stopSession does not throw into the SDK prompt consumer", () => {
     // The SDK consumes user messages via `for await (... of prompt)`.
     // Stopping a session must end that loop cleanly — not throw an error.
@@ -2752,6 +2940,256 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("settles terminal task patches without waiting for a notification", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const completed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.completed"),
+        Stream.take(4),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      for (const status of [
+        "pending",
+        "running",
+        "paused",
+        "completed",
+        "failed",
+        "killed",
+      ] as const) {
+        harness.query.emit({
+          type: "system",
+          subtype: "task_updated",
+          task_id: `task-${status}`,
+          patch: {
+            status,
+            description: `Task ${status}`,
+            ...(status === "failed" ? { error: "Command exited with code 1" } : {}),
+          },
+          session_id: "task-patches",
+          uuid: "00000000-0000-4000-8000-000000000001",
+        });
+      }
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-completed",
+        status: "completed",
+        summary: "Final command output",
+        output_file: "/tmp/task-output",
+        session_id: "task-patches",
+        uuid: "00000000-0000-4000-8000-000000000002",
+      });
+      const events = Array.from(yield* Fiber.join(completed));
+      assert.deepEqual(
+        events.map((event) => event.payload.status),
+        ["completed", "failed", "stopped", "completed"],
+      );
+      assert.deepEqual(
+        events.map((event) => event.turnId),
+        [undefined, undefined, undefined, undefined],
+      );
+      assert.equal(events[0]?.payload.title, "Task completed");
+      assert.equal(events[1]?.payload.summary, "Command exited with code 1");
+      assert.equal(events[3]?.payload.summary, "Final command output");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("identifies Monitor tasks after their tool call and parent turn have finished", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const started = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.started"),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Watch the log", attachments: [] });
+      harness.query.emit({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "monitor-tool",
+            name: "Monitor",
+            input: { command: "tail -f /tmp/build.log" },
+          },
+        },
+        session_id: "monitor-session",
+        uuid: "monitor-start",
+        parent_tool_use_id: null,
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "monitor-tool",
+              content: "Monitor started (task watch-1)",
+            },
+          ],
+        },
+        parent_tool_use_id: null,
+        session_id: "monitor-session",
+        uuid: "monitor-result",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "The watch is running",
+        session_id: "monitor-session",
+        uuid: "parent-finished",
+      } as unknown as SDKMessage);
+      for (const [id, toolUseId, taskType] of [
+        ["watch-1", "monitor-tool", "local_bash"],
+        ["build-1", "bash-tool", "local_bash"],
+        ["agent-1", "agent-tool", "local_agent"],
+      ]) {
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: id,
+          tool_use_id: toolUseId,
+          task_type: taskType,
+          description: id,
+          session_id: "monitor-session",
+          uuid: id,
+        } as SDKMessage);
+      }
+      const events = Array.from(yield* Fiber.join(started));
+      assert.deepEqual(
+        events.map((event) => event.payload.taskType),
+        ["local_monitor", "local_bash", "local_agent"],
+      );
+      assert.equal((yield* adapter.listSessions())[0]?.activeBackgroundTaskCount, 3);
+      const completed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.completed"),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      for (const taskId of ["watch-1", "build-1", "agent-1"]) {
+        harness.query.emit({
+          type: "system",
+          subtype: "task_updated",
+          task_id: taskId,
+          patch: { status: "completed" },
+          session_id: "monitor-session",
+          uuid: `end-${taskId}`,
+        } as SDKMessage);
+      }
+      yield* Fiber.join(completed);
+      assert.equal((yield* adapter.listSessions())[0]?.activeBackgroundTaskCount, 0);
+      const resumed = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "session.state.changed" && event.payload.state === "running",
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "system",
+        subtype: "session_state_changed",
+        state: "running",
+        session_id: "monitor-session",
+        uuid: "native-wakeup",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(resumed);
+      assert.equal((yield* adapter.listSessions())[0]?.status, "running");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("settles only outstanding background tasks when their session closes", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const started = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.started"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      for (const taskId of ["done", "pending"]) {
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: taskId,
+          task_type: "local_bash",
+          description: taskId,
+          session_id: "tasks-session",
+          uuid: taskId,
+        } as SDKMessage);
+      }
+      yield* Fiber.join(started);
+      const finished = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "done",
+        status: "completed",
+        summary: "Done",
+        session_id: "tasks-session",
+        uuid: "done-result",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(finished);
+      assert.equal((yield* adapter.listSessions())[0]?.activeBackgroundTaskCount, 1);
+      const stopped = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "task.completed" || event.type === "session.exited",
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.stopSession(THREAD_ID);
+      const events = Array.from(yield* Fiber.join(stopped));
+      assert.equal(events[0]?.type, "task.completed");
+      if (events[0]?.type === "task.completed") {
+        assert.equal(events[0].payload.taskId, "pending");
+        assert.equal(events[0].payload.status, "stopped");
+      }
+      assert.equal(events[1]?.type, "session.exited");
+      assert.deepEqual(yield* adapter.listSessions(), []);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards Claude task progress summaries for subagent updates", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -2837,6 +3275,25 @@ describe("ClaudeAdapterLive", () => {
           session_id: "session",
           uuid: "vcs",
         },
+        {
+          // The CLI's project scan guessing the kind of project. Rendered as
+          // an orange warning in every turn of an app project until now.
+          type: "system",
+          subtype: "dev_intent",
+          kind: "ios_app",
+          trigger: "project_scan",
+          session_id: "session",
+          uuid: "intent",
+        },
+        {
+          // A subtype no release of the adapter knows yet: logged, not shown.
+          type: "system",
+          subtype: "future_status_notice",
+          detail: "something informational",
+          session_id: "session",
+          uuid: "future-system",
+        },
+        { type: "future_top_level_notice", session_id: "session", uuid: "future-type" },
         {
           type: "system",
           subtype: "task_updated",

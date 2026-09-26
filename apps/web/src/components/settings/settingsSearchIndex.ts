@@ -47,6 +47,21 @@ function entries(
 }
 
 export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
+  ...entries("/settings/providers", "Providers", "Models", [
+    {
+      title: "Automatic fallback models",
+      anchor: "setting-fallback-models",
+      keywords: [
+        "whitelist",
+        "allowlist",
+        "block",
+        "model restrictions",
+        "fallback",
+        "agent",
+        "side chat",
+      ],
+    },
+  ]),
   ...entries("/settings/general", "General", "Threads", [
     { title: "New threads", keywords: ["worktree", "local", "default mode", "draft"] },
     { title: "Start from origin", keywords: ["worktree", "branch", "remote"] },
@@ -72,7 +87,10 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     { title: "Attachment retention", keywords: ["images", "cleanup", "hours", "storage"] },
   ]),
   ...entries("/settings/general", "General", "Voice input", [
-    { title: "Auto-send transcription", keywords: ["dictation", "push to talk", "microphone"] },
+    {
+      title: "Voice notes",
+      keywords: ["recording", "push to talk", "microphone", "audio attachment"],
+    },
     {
       title: "Contextual transcription correction",
       keywords: ["dictation", "names", "punctuation", "speech"],
@@ -213,6 +231,26 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     anchor: "setting-permissions",
     keywords: ["microphone", "screen recording", "accessibility", "macos", "privacy"],
     desktopOnly: true,
+  },
+  {
+    title: "Saved passwords and PINs",
+    tab: "/settings/credentials",
+    tabLabel: "Credentials",
+    section: "Credentials",
+    anchor: "setting-saved-passwords",
+    keywords: [
+      "credentials",
+      "login",
+      "sign in",
+      "username",
+      "email",
+      "password",
+      "pin",
+      "code",
+      "autofill",
+      "browser",
+      "preview",
+    ],
   },
 ];
 

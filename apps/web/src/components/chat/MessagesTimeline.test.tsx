@@ -1,4 +1,5 @@
-import { CheckpointRef, EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
+import { deriveWorkLogEntries } from "../../session-logic";
+import { CheckpointRef, EnvironmentId, EventId, MessageId, TurnId } from "@t3tools/contracts";
 import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
@@ -7,6 +8,12 @@ import { AGENT_CONTINUE_PROMPT } from "../../agentMode";
 import { RESUME_PROMPT } from "../../resumePrompt";
 
 const assetUrlStateCalls = vi.hoisted(() => [] as Array<unknown>);
+const assetUrlState = vi.hoisted(() => ({
+  current: {
+    _tag: "Success",
+    url: "https://environment.example/api/assets/signed/reference.png",
+  } as { readonly _tag: "Success"; readonly url: string } | { readonly _tag: "Failure" },
+}));
 const legendListPropsCalls = vi.hoisted(() => [] as Array<unknown>);
 
 vi.mock("@legendapp/list/react", async () => {
@@ -138,10 +145,7 @@ vi.mock("../../assets/assetUrls", () => ({
   withAssetRevision: (url: string, revision: string) => `${url}?solla_revision=${revision}`,
   useAssetUrlState: (_environmentId: unknown, resource: unknown) => {
     assetUrlStateCalls.push(resource);
-    return {
-      _tag: "Success" as const,
-      url: "https://environment.example/api/assets/signed/reference.png",
-    };
+    return assetUrlState.current;
   },
 }));
 
@@ -265,6 +269,35 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Queued for Codex");
   });
 
+  it("shows a message's leading provider command as a link, with the text after it", () => {
+    const entry = buildUserTimelineEntry("/compact keep the auth notes");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[entry]}
+        slashCommands={[{ name: "compact", description: "Clear history but keep a summary" }]}
+      />,
+    );
+
+    expect(markup).toMatch(
+      /<button[^>]*class="provider-slash-command-link"[^>]*>\/compact<\/button> keep the auth notes/,
+    );
+  });
+
+  it("keeps a slash that is not a leading provider command as plain text", () => {
+    const entry = buildUserTimelineEntry("please /compact later");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[entry]}
+        slashCommands={[{ name: "compact" }]}
+      />,
+    );
+
+    expect(markup).not.toContain("provider-slash-command-link");
+    expect(markup).toContain("please /compact later");
+  });
+
   it("keeps delivery state visible for a manually sent Resume message", () => {
     const entry = buildUserTimelineEntry("resume");
     const markup = renderToStaticMarkup(
@@ -279,6 +312,24 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain(">Resume<");
     expect(markup).toContain("Queued for Codex");
+  });
+
+  it("replaces the queued label with Not sent and Send again once delivery failed for good", () => {
+    const entry = buildUserTimelineEntry("Let's do Moose");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[entry]}
+        newestUserMessageId={entry.message.id}
+        deliveryReceiptsExpected
+        deliveryProviderName="Claude"
+        unsentMessage={{ messageId: entry.message.id, detail: "Invalid params" }}
+      />,
+    );
+
+    expect(markup).toContain("Not sent");
+    expect(markup).toContain("Send again");
+    expect(markup).not.toContain("Queued for Claude");
   });
 
   it("shows Sending while the newest message is still only a local echo", () => {
@@ -746,7 +797,7 @@ describe("MessagesTimeline", () => {
     expect(unreachable).not.toContain("Working for");
   });
 
-  it("disables LegendList live-follow after the user opts out during streaming", () => {
+  it("uses visible-row anchoring only after the user opts out during streaming", () => {
     const timelineEntries = [buildUserTimelineEntry("Keep my reading position")];
     const followingMarkup = renderToStaticMarkup(
       <MessagesTimeline {...buildProps()} followEnd isWorking timelineEntries={timelineEntries} />,
@@ -760,7 +811,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(followingMarkup).toContain('data-maintain-scroll-at-end="enabled"');
+    expect(followingMarkup).not.toContain('data-maintain-scroll-at-end="enabled"');
     expect(optedOutMarkup).not.toContain('data-maintain-scroll-at-end="enabled"');
     expect(followingMarkup).toContain('data-maintain-visible-content-position="false"');
     expect(optedOutMarkup).toContain('data-maintain-visible-content-position="object"');
@@ -882,7 +933,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("data-content-inset-end=");
     expect(markup).toContain('data-chat-timeline-bottom-inset="0"');
     expect(markup).toContain("[overflow-anchor:none]");
-    expect(markup).toContain('data-maintain-scroll-at-end="enabled"');
+    expect(markup).not.toContain('data-maintain-scroll-at-end="enabled"');
     expect(markup).toContain('data-maintain-visible-content-position="false"');
     expect(markup).toContain("aspect-video overflow-hidden");
     expect(markup).toContain("block size-full object-cover");
@@ -899,11 +950,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Show full message");
-    expect(markup).toContain('data-maintain-scroll-at-end="enabled"');
-    expect(markup).toContain('data-maintain-scroll-at-end-animated="false"');
-    expect(markup).toContain('data-maintain-scroll-at-end-data-change="true"');
-    expect(markup).toContain('data-maintain-scroll-at-end-item-layout="true"');
-    expect(markup).toContain('data-maintain-scroll-at-end-layout="true"');
+    expect(markup).not.toContain('data-maintain-scroll-at-end="enabled"');
     expect(markup).toContain('data-user-message-collapsed="true"');
     expect(markup).toContain('data-user-message-fade="true"');
     expect(markup).toContain('data-user-message-footer="true"');
@@ -1148,6 +1195,35 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Work Log");
   });
 
+  it("keeps an interrupted background task visibly stopped after the turn settles", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking={false}
+        activeTurnInProgress={false}
+        timelineEntries={[
+          {
+            id: "stopped-task",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "stopped-task",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "Background shell command did not finish",
+              toolTitle: "TikTok post check",
+              tone: "info",
+              toolLifecycleStatus: "stopped",
+              sourceActivityKind: "task.completed",
+            },
+          },
+        ]}
+      />,
+    );
+    expect(markup).toContain('aria-label="Task stopped before completion"');
+    expect(markup).toContain("lucide-minus");
+    expect(markup).not.toContain("lucide-check");
+  });
+
   it.each([
     ["active turn", true],
     ["completed turn", false],
@@ -1309,6 +1385,44 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
   });
 
+  it("renders the persisted Muse image receipt through the signed image preview path", () => {
+    assetUrlStateCalls.length = 0;
+    const [entry] = deriveWorkLogEntries([
+      {
+        id: EventId.make("muse-image-receipt"),
+        kind: "tool.completed",
+        tone: "tool",
+        summary: "Tool",
+        turnId: null,
+        createdAt: MESSAGE_CREATED_AT,
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool",
+          detail:
+            "Read image file `screenshots/plateau_edge_to_bay.png` as model-visible image output.\nmedia_type: image/png\nsource_bytes: 4173209",
+        },
+      },
+    ]);
+    expect(entry).toBeDefined();
+    if (!entry) return;
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[{ id: "muse-image", kind: "work", createdAt: MESSAGE_CREATED_AT, entry }]}
+        workspaceRoot="/workspace/open-world"
+      />,
+    );
+    expect(markup).toContain(
+      'aria-label="Open image preview: open-world/screenshots/plateau_edge_to_bay.png"',
+    );
+    expect(markup).toContain('src="https://environment.example/api/assets/signed/reference.png');
+    expect(markup).not.toContain('src="screenshots/');
+    expect(assetUrlStateCalls.at(-1)).toMatchObject({
+      path: "screenshots/plateau_edge_to_bay.png",
+      sourceActivityId: "muse-image-receipt",
+    });
+  });
+
   it("renders a signed inline image preview beneath an image-read tool call", () => {
     assetUrlStateCalls.length = 0;
     const markup = renderToStaticMarkup(
@@ -1347,6 +1461,112 @@ describe("MessagesTimeline", () => {
     expect(assetUrlStateCalls.at(-1)).toMatchObject({
       sourceActivityId: "activity-that-supplied-image-path",
     });
+  });
+
+  it("falls back to the image the tool returned when the file behind it is gone", () => {
+    const storedSrc = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg";
+    assetUrlState.current = { _tag: "Failure" };
+    try {
+      const markup = renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              id: "entry-stored-image",
+              kind: "work",
+              createdAt: MESSAGE_CREATED_AT,
+              entry: {
+                id: "work-stored-image",
+                createdAt: MESSAGE_CREATED_AT,
+                label: "Read File",
+                tone: "tool",
+                itemType: "dynamic_tool_call",
+                readImagePath: "/tmp/shots-before/jacket-right-thumb.png",
+                readImageSourceActivityId: "activity-that-supplied-image-path",
+                readImageInlineSrc: storedSrc,
+              },
+            },
+          ]}
+          workspaceRoot="/workspace"
+        />,
+      );
+
+      expect(markup).toContain(`src="${storedSrc}"`);
+      expect(markup).toContain("Stored copy");
+      expect(markup).not.toContain("Image preview unavailable");
+    } finally {
+      assetUrlState.current = {
+        _tag: "Success",
+        url: "https://environment.example/api/assets/signed/reference.png",
+      };
+    }
+  });
+
+  it("says plainly when neither the file nor a stored copy can be shown", () => {
+    assetUrlState.current = { _tag: "Failure" };
+    try {
+      const markup = renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              id: "entry-missing-image",
+              kind: "work",
+              createdAt: MESSAGE_CREATED_AT,
+              entry: {
+                id: "work-missing-image",
+                createdAt: MESSAGE_CREATED_AT,
+                label: "Read File",
+                tone: "tool",
+                itemType: "dynamic_tool_call",
+                readImagePath: "/tmp/shots-before/jacket-right-thumb.png",
+                readImageSourceActivityId: "activity-that-supplied-image-path",
+              },
+            },
+          ]}
+          workspaceRoot="/workspace"
+        />,
+      );
+
+      expect(markup).toContain("Nothing readable is at this path now");
+      expect(markup).not.toContain("Stored copy");
+    } finally {
+      assetUrlState.current = {
+        _tag: "Success",
+        url: "https://environment.example/api/assets/signed/reference.png",
+      };
+    }
+  });
+
+  it("keeps showing the live file when it resolves, stored copy or not", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-live-image",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "work-live-image",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "Read File",
+              tone: "tool",
+              itemType: "dynamic_tool_call",
+              readImagePath: "/workspace/art/reference.png",
+              readImageSourceActivityId: "activity-that-supplied-image-path",
+              readImageInlineSrc: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg",
+            },
+          },
+        ]}
+        workspaceRoot="/workspace"
+      />,
+    );
+
+    expect(markup).toContain(
+      'src="https://environment.example/api/assets/signed/reference.png?solla_revision=work-live-image"',
+    );
+    expect(markup).not.toContain("Stored copy");
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", () => {

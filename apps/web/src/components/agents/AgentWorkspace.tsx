@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { agentPresence } from "@t3tools/client-runtime/state/agent-appearance";
 import { type EnvironmentId, type VmAgent, VmAgentId } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
@@ -8,20 +9,26 @@ import {
   LayoutDashboardIcon,
   ListTodoIcon,
   PanelRightIcon,
+  PanelTopCloseIcon,
   ScrollTextIcon,
 } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { RemoteConnectionControl } from "../remoteControl/RemoteConnectionControl";
-import { usePrimaryEnvironmentId } from "../../state/environments";
+import { useEnvironment, usePrimaryEnvironmentId } from "../../state/environments";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { isElectron } from "../../env";
+import { useIsMobile } from "../../hooks/useMediaQuery";
+import { useUiStateStore } from "../../uiStateStore";
+import { useMobileTopBarTrailingSlot } from "../mobile/mobileTopBarSlot";
 import { cn } from "../../lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { Button } from "../ui/button";
+import { ToolbarControl } from "../ui/toolbar-control";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { AgentGlyph } from "./AgentGlyph";
@@ -33,6 +40,7 @@ import { resolveInlineAgentAttention, resolveInlineAgentNotification } from "./a
 import { hasAgentDashboard } from "./agentWorkspaceNavigation";
 import { pruneWaitingOnYouAttachment } from "./waitingOnYouAttachment";
 import { AgentArtifactPanel, AgentTasksPanel } from "./AgentWorkspacePanels";
+import { useAgentHeaderFold } from "./useAgentHeaderFold";
 
 export type AgentWorkspaceView = "chat" | "activity" | "tasks" | "dashboard" | "rules";
 
@@ -67,6 +75,7 @@ function AgentWorkspaceResolved(props: {
   readonly environmentId: EnvironmentId;
 }) {
   const { environmentId } = props;
+  const environment = useEnvironment(environmentId);
   const [view, setView] = useState<AgentWorkspaceView>("chat");
   const [projectScriptsPortalTarget, setProjectScriptsPortalTarget] =
     useState<HTMLDivElement | null>(null);
@@ -158,6 +167,19 @@ function AgentWorkspaceResolved(props: {
     }
     store.setOpen(threadRef, !panelOpen);
   };
+  // On a phone the header card can fold into the top bar as just the agent's
+  // avatar, beside the panel toggle. Only the chat folds: the other views
+  // need the card's way back to it.
+  const topBarSlot = useMobileTopBarTrailingSlot((state) => state.element);
+  const foldEnabled = useIsMobile() && topBarSlot !== null;
+  const collapsedPreference = useUiStateStore((state) => state.agentHeaderCollapsed);
+  const setAgentHeaderCollapsed = useUiStateStore((state) => state.setAgentHeaderCollapsed);
+  const headerFolded = foldEnabled && collapsedPreference && view === "chat";
+  const headerFold = useAgentHeaderFold({
+    enabled: foldEnabled && view === "chat",
+    slot: topBarSlot,
+    setCollapsed: setAgentHeaderCollapsed,
+  });
 
   if (registryUnavailable) {
     return <CenteredNote text="Agents are unavailable. Reconnect to the host and try again." />;
@@ -170,161 +192,235 @@ function AgentWorkspaceResolved(props: {
   if (!agent) {
     return <CenteredNote text="This agent no longer exists." />;
   }
+  const agentOnline = agentPresence(
+    agent.status,
+    environment?.connection.phase === "connected",
+  ).online;
+  const panelToggle = agentThreadId ? (
+    <ToolbarControl
+      type="button"
+      size="icon-xs"
+      aria-label="Panel"
+      aria-pressed={view === "chat" && panelOpen}
+      title="Browser, Terminal, and Side Chat"
+      onClick={togglePanel}
+      className={cn(
+        view === "chat" && panelOpen
+          ? "border-gold-500 text-foreground"
+          : "text-foreground hover:border-foreground/40",
+      )}
+    >
+      <PanelRightIcon className="size-3.5" aria-hidden />
+    </ToolbarControl>
+  ) : null;
 
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
-      {/* Same inset every other top-level header carries: with the sidebar
-          collapsed, its open button floats over this row, and without the
-          reserve it lands on top of the agent's name and purpose. */}
-      <header
+      {/* Folded, the card closes to nothing (its contents keep their layout,
+          clipped) and its avatar and panel toggle wait in the top bar. */}
+      <div
+        data-agent-header-folded={headerFolded ? "true" : "false"}
+        inert={headerFolded}
         className={cn(
-          "@container/header-actions flex min-w-0 flex-col gap-2 px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3 md:border-b",
-          // On a phone the header is the project card from the mockup: a
-          // rounded turn-box card under the top bar rather than a full-width
-          // band. The floating sidebar control is hidden there too, so the
-          // collapsed-sidebar reserve is only wanted from `md` up.
-          "max-md:mx-3 max-md:mt-2 max-md:rounded-[14px] max-md:border max-md:border-[var(--line)] max-md:bg-card max-md:p-3",
-          "md:" + COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
-          // This header spans the window even when the right panel is open,
-          // so unlike ChatHeader the reserve cannot ever drop to pr-0: on
-          // Windows the native window controls overlay this row's right edge,
-          // and with them the parked panel toggle. Container-level only from
-          // `md` up, where the header is a single row. Stacked (phones), the
-          // overlay occupies the first row's band alone — padding the whole
-          // header pushed the actions row ~3.5rem off the right edge for
-          // nothing, which read as a broken gap under the title.
-          "md:pr-[var(--workspace-titlebar-content-right)]",
-          // This row is the desktop title bar, so it has to drag the window
-          // like every other header that owns that band. Unprefixed on
-          // purpose: `.drag-region` is a plain rule in index.css, not a
-          // Tailwind utility, so `md:drag-region` would compile to nothing at
-          // all. Gating on Electron is what keeps it off touch web, where the
-          // header is a card in a scroll container. `.drag-region` already
-          // exempts nested buttons and inputs, so the tools menu, the power
-          // toggle and Panel keep their clicks.
-          isElectron && "drag-region",
+          "grid shrink-0 transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none",
+          headerFolded ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100",
         )}
       >
-        <div className="flex min-w-0 items-center gap-3 pr-[var(--workspace-titlebar-content-right)] md:flex-1 md:pr-0">
-          {view !== "chat" ? (
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              className="shrink-0"
-              aria-label="Back to agent chat"
-              title="Back to chat"
-              onClick={() => setView("chat")}
-            >
-              <ChevronLeftIcon />
-            </Button>
-          ) : null}
-          {/* The agent's outlined glyph in a tile, then name and purpose. The
+        <div className="min-h-0 max-md:overflow-hidden">
+          {/* Same inset every other top-level header carries: with the sidebar
+          collapsed, its open button floats over this row, and without the
+          reserve it lands on top of the agent's name and purpose. */}
+          <header
+            className={cn(
+              "@container/header-actions flex min-w-0 flex-col gap-2 px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3 md:border-b",
+              // On a phone the header is the project card from the mockup: a
+              // rounded turn-box card under the top bar rather than a full-width
+              // band. The floating sidebar control is hidden there too, so the
+              // collapsed-sidebar reserve is only wanted from `md` up.
+              "max-md:mx-3 max-md:mt-2 max-md:rounded-[14px] max-md:border max-md:border-[var(--line)] max-md:bg-card max-md:p-3",
+              "md:" + COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+              // This header spans the window even when the right panel is open,
+              // so unlike ChatHeader the reserve cannot ever drop to pr-0: on
+              // Windows the native window controls overlay this row's right edge,
+              // and with them the parked panel toggle. Container-level only from
+              // `md` up, where the header is a single row. Stacked (phones), the
+              // overlay occupies the first row's band alone — padding the whole
+              // header pushed the actions row ~3.5rem off the right edge for
+              // nothing, which read as a broken gap under the title.
+              "md:pr-[var(--workspace-titlebar-content-right)]",
+              // This row is the desktop title bar, so it has to drag the window
+              // like every other header that owns that band. Unprefixed on
+              // purpose: `.drag-region` is a plain rule in index.css, not a
+              // Tailwind utility, so `md:drag-region` would compile to nothing at
+              // all. Gating on Electron is what keeps it off touch web, where the
+              // header is a card in a scroll container. `.drag-region` already
+              // exempts nested buttons and inputs, so the tools menu, the power
+              // toggle and Panel keep their clicks.
+              isElectron && "drag-region",
+            )}
+          >
+            <div className="flex min-w-0 items-center gap-3 pr-[var(--workspace-titlebar-content-right)] md:flex-1 md:pr-0">
+              {view !== "chat" ? (
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  className="shrink-0"
+                  aria-label="Back to agent chat"
+                  title="Back to chat"
+                  onClick={() => setView("chat")}
+                >
+                  <ChevronLeftIcon />
+                </Button>
+              ) : null}
+              {/* The agent's character, then name and purpose. The
               name is the tools-menu trigger: the chevron beside it says so,
               and the menu is where Activity, Scheduled work, Rules and the
               Dashboard live. */}
-          <span
-            aria-hidden
-            className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-[var(--line)] bg-surface-tile text-foreground/85"
-          >
-            <AgentGlyph name={agent.name} icon={agent.icon} className="size-[18px]" />
-          </span>
-          <div className="min-w-0">
-            <Menu>
-              <MenuTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label="Agent tools"
-                    title="Agent tools"
-                    className="flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-sm text-left outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                }
+              {/* On a phone, drag the avatar up and to the right to fold the
+              card into the top bar. */}
+              <div
+                {...headerFold.cardAvatarProps}
+                data-agent-header-avatar=""
+                className={cn(
+                  "flex shrink-0",
+                  foldEnabled &&
+                    view === "chat" &&
+                    "cursor-grab touch-none select-none [-webkit-app-region:no-drag]",
+                  headerFold.flying && "invisible",
+                )}
               >
-                <h1 className="truncate text-[15px] font-semibold leading-5 text-foreground">
-                  {agent.name}
-                </h1>
-                <ChevronDownIcon
-                  className="size-3.5 shrink-0 text-muted-foreground"
-                  strokeWidth={2.25}
-                  aria-hidden
+                <AgentGlyph
+                  agentId={agent.vmAgentId}
+                  avatarColor={agent.avatarColor}
+                  online={agentOnline}
+                  className="size-10"
                 />
-              </MenuTrigger>
-              <MenuPopup align="start" className="w-52">
-                <MenuItem
-                  className={view === "activity" ? "bg-foreground/[0.08]" : undefined}
-                  onClick={() => setView("activity")}
-                >
-                  <GitForkIcon /> Activity
-                </MenuItem>
-                <MenuItem
-                  className={view === "tasks" ? "bg-foreground/[0.08]" : undefined}
-                  onClick={() => setView("tasks")}
-                >
-                  <ListTodoIcon /> Scheduled work
-                </MenuItem>
-                <MenuItem
-                  className={view === "rules" ? "bg-foreground/[0.08]" : undefined}
-                  onClick={() => setView("rules")}
-                >
-                  <ScrollTextIcon /> Rules
-                </MenuItem>
-                {dashboardAvailable ? (
-                  <MenuItem
-                    className={view === "dashboard" ? "bg-foreground/[0.08]" : undefined}
-                    onClick={() => setView("dashboard")}
+              </div>
+              <div className="min-w-0">
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label="Agent tools"
+                        title="Agent tools"
+                        className="flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-sm text-left outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    }
                   >
-                    <LayoutDashboardIcon /> Dashboard
-                  </MenuItem>
-                ) : null}
-              </MenuPopup>
-            </Menu>
-            {/* Not selectable: it is one line of chrome in a drag region, and
+                    <h1 className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                      {agent.name}
+                    </h1>
+                    <ChevronDownIcon
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                      strokeWidth={2.25}
+                      aria-hidden
+                    />
+                  </MenuTrigger>
+                  <MenuPopup align="start" className="w-52">
+                    <MenuItem
+                      className={view === "activity" ? "bg-foreground/[0.08]" : undefined}
+                      onClick={() => setView("activity")}
+                    >
+                      <GitForkIcon /> Activity
+                    </MenuItem>
+                    <MenuItem
+                      className={view === "tasks" ? "bg-foreground/[0.08]" : undefined}
+                      onClick={() => setView("tasks")}
+                    >
+                      <ListTodoIcon /> Scheduled work
+                    </MenuItem>
+                    <MenuItem
+                      className={view === "rules" ? "bg-foreground/[0.08]" : undefined}
+                      onClick={() => setView("rules")}
+                    >
+                      <ScrollTextIcon /> Rules
+                    </MenuItem>
+                    {dashboardAvailable ? (
+                      <MenuItem
+                        className={view === "dashboard" ? "bg-foreground/[0.08]" : undefined}
+                        onClick={() => setView("dashboard")}
+                      >
+                        <LayoutDashboardIcon /> Dashboard
+                      </MenuItem>
+                    ) : null}
+                    {foldEnabled && view === "chat" ? (
+                      <MenuItem onClick={headerFold.fold}>
+                        <PanelTopCloseIcon /> Collapse to top bar
+                      </MenuItem>
+                    ) : null}
+                  </MenuPopup>
+                </Menu>
+                {/* Not selectable: it is one line of chrome in a drag region, and
                 a click-drag across it selected the text instead of moving the
                 window. */}
-            <p className="truncate text-xs leading-4 text-muted-foreground select-none">
-              {view !== "chat"
-                ? VIEW_LABELS[view]
-                : agent.status === "stopped"
-                  ? `Stopped · scheduled tasks paused · ${agent.purpose}`
-                  : agent.purpose}
-            </p>
-          </div>
-        </div>
-        <div className="flex min-w-0 items-center justify-end gap-2 md:shrink-0">
-          {view === "chat" && agentThreadId ? (
-            <div ref={setProjectScriptsPortalTarget} className="flex shrink-0 items-center" />
-          ) : null}
-          <AgentPowerToggle agent={agent} environmentId={environmentId} />
-          {/* Agent threads reach the same remote machines as ordinary threads,
+                <p className="truncate text-xs leading-4 text-muted-foreground select-none">
+                  {view !== "chat"
+                    ? VIEW_LABELS[view]
+                    : agent.status === "stopped"
+                      ? `Stopped · scheduled tasks paused · ${agent.purpose}`
+                      : agent.purpose}
+                </p>
+              </div>
+            </div>
+            <div
+              data-chat-header-actions
+              className="flex min-w-0 items-center justify-end gap-2 md:shrink-0"
+            >
+              {view === "chat" && agentThreadId ? (
+                <div
+                  ref={setProjectScriptsPortalTarget}
+                  className="flex shrink-0 items-center [&_button]:bg-transparent [&_button]:before:shadow-none"
+                />
+              ) : null}
+              <AgentPowerToggle agent={agent} environmentId={environmentId} />
+              {/* Agent threads reach the same remote machines as ordinary threads,
               so the control that connects to one belongs here too — a device
               driving an agent had no way to start a session from this header. */}
-          <RemoteConnectionControl
-            activeEnvironmentId={environmentId}
-            className="h-7 rounded-full border-[var(--line)] bg-surface-row px-2.5 text-[12px] hover:bg-surface-hover"
-          />
-          {agentThreadId ? (
-            <button
-              type="button"
-              aria-label="Panel"
-              aria-pressed={view === "chat" && panelOpen}
-              title="Browser, Terminal, and Side Chat"
-              onClick={togglePanel}
-              className={cn(
-                "inline-flex h-7 cursor-pointer items-stretch overflow-hidden rounded-full border border-[var(--line)] text-xs font-medium outline-hidden transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                view === "chat" && panelOpen
-                  ? "border-[var(--gold-line)] bg-[var(--gold-tint)] text-foreground"
-                  : "bg-surface-row text-foreground/85 hover:bg-surface-hover hover:text-foreground",
-              )}
-            >
-              <span className="flex items-center border-r border-[var(--line)] px-2">
-                <PanelRightIcon className="size-3.5" aria-hidden />
-              </span>
-              <span className="flex items-center px-2.5">Panel</span>
-            </button>
-          ) : null}
+              <RemoteConnectionControl
+                activeEnvironmentId={environmentId}
+                className="h-7 rounded-lg border-[var(--line)] px-2.5 text-[12px]"
+              />
+              {panelToggle}
+            </div>
+          </header>
         </div>
-      </header>
+      </div>
+      {headerFolded && topBarSlot
+        ? createPortal(
+            <>
+              <button
+                type="button"
+                aria-label={`Show ${agent.name}'s header`}
+                title="Show agent header"
+                onClick={headerFold.unfold}
+                className="inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span
+                  ref={headerFold.barAvatarRef}
+                  className={cn("flex size-8", headerFold.flying && "invisible")}
+                >
+                  <AgentGlyph
+                    agentId={agent.vmAgentId}
+                    avatarColor={agent.avatarColor}
+                    online={agentOnline}
+                    className="size-8"
+                  />
+                </span>
+              </button>
+              {panelToggle}
+            </>,
+            topBarSlot,
+          )
+        : null}
+      {headerFold.standIn(
+        <AgentGlyph
+          agentId={agent.vmAgentId}
+          avatarColor={agent.avatarColor}
+          online={agentOnline}
+        />,
+      )}
 
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {agent.threadId ? (

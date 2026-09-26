@@ -9,6 +9,12 @@
  * something in the user's real browser, and copying the page address.
  */
 
+import {
+  PREVIEW_CONTEXT_MENU_SELECTION_MAX_CHARS,
+  PREVIEW_CONTEXT_MENU_URL_MAX_CHARS,
+  type PreviewContextMenuTarget,
+} from "@t3tools/contracts";
+
 export interface PreviewContextMenuEditFlags {
   readonly canUndo: boolean;
   readonly canRedo: boolean;
@@ -200,3 +206,45 @@ const SEARCH_URL_PREFIX = "https://www.google.com/search?q=";
 
 export const webSearchUrl = (query: string): string =>
   `${SEARCH_URL_PREFIX}${encodeURIComponent(query.replace(/\s+/gu, " ").trim())}`;
+
+/**
+ * How long a remote right-click waits, after the button is released, for the
+ * guest to report its menu. A page that draws its own menu never reports one.
+ */
+export const REMOTE_CONTEXT_MENU_WAIT_MS = 800;
+
+const MEDIA_TYPES = new Set(["image", "video", "audio", "canvas", "plugin", "file"]);
+
+const boundedUrl = (url: string): string =>
+  url.length > PREVIEW_CONTEXT_MENU_URL_MAX_CHARS ? "" : url;
+
+/**
+ * What a remote viewer needs to draw the menu itself, bounded for the wire:
+ * an inline `data:` image or a whole-page selection would otherwise ride the
+ * WebSocket in full. Spelling items are left out; the viewer has no way to
+ * see which word the host underlined.
+ */
+export function remoteContextMenuTarget(
+  params: Pick<
+    PreviewContextMenuParams,
+    "pageURL" | "linkURL" | "linkText" | "srcURL" | "mediaType" | "isEditable" | "selectionText"
+  > & {
+    readonly editFlags: Pick<PreviewContextMenuEditFlags, "canUndo" | "canRedo" | "canSelectAll">;
+  },
+  state: PreviewContextMenuState,
+): PreviewContextMenuTarget {
+  return {
+    pageUrl: boundedUrl(params.pageURL),
+    linkUrl: boundedUrl(params.linkURL),
+    linkText: params.linkText.slice(0, 2_048),
+    srcUrl: boundedUrl(params.srcURL),
+    mediaType: MEDIA_TYPES.has(params.mediaType) ? params.mediaType : "none",
+    isEditable: params.isEditable,
+    selectionText: params.selectionText.slice(0, PREVIEW_CONTEXT_MENU_SELECTION_MAX_CHARS),
+    canUndo: params.editFlags.canUndo,
+    canRedo: params.editFlags.canRedo,
+    canSelectAll: params.editFlags.canSelectAll,
+    canGoBack: state.canGoBack,
+    canGoForward: state.canGoForward,
+  };
+}

@@ -59,6 +59,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   COMPOSER_DRAFT_STORAGE_KEY,
+  hydrateImagesFromPersisted,
   clearComposerDraftsEnvironment,
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThread,
@@ -1791,5 +1792,29 @@ describe("createDebouncedStorage", () => {
     vi.advanceTimersByTime(300);
     expect(base.setItem).toHaveBeenCalledTimes(1);
     expect(base.setItem).toHaveBeenCalledWith("key", "v2");
+  });
+});
+
+describe("voice note draft hydration", () => {
+  it("restores compressed audio as a playable note without putting its content in text", async () => {
+    const [note] = hydrateImagesFromPersisted([
+      {
+        type: "audio",
+        id: "note-1",
+        name: "Voice note",
+        mimeType: "audio/mp4",
+        sizeBytes: 3,
+        durationMs: 2345,
+        dataUrl: "data:audio/mp4;base64,AQID",
+      },
+    ]);
+    expect(note).toMatchObject({
+      type: "audio",
+      mimeType: "audio/mp4",
+      durationMs: 2345,
+      previewUrl: "data:audio/mp4;base64,AQID",
+    });
+    expect(note?.file.type).toBe("audio/mp4");
+    expect(note?.file.size).toBe(3);
   });
 });

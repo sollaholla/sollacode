@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { ThreadId } from "@t3tools/contracts";
+import { EventId, ThreadId } from "@t3tools/contracts";
 
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
@@ -41,6 +41,58 @@ const insertActivity = (input: {
   });
 
 layer("ProjectionThreadActivityRepository.deleteSupersededToolUpdates", (it) => {
+  it.effect("preserves duplicate historical activity chronology while repairing content", () =>
+    Effect.gen(function* () {
+      yield* runMigrations({});
+      const repository = yield* ProjectionThreadActivityRepository;
+      const threadId = ThreadId.make("history-replay");
+      const original = {
+        activityId: EventId.make("old-tool"),
+        threadId,
+        turnId: null,
+        tone: "tool" as const,
+        kind: "tool.started",
+        summary: "Running",
+        payload: {},
+        sequence: 10,
+        createdAt: "2026-09-13T20:43:26.208Z",
+      };
+      yield* repository.upsert(original);
+      yield* repository.upsert(
+        {
+          ...original,
+          kind: "tool.completed",
+          summary: "Completed",
+          sequence: 30,
+          createdAt: "2026-09-13T21:26:02.431Z",
+        },
+        { preserveChronology: true },
+      );
+      const [repaired] = yield* repository.listByThreadId({ threadId });
+      assert.equal(repaired?.createdAt, original.createdAt);
+      assert.equal(repaired?.sequence, 10);
+      assert.equal(repaired?.kind, "tool.completed");
+      yield* repository.upsert(
+        { ...original, activityId: EventId.make("missing-tool"), sequence: 20 },
+        { preserveChronology: true },
+      );
+      const rows = yield* repository.listByThreadId({ threadId });
+      assert.deepStrictEqual(
+        rows.map((row) => row.activityId),
+        ["old-tool", "missing-tool"],
+      );
+      yield* repository.upsert({
+        ...original,
+        sequence: 40,
+        createdAt: "2026-09-13T22:00:00.000Z",
+      });
+      const liveRows = yield* repository.listByThreadId({ threadId });
+      assert.equal(liveRows.at(-1)?.sequence, 40);
+      assert.equal(liveRows.at(-1)?.createdAt, "2026-09-13T22:00:00.000Z");
+      yield* repository.deleteByThreadId({ threadId });
+    }),
+  );
+
   it.effect("deletes only the completed call's recent updated frames", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

@@ -9,7 +9,7 @@ const preview = {
 };
 
 describe("ExpandedImageDialog", () => {
-  it("uses a safe-area full-screen viewer with both mobile dismissal controls", () => {
+  it("uses a safe-area full-screen viewer with exactly one dismissal control", () => {
     const html = renderToStaticMarkup(
       <ExpandedImageDialog preview={preview} onClose={() => {}} fullScreenMobile />,
     );
@@ -19,7 +19,9 @@ describe("ExpandedImageDialog", () => {
     expect(html).toContain("pt-safe");
     expect(html).toContain("pb-safe");
     expect(html).toContain('aria-label="Back from image preview"');
-    expect(html).toContain('aria-label="Close image preview"');
+    // Reported 2026-09-18: the header carried a back arrow AND an X, both
+    // wired to the same dismiss.
+    expect(html).not.toContain('aria-label="Close image preview"');
     expect(html).toContain('role="dialog"');
   });
 

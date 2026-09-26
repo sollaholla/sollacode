@@ -100,8 +100,14 @@ describe("resolveFrameGesture", () => {
         firstMovedAt: 1_050,
       }),
     );
-    // Finger travels down 100px in a 300px frame: reveal content above.
-    expect(action).toEqual({ kind: "scroll", deltaX: 0, deltaY: -(100 / 300) });
+    // Finger travels down 100px in a 300px frame: reveal content above. The
+    // wheel turns where the finger landed, so an inner panel there scrolls.
+    expect(action).toEqual({
+      kind: "scroll",
+      deltaX: 0,
+      deltaY: -(100 / 300),
+      position: { x: 0.25, y: 0.5 },
+    });
   });
 
   it("scrolls horizontally with the same sign convention", () => {
@@ -109,7 +115,12 @@ describe("resolveFrameGesture", () => {
       size,
       sample({ end: { x: 0, y: 150 }, maxDistancePx: 100, firstMovedAt: 1_020 }),
     );
-    expect(action).toEqual({ kind: "scroll", deltaX: 100 / 400, deltaY: 0 });
+    expect(action).toEqual({
+      kind: "scroll",
+      deltaX: 100 / 400,
+      deltaY: 0,
+      position: { x: 0.25, y: 0.5 },
+    });
   });
 
   it("turns a held-then-moved touch into a drag between both fractions", () => {

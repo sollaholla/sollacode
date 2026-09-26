@@ -30,6 +30,18 @@ import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
+/**
+ * Whether the adapter can accept input into an already-running turn.
+ *
+ * "native" (the default) joins the running turn, so a message typed mid-turn
+ * reaches the model straight away. "unsupported" means the message cannot
+ * reach it until the turn ends; the orchestrator then stops the running turn
+ * so the parked message is delivered as the next turn promptly instead of
+ * waiting behind a long one. Deep Code's one-shot `--exec` is the motivating
+ * case.
+ */
+export type ProviderLiveSteeringMode = "native" | "unsupported";
+
 export interface ProviderAdapterCapabilities {
   /**
    * Declares whether changing the model on an existing session is supported.
@@ -37,12 +49,22 @@ export interface ProviderAdapterCapabilities {
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
 
   /**
+   * Declares whether a mid-turn message can join the running turn. Defaults to
+   * "native" when omitted.
+   */
+  readonly liveSteering?: ProviderLiveSteeringMode;
+
+  /**
    * Whether one background task or sub-agent can be stopped by id without
    * cancelling the whole turn.
    *
-   * The task panel gates its stop control on this: a button that claims to
-   * kill work it cannot reach is worse than no button, which is why the panel
-   * previously only offered "dismiss".
+   * An adapter that emits `task.started` MUST declare this `true`. The
+   * orchestrator reads the pair as an ownership test: a stop aimed at a session
+   * that cannot stop tasks is treated as a stop aimed at a row that session
+   * never started -- a leftover from a provider switch -- and the row is
+   * settled rather than left claiming to run. An adapter that announced tasks
+   * without a kill would make that inference wrong, and the panel would report
+   * live work as stopped.
    */
   readonly taskStop?: boolean;
 
@@ -174,6 +196,21 @@ export interface ProviderAdapterShape<TError> {
    * Read a provider thread snapshot.
    */
   readonly readThread: (threadId: ThreadId) => Effect.Effect<ProviderThreadSnapshot, TError>;
+
+  /** Restore durable assistant messages without opening or resuming a provider session. */
+  readonly replayStoredTranscript?: (input: {
+    readonly threadId: ThreadId;
+    readonly sessionId: string;
+  }) => Effect.Effect<number, TError>;
+
+  /**
+   * Compact the provider's own session history in place so the next request
+   * fits the model's context window again, keeping the session and its
+   * working memory. Resolves true when the provider confirmed the compaction;
+   * false when it declined. Adapters without a native compaction leave this
+   * undefined and the caller falls back to a fresh session with a digest.
+   */
+  readonly compactSessionHistory?: (threadId: ThreadId) => Effect.Effect<boolean, TError>;
 
   /**
    * Roll back a provider thread by N turns.

@@ -1,6 +1,7 @@
 import {
   PreviewCredentialSummary,
   type PreviewCredentialId,
+  type PreviewCredentialKind,
   type PreviewCredentialSummary as PreviewCredentialSummaryType,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -103,10 +104,20 @@ export function normalizeCredentialOrigin(raw: string): string {
   return url.origin;
 }
 
+// Entries saved before PINs and codes existed carry no kind: they are passwords.
 const metadata = (record: StoredCredential): PreviewCredentialSummaryType => {
   const { encryptedSecret: _, ...summary } = record;
-  return summary;
+  return { ...summary, kind: record.kind ?? "password" };
 };
+
+export interface BrowserCredentialSaveInput {
+  readonly id?: PreviewCredentialId;
+  readonly label: string;
+  readonly origin: string;
+  readonly kind?: PreviewCredentialKind;
+  readonly username?: string;
+  readonly secret?: string;
+}
 
 export class BrowserCredentialVault extends Context.Service<
   BrowserCredentialVault,
@@ -115,13 +126,15 @@ export class BrowserCredentialVault extends Context.Service<
       readonly PreviewCredentialSummaryType[],
       BrowserCredentialVaultFailure
     >;
-    readonly save: (input: {
-      readonly id?: PreviewCredentialId;
-      readonly label: string;
-      readonly origin: string;
-      readonly username?: string;
-      readonly secret: string;
-    }) => Effect.Effect<PreviewCredentialSummaryType, BrowserCredentialVaultFailure>;
+    /**
+     * Adds an entry, or replaces the one with `id`. Omitting `secret` keeps the
+     * existing entry's encrypted password, so a label, username, or origin edit
+     * never sends the password back through the renderer. Omitting `kind` keeps
+     * the existing entry's kind, and a new entry is a password.
+     */
+    readonly save: (
+      input: BrowserCredentialSaveInput,
+    ) => Effect.Effect<PreviewCredentialSummaryType, BrowserCredentialVaultFailure>;
     readonly remove: (
       id: PreviewCredentialId,
     ) => Effect.Effect<void, BrowserCredentialVaultFailure>;
@@ -209,14 +222,9 @@ export const make = Effect.gen(function* () {
     read().pipe(Effect.map((document) => document.credentials.map(metadata))),
   );
 
-  const save = Effect.fn("browserCredentialVault.save")(function* (input: {
-    readonly id?: PreviewCredentialId;
-    readonly label: string;
-    readonly origin: string;
-    readonly username?: string;
-    readonly secret: string;
-  }) {
-    yield* requireEncryption;
+  const save = Effect.fn("browserCredentialVault.save")(function* (
+    input: BrowserCredentialSaveInput,
+  ) {
     const origin = yield* Effect.try({
       try: () => normalizeCredentialOrigin(input.origin),
       catch: (cause) => cause as BrowserCredentialOriginError,
@@ -226,19 +234,29 @@ export const make = Effect.gen(function* () {
     const existing = input.id
       ? document.credentials.find((credential) => credential.id === input.id)
       : undefined;
-    const encryptedSecret = Buffer.from(
-      yield* safeStorage
-        .encryptString(input.secret)
-        .pipe(
-          Effect.mapError(
-            (cause) => new BrowserCredentialVaultError({ operation: "encrypt", cause }),
+    let encryptedSecret: string;
+    if (input.secret === undefined) {
+      if (!existing) {
+        return yield* new BrowserCredentialNotFoundError({ credentialId: input.id ?? "" });
+      }
+      encryptedSecret = existing.encryptedSecret;
+    } else {
+      yield* requireEncryption;
+      encryptedSecret = Buffer.from(
+        yield* safeStorage
+          .encryptString(input.secret)
+          .pipe(
+            Effect.mapError(
+              (cause) => new BrowserCredentialVaultError({ operation: "encrypt", cause }),
+            ),
           ),
-        ),
-    ).toString("base64");
+      ).toString("base64");
+    }
     const record: StoredCredential = {
       id: (input.id ?? NodeCrypto.randomUUID()) as PreviewCredentialId,
       label: input.label.trim(),
       origin,
+      kind: input.kind ?? existing?.kind ?? "password",
       ...(input.username === undefined ? {} : { username: input.username }),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,

@@ -52,7 +52,21 @@ const reportUserInput = (event: Event): void => {
         target instanceof HTMLElement && target.closest(EDITABLE_FOCUS_SELECTOR) !== null,
     })
   ) {
-    ipcRenderer.send(IpcChannels.PREVIEW_USER_INPUT_CHANNEL);
+    // Say what the input was. The desktop's hold is one timestamp, and a
+    // source producing trusted events at machine rate (a stuck key, a
+    // chattering button, a loop) held every agent for hours in 2026-09
+    // before anyone could name it. Keys stay private: only non-printing
+    // names cross, a character is reported as "<char>".
+    ipcRenderer.send(IpcChannels.PREVIEW_USER_INPUT_CHANNEL, {
+      eventType: event.type,
+      repeat: event instanceof KeyboardEvent ? event.repeat : false,
+      ...(event instanceof KeyboardEvent
+        ? { key: event.key.length === 1 ? "<char>" : event.key }
+        : {}),
+      ...(event instanceof PointerEvent
+        ? { pointerType: event.pointerType, button: event.button }
+        : {}),
+    });
   }
   // Pointer default handling and React thread switches can move focus after the
   // capture listener runs. Remember both the immediate and next-frame target
@@ -183,6 +197,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   saveThreadExportJson: (input) =>
     ipcRenderer.invoke(IpcChannels.SAVE_THREAD_EXPORT_JSON_CHANNEL, input),
   revealFile: (path) => ipcRenderer.invoke(IpcChannels.REVEAL_FILE_CHANNEL, path),
+  openPath: (path) => ipcRenderer.invoke(IpcChannels.OPEN_PATH_CHANNEL, path),
   writeComposerClipboard: (input) =>
     ipcRenderer.invoke(IpcChannels.WRITE_COMPOSER_CLIPBOARD_CHANNEL, input),
   setVoiceCaptureSystemAudioMuted: (input) =>
@@ -309,6 +324,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke(IpcChannels.PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL, { tabId }),
     captureScreenshot: (tabId) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_CAPTURE_SCREENSHOT_CHANNEL, { tabId }),
+    getTabAudioSource: (tabId) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_GET_TAB_AUDIO_SOURCE_CHANNEL, { tabId }),
     revealArtifact: (path) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_REVEAL_ARTIFACT_CHANNEL, { path }),
     revealPreviewDownload: (path) =>
@@ -359,6 +376,12 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         }),
       drag: (tabId, input, expiresAt) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_DRAG_CHANNEL, {
+          tabId,
+          input,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+        }),
+      contextMenu: (tabId, input, expiresAt) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_CONTEXT_MENU_CHANNEL, {
           tabId,
           input,
           ...(expiresAt === undefined ? {} : { expiresAt }),

@@ -1,5 +1,5 @@
 import type { OrchestrationMessage, OrchestrationThreadActivity } from "@t3tools/contracts";
-import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import { isWorkspaceImagePreviewPath, readImageToolOutputPath } from "@t3tools/shared/filePreview";
 import {
   normalizeEmbeddedWindowsAbsolutePath,
   normalizeProjectPathForComparison,
@@ -120,6 +120,7 @@ function isReadImageActivity(
     normalizedTitle.includes("read file") ||
     normalizedTitle.includes("view image") ||
     normalizedTitle.includes("image view") ||
+    readImageToolOutputPath(payload) !== null ||
     readInvocationPath(detail) !== null ||
     imagePathFromReadText(title) !== null ||
     imagePathFromReadText(detail) !== null
@@ -145,6 +146,8 @@ export function activityAuthorizesExternalImagePath(
 
   const candidates = new Set<string>();
   addPathCandidates(candidates, payload);
+  const outputImagePath = readImageToolOutputPath(payload);
+  if (outputImagePath) candidates.add(outputImagePath);
   const titleImagePath = imagePathFromReadText(asTrimmedString(payload.title));
   if (titleImagePath) {
     candidates.add(titleImagePath);

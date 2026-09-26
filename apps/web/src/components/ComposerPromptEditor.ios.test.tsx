@@ -123,4 +123,40 @@ describe("ComposerPromptEditor on iOS WebKit", () => {
     expect(textarea?.selectionStart).toBe(7);
     expect(textarea?.selectionEnd).toBe(10);
   });
+
+  it("does not resize or collapse a native selection when its cursor echo renders", async () => {
+    const editorRef = createRef<ComposerPromptEditorHandle | null>();
+    const renderEditor = async (cursor: number) => {
+      await act(async () => {
+        root.render(
+          <ComposerPromptEditor
+            value="select this entire range"
+            cursor={cursor}
+            terminalContexts={[]}
+            skills={[]}
+            disabled={false}
+            placeholder="Ask anything"
+            onRemoveTerminalContext={() => {}}
+            onChange={() => {}}
+            onPaste={() => {}}
+            editorRef={editorRef}
+          />,
+        );
+      });
+    };
+    await renderEditor(24);
+    const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    textarea.focus();
+    textarea.setSelectionRange(7, 17, "backward");
+    const setHeight = vi.spyOn(textarea.style, "height", "set");
+
+    await renderEditor(7);
+
+    expect(textarea.selectionStart).toBe(7);
+    expect(textarea.selectionEnd).toBe(17);
+    expect(textarea.selectionDirection).toBe("backward");
+    expect(document.activeElement).toBe(textarea);
+    expect(setHeight).not.toHaveBeenCalled();
+    setHeight.mockRestore();
+  });
 });

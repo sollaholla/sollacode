@@ -1,6 +1,8 @@
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import { stripSyntheticCodexRateLimits } from "../codexRateLimitPlaceholders.ts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -38,7 +40,27 @@ const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnErro
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
 const CODEX_PROVIDER_STATUS_RETRY_DELAY = "1 second" as const;
-export const CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT = "3 seconds" as const;
+/**
+ * How long to wait for the account's usage before giving up on this refresh.
+ *
+ * This call is NETWORK-backed - the app-server asks OpenAI for the account's
+ * rate limits - so it is racing the owner's uplink, not local IPC. Three
+ * seconds lost that race routinely on mobile and over a tailnet, and because
+ * the result is optional the loss was silent: `Effect.option` turned it into
+ * `None`, the card read "Unavailable", and the previously reported usage aged
+ * into "Stale" with nothing explaining why.
+ *
+ * It must stay comfortably UNDER `AUTH_PROBE_TIMEOUT_MS`, which bounds the whole
+ * probe: this call runs inside that budget, so a value at or above it would not
+ * just be clipped - it would let a slow usage fetch eat the readiness check and
+ * turn "usage is late" into "the provider failed to refresh", which is the
+ * louder bug. Seven seconds buys a real network round trip while leaving the
+ * probe three seconds to finish.
+ *
+ * The proper fix is to move usage off the readiness path entirely so it can
+ * take as long as it needs; see docs/project/provider-usage-freshness.md.
+ */
+export const CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT = "7 seconds" as const;
 
 const CODEX_PRESENTATION = {
   displayName: "Codex",
@@ -48,6 +70,12 @@ const CODEX_PRESENTATION = {
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
   readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
+  /**
+   * Why this probe did or did not produce a usage reading. Absent on the
+   * early-return path, where the account is not authenticated and usage was
+   * never asked for.
+   */
+  readonly rateLimitsOutcome?: CodexRateLimitsOutcome;
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
@@ -321,19 +349,68 @@ const requestAllCodexModels = Effect.fn("requestAllCodexModels")(function* (
 });
 
 /**
+ * The outcome of one account-usage refresh, including why it failed.
+ *
+ * This used to be an `Option`, and the `None` is what made the reported bug
+ * invisible for so long: a timed-out network call and a rejected request
+ * collapsed to the same empty value as "this provider has no usage", the
+ * previous reading was carried forward with its original timestamp, and the
+ * card aged quietly into "Stale" with nothing anywhere saying what had
+ * actually happened. Carrying the reason costs one field and makes the
+ * failure sayable.
+ */
+export type CodexRateLimitsOutcome =
+  | { readonly kind: "ok"; readonly value: CodexSchema.V2GetAccountRateLimitsResponse }
+  | { readonly kind: "timeout" }
+  | { readonly kind: "failed" }
+  /** The app-server answered, but only with its unfilled stand-in windows. */
+  | { readonly kind: "placeholder" };
+
+/**
  * Usage is useful provider metadata, but it is not part of Codex readiness.
  * Keep a slow network-backed refresh from turning a healthy local app-server
  * probe into a provider error.
  */
 export function settleOptionalCodexRateLimits<E, R>(
   request: Effect.Effect<CodexSchema.V2GetAccountRateLimitsResponse, E, R>,
-): Effect.Effect<Option.Option<CodexSchema.V2GetAccountRateLimitsResponse>, never, R> {
+): Effect.Effect<CodexRateLimitsOutcome, never, R> {
   return request.pipe(
-    Effect.option,
+    Effect.map((value) => ({ kind: "ok" as const, value })),
+    Effect.catchCause(() => Effect.succeed({ kind: "failed" as const })),
     Effect.timeoutOption(CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT),
-    Effect.map(Option.flatten),
+    Effect.map(
+      (settled): CodexRateLimitsOutcome =>
+        Option.isSome(settled) ? settled.value : { kind: "timeout" as const },
+    ),
     Effect.withSpan("CodexProvider.probe.rateLimits"),
   );
+}
+
+/** The card's reason line for a usage refresh that did not produce a reading. */
+export function codexUsageStatusFor(
+  outcome: CodexRateLimitsOutcome,
+): NonNullable<ServerProvider["accountUsageStatus"]> {
+  switch (outcome.kind) {
+    case "ok":
+      return { state: "available" };
+    case "timeout":
+      return {
+        state: "error",
+        message: `Codex did not return account usage within ${CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT}. Showing the last reading while Solla Code retries.`,
+      };
+    case "failed":
+      return {
+        state: "error",
+        message:
+          "Codex rejected the account usage request. Showing the last reading while Solla Code retries.",
+      };
+    case "placeholder":
+      return {
+        state: "error",
+        message:
+          "Codex answered with an empty stand-in (0% used, reset exactly one window from now) instead of a reading. Showing the last real reading while Solla Code retries.",
+      };
+  }
 }
 
 export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
@@ -449,7 +526,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models, rateLimits] = yield* Effect.all(
+  const [skillsResponse, models, rawRateLimits] = yield* Effect.all(
     [
       client
         .request("skills/list", {
@@ -461,6 +538,19 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     ],
     { concurrency: "unbounded" },
   );
+  // A cold app-server answers with unfilled stand-in windows (0% used, reset
+  // one window from now). Publishing those would tell the card the quota just
+  // reset; keeping the last real reading is the truthful choice.
+  const nowMs = yield* Clock.currentTimeMillis;
+  const rateLimits: CodexRateLimitsOutcome =
+    rawRateLimits.kind === "ok"
+      ? (() => {
+          const stripped = stripSyntheticCodexRateLimits(rawRateLimits.value, nowMs);
+          return stripped === null
+            ? { kind: "placeholder" as const }
+            : { kind: "ok" as const, value: stripped };
+        })()
+      : rawRateLimits;
 
   return {
     account: accountResponse,
@@ -469,7 +559,8 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       appendCustomCodexModels(models, input.customModels ?? []),
     ),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
-    ...(Option.isSome(rateLimits) ? { rateLimits: rateLimits.value } : {}),
+    rateLimitsOutcome: rateLimits,
+    ...(rateLimits.kind === "ok" ? { rateLimits: rateLimits.value } : {}),
   } satisfies CodexAppServerProviderSnapshot;
 });
 
@@ -657,6 +748,11 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
           accountUsage: snapshot.rateLimits,
           accountUsageReportedAt: checkedAt,
         }
+      : {}),
+    // Says why when there is no fresh reading, instead of leaving the card to
+    // age silently into "Stale" with "Couldn't refresh right now".
+    ...(snapshot.rateLimitsOutcome !== undefined
+      ? { accountUsageStatus: codexUsageStatusFor(snapshot.rateLimitsOutcome) }
       : {}),
     probe: {
       installed: true,

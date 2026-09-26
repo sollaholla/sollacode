@@ -23,10 +23,11 @@ import {
   type OpenCodeInventory,
 } from "../opencodeRuntime.ts";
 import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
+import { isOpenCodeDecisionModel } from "../opencodeModels.ts";
 
 const OPENCODE_PRESENTATION = {
   displayName: "OpenCode",
-  showInteractionModeToggle: false,
+  showInteractionModeToggle: true,
 } as const;
 const MINIMUM_OPENCODE_VERSION = "1.14.19";
 
@@ -227,6 +228,7 @@ function flattenOpenCodeModels(input: OpenCodeInventory): ReadonlyArray<ServerPr
     }
 
     for (const model of Object.values(provider.models)) {
+      if (isOpenCodeDecisionModel(`${provider.id}/${model.id}`)) continue;
       const name = nonEmptyTrimmed(model.name);
       if (!name) {
         continue;
@@ -257,7 +259,7 @@ export const makePendingOpenCodeProvider = (
     const checkedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
     const models = providerModelsFromSettings(
       [],
-      openCodeSettings.customModels,
+      openCodeSettings.customModels.filter((model) => !isOpenCodeDecisionModel(model)),
       DEFAULT_OPENCODE_MODEL_CAPABILITIES,
     );
 
@@ -303,7 +305,9 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   const openCodeRuntime = yield* OpenCodeRuntime;
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  const customModels = openCodeSettings.customModels;
+  const customModels = openCodeSettings.customModels.filter(
+    (model) => !isOpenCodeDecisionModel(model),
+  );
   const isExternalServer = openCodeSettings.serverUrl.trim().length > 0;
 
   const fallback = (cause: unknown, version: string | null = null) => {

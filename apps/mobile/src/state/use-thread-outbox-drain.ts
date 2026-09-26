@@ -1,3 +1,4 @@
+import { updateThreadOutboxMessage } from "./thread-outbox";
 import { isThreadSessionWorking } from "@t3tools/client-runtime/state/thread-activity";
 import { useAtomValue } from "@effect/atom-react";
 import type {
@@ -153,7 +154,23 @@ export function useThreadOutboxDrain(): void {
     const completeDelivery = async (
       deliveryResult: AtomCommandResult<unknown, unknown>,
     ): Promise<boolean> => {
-      if (reportFailure(deliveryResult, "start-turn")) {
+      if (AsyncResult.isFailure(deliveryResult)) {
+        if (!reportFailure(deliveryResult, "start-turn")) {
+          const error = Cause.squash(deliveryResult.cause);
+          try {
+            await updateThreadOutboxMessage({
+              ...queuedMessage,
+              deliveryError:
+                error instanceof Error
+                  ? error.message
+                  : "Message delivery was rejected. Your message remains saved.",
+            });
+          } catch (storageError) {
+            // The original saved entry remains retryable if recording its
+            // rejection fails. Never remove it or reject the background drain.
+            console.warn("[thread-outbox] could not save delivery error", storageError);
+          }
+        }
         return false;
       }
 
@@ -297,7 +314,7 @@ export function useThreadOutboxDrain(): void {
 
     for (const [threadKey, queuedMessages] of Object.entries(queuedMessagesByThreadKey)) {
       const nextQueuedMessage = queuedMessages[0];
-      if (!nextQueuedMessage) {
+      if (!nextQueuedMessage || nextQueuedMessage.deliveryError) {
         continue;
       }
       if (editingQueuedMessageIds[nextQueuedMessage.messageId]) {
@@ -367,7 +384,7 @@ export function useThreadOutboxDrain(): void {
           : creation !== undefined
             ? creationProjectCwd !== null
               ? sendQueuedCreation(nextQueuedMessage, creation, creationProjectCwd)
-              : removeQueuedMessage("[thread-outbox] dropped pending task for a missing project")
+              : Promise.resolve(false)
             : thread !== undefined
               ? sendQueuedMessage(nextQueuedMessage, thread)
               : Promise.resolve(false);

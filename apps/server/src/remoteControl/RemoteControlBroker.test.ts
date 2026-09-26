@@ -829,3 +829,56 @@ it.effect("ignores a status report for a session it no longer knows about", () =
     }),
   ),
 );
+
+/**
+ * The lockout: a controller that vanishes without ending its session used to
+ * leave the request alive forever, and with it the host's approval dialog -
+ * which had no close button. Nothing retired it, because a waiting session is
+ * not terminal and only terminal sessions were pruned. The owner was locked out
+ * of their own app by a device that was no longer there.
+ *
+ * Asserts on the HOST stream specifically: that is where the stuck dialog
+ * lives, and an expiry that told only the controller would leave it up.
+ */
+it.effect("tells the host when a request expires so its dialog can never stick", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const hostEvents: RemoteControlHostStreamEvent[] = [];
+      const hostStream = yield* broker.connectHost(host, hostSessionId);
+      yield* Stream.runForEach(hostStream, (event) =>
+        Effect.sync(() => {
+          hostEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const waiting = yield* broker.requestAccess(
+        { clientId: "controller-client", requestedCapabilities: ["screen"] },
+        requester,
+      );
+      expect(waiting.status).toBe("waiting-for-host-approval");
+      yield* Effect.yieldNow;
+      expect(hostEvents.some((event) => event.type === "session-ended")).toBe(false);
+
+      // Nobody answers; the asking device is gone. Any later broker call runs
+      // the sweep, so drive one rather than relying on a background timer.
+      yield* TestClock.adjust("6 minutes");
+      // A second request from any device sweeps the abandoned one: two live
+      // prompts for the same machine is the state to avoid.
+      yield* broker
+        .requestAccess(
+          { clientId: "controller-client", requestedCapabilities: ["screen"] },
+          requester,
+        )
+        .pipe(Effect.orElseSucceed(() => waiting));
+      yield* Effect.yieldNow;
+
+      const ended = hostEvents.find((event) => event.type === "session-ended");
+      expect(ended?.type, "the host must be told the request is over").toBe("session-ended");
+      if (ended?.type === "session-ended") {
+        expect(ended.session.status).toBe("cancelled");
+      }
+    }),
+  ),
+);

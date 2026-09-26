@@ -20,6 +20,7 @@ describe("isWorkCardRow", () => {
     expect(isWorkCardRow(row("work", "w"))).toBe(true);
     expect(isWorkCardRow(row("work-toggle", "t"))).toBe(true);
     expect(isWorkCardRow(row("working", "live"))).toBe(true);
+    expect(isWorkCardRow(row("thought", "th"))).toBe(true);
     expect(isWorkCardRow(row("message", "u", "user"))).toBe(false);
     expect(isWorkCardRow(row("provider-transition", "p"))).toBe(false);
     expect(isWorkCardRow(row("turn-fold", "f"))).toBe(false);
@@ -58,6 +59,25 @@ describe("deriveWorkCardEdges", () => {
     expect(edges.get("a1")).toBe("solo");
     expect(edges.get("p1")).toBeUndefined();
     expect(edges.get("w1")).toBe("solo");
+  });
+
+  it("keeps a turn that thinks between its tool calls in one box", () => {
+    // A thought is the agent talking, so it must not break the card the way a
+    // user message does: thinking between calls used to render as a bare
+    // full-bleed paragraph with a separate box on either side of it.
+    const edges = deriveWorkCardEdges([
+      row("message", "u1", "user"),
+      row("work", "w1"),
+      row("thought", "th1"),
+      row("work", "w2"),
+      row("thought", "th2"),
+      row("working", "live"),
+    ]);
+    expect(edges.get("w1")).toBe("start");
+    expect(edges.get("th1")).toBe("middle");
+    expect(edges.get("w2")).toBe("middle");
+    expect(edges.get("th2")).toBe("middle");
+    expect(edges.get("live")).toBe("end");
   });
 
   it("handles an empty timeline", () => {

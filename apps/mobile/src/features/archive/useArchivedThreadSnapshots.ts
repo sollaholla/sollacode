@@ -1,3 +1,4 @@
+import { environmentShell, environmentSnapshotAtom } from "../../state/shell";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type ArchivedSnapshotEntry,
@@ -19,6 +20,8 @@ function archivedSnapshotAtom(environmentId: EnvironmentId) {
 
 const archivedSnapshotsAtom = createArchivedThreadSnapshotsAtomFamily({
   getSnapshotAtom: archivedSnapshotAtom,
+  getPendingAtom: environmentShell.deferredAtom,
+  getActiveSnapshotAtom: environmentSnapshotAtom,
   labelPrefix: "mobile:archived-thread-snapshots",
 });
 

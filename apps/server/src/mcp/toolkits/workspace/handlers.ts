@@ -368,6 +368,8 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
           message: {
             messageId: MessageId.make(yield* randomId),
             role: "user",
+            senderThreadId: invocation.threadId,
+            senderThreadTitle: "Orchestrator",
             text: message,
             attachments: [],
           },

@@ -3,6 +3,7 @@ import { RemotePreviewCommandCoordinator } from "@t3tools/client-runtime/preview
 import {
   EnvironmentId,
   ThreadId,
+  type PreviewAgentControl,
   type PreviewRemoteInputAction,
   type PreviewRemoteSnapshotResult,
   type PreviewSessionSnapshot,
@@ -25,6 +26,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { previewEnvironment } from "../../state/preview";
 import { closeRemoteBrowserTab, openRemoteBrowserTab } from "./threadBrowserRouteActions";
+import { AgentCursorGlyph, RemoteAgentCursor } from "./RemoteAgentCursor";
 import {
   FRAME_TAP_SLOP_PX,
   resolveFrameGesture,
@@ -33,6 +35,8 @@ import {
 } from "@t3tools/shared/remoteFrameGestures";
 
 const LIVE_FRAME_INTERVAL_MS = 2_500;
+/** Faster frames while an agent drives the tab, so its cursor can be followed. */
+const AGENT_FRAME_INTERVAL_MS = 1_000;
 
 type ThreadBrowserRouteProps = StaticScreenProps<{
   readonly environmentId: string;
@@ -47,6 +51,12 @@ function snapshotTitle(snapshot: PreviewSessionSnapshot): string {
 
 function snapshotUrl(snapshot: PreviewSessionSnapshot): string {
   return snapshot.navStatus._tag === "Idle" ? "about:blank" : snapshot.navStatus.url;
+}
+
+function agentControlLabel(control: PreviewAgentControl): string | null {
+  if (control === "agent") return "An agent is working in this tab";
+  if (control === "waiting-for-user") return "An agent is waiting for you in this tab";
+  return null;
 }
 
 function commandError(cause: Cause.Cause<unknown>, fallback: string): string {
@@ -70,8 +80,22 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
   );
   const previews = useEnvironmentQuery(listAtom);
   const sessions = previews.data?.sessions ?? [];
+  const eventsAtom = useMemo(
+    () => previewEnvironment.events({ environmentId, input: {} }),
+    [environmentId],
+  );
+  const latestPreviewEvent = useEnvironmentQuery(eventsAtom).data;
+  const refreshPreviews = previews.refresh;
+  useEffect(() => {
+    // The tab list is a cached query: this thread's tab events (a navigation,
+    // an agent taking or releasing a tab) are what make it stale.
+    if (latestPreviewEvent?.threadId === threadId) refreshPreviews();
+  }, [latestPreviewEvent, threadId]);
   const [selectedTabId, setSelectedTabId] = useState<string | null>(null);
   const [frame, setFrame] = useState<PreviewRemoteSnapshotResult | null>(null);
+  const frameIntervalRef = useRef(LIVE_FRAME_INTERVAL_MS);
+  frameIntervalRef.current =
+    frame?.agentControl === "agent" ? AGENT_FRAME_INTERVAL_MS : LIVE_FRAME_INTERVAL_MS;
   const [frameError, setFrameError] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
   const [typing, setTyping] = useState(false);
@@ -81,6 +105,18 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
   const captureRemoteSnapshot = useAtomCommand(previewEnvironment.remoteSnapshot, {
     reportFailure: false,
   });
+  const reportActivity = useAtomCommand(previewEnvironment.reportActivity, {
+    reportFailure: false,
+  });
+  useFocusEffect(
+    useCallback(() => {
+      if (selectedTabId)
+        void reportActivity({
+          environmentId,
+          input: { threadId, tabId: selectedTabId, interacted: true },
+        });
+    }, [environmentId, threadId, selectedTabId, reportActivity]),
+  );
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
   const closePreview = useAtomCommand(previewEnvironment.close, { reportFailure: false });
   const sendRemoteInput = useAtomCommand(previewEnvironment.remoteInput, {
@@ -143,7 +179,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
       let timer: ReturnType<typeof setTimeout> | null = null;
       const tick = async () => {
         await capture();
-        if (active) timer = setTimeout(() => void tick(), LIVE_FRAME_INTERVAL_MS);
+        if (active) timer = setTimeout(() => void tick(), frameIntervalRef.current);
       };
       void tick();
       return () => {
@@ -345,18 +381,26 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
           >
             {sessions.map((session) => {
               const selected = session.tabId === selectedTabId;
+              const title = snapshotTitle(session);
+              const agentLabel = agentControlLabel(session.agentControl ?? "none");
               return (
                 <Pressable
                   key={session.tabId}
+                  accessibilityLabel={agentLabel ? `${title}. ${agentLabel}` : title}
                   accessibilityRole="tab"
                   accessibilityState={{ selected }}
-                  className={`min-h-11 max-w-64 justify-center rounded-xl border px-4 ${
+                  className={`min-h-11 max-w-64 flex-row items-center gap-1.5 rounded-xl border px-4 ${
                     selected ? "border-primary bg-primary/10" : "border-border bg-sheet"
                   }`}
                   onPress={() => selectTab(session.tabId)}
                 >
-                  <Text className="font-t3-bold text-foreground" numberOfLines={1}>
-                    {snapshotTitle(session)}
+                  {agentLabel ? (
+                    <View style={{ opacity: session.agentControl === "agent" ? 1 : 0.55 }}>
+                      <AgentCursorGlyph size={15} />
+                    </View>
+                  ) : null}
+                  <Text className="shrink font-t3-bold text-foreground" numberOfLines={1}>
+                    {title}
                   </Text>
                 </Pressable>
               );
@@ -386,6 +430,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
                     aspectRatio: frame.screenshot.width / frame.screenshot.height,
                   }}
                 />
+                <RemoteAgentCursor pointer={frame.agentPointer} />
               </View>
             ) : (
               <View className="min-h-72 items-center justify-center gap-3 px-6">

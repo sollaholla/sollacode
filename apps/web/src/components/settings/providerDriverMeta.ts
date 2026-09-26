@@ -8,6 +8,7 @@ import {
   McpBridgeSettings,
   OpenCodeSettings,
   ProviderDriverKind,
+  MuseSettings,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
 import {
@@ -20,6 +21,7 @@ import {
   type Icon,
   OpenAI,
   OpenCodeIcon,
+  MuseIcon,
 } from "../Icons";
 
 type ProviderSettingsSchema = {
@@ -93,6 +95,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     icon: DeepCodeIcon,
     badgeLabel: "Early Access",
     settingsSchema: DeepCodeSettings,
+  },
+  {
+    value: ProviderDriverKind.make("muse"),
+    label: "Muse Code",
+    icon: MuseIcon,
+    badgeLabel: "Early Access",
+    settingsSchema: MuseSettings,
   },
   {
     value: ProviderDriverKind.make("mcpBridge"),

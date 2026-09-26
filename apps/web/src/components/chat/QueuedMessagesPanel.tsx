@@ -1,8 +1,9 @@
-import { ChevronDownIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { cn } from "../../lib/utils";
 import { useUiStateStore } from "../../uiStateStore";
-import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
+import { ComposerStackPanelHeader } from "./ComposerStackPanelHeader";
+import { COMPOSER_STACK_SURFACE_CLASS_NAME } from "./composerStackSurface";
 
 export function QueuedMessagesPanel({
   count,
@@ -21,34 +22,43 @@ export function QueuedMessagesPanel({
     (state) => state.threadPanelExpandedById[threadKey]?.["queued-messages"] === true,
   );
   const setThreadPanelExpanded = useUiStateStore((state) => state.setThreadPanelExpanded);
+  const collapsed = !expanded;
   return (
-    <Collapsible
-      open={expanded}
-      onOpenChange={(open) => setThreadPanelExpanded(threadKey, "queued-messages", open)}
-      className="mx-auto mt-3 mb-2 w-full max-w-3xl overflow-hidden rounded-xl border border-border/70 bg-card shadow-sm"
+    <section
+      aria-label="Queued messages"
+      className={cn(
+        COMPOSER_STACK_SURFACE_CLASS_NAME,
+        "mt-3 mb-2 flex min-h-0 shrink-0 flex-col-reverse",
+        collapsed ? "max-h-none" : "max-h-[min(38dvh,22rem)]",
+      )}
     >
-      <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium">
-            <span>
-              {count} queued message{count === 1 ? "" : "s"}
+      <ComposerStackPanelHeader
+        label="queued messages"
+        // Matches the task panel's "Background tasks · 1 running": the noun,
+        // then what the count actually means. The status sentence rides along
+        // because it is the one thing a reader needs while the card is shut —
+        // "Waiting for usage budget" and "Sends when the current work
+        // finishes" are different situations.
+        title={`Queued messages · ${count} waiting · ${status}`}
+        // Blue dot for the same reason the task panel uses one: something on
+        // this card is in flight rather than merely parked.
+        active={failedCount === 0}
+        collapsed={collapsed}
+        onToggle={(next) => setThreadPanelExpanded(threadKey, "queued-messages", !next)}
+        actions={
+          failedCount > 0 ? (
+            <span className="text-[11px] text-destructive" role="status">
+              {failedCount} failed
             </span>
-            {failedCount > 0 && (
-              <span className="text-destructive" role="status">
-                {failedCount} failed
-              </span>
-            )}
-          </span>
-          <span className="mt-0.5 block text-[11px] text-muted-foreground">{status}</span>
-        </span>
-        <ChevronDownIcon
-          aria-hidden="true"
-          className="size-3.5 shrink-0 text-muted-foreground group-data-panel-open:rotate-180"
-        />
-      </CollapsibleTrigger>
-      <CollapsiblePanel className="motion-reduce:transition-none">
-        <div className="max-h-56 overflow-y-auto overscroll-contain px-4 pb-1">{children}</div>
-      </CollapsiblePanel>
-    </Collapsible>
+          ) : null
+        }
+        count={count}
+      />
+      {collapsed ? null : (
+        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain border-b border-border/60 p-2">
+          {children}
+        </div>
+      )}
+    </section>
   );
 }

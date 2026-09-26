@@ -17,6 +17,7 @@ import {
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
   ThreadId,
+  RuntimeTaskId,
   TurnId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -157,6 +158,11 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     readonly attachments?: ReadonlyArray<{ readonly type: "image"; readonly url: string }>;
   }) {
     return Effect.promise(() => this.steerTurnImpl(input));
+  }
+
+  readonly stopTaskImpl = vi.fn((_taskId: string): Promise<void> => Promise.resolve());
+  stopTask(taskId: string) {
+    return Effect.promise(() => this.stopTaskImpl(taskId));
   }
 
   interruptTurn(turnId?: TurnId) {
@@ -681,6 +687,87 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect(
+    "maps isolated child updates into the shared background task stream, not assistant content",
+    () =>
+      Effect.gen(function* () {
+        const { adapter, runtime } = yield* startLifecycleRuntime();
+        const eventsFiber = yield* Stream.runCollect(
+          adapter.streamEvents.pipe(Stream.take(4)),
+        ).pipe(Effect.forkChild);
+        const base = {
+          kind: "notification" as const,
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("root-turn"),
+          method: "codex/backgroundTask/updated",
+        };
+        yield* runtime.emit({
+          ...base,
+          id: asEventId("child-start"),
+          payload: {
+            providerThreadId: "native-child",
+            title: "Codex subagent image preview",
+            discovered: true,
+            status: "running",
+            lastToolName: "commandExecution",
+            totalTokens: 1234,
+          },
+        });
+        yield* runtime.emit({
+          ...base,
+          id: asEventId("child-finish"),
+          payload: {
+            providerThreadId: "native-child",
+            title: "Codex subagent image preview",
+            status: "completed",
+            summary: "Child result",
+            totalTokens: 1250,
+          },
+        });
+        yield* runtime.emit({
+          ...base,
+          id: asEventId("child-late-name"),
+          payload: {
+            providerThreadId: "native-child",
+            title: "Codex subagent /root/image_preview",
+            status: "completed",
+            metadataUpdated: true,
+            totalTokens: 1250,
+          },
+        });
+        const events = [...(yield* Fiber.join(eventsFiber))];
+        NodeAssert.deepEqual(
+          events.map((event) => event.type),
+          ["task.started", "task.progress", "task.completed", "task.completed"],
+        );
+        NodeAssert.ok(events.every((event) => event.type.startsWith("task.")));
+        const progress = events[1];
+        NodeAssert.equal(progress?.type, "task.progress");
+        if (progress?.type === "task.progress")
+          NodeAssert.deepEqual(progress.payload, {
+            taskId: "codex-subagent:native-child",
+            title: "Codex subagent image preview",
+            description: "Codex subagent image preview",
+            lastToolName: "commandExecution",
+            usage: { total_tokens: 1234 },
+          });
+        const renamed = events[3];
+        NodeAssert.equal(renamed?.type, "task.completed");
+        if (renamed?.type === "task.completed") {
+          NodeAssert.equal(renamed.payload.title, "Codex subagent /root/image_preview");
+          NodeAssert.equal(renamed.payload.metadataOnly, true);
+        }
+        yield* adapter.stopTask!(
+          asThreadId("thread-1"),
+          RuntimeTaskId.make("codex-subagent:native-child"),
+        );
+        NodeAssert.deepEqual(runtime.stopTaskImpl.mock.calls, [["codex-subagent:native-child"]]);
+        NodeAssert.equal(runtime.interruptTurnImpl.mock.calls.length, 0);
+      }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

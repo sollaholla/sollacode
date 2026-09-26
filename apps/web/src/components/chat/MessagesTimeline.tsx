@@ -1,3 +1,9 @@
+import { Link } from "@tanstack/react-router";
+import type { TurnFileReference } from "@t3tools/client-runtime/state/turn-file-references";
+import { collapseSenderSideChats } from "../../lib/senderThreadNavigation";
+import { findLeadingProviderSlashCommand } from "../../providerSlashCommands";
+import { ResultFileReferences } from "./ResultFileReferences";
+import { VoiceNoteChip } from "./VoiceNoteChip";
 import {
   EventId,
   isOrchestratorThreadId,
@@ -5,6 +11,7 @@ import {
   type MessageId,
   type ScopedThreadRef,
   type ServerProviderSkill,
+  type ServerProviderSlashCommand,
   type TurnId,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
@@ -24,6 +31,7 @@ import {
   use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -104,9 +112,7 @@ import {
   resolveAssistantMessageCopyState,
   visibleAssistantMessageText,
   resolveTimelineDrawDistance,
-  resolveTimelineIsAtEnd,
   resolveTimelineIsExactlyAtEnd,
-  shouldMaintainTimelineScrollAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapHeightStyle,
   resolveTimelineMinimapHitStripWidth,
@@ -129,10 +135,16 @@ import {
   TIMELINE_MOMENTUM_SETTLE_MS,
   shouldReleaseTimelineLiveFollowForWheel,
 } from "./timelineScrollAnchoring";
+import {
+  captureTimelineDisclosure,
+  followTimelineEnd,
+  restoreTimelineDisclosure,
+} from "./timelineViewport";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   type MessageDeliveryState,
+  type UnsentMessage,
   messageDeliveryLabel,
   messageDeliveryState,
   shouldShowDeliveryIndicator,
@@ -154,6 +166,7 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
+import { resolveReadImagePreview } from "@t3tools/client-runtime/state/read-image-preview";
 import { useAssetUrlState, withAssetRevision } from "../../assets/assetUrls";
 import { useOpenInPreferredEditor } from "../../editorPreferences";
 import { readLocalApi } from "../../localApi";
@@ -162,7 +175,7 @@ import { useEnvironment } from "../../state/environments";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { revealInFileExplorerLabel } from "../preview/fileExplorerLabel";
-import { resolveLinkedFileAbsolutePath } from "./linkedFileBehavior";
+import { resolveLinkedFileAbsolutePath, resolveLocalFileFallback } from "./linkedFileBehavior";
 
 import {
   buildInlineTerminalContextText,
@@ -186,6 +199,7 @@ import {
 // ---------------------------------------------------------------------------
 
 interface TimelineRowSharedState {
+  turnFileReferences: ReadonlyMap<string, ReadonlyArray<TurnFileReference>>;
   timestampFormat: TimestampFormat;
   routeThreadKey: string;
   threadRef: ScopedThreadRef | null;
@@ -193,6 +207,8 @@ interface TimelineRowSharedState {
   resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  /** The provider's slash commands, so a message that opens with one shows it. */
+  slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
   /** Message ids the provider has confirmed pulling into its agent loop. */
   deliveredMessageIds: ReadonlySet<string>;
   /** Only this message shows an unconfirmed indicator; see shouldShowDeliveryIndicator. */
@@ -203,12 +219,17 @@ interface TimelineRowSharedState {
   deliveryProviderName: string;
   /** Whether the selected provider emits explicit consumption receipts. */
   deliveryReceiptsExpected: boolean;
+  /** The newest user message when its delivery failed for good. */
+  unsentMessage: UnsentMessage | null;
+  /** Unsent messages whose Send again request is in flight. */
+  sendingAgainMessageIds: ReadonlySet<string>;
+  onSendAgain: (messageId: MessageId) => void;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
-  onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
+  onToggleWorkGroup: (groupId: string) => void;
   onCompactAndContinue: () => void;
   isCompactAndContinueBusy: boolean;
   resumableAssistantMessageId: MessageId | null;
@@ -230,15 +251,19 @@ interface TimelineRowActivityState {
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
+const EMPTY_TURN_REFERENCES: ReadonlyMap<string, ReadonlyArray<TurnFileReference>> = new Map();
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+const EMPTY_TIMELINE_SLASH_COMMANDS: ReadonlyArray<ServerProviderSlashCommand> = [];
 // Stable identity: a fresh Set here would rebuild the row context every render.
 const EMPTY_DELIVERED_MESSAGE_IDS: ReadonlySet<string> = new Set<string>();
+const noopSendAgain = (_messageId: MessageId) => {};
 
 // ---------------------------------------------------------------------------
 // Props (public API)
 // ---------------------------------------------------------------------------
 
 interface MessagesTimelineProps {
+  turnFileReferences?: ReadonlyMap<string, ReadonlyArray<TurnFileReference>>;
   isWorking: boolean;
   /** Auto-resume gap: latest turn settled but the server will start a continuation turn. */
   pendingContinuation?: boolean;
@@ -267,11 +292,15 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   deliveredMessageIds?: ReadonlySet<string>;
   newestUserMessageId?: MessageId | null;
   pendingMessageIds?: ReadonlySet<string>;
   deliveryProviderName?: string;
   deliveryReceiptsExpected?: boolean;
+  unsentMessage?: UnsentMessage | null;
+  sendingAgainMessageIds?: ReadonlySet<string>;
+  onSendAgain?: (messageId: MessageId) => void;
   followEnd?: boolean;
   initialScrollAtEnd?: boolean;
   initialScrollOffset?: number | null;
@@ -313,6 +342,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   latestTurn,
   runningTurnId,
   turnDiffSummaryByAssistantMessageId,
+  turnFileReferences = EMPTY_TURN_REFERENCES,
   routeThreadKey,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
@@ -325,11 +355,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
+  slashCommands = EMPTY_TIMELINE_SLASH_COMMANDS,
   deliveredMessageIds = EMPTY_DELIVERED_MESSAGE_IDS,
   newestUserMessageId = null,
   pendingMessageIds = EMPTY_DELIVERED_MESSAGE_IDS,
   deliveryProviderName = "provider CLI",
   deliveryReceiptsExpected = false,
+  unsentMessage = null,
+  sendingAgainMessageIds = EMPTY_DELIVERED_MESSAGE_IDS,
+  onSendAgain = noopSendAgain,
   followEnd = true,
   initialScrollAtEnd = true,
   initialScrollOffset = null,
@@ -369,39 +403,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return next;
     });
   }, []);
-  const onToggleWorkGroup = useCallback(
-    (groupId: string, anchorElement?: HTMLElement) => {
-      const anchorBottomBeforeToggle = anchorElement?.getBoundingClientRect().bottom ?? null;
-
-      flushSync(() => {
-        setExpandedWorkGroupIds((existing) => {
-          const next = new Set(existing);
-          if (next.has(groupId)) {
-            next.delete(groupId);
-          } else {
-            next.add(groupId);
-          }
-          return next;
-        });
-      });
-
-      if (anchorBottomBeforeToggle === null || !anchorElement) {
-        return;
-      }
-
-      const delta = anchorElement.getBoundingClientRect().bottom - anchorBottomBeforeToggle;
-      if (Math.abs(delta) < 0.5) {
-        return;
-      }
-
-      const list = listRef.current;
-      const currentScroll = list?.getState?.().scroll;
-      if (list && typeof currentScroll === "number") {
-        list.scrollToOffset({ offset: currentScroll + delta, animated: false });
-      }
-    },
-    [listRef],
-  );
+  const onToggleWorkGroup = useCallback((groupId: string) => {
+    setExpandedWorkGroupIds((existing) => {
+      const next = new Set(existing);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
 
   // An in-session interrupt leaves its turn expanded so the user keeps their
   // place; the next turn (or a reload, since this is local state) folds it.
@@ -489,9 +498,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const olderNavigationIntentRef = useRef(false);
   const [manualFollowSuppressed, setManualFollowSuppressed] = useState(false);
-  // This ref flips in the input event itself. The state copy rerenders
-  // LegendList with maintainScrollAtEnd disabled; the ref also fences any
-  // already-scheduled resize reconciliation before that render commits.
+  const disclosureAnchorRef = useRef<ReturnType<typeof captureTimelineDisclosure>>(null);
+  const [disclosureAnchored, setDisclosureAnchored] = useState(false);
+  // The ref fences already-scheduled work in the input event itself; state
+  // updates the virtualizer's ownership before the next measurement.
   const manualFollowSuppressedRef = useRef(false);
   const followEndRef = useRef(followEnd);
   followEndRef.current = followEnd;
@@ -504,9 +514,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const momentumTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
   const positionReconcileFramesRef = useRef<{
     first: number | null;
-    second: number | null;
     restoreSavedOffset: boolean | null;
-  }>({ first: null, second: null, restoreSavedOffset: null });
+  }>({ first: null, restoreSavedOffset: null });
   const pendingPositionReconcileRef = useRef<boolean | null>(null);
   const flushDeferredPositionReconcileRef = useRef<() => void>(() => {});
   const deferPositionReconcile = useCallback((restoreSavedOffset: boolean) => {
@@ -520,30 +529,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         deferPositionReconcile(frames.restoreSavedOffset);
       }
       if (frames.first !== null) cancelAnimationFrame(frames.first);
-      if (frames.second !== null) cancelAnimationFrame(frames.second);
       frames.first = null;
-      frames.second = null;
       frames.restoreSavedOffset = null;
     },
     [deferPositionReconcile],
   );
   const clearManualFollowSuppression = useCallback(() => {
+    disclosureAnchorRef.current = null;
+    setDisclosureAnchored(false);
     manualFollowSuppressedRef.current = false;
     olderNavigationIntentRef.current = false;
     setManualFollowSuppressed(false);
   }, []);
   const claimManualNavigation = useCallback(
-    (towardEnd: boolean) => {
+    (towardEnd: boolean, disclosure: ReturnType<typeof captureTimelineDisclosure> = null) => {
       // A resize/item-measure reconcile may already be between animation
       // frames. Preserve it for after the gesture instead of letting it race
       // the input or silently losing it.
       cancelPositionReconcile(true);
+      disclosureAnchorRef.current = disclosure;
+      setDisclosureAnchored(disclosure !== null);
       if (!towardEnd && !manualFollowSuppressedRef.current) {
         olderNavigationIntentRef.current = true;
         manualFollowSuppressedRef.current = true;
-        // LegendList owns its own data/layout handlers. Commit the prop that
-        // disables those handlers in this input task, before a streamed row
-        // can arrive and snap the viewport back to the live edge.
+        // Release the live edge in the input task, before streamed content or
+        // the disclosure's own update can change the measured scroll extent.
         flushSync(() => setManualFollowSuppressed(true));
       }
       onManualNavigation(towardEnd);
@@ -563,6 +573,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       momentumTimerRef.current = null;
       const state = mountedListRef.current?.getState?.();
       if (
+        disclosureAnchorRef.current === null &&
         resolveTimelineIsExactlyAtEnd(state) === true &&
         (manualFollowSuppressedRef.current || !followEndRef.current)
       ) {
@@ -573,110 +584,114 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       flushDeferredPositionReconcileRef.current();
     }, TIMELINE_MOMENTUM_SETTLE_MS);
   }, [clearManualFollowSuppression, onIsAtEndChange, onManualNavigation]);
-  const handleScroll = useCallback(() => {
-    // Still gliding: push the settle deadline out so the gesture stays open
-    // for as long as the list is actually moving.
-    if (momentumTimerRef.current !== null) {
-      endGestureWhenMomentumSettles();
-    }
-    const state = mountedListRef.current?.getState?.();
-    if (!state) {
-      return;
-    }
-
-    const isAtEnd = resolveTimelineIsAtEnd(state);
-    const isExactlyAtEnd = resolveTimelineIsExactlyAtEnd(state);
-    const scrollTop = state.scroll ?? 0;
-    const scrollDirection = resolveTimelineManualScrollDirection(
-      previousScrollOffsetRef.current,
-      scrollTop,
-    );
-    if (Number.isFinite(scrollTop)) {
-      previousScrollOffsetRef.current = scrollTop;
-    }
-
-    // Offset direction catches the later scroll events from keyboard,
-    // scrollbar, and middle-button paths. It is deliberately gated by an
-    // input token: LegendList and layout changes also move this offset, and
-    // those programmatic movements must never steal viewport ownership.
-    const hasUserGesture = userGestureActive();
-    if (hasUserGesture && scrollDirection === "older" && isExactlyAtEnd !== true) {
-      claimManualNavigation(false);
-    } else if (
-      hasUserGesture &&
-      scrollDirection === "newer" &&
-      (manualFollowSuppressedRef.current || !followEndRef.current)
-    ) {
-      claimManualNavigation(true);
-      if (isExactlyAtEnd === true) {
-        clearManualFollowSuppression();
+  const handleScroll = useCallback(
+    (fromScrollEvent = false) => {
+      // Still gliding: push the settle deadline out so the gesture stays open
+      // for as long as the list is actually moving.
+      if (fromScrollEvent && momentumTimerRef.current !== null) {
+        endGestureWhenMomentumSettles();
       }
-    }
+      const state = mountedListRef.current?.getState?.();
+      if (!state) {
+        return;
+      }
 
-    if (isAtEnd !== undefined) {
-      if (
-        shouldCommitTimelineOlderNavigation({
-          olderNavigationIntent: olderNavigationIntentRef.current,
-          isAtEnd,
-        }) &&
-        !manualFollowSuppressedRef.current
-      ) {
+      const isAtEnd = resolveTimelineIsExactlyAtEnd(state);
+      const scrollTop = state.scroll ?? 0;
+      const scrollDirection = resolveTimelineManualScrollDirection(
+        previousScrollOffsetRef.current,
+        scrollTop,
+      );
+      if (Number.isFinite(scrollTop)) {
+        previousScrollOffsetRef.current = scrollTop;
+      }
+
+      // Offset direction catches the later scroll events from keyboard,
+      // scrollbar, and middle-button paths. It is deliberately gated by an
+      // input token: LegendList and layout changes also move this offset, and
+      // those programmatic movements must never steal viewport ownership.
+      const hasUserGesture = fromScrollEvent && userGestureActive();
+      if (hasUserGesture && scrollDirection === "older" && isAtEnd !== true) {
         claimManualNavigation(false);
       } else if (
-        shouldClearOlderNavigationIntent({
-          isAtEnd: isExactlyAtEnd,
-          userGestureActive: userGestureActive(),
-          manualFollowSuppressed: manualFollowSuppressedRef.current,
-        })
+        hasUserGesture &&
+        scrollDirection === "newer" &&
+        (manualFollowSuppressedRef.current || !followEndRef.current)
       ) {
-        olderNavigationIntentRef.current = false;
-      }
-      onIsAtEndChange(isAtEnd);
-    }
-
-    if (Number.isFinite(scrollTop)) {
-      onScrollStateChange({
-        scrollOffset: Math.max(0, scrollTop),
-        isAtEnd,
-      });
-    }
-    if (hasOlderHistory && !olderHistoryLoading && scrollTop <= 600) {
-      onLoadOlderHistory?.();
-    }
-    if (minimapItems.length === 0) {
-      return;
-    }
-
-    const scrollBottom = scrollTop + (state.scrollLength ?? 0);
-
-    for (const item of minimapItems) {
-      const strip = minimapStripMap.get(item.id);
-      if (!strip) {
-        continue;
+        claimManualNavigation(true);
+        if (isAtEnd === true) {
+          clearManualFollowSuppression();
+        }
       }
 
-      const rowTop = resolveTimelineRowTop(state, item.rowIndex);
-      const rowHeight = resolveTimelineRowHeight(state, item.rowIndex);
-      const inView =
-        rowTop !== null &&
-        rowTop < scrollBottom &&
-        rowTop + Math.max(1, rowHeight ?? 1) > scrollTop;
+      if (isAtEnd !== undefined) {
+        if (
+          shouldCommitTimelineOlderNavigation({
+            olderNavigationIntent: olderNavigationIntentRef.current,
+            isAtEnd,
+          }) &&
+          !manualFollowSuppressedRef.current
+        ) {
+          claimManualNavigation(false);
+        } else if (
+          shouldClearOlderNavigationIntent({
+            isAtEnd,
+            userGestureActive: userGestureActive(),
+            manualFollowSuppressed: manualFollowSuppressedRef.current,
+          })
+        ) {
+          olderNavigationIntentRef.current = false;
+        }
+        onIsAtEndChange(isAtEnd);
+      }
 
-      strip.dataset.inView = inView ? "true" : "false";
-    }
-  }, [
-    claimManualNavigation,
-    clearManualFollowSuppression,
-    endGestureWhenMomentumSettles,
-    minimapItems,
-    minimapStripMap,
-    hasOlderHistory,
-    olderHistoryLoading,
-    onLoadOlderHistory,
-    onIsAtEndChange,
-    onScrollStateChange,
-    userGestureActive,
-  ]);
+      if (Number.isFinite(scrollTop)) {
+        onScrollStateChange({
+          scrollOffset: Math.max(0, scrollTop),
+          isAtEnd,
+        });
+      }
+      if (hasOlderHistory && !olderHistoryLoading && scrollTop <= 600) {
+        onLoadOlderHistory?.();
+      }
+      if (minimapItems.length === 0) {
+        return;
+      }
+
+      const scrollBottom = scrollTop + (state.scrollLength ?? 0);
+
+      for (const item of minimapItems) {
+        const strip = minimapStripMap.get(item.id);
+        if (!strip) {
+          continue;
+        }
+
+        const rowTop = resolveTimelineRowTop(state, item.rowIndex);
+        const rowHeight = resolveTimelineRowHeight(state, item.rowIndex);
+        const inView =
+          rowTop !== null &&
+          rowTop < scrollBottom &&
+          rowTop + Math.max(1, rowHeight ?? 1) > scrollTop;
+
+        const nextInView = inView ? "true" : "false";
+        if (strip.dataset.inView !== nextInView) strip.dataset.inView = nextInView;
+      }
+    },
+    [
+      claimManualNavigation,
+      clearManualFollowSuppression,
+      endGestureWhenMomentumSettles,
+      minimapItems,
+      minimapStripMap,
+      hasOlderHistory,
+      olderHistoryLoading,
+      onLoadOlderHistory,
+      onIsAtEndChange,
+      onScrollStateChange,
+      userGestureActive,
+    ],
+  );
+  const handleNativeScroll = useCallback(() => handleScroll(true), [handleScroll]);
   const listHeader = useMemo(
     () => (
       <div className={topFadeEnabled ? "pb-3 pt-10 sm:pt-12" : "py-3 sm:py-4"}>
@@ -711,63 +726,52 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       topFadeEnabled,
     ],
   );
-  const schedulePositionReconcile = useCallback(
-    (restoreSavedOffset: boolean) => {
-      const nextRestoreSavedOffset =
-        restoreSavedOffset ||
-        positionReconcileFramesRef.current.restoreSavedOffset === true ||
-        pendingPositionReconcileRef.current === true;
-      cancelPositionReconcile();
-      pendingPositionReconcileRef.current = null;
-      positionReconcileFramesRef.current.restoreSavedOffset = nextRestoreSavedOffset;
-      positionReconcileFramesRef.current.first = requestAnimationFrame(() => {
-        positionReconcileFramesRef.current.first = null;
-        positionReconcileFramesRef.current.second = requestAnimationFrame(() => {
-          positionReconcileFramesRef.current.second = null;
-          const frames = positionReconcileFramesRef.current;
-          frames.restoreSavedOffset = null;
-          const list = mountedListRef.current;
-          if (!list) return;
-          if (userGestureActive()) {
-            deferPositionReconcile(nextRestoreSavedOffset);
-            return;
-          }
-          if (
-            shouldSnapTimelineToEndOnResize({
-              followEnd: followEndRef.current,
-              userGestureActive: userGestureActive(),
-              olderNavigationIntent: olderNavigationIntentRef.current,
-              manualFollowSuppressed: manualFollowSuppressedRef.current,
-            })
-          ) {
-            void list.scrollToEnd({ animated: false }).then(handleScroll);
-            return;
-          }
-          if (
-            nextRestoreSavedOffset &&
-            initialScrollOffset !== null &&
-            !manualFollowSuppressedRef.current
-          ) {
-            void list
-              .scrollToOffset({
-                offset: Math.max(0, initialScrollOffset),
-                animated: false,
-              })
-              .then(handleScroll);
-            return;
-          }
-          handleScroll();
-        });
-      });
+  const reconcilePosition = useCallback(
+    (restoreSavedOffset = false) => {
+      const scroller = mountedListRef.current?.getScrollableNode();
+      if (!scroller) return;
+      if (userGestureActive()) {
+        deferPositionReconcile(restoreSavedOffset);
+        return;
+      }
+      const disclosure = disclosureAnchorRef.current;
+      if (disclosure) {
+        restoreTimelineDisclosure(scroller, disclosure);
+      } else if (
+        shouldSnapTimelineToEndOnResize({
+          followEnd: followEndRef.current,
+          userGestureActive: false,
+          olderNavigationIntent: olderNavigationIntentRef.current,
+          manualFollowSuppressed: manualFollowSuppressedRef.current,
+        })
+      ) {
+        followTimelineEnd(scroller);
+      } else if (
+        restoreSavedOffset &&
+        initialScrollOffset !== null &&
+        !manualFollowSuppressedRef.current
+      ) {
+        scroller.scrollTop = Math.max(0, initialScrollOffset);
+      }
+      handleScroll();
     },
-    [
-      cancelPositionReconcile,
-      deferPositionReconcile,
-      handleScroll,
-      initialScrollOffset,
-      userGestureActive,
-    ],
+    [deferPositionReconcile, handleScroll, initialScrollOffset, userGestureActive],
   );
+  const reconcilePositionRef = useRef(reconcilePosition);
+  reconcilePositionRef.current = reconcilePosition;
+  const schedulePositionReconcile = useCallback((restoreSavedOffset: boolean) => {
+    const frames = positionReconcileFramesRef.current;
+    frames.restoreSavedOffset = restoreSavedOffset || frames.restoreSavedOffset === true;
+    // Coalesce measurements without cancelling the pending frame. Repeated
+    // streamed chunks must not postpone reconciliation indefinitely.
+    if (frames.first !== null) return;
+    frames.first = requestAnimationFrame(() => {
+      frames.first = null;
+      const restore = frames.restoreSavedOffset === true;
+      frames.restoreSavedOffset = null;
+      reconcilePositionRef.current(restore);
+    });
+  }, []);
   flushDeferredPositionReconcileRef.current = () => {
     const restoreSavedOffset = pendingPositionReconcileRef.current;
     if (restoreSavedOffset === null) return;
@@ -778,11 +782,58 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     schedulePositionReconcile(true);
   }, [schedulePositionReconcile]);
   const handleTimelineItemSizeChanged = useCallback(() => {
-    // First-time image measurements are not covered by LegendList's own
-    // maintainScrollAtEnd correction. Reconcile after the measurement settles
-    // so live-follow remains at the end and free-scrolling retains its anchor.
+    // LegendList reports the size before committing its new row positions.
+    // The content observer below also catches image loads and footer changes.
     schedulePositionReconcile(false);
   }, [schedulePositionReconcile]);
+  useLayoutEffect(() => {
+    const scroller = mountedListRef.current?.getScrollableNode();
+    if (!scroller) return;
+    // Writing the scroll offset inside ResizeObserver can make LegendList
+    // remeasure its children during the same observer delivery. Queue one
+    // frame instead of creating a resize feedback loop during streaming.
+    const observer = new ResizeObserver(() => schedulePositionReconcile(false));
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [schedulePositionReconcile, timelineViewportElement]);
+  useLayoutEffect(() => {
+    if (disclosureAnchorRef.current) reconcilePositionRef.current();
+    else schedulePositionReconcile(false);
+  }, [rows, disclosureAnchored, followEnd, schedulePositionReconcile]);
+  useLayoutEffect(() => {
+    const scroller = mountedListRef.current?.getScrollableNode();
+    if (!scroller) return;
+    // Row positions can commit after the list owner's layout effect without
+    // changing the content height again. Restore in that mutation microtask,
+    // before paint, rather than showing the inserted rows for one frame and
+    // pulling the clicked control back on the next animation frame.
+    const observer = new MutationObserver(() => {
+      if (disclosureAnchorRef.current) reconcilePositionRef.current();
+      else if (followEndRef.current) schedulePositionReconcile(false);
+    });
+    observer.observe(scroller, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style"],
+    });
+    return () => observer.disconnect();
+  }, [schedulePositionReconcile, timelineViewportElement]);
+  const handleDisclosure = useCallback(
+    (event: MouseEvent<HTMLDivElement> | KeyboardEvent<HTMLDivElement>) => {
+      if ("key" in event && event.key !== "Enter" && event.key !== " ") return;
+      const scroller = mountedListRef.current?.getScrollableNode();
+      if (!scroller) return;
+      const anchor = captureTimelineDisclosure(scroller, event.target);
+      if (!anchor) return;
+      if (momentumTimerRef.current !== null) {
+        globalThis.clearTimeout(momentumTimerRef.current);
+        momentumTimerRef.current = null;
+      }
+      claimManualNavigation(false, anchor);
+    },
+    [claimManualNavigation],
+  );
   useEffect(
     () => () => {
       pendingPositionReconcileRef.current = null;
@@ -798,9 +849,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         endGestureWhenMomentumSettles();
       }
       if (shouldReleaseTimelineLiveFollowForWheel(event.deltaY)) {
-        // Claim the viewport at input time, before LegendList's first scroll
-        // event. A streamed row can otherwise arrive in that gap and its
-        // maintainScrollAtEnd correction wins the race back to the bottom.
+        // Claim the viewport before the first scroll event so a queued
+        // streamed-row measurement cannot pull it back to the bottom.
         claimManualNavigation(false);
         return;
       }
@@ -929,7 +979,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (routeChanged || explicitlyReturnedToEnd) {
       pendingPositionReconcileRef.current = null;
       cancelPositionReconcile();
-      if (routeChanged && momentumTimerRef.current !== null) {
+      if (momentumTimerRef.current !== null) {
         globalThis.clearTimeout(momentumTimerRef.current);
         momentumTimerRef.current = null;
       }
@@ -937,8 +987,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       pointerActiveRef.current = false;
       clearManualFollowSuppression();
       previousScrollOffsetRef.current = null;
+      schedulePositionReconcile(routeChanged);
     }
-  }, [cancelPositionReconcile, clearManualFollowSuppression, followEnd, routeThreadKey]);
+  }, [
+    cancelPositionReconcile,
+    clearManualFollowSuppression,
+    followEnd,
+    routeThreadKey,
+    schedulePositionReconcile,
+  ]);
   useEffect(
     () => () => {
       if (momentumTimerRef.current !== null) globalThis.clearTimeout(momentumTimerRef.current);
@@ -949,7 +1006,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   useEffect(() => {
-    const frame = requestAnimationFrame(handleScroll);
+    const frame = requestAnimationFrame(() => handleScroll());
     return () => cancelAnimationFrame(frame);
   }, [handleScroll, rows.length]);
 
@@ -978,20 +1035,29 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, [timelineViewportElement, rows.length]);
 
+  // Pinned to the route key rather than re-parsed with the shared state: a
+  // fresh object here reached every message's markdown as a "new" thread and
+  // remounted its DOM, which is what wiped a text selection on mouse-up.
+  const threadRef = useMemo(() => parseScopedThreadKey(routeThreadKey), [routeThreadKey]);
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
+      turnFileReferences,
       timestampFormat,
       routeThreadKey,
-      threadRef: parseScopedThreadKey(routeThreadKey),
+      threadRef,
       markdownCwd,
       resolvedTheme,
       workspaceRoot,
       skills,
+      slashCommands,
       deliveredMessageIds,
       newestUserMessageId,
       pendingMessageIds,
       deliveryProviderName,
       deliveryReceiptsExpected,
+      unsentMessage,
+      sendingAgainMessageIds,
+      onSendAgain,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
@@ -1007,17 +1073,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isResumeIncompleteTurnDisabled,
     }),
     [
+      turnFileReferences,
       timestampFormat,
       routeThreadKey,
+      threadRef,
       markdownCwd,
       resolvedTheme,
       workspaceRoot,
       skills,
+      slashCommands,
       deliveredMessageIds,
       newestUserMessageId,
       pendingMessageIds,
       deliveryProviderName,
       deliveryReceiptsExpected,
+      unsentMessage,
+      sendingAgainMessageIds,
+      onSendAgain,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
@@ -1065,11 +1137,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const timelineShouldFollowEnd = followEnd && !manualFollowSuppressed;
   useEffect(() => {
     if (inlineNotice === null) return;
-    const frame = requestAnimationFrame(() => {
-      void mountedListRef.current?.scrollToEnd({ animated: false }).then(handleScroll);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [handleScroll, inlineNotice?.id]);
+    schedulePositionReconcile(false);
+  }, [schedulePositionReconcile, inlineNotice?.id]);
 
   const listFooter = useMemo(
     () =>
@@ -1106,6 +1175,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           ref={setTimelineViewportElement}
           data-chat-timeline-bottom-inset="0"
           className="relative h-full min-h-0"
+          onClickCapture={handleDisclosure}
+          onKeyDownCapture={handleDisclosure}
           onPointerEnter={() => {
             pointerInsideTimelineRef.current = true;
           }}
@@ -1127,22 +1198,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             drawDistance={drawDistance}
             initialScrollAtEnd={initialScrollAtEnd}
             {...(initialScrollOffset === null ? {} : { initialScrollOffset })}
-            maintainScrollAtEnd={
-              shouldMaintainTimelineScrollAtEnd({
-                hasAnchoredEndSpace: false,
-                followEnd: timelineShouldFollowEnd,
-              })
-                ? {
-                    animated: false,
-                    on: {
-                      dataChange: true,
-                      itemLayout: true,
-                      layout: true,
-                    },
-                  }
-                : false
-            }
+            // The measured viewport owns end-follow. LegendList's scheduled
+            // end correction would otherwise race gestures and disclosures.
+            maintainScrollAtEnd={false}
+            recycleItems={false}
             maintainVisibleContentPosition={
+              !disclosureAnchored &&
               shouldMaintainTimelineVisibleContentPosition({
                 followEnd: timelineShouldFollowEnd,
               })
@@ -1152,7 +1213,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   }
                 : false
             }
-            onScroll={handleScroll}
+            onScroll={handleNativeScroll}
             onLoad={handleTimelineLoad}
             onItemSizeChanged={handleTimelineItemSizeChanged}
             onWheel={handleWheelNavigation}
@@ -1177,7 +1238,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             hitStripWidth={minimapHitStripWidth}
             stripMap={minimapStripMap}
             onSelect={(item) => {
-              onManualNavigation();
+              claimManualNavigation(false);
               void listRef.current?.scrollToIndex({
                 index: item.rowIndex,
                 animated: true,
@@ -1636,7 +1697,12 @@ function ConversationBoundaryTimelineRow({
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const [syntheticPromptExpanded, setSyntheticPromptExpanded] = useState(false);
-  const userImages = row.message.attachments ?? [];
+  const userImages = (row.message.attachments ?? []).filter(
+    (attachment) => attachment.type === "image",
+  );
+  const voiceNotes = (row.message.attachments ?? []).filter(
+    (attachment) => attachment.type === "audio",
+  );
   const [interruptedExpanded, setInterruptedExpanded] = useState(false);
   // Stripped first. `deriveDisplayedUserMessageState` needs `<element_context>`
   // to be the trailing block, and this one is appended after it at send time.
@@ -1666,7 +1732,12 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     isOptimistic: ctx.pendingMessageIds.has(row.message.id),
     isDelivered,
   });
+  const unsent =
+    row.message.voiceTranscript !== true && ctx.unsentMessage?.messageId === row.message.id
+      ? ctx.unsentMessage
+      : null;
   const showDeliveryIndicator =
+    unsent === null &&
     // Voice-transcript rows are history of a conversation that already
     // happened aloud — they are never dispatched to a provider, so a delivery
     // indicator would show "Queued" forever.
@@ -1679,7 +1750,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       threadReportsDelivery: threadReportsDelivery(ctx.deliveredMessageIds),
     });
 
-  const settingsUpdate = parseSettingsUpdatePrompt(row.message.text);
+  const settingsUpdate = row.message.senderThreadId
+    ? null
+    : parseSettingsUpdatePrompt(row.message.text);
   if (settingsUpdate !== null) {
     return (
       <div
@@ -1706,7 +1779,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         ? "Resume"
         : null;
 
-  if (syntheticPromptLabel !== null) {
+  if (syntheticPromptLabel !== null && !row.message.senderThreadId) {
     return (
       <div className="flex flex-col items-end gap-1.5">
         <button
@@ -1725,6 +1798,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         {showDeliveryIndicator ? (
           <MessageDeliveryIndicator state={deliveryState} providerName={ctx.deliveryProviderName} />
         ) : null}
+        {unsent ? (
+          <UnsentMessageIndicator messageId={row.message.id} detail={unsent.detail} />
+        ) : null}
         {syntheticPromptExpanded ? (
           <div className="max-w-[80%] rounded-2xl bg-accent p-3">
             <CollapsibleUserMessageBody
@@ -1739,9 +1815,92 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     );
   }
 
+  const messageFooter = (
+    <div
+      className={
+        row.message.senderThreadId
+          ? "mt-2 flex w-full items-center justify-start gap-1.5 text-xs tabular-nums"
+          : "flex w-full max-w-[80%] items-center justify-end gap-1.5 pe-1 text-xs tabular-nums"
+      }
+    >
+      <div className="flex shrink-0 items-center gap-2">
+        <Tooltip>
+          <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
+            {formatShortTimestamp(row.message.createdAt, ctx.timestampFormat)}
+          </TooltipTrigger>
+          <TooltipPopup>
+            {formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat)}
+          </TooltipPopup>
+        </Tooltip>
+        <div className="flex items-center gap-0.5">
+          {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+          {displayedUserMessage.copyText && (
+            <MessageCopyButton text={displayedUserMessage.copyText} variant="ghost" />
+          )}
+        </div>
+      </div>
+      {showDeliveryIndicator ? (
+        <MessageDeliveryIndicator state={deliveryState} providerName={ctx.deliveryProviderName} />
+      ) : null}
+      {unsent ? <UnsentMessageIndicator messageId={row.message.id} detail={unsent.detail} /> : null}
+    </div>
+  );
+
   return (
-    <div className="group flex flex-col items-end gap-1">
-      <div className="relative max-w-[80%] rounded-[14px] border border-[var(--gold-line)] bg-[var(--gold-tint)] px-3.5 py-3">
+    <div
+      className={
+        row.message.senderThreadId
+          ? "group flex flex-col items-start gap-1"
+          : "group flex flex-col items-end gap-1"
+      }
+    >
+      <div
+        className={
+          row.message.senderThreadId
+            ? "relative max-w-[90%] rounded-[14px] border border-sky-500/20 bg-sky-500/[0.07] px-3.5 py-3"
+            : "relative max-w-[80%] rounded-[14px] border border-[var(--gold-line)] bg-[var(--gold-tint)] px-3.5 py-3"
+        }
+      >
+        {row.message.senderThreadId ? (
+          <Link
+            to="/$environmentId/$threadId"
+            params={{
+              environmentId: ctx.activeThreadEnvironmentId,
+              threadId: row.message.senderThreadId,
+            }}
+            onClick={(event) => {
+              if (
+                event.button !== 0 ||
+                event.metaKey ||
+                event.ctrlKey ||
+                event.shiftKey ||
+                event.altKey
+              )
+                return;
+              collapseSenderSideChats(ctx.threadRef, {
+                environmentId: ctx.activeThreadEnvironmentId,
+                threadId: row.message.senderThreadId!,
+              });
+            }}
+            className="mb-2 inline-flex max-w-full items-center gap-1.5 rounded-full border border-sky-500/25 bg-sky-500/10 px-2.5 py-1 text-sm font-medium text-foreground hover:bg-sky-500/20 focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            <BotIcon className="size-4" aria-hidden />
+            <span className="truncate">{row.message.senderThreadTitle || "Another AI thread"}</span>
+          </Link>
+        ) : null}
+        {voiceNotes.length > 0 && (
+          <div className="mb-2 flex flex-col gap-2">
+            {voiceNotes.map((note) => (
+              <VoiceNoteChip
+                key={note.id}
+                src={note.previewUrl}
+                durationMs={note.durationMs}
+                transcript={note.transcript}
+                pending={ctx.pendingMessageIds.has(row.message.id)}
+              />
+            ))}
+          </div>
+        )}
         {regularImages.length > 0 && (
           <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
             {regularImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
@@ -1795,7 +1954,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           </div>
         ) : null}
         <CollapsibleUserMessageBody
-          text={elementContextState.promptText}
+          text={
+            voiceNotes.length > 0 && elementContextState.promptText === "[Voice note attached]"
+              ? ""
+              : elementContextState.promptText
+          }
           terminalContexts={terminalContexts}
           skills={ctx.skills}
           markdownCwd={ctx.markdownCwd}
@@ -1833,35 +1996,19 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             ) : null}
           </div>
         ) : null}
-        {row.message.inputOrigin === "transcription" ? (
+        {row.message.inputOrigin === "transcription" && voiceNotes.length === 0 ? (
           <div className="mt-2 flex justify-start">
             <span className="rounded-full border border-border bg-background/55 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
               Transcribed
             </span>
           </div>
         ) : null}
-      </div>
-      <div className="flex w-full max-w-[80%] items-center justify-end gap-1.5 pe-1 text-xs tabular-nums">
-        <div className="flex shrink-0 items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
-              {formatShortTimestamp(row.message.createdAt, ctx.timestampFormat)}
-            </TooltipTrigger>
-            <TooltipPopup>
-              {formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat)}
-            </TooltipPopup>
-          </Tooltip>
-          <div className="flex items-center gap-0.5">
-            {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
-            {displayedUserMessage.copyText && (
-              <MessageCopyButton text={displayedUserMessage.copyText} variant="ghost" />
-            )}
-          </div>
-        </div>
-        {showDeliveryIndicator ? (
-          <MessageDeliveryIndicator state={deliveryState} providerName={ctx.deliveryProviderName} />
+        {row.message.senderThreadId ? (
+          <p className="mt-3 text-xs text-muted-foreground">Sent by another thread</p>
         ) : null}
+        {row.message.senderThreadId ? messageFooter : null}
       </div>
+      {!row.message.senderThreadId ? messageFooter : null}
     </div>
   );
 }
@@ -1918,6 +2065,46 @@ function MessageDeliveryIndicator({
       </TooltipTrigger>
       <TooltipPopup>{label}</TooltipPopup>
     </Tooltip>
+  );
+}
+
+/**
+ * Replaces the delivery indicator when a message's turn failed for good, so
+ * the row stops promising it is queued. Send again delivers the same message
+ * with the thread's current model, which after a failover is the new provider.
+ */
+function UnsentMessageIndicator({ messageId, detail }: { messageId: MessageId; detail: string }) {
+  const ctx = use(TimelineRowCtx);
+  const sending = ctx.sendingAgainMessageIds.has(messageId);
+
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              className="flex items-center gap-1 text-[11px] font-medium text-destructive-foreground"
+              aria-label={`Not sent: ${detail}`}
+              role="status"
+            />
+          }
+        >
+          <CircleAlertIcon className="size-3" aria-hidden />
+          <span>Not sent</span>
+        </TooltipTrigger>
+        <TooltipPopup className="max-w-80">{detail}</TooltipPopup>
+      </Tooltip>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={sending}
+        onClick={() => ctx.onSendAgain(messageId)}
+      >
+        {sending ? <LoaderCircleIcon className="size-3 animate-spin" aria-hidden /> : null}
+        Send again
+      </Button>
+    </span>
   );
 }
 
@@ -2008,6 +2195,11 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           </div>
         ) : null}
         <AssistantChangedFilesSection
+          references={
+            row.showAssistantMeta && row.message.turnId
+              ? ctx.turnFileReferences.get(row.message.turnId)
+              : undefined
+          }
           turnSummary={row.assistantTurnDiffSummary}
           routeThreadKey={ctx.routeThreadKey}
           resolvedTheme={ctx.resolvedTheme}
@@ -2276,12 +2468,7 @@ function WorkGroupToggleTimelineRow({
         type="button"
         className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--line)] bg-surface-row px-3 text-left text-[12px] font-medium leading-5 text-foreground/85 transition-colors duration-150 hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
         aria-expanded={row.expanded}
-        onClick={(event) => {
-          const anchorElement =
-            event.currentTarget.closest<HTMLElement>("[data-timeline-row-id]") ??
-            event.currentTarget;
-          ctx.onToggleWorkGroup(row.groupId, anchorElement);
-        }}
+        onClick={() => ctx.onToggleWorkGroup(row.groupId)}
       >
         <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground/70" aria-hidden />
         {row.expanded ? (
@@ -2306,24 +2493,36 @@ function WorkGroupToggleTimelineRow({
 /** Subscribes directly to the UI state store for expand/collapse state,
  *  so toggling re-renders only this component — not the entire list. */
 const AssistantChangedFilesSection = memo(function AssistantChangedFilesSection({
+  references,
   turnSummary,
   routeThreadKey,
   resolvedTheme,
   onOpenTurnDiff,
 }: {
+  references?: ReadonlyArray<TurnFileReference> | undefined;
   turnSummary: TurnDiffSummary | undefined;
   routeThreadKey: string;
   resolvedTheme: "light" | "dark";
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
 }) {
-  if (!turnSummary) return null;
+  const ctx = use(TimelineRowCtx);
+  const hasChangedFiles = turnSummary !== undefined && turnSummary.files.length > 0;
+  const referenceSection = references?.length ? (
+    <ResultFileReferences
+      references={references}
+      threadRef={ctx.threadRef}
+      cwd={ctx.markdownCwd}
+      standalone={!hasChangedFiles}
+    />
+  ) : null;
+  if (!turnSummary || turnSummary.files.length === 0) return referenceSection;
   const checkpointFiles = turnSummary.files;
-  if (checkpointFiles.length === 0) return null;
 
   return (
     <AssistantChangedFilesSectionInner
       turnSummary={turnSummary}
       checkpointFiles={checkpointFiles}
+      referenceSection={referenceSection}
       routeThreadKey={routeThreadKey}
       resolvedTheme={resolvedTheme}
       onOpenTurnDiff={onOpenTurnDiff}
@@ -2334,12 +2533,14 @@ const AssistantChangedFilesSection = memo(function AssistantChangedFilesSection(
 /** Inner component that only mounts when there are actual changed files,
  *  so the store subscription is unconditional (no hooks after early return). */
 function AssistantChangedFilesSectionInner({
+  referenceSection,
   turnSummary,
   checkpointFiles,
   routeThreadKey,
   resolvedTheme,
   onOpenTurnDiff,
 }: {
+  referenceSection: React.ReactNode;
   turnSummary: TurnDiffSummary;
   checkpointFiles: TurnDiffSummary["files"];
   routeThreadKey: string;
@@ -2361,6 +2562,7 @@ function AssistantChangedFilesSectionInner({
   return (
     <ChangedFilesCard
       turnId={turnSummary.turnId}
+      references={referenceSection}
       files={checkpointFiles}
       expanded={expanded}
       showCompactPreview={isLatestTurn}
@@ -2711,6 +2913,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       cwd={props.markdownCwd}
       threadRef={ctx.threadRef ?? undefined}
       skills={props.skills}
+      leadingSlashCommand={findLeadingProviderSlashCommand(props.text, ctx.slashCommands)}
       className="text-foreground"
       lineBreaks
     />
@@ -2833,6 +3036,7 @@ type WorkEntryIconName =
   | "hammer"
   | "message-circle"
   | "mouse"
+  | "minus"
   | "square-pen"
   | "terminal"
   | "wrench"
@@ -2845,6 +3049,8 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
       return <BotIcon className={className} aria-hidden />;
     case "check":
       return <CheckIcon className={className} aria-hidden />;
+    case "minus":
+      return <MinusIcon className={className} aria-hidden />;
     case "circle-alert":
       return <CircleAlertIcon className={className} aria-hidden />;
     case "eye":
@@ -2976,6 +3182,7 @@ function buildToolCallExpandedBody(
 }
 
 function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
+  if (workEntry.toolLifecycleStatus === "stopped") return "minus";
   if (workEntry.sourceActivityKind === "token-optimizer.applied") {
     return "zap";
   }
@@ -3108,12 +3315,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : "font-semibold text-foreground";
   const turnSettled = !activity.activeTurnInProgress;
   const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
+  const showStoppedIndicator = workEntry.toolLifecycleStatus === "stopped";
   const showSuccessIndicator =
-    workEntryIndicatesToolSuccess(workEntry) ||
-    (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));
+    !showStoppedIndicator &&
+    (workEntryIndicatesToolSuccess(workEntry) ||
+      (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry)));
   const rowToggleProps = canExpand
     ? {
         role: "button" as const,
+        "aria-expanded": expanded,
         tabIndex: 0 as const,
         "aria-label": displayText,
         onClick: () => setExpanded((v) => !v),
@@ -3151,6 +3361,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           <div className="min-w-0 flex-1 overflow-hidden">
             <p className="flex min-w-0 w-full items-center gap-2 text-[12.5px] leading-6">
               <span className={cn("min-w-0 shrink truncate", headingClass)}>{heading}</span>
+              {showStoppedIndicator && (
+                <span
+                  className="shrink-0 text-[10px] text-muted-foreground"
+                  aria-label="Task stopped before completion"
+                >
+                  Stopped
+                </span>
+              )}
               {preview && (
                 <span className="min-w-0 flex-1 truncate rounded-md bg-surface-tile px-1.5 py-px font-mono text-[11px] leading-5 text-gold-700 dark:text-gold-300/85">
                   {preview}
@@ -3223,6 +3441,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           path={workEntry.readImagePath}
           revision={workEntry.id}
           sourceActivityId={workEntry.readImageSourceActivityId ?? workEntry.id}
+          inlineSrc={workEntry.readImageInlineSrc}
           workspaceRoot={workspaceRoot}
         />
       ) : null}
@@ -3324,6 +3543,7 @@ function ToolReadImagePreview(props: {
   readonly path: string;
   readonly revision: string;
   readonly sourceActivityId: string;
+  readonly inlineSrc: string | undefined;
   readonly workspaceRoot: string | undefined;
 }) {
   const ctx = use(TimelineRowCtx);
@@ -3343,6 +3563,7 @@ function ToolReadImagePreview(props: {
       path={props.path}
       revision={props.revision}
       sourceActivityId={props.sourceActivityId}
+      inlineSrc={props.inlineSrc}
       workspaceRoot={props.workspaceRoot}
       threadRef={threadRef}
     />
@@ -3353,6 +3574,7 @@ function ToolReadImagePreviewWithThread(props: {
   readonly path: string;
   readonly revision: string;
   readonly sourceActivityId: string;
+  readonly inlineSrc: string | undefined;
   readonly workspaceRoot: string | undefined;
   readonly threadRef: ScopedThreadRef;
 }) {
@@ -3376,7 +3598,11 @@ function ToolReadImagePreviewWithThread(props: {
   );
   const asset = useAssetUrlState(ctx.activeThreadEnvironmentId, resource);
   const previewUrl = asset._tag === "Success" ? withAssetRevision(asset.url, props.revision) : null;
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const [failedSrcs, setFailedSrcs] = useState<ReadonlySet<string>>(() => new Set());
+  const markSrcFailed = useCallback(
+    (src: string) => setFailedSrcs((previous) => new Set(previous).add(src)),
+    [],
+  );
   const displayPath = formatWorkspaceRelativePath(props.path, props.workspaceRoot);
   const resolvedFilePath = useMemo(
     () => resolveLinkedFileAbsolutePath(props.path, props.workspaceRoot),
@@ -3392,7 +3618,15 @@ function ToolReadImagePreviewWithThread(props: {
       ? normalizedPath.slice(normalizedRoot.length + 1)
       : null;
   }, [props.workspaceRoot, resolvedFilePath]);
-  const failed = asset._tag === "Failure" || (previewUrl !== null && previewUrl === failedUrl);
+  const preview = resolveReadImagePreview({
+    assetFailed: asset._tag === "Failure",
+    assetUrl: previewUrl,
+    storedSrc: props.inlineSrc ?? null,
+    failedSrcs,
+  });
+  const previewSrc = preview._tag === "Image" ? preview.src : null;
+  const showingStoredCopy = preview._tag === "Image" && preview.stored;
+  const failed = preview._tag === "Unavailable";
   const canRevealOnThisDevice =
     typeof window !== "undefined" &&
     window.desktopBridge !== undefined &&
@@ -3400,7 +3634,7 @@ function ToolReadImagePreviewWithThread(props: {
     resolvedFilePath !== null;
 
   useEffect(() => {
-    setFailedUrl(null);
+    setFailedSrcs(new Set());
   }, [previewUrl]);
 
   const handleOpenFile = useCallback(() => {
@@ -3426,11 +3660,26 @@ function ToolReadImagePreviewWithThread(props: {
     void window.desktopBridge.revealFile(resolvedFilePath).then(
       (revealed) => {
         if (revealed) return;
+        // Reveal answers for THIS computer only. A workspace on a remote host,
+        // in WSL, or in a worktree has the file even when this filesystem does
+        // not, so the old wording was wrong and the click dead-ended. The panel
+        // reads through the environment that owns the file, so try it first.
+        if (
+          resolveLocalFileFallback({
+            hasThreadRef: props.threadRef !== undefined,
+            workspaceRelativePath,
+          }) === "preview" &&
+          props.threadRef &&
+          workspaceRelativePath
+        ) {
+          useRightPanelStore.getState().openFile(props.threadRef, workspaceRelativePath);
+          return;
+        }
         toastManager.add(
           stackedThreadToast({
             type: "error",
             title: "Unable to locate file",
-            description: "The file no longer exists on this computer.",
+            description: "This computer has no file at that path.",
           }),
         );
       },
@@ -3444,7 +3693,7 @@ function ToolReadImagePreviewWithThread(props: {
         );
       },
     );
-  }, [canRevealOnThisDevice, resolvedFilePath]);
+  }, [canRevealOnThisDevice, props.threadRef, resolvedFilePath, workspaceRelativePath]);
 
   const handleCopyPath = useCallback((path: string, label: string) => {
     void navigator.clipboard.writeText(path).then(
@@ -3521,7 +3770,7 @@ function ToolReadImagePreviewWithThread(props: {
       onClick={stopRowToggle}
       onPointerDown={stopRowToggle}
     >
-      {!failed && asset._tag === "Success" && previewUrl !== null ? (
+      {previewSrc !== null ? (
         <button
           type="button"
           className="block h-48 w-full cursor-zoom-in bg-black/10 sm:h-64"
@@ -3529,31 +3778,36 @@ function ToolReadImagePreviewWithThread(props: {
           onClick={(event) => {
             event.stopPropagation();
             ctx.onImageExpand({
-              images: [{ src: previewUrl, name: displayPath }],
+              images: [{ src: previewSrc, name: displayPath }],
               index: 0,
             });
           }}
           onPointerDown={stopRowToggle}
         >
           <img
-            src={previewUrl}
+            src={previewSrc}
             alt={displayPath}
             className="block size-full object-contain"
             loading="lazy"
             decoding="async"
-            onError={() => setFailedUrl(previewUrl)}
+            onError={() => markSrcFailed(previewSrc)}
           />
         </button>
       ) : failed ? (
         <div className="flex h-48 items-center justify-center px-4 py-3 text-center text-[11px] text-muted-foreground sm:h-64">
-          Image preview unavailable. The file may be missing, too large, or not a valid supported
-          image.
+          Image preview unavailable. Nothing readable is at this path now, and the tool result kept
+          no copy of the image.
         </div>
       ) : (
         <div className="flex h-48 items-center justify-center text-muted-foreground sm:h-64">
           <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading image preview" />
         </div>
       )}
+      {showingStoredCopy ? (
+        <p className="border-t border-border px-2.5 py-1 text-[10px] text-muted-foreground/75">
+          Stored copy — this path holds no readable image now.
+        </p>
+      ) : null}
       <a
         href={props.path}
         className="block truncate border-t border-border px-2.5 py-1.5 font-mono text-[10px] text-muted-foreground/65 transition-colors hover:bg-accent/20 hover:text-foreground hover:underline"

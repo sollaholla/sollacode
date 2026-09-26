@@ -17,6 +17,61 @@ const task: ProviderTask = {
 };
 
 describe("ProviderTaskPanel", () => {
+  it("shows actual provider tokens and reports missing totals as unknown", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderTaskPanel
+        tasks={[
+          {
+            ...task,
+            taskId: "codex-subagent:child",
+            title: "Codex subagent image preview",
+            totalTokens: 1234,
+          },
+          { ...task, taskId: "unknown-tokens", totalTokens: null },
+        ]}
+      />,
+    );
+    expect(markup).toContain("1,234 tokens");
+    expect(markup).toContain("tokens unknown");
+    expect(markup).toContain('data-provider-task-placement="composer"');
+  });
+
+  it("shows commands and monitors without agent usage fields", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderTaskPanel
+        tasks={[
+          {
+            ...task,
+            taskId: "command",
+            taskType: "local_bash",
+            title: "Build the island",
+            totalTokens: 1234,
+          },
+          {
+            ...task,
+            taskId: "monitor",
+            taskType: "local_monitor",
+            title: "Watch the log",
+            totalTokens: null,
+          },
+        ]}
+      />,
+    );
+    expect(markup).toContain("Background command · Running");
+    expect(markup).toContain("Monitor · Watching");
+    expect(markup).toContain("Background tasks · 2 active");
+    expect(markup).not.toContain("tokens");
+    expect(markup).not.toContain("tool uses");
+    expect(markup).not.toContain("Sub-agent");
+  });
+
+  it("does not invent token usage for tasks without an agent type", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderTaskPanel tasks={[{ ...task, taskType: null, toolUses: null }]} />,
+    );
+    expect(markup).not.toContain("tokens unknown");
+  });
+
   it("renders every task in a bounded composer drawer instead of paginating", () => {
     const tasks = Array.from({ length: 12 }, (_, index) => ({
       ...task,
@@ -37,7 +92,7 @@ describe("ProviderTaskPanel", () => {
 
   it("offers Stop but never Dismiss for a running task", () => {
     const markup = renderToStaticMarkup(
-      <ProviderTaskPanel tasks={[task]} driverKind="claudeAgent" onStopTask={() => undefined} />,
+      <ProviderTaskPanel tasks={[task]} onStopTask={() => undefined} />,
     );
     expect(markup).toContain(`aria-label="Stop ${task.title}"`);
     // Dismissing live work hid the row while the task still held the turn, so
@@ -56,15 +111,23 @@ describe("ProviderTaskPanel", () => {
     // A dead runtime is still reachable: silence past PROVIDER_TASK_STALE_AFTER_MS
     // downgrades the task to `stale`, which is what makes the row hideable again.
     const markup = renderToStaticMarkup(
-      <ProviderTaskPanel
-        tasks={[{ ...task, status: "stale" }]}
-        driverKind="claudeAgent"
-        onStopTask={() => undefined}
-      />,
+      <ProviderTaskPanel tasks={[{ ...task, status: "stale" }]} onStopTask={() => undefined} />,
     );
 
     expect(markup).toContain(`aria-label="Dismiss ${task.title}"`);
     expect(markup).not.toContain(`aria-label="Stop ${task.title}"`);
+  });
+
+  it("gives Clear a hit area as tall as the header", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderTaskPanel tasks={[{ ...task, status: "completed" }]} />,
+    );
+    const clear = markup.match(/<button[^>]*>Clear<\/button>/)?.[0] ?? "";
+
+    // A near miss on the small label landed on the collapse toggle underneath
+    // and folded the panel instead of clearing it.
+    expect(clear).toContain("before:absolute");
+    expect(clear).toContain("before:-inset-y-2");
   });
 
   it("starts collapsed when it is bound to a thread", () => {
@@ -73,7 +136,7 @@ describe("ProviderTaskPanel", () => {
     );
 
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup).toContain("Background tasks · 1 running");
+    expect(markup).toContain("Background tasks · 1 active");
     expect(markup).not.toContain(task.title);
   });
 });

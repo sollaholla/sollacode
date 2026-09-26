@@ -31,6 +31,15 @@ import {
 } from "./agentCliResume.ts";
 
 describe("agent CLI resume", () => {
+  it("identifies Codex through its owned writer lock and rejects ambiguous owners", () => {
+    const first = "01a0a09f-510e-7cc3-b306-c864e84ba591";
+    const second = "01a0a09f-e862-7ab2-9673-768cb3cc2ad8";
+    const lock = (id: string) => `/home/me/.codex/thread-writer-locks/${id}.lock`;
+    expect(sessionIdFromOpenFiles("codex", [lock(first), "/home/me/.codex/state_5.sqlite"])).toBe(
+      first,
+    );
+    expect(sessionIdFromOpenFiles("codex", [lock(first), lock(second)])).toBeNull();
+  });
   it("recognizes the agent CLIs users run in thread terminals", () => {
     expect(isAgentCliCommand("grok")).toBe(true);
     expect(isAgentCliCommand("Claude")).toBe(true);

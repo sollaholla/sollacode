@@ -37,6 +37,7 @@ import {
   getLocalEnvironmentBearerToken,
   getWindowFullscreenState,
   openExternal,
+  openPath,
   pickFolder,
   revealFile,
   saveThreadExportJson,
@@ -127,6 +128,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(openExternal);
   yield* ipc.handle(saveThreadExportJson);
   yield* ipc.handle(revealFile);
+  yield* ipc.handle(openPath);
   yield* ipc.handle(writeComposerClipboard);
   yield* ipc.handle(setVoiceCaptureSystemAudioMuted);
   yield* ipc.handle(transcribeVoice);

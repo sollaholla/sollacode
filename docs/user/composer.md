@@ -1,11 +1,14 @@
 # Composer
 
-## Revert staged chat settings
+## Apply staged chat settings
 
-Changing the provider, model, effort, service tier, access level, or interaction mode on an existing
-chat stages the selection until **Apply changes** is pressed. Right-click **Apply changes** and choose
-**Revert** to restore every staged setting to the chat's currently saved configuration. Reverting
-does not send a message or alter the prompt and attachments already in the composer.
+Provider, model, effort, runtime mode (access level), and interaction mode picks stay staged
+until you press **Apply changes**, send a message, or resume the conversation. Applying sends a
+turn asking the agent to adopt the selected settings. The button stays labeled while an agent is
+running; narrow composers show **Apply**. Choosing the original settings removes the pending change.
+Right-click **Apply changes** and choose **Revert** to restore every staged setting to the chat's
+currently saved configuration. Reverting does not send a message or alter the prompt and
+attachments already in the composer.
 
 ## Add emoji
 
@@ -50,6 +53,12 @@ File references open in the owning environment: previewable workspace files use 
 while local videos, audio, documents, archives, and executables are revealed in Finder or File
 Explorer. Missing local files report an error instead of failing silently, and remote paths are
 never passed to the desktop's local file explorer.
+
+## Provider slash commands
+
+Typing `/` at the start of a line lists commands. Some belong to Solla Code (`/model`, `/plan`, `/default`, `/refresh-plan`). The rest belong to the provider, such as Claude's `/compact` or `/review`, and are sent straight to the model. A provider runs a command only when the message starts with it; anything you type after the command goes with it as its input.
+
+When a message starts with a provider command, the command is link-coloured with a dotted underline, both in the composer and in the sent message. Tap or click it to see what it does and what input it takes. A `/word` anywhere else in the message, or one the provider does not recognise, stays plain text, because it will not run. This works in the web and desktop apps and in Safari on iPhone and iPad. The native mobile app does not colour commands yet.
 
 ## Interaction and access
 
@@ -105,6 +114,11 @@ double-tap word selection, drag-to-move-cursor, and the long-press copy/paste me
 committed to the same per-thread draft as desktop input. A delayed draft update cannot replace the
 newer text still held by Safari, and attached terminal contexts remain visible above the field while
 you edit.
+
+Touches inside the focused text field stay with the keyboard's native selection and scrolling. To dismiss
+the composer with a downward swipe, first leave the text field unfocused. Then swipe down
+on the frame or unfocused text field. A focused composer stays expanded, including while
+moving selection handles; recording and transcription also keep it open.
 
 ## Responsive controls
 
@@ -173,7 +187,34 @@ minutes for upstream response headers; the CLI's default first-byte and request 
 so a large-context request can get past the old five-minute cutoff. Explicit environment overrides
 remain in effect. Authentication failures still require the account to be restored.
 
+If recovery stops with a session error, the error banner offers **Resume** even when no
+assistant response or turn record survived. Resume keeps your unsent draft and starts a
+continuation using the thread's saved history. A delivered message whose turn state was lost
+during a provider switch is marked for this explicit recovery rather than silently replayed.
+
+## Messages written while offline
+
+A message sent while the host is out of reach is saved on this device and appears in the
+conversation straight away. If it is still waiting after a few seconds, a small **Waiting to send**
+chip appears above the composer. On a weak connection, most messages go out before that, so the chip
+does not flash on and off. Tap the chip to see each saved message, when it was saved, and its
+attachments. Once everything has gone, the chip reads **Sent** for a few seconds before it leaves.
+
+If the host refuses a saved message for another reason, the chip turns red and reads **Not sent**
+straight away. Tap it to see why and choose **Retry** or **Discard**. The mobile app shows the same
+refused-message card above the conversation.
+
 ## Work duration
 
 Work labels use hours and minutes for long turns (for example, **Worked for 9h 29m**),
 and days and hours after a day. Short turns retain seconds and milliseconds.
+
+## Voice notes
+
+Hold the microphone button to record, then release it to add a playable voice attachment.
+You can add text alongside the recording or remove the note before sending. Sending transcribes
+it on the connected host; the message retains its player and an expandable **Transcribed** chip.
+The AI receives the marked voice transcript and your additional text. Transcription errors keep
+the note in the draft. A three-minute transcription deadline stops the owned speech process
+before another note can start; a late result cannot send the timed-out recording.
+See [voice input](keybindings.md#push-to-talk) for host support and limits.

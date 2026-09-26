@@ -1,3 +1,5 @@
+import { replayOrBootstrapTurn } from "../bootstrapReplay.ts";
+import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
   CheckpointRef,
   CommandId,
@@ -17,6 +19,7 @@ import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { describe, expect, it } from "vite-plus/test";
 
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
@@ -58,17 +61,25 @@ async function createOrchestrationSystem() {
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(RepositoryIdentityResolver.layer),
-    Layer.provide(SqlitePersistenceMemory),
+    Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
   );
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
+  const receipts = await runtime.runPromise(
+    Effect.service(OrchestrationCommandReceiptRepository).pipe(
+      Effect.provide(OrchestrationCommandReceiptRepositoryLive),
+    ),
+  );
   return {
     engine,
+    receipts,
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
+    executeSql: (query: string) =>
+      runtime.runPromise(Effect.flatMap(SqlClient.SqlClient, (sql) => sql.unsafe(query))),
     dispose: () => runtime.dispose(),
   };
 }
@@ -89,6 +100,95 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("replays a first-message receipt before repeating bootstrap side effects", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const projectId = ProjectId.make("outbox-replay-project");
+      const threadId = ThreadId.make("outbox-replay-thread");
+      const commandId = CommandId.make("outbox-replay-send");
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("outbox-project-create"),
+          projectId,
+          title: "Outbox replay",
+          workspaceRoot: "/tmp/outbox-replay",
+          createdAt: now(),
+        }),
+      );
+      let bootstraps = 0;
+      const send = replayOrBootstrapTurn(
+        commandId,
+        Effect.gen(function* () {
+          bootstraps += 1;
+          yield* system.engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`outbox-create-${bootstraps}`),
+            threadId,
+            projectId,
+            title: "Saved first message",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("opencode"),
+              model: "big-pickle",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now(),
+          });
+          return yield* system.engine.dispatch({
+            type: "thread.turn.start",
+            commandId,
+            threadId,
+            message: {
+              messageId: MessageId.make("outbox-message"),
+              role: "user",
+              text: "Preserve this first message",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: now(),
+          });
+        }),
+      ).pipe(Effect.provideService(OrchestrationCommandReceiptRepository, system.receipts));
+      const firstReceipt = await system.run(send);
+      // The client lost that receipt, then retried after navigation/reconnection.
+      expect(await system.run(send)).toEqual(firstReceipt);
+      expect(bootstraps).toBe(1);
+      const thread = (await system.readModel()).threads.find((row) => row.id === threadId);
+      expect(thread?.messages.filter((row) => row.id === "outbox-message")).toHaveLength(1);
+      const rejectedId = CommandId.make("outbox-rejected-send");
+      await system.run(
+        system.receipts.upsert({
+          commandId: rejectedId,
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          acceptedAt: now(),
+          resultSequence: firstReceipt.sequence,
+          status: "rejected",
+          error: "Model unavailable",
+        }),
+      );
+      const rejected = await system.run(
+        Effect.result(
+          replayOrBootstrapTurn(
+            rejectedId,
+            Effect.sync(() => {
+              bootstraps += 1;
+              return { sequence: 99 };
+            }),
+          ).pipe(Effect.provideService(OrchestrationCommandReceiptRepository, system.receipts)),
+        ),
+      );
+      expect(rejected._tag).toBe("Failure");
+      expect(bootstraps).toBe(1);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("acknowledges stale conditional session writes without changing the replacement", async () => {
     const system = await createOrchestrationSystem();
     try {
@@ -551,7 +651,7 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
-  it("archives and unarchives threads through orchestration commands", async () => {
+  it("rolls back a failed archive receipt, then retries and unarchives without losing the thread", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;
     const createdAt = now();
@@ -589,13 +689,37 @@ describe("OrchestrationEngine", () => {
       }),
     );
 
-    await system.run(
-      engine.dispatch({
-        type: "thread.archive",
-        commandId: CommandId.make("cmd-thread-archive"),
-        threadId: ThreadId.make("thread-archive"),
-      }),
-    );
+    const archive = {
+      type: "thread.archive" as const,
+      commandId: CommandId.make("cmd-thread-archive"),
+      threadId: ThreadId.make("thread-archive"),
+    };
+    await system.executeSql(`
+      CREATE TEMP TRIGGER fail_archive_receipt
+      BEFORE INSERT ON orchestration_command_receipts
+      WHEN NEW.command_id = 'cmd-thread-archive'
+      BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END
+    `);
+    await expect(system.run(engine.dispatch(archive))).rejects.toThrow("database or disk is full");
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === "thread-archive"),
+    ).toMatchObject({ archivedAt: null, title: "Archive me" });
+    expect(
+      await system.executeSql(
+        "SELECT * FROM orchestration_command_receipts WHERE command_id = 'cmd-thread-archive'",
+      ),
+    ).toHaveLength(0);
+    expect(await system.run(Stream.runCollect(engine.readEvents(0)))).toHaveLength(2);
+
+    await system.executeSql("DROP TRIGGER fail_archive_receipt");
+    const accepted = await system.run(engine.dispatch(archive));
+    expect(await system.run(engine.dispatch(archive))).toEqual(accepted);
+    expect(await system.run(Stream.runCollect(engine.readEvents(0)))).toHaveLength(3);
+    expect(
+      await system.executeSql(
+        "SELECT * FROM orchestration_command_receipts WHERE command_id = 'cmd-thread-archive'",
+      ),
+    ).toHaveLength(1);
     expect(
       (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
         ?.archivedAt,

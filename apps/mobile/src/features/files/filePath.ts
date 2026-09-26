@@ -1,6 +1,8 @@
 import {
+  isWorkspaceAudioPreviewPath,
   isWorkspaceBrowserPreviewPath,
   isWorkspaceImagePreviewPath,
+  isWorkspaceVideoPreviewPath,
 } from "@t3tools/shared/filePreview";
 
 export interface FileBreadcrumb {
@@ -101,6 +103,23 @@ export function isSvgImagePreviewFile(path: string): boolean {
 
 export function isMarkdownPreviewFile(path: string): boolean {
   return /\.(?:md|mdx)$/i.test(path.split(/[?#]/, 1)[0] ?? "");
+}
+
+export function isAudioPreviewFile(path: string): boolean {
+  return isWorkspaceAudioPreviewPath(path);
+}
+
+export function isVideoPreviewFile(path: string): boolean {
+  return isWorkspaceVideoPreviewPath(path);
+}
+
+/**
+ * Audio and video have no in-app surface on mobile: no player, and the
+ * source view would show binary as text. They open in the system player
+ * through the signed asset URL instead.
+ */
+export function isExternalMediaPreviewFile(path: string): boolean {
+  return isAudioPreviewFile(path) || isVideoPreviewFile(path);
 }
 
 export function fileBreadcrumbs(projectName: string, relativePath: string): FileBreadcrumb[] {

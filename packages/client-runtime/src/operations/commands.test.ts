@@ -27,6 +27,8 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import * as Persistence from "../platform/persistence.ts";
 import {
   archiveThread,
+  unarchiveThread,
+  deleteThread,
   createProject,
   respondToThreadApproval,
   respondToThreadUserInput,
@@ -46,13 +48,20 @@ const TEST_CRYPTO_LAYER = Layer.succeed(
     digest: (_algorithm, data) => Effect.succeed(data),
   }),
 );
-const TEST_DEFERRED_COMMAND_LAYER = Layer.succeed(
+const TEST_DEFERRED_COMMAND_LAYER = Layer.effect(
   Persistence.DeferredThreadCommandStore,
-  Persistence.DeferredThreadCommandStore.of({
-    list: () => Effect.succeed([]),
-    enqueue: () => Effect.void,
-    remove: () => Effect.void,
-    clear: () => Effect.void,
+  Effect.gen(function* () {
+    const entries = yield* Ref.make<readonly Persistence.DeferredThreadCommandEntry[]>([]);
+    return Persistence.DeferredThreadCommandStore.of({
+      list: () => Ref.get(entries),
+      enqueue: (_id, entry) =>
+        Ref.update(entries, (current) => compactDeferredThreadCommands(current, entry)),
+      remove: (_id, commandId) =>
+        Ref.update(entries, (current) =>
+          current.filter((entry) => entry.command.commandId !== commandId),
+        ),
+      clear: () => Ref.set(entries, []),
+    });
   }),
 );
 const TEST_COMMAND_LAYER = Layer.merge(TEST_CRYPTO_LAYER, TEST_DEFERRED_COMMAND_LAYER);
@@ -145,6 +154,95 @@ describe("environment commands", () => {
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
+  it.effect("queues a remote delete while its environment is offline", () =>
+    Effect.gen(function* () {
+      const entries = yield* Ref.make<ReadonlyArray<Persistence.DeferredThreadCommandEntry>>([]);
+      const store = Persistence.DeferredThreadCommandStore.of({
+        list: () => Ref.get(entries),
+        enqueue: (_environmentId, entry) => Ref.update(entries, (current) => [...current, entry]),
+        remove: (_environmentId, commandId) =>
+          Ref.update(entries, (current) =>
+            current.filter((entry) => entry.command.commandId !== commandId),
+          ),
+        clear: () => Ref.set(entries, []),
+      });
+      const supervisor = yield* makeOfflineRemoteSupervisor();
+
+      const result = yield* deleteThread({
+        commandId: CommandId.make("offline-delete"),
+        threadId: ThreadId.make("thread-1"),
+      }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(Persistence.DeferredThreadCommandStore, store),
+      );
+
+      expect(result).toEqual({ _tag: "Deferred" });
+      expect((yield* Ref.get(entries)).map((entry) => entry.command)).toEqual([
+        {
+          type: "thread.delete",
+          commandId: "offline-delete",
+          threadId: "thread-1",
+        },
+      ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("queues a remote archive while its environment is offline", () =>
+    Effect.gen(function* () {
+      const entries = yield* Ref.make<ReadonlyArray<Persistence.DeferredThreadCommandEntry>>([]);
+      const store = Persistence.DeferredThreadCommandStore.of({
+        list: () => Ref.get(entries),
+        enqueue: (_environmentId, entry) => Ref.update(entries, (current) => [...current, entry]),
+        remove: (_environmentId, commandId) =>
+          Ref.update(entries, (current) =>
+            current.filter((entry) => entry.command.commandId !== commandId),
+          ),
+        clear: () => Ref.set(entries, []),
+      });
+      const supervisor = yield* makeOfflineRemoteSupervisor();
+
+      const result = yield* archiveThread({
+        commandId: CommandId.make("offline-archive"),
+        threadId: ThreadId.make("thread-1"),
+      }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(Persistence.DeferredThreadCommandStore, store),
+      );
+
+      expect(result).toEqual({ _tag: "Deferred" });
+      expect((yield* Ref.get(entries)).map((entry) => entry.command)).toEqual([
+        {
+          type: "thread.archive",
+          commandId: "offline-archive",
+          threadId: "thread-1",
+        },
+      ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("restore supersedes an offline archive before reconnect drains the queue", () =>
+    Effect.gen(function* () {
+      const dispatched: ClientOrchestrationCommand[] = [];
+      const offline = yield* makeOfflineRemoteSupervisor();
+      const online = yield* makeSupervisor(dispatched);
+      const restoredOnline = { ...online, target: offline.target };
+      yield* archiveThread({
+        commandId: CommandId.make("old-archive"),
+        threadId: ThreadId.make("thread-1"),
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, offline));
+      yield* unarchiveThread({
+        commandId: CommandId.make("new-restore"),
+        threadId: ThreadId.make("thread-1"),
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, restoredOnline));
+      yield* drainDeferredThreadCommands(offline.target.environmentId).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, restoredOnline),
+      );
+      expect(dispatched.map((command) => command.type)).toEqual(["thread.unarchive"]);
+      const store = yield* Persistence.DeferredThreadCommandStore;
+      expect(yield* store.list(offline.target.environmentId)).toEqual([]);
+    }).pipe(Effect.provide(TEST_COMMAND_LAYER)),
+  );
+
   it.effect("drains a queued command with its original id after reconnect", () =>
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];
@@ -152,7 +250,7 @@ describe("environment commands", () => {
       const entries = yield* Ref.make<ReadonlyArray<Persistence.DeferredThreadCommandEntry>>([
         {
           command: {
-            type: "thread.archive",
+            type: "thread.delete",
             commandId: CommandId.make("queued-archive"),
             threadId: ThreadId.make("thread-1"),
           },
@@ -176,7 +274,7 @@ describe("environment commands", () => {
 
       expect(dispatched).toEqual([
         {
-          type: "thread.archive",
+          type: "thread.delete",
           commandId: "queued-archive",
           threadId: "thread-1",
         },
@@ -184,6 +282,20 @@ describe("environment commands", () => {
       expect(yield* Ref.get(entries)).toEqual([]);
     }),
   );
+
+  it("a queued deletion supersedes lifecycle toggles and survives later toggles", () => {
+    const entry = (
+      type: "thread.archive" | "thread.delete",
+      id: string,
+    ): Persistence.DeferredThreadCommandEntry => ({
+      command: { type, commandId: CommandId.make(id), threadId: ThreadId.make("thread-1") },
+      enqueuedAt: "2026-09-14T00:00:00.000Z",
+    });
+    const archive = entry("thread.archive", "archive");
+    const deletion = entry("thread.delete", "delete");
+    expect(compactDeferredThreadCommands([archive], deletion)).toEqual([deletion]);
+    expect(compactDeferredThreadCommands([deletion], archive)).toEqual([deletion]);
+  });
 
   it("compacts opposite offline actions on the same thread axis", () => {
     const settled: Persistence.DeferredThreadCommandEntry = {

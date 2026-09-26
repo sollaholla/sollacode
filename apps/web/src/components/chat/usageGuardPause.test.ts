@@ -56,6 +56,30 @@ describe("findUsageGuardPauseNotice", () => {
     });
   });
 
+  it("ignores a hold left behind by a provider the thread no longer runs on", () => {
+    // A Muse thread showed a Claude weekly hold from two days earlier as
+    // "Waiting for usage room · resumes in 2h" (2026-09-12).
+    const activities = [
+      activity("usage-guard.paused", "2026-09-11T03:47:51.000Z", {
+        providerLabel: "Claude",
+        instanceId: "claudeAgent",
+        tier: "optimize",
+        retryAt: "2026-09-13T01:55:57.659Z",
+      }),
+    ];
+    expect(findUsageGuardPauseNotice(activities, "muse")).toBeNull();
+    expect(findUsageGuardPauseNotice(activities, "claudeAgent")).not.toBeNull();
+    // Without a current instance, or on a notice that never said whose it
+    // was, the hold is still shown.
+    expect(findUsageGuardPauseNotice(activities)).not.toBeNull();
+    expect(
+      findUsageGuardPauseNotice(
+        [activity("usage-guard.paused", "2026-09-11T03:47:51.000Z", { providerLabel: "Claude" })],
+        "muse",
+      ),
+    ).not.toBeNull();
+  });
+
   it("is cleared by a later resume", () => {
     expect(
       findUsageGuardPauseNotice([

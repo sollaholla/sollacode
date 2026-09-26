@@ -6,6 +6,14 @@ import { buildVmAgentContext, withVmAgentContext } from "./vmAgentContext.ts";
 const agent = { name: "Scout", purpose: "Watch the Okta tenant thread" };
 
 describe("buildVmAgentContext", () => {
+  it("assigns avatars automatically without a model-driven icon setup step", () => {
+    for (const identity of [agent, { ...agent, icon: null }, { ...agent, icon: "globe" }]) {
+      const context = buildVmAgentContext(identity);
+      expect(context).toContain("automatically assigns your blob avatar and stable color");
+      expect(context).not.toContain("set_icon");
+      expect(context).not.toContain("You have no icon yet");
+    }
+  });
   it("tells the agent to schedule and end its turn rather than poll for a clock time", () => {
     // The regression this guards: an agent waiting for a noon follow-up stayed
     // awake polling `agent_workspace` in-context for hours. That burns the
@@ -68,5 +76,19 @@ describe("buildVmAgentContext", () => {
 
   it("emits the bare context when there is no user message", () => {
     expect(withVmAgentContext("   ", agent)).not.toContain("<vm_agent_user_message>");
+  });
+
+  it("asks the agent to compact an oversized AGENTS.md only while it is over budget", () => {
+    expect(buildVmAgentContext(agent)).not.toContain("compact AGENTS.md");
+    const wrapped = withVmAgentContext("check the inbox", agent, {
+      characters: 564_873,
+      loadedCharacters: 99_800,
+    });
+    expect(wrapped).toContain("Your AGENTS.md is 564,873 characters");
+    expect(wrapped).toContain("first 99,800 characters");
+    expect(wrapped).toContain("compact AGENTS.md");
+    expect(wrapped.indexOf("compact AGENTS.md")).toBeLessThan(
+      wrapped.indexOf("</solla_vm_agent_context>"),
+    );
   });
 });

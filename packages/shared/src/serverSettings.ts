@@ -144,6 +144,7 @@ export function applyServerSettingsPatch(
     backgroundActivityProfile,
     backgroundActivity,
     orchestrator,
+    providerApiKeyAccountAction: _writeOnlyProviderApiKeyAction,
     ...patchForMerge
   } = patch;
   // Orchestrator API keys are write-only: they are carried by the patch so the
@@ -198,6 +199,12 @@ export function applyServerSettingsPatch(
   const next = deepMerge(current, patchForMerge);
   const nextWithReplacementsBase = {
     ...next,
+    ...(patch.fallbackModelPolicy !== undefined
+      ? { fallbackModelPolicy: patch.fallbackModelPolicy }
+      : {}),
+    ...(patch.threadModelPolicies !== undefined
+      ? { threadModelPolicies: { ...current.threadModelPolicies, ...patch.threadModelPolicies } }
+      : {}),
     ...(backgroundActivity !== undefined
       ? {
           backgroundActivity: {

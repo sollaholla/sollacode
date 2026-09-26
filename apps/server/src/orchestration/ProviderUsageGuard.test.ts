@@ -244,6 +244,9 @@ describe("modelCostMultiplier", () => {
   it("weights tokens by the model's cost tier and defaults to 1", () => {
     expect(modelCostMultiplier("claudeAgent", "claude-fable-5-1")).toBe(5);
     expect(modelCostMultiplier("claudeAgent", "claude-opus-5")).toBe(2.5);
+    expect(modelCostMultiplier("claudeAgent", "claude-opus-5-5")).toBe(2);
+    expect(modelCostMultiplier("claudeAgent", "claude-opus-5.5[1m]")).toBe(2);
+    expect(modelCostMultiplier("claudeAgent", "claude-opus-5-50")).toBe(2.5);
     expect(modelCostMultiplier("claudeAgent", "claude-sonnet-5")).toBe(1);
     expect(modelCostMultiplier("claudeAgent", "claude-haiku-4-5")).toBe(0.5);
     // Codex, relative to GPT-6 Astra (250 credits/MTok input).

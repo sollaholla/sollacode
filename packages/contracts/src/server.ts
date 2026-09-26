@@ -58,8 +58,34 @@ export const ServerProviderAuth = Schema.Struct({
   type: Schema.optional(TrimmedNonEmptyString),
   label: Schema.optional(TrimmedNonEmptyString),
   email: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * The command that signs this CLI in or switches its account, when the
+   * provider has one.
+   *
+   * A CLI sign-in is interactive - it prints a device code, or opens a browser
+   * and waits - so the app cannot run it fire-and-forget the way it runs an
+   * install. Carrying the exact command lets the card show it, which is the
+   * difference between "not signed in" and knowing what to do about it on a
+   * machine with no terminal in front of you.
+   */
+  signInCommand: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
+
+/**
+ * Why a provider is offering no models, when the reason is actionable.
+ *
+ * An empty model list on its own is indistinguishable from a provider that is
+ * merely still probing, so the picker drew a blank pane and left the person to
+ * guess. The states here are the two that a person can actually resolve, and
+ * `url` is what the UI turns into a working link.
+ */
+export const ServerProviderModelAccess = Schema.Struct({
+  state: Schema.Literals(["signed-out", "no-plan"]),
+  detail: TrimmedNonEmptyString,
+  url: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderModelAccess = typeof ServerProviderModelAccess.Type;
 
 export const ServerProviderModel = Schema.Struct({
   slug: TrimmedNonEmptyString,
@@ -252,12 +278,31 @@ export const ServerProvider = Schema.Struct({
   version: Schema.NullOr(TrimmedNonEmptyString),
   status: ServerProviderState,
   auth: ServerProviderAuth,
+  /** Set only when the provider serves no usable models for a reason the person can fix. */
+  modelAccess: Schema.optional(ServerProviderModelAccess),
   checkedAt: IsoDateTime,
   message: Schema.optional(TrimmedNonEmptyString),
   // Latest account-level usage snapshot reported by a provider health probe.
   // This is quota metadata only; producers must never place auth material here.
   accountUsage: Schema.optional(Schema.Unknown),
   accountUsageReportedAt: Schema.optional(IsoDateTime),
+  // Opaque account fingerprint for providers without public account IDs.
+  // Changing credentials must not reuse the previous account's cached usage.
+  accountUsageIdentity: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Whether this instance can sign in / switch accounts from inside the app.
+   *
+   * Mirrors the driver's `accountAuth` capability. The UI used to hardcode a
+   * driver list to answer this, which meant a driver that gained the
+   * capability kept being told to go and run a terminal command.
+   */
+  supportsAccountSwitch: Schema.optional(Schema.Boolean),
+  accountUsageStatus: Schema.optional(
+    Schema.Struct({
+      state: Schema.Literals(["available", "unavailable", "unsupported", "error"]),
+      message: Schema.optional(TrimmedNonEmptyString),
+    }),
+  ),
   // Optional for back-compat: every legacy producer omits this field and
   // an absent value is interpreted as `"available"` by consumers (see
   // `isProviderAvailable`). New `ProviderInstanceRegistry` outputs set it

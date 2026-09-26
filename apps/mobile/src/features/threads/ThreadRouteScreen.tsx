@@ -1,3 +1,5 @@
+import { ThreadOutboxRecovery } from "./ThreadOutboxRecovery";
+import { scriptsForThread } from "@t3tools/shared/projectScripts";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import {
   StackActions,
@@ -608,7 +610,13 @@ function ThreadRouteContent(
     gitOperationLabel: gitState.gitOperationLabel,
     canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
     canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
-    projectScripts: selectedThreadProject?.scripts ?? [],
+    projectScripts: selectedThreadProject
+      ? scriptsForThread(
+          selectedThreadProject.scripts,
+          selectedThreadProject.id,
+          selectedThread?.id ?? null,
+        )
+      : [],
     terminalSessions: terminalMenuSessions,
     showDirectFileControl: layout.usesSplitView,
     onOpenTerminal: handleOpenTerminal,
@@ -779,6 +787,12 @@ function ThreadRouteContent(
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
 
       <View className="flex-1 bg-screen">
+        {selectedThread && (
+          <ThreadOutboxRecovery
+            environmentId={selectedThread.environmentId}
+            threadId={selectedThread.id}
+          />
+        )}
         <ThreadDetailScreen
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           contentPresentation={contentPresentation}
@@ -820,6 +834,8 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
           onSendMessage={composer.onSendMessage}
+          onResumeSession={composer.onResumeSession}
+          isResumingSession={composer.isResumingSession}
           onPromoteQueuedMessages={composer.onPromoteQueuedMessages}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

@@ -28,6 +28,7 @@ import * as ServerSettingsModule from "./serverSettings.ts";
 
 const decodeSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+const encodeSettingsJson = Schema.encodeEffect(Schema.fromJsonString(ServerSettings));
 
 const makeServerSettingsLayer = () =>
   ServerSettingsModule.layer.pipe(
@@ -54,6 +55,203 @@ const makeFailingSecretStoreLayer = (cause: ServerSecretStore.SecretStoreError) 
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect(
+    "keeps the previous key and removes a staged replacement when settings persistence fails",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        let rejectSettingsWrite = false;
+        const guardedFs = {
+          ...fs,
+          rename: (from: string, to: string) =>
+            Effect.suspend(() =>
+              rejectSettingsWrite && to.endsWith("/settings.json")
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "rename",
+                      pathOrDescriptor: to,
+                      description: "Fixture write rejection",
+                    }),
+                  )
+                : fs.rename(from, to),
+            ),
+        };
+        yield* Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          const config = yield* ServerConfig.ServerConfig;
+          const instanceId = ProviderInstanceId.make("deepcode");
+          const action = {
+            action: "save",
+            instanceId,
+            id: "personal",
+            name: "Personal",
+            apiKey: "fixture-original-key",
+            baseUrl: "https://api.deepseek.com",
+            activate: true,
+          } as const;
+          yield* service.updateSettings({ providerApiKeyAccountAction: action });
+          const before = yield* fs.readFileString(config.settingsPath);
+          const files = yield* fs.readDirectory(config.secretsDir);
+          rejectSettingsWrite = true;
+          const result = yield* service
+            .updateSettings({
+              providerApiKeyAccountAction: { ...action, apiKey: "fixture-replacement-key" },
+            })
+            .pipe(Effect.result);
+          assert.strictEqual(result._tag, "Failure");
+          assert.strictEqual(yield* fs.readFileString(config.settingsPath), before);
+          assert.deepEqual((yield* fs.readDirectory(config.secretsDir)).sort(), files.sort());
+          assert.strictEqual((yield* service.getProviderApiKey(instanceId))?.apiKey, action.apiKey);
+        }).pipe(
+          Effect.provide(makeServerSettingsLayer()),
+          Effect.provideService(FileSystem.FileSystem, guardedFs),
+        );
+      }),
+  );
+
+  it.effect("saves, selects, rotates and removes named API keys without exposing credentials", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const instanceId = ProviderInstanceId.make("deepcode");
+      const save = (id: string, name: string, apiKey: string, activate: boolean) =>
+        service.updateSettings({
+          providerApiKeyAccountAction: {
+            action: "save",
+            instanceId,
+            id,
+            name,
+            apiKey,
+            activate,
+            baseUrl: "https://api.deepseek.com",
+          },
+        });
+      const first = yield* save("personal", "Personal", "sk-personal-1234", true);
+      assert.notInclude(yield* encodeSettingsJson(first), "sk-personal");
+      assert.notInclude(yield* fs.readFileString(config.settingsPath), "sk-personal");
+      assert.strictEqual(
+        (yield* service.getProviderApiKey(instanceId))?.apiKey,
+        "sk-personal-1234",
+      );
+      const oldCredentialId = first.providerApiKeyAccounts?.[instanceId]?.accounts[0]?.credentialId;
+      yield* save("work", "Work", "sk-work-5678", false);
+      assert.strictEqual((yield* service.getProviderApiKey(instanceId))?.account.name, "Personal");
+      yield* service.updateSettings({
+        providerApiKeyAccountAction: { action: "select", instanceId, id: "work" },
+      });
+      assert.strictEqual((yield* service.getProviderApiKey(instanceId))?.apiKey, "sk-work-5678");
+      const reloaded = yield* Effect.gen(function* () {
+        const fresh = yield* ServerSettingsModule.ServerSettingsService;
+        return yield* fresh.getProviderApiKey(instanceId);
+      }).pipe(
+        Effect.provide(ServerSettingsModule.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+      );
+      assert.strictEqual(reloaded?.apiKey, "sk-work-5678");
+      assert.isNull(
+        yield* service.getProviderApiKey(ProviderInstanceId.make("deepcode-unrelated")),
+      );
+      yield* save("personal", "Personal renamed", "sk-replacement-9999", true);
+      assert.strictEqual(
+        yield* fs.exists(`${config.secretsDir}/provider-api-key-deepcode-${oldCredentialId}.bin`),
+        false,
+      );
+      assert.strictEqual(
+        (yield* service.getProviderApiKey(instanceId))?.apiKey,
+        "sk-replacement-9999",
+      );
+      const renamed = yield* service.updateSettings({
+        providerApiKeyAccountAction: {
+          action: "save",
+          instanceId,
+          id: "personal",
+          name: "Home",
+          baseUrl: "https://api.deepseek.com",
+          activate: true,
+        },
+      });
+      assert.strictEqual(
+        (yield* service.getProviderApiKey(instanceId))?.apiKey,
+        "sk-replacement-9999",
+      );
+      assert.strictEqual(renamed.providerApiKeyAccounts?.[instanceId]?.accounts[0]?.name, "Home");
+      assert.strictEqual(
+        renamed.providerApiKeyAccounts?.[instanceId]?.accounts[0]?.keySuffix,
+        "9999",
+      );
+      yield* service.updateSettings({
+        providerApiKeyAccountAction: { action: "remove", instanceId, id: "personal" },
+      });
+      assert.isNull(yield* service.getProviderApiKey(instanceId));
+      const final = yield* service.getSettings;
+      assert.deepEqual(
+        final.providerApiKeyAccounts?.[instanceId]?.accounts.map((item) => item.name),
+        ["Work"],
+      );
+      assert.notInclude(
+        yield* encodeSettingsJson(ServerSettingsModule.redactServerSettingsForClient(final)),
+        "sk-",
+      );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect(
+    "rejects unknown accounts and endpoint changes without replacing the existing credential",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const instanceId = ProviderInstanceId.make("deepcode");
+        yield* service.updateSettings({
+          providerApiKeyAccountAction: {
+            action: "save",
+            instanceId,
+            id: "one",
+            name: "One",
+            apiKey: "sk-original",
+            activate: true,
+            baseUrl: "https://api.deepseek.com",
+          },
+        });
+        for (const action of [
+          { action: "select", instanceId, id: "missing" } as const,
+          {
+            action: "save",
+            instanceId,
+            id: "one",
+            name: "One",
+            activate: true,
+            baseUrl: "https://different.example",
+          } as const,
+          {
+            action: "save",
+            instanceId,
+            id: "other",
+            name: "one",
+            activate: true,
+            apiKey: "sk-other",
+            baseUrl: "https://api.deepseek.com",
+          } as const,
+          {
+            action: "save",
+            instanceId,
+            id: "other",
+            name: "Other",
+            activate: true,
+            apiKey: "sk-other",
+            baseUrl: "https://user:secret@example.com",
+          } as const,
+        ]) {
+          const result = yield* service
+            .updateSettings({ providerApiKeyAccountAction: action })
+            .pipe(Effect.result);
+          assert.strictEqual(result._tag, "Failure");
+          assert.strictEqual((yield* service.getProviderApiKey(instanceId))?.apiKey, "sk-original");
+        }
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("preserves context when reading a provider environment secret fails", () => {
     const platformCause = PlatformError.systemError({
       _tag: "PermissionDenied",

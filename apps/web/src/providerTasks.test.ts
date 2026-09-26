@@ -25,6 +25,77 @@ function activity(
 }
 
 describe("deriveProviderTasks", () => {
+  it("loads the final metadata replacement from a fresh persisted activity snapshot", () => {
+    // The SQL projection replaces progress and completion under one lifecycle ID.
+    // Only the started row and final metadata completion survive a fresh reload.
+    const rows = [
+      activity("task.started", "2026-01-01T00:00:00.000Z", {
+        taskId: "codex-subagent:child",
+        detail: "Codex subagent child",
+        taskType: "local_agent",
+      }),
+      activity("task.completed", "2026-01-01T00:00:01.000Z", {
+        taskId: "codex-subagent:child",
+        title: "Codex subagent /root/installed_task_probe",
+        status: "completed",
+        metadataOnly: true,
+        usage: { total_tokens: 1234 },
+      }),
+    ];
+    const tasks = deriveProviderTasks(rows, { nowMs: Date.parse("2026-01-01T00:00:02.000Z") });
+    NodeAssert.equal(tasks.length, 1);
+    NodeAssert.equal(tasks[0]?.title, "Codex subagent /root/installed_task_probe");
+    NodeAssert.equal(tasks[0]?.status, "completed");
+    NodeAssert.equal(tasks[0]?.totalTokens, 1234);
+  });
+
+  it("keeps provider token totals as snapshots and revives only an explicitly restarted task", () => {
+    const rows = [
+      activity("task.started", "2026-08-01T10:00:00Z", {
+        taskId: "codex-subagent:child",
+        detail: "Codex subagent image preview",
+        taskType: "local_agent",
+      }),
+      activity("task.progress", "2026-08-01T10:00:05Z", {
+        taskId: "codex-subagent:child",
+        title: "Codex subagent image preview",
+        usage: { total_tokens: 1234 },
+      }),
+      activity("task.progress", "2026-08-01T10:00:06Z", {
+        taskId: "codex-subagent:child",
+        title: "Codex subagent image preview",
+        usage: { total_tokens: 1234 },
+      }),
+      activity("task.completed", "2026-08-01T10:00:07Z", {
+        taskId: "codex-subagent:child",
+        status: "completed",
+      }),
+    ];
+    NodeAssert.equal(
+      deriveProviderTasks(rows, { nowMs: Date.parse("2026-08-01T10:01:00Z") })[0]?.totalTokens,
+      1234,
+    );
+    NodeAssert.equal(
+      deriveProviderTasks(rows, { nowMs: Date.parse("2026-08-01T10:01:00Z") })[0]?.status,
+      "completed",
+    );
+    rows.push(
+      activity("task.started", "2026-08-01T10:00:08Z", {
+        taskId: "codex-subagent:child",
+        detail: "Codex subagent image preview",
+      }),
+    );
+    NodeAssert.equal(
+      deriveProviderTasks(rows, { nowMs: Date.parse("2026-08-01T10:01:00Z") })[0]?.status,
+      "running",
+    );
+    NodeAssert.equal(
+      deriveProviderTasks([rows[0]!], { nowMs: Date.parse("2026-08-01T10:01:00Z") })[0]
+        ?.totalTokens,
+      null,
+    );
+  });
+
   it("folds start, progress and completion into one row", () => {
     const tasks = deriveProviderTasks(
       [
@@ -113,6 +184,29 @@ describe("deriveProviderTasks", () => {
       { nowMs: Date.parse("2026-08-01T10:00:02Z"), providerSessionEnded: true },
     );
     NodeAssert.equal(settled[0]?.status, "failed");
+  });
+
+  it("retains a newly stopped long-running command from the session end time", () => {
+    const activities = [
+      activity("task.started", "2026-08-01T10:00:00Z", {
+        taskId: "capture",
+        taskType: "local_bash",
+        detail: "Capture the ground camera",
+      }),
+    ];
+    const options = { providerSessionEnded: true, providerSessionEndedAt: "2026-08-01T11:00:00Z" };
+    const tasks = deriveProviderTasks(activities, {
+      ...options,
+      nowMs: Date.parse("2026-08-01T11:01:00Z"),
+    });
+    NodeAssert.equal(tasks.length, 1);
+    NodeAssert.equal(tasks[0]?.status, "stopped");
+    NodeAssert.equal(tasks[0]?.updatedAt, options.providerSessionEndedAt);
+    NodeAssert.equal(
+      deriveProviderTasks(activities, { ...options, nowMs: Date.parse("2026-08-01T11:11:00Z") })
+        .length,
+      0,
+    );
   });
 
   it("preserves a failed status rather than overwriting it", () => {
@@ -296,6 +390,31 @@ describe("deriveProviderTasks", () => {
     );
   });
 
+  it("keeps a Monitor watching until the provider reports its terminal state", () => {
+    const start = activity("task.started", "2026-08-01T10:00:00Z", {
+      taskId: "watch",
+      taskType: "local_monitor",
+      detail: "Watch the build log",
+    });
+    const [watching] = deriveProviderTasks([start], { nowMs: Date.parse("2026-08-01T10:01:00Z") });
+    NodeAssert.ok(watching);
+    NodeAssert.equal(providerTaskTypeLabel(watching), "Monitor");
+    NodeAssert.equal(providerTaskStatusLabel(watching), "Watching");
+    const [finished] = deriveProviderTasks(
+      [
+        start,
+        activity("task.completed", "2026-08-01T10:02:00Z", {
+          taskId: "watch",
+          status: "completed",
+        }),
+      ],
+      { nowMs: Date.parse("2026-08-01T10:02:01Z") },
+    );
+    NodeAssert.ok(finished);
+    NodeAssert.equal(providerTaskStatusLabel(finished), "Completed");
+    NodeAssert.equal(countActiveProviderTasks([finished]), 0);
+  });
+
   it("labels task types and statuses for display", () => {
     const [task] = deriveProviderTasks(
       [
@@ -356,31 +475,25 @@ describe("canStopProviderTask", () => {
     };
   }
 
-  it("allows stopping a running task on a runtime with a per-task kill", () => {
-    NodeAssert.equal(canStopProviderTask({ task: task(), driverKind: "claudeAgent" }), true);
-    NodeAssert.equal(canStopProviderTask({ task: task(), driverKind: "grok" }), true);
-  });
-
-  it("refuses when the driver has no per-task stop channel", () => {
-    NodeAssert.equal(canStopProviderTask({ task: task(), driverKind: "codex" }), false);
-    NodeAssert.equal(canStopProviderTask({ task: task(), driverKind: null }), false);
+  /**
+   * There is no driver input any more, and that is the fix: only Claude and
+   * Grok announce tasks, so a row still showing under Muse belongs to a
+   * runtime the provider switch already tore down. Gating the control on the
+   * current driver hid it exactly there, leaving the row claiming to run
+   * forever with nothing to press. The server settles that row instead.
+   */
+  it("allows stopping a running task whatever the thread is running now", () => {
+    NodeAssert.equal(canStopProviderTask({ task: task() }), true);
   });
 
   it("refuses on anything not confidently running", () => {
     for (const status of ["stale", "completed", "failed", "stopped"] as const) {
-      NodeAssert.equal(
-        canStopProviderTask({ task: task({ status }), driverKind: "claudeAgent" }),
-        false,
-        status,
-      );
+      NodeAssert.equal(canStopProviderTask({ task: task({ status }) }), false, status);
     }
   });
 
   it("refuses on server-side plan refreshes, which have no provider task behind them", () => {
-    NodeAssert.equal(
-      canStopProviderTask({ task: task({ taskType: "plan-refresh" }), driverKind: "claudeAgent" }),
-      false,
-    );
+    NodeAssert.equal(canStopProviderTask({ task: task({ taskType: "plan-refresh" }) }), false);
   });
 });
 

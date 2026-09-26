@@ -486,7 +486,18 @@ function flattenThreadTerminalGroups(state: ThreadTerminalUiState): ThreadTermin
     layout: {
       kind: "split",
       direction: children.length <= 2 ? "horizontal" : "vertical",
-      children,
+      children:
+        children.length <= 2
+          ? children
+          : Array.from(
+              { length: Math.ceil(children.length / 2) },
+              (_, index): TerminalPaneLayout => {
+                const row = children.slice(index * 2, index * 2 + 2);
+                return row.length === 1
+                  ? row[0]!
+                  : { kind: "split", direction: "horizontal", children: row };
+              },
+            ),
     },
   };
   return normalizeThreadTerminalUiState({
@@ -1118,7 +1129,7 @@ interface TerminalUiStateStoreState {
 
 export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
   persist(
-    (set) => {
+    (set, get) => {
       const updateTerminal = (
         threadRef: ScopedThreadRef,
         updater: (
@@ -1365,8 +1376,19 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             if (normalized.terminalIds.length === 0) {
               return normalized;
             }
+            // A remote snapshot can arrive halfway through a multi-pane launch.
+            // Keep the entire edited group while any of its opens are pending.
+            const pendingIds = new Set(
+              get().pendingOpenTerminalIdsByThreadKey[terminalThreadKey(threadRef)] ?? [],
+            );
+            const remoteIds = new Set(remoteGroups.flatMap((group) => group.terminalIds));
+            const pendingGroups = normalized.terminalGroups.filter(
+              (group) =>
+                group.terminalIds.length > 1 &&
+                group.terminalIds.some((id) => pendingIds.has(id) && !remoteIds.has(id)),
+            );
             const projected = normalizeTerminalGroups(
-              remoteTerminalGroupsToLocal(remoteGroups),
+              [...pendingGroups, ...remoteTerminalGroupsToLocal(remoteGroups)],
               normalized.terminalIds,
             );
             if (terminalGroupsEqual(normalized.terminalGroups, projected)) {

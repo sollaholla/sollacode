@@ -10,7 +10,16 @@ import type {
 } from "@t3tools/contracts";
 import { terminalSubprocessIsWorking } from "@t3tools/shared/terminalProvider";
 
+export interface TerminalStreamCursor {
+  /** Local snapshot identity; preserved by output appends and replaced on resubscription. */
+  readonly generation: object;
+  readonly offset: number;
+}
+
 export interface TerminalSessionState {
+  readonly replayGeometry?: { readonly cols: number; readonly rows: number } | undefined;
+  readonly replayComplete?: boolean | undefined;
+  readonly streamCursor?: TerminalStreamCursor | undefined;
   readonly summary: TerminalSummary | null;
   readonly buffer: string;
   readonly status: TerminalSessionSnapshot["status"] | "closed";
@@ -22,6 +31,10 @@ export interface TerminalSessionState {
 }
 
 export interface TerminalBufferState {
+  readonly replayGeometry?: { readonly cols: number; readonly rows: number } | undefined;
+  readonly replayComplete?: boolean | undefined;
+  readonly bufferBytes?: number;
+  readonly streamCursor?: TerminalStreamCursor | undefined;
   readonly buffer: string;
   readonly status: TerminalSessionSnapshot["status"] | "closed";
   readonly error: string | null;
@@ -93,12 +106,43 @@ function trimBufferToBytes(buffer: string, maxBufferBytes: number): string {
   return textDecoder.decode(encoded.subarray(start));
 }
 
+/** Trim only the discarded prefix instead of encoding the entire retained history per PTY read. */
+function appendTerminalBuffer(current: TerminalBufferState, data: string, maxBytes: number) {
+  const joined = current.buffer + data;
+  let bytes =
+    (current.bufferBytes ?? textEncoder.encode(current.buffer).byteLength) +
+    textEncoder.encode(data).byteLength;
+  const last = current.buffer.charCodeAt(current.buffer.length - 1);
+  const first = data.charCodeAt(0);
+  if (last >= 0xd800 && last <= 0xdbff && first >= 0xdc00 && first <= 0xdfff) bytes -= 2;
+  let start = 0;
+  while (bytes > Math.max(0, maxBytes) && start < joined.length) {
+    const point = joined.codePointAt(start)!;
+    bytes -= point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    start += point > 0xffff ? 2 : 1;
+  }
+  return {
+    buffer: joined.slice(start),
+    bufferBytes: bytes,
+    replayComplete: current.replayComplete !== false && start === 0,
+  };
+}
+
 export function terminalBufferStateFromSnapshot(
   snapshot: TerminalSessionSnapshot,
   maxBufferBytes: number,
 ): TerminalBufferState {
+  // A serialized screen is already bounded by dropping whole scrollback rows.
+  // Cutting it again can discard its modes or half of a cursor command.
+  const buffer = snapshot.screen?.data ?? trimBufferToBytes(snapshot.history, maxBufferBytes);
   return {
-    buffer: trimBufferToBytes(snapshot.history, maxBufferBytes),
+    buffer,
+    replayGeometry: snapshot.screen
+      ? { cols: snapshot.screen.cols, rows: snapshot.screen.rows }
+      : undefined,
+    replayComplete: true,
+    streamCursor: { generation: {}, offset: buffer.length },
+    bufferBytes: textEncoder.encode(buffer).byteLength,
     status: snapshot.status,
     error: null,
     updatedAt: snapshot.updatedAt,
@@ -119,6 +163,9 @@ export function combineTerminalSessionState(
   return {
     summary,
     buffer: buffer.buffer,
+    replayGeometry: buffer.replayGeometry,
+    replayComplete: buffer.replayComplete,
+    streamCursor: buffer.streamCursor,
     status: buffer.version > 0 ? buffer.status : (summary?.status ?? buffer.status),
     error: buffer.error,
     hasRunningSubprocess: summary?.hasRunningSubprocess ?? false,
@@ -140,11 +187,18 @@ export function applyTerminalAttachStreamEvent(
   switch (event.type) {
     case "snapshot":
     case "restarted":
-      return terminalBufferStateFromSnapshot(event.snapshot, maxBufferBytes);
+      return {
+        ...terminalBufferStateFromSnapshot(event.snapshot, maxBufferBytes),
+        version: current.version + 1,
+      };
     case "output":
       return {
         ...current,
-        buffer: trimBufferToBytes(`${current.buffer}${event.data}`, maxBufferBytes),
+        ...appendTerminalBuffer(current, event.data, maxBufferBytes),
+        streamCursor: {
+          generation: current.streamCursor?.generation ?? {},
+          offset: (current.streamCursor?.offset ?? current.buffer.length) + event.data.length,
+        },
         status: current.status === "closed" ? "running" : current.status,
         error: null,
         version: current.version + 1,
@@ -153,6 +207,9 @@ export function applyTerminalAttachStreamEvent(
       return {
         ...current,
         buffer: "",
+        bufferBytes: 0,
+        replayComplete: true,
+        streamCursor: { generation: {}, offset: 0 },
         error: null,
         version: current.version + 1,
       };

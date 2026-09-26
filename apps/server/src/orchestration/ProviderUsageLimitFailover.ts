@@ -1,5 +1,6 @@
 import type {
   ModelSelection,
+  ModelAccessPolicy,
   OrchestrationMessage,
   OrchestrationThreadActivity,
   ProviderDriverKind,
@@ -9,6 +10,14 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
+
+import { modelAccessPoliciesAllow } from "@t3tools/shared/modelAccessPolicy";
+import { antigravityUsageModelFamily } from "@t3tools/shared/model";
+import { parseDeepCodeBalance } from "@t3tools/shared/deepcodeUsage";
+import { providerDriverHasSollaMcpTools } from "@t3tools/shared/providerDrivers";
+import { antigravityUsageWindowsFromAccountUsage } from "../provider/antigravityUsage.ts";
+import { isDeepCodeContextOverflow } from "../provider/deepcodeContext.ts";
+import { DEEPCODE_PROGRESS_TIMEOUT_MESSAGE } from "../provider/deepcodeProtocol.ts";
 
 import { contextRecoveryReminder } from "../provider/contextRecovery.ts";
 
@@ -81,9 +90,13 @@ function latestResetAt(records: ReadonlyArray<UnknownRecord | undefined>): numbe
   return resetAt;
 }
 
-function detectCodexExhaustion(rateLimits: unknown): ProviderUsageLimitExhaustion | null {
+function codexSnapshotOf(rateLimits: unknown): UnknownRecord | undefined {
   const envelope = asRecord(rateLimits);
-  const snapshot = asRecord(envelope?.rateLimits) ?? envelope;
+  return asRecord(envelope?.rateLimits) ?? envelope;
+}
+
+function detectCodexExhaustion(rateLimits: unknown): ProviderUsageLimitExhaustion | null {
+  const snapshot = codexSnapshotOf(rateLimits);
   if (!snapshot) {
     return null;
   }
@@ -147,10 +160,399 @@ function detectGrokExhaustion(rateLimits: unknown): ProviderUsageLimitExhaustion
 }
 
 /**
+ * Whether Codex reports fallback credit that keeps serving past the end of
+ * the included-quota window. Unknown means yes: an absent or unparseable
+ * credit reading must not move a thread off the model the user chose.
+ */
+function codexHasFallbackCredit(snapshot: UnknownRecord): boolean {
+  const credits = asRecord(snapshot.credits);
+  if (!credits) return true;
+  if (credits.unlimited === true) return true;
+  if (credits.hasCredits === true) return true;
+  const balance = credits.balance;
+  if (typeof balance === "number") return balance > 0;
+  if (typeof balance === "string") {
+    const stripped = balance.replace(/[^0-9.-]/g, "");
+    // An unparseable balance says nothing; assume fallback remains.
+    if (stripped.length === 0) return true;
+    const numeric = Number(stripped);
+    if (!Number.isFinite(numeric)) return true;
+    return numeric > 0;
+  }
+  return false;
+}
+
+function codexWindowSpent(window: UnknownRecord | undefined, nowEpochMs: number | null): boolean {
+  if (!window) return false;
+  const usedPercent = finiteNumber(window.usedPercent);
+  if (usedPercent === undefined || usedPercent < QUOTA_EXHAUSTED_PERCENT) return false;
+  const resetAt = epochMilliseconds(window.resetsAt);
+  // A window that already rolled over is stale rather than spent.
+  if (resetAt !== null && nowEpochMs !== null && resetAt <= nowEpochMs) return false;
+  return true;
+}
+
+/**
+ * Whether a Codex quota snapshot shows a spent window with no fallback credit
+ * behind it. This never triggers a failover on its own — a bare 100% reading
+ * must not take a thread off its chosen model — but it corroborates a refusal
+ * (see `detectProviderUsageLimitRefusal`) and screens spent Codex instances
+ * out of failover targets.
+ */
+export function isCodexQuotaWindowExhausted(
+  rateLimits: unknown,
+  nowEpochMs?: number | null,
+): boolean {
+  const snapshot = codexSnapshotOf(rateLimits);
+  if (!snapshot) return false;
+  if (codexHasFallbackCredit(snapshot)) return false;
+  const now = nowEpochMs ?? null;
+  return (
+    codexWindowSpent(asRecord(snapshot.primary), now) ||
+    codexWindowSpent(asRecord(snapshot.secondary), now)
+  );
+}
+
+/**
+ * Codex's canonical usage-limit refusal. Observed 2026-09-14: "You've hit
+ * your usage limit. Visit https://chatgpt.com/codex/settings/usage to
+ * purchase more credits or try again at Sep 19th, 2026 6:19 PM." — while the
+ * typed snapshot still read `rateLimitReachedType: null`.
+ */
+function isCodexUsageLimitRefusal(message: string): boolean {
+  return (
+    /you(?:'|\u2019)?ve hit your usage limit/i.test(message) ||
+    (/usage limit/i.test(message) && /purchase more credits/i.test(message))
+  );
+}
+
+/**
+ * Google's canonical quota rejection, matched by the Antigravity adapter from
+ * the CLI's own `Run: attempt N failed (RESOURCE_EXHAUSTED (code 429) …)`
+ * line and re-emitted verbatim. The text never names which family pool died,
+ * so the stored windows decide that below.
+ */
+function isAntigravityQuotaRejection(message: string): boolean {
+  return (
+    /rejected by Google with RESOURCE_EXHAUSTED \(429\)/i.test(message) ||
+    (/RESOURCE_EXHAUSTED/i.test(message) && /429/.test(message))
+  );
+}
+
+function isClaudeUsageLimitRefusal(message: string): boolean {
+  return (
+    (/you(?:'|\u2019)?ve hit your/i.test(message) && /limit|quota|\bcap\b/i.test(message)) ||
+    /session limit/i.test(message)
+  );
+}
+
+/** Mirror of the per-model screen in `failoverModel`: spent and unexpired. */
+function isAntigravityWindowExhausted(
+  window: { readonly usedPercent: number; readonly resetsAt: string | null },
+  nowEpochMs: number | null,
+): boolean {
+  return (
+    window.usedPercent >= QUOTA_EXHAUSTED_PERCENT &&
+    (window.resetsAt === null || nowEpochMs === null || Date.parse(window.resetsAt) > nowEpochMs)
+  );
+}
+
+/**
+ * Whether an Antigravity quota rejection spends the whole instance. One dead
+ * family pool must not exile the others: when any known window still has
+ * quota, the same instance stays eligible and `failoverModel` walks to the
+ * surviving family. Unknown windows (no probe yet) also stay eligible; a
+ * rejection the windows cannot explain still moves the thread, and the
+ * per-model exclusions converge if the next pool rejects too.
+ */
+export function isAntigravityExhaustionAccountWide(
+  accountUsage: unknown,
+  nowEpochMs?: number | null,
+): boolean {
+  const now = nowEpochMs ?? null;
+  const windows = antigravityUsageWindowsFromAccountUsage(accountUsage);
+  if (windows.length === 0) return false;
+  return !windows.some((window) => !isAntigravityWindowExhausted(window, now));
+}
+
+/** Latest unexpired family reset, for restore-on-reset. Null when unknown. */
+function antigravityUnexpiredResetMax(
+  accountUsage: unknown,
+  nowEpochMs?: number | null,
+): number | null {
+  const now = nowEpochMs ?? null;
+  let latest: number | null = null;
+  for (const window of antigravityUsageWindowsFromAccountUsage(accountUsage)) {
+    if (window.resetsAt === null) continue;
+    const resetAtMs = Date.parse(window.resetsAt);
+    if (!Number.isFinite(resetAtMs)) continue;
+    if (now !== null && resetAtMs <= now) continue;
+    if (latest === null || resetAtMs > latest) latest = resetAtMs;
+  }
+  return latest;
+}
+
+/**
+ * A spent Claude window corroborating a rejection that arrived as text. Uses
+ * the same window predicate as the typed path, so text only ever confirms
+ * what the snapshot already proves. The reason names the first spent window
+ * found; any of them justifies leaving.
+ */
+function detectClaudeSpentWindowExhaustion(
+  accountUsage: unknown,
+  nowEpochMs: number | null,
+): ProviderUsageLimitExhaustion | null {
+  const envelope = asRecord(accountUsage);
+  const rateLimits = asRecord(envelope?.rate_limits);
+  if (!rateLimits) return null;
+  const candidates: Array<{ readonly key: string; readonly window: UnknownRecord }> = [];
+  for (const [key, value] of Object.entries(rateLimits)) {
+    const window = asRecord(value);
+    if (window) candidates.push({ key, window });
+  }
+  for (const key of ["model_scoped", "limits"] as const) {
+    const entries = rateLimits[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const window = asRecord(entry);
+      if (window) candidates.push({ key, window });
+    }
+  }
+  for (const { key, window } of candidates) {
+    if (!isWindowExhausted(window, nowEpochMs)) continue;
+    return {
+      reason: boundedMetadata(`rate_limit_window_exhausted:${key}`),
+      resetsAt:
+        epochMilliseconds(window.resets_at ?? window.resetsAt) ??
+        epochMilliseconds(window.overageResetsAt),
+    };
+  }
+  return null;
+}
+
+/**
+ * A usage-limit refusal carried as provider error text, corroborated by the
+ * provider's latest quota snapshot. Text alone never switches providers (an
+ * unrelated failure or a translated message must not move a thread), and a
+ * bare 100% window alone never does either (fallback credit keeps serving
+ * past it) — but a refusal naming a spent window with no fallback credit is
+ * the provider saying it stopped, exactly like a typed rejection.
+ *
+ * Antigravity is the exception to corroboration: it has no live quota stream,
+ * only lagging `agy /usage` probes, while its 429 text is already a positive
+ * rejection the adapter matched from the CLI's own retry-exhaustion line. The
+ * windows still decide the scope (one dead pool keeps the instance eligible)
+ * and the restore time, but a rejection never waits on them.
+ *
+ * The Deep Code stall marker is the other exception: the adapter measured five
+ * silent minutes itself and killed the wedged request, so the exact marker is
+ * already the positive signal and no quota snapshot confirms it.
+ */
+/**
+ * The provider refused the shape of the request, not the work in it. Another
+ * provider speaks a different protocol and may well accept the same turn, and
+ * no amount of retrying changes what we send.
+ */
+const PROTOCOL_REJECTION_SIGNATURES: ReadonlyArray<RegExp> = [
+  /\binvalid params\b/iu,
+  /\binvalid request\b/iu,
+  /\bmethod not found\b/iu,
+];
+
+/**
+ * Provider-side failures that a DIFFERENT provider can serve right now.
+ *
+ * Quota exhaustion already moves a thread instead of parking it; everything
+ * else fell through to the generic retry budget and left the thread stopped
+ * behind a banner, which is the same outcome the failover exists to avoid
+ * (2026-09-18: a DeepCode thread paused on "model stream idle timeout after
+ * 180000ms", an OpenCode thread on a model its gateway had dropped, and a
+ * Grok thread on an exhausted balance — three usable providers sat idle in
+ * every case).
+ *
+ * Deliberately narrow. Each entry is a failure the SAME provider will keep
+ * producing and a human cannot clear mid-turn, so retrying it is waste and
+ * moving is strictly better. Authentication is excluded on purpose: it has
+ * its own blocked state and the user must act on that provider, not be
+ * quietly moved off it. Context overflow, transient upstream 5xx and
+ * user-initiated stops are excluded because they each own a better recovery.
+ */
+const PROVIDER_UNUSABLE_SIGNATURES: ReadonlyArray<RegExp> = [
+  /\busage balance exhausted\b/iu,
+  /\bno credit left\b/iu,
+  /\bHTTP 402\b/iu,
+  /\bpayment required\b/iu,
+  /\bstream idle timeout after \d+\s*ms\b/iu,
+  /\bmodel not found\b/iu,
+  /\bmodel is (?:no longer |not )available\b/iu,
+  // JSON-RPC rejections of the request ITSELF. The identical request fails
+  // identically every time, so the retry budget is pure waste: a Grok thread
+  // burned eight attempts on a bare "Invalid params" over two minutes and
+  // then parked, while Muse sat at 9% used (2026-09-19).
+  ...PROTOCOL_REJECTION_SIGNATURES,
+];
+
+/** Cap for the same reason as the other classifiers: prose is not a status. */
+const PROVIDER_UNUSABLE_MAX_CHARS = 600;
+
+/**
+ * The subset whose cause is the ACCOUNT, not the model: no balance, no
+ * credit, payment required. Another model on the same provider bills the same
+ * empty account, so the whole instance has to come out of the running — the
+ * first cut of this moved an exhausted Grok thread from grok-4.6 to grok-4.5
+ * and failed again half a second later (2026-09-18).
+ */
+const ACCOUNT_WIDE_UNUSABLE_SIGNATURES: ReadonlyArray<RegExp> = [
+  /\busage balance exhausted\b/iu,
+  /\bno credit left\b/iu,
+  /\bHTTP 402\b/iu,
+  /\bpayment required\b/iu,
+  // A protocol rejection is the provider's, not the model's: every model
+  // behind it speaks the same protocol and rejects the same request.
+  ...PROTOCOL_REJECTION_SIGNATURES,
+];
+
+export function isAccountWideUnusableRefusal(message: string): boolean {
+  const trimmed = message.trim();
+  if (trimmed.length === 0 || trimmed.length > PROVIDER_UNUSABLE_MAX_CHARS) return false;
+  return ACCOUNT_WIDE_UNUSABLE_SIGNATURES.some((pattern) => pattern.test(trimmed));
+}
+
+export function detectProviderUnusableRefusal(
+  message: string,
+): ProviderUsageLimitExhaustion | null {
+  const trimmed = message.trim();
+  if (trimmed.length === 0 || trimmed.length > PROVIDER_UNUSABLE_MAX_CHARS) return null;
+  return PROVIDER_UNUSABLE_SIGNATURES.some((pattern) => pattern.test(trimmed))
+    ? { reason: "provider_unusable", resetsAt: null }
+    : null;
+}
+
+export function detectProviderUsageLimitRefusal(
+  driver: ProviderDriverKind,
+  message: string,
+  accountUsage: unknown,
+  nowEpochMs?: number | null,
+): ProviderUsageLimitExhaustion | null {
+  const driverName = String(driver);
+  if (driverName === "codex") {
+    if (!isCodexUsageLimitRefusal(message)) return null;
+    const typed = detectCodexExhaustion(accountUsage);
+    if (typed) return typed;
+    if (!isCodexQuotaWindowExhausted(accountUsage, nowEpochMs ?? null)) return null;
+    const snapshot = codexSnapshotOf(accountUsage);
+    return {
+      reason: "usage_limit_refused",
+      resetsAt: latestResetAt([asRecord(snapshot?.primary), asRecord(snapshot?.secondary)]),
+    };
+  }
+  if (driverName === "antigravity") {
+    if (!isAntigravityQuotaRejection(message)) return null;
+    return {
+      reason: "resource_exhausted",
+      resetsAt: antigravityUnexpiredResetMax(accountUsage, nowEpochMs ?? null),
+    };
+  }
+  if (driverName === CLAUDE_DRIVER) {
+    if (!isClaudeUsageLimitRefusal(message)) return null;
+    return (
+      detectClaudeExhaustion(accountUsage) ??
+      detectClaudeSpentWindowExhaustion(accountUsage, nowEpochMs ?? null)
+    );
+  }
+  if (driverName === "deepcode") {
+    if (message !== DEEPCODE_PROGRESS_TIMEOUT_MESSAGE) return null;
+    const now = nowEpochMs ?? null;
+    return {
+      reason: "upstream_stalled",
+      resetsAt: now === null ? null : now + DEEPCODE_STALL_RESTORE_DELAY_MS,
+    };
+  }
+  return null;
+}
+
+export type DeferredRecoveryKind =
+  | "usage-exhaustion"
+  | "context-overflow-retry"
+  | "progress-timeout-retry";
+
+export type DeferredRecoveryAction =
+  | { readonly kind: "exhaustion"; readonly target: ProviderFailoverTarget | null }
+  | { readonly kind: "silent-retry" }
+  | null;
+
+/**
+ * What a deferred failure wants from its obligation: retry quietly while
+ * recovery is live, record exactly once when it gives up, or fall through to
+ * the generic record-and-recover path when no recovery applies.
+ *
+ * Exhaustion retries until the generic cap because each round trip may land
+ * on a new provider; silent retries get a tight budget because a second
+ * identical stall is deterministic, not a wobble.
+ */
+export function decideDeferredRecoveryOutcome(
+  action: DeferredRecoveryAction,
+  attempt: number,
+  caps: { readonly maxAttempts: number; readonly silentRetryMaxAttempts: number },
+): "retry" | "record-and-cancel" | "fall-through" {
+  if (action?.kind === "exhaustion" && action.target !== null) {
+    return attempt >= caps.maxAttempts ? "record-and-cancel" : "retry";
+  }
+  if (action?.kind === "silent-retry" && attempt < caps.silentRetryMaxAttempts) {
+    return "retry";
+  }
+  if (action !== null) return "record-and-cancel";
+  return "fall-through";
+}
+
+/**
+ * Failures whose recovery owns the outcome, so surfacing them would only
+ * flash an error the system immediately contradicts:
+ *
+ * - usage-exhaustion: failover moves the thread while quota remains
+ *   elsewhere;
+ * - context-overflow-retry: DeepCode retries the same turn with a smaller
+ *   working context;
+ * - progress-timeout-retry: a stalled Muse turn restarts on a fresh host,
+ *   and a finished-but-unverified delivery resumes to recover its saved
+ *   response instead of redoing work.
+ *
+ * Every kind records exactly once if recovery gives up; until then, callers
+ * stay silent.
+ */
+export function classifyDeferredRecoveryFailure(input: {
+  readonly driver: ProviderDriverKind;
+  readonly message: string;
+  readonly accountUsage?: unknown;
+  readonly nowEpochMs?: number | null;
+}): DeferredRecoveryKind | null {
+  const driverName = String(input.driver);
+  if (
+    detectProviderUsageLimitRefusal(
+      input.driver,
+      input.message,
+      input.accountUsage,
+      input.nowEpochMs ?? null,
+    ) !== null
+  ) {
+    return "usage-exhaustion";
+  }
+  if (driverName === "deepcode" && isDeepCodeContextOverflow(input.message)) {
+    return "context-overflow-retry";
+  }
+  if (driverName === "muse" && /\[muse-progress-timeout\]/i.test(input.message)) {
+    return "progress-timeout-retry";
+  }
+  return null;
+}
+
+/**
  * Returns an exhaustion signal only for provider adapters that expose a typed,
  * canonical account rate-limit event. Text matching provider errors is
  * intentionally avoided because it would switch providers on unrelated
- * failures and translated CLI output.
+ * failures and translated CLI output; the one exception is a refusal text
+ * corroborated by a spent quota snapshot (see
+ * `detectProviderUsageLimitRefusal`).
  */
 export function detectProviderUsageLimitExhaustion(
   driver: ProviderDriverKind,
@@ -163,6 +565,10 @@ export function detectProviderUsageLimitExhaustion(
       return detectClaudeExhaustion(rateLimits);
     case "grok":
       return detectGrokExhaustion(rateLimits);
+    case "deepcode":
+      return parseDeepCodeBalance(rateLimits)?.is_available === false
+        ? { reason: "insufficient_account_credit", resetsAt: null }
+        : null;
     default:
       return null;
   }
@@ -170,6 +576,8 @@ export function detectProviderUsageLimitExhaustion(
 
 const CLAUDE_DRIVER = "claudeAgent";
 const QUOTA_EXHAUSTED_PERCENT = 100;
+/** How long a stalled Deep Code account rests before the thread may return. */
+const DEEPCODE_STALL_RESTORE_DELAY_MS = 30 * 60 * 1000;
 
 /**
  * Claude meters these model families against their own quota window, so one
@@ -230,12 +638,19 @@ function isClaudeAccountWideLimitKey(key: string): boolean {
 /**
  * Codex and Grok meter the whole account. Claude only does so for shared
  * windows such as the five-hour session or weekly cap; a Fable-only rejection
- * must not disqualify Opus 5 on the same instance.
+ * must not disqualify Opus 5 on the same instance. Antigravity reads its
+ * family windows: one dead pool keeps the instance eligible so the fallback
+ * walks to the surviving family.
  */
 export function isAccountWideProviderExhaustion(
   driver: ProviderDriverKind,
   exhaustion: ProviderUsageLimitExhaustion,
+  accountUsage?: unknown,
+  nowEpochMs?: number | null,
 ): boolean {
+  if (String(driver) === "antigravity") {
+    return isAntigravityExhaustionAccountWide(accountUsage, nowEpochMs ?? null);
+  }
   if (String(driver) !== CLAUDE_DRIVER) {
     return true;
   }
@@ -406,18 +821,38 @@ function isEligibleTarget(provider: ServerProvider): boolean {
   );
 }
 
-/**
- * Registry order is capability order (highest first), so the preferred default
- * is used when it still has quota and otherwise the next-highest usable model
- * takes over. Returns null when every model of this provider is spent.
- */
+/** Highest Claude tier first, then newest version, independent of CLI menu order. */
+function compareClaudeModels(a: ServerProviderModel, b: ServerProviderModel): number {
+  const tiers = ["fable", "opus", "sonnet", "haiku"];
+  const tier = (slug: string) => {
+    const index = tiers.findIndex((family) => slug.toLowerCase().includes(family));
+    return index < 0 ? tiers.length : index;
+  };
+  const tierDifference = tier(a.slug) - tier(b.slug);
+  if (tierDifference !== 0) return tierDifference;
+  return b.slug.localeCompare(a.slug, "en", { numeric: true });
+}
+
+/** Select the highest usable Claude model before other provider defaults. */
 function failoverModel(
   provider: ServerProvider,
   nowEpochMs: number | null,
   skipSlugs?: ReadonlySet<string>,
 ): ServerProviderModel | null {
+  const antigravityWindows =
+    provider.driver === "antigravity"
+      ? antigravityUsageWindowsFromAccountUsage(provider.accountUsage)
+      : [];
   const usable = provider.models.filter((entry) => {
     if (skipSlugs?.has(entry.slug)) return false;
+    if (
+      antigravityWindows.some(
+        (window) =>
+          window.family === antigravityUsageModelFamily(entry.slug) &&
+          isAntigravityWindowExhausted(window, nowEpochMs),
+      )
+    )
+      return false;
     if (String(provider.driver) !== CLAUDE_DRIVER) return true;
     return !isClaudeModelExhausted({
       accountUsage: provider.accountUsage,
@@ -425,6 +860,27 @@ function failoverModel(
       nowEpochMs,
     });
   });
+  // Antigravity exhausts its Gemini pool before touching Claude or GPT: the
+  // Gemini quota is separate, and burning Claude first wastes the pool with
+  // the tighter limit. Claude tiers still order strongest-first once no
+  // usable Gemini model remains.
+  if (provider.driver === "antigravity") {
+    const gemini = usable.filter((entry) => antigravityUsageModelFamily(entry.slug) === "gemini");
+    const preferredGemini = gemini.find((entry) => entry.isDefault === true) ?? gemini[0] ?? null;
+    if (preferredGemini) return preferredGemini;
+    const claude = usable
+      .filter((entry) => claudeModelFamily(entry.slug) !== null)
+      .sort(compareClaudeModels);
+    if (claude[0]) return claude[0];
+  }
+  // Secondary models follow the same policy as Fable -> Opus: choose the
+  // strongest remaining Claude tier rather than a menu default.
+  if (String(provider.driver) === CLAUDE_DRIVER) {
+    const claude = usable
+      .filter((entry) => claudeModelFamily(entry.slug) !== null)
+      .sort(compareClaudeModels);
+    if (claude[0]) return claude[0];
+  }
   return usable.find((entry) => entry.isDefault === true) ?? usable[0] ?? null;
 }
 
@@ -501,8 +957,25 @@ export function isProviderUsageWindowFull(
 }
 
 function isProviderAccountExhausted(provider: ServerProvider, nowEpochMs: number | null): boolean {
+  if (
+    provider.driver === "deepcode" &&
+    (provider.accountUsageStatus?.state === "error" ||
+      (nowEpochMs !== null &&
+        (!provider.accountUsageReportedAt ||
+          nowEpochMs - Date.parse(provider.accountUsageReportedAt) > 20 * 60_000)))
+  )
+    return false;
   if (String(provider.driver) === CLAUDE_DRIVER) {
     return isClaudeAccountExhausted(provider.accountUsage, nowEpochMs);
+  }
+  // Codex can refuse turns ("You've hit your usage limit …") while its typed
+  // snapshot still reads `rateLimitReachedType: null`, so the typed signal
+  // alone would hand threads to an already-spent Codex. Observed 2026-09-14.
+  if (
+    String(provider.driver) === "codex" &&
+    isCodexQuotaWindowExhausted(provider.accountUsage, nowEpochMs)
+  ) {
+    return true;
   }
   const exhaustion = detectProviderUsageLimitExhaustion(provider.driver, provider.accountUsage);
   if (exhaustion === null || exhaustion.resetsAt === null) {
@@ -588,6 +1061,7 @@ function skippedSlugsForProvider(input: {
  */
 export function selectProviderFailoverTarget(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
+  readonly modelPolicies?: ReadonlyArray<ModelAccessPolicy>;
   readonly currentInstanceId: ProviderInstanceId;
   readonly currentDriver: ProviderDriverKind;
   readonly currentModel?: string | null;
@@ -595,13 +1069,22 @@ export function selectProviderFailoverTarget(input: {
   readonly excludedModels?: ReadonlySet<string>;
   readonly nowEpochMs?: number | null;
 }): ProviderFailoverTarget | null {
+  const providers = input.providers.map((provider) => ({
+    ...provider,
+    models: provider.models.filter((model) =>
+      modelAccessPoliciesAllow(input.modelPolicies ?? [], {
+        instanceId: provider.instanceId,
+        model: model.slug,
+      }),
+    ),
+  }));
   const nowEpochMs = input.nowEpochMs ?? null;
   const currentModel =
     typeof input.currentModel === "string" && input.currentModel.length > 0
       ? input.currentModel
       : null;
 
-  const currentProvider = input.providers.find(
+  const currentProvider = providers.find(
     (provider) => provider.instanceId === input.currentInstanceId,
   );
   if (currentProvider && currentModel && isEligibleTarget(currentProvider)) {
@@ -620,7 +1103,7 @@ export function selectProviderFailoverTarget(input: {
     }
   }
 
-  const candidates = input.providers.filter(
+  const candidates = providers.filter(
     (provider) =>
       provider.instanceId !== input.currentInstanceId &&
       !input.excludedInstanceIds?.has(String(provider.instanceId)) &&
@@ -695,6 +1178,7 @@ const PROVIDER_NOTICE_PATTERNS: ReadonlyArray<RegExp> = [
   /being rate[- ]limited|rate limit (?:reached|exceeded)/i,
   /at capacity/i,
   /you(?:'|\u2019)?ve reached your/i,
+  /stalled request was stopped/i,
 ];
 
 /** True when an assistant message is the provider talking about itself. */
@@ -735,6 +1219,12 @@ export function deriveProviderHandoffContinuity(messages: ReadonlyArray<Orchestr
  */
 export function buildProviderHandoffSummary(input: ProviderHandoffSummaryInput): string {
   const derivedContinuity = deriveProviderHandoffContinuity(input.messages);
+  // Only name the history tool when the target adapter actually mounts it.
+  // Deep Code, Antigravity, and external bridges never receive the t3-code MCP
+  // server, and a prompt that promises the tool there makes the model stall
+  // and ask the user for context instead of working from the digest and the
+  // workspace. See providerDriverHasSollaMcpTools.
+  const threadHistoryToolAvailable = providerDriverHasSollaMcpTools(input.to.driver);
   const immediateRequirement =
     input.immediateRequirement?.trim() || derivedContinuity.immediateRequirement;
   const inProgressWork = input.inProgressWork?.trim() || derivedContinuity.inProgressWork;
@@ -756,10 +1246,12 @@ export function buildProviderHandoffSummary(input: ProviderHandoffSummaryInput):
       version: 1,
       kind: "t3.provider-handoff",
       // The digest is bounded, so the incoming provider is otherwise free to
-      // assume it is the whole record and answer straight from it. Naming the
-      // query tool here is what turns "state any missing context you need"
-      // into something it can act on without going back to the user.
-      instruction: `Continue this T3 thread from the bounded persisted context digest. Do not repeat completed work. ${contextRecoveryReminder("provider-handoff")}`,
+      // assume it is the whole record and answer straight from it. The reminder
+      // turns "state any missing context you need" into something the model can
+      // act on: it names the query tool for adapters that mount it, and points
+      // at the workspace for adapters that never receive it, so neither one is
+      // left asking the user for context the digest already carried.
+      instruction: `Continue this T3 thread from the bounded persisted context digest. Do not redo work the digest already shows as complete. ${contextRecoveryReminder("provider-handoff", { threadHistoryToolAvailable })}`,
       thread: {
         id: boundedMetadata(String(input.threadId)),
         title: boundedMetadata(input.threadTitle),
@@ -815,7 +1307,7 @@ export function buildProviderHandoffSummary(input: ProviderHandoffSummaryInput):
   return JSON.stringify({
     version: 1,
     kind: "t3.provider-handoff",
-    instruction: `Continue this T3 thread. The bounded context digest was omitted for size. ${contextRecoveryReminder("provider-handoff")}`,
+    instruction: `Continue this T3 thread. The bounded context digest was omitted for size. ${contextRecoveryReminder("provider-handoff", { threadHistoryToolAvailable })}`,
     handoff: {
       reason: "usage_limit",
       from: boundedMetadata(String(input.from.instanceId)).slice(0, 64),
@@ -954,7 +1446,8 @@ function activityIsAfter(
  *
  * The restore is deliberately narrow. It only fires when the thread is still
  * exactly where the failover left it — the same instance and model — so a
- * user who chose something else since keeps their choice; only once the
+ * user who explicitly selected a provider or model since keeps their choice,
+ * even when that selection matches the fallback; only once the
  * window the failover recorded has actually reset; only when the provider it
  * would return to is enabled, authenticated, still lists the model, and is
  * not reporting a fresh exhaustion of its own; and never twice for the same
@@ -964,12 +1457,22 @@ export function resolveUsageLimitFailoverRestore(input: {
   readonly failover: OrchestrationThreadActivity | null | undefined;
   readonly restored: OrchestrationThreadActivity | null | undefined;
   readonly currentSelection: ModelSelection;
+  readonly latestClientSelection?: { readonly sequence: number; readonly createdAt: string } | null;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly nowEpochMs: number;
 }): UsageLimitFailoverRestore | null {
   const failover = input.failover;
   if (!failover || failover.kind !== PROVIDER_FAILOVER_COMPLETED_ACTIVITY_KIND) return null;
   if (input.restored && activityIsAfter(input.restored, failover)) return null;
+  // Matching values do not imply unchanged intent: explicitly choosing the
+  // fallback again retires the old failover, including across restarts.
+  if (input.latestClientSelection) {
+    const selectedAfterFailover =
+      typeof failover.sequence === "number" && Number.isFinite(failover.sequence)
+        ? input.latestClientSelection.sequence > failover.sequence
+        : input.latestClientSelection.createdAt >= failover.createdAt;
+    if (selectedAfterFailover) return null;
+  }
 
   const payload = asRecord(failover.payload);
   if (!payload) return null;

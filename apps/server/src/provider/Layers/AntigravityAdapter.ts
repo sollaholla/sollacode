@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import { collaborationModePrompt } from "../collaborationMode.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import {
@@ -171,7 +172,14 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         let textReceived = false;
         let delivered = false;
         let stderr = "";
-        const prompt = `The Solla project working directory is ${encodeString(context.session.cwd ?? config.cwd)}. Use that directory explicitly for command tools; AGY's default scratch directory is not this project.\n\n${input.input}`;
+        // `--mode plan|accept-edits` above already carries Plan and Build, so
+        // only Agent needs stating here - and it needs it badly: AGY is not
+        // connected to the Solla MCP server, so nothing else ever tells it
+        // about `AGENT_STOP`, and the server's continuation loop keeps
+        // starting turns until something says the word.
+        const agentModeInstructions =
+          input.interactionMode === "agent" ? `${collaborationModePrompt("agent")}\n\n` : "";
+        const prompt = `${agentModeInstructions}The Solla project working directory is ${encodeString(context.session.cwd ?? config.cwd)}. Use that directory explicitly for command tools; AGY's default scratch directory is not this project.\n\n${input.input}`;
         const run = Effect.gen(function* () {
           const command = yield* resolveSpawnCommand(config.binaryPath, args, {
             env: config.environment,
@@ -389,6 +397,17 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     provider: ANTIGRAVITY_DRIVER_KIND,
     capabilities: {
       sessionModelSwitch: "in-session",
+      // AGY spawns one process per turn, writes the single user message to its
+      // stdin and then reads until the process exits: there is no channel a
+      // mid-turn message could arrive on. Leaving this undeclared defaulted the
+      // reactor to "native", so it kept trying to steer a turn that could never
+      // receive the words, and the message sat reading "Queued for Antigravity"
+      // for the rest of the turn. Saying so out loud instead routes it through
+      // the same path Deep Code uses — stop the turn, deliver the queued
+      // message as the next one — which is what "send it mid turn" means for a
+      // one-shot CLI. The session survives: the next process resumes the same
+      // conversation id.
+      liveSteering: "unsupported",
       taskStop: false,
       threadRollback: false,
       threadFork: false,

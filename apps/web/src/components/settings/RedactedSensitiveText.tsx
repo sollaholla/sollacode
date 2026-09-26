@@ -2,13 +2,16 @@ import { useMemo, useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { confirmInApp } from "../ui/appConfirm";
 
 const REDACTED_TEXT_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 const DEFAULT_REVEAL_CONFIRMATION =
   "Reveal this sensitive information? Make sure nobody else can see your screen.";
 
-export function confirmSensitiveReveal(message = DEFAULT_REVEAL_CONFIRMATION): boolean {
-  return window.confirm(message);
+export function confirmSensitiveReveal(message = DEFAULT_REVEAL_CONFIRMATION): Promise<boolean> {
+  // Never `window.confirm`: it freezes the renderer thread, which is what took
+  // the whole app - and preview automation with it - down on 2026-09-11.
+  return confirmInApp(message, { confirmLabel: "Reveal" });
 }
 
 function redactedPlaceholder(value: string): string {
@@ -36,13 +39,46 @@ export function RedactedSensitiveText(props: {
   readonly revealTooltip: string;
   readonly hideTooltip: string;
   readonly confirmationMessage?: string;
+  readonly confirmationMode?: "dialog" | "inline";
   readonly className?: string;
 }) {
   const [revealed, setRevealed] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const value = props.value?.trim();
   const redacted = useMemo(() => (value ? redactedPlaceholder(value) : ""), [value]);
 
   if (!value) return null;
+
+  if (confirming) {
+    return (
+      <span
+        className="flex min-w-0 flex-wrap items-center gap-2"
+        role="group"
+        aria-label="Confirm account reveal"
+      >
+        <span className="basis-full text-xs text-muted-foreground">
+          {props.confirmationMessage ?? DEFAULT_REVEAL_CONFIRMATION}
+        </span>
+        <button
+          type="button"
+          className="rounded-md border px-2 py-1 text-xs"
+          onClick={() => {
+            setConfirming(false);
+            setRevealed(true);
+          }}
+        >
+          Reveal
+        </button>
+        <button
+          type="button"
+          className="rounded-md border px-2 py-1 text-xs"
+          onClick={() => setConfirming(false)}
+        >
+          Cancel
+        </button>
+      </span>
+    );
+  }
 
   return (
     <Tooltip>
@@ -60,9 +96,13 @@ export function RedactedSensitiveText(props: {
                 setRevealed(false);
                 return;
               }
-              if (confirmSensitiveReveal(props.confirmationMessage)) {
-                setRevealed(true);
+              if (props.confirmationMode === "inline") {
+                setConfirming(true);
+                return;
               }
+              void confirmSensitiveReveal(props.confirmationMessage).then((confirmed) => {
+                if (confirmed) setRevealed(true);
+              });
             }}
             aria-label={props.ariaLabel}
             aria-pressed={revealed}

@@ -1,9 +1,9 @@
 import { DeepCodeSettings, TextGenerationError, type ServerProvider } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -11,6 +11,11 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { ServerConfig } from "../../config.ts";
+import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import { ProviderDriverError } from "../Errors.ts";
+import { readDeepCodeBalance, resolveDeepCodeConnection } from "../deepcodeUsage.ts";
 import {
   customModelCapabilitiesFrom,
   parseGenericCliVersion,
@@ -28,7 +33,6 @@ import {
   DEEPCODE_MODEL_CAPABILITIES,
   deepCodeHomeDir,
   deepCodeSettingsPath,
-  parseDeepCodeSettingsAuth,
 } from "../deepcodeProtocol.ts";
 import { DEEPCODE_DRIVER_KIND } from "../deepcodeRuntime.ts";
 import { makeDeepCodeAdapter } from "../Layers/DeepCodeAdapter.ts";
@@ -46,7 +50,9 @@ export type DeepCodeDriverEnv =
   | ServerConfig
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
-  | Path.Path;
+  | Path.Path
+  | BackgroundPolicy.BackgroundPolicy
+  | ServerSettingsService;
 export const DeepCodeDriver: ProviderDriver<DeepCodeSettings, DeepCodeDriverEnv> = {
   driverKind: DEEPCODE_DRIVER_KIND,
   metadata: { displayName: "Deep Code", supportsMultipleInstances: true },
@@ -56,19 +62,38 @@ export const DeepCodeDriver: ProviderDriver<DeepCodeSettings, DeepCodeDriverEnv>
     const serverConfig = yield* ServerConfig;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const serverSettings = yield* ServerSettingsService;
     const environment = mergeProviderInstanceEnvironment(input.environment);
+    const selectedApiKey = serverSettings.getProviderApiKey(input.instanceId);
+    const credentialEnvironment = (selected: Effect.Success<typeof selectedApiKey>) =>
+      selected
+        ? {
+            ...environment,
+            DEEPCODE_API_KEY: selected.apiKey,
+            DEEPCODE_BASE_URL: selected.account.baseUrl,
+          }
+        : environment;
     const binaryPath = input.config.binaryPath || "deepcode";
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DEEPCODE_DRIVER_KIND,
       instanceId: input.instanceId,
     });
+    const lastUsageRef = yield* Ref.make<{
+      identity: string;
+      usage: NonNullable<ServerProvider["accountUsage"]>;
+      reportedAt: string;
+    } | null>(null);
     const probe = Effect.fn("DeepCodeDriver.probe")(function* (): Effect.fn.Return<ServerProvider> {
+      const selectionResult = yield* selectedApiKey.pipe(Effect.result);
+      const selection = selectionResult._tag === "Success" ? selectionResult.success : null;
+      const probeEnvironment = credentialEnvironment(selection);
       const runProbe = Effect.fn("DeepCodeDriver.runProbe")(function* (args: string[]) {
-        const command = yield* resolveSpawnCommand(binaryPath, args, { env: environment });
+        const command = yield* resolveSpawnCommand(binaryPath, args, { env: probeEnvironment });
         return yield* spawnAndCollect(
           binaryPath,
           ChildProcess.make(command.command, command.args, {
-            env: environment,
+            env: probeEnvironment,
             extendEnv: false,
             shell: command.shell,
             forceKillAfter: "2 seconds",
@@ -83,13 +108,62 @@ export const DeepCodeDriver: ProviderDriver<DeepCodeSettings, DeepCodeDriverEnv>
       const settingsRaw = yield* fs
         .readFileString(deepCodeSettingsPath(deepCodeHomeDir(environment)))
         .pipe(Effect.orElseSucceed(() => ""));
-      const settingsAuth = parseDeepCodeSettingsAuth(settingsRaw);
-      const envKey = environment.DEEPCODE_API_KEY?.trim() ?? "";
-      const authenticated = settingsAuth.hasApiKey || envKey.length > 0;
+      const plusSettings = yield* fs
+        .readFileString(path.join(deepCodeHomeDir(environment), ".deepcode-plus", "settings.json"))
+        .pipe(Effect.orElseSucceed(() => ""));
+      // This is the instance's base account. Project overrides are deliberately
+      // excluded: one project's key cannot stand in for every project on the host.
+      const connection = resolveDeepCodeConnection({
+        userSettings: settingsRaw,
+        plusSettings,
+        environment: probeEnvironment,
+      });
+      const authenticated = selectionResult._tag === "Success" && connection.apiKey !== null;
       const installed = versionResult?._tag === "Success";
       const versionReady = installed && versionResult.success.code === 0;
       const available = versionReady;
-      const checkedAt = DateTime.formatIso(DateTime.nowUnsafe());
+      const checkedAt = DateTime.formatIso(yield* DateTime.now);
+      const usageResult =
+        input.enabled &&
+        available &&
+        authenticated &&
+        connection.apiKey &&
+        connection.supportsBalance
+          ? yield* readDeepCodeBalance(connection.apiKey)
+          : null;
+      if (usageResult?.status === "success" && connection.identity) {
+        yield* Ref.set(lastUsageRef, {
+          identity: connection.identity,
+          usage: usageResult.balance,
+          reportedAt: DateTime.formatIso(yield* DateTime.now),
+        });
+      }
+      const previousUsage = yield* Ref.get(lastUsageRef);
+      const accountUsage =
+        authenticated && previousUsage?.identity === connection.identity ? previousUsage : null;
+      if (previousUsage && !accountUsage) yield* Ref.set(lastUsageRef, null);
+      const accountUsageStatus: NonNullable<ServerProvider["accountUsageStatus"]> = !authenticated
+        ? {
+            state: "unavailable",
+            message:
+              selectionResult._tag === "Failure"
+                ? "The selected API key could not be loaded. Replace it in Providers settings."
+                : "Add a named API key in Settings > Providers > Deep Code, or configure the Deep Code CLI.",
+          }
+        : !connection.supportsBalance
+          ? {
+              state: "unsupported",
+              message:
+                "This endpoint uses separate billing. Deep Code Plus and custom endpoints do not expose a supported balance API.",
+            }
+          : usageResult?.status === "success"
+            ? { state: "available" }
+            : usageResult?.status === "error"
+              ? { state: "error", message: usageResult.message }
+              : {
+                  state: "unavailable",
+                  message: "Enable and install Deep Code to refresh its DeepSeek balance.",
+                };
       const models = providerModelsFromSettings(
         DEEPCODE_BUILT_IN_MODELS,
         input.config.customModels,
@@ -112,20 +186,26 @@ export const DeepCodeDriver: ProviderDriver<DeepCodeSettings, DeepCodeDriverEnv>
             : settingsRaw.length > 0
               ? "unauthenticated"
               : "unknown",
-          ...(authenticated ? { type: "DeepSeek API key" } : {}),
+          ...(authenticated ? { type: connection.authType } : {}),
+          ...(authenticated && selection ? { label: selection.account.name } : {}),
         },
         checkedAt,
+        ...(connection.identity ? { accountUsageIdentity: connection.identity } : {}),
+        ...(accountUsage
+          ? { accountUsage: accountUsage.usage, accountUsageReportedAt: accountUsage.reportedAt }
+          : {}),
+        accountUsageStatus,
         message: !input.enabled
           ? "Deep Code is disabled in Solla Code settings."
           : available
             ? authenticated
-              ? "Uses ~/.deepcode/settings.json. Headless --exec cannot confirm permission prompts; keep permissions.defaultMode allowAll or pre-allow the scopes the agent needs."
-              : "Deep Code is installed. Add a DeepSeek API key to ~/.deepcode/settings.json (env.API_KEY), then refresh."
+              ? "Headless --exec cannot confirm permission prompts; keep permissions.defaultMode allowAll or pre-allow the scopes the agent needs."
+              : "Deep Code is installed. Add a named API key in Settings > Providers > Deep Code."
             : installed
-              ? "Deep Code is installed, but its CLI check failed. Run deepcode --version in a terminal, then refresh."
-              : "Install @vegamo/deepcode-cli (`npm install -g @vegamo/deepcode-cli`), add your DeepSeek API key to ~/.deepcode/settings.json, then refresh.",
+              ? "Deep Code is installed, but its CLI check failed. Refresh to try again."
+              : "Install Deep Code, then add a named API key in its provider settings.",
         availability: "available",
-        showInteractionModeToggle: false,
+        showInteractionModeToggle: true,
         requiresNewThreadForModelChange: false,
         models,
         slashCommands: [],
@@ -139,21 +219,41 @@ export const DeepCodeDriver: ProviderDriver<DeepCodeSettings, DeepCodeDriverEnv>
         },
       };
     });
-    const snapshotRef = yield* Ref.make(yield* probe());
-    const changes = yield* Effect.acquireRelease(
-      PubSub.unbounded<ServerProvider>(),
-      PubSub.shutdown,
-    );
     const adapter = yield* makeDeepCodeAdapter({
       instanceId: input.instanceId,
       binaryPath,
       environment,
+      resolveEnvironment: selectedApiKey.pipe(Effect.map(credentialEnvironment)),
       cwd: serverConfig.cwd,
+      attachmentsDir: serverConfig.attachmentsDir,
     });
     const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
       binaryPath,
       env: environment,
     });
+    const snapshot = yield* makeManagedServerProvider({
+      maintenanceCapabilities,
+      getSettings: serverSettings.getSettings.pipe(
+        Effect.map((settings) => settings.providerApiKeyAccounts?.[input.instanceId] ?? null),
+      ),
+      streamSettings: serverSettings.streamChanges.pipe(
+        Stream.map((settings) => settings.providerApiKeyAccounts?.[input.instanceId] ?? null),
+      ),
+      haveSettingsChanged: (previous, next) => !Equal.equals(previous, next),
+      initialSnapshot: () => probe(),
+      refreshOnCreate: false,
+      checkProvider: probe(),
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DEEPCODE_DRIVER_KIND,
+            instanceId: input.instanceId,
+            detail: "Could not initialize provider usage refresh.",
+            cause,
+          }),
+      ),
+    );
     return {
       instanceId: input.instanceId,
       driverKind: DEEPCODE_DRIVER_KIND,
@@ -213,15 +313,7 @@ export const DeepCodeDriver: ProviderDriver<DeepCodeSettings, DeepCodeDriverEnv>
             }),
           ),
       },
-      snapshot: {
-        maintenanceCapabilities,
-        getSnapshot: Ref.get(snapshotRef),
-        refresh: probe().pipe(
-          Effect.tap((snapshot) => Ref.set(snapshotRef, snapshot)),
-          Effect.tap((snapshot) => PubSub.publish(changes, snapshot)),
-        ),
-        streamChanges: Stream.fromPubSub(changes),
-      },
+      snapshot,
     };
   }),
 };

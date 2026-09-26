@@ -1,3 +1,7 @@
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { createMcpShellBridge, removeMcpShellBridge } from "../../mcp/McpShellBridge.ts";
+import { ServerConfig } from "../../config.ts";
+import { voiceNoteProviderInput } from "../voiceNoteInput.ts";
 /**
  * ProviderServiceLive - Cross-provider orchestration layer.
  *
@@ -39,8 +43,10 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -76,7 +82,10 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { withSideChatAgentContext } from "../sideChatContext.ts";
 import { withVmAgentContext } from "../vmAgentContext.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../../persistence/Services/VmAgents.ts";
+import { resolveOwningVmAgent } from "../../vm/owningAgent.ts";
+import { boundVmAgentClaudeRules, resolveVmAgentRulesPath } from "../../vm/VmAgentRules.ts";
 const isModelSelection = Schema.is(ModelSelection);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderPendingContextRecovery = Schema.is(ProviderPendingContextRecovery);
@@ -382,21 +391,75 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const publishedDeliveryReceiptKeys = new Map<string, true>();
   const maxPublishedDeliveryReceiptKeys = 65_536;
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+  const removeSessionShellBridge = (config: McpProviderSession.McpProviderSessionConfig) =>
+    Effect.gen(function* () {
+      const hostConfig = yield* Effect.serviceOption(ServerConfig);
+      if (Option.isSome(hostConfig))
+        yield* Effect.tryPromise(() =>
+          removeMcpShellBridge(config, hostConfig.value.stateDir),
+        ).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("provider.mcp-session.helper-cleanup-failed", {
+              threadId: config.threadId,
+              cause,
+            }),
+          ),
+        );
+    });
+  // An agent's working directory holds its own AGENTS.md, which it grows at
+  // will. Bound what Claude imports before any session in that directory
+  // starts or takes a turn; a runaway file otherwise overflows every fresh
+  // session. Directories outside the agents root are never touched.
+  const boundAgentRules = (cwd: string | undefined) =>
+    Effect.gen(function* () {
+      if (cwd === undefined) return null;
+      const [config, fileSystem, path] = yield* Effect.all([
+        Effect.serviceOption(ServerConfig),
+        Effect.serviceOption(FileSystem.FileSystem),
+        Effect.serviceOption(Path.Path),
+      ]);
+      if (Option.isNone(config) || Option.isNone(fileSystem) || Option.isNone(path)) return null;
+      const rulesPath = resolveVmAgentRulesPath(path.value, config.value.agentsWorkspaceDir, cwd);
+      if (rulesPath === null) return null;
+      return yield* boundVmAgentClaudeRules({
+        fileSystem: fileSystem.value,
+        path: path.value,
+        workspaceDir: path.value.dirname(rulesPath),
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("could not bound agent rules for Claude", { cause, cwd }).pipe(
+          Effect.as(null),
+        ),
+      ),
+    );
+
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
       const previous = McpProviderSession.readMcpProviderSession(threadId);
       if (previous) {
         yield* McpSessionRegistry.revokeActiveMcpProviderSession(previous.providerSessionId);
+        yield* removeSessionShellBridge(previous);
         McpProviderSession.clearMcpProviderSession(threadId);
       }
-      // Only a custom agent's own thread gets the "vm" capability (historical
-      // name) — it marks the thread as agent-owned and gates agent_workspace
-      // and workspace_consult. VmAgentStore is optional (absent in unit
-      // tests, where no thread is an agent anyway).
+      // A custom agent's own thread — and the side chats forked from it, which
+      // act on the agent's behalf — get the "vm" capability (historical name).
+      // It marks the thread as agent-owned and gates agent_workspace and
+      // workspace_consult. VmAgentStore is optional (absent in unit tests,
+      // where no thread is an agent anyway).
+      const snapshotQuery = yield* Effect.serviceOption(ProjectionSnapshotQuery);
       const isVmAgent = yield* Option.match(yield* Effect.serviceOption(VmAgentStore), {
         onNone: () => Effect.succeed(false),
         onSome: (store) =>
-          store.getByThreadId(threadId).pipe(
+          resolveOwningVmAgent({
+            threadId,
+            getAgentByThreadId: store.getByThreadId,
+            getThreadShellById: (id) =>
+              Option.match(snapshotQuery, {
+                onNone: () => Effect.succeed(Option.none()),
+                onSome: (query) => query.getThreadShellById(id),
+              }),
+          }).pipe(
             Effect.map(Option.isSome),
             Effect.orElseSucceed(() => false),
           ),
@@ -421,7 +484,25 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           : {}),
       });
       if (credential) {
-        McpProviderSession.setMcpProviderSession(credential.config);
+        const hostConfig = yield* Effect.serviceOption(ServerConfig);
+        const hostPlatform = yield* HostProcessPlatform;
+        const shellBridgeInstructions = Option.isSome(hostConfig)
+          ? yield* Effect.tryPromise({
+              try: () =>
+                createMcpShellBridge(credential.config, hostConfig.value.stateDir, hostPlatform),
+              catch: (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: "mcp",
+                  method: "prepareMcpSession",
+                  detail: "Could not prepare host MCP tools",
+                  cause,
+                }),
+            }).pipe(Effect.orDie)
+          : undefined;
+        McpProviderSession.setMcpProviderSession({
+          ...credential.config,
+          ...(shellBridgeInstructions ? { shellBridgeInstructions } : {}),
+        });
       } else {
         // The registry is only absent when /mcp never came up. Silence here
         // read downstream as "this thread has no host tools" and providers
@@ -439,6 +520,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const current = McpProviderSession.readMcpProviderSession(threadId);
       if (current) {
         yield* McpSessionRegistry.revokeActiveMcpProviderSession(current.providerSessionId);
+        yield* removeSessionShellBridge(current);
       }
       McpProviderSession.clearMcpProviderSession(threadId);
     });
@@ -497,16 +579,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly modelSelection?: ModelSelection | undefined;
       readonly sourceMessageId: MessageId | null;
       readonly existing?: ProviderPendingContextRecovery | undefined;
+      readonly reason?: string | undefined;
     }) {
-      const pendingContextRecovery =
+      const reason = input.reason?.trim();
+      const pendingContextRecovery: ProviderPendingContextRecovery =
         input.existing?.providerInstanceId === input.providerInstanceId
-          ? input.existing
+          ? { ...input.existing, ...(reason ? { reason } : {}) }
           : {
               version: 1 as const,
               kind: "native-resume-timeout" as const,
               sourceMessageId: input.sourceMessageId,
               providerInstanceId: input.providerInstanceId,
               createdAt: yield* nowIso,
+              ...(reason ? { reason } : {}),
             };
       yield* directory.upsert({
         threadId: input.threadId,
@@ -804,6 +889,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         // A failed resume revokes its credential. The fresh fallback is a new
         // process and must receive a new credential before it is spawned.
         yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+        yield* boundAgentRules(persistedCwd);
         return yield* adapter
           .startSession({
             threadId: input.binding.threadId,
@@ -1101,6 +1187,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         currentInstanceId: resolvedInstanceId,
       });
       yield* prepareMcpSession(threadId, resolvedInstanceId);
+      yield* boundAgentRules(effectiveCwd);
       const { resumeCursor: _requestedResumeCursor, ...adapterInput } = input;
       const session = yield* adapter
         .startSession({
@@ -1298,14 +1385,33 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                   ),
               });
 
+        const rulesOverflow = vmAgentIdentity
+          ? yield* directory.getBinding(parsed.threadId).pipe(
+              Effect.map((binding) =>
+                Option.isSome(binding) ? readPersistedCwd(binding.value.runtimePayload) : undefined,
+              ),
+              Effect.orElseSucceed(() => undefined),
+              Effect.flatMap(boundAgentRules),
+            )
+          : null;
+        const hostConfig = yield* Effect.serviceOption(ServerConfig);
+        const transcriptInput = voiceNoteProviderInput(
+          parsed.input,
+          parsed.attachments ?? [],
+          Option.getOrUndefined(hostConfig)?.attachmentsDir,
+        );
+        const voiceInput = transcriptInput;
         const input = {
           ...parsed,
+          input: voiceInput,
           ...(parsed.isSideChat === true
-            ? { input: withSideChatAgentContext(parsed.input) }
+            ? { input: withSideChatAgentContext(voiceInput) }
             : vmAgentIdentity
-              ? { input: withVmAgentContext(parsed.input, vmAgentIdentity) }
+              ? { input: withVmAgentContext(voiceInput, vmAgentIdentity, rulesOverflow) }
               : {}),
-          attachments: parsed.attachments ?? [],
+          attachments: (parsed.attachments ?? []).filter(
+            (attachment) => attachment.type === "image",
+          ),
         };
         if (!input.input && input.attachments.length === 0) {
           return yield* toValidationError(
@@ -1371,8 +1477,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                   messageDeliveryReceipts: adapter.capabilities.messageDeliveryReceipts === true,
                 }),
               );
+              const hostTools = McpProviderSession.readMcpProviderSession(
+                input.threadId,
+              )?.shellBridgeInstructions;
+              const augmentedInput = McpProviderSession.appendMcpShellBridgeInstructions(
+                input.input,
+                hostTools,
+              );
+              const nativeInput =
+                augmentedInput === input.input ? input : { ...input, input: augmentedInput };
               const turn = yield* adapter.sendTurn(
-                input,
+                nativeInput,
                 acknowledgeNativeDispatch === undefined
                   ? undefined
                   : { onNativeDispatch: acknowledgeNativeDispatch },
@@ -2058,6 +2173,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         detail: `Provider '${adapter.provider}' does not support thread forking.`,
       });
     }
+    // The target's first turn can start before the fork runs, or while it
+    // copies a long conversation. That live session owns the thread now:
+    // binding a copy over it would resume the parent's conversation on the
+    // next turn and drop everything the live turn did.
+    const keepLiveTarget = Effect.fnUntraced(function* () {
+      const live = (yield* adapter.listSessions()).find(
+        (candidate) => candidate.threadId === input.targetThreadId,
+      );
+      if (live === undefined) return undefined;
+      yield* Effect.logWarning("provider.fork.target-already-live", {
+        sourceThreadId: input.sourceThreadId,
+        targetThreadId: input.targetThreadId,
+      });
+      return { ...live, providerInstanceId };
+    });
+    const liveBeforeFork = yield* keepLiveTarget();
+    if (liveBeforeFork) return liveBeforeFork;
     if (adapter.forkSession) {
       const session = yield* adapter.forkSession({
         sourceThreadId: input.sourceThreadId,
@@ -2074,6 +2206,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           `Adapter/provider mismatch while forking thread '${input.sourceThreadId}'. Expected '${adapter.provider}', received '${session.provider}'.`,
         );
       }
+      const liveAfterCopy = yield* keepLiveTarget();
+      if (liveAfterCopy) return liveAfterCopy;
       const sessionWithInstance = {
         ...session,
         providerInstanceId,
@@ -2129,6 +2263,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       ),
     ).pipe(Effect.asVoid);
     yield* McpSessionRegistry.revokeAllActiveMcpCredentials();
+    yield* Effect.forEach(McpProviderSession.listMcpProviderSessions(), removeSessionShellBridge, {
+      discard: true,
+    });
     McpProviderSession.clearAllMcpProviderSessions();
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
     yield* Effect.forEach(bindings, (binding) =>
@@ -2166,8 +2303,87 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     ),
   );
 
+  const replayStoredTranscript = Effect.fn("ProviderService.replayStoredTranscript")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly providerInstanceId: ProviderInstanceId;
+    }) {
+      const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+      if (
+        !binding ||
+        binding.providerInstanceId !== input.providerInstanceId ||
+        binding.provider !== "muse"
+      )
+        return 0;
+      const saved = binding.resumeCursor;
+      const sessionId =
+        typeof saved === "string"
+          ? saved
+          : typeof saved === "object" &&
+              saved !== null &&
+              "sessionId" in saved &&
+              typeof saved.sessionId === "string"
+            ? saved.sessionId
+            : null;
+      if (!sessionId?.trim()) return 0;
+      const adapter = yield* registry.getByInstance(input.providerInstanceId);
+      if (adapter.provider !== binding.provider || !adapter.replayStoredTranscript) return 0;
+      return yield* adapter.replayStoredTranscript({ threadId: input.threadId, sessionId });
+    },
+  );
+
+  const discardSessionHistory = Effect.fn("ProviderService.discardSessionHistory")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly sourceMessageId: MessageId | null;
+      readonly reason?: string;
+    }) {
+      const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+      if (binding === undefined) return false;
+      const instanceId = binding.providerInstanceId;
+      if (instanceId === undefined) return false;
+      // Compaction keeps the session and everything the model learned in it;
+      // a reset keeps only a digest. Try the provider's own compaction first
+      // and fall through to the reset only when it is unavailable or fails
+      // (a single tool result larger than the window fails both, and the
+      // recovery prompt then names it so the fresh session does not repeat it).
+      const adapter = yield* registry
+        .getByInstance(instanceId)
+        .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+      if (adapter?.compactSessionHistory !== undefined) {
+        const compacted = yield* adapter.compactSessionHistory(input.threadId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("ProviderService.compactSessionHistory.failed", {
+              threadId: input.threadId,
+              providerInstanceId: instanceId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (compacted) return "compacted" as const;
+      }
+      yield* stopSession({ threadId: input.threadId }).pipe(Effect.ignore);
+      const cwd = readPersistedCwd(binding.runtimePayload);
+      const modelSelection = readPersistedModelSelection(binding.runtimePayload);
+      const existing = readPendingContextRecovery(binding.runtimePayload, instanceId);
+      yield* persistPendingContextRecovery({
+        threadId: input.threadId,
+        provider: binding.provider,
+        providerInstanceId: instanceId,
+        runtimeMode: binding.runtimeMode ?? "full-access",
+        ...(cwd !== undefined ? { cwd } : {}),
+        ...(modelSelection !== undefined ? { modelSelection } : {}),
+        sourceMessageId: input.sourceMessageId,
+        ...(existing !== undefined ? { existing } : {}),
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      });
+      return "discarded" as const;
+    },
+  );
+
   return {
     startSession,
+    replayStoredTranscript,
     sendTurn,
     interruptTurn,
     promoteQueuedTurn,
@@ -2175,6 +2391,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToRequest,
     respondToUserInput,
     stopSession,
+    discardSessionHistory,
     listSessions,
     getCapabilities,
     getInstanceInfo,

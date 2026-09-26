@@ -3,6 +3,16 @@ import { describe, expect, it } from "vite-plus/test";
 import { shouldOfferAppVoiceCapture } from "./appVoiceCaptureAvailability";
 
 describe("app voice capture availability", () => {
+  it("offers voice notes on touch web with recording APIs and no browser speech recognizer", () => {
+    expect(
+      shouldOfferAppVoiceCapture({
+        isDesktopElectron: false,
+        hasCoarsePointer: true,
+        hasAudioCapture: true,
+        hasNativeSpeechDictation: false,
+      }),
+    ).toBe(true);
+  });
   it("hides local Whisper capture on touch/mobile web without a recogniser", () => {
     expect(
       shouldOfferAppVoiceCapture({

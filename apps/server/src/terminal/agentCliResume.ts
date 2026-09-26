@@ -481,11 +481,19 @@ export function sessionIdFromOpenFiles(
       transcripts: filePaths.map((path) => ({ path, bytes: CLAUDE_EMPTY_SESSION_MAX_BYTES })),
     });
   }
+  if (normalized === "codex") {
+    const ids = new Set(
+      filePaths.flatMap((filePath) => {
+        const lock = filePath.match(
+          /[/\\]thread-writer-locks[/\\]([\da-f]{8}(-[\da-f]{4}){3}-[\da-f]{12})\.lock$/i,
+        )?.[1];
+        const id = lock ?? sessionIdFromCodexTranscriptPath(filePath);
+        return id ? [id] : [];
+      }),
+    );
+    return ids.size === 1 ? [...ids][0]! : null;
+  }
   for (const filePath of filePaths) {
-    if (normalized === "codex") {
-      const sessionId = sessionIdFromCodexTranscriptPath(filePath);
-      if (sessionId) return sessionId;
-    }
     if (normalized === "grok") {
       const sessionId = sessionIdFromGrokSessionPath(filePath);
       if (sessionId) return sessionId;

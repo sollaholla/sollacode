@@ -3,6 +3,8 @@ import type {
   PreviewAutomationRequest,
   PreviewAutomationResponse,
   PreviewAutomationStreamEvent,
+  PreviewCredentialVaultCommand,
+  PreviewTabAudioTarget,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
@@ -36,6 +38,18 @@ export function serializePreviewAutomationError(
   );
 }
 
+const CREDENTIAL_VAULT_FAILURE = "The desktop app could not change the saved passwords.";
+
+// Only the vault's own errors are worded for a person and quote nothing that
+// was typed. Anything else, such as a payload that failed to decode, could
+// quote the new password, so it is replaced with a plain sentence.
+function credentialVaultFailureMessage(error: unknown): string {
+  if (!(error instanceof Error)) return CREDENTIAL_VAULT_FAILURE;
+  const vaultError =
+    /^Error invoking remote method '[^']+': BrowserCredential\w*Error: (.+)$/s.exec(error.message);
+  return vaultError?.[1]?.trim() || CREDENTIAL_VAULT_FAILURE;
+}
+
 export function createPreviewAutomationRequestConsumerAtom<E>(options: {
   readonly requestsAtom: Atom.Atom<AutomationStreamResult<E>>;
   readonly clientId: PreviewAutomationHost["clientId"];
@@ -44,6 +58,16 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
   readonly requestHandlerAtom: Atom.Atom<{
     readonly handle: (request: PreviewAutomationRequest) => Promise<unknown>;
   }>;
+  /**
+   * Applies a saved-password change sent from another device's settings. Only
+   * hosts that registered with `manageCredentials` are sent one.
+   */
+  readonly handleCredentialVault?: (command: PreviewCredentialVaultCommand) => Promise<unknown>;
+  /**
+   * Takes the set of tabs remote viewers are listening to. Only hosts that
+   * registered with `streamsTabAudio` are sent one.
+   */
+  readonly handleAudioDemand?: (tabs: ReadonlyArray<PreviewTabAudioTarget>) => void;
   readonly renewAutomationForeground: () => Promise<unknown>;
   readonly respond: (response: PreviewAutomationResponse) => Promise<unknown>;
   readonly label: string;
@@ -141,6 +165,42 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
         void Promise.resolve()
           .then(() => options.renewAutomationForeground())
           .catch(() => undefined);
+        return;
+      }
+      if (event.type === "audioDemand") {
+        options.handleAudioDemand?.(event.tabs);
+        return;
+      }
+      if (event.type === "credentialVault") {
+        const { request } = event;
+        const handleCredentialVault = options.handleCredentialVault;
+        if (!handleCredentialVault || Date.now() >= request.expiresAt) return;
+        // Not an agent operation, so it neither wakes the guest fleet nor
+        // goes through the agent-facing error curation: the answer goes to
+        // the person in settings, and a vault error never carries a secret.
+        void Promise.resolve()
+          .then(() => handleCredentialVault(request.command))
+          .then(
+            (value) =>
+              options.respond({
+                clientId: options.clientId,
+                connectionId: event.connectionId,
+                requestId: request.requestId,
+                ok: true,
+                ...(value === undefined ? {} : { result: value }),
+              }),
+            (error) =>
+              options.respond({
+                clientId: options.clientId,
+                connectionId: event.connectionId,
+                requestId: request.requestId,
+                ok: false,
+                error: {
+                  _tag: "PreviewCredentialVaultError",
+                  message: credentialVaultFailureMessage(error),
+                },
+              }),
+          );
         return;
       }
       if (Date.now() >= event.request.expiresAt) {

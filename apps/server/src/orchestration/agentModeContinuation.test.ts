@@ -33,6 +33,7 @@ import {
   providerAuthenticationResumeIds,
   shouldAutoContinueAgentThread,
   shouldDispatchStartupResume,
+  shouldWaitForStartupResume,
   shouldResumeProviderAuthenticationPausedThread,
   startupAutoResumeIds,
   startupResumeSourceTurnId,
@@ -407,6 +408,33 @@ describe("server-owned Agent continuation", () => {
       hasLaterRealUserTurn: false,
     };
     expect(shouldDispatchStartupResume(resumable, input)).toBe(true);
+    const starting = {
+      ...resumable,
+      session: { ...resumable.session!, status: "starting" as const },
+    };
+    expect(shouldWaitForStartupResume(starting, input)).toBe(true);
+    expect(shouldWaitForStartupResume(starting, { ...input, hasLaterRealUserTurn: true })).toBe(
+      false,
+    );
+    expect(shouldWaitForStartupResume({ ...starting, hasPendingApprovals: true }, input)).toBe(
+      false,
+    );
+    expect(shouldWaitForStartupResume({ ...starting, hasPendingUserInput: true }, input)).toBe(
+      false,
+    );
+    expect(shouldWaitForStartupResume({ ...starting, settledOverride: "settled" }, input)).toBe(
+      false,
+    );
+    expect(shouldWaitForStartupResume(starting, { ...input, sourceTurnState: "interrupted" })).toBe(
+      false,
+    );
+    expect(
+      shouldWaitForStartupResume(
+        { ...starting, session: { ...starting.session, activeTurnId: TurnId.make("other-turn") } },
+        input,
+      ),
+    ).toBe(false);
+
     expect(
       shouldDispatchStartupResume(
         { ...resumable, session: { ...resumable.session!, status: "interrupted" } },

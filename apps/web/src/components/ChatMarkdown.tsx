@@ -10,6 +10,10 @@ import {
 } from "lucide-react";
 import type { MessageId, ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import { fileViewHref } from "~/fileViewHref";
+import { findBareFilePaths, remarkBareFilePaths, uniqueBareFilePaths } from "~/barePathLinks";
+import { useHostPathExistence } from "~/hostPathExistence";
+import { filesystemEnvironment } from "../state/filesystem";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -40,6 +44,8 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
+import { ProviderSlashCommandLink } from "./chat/ProviderSlashCommandLink";
+import type { LeadingProviderSlashCommand } from "../providerSlashCommands";
 import { CHAT_FILE_TAG_CHIP_CLASS_NAME, FileTagChipContent } from "./chat/FileTagChip";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import {
@@ -106,7 +112,10 @@ import {
   resolveImageReferenceAssetPath,
   shouldOpenImageReferenceInFullScreen,
 } from "./chat/mobileImageViewer";
-import { resolveLinkedFilePrimaryAction } from "./chat/linkedFileBehavior";
+import {
+  resolveLinkedFilePrimaryAction,
+  resolveLocalFileFallback,
+} from "./chat/linkedFileBehavior";
 import { revealInFileExplorerLabel } from "./preview/fileExplorerLabel";
 
 interface ChatMarkdownProps {
@@ -118,6 +127,8 @@ interface ChatMarkdownProps {
   assetRevision?: string;
   sourceMessageId?: MessageId;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  /** A user message's leading provider slash command, drawn as a tappable link. */
+  leadingSlashCommand?: LeadingProviderSlashCommand | null;
   className?: string;
   /** Treat single newlines as hard breaks — chat-style user input. */
   lineBreaks?: boolean;
@@ -130,6 +141,69 @@ interface ChatMarkdownProps {
 }
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+
+/** The same thread reference, by value: a fresh object with the same ids is the same ref. */
+function useStableScopedThreadRef(ref: ScopedThreadRef | undefined): ScopedThreadRef | undefined {
+  const environmentId = ref?.environmentId;
+  const threadId = ref?.threadId;
+  return useMemo(
+    () =>
+      environmentId !== undefined && threadId !== undefined
+        ? { environmentId, threadId }
+        : undefined,
+    [environmentId, threadId],
+  );
+}
+
+/** Pins a leading slash command to its content, as the skills below are. */
+function useStableLeadingSlashCommand(
+  command: LeadingProviderSlashCommand | null,
+): LeadingProviderSlashCommand | null {
+  const key =
+    command === null
+      ? ""
+      : [
+          command.start,
+          command.end,
+          command.command.name,
+          command.command.description ?? "",
+          command.command.input?.hint ?? "",
+        ].join("\u0000");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => command, [key]);
+}
+
+/** Replaces the paragraph's opening `/name` with the tappable command link. */
+function renderLeadingSlashCommandChildren(
+  children: ReactNode,
+  leading: LeadingProviderSlashCommand,
+): ReactNode {
+  const commandText = `/${leading.command.name}`;
+  const items = Children.toArray(children);
+  const first = items[0];
+  if (typeof first !== "string" || !first.startsWith(commandText)) return children;
+  return [
+    <ProviderSlashCommandLink key="provider-slash-command" command={leading.command} />,
+    first.slice(commandText.length),
+    ...items.slice(1),
+  ];
+}
+
+function markdownSkillsKey(
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>,
+): string {
+  return skills.map((skill) => `${skill.name}\u0000${skill.displayName}`).join("\u0001");
+}
+
+/** The same skill list, by content: a re-fetched provider status must not remount every message. */
+function useStableMarkdownSkills(
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>,
+): ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> {
+  const key = markdownSkillsKey(skills);
+  // The key is the content; the array identity is exactly what must not matter.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => skills, [key]);
+}
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
@@ -518,6 +592,7 @@ function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
                 size="icon-xs"
                 className="chat-markdown-chrome-action"
                 aria-pressed={expanded}
+                data-timeline-disclosure
                 onClick={toggleExpanded}
                 aria-label={expandLabel}
               />
@@ -723,6 +798,7 @@ function MarkdownCodeBlock({
                   size="icon-xs"
                   className="chat-markdown-chrome-action"
                   aria-pressed={wrapped}
+                  data-timeline-disclosure
                   onClick={() => setWrapped((value) => !value)}
                   aria-label={wrapLabel}
                 />
@@ -1183,6 +1259,61 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
   }, [handleOpenInEditor, line, threadRef, workspaceRelativePath]);
 
+  /**
+   * Open the file with the application the OS has registered for it.
+   *
+   * This is what a click on a .docx or a ProRes .mov should do: the user asked
+   * for the file, and the panel cannot draw it. Falls through to revealing it
+   * if the bridge refuses, so the click still ends somewhere.
+   */
+  const handleOpenInDefaultApp = useCallback(() => {
+    const bridge = window.desktopBridge;
+    if (!bridge?.openPath) {
+      handleOpenInEditor();
+      return;
+    }
+    void bridge.openPath(iconPath).then(
+      (failure) => {
+        if (failure === "") return;
+        // Same trap as reveal: the bridge speaks for this computer's
+        // filesystem, and the workspace may not be on it. Let the panel, which
+        // reads through the owning environment, answer before we claim the
+        // file is missing.
+        if (
+          resolveLocalFileFallback({
+            hasThreadRef: threadRef !== undefined,
+            workspaceRelativePath,
+          }) === "preview" &&
+          threadRef &&
+          workspaceRelativePath
+        ) {
+          useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
+          return;
+        }
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open file",
+            description: failure,
+          }),
+        );
+      },
+      (cause) => {
+        reportMarkdownActionFailure(
+          { operation: "open-file-in-default-app", target: iconPath },
+          cause,
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open file",
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        );
+      },
+    );
+  }, [handleOpenInEditor, iconPath, line, threadRef, workspaceRelativePath]);
+
   const handleRevealInFileExplorer = useCallback(() => {
     const bridge = window.desktopBridge;
     if (!canRevealOnThisDevice || !bridge) {
@@ -1192,11 +1323,29 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     void bridge.revealFile(iconPath).then(
       (revealed) => {
         if (revealed) return;
+        // `revealFile` answers for THIS computer's filesystem, but the
+        // workspace may live somewhere else - a remote environment, WSL, or a
+        // worktree - where the file is perfectly present. Reporting "the file
+        // no longer exists" for that case was simply wrong, and it dead-ended
+        // a click that the server-backed panel can still satisfy. Try the panel
+        // before saying anything: it reads the file through the environment
+        // that actually owns it.
+        if (
+          resolveLocalFileFallback({
+            hasThreadRef: threadRef !== undefined,
+            workspaceRelativePath,
+          }) === "preview" &&
+          threadRef &&
+          workspaceRelativePath
+        ) {
+          useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
+          return;
+        }
         toastManager.add(
           stackedThreadToast({
             type: "error",
             title: "Unable to locate file",
-            description: "The file no longer exists on this computer.",
+            description: "This computer has no file at that path.",
           }),
         );
       },
@@ -1214,7 +1363,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         );
       },
     );
-  }, [canRevealOnThisDevice, handleOpenInEditor, iconPath]);
+  }, [canRevealOnThisDevice, handleOpenInEditor, iconPath, line, threadRef, workspaceRelativePath]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!onOpenInBrowser) {
@@ -1308,6 +1457,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             ...(onOpenInBrowser
               ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
               : []),
+            ...(canRevealOnThisDevice && Boolean(window.desktopBridge?.openPath)
+              ? ([{ id: "open-in-default-app", label: "Open in default app" }] as const)
+              : []),
             ...(canRevealOnThisDevice
               ? ([
                   {
@@ -1328,6 +1480,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }
         if (clicked === "open-in-browser") {
           handleOpenInBrowser();
+          return;
+        }
+        if (clicked === "open-in-default-app") {
+          handleOpenInDefaultApp();
           return;
         }
         if (clicked === "reveal") {
@@ -1352,6 +1508,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       displayPath,
       handleCopy,
       handleOpenInBrowser,
+      handleOpenInDefaultApp,
       handleOpenInEditor,
       handleRevealInFileExplorer,
       canRevealOnThisDevice,
@@ -1377,6 +1534,8 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
                 hasImageAction: onOpenImage !== undefined,
                 hasBrowserAction: onOpenInBrowser !== undefined,
                 canRevealOnThisDevice,
+                canOpenInDefaultApp:
+                  canRevealOnThisDevice && Boolean(window.desktopBridge?.openPath),
               });
               switch (action) {
                 case "image":
@@ -1390,6 +1549,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
                   return;
                 case "editor":
                   handleOpenInEditor();
+                  return;
+                case "default-app":
+                  handleOpenInDefaultApp();
                   return;
                 case "preview":
                   handleOpenInFilePreview();
@@ -1427,7 +1589,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.label === next.label &&
     previous.copyMarkdown === next.copyMarkdown &&
     previous.theme === next.theme &&
-    previous.threadRef === next.threadRef &&
+    previous.threadRef?.environmentId === next.threadRef?.environmentId &&
+    previous.threadRef?.threadId === next.threadRef?.threadId &&
     previous.canRevealOnThisDevice === next.canRevealOnThisDevice &&
     previous.onOpen === next.onOpen &&
     previous.onOpenImage === next.onOpenImage &&
@@ -1439,16 +1602,27 @@ function areMarkdownFileLinkPropsEqual(
 function ChatMarkdown({
   text,
   cwd,
-  threadRef,
+  threadRef: threadRefProp,
   onTaskListChange,
   isStreaming = false,
   assetRevision,
   sourceMessageId,
-  skills = EMPTY_MARKDOWN_SKILLS,
+  skills: skillsProp = EMPTY_MARKDOWN_SKILLS,
+  leadingSlashCommand: leadingSlashCommandProp = null,
   className,
   lineBreaks = false,
   lowContextWarningAction,
 }: ChatMarkdownProps) {
+  // Callers rebuild these two props on renders that have nothing to do with
+  // this message: the timeline re-creates its shared row state whenever any
+  // input moves, and a click in the transcript is enough. Every fresh
+  // identity invalidated the components map below, so react-markdown saw new
+  // component types and REMOUNTED every node of every message -- and the text
+  // the user had just selected was gone the moment they released the mouse.
+  // Pin both to their content so only a real change reaches the memo.
+  const threadRef = useStableScopedThreadRef(threadRefProp);
+  const skills = useStableMarkdownSkills(skillsProp);
+  const leadingSlashCommand = useStableLeadingSlashCommand(leadingSlashCommandProp);
   const { resolvedTheme } = useTheme();
   const expandedImagePreviewController = useExpandedImagePreviewController();
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
@@ -1492,12 +1666,47 @@ function ChatMarkdown({
     serverConfig?.availableEditors ?? [],
   );
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
+  // Bare absolute paths in prose (`/Users/me/x.png` with no link or code
+  // span) become chips once the host confirms they exist. The scan is one
+  // regex pass per message text; the confirmation is cached per path across
+  // messages and reloads, and is only requested once the message is no
+  // longer streaming, so a half-typed path never costs a round trip.
+  const bareFilePathMatches = useMemo(() => findBareFilePaths(text), [text]);
+  const bareFilePathCandidates = useMemo(
+    () => uniqueBareFilePaths(bareFilePathMatches),
+    [bareFilePathMatches],
+  );
+  const probeHostPaths = useAtomCommand(filesystemEnvironment.pathsExistNow, {
+    reportFailure: false,
+  });
+  const hostPathKinds = useHostPathExistence(
+    environmentId ?? null,
+    bareFilePathCandidates,
+    !isStreaming,
+    probeHostPaths,
+  );
+  const verifiedBareFilePaths = useMemo(() => {
+    const verified = new Set<string>();
+    for (const candidate of bareFilePathCandidates) {
+      const kind = hostPathKinds.get(candidate);
+      if (kind === "file" || kind === "directory") verified.add(candidate);
+    }
+    return verified;
+  }, [bareFilePathCandidates, hostPathKinds]);
+  const bareFileLinkHrefs = useMemo(() => {
+    const hrefs = new Set<string>();
+    for (const match of bareFilePathMatches) {
+      if (verifiedBareFilePaths.has(match.path))
+        hrefs.add(normalizeMarkdownLinkHrefKey(match.href));
+    }
+    return hrefs;
+  }, [bareFilePathMatches, verifiedBareFilePaths]);
   const markdownFileLinkMetaByHref = useMemo(() => {
     const metaByHref = new Map<
       string,
       NonNullable<ReturnType<typeof resolveMarkdownFileLinkMeta>>
     >();
-    for (const href of extractMarkdownLinkHrefs(text)) {
+    for (const href of [...extractMarkdownLinkHrefs(text), ...bareFileLinkHrefs]) {
       const normalizedHref = normalizeMarkdownLinkHrefKey(href);
       if (metaByHref.has(normalizedHref)) continue;
       const meta = resolveMarkdownFileLinkMeta(normalizedHref, cwd);
@@ -1506,7 +1715,7 @@ function ChatMarkdown({
       }
     }
     return metaByHref;
-  }, [cwd, text]);
+  }, [bareFileLinkHrefs, cwd, text]);
   const inlineCodeFileLinkMetaByText = useMemo(() => {
     const metaByText = new Map<string, MarkdownFileLinkMeta>();
     for (const span of extractInlineCodeSpans(text)) {
@@ -1536,8 +1745,11 @@ function ChatMarkdown({
     const base = lineBreaks
       ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS
       : CHAT_MARKDOWN_REMARK_PLUGINS;
-    return lowContextWarningAction ? [...base, remarkLowContextWarnings] : base;
-  }, [lineBreaks, lowContextWarningAction]);
+    const withWarnings = lowContextWarningAction ? [...base, remarkLowContextWarnings] : base;
+    return verifiedBareFilePaths.size > 0
+      ? [...withWarnings, [remarkBareFilePaths, { verified: verifiedBareFilePaths }] as const]
+      : withWarnings;
+  }, [lineBreaks, lowContextWarningAction, verifiedBareFilePaths]);
   // Re-emit highlighted content as markdown so copying out of the rendered
   // view keeps links, emphasis, lists, and code fences intact.
   const handleCopy = useCallback((event: ReactClipboardEvent<HTMLDivElement>) => {
@@ -1702,9 +1914,16 @@ function ChatMarkdown({
         ? () => openMarkdownImageInFullScreen(fileLinkMeta, imageAssetPath!)
         : undefined;
 
+      // Reached only by a browser following the link on its own (long-press
+      // preview, open in new tab); the click itself stays in-app.
+      const viewHref = fileViewHref(
+        preparedConnection._tag === "Some" ? preparedConnection.value.httpBaseUrl : null,
+        fileLinkMeta.filePath,
+      );
+
       return (
         <MarkdownFileLink
-          href={fileLinkMeta.targetPath}
+          href={viewHref ?? fileLinkMeta.targetPath}
           targetPath={fileLinkMeta.targetPath}
           iconPath={fileLinkMeta.filePath}
           displayPath={fileLinkMeta.displayPath}
@@ -1744,8 +1963,12 @@ function ChatMarkdown({
         }
         return <span {...props}>{children}</span>;
       },
-      p({ node: _node, children, ...props }) {
-        return <p {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</p>;
+      p({ node, children, ...props }) {
+        const withCommand =
+          leadingSlashCommand !== null && node?.position?.start.offset === leadingSlashCommand.start
+            ? renderLeadingSlashCommandChildren(children, leadingSlashCommand)
+            : children;
+        return <p {...props}>{renderSkillInlineMarkdownChildren(withCommand, skills)}</p>;
       },
       li({ node, children, ...props }) {
         const listItemStart = node?.position?.start.offset;
@@ -1866,7 +2089,9 @@ function ChatMarkdown({
 
         return fileLinkChip(
           fileLinkMeta,
-          `[${fileLinkMeta.basename}](${normalizedHref})`,
+          bareFileLinkHrefs.has(normalizedHref)
+            ? normalizedHref
+            : `[${fileLinkMeta.basename}](${normalizedHref})`,
           props.className,
         );
       },
@@ -1929,6 +2154,7 @@ function ChatMarkdown({
     inlineCodeFileLinkMetaByText,
     isStreaming,
     lowContextWarningAction,
+    bareFileLinkHrefs,
     markdownFileLinkMetaByHref,
     onTaskListChange,
     openInPreferredEditor,
@@ -1936,8 +2162,10 @@ function ChatMarkdown({
     openExternalLinkInPreview,
     openMarkdownImageInFullScreen,
     openMarkdownFileInPreview,
+    preparedConnection,
     resolvedTheme,
     skills,
+    leadingSlashCommand,
     text,
     threadRef,
     canRevealFileOnThisDevice,

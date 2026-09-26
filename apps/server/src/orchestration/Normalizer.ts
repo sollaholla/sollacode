@@ -1,3 +1,4 @@
+import { HostProcessPlatform, HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -15,6 +16,7 @@ import { ServerConfig } from "../config.ts";
 import { parseBase64DataUrl } from "../imageMime.ts";
 import { prepareModelCompatibleImage } from "../modelImageCompatibility.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { readVoiceNotePcm, transcribeVoiceNote } from "../voiceNoteTranscription.ts";
 
 export function isSendImagePayloadByteLengthValid(byteLength: number): boolean {
   return byteLength > 0 && byteLength <= PROVIDER_SEND_TURN_MAX_IMAGE_BYTES;
@@ -114,6 +116,69 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       (attachment) =>
         Effect.gen(function* () {
           const parsed = parseBase64DataUrl(attachment.dataUrl);
+          if (attachment.type === "audio") {
+            const platform = yield* HostProcessPlatform;
+            const hostEnvironment = yield* HostProcessEnvironment;
+            const persistVoiceNote = Effect.tryPromise({
+              try: async () => {
+                if (!parsed || parsed.mimeType !== "audio/wav")
+                  throw new Error("Invalid voice note audio payload.");
+                const bytes = Buffer.from(parsed.base64, "base64");
+                const { durationMs } = readVoiceNotePcm(bytes);
+                const transcript = await transcribeVoiceNote(
+                  bytes,
+                  serverConfig.stateDir,
+                  platform,
+                  hostEnvironment,
+                );
+                const id = createAttachmentId(canonicalCommand.threadId);
+                if (!id) throw new Error("Failed to create voice note attachment id.");
+                return {
+                  bytes,
+                  attachment: {
+                    type: "audio" as const,
+                    id,
+                    name: attachment.name,
+                    mimeType: "audio/wav" as const,
+                    sizeBytes: bytes.length,
+                    durationMs,
+                    transcript,
+                  },
+                };
+              },
+              catch: (cause) =>
+                new OrchestrationDispatchCommandError({
+                  message:
+                    cause instanceof Error ? cause.message : "Host voice transcription failed.",
+                }),
+            });
+            const note = yield* persistVoiceNote;
+            const destination = resolveAttachmentPath({
+              attachmentsDir: serverConfig.attachmentsDir,
+              attachment: note.attachment,
+            });
+            if (!destination)
+              return yield* new OrchestrationDispatchCommandError({
+                message: "Invalid voice note storage path.",
+              });
+            yield* fileSystem.makeDirectory(path.dirname(destination), { recursive: true }).pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestrationDispatchCommandError({
+                    message: "Could not create voice note storage.",
+                  }),
+              ),
+            );
+            yield* fileSystem.writeFile(destination, note.bytes).pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestrationDispatchCommandError({
+                    message: "Could not save voice note.",
+                  }),
+              ),
+            );
+            return note.attachment;
+          }
           if (!parsed || !parsed.mimeType.startsWith("image/")) {
             return yield* new OrchestrationDispatchCommandError({
               message: `Invalid image attachment payload for '${attachment.name}'.`,
@@ -196,6 +261,9 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       message: {
         ...canonicalCommand.message,
         attachments: normalizedAttachments,
+        ...(normalizedAttachments.some((attachment) => attachment.type === "audio")
+          ? { inputOrigin: "transcription" as const }
+          : {}),
       },
     } satisfies OrchestrationCommand;
   });

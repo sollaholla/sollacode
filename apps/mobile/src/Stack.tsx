@@ -218,6 +218,12 @@ const SettingsClientStorageRouteScreen = deferredScreen(
       require("./features/settings/SettingsClientStorageRouteScreen") as typeof import("./features/settings/SettingsClientStorageRouteScreen")
     ).SettingsClientStorageRouteScreen,
 );
+const SettingsCredentialsRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/settings/SettingsCredentialsRouteScreen") as typeof import("./features/settings/SettingsCredentialsRouteScreen")
+    ).SettingsCredentialsRouteScreen,
+);
 const SettingsEnvironmentsRouteScreen = deferredScreen(
   () =>
     (
@@ -354,6 +360,13 @@ const SettingsSheetStack = createNativeStackNavigator({
       linking: "environment-new",
       options: {
         title: "Add Environment",
+      },
+    }),
+    SettingsCredentials: createNativeStackScreen({
+      screen: SettingsCredentialsRouteScreen,
+      linking: "credentials",
+      options: {
+        title: "Credentials",
       },
     }),
     SettingsArchive: createNativeStackScreen({

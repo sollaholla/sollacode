@@ -57,6 +57,14 @@ function stringOrNull(value: unknown): string | null {
  */
 export function findUsageGuardPauseNotice(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  /**
+   * The provider instance the thread runs on now. A hold names the instance
+   * it was computed for; one left behind by a provider the thread has since
+   * moved away from is not this thread's hold. A Muse thread showed "Waiting
+   * for usage room · resumes in 2h" from a Claude weekly hold two days old
+   * (2026-09-12) because nothing here asked whose hold it was.
+   */
+  currentInstanceId: string | null = null,
 ): UsageGuardPauseNotice | null {
   let paused: OrchestrationThreadActivity | null = null;
   for (const activity of activities) {
@@ -65,6 +73,14 @@ export function findUsageGuardPauseNotice(
       continue;
     }
     if (activity.kind !== USAGE_GUARD_PAUSED_ACTIVITY_KIND) continue;
+    const noticeInstanceId = stringOrNull(asRecord(activity.payload)?.instanceId);
+    if (
+      currentInstanceId !== null &&
+      noticeInstanceId !== null &&
+      noticeInstanceId !== currentInstanceId
+    ) {
+      continue;
+    }
     if (paused === null || activity.createdAt >= paused.createdAt) paused = activity;
   }
   if (paused === null) return null;

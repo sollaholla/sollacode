@@ -12,12 +12,15 @@ The authoritative built-in list is [`builtInDrivers.ts`](../../apps/server/src/p
 | Grok                | ACP runtime adapter                                               | [Architecture](../architecture/providers.md)                                               |
 | Antigravity         | `agy` headless stream-JSON sessions                               | [Setup and capabilities](./antigravity.md)                                                 |
 | Deep Code           | `deepcode --exec` text sessions                                   | [Setup and capabilities](./deepcode.md)                                                    |
-| OpenCode            | OpenCode server and SDK                                           | [Architecture](../architecture/providers.md)                                               |
+| Muse Code           | `muse serve` MSP sessions over stdio                              | [Setup and capabilities](./muse.md)                                                        |
+| OpenCode            | OpenCode server and SDK                                           | [Tracking, free models, and Jev](./opencode.md)                                            |
 | External MCP bridge | User-configured executable implementing `solla.provider-bridge/1` | [Bridge contract](./mcp-bridge.md)                                                         |
 
 Antigravity has a built-in driver, model discovery, and a session adapter. Its text-only headless transport has narrower capabilities than the interactive CLI; see its capability notes before configuring agent workflows.
 
 Deep Code has a built-in driver, DeepSeek models, effort selection, and native session resume through `deepcode --exec`. Headless exec cannot confirm permission prompts and does not stream tool activity; see [Deep Code](./deepcode.md).
+
+Muse Code speaks MSP, a JSON-RPC session protocol over the stdio of a long-lived `muse serve` host. Unlike the one-shot CLIs it streams reasoning and tool calls live, steers a running turn natively, and takes images as wire input; see [Muse Code](./muse.md).
 
 ## Installing a provider CLI
 

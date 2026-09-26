@@ -1,7 +1,16 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeURL from "node:url";
+
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ComposerStatusRail } from "./ComposerStatusRail";
+
+const CSS = NodeFS.readFileSync(
+  NodeURL.fileURLToPath(new URL("../../index.css", import.meta.url)),
+  "utf8",
+);
 
 describe("ComposerStatusRail", () => {
   it("renders one coordinated rail with named slots", () => {
@@ -27,6 +36,16 @@ describe("ComposerStatusRail", () => {
 
     expect(markup).toContain("chat-composer-measure");
     expect(markup).not.toMatch(/max-w-\w+/u);
+  });
+
+  // A 0 floor let the usage pill's auto column take its full width first and
+  // squeeze the side-chat chip below its content: the count spilled past the
+  // chip's border. The side columns keep their content; the usage pill wraps.
+  it("never squeezes a side chip below its own content", () => {
+    const rail = /\.chat-composer-status-rail \{[^}]*\}/u.exec(CSS)?.[0] ?? "";
+    expect(rail).toContain(
+      "grid-template-columns: minmax(min-content, 1fr) auto minmax(min-content, 1fr);",
+    );
   });
 
   it("renders nothing when every status is absent", () => {

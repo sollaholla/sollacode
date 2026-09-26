@@ -9,7 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import type { Thread, ThreadShell } from "../types";
+import type { ChatMessage, Thread, ThreadShell } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   authoritativeThreadSettingsFingerprint,
@@ -23,6 +23,7 @@ import {
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   deriveActiveSessionProviderDriver,
+  describeComposerSettingsUpdate,
   describePendingTurnStart,
   deriveLockedProvider,
   dismissBranchMismatchForSession,
@@ -30,7 +31,7 @@ import {
   isBranchMismatchDismissedForSession,
   isHeldMessageStillQueued,
   wasHeldMessageDelivered,
-  isProviderOverloadRetrying,
+  isSteerWaitingBehindSubagent,
   isThreadAlreadyExistsError,
   isThreadWorkInterruptible,
   reconcileRetainedMountedThreadIds,
@@ -50,41 +51,17 @@ import {
 } from "./ChatView.logic";
 
 describe("canQueueLocalMessageDuringReconnect", () => {
-  it("queues only a loaded local thread during a transient reconnect", () => {
-    expect(
-      canQueueLocalMessageDuringReconnect({
-        targetKind: "PrimaryConnectionTarget",
-        phase: "connecting",
-        threadDetailLoaded: true,
-      }),
-    ).toBe(true);
-    expect(
-      canQueueLocalMessageDuringReconnect({
-        targetKind: "PrimaryConnectionTarget",
-        phase: "reconnecting",
-        threadDetailLoaded: true,
-      }),
-    ).toBe(true);
+  it("keeps loaded local and remote sends queueable through disconnects", () => {
+    for (const targetKind of ["PrimaryConnectionTarget", "BearerConnectionTarget"] as const)
+      for (const phase of ["connecting", "reconnecting", "offline", "error"] as const)
+        expect(
+          canQueueLocalMessageDuringReconnect({ targetKind, phase, threadDetailLoaded: true }),
+        ).toBe(true);
   });
-
-  it("does not queue remote, unloaded, blocked, or offline sends", () => {
+  it("requires a known environment and loaded thread", () => {
     expect(
       canQueueLocalMessageDuringReconnect({
-        targetKind: "BearerConnectionTarget",
-        phase: "reconnecting",
-        threadDetailLoaded: true,
-      }),
-    ).toBe(false);
-    expect(
-      canQueueLocalMessageDuringReconnect({
-        targetKind: "PrimaryConnectionTarget",
-        phase: "reconnecting",
-        threadDetailLoaded: false,
-      }),
-    ).toBe(false);
-    expect(
-      canQueueLocalMessageDuringReconnect({
-        targetKind: "PrimaryConnectionTarget",
+        targetKind: null,
         phase: "offline",
         threadDetailLoaded: true,
       }),
@@ -92,8 +69,8 @@ describe("canQueueLocalMessageDuringReconnect", () => {
     expect(
       canQueueLocalMessageDuringReconnect({
         targetKind: "PrimaryConnectionTarget",
-        phase: "error",
-        threadDetailLoaded: true,
+        phase: "offline",
+        threadDetailLoaded: false,
       }),
     ).toBe(false);
   });
@@ -142,67 +119,108 @@ const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const now = "2026-03-29T00:00:00.000Z";
 
-describe("isProviderOverloadRetrying", () => {
+describe("isSteerWaitingBehindSubagent", () => {
   const latestTurn = {
-    turnId: TurnId.make("turn-overloaded"),
+    turnId: TurnId.make("turn-subagent"),
     state: "running" as const,
-    requestedAt: "2026-07-29T15:00:00.000Z",
-    startedAt: "2026-07-29T15:00:01.000Z",
+    requestedAt: "2026-09-17T05:56:50.000Z",
+    startedAt: "2026-09-17T05:56:50.000Z",
     completedAt: null,
     assistantMessageId: null,
   };
-  const activity = {
-    id: "event-overload" as never,
-    createdAt: "2026-07-29T15:00:02.000Z",
+  const message = (input: {
+    id: string;
+    role: "user" | "assistant";
+    createdAt: string;
+    voiceTranscript?: boolean;
+  }): ChatMessage =>
+    ({
+      id: MessageId.make(input.id),
+      role: input.role,
+      text: input.id,
+      createdAt: input.createdAt,
+      ...(input.voiceTranscript === undefined ? {} : { voiceTranscript: input.voiceTranscript }),
+    }) as unknown as ChatMessage;
+  const taskStarted = {
+    id: "task-started" as never,
+    createdAt: "2026-09-17T05:58:49.000Z",
     tone: "info" as const,
-    kind: "provider.overload.retrying",
-    summary: "Provider unavailable — retrying shortly",
-    payload: { reason: "provider_overloaded:retrying;attempt=1" },
+    kind: "task.started",
+    summary: "subagent task started",
+    payload: { taskId: "ses-child", taskType: "subagent" },
     turnId: latestTurn.turnId,
   };
+  const taskCompleted = {
+    id: "task:thread-1:ses-child" as never,
+    createdAt: "2026-09-17T06:11:32.000Z",
+    tone: "info" as const,
+    kind: "task.completed",
+    summary: "Task completed",
+    payload: { taskId: "ses-child", status: "completed" },
+    turnId: latestTurn.turnId,
+  };
+  const opening = message({ id: "m-open", role: "user", createdAt: latestTurn.startedAt });
+  const steer = message({ id: "m-steer", role: "user", createdAt: "2026-09-17T06:02:25.000Z" });
+  const delivered = new Set(["m-open", "m-steer"]);
 
-  const freshNowMs = Date.parse(activity.createdAt) + 1_000;
-  it("shows only a retry activity for the current working turn", () => {
+  it("names a delivered steer held behind a subagent that started before it", () => {
     expect(
-      isProviderOverloadRetrying({
-        activities: [activity],
+      isSteerWaitingBehindSubagent({
+        activities: [taskStarted],
+        messages: [opening, steer],
         latestTurn,
         isWorking: true,
-        nowMs: freshNowMs,
+        deliveredMessageIds: delivered,
       }),
     ).toBe(true);
+  });
+
+  it("stays quiet once the subagent finished, the model answered, or nothing is working", () => {
+    const base = {
+      activities: [taskStarted],
+      messages: [opening, steer],
+      latestTurn,
+      isWorking: true,
+      deliveredMessageIds: delivered,
+    };
     expect(
-      isProviderOverloadRetrying({
-        activities: [activity],
-        latestTurn,
-        isWorking: false,
-        nowMs: freshNowMs,
+      isSteerWaitingBehindSubagent({ ...base, activities: [taskStarted, taskCompleted] }),
+    ).toBe(false);
+    expect(
+      isSteerWaitingBehindSubagent({
+        ...base,
+        messages: [
+          opening,
+          steer,
+          message({ id: "m-reply", role: "assistant", createdAt: "2026-09-17T06:03:00.000Z" }),
+        ],
       }),
     ).toBe(false);
+    expect(isSteerWaitingBehindSubagent({ ...base, isWorking: false })).toBe(false);
   });
 
-  it("expires once the promised retry delay passes without a new heartbeat", () => {
-    const heartbeat = {
-      ...activity,
-      payload: { reason: "provider_overloaded:retrying;attempt=2;delay_ms=20000" },
+  it("does not claim the turn's own opening message, an undelivered steer, or a later subagent", () => {
+    const base = {
+      activities: [taskStarted],
+      messages: [opening, steer],
+      latestTurn,
+      isWorking: true,
+      deliveredMessageIds: delivered,
     };
-    const heartbeatMs = Date.parse(heartbeat.createdAt);
-    const during = { activities: [heartbeat], latestTurn, isWorking: true };
-    expect(isProviderOverloadRetrying({ ...during, nowMs: heartbeatMs + 40_000 })).toBe(true);
-    expect(isProviderOverloadRetrying({ ...during, nowMs: heartbeatMs + 60_000 })).toBe(false);
-    // Without a stated delay the marker lives 90 seconds.
-    const bare = { activities: [activity], latestTurn, isWorking: true };
-    expect(isProviderOverloadRetrying({ ...bare, nowMs: heartbeatMs + 80_000 })).toBe(true);
-    expect(isProviderOverloadRetrying({ ...bare, nowMs: heartbeatMs + 100_000 })).toBe(false);
-  });
-
-  it("ignores stale retry activity from a previous turn", () => {
+    expect(isSteerWaitingBehindSubagent({ ...base, messages: [opening] })).toBe(false);
     expect(
-      isProviderOverloadRetrying({
-        activities: [{ ...activity, createdAt: "2026-07-29T14:59:59.000Z", turnId: null }],
-        latestTurn,
-        isWorking: true,
-        nowMs: freshNowMs,
+      isSteerWaitingBehindSubagent({ ...base, deliveredMessageIds: new Set(["m-open"]) }),
+    ).toBe(false);
+    expect(
+      isSteerWaitingBehindSubagent({
+        ...base,
+        activities: [{ ...taskStarted, createdAt: "2026-09-17T06:05:00.000Z" }],
+      }),
+    ).toBe(false);
+    expect(
+      isSteerWaitingBehindSubagent({
+        ...base,
+        activities: [{ ...taskStarted, payload: { taskId: "mon", taskType: "local_monitor" } }],
       }),
     ).toBe(false);
   });
@@ -360,6 +378,127 @@ describe("authoritativeThreadSettingsFingerprint", () => {
     expect(authoritativeThreadSettingsFingerprint({ ...base, interactionMode: "plan" })).not.toBe(
       fingerprint,
     );
+  });
+});
+
+describe("describeComposerSettingsUpdate", () => {
+  it("keeps model, provider and effort changes pending until the thread accepts them", () => {
+    const thread = makeThread();
+    const base = {
+      thread,
+      runtimeMode: thread.runtimeMode,
+      interactionMode: thread.interactionMode,
+    };
+    const selection = {
+      ...thread.modelSelection,
+      model: "gpt-6-astra",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    };
+    expect(describeComposerSettingsUpdate({ ...base, modelSelection: selection })).toBe(
+      "gpt-6-astra with high effort",
+    );
+    expect(
+      describeComposerSettingsUpdate({
+        ...base,
+        thread: { ...thread, modelSelection: selection },
+        modelSelection: selection,
+      }),
+    ).toBeNull();
+    expect(
+      describeComposerSettingsUpdate({ ...base, modelSelection: thread.modelSelection }),
+    ).toBeNull();
+    expect(
+      describeComposerSettingsUpdate({
+        ...base,
+        modelSelection: {
+          ...thread.modelSelection,
+          instanceId: ProviderInstanceId.make("codex-personal"),
+        },
+      }),
+    ).toBe("gpt-5.4");
+    expect(
+      describeComposerSettingsUpdate({
+        ...base,
+        modelSelection: {
+          ...thread.modelSelection,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      }),
+    ).toBe("gpt-5.4 with high effort");
+  });
+
+  it("does not invent a change for reordered or absent options", () => {
+    const thread = makeThread({
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6-astra",
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "default" },
+        ],
+      },
+    });
+    const base = {
+      thread,
+      runtimeMode: thread.runtimeMode,
+      interactionMode: thread.interactionMode,
+    };
+    expect(
+      describeComposerSettingsUpdate({
+        ...base,
+        modelSelection: {
+          ...thread.modelSelection,
+          options: thread.modelSelection.options!.toReversed(),
+        },
+      }),
+    ).toBeNull();
+    const legacy = makeThread();
+    expect(
+      describeComposerSettingsUpdate({
+        ...base,
+        thread: legacy,
+        modelSelection: { ...legacy.modelSelection, options: [] },
+      }),
+    ).toBeNull();
+  });
+
+  it("covers runtime and interaction modes", () => {
+    const thread = makeThread();
+    expect(
+      describeComposerSettingsUpdate({
+        thread,
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+      }),
+    ).toBeNull();
+    expect(
+      describeComposerSettingsUpdate({
+        thread,
+        runtimeMode: "approval-required",
+        interactionMode: thread.interactionMode,
+      }),
+    ).toBe("Approval required");
+    expect(
+      describeComposerSettingsUpdate({
+        thread: { ...thread, runtimeMode: "approval-required" },
+        runtimeMode: "full-access",
+        interactionMode: thread.interactionMode,
+      }),
+    ).toBe("Full access");
+    expect(
+      describeComposerSettingsUpdate({
+        thread,
+        runtimeMode: thread.runtimeMode,
+        interactionMode: "plan",
+      }),
+    ).toBe("Plan mode");
+    expect(
+      describeComposerSettingsUpdate({
+        thread,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+      }),
+    ).toBe("Approval required · Plan mode");
   });
 });
 

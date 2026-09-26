@@ -25,6 +25,9 @@ import { Button } from "../ui/button";
 import { shouldUseFullScreenModelPicker } from "./modelPickerPresentation";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
+  /** Opens the provider's account screen from the picker's empty-pane notice. */
+  onManageModelRestrictions?: () => void;
+  onSwitchProviderAccount?: (instanceId: ProviderInstanceId) => void;
   /**
    * The instance currently selected in the composer. Drives the trigger
    * icon, label and the default-highlighted combobox row.
@@ -144,7 +147,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   }, [isMenuOpen, useFullScreenModal]);
 
   const handleInstanceModelChange = (instanceId: ProviderInstanceId, model: string) => {
-    if (props.disabled) return;
+    if (props.disabled || props.getModelDisabledReason?.(instanceId, model)) return;
     props.onInstanceModelChange(instanceId, model);
     setIsMenuOpen(false);
   };
@@ -209,22 +212,43 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   );
 
   const content = (
-    <ModelPickerContent
-      activeInstanceId={activeInstanceId}
-      model={props.model}
-      lockedProvider={props.lockedProvider}
-      lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
-      instanceEntries={props.instanceEntries}
-      {...(props.keybindings ? { keybindings: props.keybindings } : {})}
-      modelOptionsByInstance={props.modelOptionsByInstance}
-      terminalOpen={props.terminalOpen ?? false}
-      fullScreen={useFullScreenModal}
-      onRequestClose={() => setIsMenuOpen(false)}
-      {...(props.getModelDisabledReason
-        ? { getModelDisabledReason: props.getModelDisabledReason }
-        : {})}
-      onInstanceModelChange={handleInstanceModelChange}
-    />
+    <div
+      className={cn("flex min-h-0 flex-col", useFullScreenModal && "h-full")}
+      data-model-picker-content="true"
+    >
+      {props.onManageModelRestrictions && (
+        <Button
+          type="button"
+          variant="ghost"
+          className="shrink-0 rounded-none border-b border-border bg-popover"
+          onClick={() => {
+            setIsMenuOpen(false);
+            props.onManageModelRestrictions?.();
+          }}
+        >
+          Model restrictions…
+        </Button>
+      )}
+      <ModelPickerContent
+        activeInstanceId={activeInstanceId}
+        model={props.model}
+        lockedProvider={props.lockedProvider}
+        lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
+        instanceEntries={props.instanceEntries}
+        {...(props.keybindings ? { keybindings: props.keybindings } : {})}
+        modelOptionsByInstance={props.modelOptionsByInstance}
+        terminalOpen={props.terminalOpen ?? false}
+        fullScreen={useFullScreenModal}
+        onRequestClose={() => setIsMenuOpen(false)}
+        {...(props.getModelDisabledReason
+          ? { getModelDisabledReason: props.getModelDisabledReason }
+          : {})}
+        onInstanceModelChange={handleInstanceModelChange}
+        {...(props.onSwitchProviderAccount
+          ? { onSwitchProviderAccount: props.onSwitchProviderAccount }
+          : {})}
+      />
+    </div>
   );
 
   if (useFullScreenModal) {

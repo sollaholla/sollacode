@@ -1,5 +1,5 @@
-import { createFileRoute, lazyRouteComponent, useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Suspense, useEffect } from "react";
 import { threadHasStarted } from "../components/ChatView.logic";
 import {
   DraftId,
@@ -10,8 +10,8 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { waitForDraftHeroTransition } from "../components/chat/draftHeroTransition";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { useThread, useThreadRefs } from "../state/entities";
-
-const ChatView = lazyRouteComponent(() => import("../components/ChatView"));
+import { LazyChatView } from "../lazyChatView";
+import { PaneLoadingState } from "../components/PaneLoadingState";
 
 function DraftChatThreadRouteView() {
   const navigate = useNavigate();
@@ -73,13 +73,15 @@ function DraftChatThreadRouteView() {
 
   return (
     <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
-      <ChatView
-        draftId={draftId}
-        environmentId={draftSession.environmentId}
-        threadId={draftSession.threadId}
-        routeKind="draft"
-        forceExpandedMobileComposer
-      />
+      <Suspense fallback={<PaneLoadingState label="Opening…" />}>
+        <LazyChatView
+          draftId={draftId}
+          environmentId={draftSession.environmentId}
+          threadId={draftSession.threadId}
+          routeKind="draft"
+          forceExpandedMobileComposer
+        />
+      </Suspense>
     </SidebarInset>
   );
 }

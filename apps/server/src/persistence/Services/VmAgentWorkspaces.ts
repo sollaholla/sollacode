@@ -165,6 +165,12 @@ export interface VmAgentWorkspaceStoreShape {
     readonly taskId: VmAgentTaskId;
     readonly now: IsoDateTime;
   }) => Effect.Effect<VmAgentTask, ProjectionRepositoryError>;
+  readonly prepareResume: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly now: IsoDateTime;
+    readonly catchUpTaskId: VmAgentTaskId;
+    readonly policy?: "combine" | "skip";
+  }) => Effect.Effect<number, ProjectionRepositoryError>;
   readonly claimNextDue: (
     input: ClaimVmAgentTaskInput,
   ) => Effect.Effect<

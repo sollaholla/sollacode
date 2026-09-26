@@ -788,7 +788,11 @@ export const make = Effect.gen(function* () {
     const createdAt = yield* nowIso;
     const messageId = VmAgentDelegationMessageId.make(NodeCrypto.randomUUID());
     if (sourceSide) {
-      if (delegation.status !== "running" && delegation.status !== "waiting-input") {
+      if (
+        delegation.status !== "queued" &&
+        delegation.status !== "running" &&
+        delegation.status !== "waiting-input"
+      ) {
         return yield* new VmAgentDelegationInvalidStateError({
           delegationId: delegation.delegationId,
           status: delegation.status,

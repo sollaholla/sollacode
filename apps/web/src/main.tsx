@@ -12,6 +12,7 @@ import "./index.css";
 // rejects the dynamic import and crashes the chat with "Unable to preload CSS".
 import "@xterm/xterm/css/xterm.css";
 
+import { preventPagePinchZoom } from "./lib/preventPagePinchZoom";
 import { APP_VERSION } from "./branding";
 import { isElectron } from "./env";
 import { getRouter } from "./router";
@@ -22,6 +23,13 @@ import {
 import { installDynamicImportRecoveryListeners } from "./lib/dynamicImportRecoveryListeners";
 import { AppRoot } from "./AppRoot";
 import { IntentionalShutdownOverlay } from "./components/IntentionalShutdownOverlay";
+import { finishStartup, setStartupStage } from "./startupSplash";
+
+// The app's code has loaded; next the startup splash waits for sign-in.
+setStartupStage("signing-in");
+
+const removePagePinchGuard = preventPagePinchZoom(document);
+if (import.meta.hot) import.meta.hot.dispose(removePagePinchGuard);
 
 const OrchestratorBubbleApp = lazy(() =>
   import("./orchestrator/OrchestratorBubbleApp").then((module) => ({
@@ -35,6 +43,8 @@ const OrchestratorBubbleApp = lazy(() =>
 // out of the route tree entirely.
 const isOrchestratorBubbleWindow =
   isElectron && window.location.hash.startsWith("#/orchestrator-bubble");
+// The floating orb is a tiny mirror window; it has no startup to cover.
+if (isOrchestratorBubbleWindow) finishStartup();
 
 // A release replaces every hashed chunk, so an already-open client 404s on its
 // next lazy import. Install this before anything can be imported lazily: the

@@ -752,3 +752,31 @@ and the audio are on the phone - which is the arrangement that makes it usable o
 headphones - while the work happens on the Mac it is connected to.
 
 Open it from **Settings → Orchestrator → Open Orchestrator**.
+
+## GPT-Live with Personal Assistant
+
+Choose **OpenAI > gpt-live-1** in **Settings > Orchestrator**, with an OpenAI API key that has access
+to GPT-Live. Existing Realtime configurations remain selectable. GPT-Live is a separate, continuous
+voice conversation: it listens while speaking and sends work through Solla's agent delegation system.
+
+**GPT-Live delegation > Assistant agent** defaults to **Personal Assistant** in the primary environment.
+Its delegated worker inherits that agent's configured chat model, workspace, scope and rules. Changing
+the agent's model changes the backend used by subsequent workers; GPT-Live handles the spoken exchange.
+The named agent must exist before voice can start. Typed Orchestrator chat keeps its composer model.
+
+The conversation can continue while work runs. Corrections and answers are delivered to the active
+worker, repeated network requests are deduplicated, and results come from durable agent activity.
+Progress is kept separate from completion. Consequential external actions still require approval in
+Solla; speaking a request or receiving an acknowledgment does not bypass those approvals.
+At **Read only** authority, GPT-Live can converse but cannot create delegated tasks.
+
+Stopping voice immediately disables the microphone. The connection briefly remains open to receive
+OpenAI's final usage receipt. Delegated work survives a voice disconnect and remains visible in agent
+activity; a disconnected update stream is never reported as completed work. Check agent activity
+before starting the same task again after reconnecting.
+
+GPT-Live's native interruption behavior keeps the microphone open with browser echo cancellation.
+Headphones give the clearest separation on handheld devices. The Realtime interruption toggle does
+not change this protocol. Voice usage shows OpenAI's reported session duration separately from
+Realtime token estimates; delegated model usage belongs to the agent. Sessions without a final
+receipt are explicitly marked unconfirmed.

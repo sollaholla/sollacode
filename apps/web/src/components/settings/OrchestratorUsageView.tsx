@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useLiveUsageStore } from "../../orchestrator/liveUsageStore";
 
 import {
   dailyBuckets,
@@ -27,6 +28,36 @@ import { Button } from "../ui/button";
  */
 
 const MAX_ROWS = 14;
+
+function LiveUsageSummary() {
+  const entries = useLiveUsageStore((state) => state.entries);
+  const clear = useLiveUsageStore((state) => state.clear);
+  if (entries.length === 0) return null;
+  const seconds = entries.reduce((total, entry) => total + entry.seconds, 0);
+  const unconfirmed = entries.filter((entry) => !entry.finalized).length;
+  return (
+    <div
+      className="mt-3 rounded-md border border-border/60 p-3 text-xs"
+      aria-label="GPT-Live voice usage"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <strong>GPT-Live · {(seconds / 60).toFixed(1)} minutes</strong>
+        <Button size="xs" variant="ghost" onClick={clear}>
+          Clear Live history
+        </Button>
+      </div>
+      <p className="mt-1 text-muted-foreground">
+        {entries.length} sessions on this client. Duration reported by OpenAI; delegated model usage
+        is recorded with the agent.
+      </p>
+      {unconfirmed > 0 ? (
+        <p className="mt-1 text-amber-700 dark:text-amber-300">
+          {unconfirmed} sessions active or awaiting final usage confirmation.
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 function BucketRow({ bucket, label }: { bucket: UsageBucket; label: string }) {
   const minutes = estimateVoiceMinutes(bucket.usage);
@@ -99,14 +130,16 @@ export function OrchestratorUsageView({
   if (days.length === 0) {
     return (
       <div className="border-border/60 text-muted-foreground mt-2 rounded-md border border-dashed p-4 text-xs">
-        No voice usage recorded yet. Usage appears here after your first spoken session, taken from
-        what the Realtime API reports for each response.
+        No Realtime token usage recorded yet. Usage appears here after your first spoken session,
+        taken from what the Realtime API reports for each response.
+        <LiveUsageSummary />
       </div>
     );
   }
 
   return (
     <div className="mt-2">
+      <LiveUsageSummary />
       <div className="grid grid-cols-3 gap-2">
         {[
           { label: "Today", bucket: today },

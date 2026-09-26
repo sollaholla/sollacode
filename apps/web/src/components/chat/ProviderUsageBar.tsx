@@ -1,3 +1,5 @@
+import { deepCodeUsageWindows } from "@t3tools/shared/deepcodeUsage";
+import { openCodeUsageWindows } from "@t3tools/client-runtime/state/opencode-usage";
 import type {
   EnvironmentId,
   ModelSelection,
@@ -24,7 +26,9 @@ import {
   type PersistedProviderUsageResetCredits,
   type PersistedProviderUsageWindow,
   useProviderUsageStore,
+  isSyntheticCodexUsageWindow,
 } from "../../providerUsageStore";
+import { isProviderUsageRefreshEligible } from "../settings/providerUsageRefresh";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -92,6 +96,7 @@ export interface ProviderUsageSummary {
   windows: ProviderUsageWindow[];
   reportedAt: string | null;
   resetCredits?: ProviderUsageResetCredits | null;
+  message?: string;
 }
 
 /**
@@ -137,6 +142,20 @@ export interface ProviderUsageExternalLink {
 export function providerUsageExternalLink(
   driver: ProviderDriverKind,
 ): ProviderUsageExternalLink | null {
+  if (driver === "deepcode")
+    return {
+      href: "https://platform.deepseek.com/usage",
+      label: "View DeepSeek balance and usage",
+    };
+  // Muse serves no billed amount anywhere the CLI can reach: `/status` shows
+  // only the billing mode ("Pay-as-you-go"), `/upgrade` the subscription
+  // state, `/usage` and `/cost` the session's own estimate. The running charge
+  // lives in Meta's Account Center, so that is where the card points.
+  if (driver === "muse")
+    return {
+      href: "https://accountscenter.meta.com/muse_code/",
+      label: "View Muse billing in Meta Account Center",
+    };
   if (driver !== "grok") return null;
   return {
     href: "https://grok.com/automations?_s=usage",
@@ -144,7 +163,61 @@ export function providerUsageExternalLink(
   };
 }
 
-const SUPPORTED_USAGE_DRIVERS = new Set(["codex", "claudeAgent", "grok", "antigravity"]);
+const SUPPORTED_USAGE_DRIVERS = new Set([
+  "codex",
+  "claudeAgent",
+  "grok",
+  "antigravity",
+  "deepcode",
+  "muse",
+  "opencode",
+]);
+
+/**
+ * Drivers whose usage figure belongs to ONE provider session (a thread), not
+ * the account. Muse reports the spend of the session it is running for; the
+ * server keeps the last report of every Muse session in the same per-provider
+ * slot, so read across threads it is whichever session spoke last. Such a
+ * figure is taken only from the current thread's own activities, never from
+ * the shared provider slot or the persisted (cross-thread) store.
+ */
+const SESSION_SCOPED_USAGE_DRIVERS: ReadonlySet<string> = new Set(["muse", "opencode"]);
+
+export function isSessionScopedUsageDriver(driver: string): boolean {
+  return SESSION_SCOPED_USAGE_DRIVERS.has(driver);
+}
+
+/**
+ * Muse's usage, as Muse can report it: what the session has spent.
+ *
+ * Muse exposes no balance, credit or quota anywhere the CLI or MSP can reach;
+ * its own TUI shows session cost from catalog prices, and so does this. One
+ * window, with no percentage: there is no allowance for it to be a fraction
+ * of. A "+" marks a figure that could not price every completion.
+ */
+export function museUsageWindows(raw: unknown): ProviderUsageWindow[] {
+  const envelope = asRecord(raw);
+  if (!envelope || envelope.source !== "muse-spend") return [];
+  const spend = typeof envelope.sessionSpend === "string" ? Number(envelope.sessionSpend) : NaN;
+  if (!Number.isFinite(spend) || spend < 0) return [];
+  const unpriced = finiteNumber(envelope.unpricedCompletions) ?? 0;
+  const currency = typeof envelope.currency === "string" ? envelope.currency : "USD";
+  const symbol = currency === "USD" ? "$" : `${currency} `;
+  const amount = spend < 0.01 && spend > 0 ? "<0.01" : spend.toFixed(2);
+  return [
+    {
+      key: "session-spend",
+      label: "Session spend",
+      usedPercent: null,
+      resetAt: null,
+      detail: `${symbol}${amount}${unpriced > 0 ? "+" : ""}`,
+      description:
+        unpriced > 0
+          ? `Priced from Muse's catalog; ${unpriced} completion${unpriced === 1 ? "" : "s"} had no listed price.`
+          : "Priced from Muse's catalog. The billed amount is in Meta Account Center.",
+    },
+  ];
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -183,7 +256,7 @@ function isRetiredCodexFiveHourWindow(window: ProviderUsageWindow): boolean {
   return window.label.trim().toLowerCase() === "5 hour";
 }
 
-function codexWindows(raw: unknown): ProviderUsageWindow[] {
+function codexWindows(raw: unknown, reportedAtMs: number): ProviderUsageWindow[] {
   const envelope = asRecord(raw);
   const snapshot = asRecord(envelope?.rateLimits) ?? envelope;
   if (!snapshot) return [];
@@ -208,6 +281,20 @@ function codexWindows(raw: unknown): ProviderUsageWindow[] {
     // Codex retired its five-hour limit. Older cached/provider payloads can still
     // contain the former primary window, but presenting it would be misleading.
     if (durationMinutes !== null && durationMinutes >= 270 && durationMinutes <= 330) continue;
+    // A cold app-server's unfilled stand-in: 0% used, reset one window from
+    // the report. Not a reading; see `isSyntheticCodexUsageWindow`.
+    if (
+      isSyntheticCodexUsageWindow(
+        {
+          usedPercent,
+          resetAt: epochMilliseconds(value.resetsAt),
+          windowDurationMs: durationMinutes === null ? null : durationMinutes * MINUTE_MS,
+        },
+        reportedAtMs,
+      )
+    ) {
+      continue;
+    }
     windows.push({
       // Codex has moved the weekly quota between `primary` and `secondary`
       // across app-server versions. Use the semantic window as the identity so
@@ -251,7 +338,7 @@ function codexWindows(raw: unknown): ProviderUsageWindow[] {
   return windows;
 }
 
-function codexResetCredits(raw: unknown): ProviderUsageResetCredits | null {
+function usageResetCredits(raw: unknown): ProviderUsageResetCredits | null {
   const envelope = asRecord(raw);
   const summary = asRecord(envelope?.rateLimitResetCredits);
   const availableCount = finiteNumber(summary?.availableCount);
@@ -647,20 +734,25 @@ function grokWindows(raw: unknown): ProviderUsageWindow[] {
 
   const windows: ProviderUsageWindow[] = [];
   const period = asRecord(config.currentPeriod);
-  const reportedUsedPercent = finiteNumber(config.creditUsagePercent);
-  // Grok omits protobuf scalar defaults from JSON. During a real current
-  // period, a missing percentage therefore means 0% used; treating it as no
-  // snapshot leaves the previous billing period stuck in persisted UI state.
-  const usedPercent = reportedUsedPercent ?? (period === null ? null : 0);
+  // Grok omits protobuf scalar defaults from JSON, so a real 0% arrives as a
+  // missing field — but so does an account that has run out: on 2026-09-18 the
+  // same CLI build reported 47, 48, 49 then 52 all afternoon and stopped
+  // sending the field entirely from the moment every prompt began failing with
+  // "Grok Build usage balance exhausted". Reading the omission as 0% put a
+  // confident, wrong "0%" on the bar for a provider refusing every turn.
+  // Unknown is its own state, and the window is still published so a finished
+  // billing period cannot stay stuck in persisted UI state.
+  const usedPercent = finiteNumber(config.creditUsagePercent) ?? null;
   const resetAt =
     epochMilliseconds(period?.end) ??
     epochMilliseconds(config.billingPeriodEnd) ??
     epochMilliseconds(config.billingPeriodStart);
-  if (usedPercent !== null) {
+  if (usedPercent !== null || period !== null) {
     windows.push({
       key: "weekly",
       label: grokPeriodLabel(period),
-      usedPercent: clampPercentage(usedPercent),
+      usedPercent: usedPercent === null ? null : clampPercentage(usedPercent),
+      ...(usedPercent === null ? { detail: "Not reported" } : {}),
       resetAt,
       windowDurationMs: grokPeriodDurationMs(period) ?? 7 * DAY_MS,
     });
@@ -717,11 +809,18 @@ function antigravityWindows(raw: unknown): ProviderUsageWindow[] {
   return windows;
 }
 
-function usageWindowsForDriver(driver: ProviderDriverKind, raw: unknown): ProviderUsageWindow[] {
-  if (driver === "codex") return codexWindows(raw);
+function usageWindowsForDriver(
+  driver: ProviderDriverKind,
+  raw: unknown,
+  reportedAt: string,
+): ProviderUsageWindow[] {
+  if (driver === "deepcode") return deepCodeUsageWindows(raw);
+  if (driver === "codex") return codexWindows(raw, Date.parse(reportedAt));
   if (driver === "claudeAgent") return claudeWindows(raw);
   if (driver === "grok") return grokWindows(raw);
   if (driver === "antigravity") return antigravityWindows(raw);
+  if (driver === "muse") return museUsageWindows(raw);
+  if (driver === "opencode") return openCodeUsageWindows(raw);
   return [];
 }
 
@@ -742,8 +841,11 @@ export function deriveProviderUsageSummaries(
   return enabledProviders.map((provider) => {
     const accountKey = providerUsageAccountKey(provider, environmentId);
     const currentReport = accountKey === null ? undefined : reportsByAccountKey[accountKey];
-    const effectiveReports =
-      currentReport === undefined
+    const effectiveReports = isSessionScopedUsageDriver(provider.driver)
+      ? currentReport === undefined || accountKey === null
+        ? {}
+        : { [accountKey]: currentReport }
+      : currentReport === undefined
         ? persistedByAccountKey
         : mergeProviderUsageEntry(persistedByAccountKey, currentReport);
     const report = accountKey === null ? undefined : effectiveReports[accountKey];
@@ -751,21 +853,42 @@ export function deriveProviderUsageSummaries(
       (window) => provider.driver !== "codex" || !isRetiredCodexFiveHourWindow(window),
     );
     const supported = SUPPORTED_USAGE_DRIVERS.has(provider.driver);
+    // Age decides staleness; a failed refresh only explains it. Marking the
+    // reading stale the moment one refresh failed painted "Stale" on a number
+    // thirty seconds old after a single slow round trip -- the exact label
+    // the freshness work set out to remove. The failure still reaches the
+    // card through `message`.
     const stale =
-      report !== undefined && now - Date.parse(report.reportedAt) > PROVIDER_USAGE_STALE_AFTER_MS;
+      provider.driver !== "opencode" &&
+      report !== undefined &&
+      now - Date.parse(report.reportedAt) > PROVIDER_USAGE_STALE_AFTER_MS;
     const resetCredits = activeResetCredits(report?.resetCredits, now);
     return {
       provider,
       accountKey,
+      // A reading wins over the probe's verdict. `unsupported` means the
+      // probe cannot ASK for usage; Muse's probe cannot, yet its runtime still
+      // reports spend, and a card carrying a real figure under an
+      // "Unsupported" badge would be arguing with itself.
       state:
         windows.length > 0 || resetCredits !== null
           ? stale
             ? "stale"
             : "available"
-          : supported
-            ? "unavailable"
-            : "unsupported",
+          : provider.driver !== "opencode" && provider.accountUsageStatus?.state === "unsupported"
+            ? "unsupported"
+            : supported
+              ? "unavailable"
+              : "unsupported",
       windows,
+      ...(provider.driver === "opencode"
+        ? {
+            message:
+              "OpenCode reports a session cost estimate when connected to a thread. Check your model provider for account credit and limits.",
+          }
+        : provider.accountUsageStatus?.message
+          ? { message: provider.accountUsageStatus.message }
+          : {}),
       reportedAt: report?.reportedAt ?? null,
       resetCredits,
     };
@@ -782,24 +905,28 @@ export function deriveProviderUsageReports(
   const record = (provider: ServerProvider, raw: unknown, reportedAt: string) => {
     const accountKey = providerUsageAccountKey(provider, environmentId);
     if (accountKey === null) return;
-    const windows = usageWindowsForDriver(provider.driver, raw);
-    const resetCredits = provider.driver === "codex" ? codexResetCredits(raw) : null;
+    const windows = usageWindowsForDriver(provider.driver, raw, reportedAt);
+    // Codex always answers about its resets. Claude's bank rides only on the
+    // health check's usage, so its live rate-limit events say nothing either
+    // way. `null` is the provider answering "none" and must be sent through;
+    // omitting the key keeps "no reset data in this report" distinct from
+    // "there are no resets", which is what the merge keys its hysteresis on.
+    const reportsResets =
+      provider.driver === "codex" ||
+      (provider.driver === "claudeAgent" && asRecord(raw)?.rateLimitResetCredits !== undefined);
+    const resetCredits = reportsResets ? usageResetCredits(raw) : null;
     if (windows.length === 0 && resetCredits === null) return;
     reports = mergeProviderUsageEntry(reports, {
       accountKey,
       driver: provider.driver,
       windows,
       reportedAt,
-      // Codex is the only driver that has resets, so its `null` is the
-      // provider answering "none" and must be sent through. Omitting the key
-      // for every other driver keeps "no reset data in this report" distinct
-      // from "there are no resets", which is what the merge keys its
-      // hysteresis on.
-      ...(provider.driver === "codex" ? { resetCredits } : {}),
+      ...(reportsResets ? { resetCredits } : {}),
     });
   };
 
   for (const provider of enabledProviders) {
+    if (isSessionScopedUsageDriver(provider.driver)) continue;
     if (provider.accountUsage !== undefined && provider.accountUsageReportedAt !== undefined) {
       record(provider, provider.accountUsage, provider.accountUsageReportedAt);
     }
@@ -943,6 +1070,42 @@ export function compactProviderUsageMetric(
   summary: ProviderUsageSummary,
   selectedModelSelection: ModelSelection | null = null,
 ): CompactProviderUsageMetric | null {
+  if (summary.provider.driver === "opencode") {
+    return {
+      label: "Cost",
+      window: summary.windows.find((window) => window.key === "session-cost") ?? null,
+    };
+  }
+  if (summary.provider.driver === "deepcode") {
+    const billing = summary.windows.find((window) => window.key === "billing");
+    const balance =
+      summary.windows.find((window) => window.key === "balance-USD") ??
+      summary.windows.find((window) => window.key.startsWith("balance-"));
+    return {
+      label: "Credit",
+      window:
+        billing?.detail === "Insufficient credit"
+          ? { ...billing, detail: "Empty" }
+          : (balance ?? billing ?? null),
+    };
+  }
+  // Muse has no account quota to report: neither `muse --help` nor the MSP
+  // schema the binary exports carries a credit, balance or limit call, because
+  // Meta serves those to its dashboard. That is a reason to SAY so in the row
+  // rather than to leave the provider out of it -- a chip that is simply
+  // absent reads as a provider that is not working, which is how a signed-in
+  // Muse account looked next to four providers that each showed a number. The
+  // badge renders a window-less metric as "not reported", and its popover is
+  // where the account card explains where the credits actually live.
+  // Muse has no account usage anywhere the CLI or MSP can reach; its card says
+  // where the credits live. Tokens and context are the context-window
+  // component's business, not this strip's, so nothing is invented here: a
+  // signed-in Muse shows a chip with no number rather than no chip at all.
+  if (summary.provider.driver === "muse") {
+    if (summary.provider.auth.status !== "authenticated") return null;
+    const spend = summary.windows.find((window) => window.key === "session-spend");
+    return spend ? { label: "Spend", window: spend } : { label: "usage", window: null };
+  }
   if (
     summary.provider.driver !== "claudeAgent" &&
     summary.provider.driver !== "codex" &&
@@ -953,19 +1116,19 @@ export function compactProviderUsageMetric(
   }
 
   if (summary.provider.driver === "antigravity") {
+    // Gemini is the default chip. Other pools apply only when this instance's
+    // selected model uses them; missing readings must not borrow another pool.
     const family =
-      selectedModelSelection?.instanceId === summary.provider.instanceId
+      (selectedModelSelection?.instanceId === summary.provider.instanceId
         ? antigravityUsageModelFamily(selectedModelSelection.model)
-        : null;
-    const applicable =
-      family === null ? summary.windows : summary.windows.filter((window) => window.key === family);
-    const pool = applicable.length > 0 ? applicable : summary.windows;
+        : null) ?? "gemini";
+    const pool = summary.windows.filter((window) => window.key === family);
     const highestReportedWindow = pool.reduce<ProviderUsageWindow | null>(
       (highest, candidate) => maxReportedUsageWindow(highest, candidate),
       null,
     );
     return {
-      label: highestReportedWindow?.label ?? "Weekly",
+      label: highestReportedWindow?.label ?? (family === "gemini" ? "Gemini" : "Claude and GPT"),
       window: highestReportedWindow,
     };
   }
@@ -1068,14 +1231,18 @@ export function ProviderUsageDetails({
   isRefreshing = false,
   refreshError = null,
   onSwitchUser,
+  switchAccountLabel = "Switch user",
   resetCredits = null,
   onUseReset,
   onDismissResetCredit,
   externalUsageLink = null,
   creditsOnly = false,
   account = null,
-}: Pick<ProviderUsageSummary, "state" | "windows" | "reportedAt"> & {
+  message,
+  scope = "account",
+}: Pick<ProviderUsageSummary, "state" | "windows" | "reportedAt" | "message"> & {
   name: string;
+  scope?: "account" | "session";
   /** Whose quota this is. Blurred until the reader asks for it. */
   account?: ProviderUsageAccount | null;
   /** Skip the header and window bars; render only reset credits and the external link. */
@@ -1084,6 +1251,7 @@ export function ProviderUsageDetails({
   isRefreshing?: boolean;
   refreshError?: string | null;
   onSwitchUser?: () => void;
+  switchAccountLabel?: string;
   resetCredits?: ProviderUsageResetCredits | null;
   externalUsageLink?: ProviderUsageExternalLink | null;
   onUseReset?: (
@@ -1184,14 +1352,16 @@ export function ProviderUsageDetails({
               {onSwitchUser ? (
                 <button type="button" onClick={onSwitchUser} className={USAGE_CARD_ACTION_CLASS}>
                   <UserRoundIcon className="size-3" aria-hidden />
-                  <span>Switch user</span>
+                  <span>{switchAccountLabel}</span>
                 </button>
               ) : null}
             </div>
             <p className="mt-0.5 w-full basis-full text-[11px] text-muted-foreground leading-snug">
               {reportedAt
                 ? `${state === "stale" ? "Last reported" : "Reported"} ${formatReportedAt(reportedAt)}`
-                : "Account-level provider usage"}
+                : scope === "session"
+                  ? "Session usage"
+                  : "Account-level provider usage"}
             </p>
             {account ? (
               <div className="flex w-full min-w-0 basis-full items-center gap-1.5 text-[11px] text-muted-foreground leading-snug">
@@ -1201,6 +1371,7 @@ export function ProviderUsageDetails({
                     value={account.email ?? account.label}
                     ariaLabel={`${name} account`}
                     revealTooltip="Reveal account"
+                    confirmationMode="inline"
                     hideTooltip="Hide account"
                     confirmationMessage="Reveal the signed-in account? Make sure nobody else can see your screen."
                     className="truncate"
@@ -1221,6 +1392,9 @@ export function ProviderUsageDetails({
             >
               {refreshError}
             </p>
+          ) : null}
+          {message && hasUsage ? (
+            <p className="mt-2 text-[11.5px] text-muted-foreground leading-snug">{message}</p>
           ) : null}
           {hasUsage ? (
             <ul className="mt-3 space-y-2" aria-label={`${name} usage windows`}>
@@ -1250,7 +1424,7 @@ export function ProviderUsageDetails({
                     key={window.key}
                     className="rounded-[10px] border border-[var(--line)] bg-surface-row/60 px-3 py-2.5"
                   >
-                    <div className="flex items-baseline justify-between gap-3">
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                       <span className="min-w-0 break-words font-medium text-[12.5px] text-foreground leading-snug">
                         {titleCaseUsageLabel(window.label)}
                       </span>
@@ -1264,6 +1438,11 @@ export function ProviderUsageDetails({
                         {detail}
                       </span>
                     </div>
+                    {window.description ? (
+                      <p className="mt-1 text-[11px] text-muted-foreground leading-snug">
+                        {window.description}
+                      </p>
+                    ) : null}
                     {window.usedPercent !== null ? (
                       <div className="mt-2">
                         <UsageWindowProgressLine
@@ -1287,9 +1466,10 @@ export function ProviderUsageDetails({
             </ul>
           ) : (
             <p className="mt-3 rounded-[10px] border border-[var(--line)] border-dashed px-3 py-3 text-center text-[11.5px] text-muted-foreground leading-snug">
-              {state === "unsupported"
-                ? "This provider does not expose account usage."
-                : "Usage has not been reported for this provider account yet."}
+              {message ??
+                (state === "unsupported"
+                  ? "This provider does not expose account usage."
+                  : "Usage has not been reported for this provider account yet.")}
             </p>
           )}
         </>
@@ -1419,7 +1599,13 @@ export function ProviderUsageBadgeDetails(props: {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const refreshInFlightRef = useRef(false);
-  const canRefresh = onRefreshProvider !== undefined;
+  // Same gate the settings card applies. Offering Refresh on a provider that
+  // has nothing to refresh -- Muse reports usage from its own runtime and has
+  // no quota call to make -- put a red "Couldn't refresh right now" on a card
+  // whose own next line said usage arrives once a turn runs (seen on a phone,
+  // 2026-09-12). A control that can only fail is not a control.
+  const canRefresh =
+    onRefreshProvider !== undefined && isProviderUsageRefreshEligible(summary.provider);
   useEffect(() => {
     setRefreshError(null);
   }, [summary.reportedAt]);
@@ -1462,11 +1648,14 @@ export function ProviderUsageBadgeDetails(props: {
       <section data-provider-usage-card={name} data-provider-instance-id={provider.instanceId}>
         <ProviderUsageDetails
           name={name}
+          scope={isSessionScopedUsageDriver(provider.driver) ? "session" : "account"}
           state={summary.state}
           windows={[...windows]}
           reportedAt={summary.reportedAt}
+          {...(summary.message ? { message: summary.message } : {})}
           resetCredits={summary.resetCredits ?? null}
           account={providerUsageAccount(provider)}
+          switchAccountLabel={provider.driver === "deepcode" ? "Switch account" : "Switch user"}
           externalUsageLink={providerUsageExternalLink(provider.driver)}
           isRefreshing={isRefreshing}
           refreshError={refreshError}
@@ -1524,7 +1713,9 @@ function ProviderUsageBadge({
   const { provider } = summary;
   const name = providerUsageName(provider);
   const usageDetailsLabel =
-    provider.driver === "claudeAgent" ? "Claude usage details" : `${name} account usage details`;
+    provider.driver === "claudeAgent"
+      ? "Claude usage details"
+      : `${name} ${isSessionScopedUsageDriver(provider.driver) ? "session" : "account"} usage details`;
   const compactUsedPercent = compactMetric.window?.usedPercent ?? null;
   const compactRoundedUsedPercent =
     compactUsedPercent === null ? null : Math.round(compactUsedPercent);
@@ -1543,7 +1734,9 @@ function ProviderUsageBadge({
   );
   const compactUsageLabel = `${name} ${compactMetric.label}`;
   const compactStatus =
-    compactRoundedUsedPercent === null ? "not reported" : `${compactRoundedUsedPercent}% used`;
+    compactRoundedUsedPercent === null
+      ? (compactMetric.window?.detail ?? "not reported")
+      : `${compactRoundedUsedPercent}% used`;
   // The overlay encodes pace visually; state it in text too, so the comparison
   // is available to screen readers and on hover rather than by color alone.
   const compactStatusWithPace =
@@ -1576,7 +1769,11 @@ function ProviderUsageBadge({
               : usageValueClass(compactUsedPercent)
           }`}
         >
-          {compactRoundedUsedPercent === null ? "—" : `${compactRoundedUsedPercent}%`}
+          {compactRoundedUsedPercent === null
+            ? compactMetric.window?.detail === "Not reported"
+              ? "—"
+              : (compactMetric.window?.detail ?? "—")
+            : `${compactRoundedUsedPercent}%`}
         </span>
         {compactUsedPercent !== null && compactRoundedUsedPercent !== null ? (
           <span
@@ -1609,7 +1806,17 @@ function ProviderUsageBadge({
         <ProviderUsageBadgeDetails
           summary={summary}
           {...(onRefreshProvider ? { onRefreshProvider } : {})}
-          {...(onSwitchUser ? { onSwitchUser } : {})}
+          {...(onSwitchUser
+            ? {
+                // Switching account opens the account screen behind this
+                // popup, so the popup has to get out of the way: left open it
+                // covers the very form it just sent the person to.
+                onSwitchUser: (instanceId: ProviderInstanceId) => {
+                  setOpen(false);
+                  onSwitchUser(instanceId);
+                },
+              }
+            : {})}
           {...(onUseReset ? { onUseReset } : {})}
           {...(onDismissResetCredit ? { onDismissResetCredit } : {})}
         />
@@ -1640,7 +1847,10 @@ export function ProviderUsageBar(props: {
     [props.activities, props.environmentId, props.providers],
   );
   useEffect(() => {
-    for (const report of Object.values(reports)) recordUsage(report);
+    for (const report of Object.values(reports)) {
+      if (isSessionScopedUsageDriver(report.driver)) continue;
+      recordUsage(report);
+    }
   }, [recordUsage, reports]);
   const summaries = deriveProviderUsageSummaries(
     props.providers,

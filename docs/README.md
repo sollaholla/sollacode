@@ -26,6 +26,7 @@ Solla Code is an independent fork. Start with [fork identity and compatibility n
   - [Background service](./user/background-service.md)
   - [Provider usage and resets](./user/provider-usage.md)
   - [Provider usage-limit failover](./user/provider-failover.md)
+  - [Model restrictions](./user/model-restrictions.md)
   - [Storage and conversation cleanup](./user/storage.md)
   - [Remote access](./user/remote-access.md)
   - [Keeping Solla Code in sync](./user/server-updates.md)

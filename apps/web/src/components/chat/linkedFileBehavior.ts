@@ -1,3 +1,5 @@
+import { isWorkspaceMediaPreviewPath } from "@t3tools/shared/filePreview";
+
 import { resolveMarkdownFileLinkTarget } from "../../markdown-links";
 import { resolvePathLinkTarget } from "../../terminal-links";
 
@@ -75,7 +77,14 @@ export function shouldRevealLinkedFileByDefault(filePath: string): boolean {
   return REVEAL_IN_FILE_EXPLORER_EXTENSIONS.has(basename.slice(extensionIndex + 1));
 }
 
-export type LinkedFilePrimaryAction = "image" | "browser" | "reveal" | "preview" | "editor";
+export type LinkedFilePrimaryAction =
+  | "image"
+  | "browser"
+  | "reveal"
+  | "preview"
+  | "editor"
+  /** Hand the file to whatever application the OS has registered for it. */
+  | "default-app";
 
 export function resolveLinkedFilePrimaryAction(input: {
   readonly filePath: string;
@@ -83,17 +92,31 @@ export function resolveLinkedFilePrimaryAction(input: {
   readonly hasImageAction: boolean;
   readonly hasBrowserAction: boolean;
   readonly canRevealOnThisDevice: boolean;
+  readonly canOpenInDefaultApp?: boolean;
 }): LinkedFilePrimaryAction {
   if (input.hasImageAction) return "image";
   if (input.workspaceRelativePath === null) {
     return input.canRevealOnThisDevice ? "reveal" : "editor";
   }
+  // Stays ahead of the media check: on desktop a PDF has an integrated-browser
+  // action and that remains the better reader. The runtime offers it only where
+  // it works, so a phone falls through to the panel below.
   if (input.hasBrowserAction) return "browser";
+  // Video, audio, and PDF render in the panel now, so they are no longer
+  // "binary" in the sense that matters here. This has to precede the reveal
+  // table, which still lists mp4/mov/webm (and mp3/wav) from when nothing
+  // could display them - and which sent a phone, where revealing is
+  // impossible, down an editor branch that quietly did nothing. That was the
+  // reported dead click.
+  if (isWorkspaceMediaPreviewPath(input.filePath)) return "preview";
   if (shouldRevealLinkedFileByDefault(input.filePath)) {
-    // Binary/media files must never enter the text preview. If the path belongs
-    // to another environment, let that environment's editor integration own it
-    // instead of asking this desktop's Finder/Explorer to reveal a foreign path.
-    return input.canRevealOnThisDevice ? "reveal" : "editor";
+    // Opening beats locating: the user asked for the file, not for its folder.
+    if (input.canOpenInDefaultApp === true) return "default-app";
+    if (input.canRevealOnThisDevice) return "reveal";
+    // Neither is possible - a phone, or a path in another environment. The
+    // panel cannot render it either, but it CAN name the file and say why,
+    // which is the difference between a dead click and an answer.
+    return "preview";
   }
   return "preview";
 }
@@ -105,4 +128,25 @@ export function resolveLinkedFileAbsolutePath(
   return workspaceRoot
     ? resolvePathLinkTarget(filePath, workspaceRoot)
     : resolveMarkdownFileLinkTarget(filePath);
+}
+
+/**
+ * What to do when this computer's filesystem could not produce the file.
+ *
+ * `revealFile` and `openPath` both answer for the LOCAL machine, and both
+ * report plain failure when the path is not on it. A Solla workspace often is
+ * not: a remote environment, WSL, or a worktree all put the file somewhere this
+ * desktop cannot see. Telling the user "the file no longer exists on this
+ * computer" was therefore wrong as often as it was right, and it ended the
+ * click in a toast - which is what the owner reported as "sometimes it says
+ * the file is not found".
+ *
+ * The panel reads through the environment that actually owns the file, so it
+ * is the better next move whenever the thread gives us one.
+ */
+export function resolveLocalFileFallback(input: {
+  readonly hasThreadRef: boolean;
+  readonly workspaceRelativePath: string | null;
+}): "preview" | "report" {
+  return input.hasThreadRef && input.workspaceRelativePath !== null ? "preview" : "report";
 }

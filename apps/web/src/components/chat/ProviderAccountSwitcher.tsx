@@ -127,11 +127,16 @@ export const ProviderAccountSwitcher = memo(function ProviderAccountSwitcher(
             }}
           >
             <LogInIcon className="size-4" aria-hidden="true" />
-            {isSwitching ? "Switching user…" : "Switch user"}
+            {isSwitching
+              ? "Switching user…"
+              : activeProvider.driver === "deepcode"
+                ? "Switch account"
+                : "Switch user"}
           </Button>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Solla Code signs out of this provider, starts its secure login flow, and keeps the
-            current conversation running.
+            {activeProvider.driver === "deepcode"
+              ? "Choose a saved API key for new work. Running work keeps its current account."
+              : "Solla Code signs out of this provider, starts its secure login flow, and keeps the current conversation running."}
           </p>
         </div>
       </PopoverPopup>

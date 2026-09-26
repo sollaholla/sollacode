@@ -33,7 +33,11 @@ import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
-import { makeGrokAcpRuntime, resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
+import {
+  grokReasoningEffortLevelsFromModelMeta,
+  makeGrokAcpRuntime,
+  resolveGrokAcpBaseModelId,
+} from "../acp/GrokAcpSupport.ts";
 import { GROK_BILLING_METHOD, parseGrokSubscription } from "../acp/GrokUsage.ts";
 
 const GROK_PRESENTATION = {
@@ -108,56 +112,6 @@ function grokModelsFromSettings(
     customModels ?? [],
     customModelCapabilitiesFrom(builtInModels, EMPTY_CAPABILITIES),
   );
-}
-
-interface GrokReasoningEffortLevel {
-  readonly value: string;
-  readonly label: string;
-  readonly isDefault: boolean;
-}
-
-/**
- * Reads the reasoning-effort levels Grok advertises per model in ACP model
- * metadata (`_meta.reasoningEfforts`), which back the composer's effort
- * dropdown and are applied via `session/set_model` metadata.
- */
-export function grokReasoningEffortLevelsFromModelMeta(
-  meta: Record<string, unknown> | null | undefined,
-): ReadonlyArray<GrokReasoningEffortLevel> {
-  if (!meta || meta["supportsReasoningEffort"] !== true) {
-    return [];
-  }
-  const rawEfforts = meta["reasoningEfforts"];
-  if (!Array.isArray(rawEfforts)) {
-    return [];
-  }
-  const seen = new Set<string>();
-  const levels: Array<GrokReasoningEffortLevel> = [];
-  for (const entry of rawEfforts) {
-    if (typeof entry !== "object" || entry === null) {
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const value =
-      typeof record["value"] === "string" && record["value"].trim()
-        ? record["value"].trim()
-        : typeof record["id"] === "string"
-          ? record["id"].trim()
-          : "";
-    if (!value || seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    levels.push({
-      value,
-      label:
-        typeof record["label"] === "string" && record["label"].trim()
-          ? record["label"].trim()
-          : value,
-      isDefault: record["default"] === true,
-    });
-  }
-  return levels;
 }
 
 function grokModelCapabilitiesFromMeta(

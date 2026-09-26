@@ -1,8 +1,10 @@
 import {
   type ClientOrchestrationCommand,
+  type VmAgentBlockerResolveInput,
   CommandId,
   type EnvironmentId,
   type OrchestrationShellSnapshot,
+  type OrchestrationThreadShell,
   type OrchestrationThreadDetailSnapshot,
   type ServerConfig,
   type ThreadId,
@@ -19,13 +21,24 @@ import type { ConnectionTarget } from "../connection/model.ts";
 export type DeferredThreadCommand = Extract<
   ClientOrchestrationCommand,
   {
-    readonly type: "thread.archive" | "thread.unarchive" | "thread.settle" | "thread.unsettle";
+    readonly type:
+      | "thread.delete"
+      | "thread.archive"
+      | "thread.unarchive"
+      | "thread.settle"
+      | "thread.unsettle"
+      | "thread.turn.start";
   }
 >;
 
 export interface DeferredThreadCommandEntry {
   readonly command: DeferredThreadCommand;
   readonly enqueuedAt: string;
+  readonly thread?: OrchestrationThreadShell;
+  readonly before?: readonly ClientOrchestrationCommand[];
+  readonly error?: string;
+  readonly accepted?: boolean;
+  readonly afterReply?: typeof VmAgentBlockerResolveInput.Type;
 }
 
 export class ConnectionPersistenceError extends Schema.TaggedErrorClass<ConnectionPersistenceError>()(
@@ -141,12 +154,13 @@ export class EnvironmentCacheStore extends Context.Service<
 >()("@t3tools/client-runtime/platform/persistence/EnvironmentCacheStore") {}
 
 /**
- * Durable client-side intent for reversible thread lifecycle commands.
+ * Durable client-side messages and reversible thread lifecycle commands.
  *
  * Archive/unarchive and settle/unsettle each form a last-write-wins axis for
  * one thread. Implementations compact an axis when enqueueing so an offline
  * user can reverse their choice without replaying contradictory commands when
- * the environment reconnects.
+ * the environment reconnects. Messages retain their original command IDs and
+ * payloads independently of those lifecycle axes until server acknowledgment.
  */
 export class DeferredThreadCommandStore extends Context.Service<
   DeferredThreadCommandStore,

@@ -5,6 +5,10 @@ import {
   EnvironmentHttpApi,
   ORCHESTRATOR_REALTIME_TOKEN_PATH,
   ORCHESTRATOR_RUN_COMMAND_PATH,
+  ORCHESTRATOR_LIVE_SESSION_PATH,
+  ORCHESTRATOR_LIVE_DELEGATION_PATH,
+  OrchestratorLiveStartInput,
+  OrchestratorLiveDelegationInput,
 } from "@t3tools/contracts";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import { decodeOtlpTraceRecords } from "@t3tools/shared/observability";
@@ -14,6 +18,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { cast } from "effect/Function";
 import {
   Headers,
@@ -30,6 +36,16 @@ import { OtlpTracer } from "effect/unstable/observability";
 
 import * as ServerConfig from "./config.ts";
 import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
+import { decodeFileViewPath, FILE_VIEW_ROUTE_PREFIX } from "@t3tools/shared/fileView";
+import {
+  FILE_VIEW_PAGE_HEADERS,
+  FILE_VIEW_RESPONSE_HEADERS,
+  fileViewContentDisposition,
+  fileViewContentType,
+  renderFileViewDirectoryPage,
+  renderFileViewSignInPage,
+  type FileViewDirectoryEntry,
+} from "./fileView.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
@@ -41,6 +57,7 @@ import {
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as OrchestratorCredentials from "./orchestrator/OrchestratorCredentials.ts";
+import { OrchestratorLive, OrchestratorLiveError } from "./orchestrator/OrchestratorLive.ts";
 import * as ReadOnlyCommand from "./orchestrator/readOnlyCommand.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as Duration from "effect/Duration";
@@ -171,6 +188,22 @@ function varyByAcceptEncoding(value: string | undefined): string {
   return values.has("*") || values.has("accept-encoding") ? value : `${value}, Accept-Encoding`;
 }
 
+/**
+ * JSON and the web app's own text files. The app's JavaScript went out
+ * uncompressed — 1.6 MB for the chat view alone — so after each release a
+ * phone on a weak connection could not finish downloading it, and every failed
+ * download reloaded the page and started over.
+ */
+function isCompressibleContentType(contentType: string): boolean {
+  return (
+    contentType.startsWith("application/json") ||
+    contentType.startsWith("text/") ||
+    contentType.startsWith("application/javascript") ||
+    contentType.startsWith("image/svg+xml") ||
+    contentType.startsWith("application/manifest+json")
+  );
+}
+
 const compressHttpResponse = Effect.fnUntraced(function* (
   response: HttpServerResponse.HttpServerResponse,
   acceptEncoding: string | undefined,
@@ -179,7 +212,7 @@ const compressHttpResponse = Effect.fnUntraced(function* (
   if (
     body._tag !== "Uint8Array" ||
     body.contentLength < GZIP_MIN_BYTES ||
-    !body.contentType.startsWith("application/json") ||
+    !isCompressibleContentType(body.contentType) ||
     response.headers["content-encoding"]
   ) {
     return response;
@@ -351,14 +384,90 @@ export const otlpTracesProxyRouteLayer = HttpRouter.add(
   ),
 );
 
-/**
- * Mints an ephemeral realtime client secret for the voice orchestrator.
- *
- * The stored API key never crosses this boundary — the response carries only a
- * short-lived token, so a leaked one expires on its own and cannot be used to
- * bill the account indefinitely. The backend is Settings → Orchestrator →
- * Voice provider: OpenAI Realtime or Grok Voice (xAI).
- */
+const liveRouteError = (error: OrchestratorLiveError) =>
+  Effect.succeed(HttpServerResponse.text(error.detail, { status: error.status }));
+
+export const orchestratorLiveRouteLayer = Layer.mergeAll(
+  HttpRouter.add(
+    "POST",
+    ORCHESTRATOR_LIVE_SESSION_PATH,
+    Effect.gen(function* () {
+      yield* authenticateRawRouteWithScope(AuthOrchestrationOperateScope);
+      const service = yield* OrchestratorLive;
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const input = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(OrchestratorLiveStartInput)),
+        Effect.mapError(
+          () =>
+            new OrchestratorLiveError({
+              status: 400,
+              detail: "A valid voice connection offer is required.",
+            }),
+        ),
+      );
+      return yield* service
+        .start(input)
+        .pipe(
+          Effect.map((result) =>
+            HttpServerResponse.jsonUnsafe(result, { headers: { "cache-control": "no-store" } }),
+          ),
+        );
+    }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
+  ),
+  HttpRouter.add(
+    "POST",
+    ORCHESTRATOR_LIVE_DELEGATION_PATH,
+    Effect.gen(function* () {
+      yield* authenticateRawRouteWithScope(AuthOrchestrationOperateScope);
+      const service = yield* OrchestratorLive;
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const input = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(OrchestratorLiveDelegationInput)),
+        Effect.mapError(
+          () =>
+            new OrchestratorLiveError({
+              status: 400,
+              detail: "A valid voice delegation is required.",
+            }),
+        ),
+      );
+      const id = yield* service.delegate(input);
+      const encoder = new TextEncoder();
+      return HttpServerResponse.stream(
+        service.watch(id).pipe(
+          Stream.map((event) => encoder.encode(JSON.stringify(event) + "\n")),
+          // Keep idle proxy connections open without polling the worker or
+          // inventing progress. The final work receipt ends both streams.
+          Stream.merge(Stream.tick("15 seconds").pipe(Stream.map(() => encoder.encode("\n"))), {
+            haltStrategy: "left",
+          }),
+        ),
+        {
+          contentType: "application/x-ndjson",
+          headers: { "cache-control": "no-store", "x-accel-buffering": "no" },
+        },
+      );
+    }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
+  ),
+  HttpRouter.add(
+    "POST",
+    `${ORCHESTRATOR_LIVE_SESSION_PATH}/release`,
+    Effect.gen(function* () {
+      yield* authenticateRawRouteWithScope(AuthOrchestrationOperateScope);
+      const service = yield* OrchestratorLive;
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const input = yield* request.json.pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.Struct({ sessionId: Schema.NonEmptyString })),
+        ),
+      );
+      yield* service.release(input.sessionId);
+      return HttpServerResponse.empty({ status: 204 });
+    }),
+  ),
+);
+
+/** Mints a short-lived OpenAI Realtime or Grok Voice credential without exposing the server key. */
 export const orchestratorRealtimeTokenRouteLayer = HttpRouter.add(
   "POST",
   ORCHESTRATOR_REALTIME_TOKEN_PATH,
@@ -578,7 +687,43 @@ export const assetRouteLayer = HttpRouter.add(
         contentType: asset.contentType,
       });
     }
-    return yield* HttpServerResponse.file(asset.path, responseOptions).pipe(
+    // Advertise range support on every file asset, then honour the request.
+    // A media element checks for `Accept-Ranges` before it will seek at all, so
+    // the header has to be present even on the initial 200.
+    const fileSystem = yield* FileSystem.FileSystem;
+    const assetSize = yield* fileSystem.stat(asset.path).pipe(
+      Effect.map((info) => Number(info.size)),
+      Effect.orElseSucceed(() => Number.NaN),
+    );
+    const range = Number.isSafeInteger(assetSize)
+      ? resolveByteRange(request.headers.range, assetSize)
+      : null;
+
+    if (range === "unsatisfiable") {
+      return HttpServerResponse.text("Range Not Satisfiable", {
+        status: 416,
+        headers: { "Accept-Ranges": "bytes", "Content-Range": `bytes */${assetSize}` },
+      });
+    }
+
+    const rangedOptions = range
+      ? {
+          ...responseOptions,
+          status: 206,
+          headers: {
+            ...responseOptions.headers,
+            "Accept-Ranges": "bytes",
+            "Content-Range": `bytes ${range.offset}-${range.offset + range.bytesToRead - 1}/${assetSize}`,
+          },
+          offset: range.offset,
+          bytesToRead: range.bytesToRead,
+        }
+      : {
+          ...responseOptions,
+          headers: { ...responseOptions.headers, "Accept-Ranges": "bytes" },
+        };
+
+    return yield* HttpServerResponse.file(asset.path, rangedOptions).pipe(
       Effect.map((response) =>
         asset.contentType
           ? HttpServerResponse.setHeader(response, "content-type", asset.contentType)
@@ -588,6 +733,201 @@ export const assetRouteLayer = HttpRouter.add(
     );
   }),
 );
+
+const FILE_VIEW_SNIFF_BYTES = 8192;
+
+/**
+ * Plain-HTTP file viewer: `GET /api/view/<absolute path>`.
+ *
+ * Chat file chips carry this URL as their `href` (see
+ * `@t3tools/shared/fileView`). It exists for the browser paths the app's own
+ * click handler never sees — Safari's long-press preview, "Open in New Tab",
+ * a link pasted elsewhere — which used to land on the SPA catch-all and read
+ * "Not Found". A folder answers with a listing page whose entries link back
+ * into the viewer; a file streams with a type the browser can show inline.
+ *
+ * Authentication is the browser session the app already holds (cookie), so
+ * the same link works from a phone over Tailscale. Text is always served as
+ * `text/plain` and every file response is sandboxed: this route is on the
+ * app's origin, and a workspace HTML file must never execute there.
+ */
+export const fileViewRouteLayer = HttpRouter.add(
+  "GET",
+  `${FILE_VIEW_ROUTE_PREFIX}/*`,
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (Option.isNone(url)) {
+      return HttpServerResponse.text("Bad Request", { status: 400 });
+    }
+    yield* authenticateRawRouteWithScope(AuthOrchestrationReadScope);
+
+    const requestedPath = decodeFileViewPath(url.value.pathname);
+    if (requestedPath === null) {
+      return HttpServerResponse.text("Invalid file path", {
+        status: 400,
+        headers: FILE_VIEW_PAGE_HEADERS,
+      });
+    }
+
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const targetPath = path.normalize(requestedPath);
+    const info = yield* fileSystem.stat(targetPath).pipe(Effect.orElseSucceed(() => null));
+    if (info === null) {
+      return HttpServerResponse.text("Not Found", { status: 404, headers: FILE_VIEW_PAGE_HEADERS });
+    }
+
+    if (info.type === "Directory") {
+      const names = yield* fileSystem
+        .readDirectory(targetPath)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (names === null) {
+        return HttpServerResponse.text("Forbidden", {
+          status: 403,
+          headers: FILE_VIEW_PAGE_HEADERS,
+        });
+      }
+      const entries = yield* Effect.forEach(
+        names,
+        (name) =>
+          fileSystem.stat(path.join(targetPath, name)).pipe(
+            Effect.map(
+              (entryInfo): FileViewDirectoryEntry => ({
+                name,
+                kind:
+                  entryInfo.type === "Directory"
+                    ? "directory"
+                    : entryInfo.type === "File"
+                      ? "file"
+                      : "other",
+                size: entryInfo.type === "File" ? Number(entryInfo.size) : null,
+              }),
+            ),
+            Effect.orElseSucceed(
+              (): FileViewDirectoryEntry => ({ name, kind: "other", size: null }),
+            ),
+          ),
+        { concurrency: 16 },
+      );
+      return HttpServerResponse.text(renderFileViewDirectoryPage({ path: targetPath, entries }), {
+        status: 200,
+        contentType: "text/html; charset=utf-8",
+        headers: FILE_VIEW_PAGE_HEADERS,
+      });
+    }
+
+    if (info.type !== "File") {
+      return HttpServerResponse.text("Not a file", {
+        status: 415,
+        headers: FILE_VIEW_PAGE_HEADERS,
+      });
+    }
+
+    const size = Number(info.size);
+    const head = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fileSystem.open(targetPath, { flag: "r" });
+        const budget = Math.min(FILE_VIEW_SNIFF_BYTES, Math.max(size, 0));
+        if (budget === 0) return new Uint8Array(0);
+        const chunk = yield* file.readAlloc(budget);
+        return Option.isNone(chunk) ? new Uint8Array(0) : chunk.value;
+      }),
+    ).pipe(Effect.orElseSucceed(() => null));
+    if (head === null) {
+      return HttpServerResponse.text("Forbidden", { status: 403, headers: FILE_VIEW_PAGE_HEADERS });
+    }
+    const fileName = path.basename(targetPath);
+    const contentType = fileViewContentType({
+      fileName,
+      mimeType: Mime.getType(targetPath),
+      looksBinary: head.includes(0),
+    });
+    const baseHeaders = {
+      ...FILE_VIEW_RESPONSE_HEADERS,
+      "Accept-Ranges": "bytes",
+      "Content-Disposition": fileViewContentDisposition(fileName),
+    };
+    const range = Number.isSafeInteger(size) ? resolveByteRange(request.headers.range, size) : null;
+    if (range === "unsatisfiable") {
+      return HttpServerResponse.text("Range Not Satisfiable", {
+        status: 416,
+        headers: { ...baseHeaders, "Content-Range": `bytes */${size}` },
+      });
+    }
+    const options = range
+      ? {
+          status: 206,
+          headers: {
+            ...baseHeaders,
+            "Content-Range": `bytes ${range.offset}-${range.offset + range.bytesToRead - 1}/${size}`,
+          },
+          offset: range.offset,
+          bytesToRead: range.bytesToRead,
+        }
+      : { status: 200, headers: baseHeaders };
+    return yield* HttpServerResponse.file(targetPath, options).pipe(
+      Effect.map((response) => HttpServerResponse.setHeader(response, "content-type", contentType)),
+      Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
+    );
+  }).pipe(
+    Effect.catchTags({
+      EnvironmentAuthInvalidError: () =>
+        Effect.succeed(
+          HttpServerResponse.text(renderFileViewSignInPage(), {
+            status: 401,
+            contentType: "text/html; charset=utf-8",
+            headers: FILE_VIEW_PAGE_HEADERS,
+          }),
+        ),
+      EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
+    }),
+  ),
+);
+
+/**
+ * One `Range: bytes=` request, resolved against a known file size.
+ *
+ * Video is the reason this exists. Safari will not begin playback at all
+ * without a 206 answer, and every browser needs one to seek: dragging the
+ * scrubber asks for a byte window, and a server that always replies 200 with
+ * the whole file forces a restart from zero. The same header makes a large PDF
+ * page-seekable instead of a full download before the first page paints.
+ *
+ * Only the single-range form is honoured. Multipart ranges would need a
+ * multipart/byteranges body, no browser media element asks for one, and
+ * answering 200 with the whole file is a valid response to a Range a server
+ * chooses not to satisfy.
+ */
+export function resolveByteRange(
+  headerValue: string | undefined,
+  size: number,
+): { readonly offset: number; readonly bytesToRead: number } | "unsatisfiable" | null {
+  if (headerValue === undefined || size <= 0) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(headerValue.trim());
+  if (!match) return null;
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === undefined || rawEnd === undefined) return null;
+  if (rawStart === "" && rawEnd === "") return null;
+
+  // "bytes=-500" is the LAST 500 bytes, not the first 500. MP4 players lean on
+  // this to read a trailing moov atom before requesting any media data.
+  if (rawStart === "") {
+    const suffixLength = Number(rawEnd);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return "unsatisfiable";
+    const length = Math.min(suffixLength, size);
+    return { offset: size - length, bytesToRead: length };
+  }
+
+  const start = Number(rawStart);
+  if (!Number.isSafeInteger(start) || start < 0) return "unsatisfiable";
+  if (start >= size) return "unsatisfiable";
+  const end = rawEnd === "" ? size - 1 : Number(rawEnd);
+  if (!Number.isSafeInteger(end) || end < start) return "unsatisfiable";
+  const inclusiveEnd = Math.min(end, size - 1);
+  return { offset: start, bytesToRead: inclusiveEnd - start + 1 };
+}
 
 export const staticAndDevRouteLayer = HttpRouter.add(
   "GET",

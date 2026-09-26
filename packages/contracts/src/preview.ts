@@ -130,6 +130,24 @@ export const PreviewNavStatus = Schema.Union([
 ]);
 export type PreviewNavStatus = typeof PreviewNavStatus.Type;
 
+/**
+ * Who is driving a tab on the desktop that renders it. Clients that only see
+ * the tab remotely (a phone) have no other way to learn it; "none" covers a
+ * person using the tab as well as nobody.
+ */
+export const PreviewAgentControl = Schema.Literals(["none", "agent", "waiting-for-user"]);
+export type PreviewAgentControl = typeof PreviewAgentControl.Type;
+
+/** The agent's latest pointer in a tab, as fractions (0..1) of the rendered frame. */
+export const PreviewAgentPointer = Schema.Struct({
+  x: Schema.Number,
+  y: Schema.Number,
+  phase: Schema.Literals(["move", "click"]),
+  /** Increases with every pointer event, so a viewer can tell a new click from an old one. */
+  sequence: Schema.Int,
+});
+export type PreviewAgentPointer = typeof PreviewAgentPointer.Type;
+
 export const PreviewSessionSnapshot = Schema.Struct({
   threadId: TrimmedNonEmptyString,
   tabId: PreviewTabId,
@@ -138,6 +156,12 @@ export const PreviewSessionSnapshot = Schema.Struct({
   canGoForward: Schema.Boolean,
   /** Missing snapshots from older servers are treated as fill-panel mode. */
   viewport: Schema.optional(PreviewViewportSetting),
+  /** Meaningful user/agent activity, independent of navigation/status updates. */
+  lastActivityAt: Schema.optional(Schema.String),
+  /** A browser approval or human-verification gate is still unresolved. */
+  attentionRequired: Schema.optional(Schema.Boolean),
+  /** Reported by the rendering desktop; absent is "none". Never persisted. */
+  agentControl: Schema.optional(PreviewAgentControl),
   updatedAt: Schema.String,
 });
 export type PreviewSessionSnapshot = typeof PreviewSessionSnapshot.Type;
@@ -165,6 +189,15 @@ export const PreviewReportStatusInput = Schema.Struct({
   canGoForward: Schema.Boolean,
 });
 export type PreviewReportStatusInput = typeof PreviewReportStatusInput.Type;
+
+export const PreviewReportActivityInput = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  interacted: Schema.Boolean,
+  attentionRequired: Schema.optional(Schema.Boolean),
+  agentControl: Schema.optional(PreviewAgentControl),
+});
+export type PreviewReportActivityInput = typeof PreviewReportActivityInput.Type;
 
 export const PreviewRefreshInput = Schema.Struct({
   threadId: ThreadId,
@@ -205,6 +238,12 @@ export const PreviewRemoteSnapshotInput = Schema.Struct({
   threadId: ThreadId,
   tabId: PreviewTabId,
 });
+
+/** Asks the desktop to add the agent's latest pointer to a snapshot for a remote viewer. */
+export const PreviewRemoteViewSnapshotInput = Schema.Struct({
+  includeAgentPointer: Schema.Literal(true),
+});
+export type PreviewRemoteViewSnapshotInput = typeof PreviewRemoteViewSnapshotInput.Type;
 export type PreviewRemoteSnapshotInput = typeof PreviewRemoteSnapshotInput.Type;
 
 /**
@@ -238,8 +277,101 @@ export const PreviewRemoteSnapshotResult = Schema.Struct({
       }),
     ),
   ),
+  /** Where the agent last pointed, so a remote viewer can draw its cursor. */
+  agentPointer: Schema.optional(PreviewAgentPointer),
+  /** Who the rendering desktop last reported driving the tab; absent is "none". */
+  agentControl: Schema.optional(PreviewAgentControl),
 });
 export type PreviewRemoteSnapshotResult = typeof PreviewRemoteSnapshotResult.Type;
+
+/**
+ * Tab audio for remote viewers. The desktop that renders a tab captures its
+ * sound only while a viewer is listening AND the page is actually making
+ * sound, encodes it as Opus, and relays it through the server in batches of
+ * short packets. Silence and closed viewers cost nothing on the wire.
+ */
+export const PREVIEW_TAB_AUDIO_MAX_PACKETS = 64;
+/** A 20 ms Opus packet is a few hundred bytes; this leaves generous room. */
+export const PREVIEW_TAB_AUDIO_MAX_PACKET_BASE64 = 16_384;
+
+export const PreviewTabAudioFormat = Schema.Struct({
+  codec: Schema.Literal("opus"),
+  sampleRate: PositiveInt,
+  numberOfChannels: PositiveInt.check(Schema.isLessThanOrEqualTo(8)),
+  /** Base64 Opus identification header, when the encoder supplied one. */
+  description: Schema.optional(Schema.String.check(Schema.isMaxLength(1024))),
+});
+export type PreviewTabAudioFormat = typeof PreviewTabAudioFormat.Type;
+
+export const PreviewTabAudioPacket = Schema.Struct({
+  /** Microseconds on the capture's own clock. */
+  timestamp: Schema.Number,
+  /** Microseconds of sound this packet decodes to. */
+  duration: Schema.Number,
+  /** Base64 Opus packet. */
+  data: Schema.String.check(Schema.isMaxLength(PREVIEW_TAB_AUDIO_MAX_PACKET_BASE64)),
+});
+export type PreviewTabAudioPacket = typeof PreviewTabAudioPacket.Type;
+
+export const PreviewTabAudioEvent = Schema.Union([
+  /** The tab started or stopped making sound (packets follow while audible). */
+  Schema.Struct({
+    type: Schema.Literal("audible"),
+    audible: Schema.Boolean,
+    /** Why sound stopped when the desktop could not capture it, for diagnosis. */
+    reason: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("packets"),
+    format: PreviewTabAudioFormat,
+    packets: Schema.Array(PreviewTabAudioPacket).check(
+      Schema.isMaxLength(PREVIEW_TAB_AUDIO_MAX_PACKETS),
+    ),
+  }),
+]);
+export type PreviewTabAudioEvent = typeof PreviewTabAudioEvent.Type;
+
+export const PreviewTabAudioTarget = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+});
+export type PreviewTabAudioTarget = typeof PreviewTabAudioTarget.Type;
+
+/** A viewer listening to one tab. */
+export const PreviewTabAudioWatchInput = PreviewTabAudioTarget;
+export type PreviewTabAudioWatchInput = typeof PreviewTabAudioWatchInput.Type;
+
+/**
+ * What a listener's player did with a tab's sound, reported now and then.
+ * Only the listening device knows whether relayed sound actually played;
+ * the server records this in its trace, which is how "no sound on my phone"
+ * becomes a locked page, a failed decoder, or a quiet tab.
+ */
+export const PreviewTabAudioListenerReport = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  /** Packet batches that arrived. */
+  batches: NonNegativeInt,
+  /** Batches dropped because a tap had not unlocked sound yet. */
+  batchesWhileLocked: NonNegativeInt,
+  packetsDecoded: NonNegativeInt,
+  /** Decoded pieces of sound, and how many of them were started. */
+  framesOut: NonNegativeInt,
+  buffersStarted: NonNegativeInt,
+  /** Decoded sound thrown away for arriving too late to play live. */
+  lateDropped: NonNegativeInt,
+  contextState: Schema.String.check(Schema.isMaxLength(32)),
+  lastError: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+});
+export type PreviewTabAudioListenerReport = typeof PreviewTabAudioListenerReport.Type;
+
+/** The rendering desktop handing the server one event for a tab's listeners. */
+export const PreviewTabAudioPublishInput = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  event: PreviewTabAudioEvent,
+});
+export type PreviewTabAudioPublishInput = typeof PreviewTabAudioPublishInput.Type;
 
 /**
  * A position expressed as fractions of the rendered frame, 0..1 on each axis.
@@ -262,6 +394,36 @@ const PreviewRemoteScrollDelta = Schema.Finite.check(
   Schema.isBetween({ minimum: -32, maximum: 32 }),
 );
 
+/**
+ * Editing commands a remote viewer's context menu runs in the guest. Copy and
+ * paste are absent on purpose: both use the viewer's own clipboard (copy from
+ * the menu's `selectionText`, paste as typed text), never the desktop's.
+ */
+export const PreviewContextMenuCommand = Schema.Literals(["undo", "redo", "delete", "selectAll"]);
+export type PreviewContextMenuCommand = typeof PreviewContextMenuCommand.Type;
+
+/** Longest selection a context menu carries back; copying a whole page is not a menu's job. */
+export const PREVIEW_CONTEXT_MENU_SELECTION_MAX_CHARS = 20_000;
+/** URLs past this (inline `data:` images, mostly) are dropped rather than shipped. */
+export const PREVIEW_CONTEXT_MENU_URL_MAX_CHARS = 8_192;
+
+/** What sat under the pointer when the guest was right-clicked. */
+export const PreviewContextMenuTarget = Schema.Struct({
+  pageUrl: Schema.String.check(Schema.isMaxLength(PREVIEW_CONTEXT_MENU_URL_MAX_CHARS)),
+  linkUrl: Schema.String.check(Schema.isMaxLength(PREVIEW_CONTEXT_MENU_URL_MAX_CHARS)),
+  linkText: Schema.String.check(Schema.isMaxLength(2_048)),
+  srcUrl: Schema.String.check(Schema.isMaxLength(PREVIEW_CONTEXT_MENU_URL_MAX_CHARS)),
+  mediaType: Schema.String.check(Schema.isMaxLength(32)),
+  isEditable: Schema.Boolean,
+  selectionText: Schema.String.check(Schema.isMaxLength(PREVIEW_CONTEXT_MENU_SELECTION_MAX_CHARS)),
+  canUndo: Schema.Boolean,
+  canRedo: Schema.Boolean,
+  canSelectAll: Schema.Boolean,
+  canGoBack: Schema.Boolean,
+  canGoForward: Schema.Boolean,
+});
+export type PreviewContextMenuTarget = typeof PreviewContextMenuTarget.Type;
+
 export const PreviewRemoteInputAction = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("click"),
@@ -271,11 +433,26 @@ export const PreviewRemoteInputAction = Schema.Union([
     kind: Schema.Literal("drag"),
     from: PreviewRemoteFramePoint,
     to: PreviewRemoteFramePoint,
+    // A press-and-hold is a drag whose ends coincide, held for `holdMs`.
+    button: Schema.optional(Schema.Literals(["left", "right"])),
+    holdMs: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5_000 }))),
+  }),
+  // Right-click. The host returns what sat under the pointer so the viewer can
+  // draw the menu itself; the guest's native menu would open on the desktop.
+  Schema.Struct({
+    kind: Schema.Literal("contextMenu"),
+    position: PreviewRemoteFramePoint,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("editCommand"),
+    command: PreviewContextMenuCommand,
   }),
   Schema.Struct({
     kind: Schema.Literal("scroll"),
     deltaX: PreviewRemoteScrollDelta,
     deltaY: PreviewRemoteScrollDelta,
+    /** Where the wheel turns: the container under this point scrolls. Omitted scrolls the page. */
+    position: Schema.optional(PreviewRemoteFramePoint),
   }),
   Schema.Struct({
     kind: Schema.Literal("type"),
@@ -316,6 +493,8 @@ export type PreviewRemoteInputInput = typeof PreviewRemoteInputInput.Type;
 
 export const PreviewRemoteInputResult = Schema.Struct({
   deliveredAt: Schema.String,
+  /** Set by `contextMenu`; null when the page drew its own menu instead. */
+  contextMenu: Schema.optional(Schema.NullOr(PreviewContextMenuTarget)),
 });
 export type PreviewRemoteInputResult = typeof PreviewRemoteInputResult.Type;
 

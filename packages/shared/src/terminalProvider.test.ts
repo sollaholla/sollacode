@@ -6,11 +6,19 @@ import {
   AGENT_CLI_WORKING_IDLE_MS,
   agentCliLooksBusy,
   nextAgentCliWorkingState,
+  providerDriverLaunchCommand,
   terminalCommandProviderDriver,
   terminalSubprocessIsWorking,
 } from "./terminalProvider.ts";
 
 describe("terminalCommandProviderDriver", () => {
+  it.each([
+    ["antigravity", "agy"],
+    ["deepcode", "deepcode"],
+  ])("launches and recognizes %s", (driver, command) => {
+    expect(providerDriverLaunchCommand(ProviderDriverKind.make(driver))).toBe(command);
+    expect(terminalCommandProviderDriver(command)).toBe(driver);
+  });
   it("maps known agent CLIs to their driver", () => {
     expect(terminalCommandProviderDriver("claude")).toEqual(ProviderDriverKind.make("claudeAgent"));
     expect(terminalCommandProviderDriver("GROK")).toEqual(ProviderDriverKind.make("grok"));

@@ -1,3 +1,5 @@
+import type { PreviewAgentControl } from "@t3tools/contracts";
+
 import type { DesktopPreviewOverlay } from "../../previewStateStore";
 
 export type PreviewTabAgentIndicator = "agent" | "waiting" | null;
@@ -36,4 +38,29 @@ export function resolvePreviewTabAgentIndicator(
   if (overlay.controller === "human") return null;
   if (overlay.controller === "agent") return "agent";
   return overlay.agentActive === true ? "agent" : null;
+}
+
+/**
+ * The indicator as the desktop reports it to the server. A phone viewing the
+ * tab remotely has no desktop overlay, so this report is the only way its tab
+ * strip and frame learn an agent is driving.
+ */
+export function previewAgentControlFromIndicator(
+  indicator: PreviewTabAgentIndicator,
+): PreviewAgentControl {
+  if (indicator === "agent") return "agent";
+  if (indicator === "waiting") return "waiting-for-user";
+  return "none";
+}
+
+/** The overlay-shaped entry a remote client derives from a tab's reported control. */
+export function previewControllerFromAgentControl(agentControl: PreviewAgentControl | undefined): {
+  readonly controller: DesktopPreviewOverlay["controller"];
+  readonly agentActive: boolean;
+} {
+  if (agentControl === "agent") return { controller: "agent", agentActive: true };
+  if (agentControl === "waiting-for-user") {
+    return { controller: "waiting-for-user", agentActive: true };
+  }
+  return { controller: "none", agentActive: false };
 }

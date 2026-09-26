@@ -1,9 +1,13 @@
+import type { TerminalStreamCursor } from "@t3tools/client-runtime/state/terminal";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { useAtomValue } from "@effect/atom-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { installConptyCursorStability } from "./terminal/cursorStability";
 
 import {
   stripTerminalMouseReports,
+  routeTerminalInput,
   stripTerminalUnbuttonedMouseMotionReports,
 } from "../terminalMouseReports";
 import {
@@ -132,21 +136,6 @@ const EMPTY_TERMINAL_IDS: readonly string[] = [];
  */
 export const TERMINAL_PTY_RESIZE_SETTLE_MS = 100;
 /**
- * Same-geometry PTY nudges within this window are skipped. Attach, reveal,
- * and window-focus all ask for a SIGWINCH; without a cooldown they stack
- * into a resize loop that fullscreen programs cannot catch up with.
- */
-export const TERMINAL_PTY_NUDGE_COOLDOWN_MS = 1000;
-/**
- * A pane that received live output this recently is repainting itself, so a
- * reveal/focus nudge must not walk the PTY through a detour: each SIGWINCH
- * makes a fullscreen TUI re-init (mouse modes + 2J clear + full repaint),
- * which smears across delivery ticks as visible flicker with the cursor
- * sweeping home → frame → input box. Only a first attach onto frozen
- * replayed history, or a long-idle frame, still needs the forced repaint.
- */
-export const TERMINAL_LIVE_OUTPUT_NUDGE_SKIP_MS = 10_000;
-/**
  * Initial history is parsed by xterm asynchronously. Keep the viewport pinned
  * briefly while that replay drains, then hand scroll ownership back to the
  * user. The write-complete callback performs one final authoritative scroll.
@@ -158,18 +147,9 @@ export const TERMINAL_INITIAL_FOLLOW_TAIL_TICK_MS = 50;
  * parsing the retained buffer. Keep each pane covered until those follow-up
  * writes have been quiet for this long, with a ceiling for busy sessions.
  */
-export const TERMINAL_REPLAY_OVERLAY_QUIET_MS = 1_500;
-export const TERMINAL_REPLAY_OVERLAY_MAX_SETTLE_MS = 4_000;
+export const TERMINAL_REPLAY_OVERLAY_QUIET_MS = 100;
+export const TERMINAL_REPLAY_OVERLAY_MAX_SETTLE_MS = 500;
 
-export function shouldDetourPtyOnNudge(input: {
-  force: boolean;
-  nowMs: number;
-  lastLiveOutputAtMs: number;
-}): boolean {
-  return (
-    input.force || input.nowMs - input.lastLiveOutputAtMs >= TERMINAL_LIVE_OUTPUT_NUDGE_SKIP_MS
-  );
-}
 /**
  * Resets xterm's mouse/focus tracking modes locally (never sent to the PTY).
  * Replayed bytes can leave tracking enabled after the program that wanted it
@@ -270,6 +250,13 @@ export function fitAndRefreshTerminalViewport(
         // blank frame on every divider tick. resize() updates the grid in
         // place and lets the current buffer paint into the new canvas.
         terminal.resize(proposed.cols, proposed.rows);
+        // xterm remeasures characters during resize (fonts/DPR can change
+        // while a pane is mirrored). Settle that correction synchronously,
+        // before painting or reporting a grid that the host would resize twice.
+        const measured = proposeTerminalDimensions(fitAddon);
+        if (measured && (measured.cols !== terminal.cols || measured.rows !== terminal.rows)) {
+          terminal.resize(measured.cols, measured.rows);
+        }
       } catch {
         if (!fitTerminalSafely(fitAddon)) {
           return null;
@@ -300,6 +287,21 @@ export function fitAndRefreshTerminalViewport(
 export const MIN_REPORTABLE_PTY_COLS = 10;
 export const MIN_REPORTABLE_PTY_ROWS = 4;
 
+/**
+ * Whether a pane may be split into another.
+ *
+ * The right panel passes `allowSplit: false`: it shows one terminal per tab,
+ * and a split would hide a second terminal behind a tab that can only name and
+ * close one of them. Exported so that guarantee has a test that does not depend
+ * on rendering xterm.
+ */
+export function canSplitTerminalGroup(input: {
+  readonly allowSplit: boolean;
+  readonly groupSize: number;
+}): boolean {
+  return input.allowSplit && input.groupSize < MAX_TERMINALS_PER_GROUP;
+}
+
 export function isReportablePtyGeometry(geometry: { cols: number; rows: number }): boolean {
   return geometry.cols >= MIN_REPORTABLE_PTY_COLS && geometry.rows >= MIN_REPORTABLE_PTY_ROWS;
 }
@@ -326,7 +328,27 @@ export function isGeometryDriverState(input: {
 }
 
 let terminalUserActivityAt = 0;
+let terminalPointerButtons = 0;
 let terminalUserActivityTrackingInstalled = false;
+
+/** Only an observed local size change following input may take a remote grid. */
+export function terminalLayoutChangeClaimsGeometry(input: {
+  previous: { width: number; height: number } | null;
+  current: { width: number; height: number };
+  hasFocus: boolean;
+  lastUserActivityAt: number;
+  nowMs: number;
+}): boolean {
+  return (
+    input.previous !== null &&
+    (input.previous.width !== input.current.width ||
+      input.previous.height !== input.current.height) &&
+    hasRenderableTerminalViewportSize(input.current) &&
+    input.hasFocus &&
+    input.lastUserActivityAt > 0 &&
+    input.nowMs - input.lastUserActivityAt <= 1_000
+  );
+}
 
 function ensureTerminalUserActivityTracking(): void {
   if (terminalUserActivityTrackingInstalled || typeof window === "undefined") {
@@ -338,7 +360,48 @@ function ensureTerminalUserActivityTracking(): void {
   };
   window.addEventListener("keydown", record, { capture: true, passive: true });
   window.addEventListener("pointerdown", record, { capture: true, passive: true });
+  window.addEventListener(
+    "pointerdown",
+    (event) => {
+      terminalPointerButtons = event.buttons;
+    },
+    { capture: true, passive: true },
+  );
+  window.addEventListener(
+    "pointerup",
+    () => {
+      terminalPointerButtons = 0;
+      record();
+    },
+    { capture: true, passive: true },
+  );
+  window.addEventListener(
+    "pointercancel",
+    () => {
+      terminalPointerButtons = 0;
+    },
+    { capture: true, passive: true },
+  );
+  window.addEventListener("blur", () => {
+    terminalPointerButtons = 0;
+  });
   window.addEventListener("wheel", record, { capture: true, passive: true });
+  window.addEventListener(
+    "pointermove",
+    (event) => {
+      if (event.buttons !== 0) record();
+    },
+    { capture: true, passive: true },
+  );
+  // Native window edges do not send DOM pointerdown events. A focused
+  // window resize is itself user activity, including after a long idle.
+  window.addEventListener(
+    "resize",
+    () => {
+      if (document.hasFocus()) record();
+    },
+    { passive: true },
+  );
 }
 
 function clientIsGeometryDriver(): boolean {
@@ -365,12 +428,13 @@ export function planTerminalResizeSync(input: {
 export function terminalViewportPreviewScale(
   fitted: { width: number; height: number },
   current: { width: number; height: number },
+  initialScale = 1,
 ): { x: number; y: number } | null {
   if (fitted.width <= 0 || fitted.height <= 0 || current.width <= 0 || current.height <= 0) {
     return null;
   }
-  const x = current.width / fitted.width;
-  const y = current.height / fitted.height;
+  const x = (current.width / fitted.width) * initialScale;
+  const y = (current.height / fitted.height) * initialScale;
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
     return null;
   }
@@ -487,7 +551,20 @@ function anchoredSuffixPrefixOverlap(left: string, right: string): number | null
 export function terminalBufferWritePlan(
   previous: string,
   current: string,
+  cursors?: {
+    previous?: TerminalStreamCursor | undefined;
+    current?: TerminalStreamCursor | undefined;
+  },
 ): TerminalBufferWritePlan {
+  if (cursors?.current) {
+    if (cursors.previous?.generation === cursors.current.generation) {
+      const added = cursors.current.offset - cursors.previous.offset;
+      if (added >= 0 && added <= current.length) {
+        return { kind: "append", data: added === 0 ? "" : current.slice(-added) };
+      }
+    }
+    return { kind: "replace", data: current };
+  }
   if (current === previous) {
     return { kind: "append", data: "" };
   }
@@ -506,7 +583,34 @@ export function terminalBufferWritePlan(
   return { kind: "replace", data: current };
 }
 
-export function shouldNudgePtyAfterBufferWrite(input: {
+/**
+ * Whether a buffer write may carry terminal queries that were already
+ * answered — or that nobody is waiting on any more — so that xterm's replies
+ * to them must be swallowed rather than typed into the PTY.
+ *
+ * A full replay (initial attach, or a `replace` after the buffer diverged) is
+ * history: its OSC colour queries, DA and cursor-position requests were
+ * answered when they first went out. Bytes that arrive while the pane is
+ * hidden or being restored are the same kind of catch-up. A live append to a
+ * visible pane is the opposite case: the foreground program asked *now* and
+ * is waiting for the answer. Muse Code, for one, gives up and exits when its
+ * cursor-position query goes unanswered for a few seconds — every live chunk
+ * used to count as replay, so that answer never left the browser.
+ */
+export function terminalWriteParsesStaleQueries(input: {
+  readonly writeKind: "append" | "replace";
+  readonly dataLength: number;
+  readonly previousVersion: number;
+  readonly surfaceVisible: boolean;
+  readonly documentHidden: boolean;
+  readonly visibilityRestorePending: boolean;
+}): boolean {
+  if (input.dataLength === 0) return false;
+  if (input.writeKind === "replace" || input.previousVersion === 0) return true;
+  return input.visibilityRestorePending || !input.surfaceVisible || input.documentHidden;
+}
+
+export function shouldFollowInitialTerminalTail(input: {
   previousVersion: number;
   currentLength: number;
 }): boolean {
@@ -930,8 +1034,8 @@ interface TerminalViewportProps {
   resizeEpoch: number;
   /**
    * Bump when the pane returns to view (thread switch, drawer reopen).
-   * Full-screen programs only repaint on SIGWINCH, so a reveal walks the PTY
-   * through a one-column resize detour even when the geometry is unchanged.
+   * Refresh the renderer after reattachment; an unchanged cell grid never
+   * sends a synthetic PTY resize.
    */
   nudgeEpoch?: number;
   drawerHeight: number;
@@ -987,6 +1091,7 @@ export function TerminalViewport({
       setKeyboardInset(
         resolveTerminalKeyboardInset({
           paneBottom: rect.bottom,
+          paneTop: rect.top,
           visualViewportHeight: viewport.height,
           visualViewportOffsetTop: viewport.offsetTop,
           terminalFocused: textarea !== null && document.activeElement === textarea,
@@ -995,32 +1100,45 @@ export function TerminalViewport({
         }),
       );
     };
+    let frame: number | null = null;
+    const scheduleSync = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        sync();
+      });
+    };
     sync();
-    viewport.addEventListener("resize", sync);
-    viewport.addEventListener("scroll", sync);
+    viewport.addEventListener("resize", scheduleSync);
+    viewport.addEventListener("scroll", scheduleSync);
     // Focus moves without the viewport changing size (tapping between the
     // terminal and the composer while the keyboard is already up), and the
     // inset belongs to whichever of them currently owns it.
-    document.addEventListener("focusin", sync);
-    document.addEventListener("focusout", sync);
+    document.addEventListener("focusin", scheduleSync);
+    document.addEventListener("focusout", scheduleSync);
     return () => {
-      viewport.removeEventListener("resize", sync);
-      viewport.removeEventListener("scroll", sync);
-      document.removeEventListener("focusin", sync);
-      document.removeEventListener("focusout", sync);
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      viewport.removeEventListener("resize", scheduleSync);
+      viewport.removeEventListener("scroll", scheduleSync);
+      document.removeEventListener("focusin", scheduleSync);
+      document.removeEventListener("focusout", scheduleSync);
     };
   }, []);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const scheduleTerminalLayoutRef = useRef<(() => void) | null>(null);
-  const nudgeTerminalLayoutRef = useRef<((options?: { force?: boolean }) => void) | null>(null);
+  const refreshTerminalLayoutRef = useRef<(() => void) | null>(null);
   const initialFollowTailRef = useRef<ReturnType<typeof createTerminalInitialFollowTail> | null>(
     null,
   );
   const missingSessionRecoveryRef = useRef<ReturnType<
     typeof createMissingTerminalSessionRecovery
   > | null>(null);
-  /** Last time live (non-replay) PTY output was written into this viewport. */
-  const lastLiveOutputAtRef = useRef(0);
+  /**
+   * Outstanding replay writes whose bytes xterm has not finished parsing.
+   * Non-zero means any status report coming back out of the terminal is an
+   * answer to a question inside replayed history, not to a live one.
+   */
+  const replayParseInFlightRef = useRef(0);
   const environmentId = threadRef.environmentId;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
@@ -1068,10 +1186,15 @@ export function TerminalViewport({
   const refreshTerminalSession = useEffectEvent(() => {
     terminalSession.refresh();
   });
-  const writeTerminal = useEffectEvent((data: string) =>
+  const writeTerminal = useEffectEvent((data: string, claimsGeometry = true) =>
     runTerminalWrite({
       environmentId,
-      input: { threadId, terminalId, data, clientId: terminalClientId() },
+      input: {
+        threadId,
+        terminalId,
+        data,
+        ...(claimsGeometry ? { clientId: terminalClientId() } : {}),
+      },
     }),
   );
   const [fileDropPreview, setFileDropPreview] = useState<TerminalFileDropPreview | null>(null);
@@ -1094,17 +1217,24 @@ export function TerminalViewport({
       },
     });
   });
-  const resizeTerminal = useEffectEvent((cols: number, rows: number) =>
+  const resizeTerminal = useEffectEvent((cols: number, rows: number, claimGeometry = false) =>
     runTerminalResize({
       environmentId,
-      input: { threadId, terminalId, cols, rows, clientId: terminalClientId() },
+      input: { threadId, terminalId, cols, rows, clientId: terminalClientId(), claimGeometry },
     }),
   );
   const terminalBuffer = terminalSession.buffer;
+  const terminalStreamCursor = terminalSession.streamCursor;
+  const terminalReplayGeometry = terminalSession.replayGeometry;
+  const terminalReplayComplete = terminalSession.replayComplete;
+  const replayRefreshGenerationRef = useRef<object | null>(null);
   const terminalError = terminalSession.error;
   const terminalStatus = terminalSession.status;
   const terminalVersion = terminalSession.version;
   const terminalHasRunningSubprocess = terminalSession.hasRunningSubprocess;
+  const codexCursorRef = useRef(false);
+  codexCursorRef.current = terminalSession.summary?.label.trim().toLowerCase() === "codex";
+  const cursorStabilityRef = useRef<ReturnType<typeof installConptyCursorStability> | null>(null);
   // TerminalViewport is keyed by terminal id. Preserve whether this instance
   // was born from a local open even after metadata confirms it and removes the
   // id from the pending-open set.
@@ -1151,6 +1281,9 @@ export function TerminalViewport({
     if (!visibilityRestorePendingRef.current) return;
     if (!surfaceVisibleRef.current || document.visibilityState === "hidden") return;
     visibilityRestorePendingRef.current = false;
+    scheduleTerminalLayoutRef.current?.();
+    const terminal = terminalRef.current;
+    if (terminal) terminal.refresh(0, terminal.rows - 1);
     replayOverlayGateRef.current?.markInitialReplayParsed();
   });
   const terminalHasRunningSubprocessRef = useRef(terminalHasRunningSubprocess);
@@ -1159,6 +1292,9 @@ export function TerminalViewport({
   const terminalDictationStateRef = useRef<TerminalDictationState>(emptyTerminalDictationState);
   const serverCols = terminalSession.summary?.cols;
   const serverRows = terminalSession.summary?.rows;
+  const serverWindowsPty = terminalSession.summary?.windowsPty;
+  const serverWindowsPtyRef = useRef(serverWindowsPty);
+  serverWindowsPtyRef.current = serverWindowsPty;
   const serverGeometryRef = useRef<{ cols: number; rows: number } | null>(null);
   serverGeometryRef.current =
     serverCols !== undefined && serverRows !== undefined
@@ -1176,6 +1312,7 @@ export function TerminalViewport({
     scheduleTerminalLayoutRef.current?.();
   }, [serverCols, serverRows, serverGeometryOwner]);
   const previousSessionRef = useRef({
+    streamCursor: terminalStreamCursor,
     buffer: terminalBuffer,
     error: terminalError,
     status: terminalStatus,
@@ -1195,7 +1332,8 @@ export function TerminalViewport({
 
     const fitAddon = new FitAddon();
     const terminal = new Terminal({
-      cursorBlink: true,
+      windowsPty: serverWindowsPtyRef.current ?? {},
+      cursorBlink: false,
       lineHeight: 1,
       fontSize: 12,
       scrollback: 5_000,
@@ -1211,10 +1349,8 @@ export function TerminalViewport({
     });
     terminal.loadAddon(fitAddon);
     terminal.open(mount);
-    // The DOM renderer repaints per write chunk, which makes alt-screen TUIs
-    // (their scrolling redraws a full frame over the wire) flicker badly.
-    // WebGL renders atomically per frame; on context loss or unsupported
-    // WebGL the DOM renderer keeps working.
+    // Use the GPU renderer for dense terminal grids. The DOM renderer remains
+    // available when WebGL is unsupported or its context is lost.
     try {
       const webglAddon = new WebglAddon();
       webglAddon.onContextLoss(() => {
@@ -1224,7 +1360,16 @@ export function TerminalViewport({
     } catch {
       // WebGL unavailable — fall back to the DOM renderer.
     }
-    fitTerminalSafely(fitAddon);
+    const cursorStability = installConptyCursorStability(terminal, () => codexCursorRef.current);
+    cursorStabilityRef.current = cursorStability;
+    // Parse history at the grid that produced it, before fitting this viewer.
+    // Absolute cursor positions cannot be replayed correctly at a different width.
+    const replayGeometry = serverGeometryRef.current;
+    if (replayGeometry && isReportablePtyGeometry(replayGeometry)) {
+      terminal.resize(replayGeometry.cols, replayGeometry.rows);
+    } else {
+      fitTerminalSafely(fitAddon);
+    }
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -1232,6 +1377,7 @@ export function TerminalViewport({
       shouldShowInitialTerminalReplayOverlay(locallyOpeningAtMountRef.current),
     );
     previousSessionRef.current = {
+      streamCursor: undefined,
       buffer: "",
       status: "closed",
       error: null,
@@ -1258,10 +1404,11 @@ export function TerminalViewport({
     // pane during the burst, then commit the cell grid and PTY size once.
     let settleCommitPending = false;
     let settleCommitTimer: number | null = null;
-    let ptyNudgeInFlight = false;
-    let lastNudgeAt = 0;
-    let lastNudgedGeometry: string | null = null;
     let lastFittedCss: { width: number; height: number } | null = null;
+    let fittedRasterScale = 1;
+    let lastObservedBounds: { width: number; height: number } | null = null;
+    let pendingGeometryClaim = false;
+    let lastObservedOwner = serverGeometryOwnerRef.current;
     const xtermElement = (): HTMLElement | null => {
       // Scale the screen (grid canvases), not `.xterm`. The wrapper is
       // width/height 100% of the pane, so scaling it would compound the
@@ -1276,13 +1423,19 @@ export function TerminalViewport({
     /**
      * This client may resize the shared PTY only when it is both the
      * actively-used window (focus + recent input) and the server-side
-     * geometry owner (last client to open/type/resize this terminal).
+     * geometry owner, or is deliberately resizing its local pane.
      * Everyone else mirrors: two active machines viewing the same terminal
      * must not ping-pong the PTY between their pane grids.
      */
     const clientDrivesPtyGeometry = () =>
       clientIsGeometryDriver() &&
-      clientOwnsTerminalGeometry(serverGeometryOwnerRef.current, terminalClientId());
+      (pendingGeometryClaim ||
+        clientOwnsTerminalGeometry(serverGeometryOwnerRef.current, terminalClientId()));
+    const cancelSettleCommit = () => {
+      if (settleCommitTimer !== null) window.clearTimeout(settleCommitTimer);
+      settleCommitTimer = null;
+      settleCommitPending = false;
+    };
     /**
      * Passive-viewer path: render at the server's authoritative PTY grid
      * and uniformly scale the raster into this pane. Returns false when no
@@ -1291,6 +1444,8 @@ export function TerminalViewport({
     const adoptServerGeometry = (): boolean => {
       const server = serverGeometryRef.current;
       if (!server || !isReportablePtyGeometry(server)) return false;
+      cancelSettleCommit();
+      pendingGeometryClaim = false;
       // Mirroring hands geometry back to the owner; if ownership later
       // returns here, the next commit must re-report even an identical fit.
       lastReportedGeometry = null;
@@ -1313,6 +1468,7 @@ export function TerminalViewport({
           screen.width > 0 && screen.height > 0
             ? Math.min(bounds.width / screen.width, bounds.height / screen.height, 1)
             : 1;
+        fittedRasterScale = scale;
         applyTerminalViewportPreviewScale(
           element,
           Math.abs(scale - 1) < 0.01 ? null : { x: scale, y: scale },
@@ -1323,25 +1479,32 @@ export function TerminalViewport({
     };
     const reportPtyGeometry = (geometry: { cols: number; rows: number }) => {
       const geometryKey = `${geometry.cols}x${geometry.rows}`;
-      const now = Date.now();
+      const claimGeometry = pendingGeometryClaim;
       lastReportedGeometry = geometryKey;
-      lastNudgedGeometry = geometryKey;
-      lastNudgeAt = now;
-      void resizeTerminal(geometry.cols, geometry.rows).then((result) => {
+      void resizeTerminal(geometry.cols, geometry.rows, claimGeometry).then((result) => {
         if (result._tag === "Failure" && lastReportedGeometry === geometryKey) {
           // Let a later activation/layout signal retry a transiently rejected
           // resize instead of permanently deduplicating the failed geometry.
           lastReportedGeometry = null;
+          pendingGeometryClaim = false;
+          if (!clientOwnsTerminalGeometry(serverGeometryOwnerRef.current, terminalClientId())) {
+            adoptServerGeometry();
+          }
         }
       });
     };
     const commitTerminalLayout = (reportPty: boolean) => {
+      // Ownership/focus may change during the trailing debounce. Never fit
+      // to a local grid after this pane has become a passive mirror.
+      if (lastObservedOwner !== serverGeometryOwnerRef.current) pendingGeometryClaim = false;
+      if (!clientDrivesPtyGeometry() && adoptServerGeometry()) return;
       const bounds = mount.getBoundingClientRect();
       if (!hasRenderableTerminalViewportSize(bounds)) return;
       const activeTerminal = terminalRef.current;
       const activeFitAddon = fitAddonRef.current;
       if (!activeTerminal || !activeFitAddon) return;
       clearPreviewScale();
+      fittedRasterScale = 1;
       const geometry = fitAndRefreshTerminalViewport(activeTerminal, activeFitAddon);
       if (!geometry) return;
       lastFittedCss = { width: bounds.width, height: bounds.height };
@@ -1352,6 +1515,15 @@ export function TerminalViewport({
       if (!clientDrivesPtyGeometry()) return;
       const geometryKey = `${geometry.cols}x${geometry.rows}`;
       if (geometryKey === lastReportedGeometry) return;
+      const server = serverGeometryRef.current;
+      if (
+        !pendingGeometryClaim &&
+        server?.cols === geometry.cols &&
+        server.rows === geometry.rows
+      ) {
+        lastReportedGeometry = geometryKey;
+        return;
+      }
       reportPtyGeometry(geometry);
     };
     const armSettleCommit = () => {
@@ -1359,14 +1531,33 @@ export function TerminalViewport({
       settleCommitTimer = window.setTimeout(() => {
         settleCommitTimer = null;
         if (!settleCommitPending) return;
+        // Keep the raster preview while a divider is held still. Pointer
+        // release schedules the final fit; no timer polls during the hold.
+        if (terminalPointerButtons !== 0) return;
         settleCommitPending = false;
         commitTerminalLayout(true);
       }, TERMINAL_PTY_RESIZE_SETTLE_MS);
     };
     const syncTerminalLayout = () => {
-      if (ptyNudgeInFlight) return;
-      if (!clientDrivesPtyGeometry() && adoptServerGeometry()) return;
       const bounds = mount.getBoundingClientRect();
+      if (lastObservedOwner !== serverGeometryOwnerRef.current) pendingGeometryClaim = false;
+      lastObservedOwner = serverGeometryOwnerRef.current;
+      if (
+        terminalLayoutChangeClaimsGeometry({
+          previous: lastObservedBounds,
+          current: bounds,
+          hasFocus: document.hasFocus(),
+          lastUserActivityAt: terminalUserActivityAt,
+          nowMs: Date.now(),
+        })
+      ) {
+        pendingGeometryClaim = true;
+      }
+      lastObservedBounds = { width: bounds.width, height: bounds.height };
+      // Keep the claim through the request/metadata round trip. A server
+      // acknowledgement is what makes this an ordinary owning viewport.
+      if (serverGeometryOwnerRef.current === terminalClientId()) pendingGeometryClaim = false;
+      if (!clientDrivesPtyGeometry() && adoptServerGeometry()) return;
       if (!hasRenderableTerminalViewportSize(bounds)) return;
       const activeTerminal = terminalRef.current;
       const activeFitAddon = fitAddonRef.current;
@@ -1382,11 +1573,15 @@ export function TerminalViewport({
         rowsChanged: proposed.rows !== activeTerminal.rows,
       });
       if (plan === "skip") {
+        cancelSettleCommit();
+        // A drag may return to its starting cell grid. Remove the preview
+        // transform and avoid leaving a stale timer to repaint it later.
+        commitTerminalLayout(true);
         return;
       }
       if (plan === "preview" && lastFittedCss) {
         const element = xtermElement();
-        const scale = terminalViewportPreviewScale(lastFittedCss, bounds);
+        const scale = terminalViewportPreviewScale(lastFittedCss, bounds, fittedRasterScale);
         if (element) applyTerminalViewportPreviewScale(element, scale);
         settleCommitPending = true;
         armSettleCommit();
@@ -1399,90 +1594,12 @@ export function TerminalViewport({
       cancel: (frameId) => window.cancelAnimationFrame(frameId),
     });
     scheduleTerminalLayoutRef.current = layoutScheduler.schedule;
-    // Reattached and revealed terminals replay history that full-screen
-    // programs never repaint on their own: the PTY only signals them on a size
-    // change, and re-fitting to the same geometry sends nothing. Walking the
-    // PTY through a one-column detour guarantees a SIGWINCH at the final,
-    // correct size — the same thing a manual window resize did by accident.
-    nudgeTerminalLayoutRef.current = (options?: { force?: boolean }) => {
-      const force = options?.force === true;
-      const run = (attempt: number) => {
-        if (ptyNudgeInFlight) return;
-        // A passive viewer never walks the PTY through a detour — the
-        // repaint it needs comes from the replayed buffer, and a detour
-        // would fight the driving client's geometry.
-        if (!clientDrivesPtyGeometry() && adoptServerGeometry()) return;
-        const bounds = mount.getBoundingClientRect();
-        if (!hasRenderableTerminalViewportSize(bounds)) {
-          if (attempt < 12) {
-            window.setTimeout(() => run(attempt + 1), 32);
-          }
-          return;
-        }
-        const activeTerminal = terminalRef.current;
-        const activeFitAddon = fitAddonRef.current;
-        if (!activeTerminal || !activeFitAddon) return;
-        clearPreviewScale();
-        const geometry = fitAndRefreshTerminalViewport(activeTerminal, activeFitAddon);
-        if (!geometry) return;
-        lastFittedCss = { width: bounds.width, height: bounds.height };
-        // Never walk the PTY through a detour from a degenerate mid-animation
-        // grid; a later layout signal retries once the pane has real bounds.
-        if (!isReportablePtyGeometry(geometry)) {
-          if (attempt < 12) {
-            window.setTimeout(() => run(attempt + 1), 32);
-          }
-          return;
-        }
-        const geometryKey = `${geometry.cols}x${geometry.rows}`;
-        const now = Date.now();
-        if (
-          geometryKey === lastNudgedGeometry &&
-          now - lastNudgeAt < TERMINAL_PTY_NUDGE_COOLDOWN_MS
-        ) {
-          lastReportedGeometry = geometryKey;
-          return;
-        }
-        // A live-painting TUI needs no forced repaint; the detour SIGWINCH
-        // would only make it clear and redraw the whole frame on screen.
-        if (
-          !shouldDetourPtyOnNudge({
-            force,
-            nowMs: now,
-            lastLiveOutputAtMs: lastLiveOutputAtRef.current,
-          })
-        ) {
-          lastReportedGeometry = geometryKey;
-          return;
-        }
-        lastReportedGeometry = geometryKey;
-        lastNudgedGeometry = geometryKey;
-        lastNudgeAt = now;
-        ptyNudgeInFlight = true;
-        // Same-size resize is a no-op in node-pty, so a one-row detour is
-        // what actually delivers SIGWINCH. Rows, not columns: ConPTY
-        // (Windows) rewraps its whole buffer on any width change and
-        // re-emits the rewrapped lines into shared history, garbling long
-        // lines for every attached viewer. A row change forces the same
-        // repaint everywhere without touching wrap. Wait a frame between
-        // the two sizes so the program observes both changes.
-        // Detour upward at the floor so the intermediate size is never
-        // dropped by the server's degenerate-resize clamp.
-        const detourRows =
-          geometry.rows > MIN_REPORTABLE_PTY_ROWS ? geometry.rows - 1 : geometry.rows + 1;
-        void resizeTerminal(geometry.cols, detourRows)
-          .then(
-            () =>
-              new Promise<void>((resolve) => {
-                window.setTimeout(resolve, 32);
-              }),
-          )
-          .then(() => resizeTerminal(geometry.cols, geometry.rows))
-          .finally(() => {
-            ptyNudgeInFlight = false;
-          });
-      };
-      run(0);
+    // Reattachment is restored from the server's parsed screen. Revealing or
+    // focusing a pane only refreshes its renderer; synthetic size detours made
+    // every attached CLI clear and redraw twice, with moving cursors in between.
+    refreshTerminalLayoutRef.current = () => {
+      layoutScheduler.schedule();
+      terminal.refresh(0, terminal.rows - 1);
     };
     const resizeObserver =
       typeof ResizeObserver === "undefined"
@@ -1777,14 +1894,26 @@ export function TerminalViewport({
       const actionableData = stripTerminalUnbuttonedMouseMotionReports(dictation.payload);
       // A bare shell never wants mouse/focus reports; dropping them here is
       // the backstop for tracking modes the local resets could not reach.
-      const payload = terminalHasRunningSubprocessRef.current
+      const mouseFiltered = terminalHasRunningSubprocessRef.current
         ? actionableData
         : stripTerminalMouseReports(actionableData);
+      // Only while replayed history is still being parsed: see
+      // `stripTerminalStatusReportReplies`. Reported on a phone, where
+      // unfocusing the pane replays the buffer and filled the prompt with
+      // `]4;1;rgb:…` palette replies that the agent then answered.
+      const routed = routeTerminalInput(mouseFiltered, {
+        replaying: replayParseInFlightRef.current > 0,
+        ownsGeometry: clientOwnsTerminalGeometry(
+          serverGeometryOwnerRef.current,
+          terminalClientId(),
+        ),
+      });
+      const payload = routed.data;
       if (payload.length === 0) {
         return;
       }
       void (async () => {
-        const result = await writeTerminal(payload);
+        const result = await writeTerminal(payload, routed.claimsGeometry);
         if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
           return;
         }
@@ -1849,45 +1978,28 @@ export function TerminalViewport({
     layoutScheduler.schedule();
     const fitTimer = window.setTimeout(layoutScheduler.schedule, 30);
 
-    // The PTY is shared across devices (phone, other windows) and the last
-    // resize wins, so returning focus to this window re-asserts this
-    // viewport's geometry with a repaint. Hidden panes bail on the
-    // renderable-size check inside the nudge.
+    // Focus schedules a size check without forcing another PTY repaint.
     const handleWindowFocusNudge = () => {
-      // Re-assert this viewport's PTY size after another device may have
-      // resized it. Do not walk a 1-column detour: Claude's alt-screen
-      // renderer full-paints on every SIGWINCH, which flashes the pane.
-      if (!terminalHasRunningSubprocessRef.current) return;
-      // Focus alone does not make this window the geometry driver, and a
-      // non-owner never re-asserts its grid; wait for real user input into
-      // this terminal so an idle mirror never yanks the PTY's grid.
-      if (!clientDrivesPtyGeometry()) {
-        adoptServerGeometry();
-        return;
-      }
-      const bounds = mount.getBoundingClientRect();
-      if (!hasRenderableTerminalViewportSize(bounds)) return;
-      const activeTerminal = terminalRef.current;
-      const activeFitAddon = fitAddonRef.current;
-      if (!activeTerminal || !activeFitAddon) return;
-      clearPreviewScale();
-      const geometry = fitAndRefreshTerminalViewport(activeTerminal, activeFitAddon);
-      if (!geometry) return;
-      lastFittedCss = { width: bounds.width, height: bounds.height };
-      reportPtyGeometry(geometry);
+      layoutScheduler.schedule();
     };
     window.addEventListener("focus", handleWindowFocusNudge);
+    window.addEventListener("blur", handleWindowFocusNudge);
+    const handleLayoutPointerRelease = () => {
+      if (settleCommitPending) layoutScheduler.schedule();
+    };
+    window.addEventListener("pointerup", handleLayoutPointerRelease);
+    window.addEventListener("pointercancel", handleLayoutPointerRelease);
     // Becoming the driver happens on the first real interaction after a
     // focus switch; re-run layout then so this pane reclaims its fit (the
     // scheduler coalesces to a no-op when nothing changed).
     const handleUserActivityLayout = () => {
       layoutScheduler.schedule();
     };
-    window.addEventListener("keydown", handleUserActivityLayout, {
+    mount.addEventListener("keydown", handleUserActivityLayout, {
       capture: true,
       passive: true,
     });
-    window.addEventListener("pointerdown", handleUserActivityLayout, {
+    mount.addEventListener("pointerdown", handleUserActivityLayout, {
       capture: true,
       passive: true,
     });
@@ -1895,10 +2007,12 @@ export function TerminalViewport({
     return () => {
       window.clearTimeout(fitTimer);
       window.removeEventListener("focus", handleWindowFocusNudge);
-      window.removeEventListener("keydown", handleUserActivityLayout, { capture: true });
-      window.removeEventListener("pointerdown", handleUserActivityLayout, { capture: true });
-      if (settleCommitTimer !== null) window.clearTimeout(settleCommitTimer);
-      settleCommitPending = false;
+      window.removeEventListener("blur", handleWindowFocusNudge);
+      window.removeEventListener("pointerup", handleLayoutPointerRelease);
+      window.removeEventListener("pointercancel", handleLayoutPointerRelease);
+      mount.removeEventListener("keydown", handleUserActivityLayout, { capture: true });
+      mount.removeEventListener("pointerdown", handleUserActivityLayout, { capture: true });
+      cancelSettleCommit();
       clearPreviewScale();
       resizeObserver?.disconnect();
       layoutScheduler.dispose();
@@ -1914,7 +2028,7 @@ export function TerminalViewport({
       if (scheduleTerminalLayoutRef.current === layoutScheduler.schedule) {
         scheduleTerminalLayoutRef.current = null;
       }
-      nudgeTerminalLayoutRef.current = null;
+      refreshTerminalLayoutRef.current = null;
       if (initialFollowTailRef.current === initialFollowTail) {
         initialFollowTailRef.current = null;
       }
@@ -1932,6 +2046,8 @@ export function TerminalViewport({
       missingSessionRecovery.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      cursorStability.dispose();
+      cursorStabilityRef.current = null;
       terminal.dispose();
     };
   }, [cwd, environmentId, runtimeEnvKey, terminalId, threadId, worktreePath]);
@@ -1963,8 +2079,13 @@ export function TerminalViewport({
 
   const staleTrackingResetDoneRef = useRef(false);
   useEffect(() => {
+    if (terminalRef.current)
+      terminalRef.current.options.windowsPty = serverWindowsPtyRef.current ?? {};
+  }, [serverWindowsPty?.backend, serverWindowsPty?.buildNumber]);
+  useEffect(() => {
     const terminal = terminalRef.current;
     const current = {
+      streamCursor: terminalStreamCursor,
       buffer: terminalBuffer,
       error: terminalError,
       status: terminalStatus,
@@ -1976,17 +2097,41 @@ export function TerminalViewport({
     }
 
     const previous = previousSessionRef.current;
-    if (current.version === previous.version) {
+    if (current.error !== null && current.error !== previous.error) {
+      replayOverlayGateRef.current?.revealImmediately();
+      if (!isMissingTerminalSessionError(current.error)) {
+        writeSystemMessage(terminal, current.error);
+      }
+    }
+    if (
+      current.version === previous.version &&
+      current.streamCursor?.generation === previous.streamCursor?.generation
+    ) {
+      previousSessionRef.current = current;
       return;
     }
 
-    const writePlan = terminalBufferWritePlan(previous.buffer, current.buffer);
+    const writePlan = terminalBufferWritePlan(previous.buffer, current.buffer, {
+      previous: previous.streamCursor,
+      current: current.streamCursor,
+    });
+    if (writePlan.kind === "replace" && terminalReplayComplete === false) {
+      // A cached/hidden consumer can miss more bytes than its rolling buffer
+      // retains. Ask for a new screen, never reset xterm with a partial tail.
+      const generation = current.streamCursor?.generation ?? null;
+      if (replayRefreshGenerationRef.current !== generation) {
+        replayRefreshGenerationRef.current = generation;
+        refreshTerminalSession();
+      }
+      return;
+    }
+    replayRefreshGenerationRef.current = null;
     const replayOverlayDisposition = terminalReplayOverlayDisposition({
       previousVersion: previous.version,
       currentVersion: current.version,
       currentLength: current.buffer.length,
     });
-    const shouldFollowInitialTail = shouldNudgePtyAfterBufferWrite({
+    const shouldFollowInitialTail = shouldFollowInitialTerminalTail({
       previousVersion: previous.version,
       currentLength: current.buffer.length,
     });
@@ -1999,9 +2144,33 @@ export function TerminalViewport({
     if (isCatchUpWrite) {
       replayOverlayGate?.beginCatchUpWrite();
     }
+    // Replayed bytes carry the foreground program's own OSC colour queries.
+    // Parsing them makes xterm answer questions that were already answered
+    // when they were first asked, and the late replies are typed into
+    // whatever is reading the line now. Mark the window so the input path can
+    // drop them. A live append to a visible pane is NOT marked: xterm emits
+    // its reply synchronously while parsing that very chunk, so marking every
+    // write swallowed every answer a running program was waiting for.
+    const parsesStaleQueries = terminalWriteParsesStaleQueries({
+      writeKind: writePlan.kind,
+      dataLength: writePlan.data.length,
+      previousVersion: previous.version,
+      surfaceVisible: surfaceVisibleRef.current,
+      documentHidden: document.visibilityState === "hidden",
+      visibilityRestorePending: visibilityRestorePendingRef.current,
+    });
+    if (parsesStaleQueries) {
+      replayParseInFlightRef.current += 1;
+    }
+    const endReplayParseWindow = () => {
+      if (parsesStaleQueries && replayParseInFlightRef.current > 0) {
+        replayParseInFlightRef.current -= 1;
+      }
+    };
     const settleReplayWrite =
       shouldFollowInitialTail || replayOverlayDisposition === "reveal-after-write" || isCatchUpWrite
         ? () => {
+            endReplayParseWindow();
             if (shouldFollowInitialTail) {
               initialFollowTail?.settle();
             }
@@ -2011,21 +2180,28 @@ export function TerminalViewport({
               replayOverlayGate?.endCatchUpWrite();
             }
           }
-        : undefined;
-    if (previous.version > 0 && writePlan.data.length > 0) {
-      lastLiveOutputAtRef.current = Date.now();
-    }
+        : writePlan.data.length > 0
+          ? endReplayParseWindow
+          : undefined;
     if (writePlan.kind === "append") {
       if (writePlan.data.length > 0) {
         terminal.write(writePlan.data, settleReplayWrite);
       }
     } else {
-      writeTerminalBuffer(terminal, writePlan.data, settleReplayWrite);
-      // Full replay re-enables tracking modes baked into TUI history. Reset
-      // locally after those bytes; a live program that still wants mouse
-      // tracking will send DECSET again on the next SIGWINCH/repaint.
-      terminal.write(TERMINAL_STALE_TRACKING_RESET);
-      staleTrackingResetDoneRef.current = true;
+      if (terminalReplayGeometry) {
+        terminal.resize(terminalReplayGeometry.cols, terminalReplayGeometry.rows);
+      }
+      cursorStabilityRef.current?.reset();
+      writeTerminalBuffer(terminal, writePlan.data, () => {
+        settleReplayWrite?.();
+        scheduleTerminalLayoutRef.current?.();
+      });
+      // Legacy logs can contain abandoned tracking; canonical screens carry
+      // the live program's modes and must retain them on passive attachment.
+      if (!terminalReplayGeometry) {
+        terminal.write(TERMINAL_STALE_TRACKING_RESET);
+        staleTrackingResetDoneRef.current = true;
+      }
     }
     if (replayOverlayDisposition === "reveal-now") {
       replayOverlayGate?.revealImmediately();
@@ -2033,21 +2209,11 @@ export function TerminalViewport({
     terminal.clearSelection();
 
     if (shouldFollowInitialTail) {
-      // First attach paints history produced for another geometry. Live
-      // output — including history that was only prefix-trimmed — must not
-      // SIGWINCH: the program then redraws, the buffer trims again, and the
-      // viewport flickers forever.
+      // Repaint the restored screen locally. Reattachment must not resize
+      // the shared PTY just to provoke another program redraw.
       window.requestAnimationFrame(() => {
-        nudgeTerminalLayoutRef.current?.({ force: true });
+        refreshTerminalLayoutRef.current?.();
       });
-    }
-
-    if (
-      current.error !== null &&
-      current.error !== previous.error &&
-      !isMissingTerminalSessionError(current.error)
-    ) {
-      writeSystemMessage(terminal, current.error);
     }
 
     if (current.status === "running") {
@@ -2070,7 +2236,23 @@ export function TerminalViewport({
     }
 
     previousSessionRef.current = current;
-  }, [autoFocus, terminalBuffer, terminalError, terminalStatus, terminalVersion]);
+  }, [
+    autoFocus,
+    terminalBuffer,
+    terminalStreamCursor,
+    terminalReplayGeometry,
+    terminalReplayComplete,
+    terminalError,
+    terminalStatus,
+    terminalVersion,
+    // Recreating xterm must replay the existing snapshot even if no new PTY bytes arrive.
+    cwd,
+    environmentId,
+    runtimeEnvKey,
+    terminalId,
+    threadId,
+    worktreePath,
+  ]);
 
   // A pane whose session no longer exists server-side was explicitly closed
   // (possibly on another machine): the server refuses to resurrect closed
@@ -2099,7 +2281,7 @@ export function TerminalViewport({
   // queues behind replayed bytes). A program that wants tracking re-enables
   // it itself, and the guard re-arms whenever a subprocess is running.
   useEffect(() => {
-    if (terminalStatus !== "running" || terminalHasRunningSubprocess) {
+    if (terminalReplayGeometry || terminalStatus !== "running" || terminalHasRunningSubprocess) {
       staleTrackingResetDoneRef.current = false;
       return;
     }
@@ -2108,7 +2290,7 @@ export function TerminalViewport({
     if (!terminal) return;
     staleTrackingResetDoneRef.current = true;
     terminal.write(TERMINAL_STALE_TRACKING_RESET);
-  }, [terminalHasRunningSubprocess, terminalStatus, terminalVersion]);
+  }, [terminalReplayGeometry, terminalHasRunningSubprocess, terminalStatus, terminalVersion]);
 
   useEffect(() => {
     if (!autoFocus || replayOverlayVisible) return;
@@ -2128,7 +2310,7 @@ export function TerminalViewport({
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      nudgeTerminalLayoutRef.current?.();
+      refreshTerminalLayoutRef.current?.();
     });
     return () => {
       window.cancelAnimationFrame(frame);
@@ -2216,6 +2398,9 @@ export function TerminalViewport({
   return (
     <div
       ref={paneRef}
+      data-terminal-version={terminalVersion}
+      data-terminal-status={terminalStatus}
+      data-terminal-pending={terminalSession.isPending && terminalVersion === 0}
       className="relative flex h-full w-full flex-col overflow-hidden rounded-[4px] bg-background"
       // Padding rather than a transform: the xterm container is `flex-1`, so
       // this shrinks the terminal itself and the fit addon reflows to the
@@ -2305,6 +2490,12 @@ interface ThreadTerminalDrawerProps {
   focusRequestId: number;
   onSplitTerminal: (terminalId: string) => void;
   onSplitTerminalVertical: (terminalId: string) => void;
+  /**
+   * Whether panes may be split. The right panel sets this false: it shows one
+   * terminal per tab, and a split would put two terminals behind one tab where
+   * only one of them could be named or closed.
+   */
+  allowSplit?: boolean | undefined;
   /** Add a pane to the layout; the drawer picks the split direction from the active pane's shape. */
   onNewTerminal: (direction?: "horizontal" | "vertical") => void;
   /** Launch pad: open several panes at once, typing each non-null command into its shell. */
@@ -2624,6 +2815,7 @@ export default function ThreadTerminalDrawer({
   mode = "drawer",
   focusOwner,
   showPaneHeaders = false,
+  allowSplit = true,
   paneLayout = "split",
   tabStripTrailing,
   threadRef,
@@ -2668,6 +2860,7 @@ export default function ThreadTerminalDrawer({
   terminalLaunchLocationsById,
 }: ThreadTerminalDrawerProps) {
   const isPanel = mode === "panel";
+  const isNarrowScreen = useIsMobile();
   const terminalThreadStateKey = scopedThreadKey(threadRef);
   const locallyOpeningTerminalIds = useTerminalUiStateStore(
     (state) =>
@@ -3017,11 +3210,11 @@ export default function ThreadTerminalDrawer({
       });
     }
   };
-  const isTabLayout = paneLayout === "tabs";
+  const isTabLayout = isNarrowScreen || paneLayout === "tabs";
   const hasTerminalSidebar = !isTabLayout && normalizedTerminalIds.length > 1;
   const isSplitView = !isTabLayout && visibleTerminalIds.length > 1;
   const showGroupHeaders = false;
-  const hasReachedSplitLimit = visibleTerminalIds.length >= MAX_TERMINALS_PER_GROUP;
+  const hasReachedSplitLimit = !allowSplit || visibleTerminalIds.length >= MAX_TERMINALS_PER_GROUP;
   const terminalLabelById = useMemo(() => {
     const next = new Map<string, string>();
     for (const terminalId of normalizedTerminalIds) {
@@ -3085,9 +3278,12 @@ export default function ThreadTerminalDrawer({
       const group = resolvedTerminalGroups.find((candidate) =>
         candidate.terminalIds.includes(terminalId),
       );
-      return (group?.terminalIds.length ?? 0) < MAX_TERMINALS_PER_GROUP;
+      return canSplitTerminalGroup({
+        allowSplit,
+        groupSize: group?.terminalIds.length ?? 0,
+      });
     },
-    [resolvedTerminalGroups],
+    [allowSplit, resolvedTerminalGroups],
   );
   const splitHorizontalLabelFor = useCallback(
     (terminalId: string) =>
@@ -3537,7 +3733,7 @@ export default function ThreadTerminalDrawer({
       ) : null}
 
       {isTabLayout ? (
-        <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-[var(--line)] px-1.5">
+        <div className="flex h-8 shrink-0 items-center gap-0.5 pointer-coarse:h-11 border-b border-[var(--line)] px-1.5">
           <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
             {normalizedTerminalIds.map((terminalId) => {
               const isActive = terminalId === resolvedActiveTerminalId;
@@ -3693,6 +3889,8 @@ export default function ThreadTerminalDrawer({
           <div className="min-w-0 flex-1">
             {isSplitView && activeGroupLayout ? (
               renderLayoutNode(activeGroupLayout, [])
+            ) : isBrowserPaneId(resolvedActiveTerminalId) ? (
+              renderTerminalPane(resolvedActiveTerminalId)
             ) : (
               <div
                 data-terminal-pane-id={resolvedActiveTerminalId}

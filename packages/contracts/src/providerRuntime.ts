@@ -252,6 +252,8 @@ const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
 const ProviderRuntimeEventBase = Schema.Struct({
+  // Rehydrated transcript events must not authorize fresh provider work.
+  historicalReplay: Schema.optional(Schema.Literal(true)),
   eventId: EventId,
   provider: ProviderDriverKind,
   // Optional during the driver/instance migration. See providerInstance.ts
@@ -490,6 +492,7 @@ export type MessageDeliveredPayload = typeof MessageDeliveredPayload.Type;
 
 const TaskProgressPayload = Schema.Struct({
   taskId: RuntimeTaskId,
+  title: Schema.optional(TrimmedNonEmptyStringSchema),
   description: TrimmedNonEmptyStringSchema,
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
   usage: Schema.optional(Schema.Unknown),
@@ -499,6 +502,9 @@ export type TaskProgressPayload = typeof TaskProgressPayload.Type;
 
 const TaskCompletedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
+  title: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Identity refresh of an already terminal task, not a new completion signal. */
+  metadataOnly: Schema.optional(Schema.Boolean),
   status: Schema.Literals(["completed", "failed", "stopped"]),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
   usage: Schema.optional(Schema.Unknown),

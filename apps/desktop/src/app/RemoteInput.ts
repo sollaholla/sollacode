@@ -11,20 +11,10 @@ import type { DesktopRemoteControlInput } from "@t3tools/contracts";
 const MACOS_REMOTE_INPUT_SOURCE = String.raw`
 ObjC.import("ApplicationServices");
 ObjC.import("Foundation");
-// Carbon is where IsSecureEventInputEnabled lives. It is not present on every
-// runtime this script can land on, and a failed top-level import would take the
-// whole helper down, so the capability is treated as optional.
-var hasCarbon = false;
-try {
-  ObjC.import("Carbon");
-  hasCarbon = true;
-} catch (error) {
-  hasCarbon = false;
-}
 // NSScreen is AppKit, not Foundation. Without this import $.NSScreen is
 // undefined and every pointer event dies on "undefined is not an object",
-// which the viewer then reports as a capture problem. Guarded like Carbon so a
-// runtime without AppKit degrades instead of taking the helper down.
+// which the viewer then reports as a capture problem. Guarded so a runtime
+// without AppKit degrades instead of taking the helper down.
 var hasAppKit = false;
 try {
   ObjC.import("AppKit");
@@ -196,9 +186,63 @@ function postWheel(input) {
   $.CGEventPost($.kCGHIDEventTap, event);
 }
 
+// What each key produces with no modifiers on a US layout. Only used to notice
+// that a reported character cannot have come from the bare key.
+var unshiftedChars = {
+  KeyA: "a", KeyB: "b", KeyC: "c", KeyD: "d", KeyE: "e", KeyF: "f", KeyG: "g",
+  KeyH: "h", KeyI: "i", KeyJ: "j", KeyK: "k", KeyL: "l", KeyM: "m", KeyN: "n",
+  KeyO: "o", KeyP: "p", KeyQ: "q", KeyR: "r", KeyS: "s", KeyT: "t", KeyU: "u",
+  KeyV: "v", KeyW: "w", KeyX: "x", KeyY: "y", KeyZ: "z",
+  Digit0: "0", Digit1: "1", Digit2: "2", Digit3: "3", Digit4: "4",
+  Digit5: "5", Digit6: "6", Digit7: "7", Digit8: "8", Digit9: "9",
+  Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Backslash: "\\",
+  Semicolon: ";", Quote: "'", Comma: ",", Period: ".", Slash: "/",
+  // A literal backtick would end the String.raw template holding this script.
+  Backquote: "\u0060"
+};
+
+function hasNonShiftModifierHeld() {
+  var found = false;
+  Object.keys(pressedKeys).forEach(function (codeName) {
+    var kind = MODIFIER_KINDS[codeName];
+    if (kind !== undefined && kind !== "shift") found = true;
+  });
+  return found;
+}
+
+/**
+ * Whether this keystroke has to be typed as text rather than posted as a key.
+ *
+ * Touch keyboards never send a Shift key of their own: "@" arrives as one
+ * event with key "@" and code "Digit2". Posting that code produces "2",
+ * because the code table is the unshifted US layout — the same reason a
+ * capital letter arrived lowercase.
+ *
+ * The test is that the reported character cannot have come from the bare key.
+ * That keeps every held key on the key path, which matters: a game holding W
+ * needs a real down edge, and typing it as text would fire once and never
+ * repeat. A character the key really does produce is left alone for the same
+ * reason.
+ */
+function needsLiteralText(input) {
+  if (input.action !== "down") return false;
+  var key = input.key;
+  if (typeof key !== "string" || Array.from(key).length !== 1) return false;
+  // A command/control/option combination is a shortcut, not typing: Cmd+2 must
+  // stay Cmd+2. Shift alone is the case this exists for.
+  if (hasNonShiftModifierHeld()) return false;
+  var bare = unshiftedChars[input.code];
+  if (bare === undefined) return false;
+  return key !== bare;
+}
+
 function postKey(input) {
   var code = keyCodes[input.code];
   if (code === undefined) return;
+  if (needsLiteralText(input)) {
+    postText({ text: input.key });
+    return;
+  }
   var isDown = input.action === "down";
   // Update held state first so a modifier's own down edge carries its flag and
   // its up edge does not — matching what a physical keyboard produces.
@@ -293,46 +337,26 @@ function cursorShape() {
 }
 
 /**
- * Why injected input would go nowhere right now, or null when it will land.
+ * macOS reports nothing here, on purpose.
  *
- * macOS has no secure desktop, but it has the same idea in a narrower form:
- * a password field or an authorization prompt turns on secure event input,
- * and the window server then drops synthetic key events outright. Reporting it
- * is what keeps a session from looking dead while someone is being asked for
- * their password.
+ * This used to detect secure event input - what a password field or an
+ * authorization prompt turns on - and refuse to inject, then merely warn. Both
+ * are gone at the owner's request: they grant control of their own Mac from a
+ * phone, where there is no keyboard to fall back to, so a banner about their
+ * own password field was noise in front of the one thing they were trying to
+ * do. Events are posted unconditionally and macOS decides.
+ *
+ * Windows keeps its secure-desktop refusal, which is a different thing: that
+ * prompt lives on a desktop this process cannot open, so the keystrokes would
+ * land in whatever window is focused on ours.
  */
-function blockReason() {
-  if (!hasCarbon) return null;
-  try {
-    return $.IsSecureEventInputEnabled() ? "secure-input" : null;
-  } catch (error) {
-    return null;
-  }
-}
-
-var wasBlocked = false;
-
 function applyCommand(command) {
   if (command.kind === "reset") {
     resetInput();
-    wasBlocked = false;
     return null;
   }
   if (command.kind === "cursor") {
-    // The lock poll doubles as the recovery detector, so it reports the block
-    // state too — otherwise an idle session never learns that input came back.
-    return { locked: cursorLocked(), blocked: blockReason(), cursor: cursorShape() };
-  }
-  var blocked = blockReason();
-  if (blocked !== null) {
-    wasBlocked = true;
-    return { blocked: blocked };
-  }
-  if (wasBlocked) {
-    // Keys held when secure input took over are still down, and their key-ups
-    // were swallowed; release everything before resuming.
-    resetInput();
-    wasBlocked = false;
+    return { locked: cursorLocked(), cursor: cursorShape() };
   }
   var input = command.input;
   if (input.type === "pointer") postPointer(input);
@@ -546,13 +570,15 @@ public static class SollaRemoteInput {
   }
 
   /**
-   * Why injected input would go nowhere right now, or null when it will land.
+   * Why injected input may not land, or null when nothing is in the way.
    *
    * Checked before every event rather than inferred from a failure, because
-   * the secure-desktop case produces no failure at all: SendInput happily
-   * succeeds against our own desktop while the user is looking at another one.
-   * Without this the events vanish and the session looks broken for no
-   * visible reason.
+   * neither case produces one: SendInput happily succeeds against our own
+   * desktop while the user is looking at another, and UIPI drops input to an
+   * elevated window silently.
+   *
+   * Only secure-desktop stops the send (see the caller). elevated-window is
+   * advisory - the caller sends anyway and lets Windows decide.
    */
   public static string BlockReason() {
     var desktop = InputDesktopName();
@@ -875,8 +901,112 @@ $keyCodes = @{
   Quote=0xDE
 }
 
+# Which of the tracked keys are modifiers, and which modifier each one is. A
+# shortcut has to stay a shortcut, so the literal-text path below needs to tell
+# Shift - the case it exists for - from Ctrl/Alt/Win.
+$modifierKinds = @{
+  ShiftLeft='shift'; ShiftRight='shift';
+  ControlLeft='control'; ControlRight='control';
+  AltLeft='alt'; AltRight='alt';
+  MetaLeft='meta'; MetaRight='meta';
+  PrimaryLeft='control'; PrimaryRight='control'
+}
+
+# What each key produces with no modifiers on a US layout. Only used to notice
+# that a reported character cannot have come from the bare key.
+$unshiftedChars = @{
+  KeyA='a'; KeyB='b'; KeyC='c'; KeyD='d'; KeyE='e'; KeyF='f'; KeyG='g';
+  KeyH='h'; KeyI='i'; KeyJ='j'; KeyK='k'; KeyL='l'; KeyM='m'; KeyN='n';
+  KeyO='o'; KeyP='p'; KeyQ='q'; KeyR='r'; KeyS='s'; KeyT='t'; KeyU='u';
+  KeyV='v'; KeyW='w'; KeyX='x'; KeyY='y'; KeyZ='z';
+  Digit0='0'; Digit1='1'; Digit2='2'; Digit3='3'; Digit4='4';
+  Digit5='5'; Digit6='6'; Digit7='7'; Digit8='8'; Digit9='9';
+  Minus='-'; Equal='='; BracketLeft='['; BracketRight=']'; Backslash='\';
+  Semicolon=';'; Quote="'"; Comma=','; Period='.'; Slash='/';
+  # [char]0x60 is the backtick. A literal one would both end the template
+  # holding this script and escape the next character in PowerShell.
+  Backquote=([string][char]0x60)
+}
+
 $pressedKeys = @{}
 $pressedButtons = @{}
+
+<#
+Whether Windows draws the UAC consent prompt on its separate secure desktop.
+
+This is the difference between a secure-desktop block the owner can do
+something about and one they cannot. With the prompt on the secure desktop
+(the default, 1) nothing outside it can capture or type into it at all. With
+it off (0) UAC draws on the ordinary desktop, so at minimum it becomes
+VISIBLE over remote control - whether input also reaches it depends on UIPI,
+since consent.exe outranks us either way.
+
+Read, never written: turning this off is a real reduction in UAC's protection
+and belongs to the person at the machine, not to a remote session. Cached
+because it sits on the status path and a registry read per event is waste; a
+change needs a UAC prompt, so a stale read cannot last long in practice.
+#>
+$script:secureDesktopPromptCache = $null
+$script:secureDesktopPromptCachedAtTick = 0
+function Get-SecureDesktopPrompt {
+  $now = [Environment]::TickCount
+  if (
+    $null -ne $script:secureDesktopPromptCache -and
+    [Math]::Abs($now - $script:secureDesktopPromptCachedAtTick) -lt 30000
+  ) {
+    return $script:secureDesktopPromptCache
+  }
+  $script:secureDesktopPromptCachedAtTick = $now
+  # Absent means the Windows default, which is on.
+  $value = 1
+  try {
+    $systemPolicyPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $entry = Get-ItemProperty -Path $systemPolicyPath -Name 'PromptOnSecureDesktop' -ErrorAction Stop
+    if ($null -ne $entry -and $null -ne $entry.PromptOnSecureDesktop) {
+      $value = [int]$entry.PromptOnSecureDesktop
+    }
+  } catch {
+    $value = 1
+  }
+  $script:secureDesktopPromptCache = ($value -ne 0)
+  return $script:secureDesktopPromptCache
+}
+
+function Test-NonShiftModifierHeld {
+  foreach ($codeName in @($pressedKeys.Keys)) {
+    $kind = $modifierKinds[[string]$codeName]
+    if ($null -ne $kind -and $kind -ne 'shift') { return $true }
+  }
+  return $false
+}
+
+<#
+Whether this keystroke has to be typed as text rather than posted as a key.
+
+Touch keyboards never send a Shift key of their own: "@" arrives as one event
+with key "@" and code "Digit2". Posting that code produces "2", because the
+code table is the unshifted US layout - the same reason a capital letter
+arrived lowercase.
+
+The test is that the reported character cannot have come from the bare key.
+That keeps every held key on the key path, which matters: a game holding W
+needs a real down edge, and typing it as text would fire once and never
+repeat. A character the key really does produce is left alone for the same
+reason.
+#>
+function Test-NeedsLiteralText($eventData) {
+  if ($eventData.action -ne 'down') { return $false }
+  $key = $eventData.key
+  if ($key -isnot [string] -or $key.Length -ne 1) { return $false }
+  # A Ctrl/Alt/Win combination is a shortcut, not typing: Ctrl+2 must stay
+  # Ctrl+2. Shift alone is the case this exists for.
+  if (Test-NonShiftModifierHeld) { return $false }
+  $bare = $unshiftedChars[[string]$eventData.code]
+  if ($null -eq $bare) { return $false }
+  # -cne, not -ne: PowerShell comparison is case-insensitive by default, which
+  # would make "A" equal "a" and send every capital down the unshifted path.
+  return ([string]$key -cne [string]$bare)
+}
 
 function Set-PointerPosition($eventData) {
   [SollaRemoteInput]::Pointer([double]$eventData.x, [double]$eventData.y, 0, 0)
@@ -935,6 +1065,10 @@ function Invoke-RemoteInput($eventData) {
   if ($eventData.type -eq 'key') {
     $virtualKey = $keyCodes[[string]$eventData.code]
     if ($null -eq $virtualKey) { return }
+    if (Test-NeedsLiteralText $eventData) {
+      [SollaRemoteInput]::Text([string]$eventData.key)
+      return
+    }
     $down = $eventData.action -eq 'down'
     [SollaRemoteInput]::Key([uint16]$virtualKey, $down)
     if ($down) { $pressedKeys[[string]$eventData.code] = [uint16]$virtualKey }
@@ -990,22 +1124,48 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
       $locked = [SollaRemoteInput]::CursorLocked()
       $reply = @{ id = $command.id; ok = $true; locked = $locked }
       $reply.cursor = [SollaRemoteInput]::CursorShape()
-      if ($null -ne $blocked) { $reply.blocked = $blocked }
+      if ($null -ne $blocked) {
+        $reply.blocked = $blocked
+        $reply.secureDesktopPrompt = (Get-SecureDesktopPrompt)
+      }
       [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))
       continue
     }
 
     $blocked = [SollaRemoteInput]::BlockReason()
-    if ($null -ne $blocked) {
-      # Injecting now would post the event to our own desktop, which nobody is
-      # looking at. Drop it and report the condition; this is not a failure.
+    if ($blocked -eq 'secure-desktop') {
+      # The only condition worth refusing. UAC, the lock screen and
+      # Ctrl+Alt+Del live on a desktop this process cannot open, so SendInput
+      # would succeed against our OWN desktop instead - delivering the
+      # keystrokes to whatever window happens to be focused there. Someone
+      # typing a password into a UAC prompt would type it into that window
+      # in the clear. Dropping it protects them; this is not a failure.
       $script:wasBlocked = $true
-      [Console]::Out.WriteLine((@{ id = $command.id; ok = $true; blocked = $blocked } | ConvertTo-Json -Compress))
+      [Console]::Out.WriteLine((@{
+        id = $command.id
+        ok = $true
+        blocked = $blocked
+        # Lets the viewer separate "nothing can be done from here" from "this
+        # machine is one setting away from showing you the prompt".
+        secureDesktopPrompt = (Get-SecureDesktopPrompt)
+      } | ConvertTo-Json -Compress))
       continue
     }
-    Resume-AfterBlock
+    if ($null -ne $blocked) {
+      # Everything else - an elevated foreground window - is advisory. Windows
+      # drops the event itself under UIPI, and the event goes to the right
+      # desktop either way, so attempting costs nothing and refusing would
+      # strand someone whose detection was merely wrong: OpenProcess also
+      # fails with ACCESS_DENIED for protected processes that are not
+      # actually elevated.
+      $script:wasBlocked = $true
+    } else {
+      Resume-AfterBlock
+    }
     Invoke-RemoteInput $command.input
-    [Console]::Out.WriteLine((@{ id = $command.id; ok = $true } | ConvertTo-Json -Compress))
+    $reply = @{ id = $command.id; ok = $true }
+    if ($null -ne $blocked) { $reply.blocked = $blocked }
+    [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))
   } catch [System.UnauthorizedAccessException] {
     $script:wasBlocked = $true
     $id = if ($null -ne $command) { $command.id } else { -1 }
@@ -1043,11 +1203,15 @@ export interface RemoteInputSendResult {
   /** False when the OS is currently refusing input; the event was dropped. */
   readonly delivered: boolean;
   readonly blocked?: RemoteInputBlockReason;
+  /** Windows only: whether UAC still draws on the secure desktop. */
+  readonly secureDesktopPrompt?: boolean;
 }
 
 export interface RemoteInputHostState {
   readonly locked: boolean;
   readonly blocked?: RemoteInputBlockReason;
+  /** Windows only: whether UAC still draws on the secure desktop. */
+  readonly secureDesktopPrompt?: boolean;
   /** Host cursor as a CSS cursor keyword ("default", "text", "none", …). */
   readonly cursor?: string;
 }
@@ -1059,6 +1223,7 @@ interface RemoteInputReply {
   readonly locked?: boolean;
   readonly blocked?: string;
   readonly cursor?: string;
+  readonly secureDesktopPrompt?: boolean;
 }
 
 /** Helper output crosses a process boundary; accept only cursor keywords. */
@@ -1144,7 +1309,14 @@ export class RemoteInputController {
   async send(input: DesktopRemoteControlInput["input"]): Promise<RemoteInputSendResult> {
     const reply = await this.sendCommand({ kind: "input", input });
     const blocked = asBlockReason(reply.blocked);
-    return blocked ? { delivered: false, blocked } : { delivered: true };
+    if (!blocked) return { delivered: true };
+    return {
+      delivered: false,
+      blocked,
+      ...(typeof reply.secureDesktopPrompt === "boolean"
+        ? { secureDesktopPrompt: reply.secureDesktopPrompt }
+        : {}),
+    };
   }
 
   async probe(): Promise<void> {
@@ -1183,6 +1355,9 @@ export class RemoteInputController {
       locked: reply.locked === true,
       ...(blocked ? { blocked } : {}),
       ...(cursor ? { cursor } : {}),
+      ...(typeof reply.secureDesktopPrompt === "boolean"
+        ? { secureDesktopPrompt: reply.secureDesktopPrompt }
+        : {}),
     };
   }
 

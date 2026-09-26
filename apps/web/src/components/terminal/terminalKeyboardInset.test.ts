@@ -25,10 +25,8 @@ describe("resolveTerminalKeyboardInset", () => {
     expect(resolveTerminalKeyboardInset({ ...KEYBOARD_OPEN, terminalFocused: false })).toBe(0);
   });
 
-  it("leaves landscape alone", () => {
-    // The keyboard already owns most of the height there; reserving it again
-    // would leave the terminal a couple of rows tall.
-    expect(resolveTerminalKeyboardInset({ ...KEYBOARD_OPEN, isPortrait: false })).toBe(0);
+  it("also lifts the prompt in landscape", () => {
+    expect(resolveTerminalKeyboardInset({ ...KEYBOARD_OPEN, isPortrait: false })).toBe(300);
   });
 
   it("does nothing on a pointer device", () => {
@@ -56,4 +54,10 @@ describe("resolveTerminalKeyboardInset", () => {
       }),
     ).toBe(300);
   });
+});
+
+it("caps the inset so a short landscape pane retains a usable grid", () => {
+  expect(resolveTerminalKeyboardInset({ ...KEYBOARD_OPEN, paneTop: 450, isPortrait: false })).toBe(
+    230,
+  );
 });

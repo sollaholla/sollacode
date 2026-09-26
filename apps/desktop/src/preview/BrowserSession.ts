@@ -20,6 +20,11 @@ import type { PreviewDownload, PreviewDownloadApproval } from "@t3tools/contract
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import {
+  DESKTOP_DEVELOPMENT_SCHEME,
+  DESKTOP_HOST,
+  DESKTOP_PRODUCTION_SCHEME,
+} from "../electron/ElectronProtocol.ts";
+import {
   downloadDomain,
   parseDownloadAllowlist,
   resolveDownloadApproval,
@@ -102,6 +107,34 @@ const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   "notifications",
   "geolocation",
 ]);
+
+const DESKTOP_APP_PROTOCOLS: ReadonlySet<string> = new Set([
+  `${DESKTOP_PRODUCTION_SCHEME}:`,
+  `${DESKTOP_DEVELOPMENT_SCHEME}:`,
+]);
+
+/**
+ * The app window capturing a tab's sound for a remote listener. Chromium asks
+ * the CAPTURED tab's session about a tab capture, so without this the guest
+ * rules below refused it ("NotAllowedError: Permission denied") and remote
+ * viewers heard nothing. `securityOrigin` is the frame that asked, which a
+ * page inside the tab can never be; pages keep being denied the microphone.
+ */
+export function isAppTabAudioCapture(permission: string, details: unknown): boolean {
+  if (permission !== "media" || typeof details !== "object" || details === null) return false;
+  const { securityOrigin, mediaTypes } = details as {
+    readonly securityOrigin?: unknown;
+    readonly mediaTypes?: ReadonlyArray<unknown>;
+  };
+  if (!(mediaTypes ?? []).every((type) => type === "audio")) return false;
+  if (typeof securityOrigin !== "string") return false;
+  try {
+    const origin = new URL(securityOrigin);
+    return DESKTOP_APP_PROTOCOLS.has(origin.protocol) && origin.hostname === DESKTOP_HOST;
+  } catch {
+    return false;
+  }
+}
 
 export class BrowserSessionPartitionDerivationError extends Schema.TaggedErrorClass<BrowserSessionPartitionDerivationError>()(
   "BrowserSessionPartitionDerivationError",
@@ -726,9 +759,15 @@ export const make = Effect.gen(function* BrowserSessionMake() {
                 // the user is asked where to put it rather than losing the file.
               }
             });
-            browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-              callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission) || denyPermission(permission));
-            });
+            browserSession.setPermissionRequestHandler(
+              (_webContents, permission, callback, details) => {
+                callback(
+                  ALLOWED_PREVIEW_PERMISSIONS.has(permission) ||
+                    isAppTabAudioCapture(permission, details) ||
+                    denyPermission(permission),
+                );
+              },
+            );
             browserSession.setPermissionCheckHandler(
               (_webContents, permission) =>
                 ALLOWED_PREVIEW_PERMISSIONS.has(permission) || denyPermission(permission),

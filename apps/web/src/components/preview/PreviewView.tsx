@@ -53,6 +53,7 @@ import { useLoadingProgress } from "./useLoadingProgress";
 import { usePreviewSession } from "./usePreviewSession";
 import { ZoomIndicator } from "./ZoomIndicator";
 import { AgentBrowserCursor } from "./AgentBrowserCursor";
+import { previewControllerFromAgentControl } from "./previewTabAgentIndicator";
 import { PreviewDownloadApprovalPrompt } from "./PreviewDownloadApprovalPrompt";
 import { PreviewDownloadNotice } from "./PreviewDownloadNotice";
 import { cn } from "~/lib/utils";
@@ -135,7 +136,11 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const refreshDisabled = navStatus._tag === "Idle";
   const isUnreachable = navStatus._tag === "LoadFailed";
   const showEmptyState = shouldShowPreviewEmptyState(snapshot);
-  const controller = desktopOverlay?.controller ?? "none";
+  // Off the desktop there is no overlay; the rendering desktop reports who is
+  // driving on the tab itself, so a phone can still say an agent has it.
+  const controller =
+    desktopOverlay?.controller ??
+    previewControllerFromAgentControl(snapshot?.agentControl).controller;
   const loadProgress = useLoadingProgress(loading);
   const displayUrl =
     url && environment && environmentHttpBaseUrl
@@ -149,6 +154,26 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const panelRect = useBrowserSurfaceStore((state) =>
     runtimeTabId ? (state.byTabId[runtimeTabId]?.rect ?? null) : null,
   );
+  const reportActivity = useAtomCommand(previewEnvironment.reportActivity, {
+    reportFailure: false,
+  });
+  useEffect(() => {
+    if (visible && tabId) {
+      void reportActivity({
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId, tabId, interacted: true },
+      });
+    }
+  }, [visible, tabId, reportActivity, threadRef.environmentId, threadRef.threadId]);
+  const lastChromeActivityMs = useRef(0);
+  const reportChromeActivity = useCallback(() => {
+    if (!tabId || Date.now() - lastChromeActivityMs.current < 1_000) return;
+    lastChromeActivityMs.current = Date.now();
+    void reportActivity({
+      environmentId: threadRef.environmentId,
+      input: { threadId: threadRef.threadId, tabId, interacted: true },
+    });
+  }, [reportActivity, tabId, threadRef.environmentId, threadRef.threadId]);
   const remoteInput = useAtomCommand(previewEnvironment.remoteInput, { reportFailure: false });
 
   const navigateToResolvedUrl = useCallback(
@@ -266,6 +291,20 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
       setCheckingVerification(false);
     }
   }, [localPreviewBridge, runtimeTabId]);
+
+  const handleOpenRemoteInNewTab = useCallback(
+    async (url: string) => {
+      const result = await openPreviewSession({ openPreview: open, threadRef, url });
+      if (result._tag === "Failure") {
+        toastManager.add({
+          type: "error",
+          title: "Could not open a new tab",
+          description: "The desktop browser did not open the link.",
+        });
+      }
+    },
+    [open, threadRef],
+  );
 
   const handleOpenVerificationResource = useCallback(
     async (resourceUrl: string) => {
@@ -728,6 +767,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     <div
       className="flex min-h-0 flex-1 flex-col bg-background"
       data-thread-key={scopedThreadKey(threadRef)}
+      onPointerDownCapture={reportChromeActivity}
+      onKeyDownCapture={reportChromeActivity}
     >
       <PreviewChromeRow
         url={url}
@@ -793,8 +834,10 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
               key={tabId}
               threadRef={threadRef}
               tabId={tabId}
+              agentControl={snapshot.agentControl ?? "none"}
               visible={visible && !isUnreachable}
               className="absolute inset-0 h-full w-full"
+              onOpenInNewTab={(url) => void handleOpenRemoteInNewTab(url)}
             />
           ) : null
         ) : null}

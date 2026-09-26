@@ -133,6 +133,7 @@ for (const targetKind of ["ephemeral", "agent"] as const) {
       const browserRootThreadId = ThreadId.make("thread-browser-root");
       const delegationId = VmAgentDelegationId.make("delegation-new-worker");
       const workerThreadId = ThreadId.make(`delegation-worker:${delegationId}`);
+      const queuedCorrection = "Use the revised date: Thursday, not Friday.";
       const delegatedTask = {
         ...task,
         schedule: { kind: "once" as const, runAt: iso },
@@ -159,6 +160,7 @@ for (const targetKind of ["ephemeral", "agent"] as const) {
         completionCriteria: [],
         requestedCapabilities: ["browser"],
         status: "queued",
+        startedAt: null,
       } as never;
       const commands: OrchestrationCommand[] = [];
       const started = yield* Deferred.make<void>();
@@ -183,7 +185,21 @@ for (const targetKind of ["ephemeral", "agent"] as const) {
         setWorkerThread: ({ threadId: assignedThreadId }) =>
           Effect.sync(() => assert.strictEqual(assignedThreadId, workerThreadId)),
         markRunning: () => Effect.void,
-        listMessages: () => Effect.succeed([]),
+        listMessages: () =>
+          Effect.succeed([
+            {
+              messageId: VmAgentDelegationMessageId.make("before-start-correction"),
+              delegationId,
+              sequence: 2,
+              sender: "user",
+              senderVmAgentId: null,
+              kind: "note",
+              delivery: "pending",
+              text: queuedCorrection,
+              createdAt: iso,
+            },
+          ]),
+        markMessageDelivered: () => Effect.void,
       });
       const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
         getThreadShellById: (requestedThreadId) =>
@@ -242,6 +258,8 @@ for (const targetKind of ["ephemeral", "agent"] as const) {
         }
         const startedTurn = commands.find((command) => command.type === "thread.turn.start");
         assert.strictEqual(startedTurn?.threadId, workerThreadId);
+        assert.include(startedTurn?.message.text ?? "", "Verify the signed-in browser session.");
+        assert.include(startedTurn?.message.text ?? "", queuedCorrection);
         assert.isFalse(
           commands.some((command) => "threadId" in command && command.threadId === threadId),
         );
@@ -642,6 +660,14 @@ it.effect("re-arms a pending delegation follow-up after the current turn settles
       text: "Check the final edge case.",
       createdAt: iso,
     } as const;
+    const correctionMessage = {
+      ...pendingMessage,
+      messageId: VmAgentDelegationMessageId.make("pending-correction-message"),
+      sequence: 3,
+      text: "Use Thursday rather than Friday for that check.",
+    };
+    const delivered = yield* Deferred.make<void>();
+    const deliveredIds: string[] = [];
     const dispatched = yield* Deferred.make<void>();
     const order: string[] = [];
     let observed = false;
@@ -680,11 +706,15 @@ it.effect("re-arms a pending delegation follow-up after the current turn settles
     const collaborationStoreLayer = Layer.mock(VmAgentCollaborationStore)({
       getByRunId: () => Effect.succeed(Option.some(delegation)),
       getByTaskId: () => Effect.succeed(Option.some(delegation)),
-      listMessages: () => Effect.succeed([pendingMessage]),
+      listMessages: () => Effect.succeed([pendingMessage, correctionMessage]),
       requeuePendingFollowup: () => Effect.sync(() => order.push("requeue-followup")),
       markRunClaimed: () => Effect.void,
       markRunning: () => Effect.void,
-      markMessageDelivered: () => Effect.void,
+      markMessageDelivered: ({ messageId }) =>
+        Effect.gen(function* () {
+          deliveredIds.push(messageId);
+          if (deliveredIds.length === 2) yield* Deferred.succeed(delivered, undefined);
+        }),
       listExpired: () => Effect.succeed([]),
     });
     const sourceThread = {
@@ -722,6 +752,11 @@ it.effect("re-arms a pending delegation follow-up after the current turn settles
             assert.strictEqual(command.threadId, workerThreadId);
             assert.strictEqual(command.message.delegationId, followupDelegationId);
             assert.include(command.message.text, pendingMessage.text);
+            assert.include(command.message.text, correctionMessage.text);
+            assert.isBelow(
+              command.message.text.indexOf(pendingMessage.text),
+              command.message.text.indexOf(correctionMessage.text),
+            );
           }
           return { sequence: 1 };
         }).pipe(Effect.tap(() => Deferred.succeed(dispatched, undefined))),
@@ -740,6 +775,8 @@ it.effect("re-arms a pending delegation follow-up after the current turn settles
       const scheduler = yield* VmAgentTaskScheduler;
       yield* scheduler.start();
       yield* Deferred.await(dispatched);
+      yield* Deferred.await(delivered);
+      assert.deepStrictEqual(deliveredIds, [pendingMessage.messageId, correctionMessage.messageId]);
       assert.deepStrictEqual(order, [
         "complete-current-run",
         "requeue-followup",

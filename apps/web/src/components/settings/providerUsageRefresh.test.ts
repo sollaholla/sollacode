@@ -32,6 +32,17 @@ const codex = () =>
   });
 
 describe("provider settings usage refresh coordinator", () => {
+  it("can discover a newly configured Deep Code key on manual refresh", () => {
+    expect(
+      isProviderUsageRefreshEligible(
+        provider({
+          driver: ProviderDriverKind.make("deepcode"),
+          instanceId: ProviderInstanceId.make("deepcode"),
+          auth: { status: "unauthenticated" },
+        }),
+      ),
+    ).toBe(true);
+  });
   it("only refreshes enabled, available, potentially authenticated supported providers", () => {
     expect(isProviderUsageRefreshEligible(codex())).toBe(true);
     expect(

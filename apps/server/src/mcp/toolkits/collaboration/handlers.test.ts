@@ -515,7 +515,7 @@ it.effect("blocks the legacy side-chat bypass for a delegated worker", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("routes VM-root worker creation away from the legacy side-chat path", () => {
+it.effect("lets a custom agent's chat fork side chats like any other chat", () => {
   const harness = makeHarness(undefined, {
     vmAgentThreadIds: new Set([mainThreadId]),
   });
@@ -524,12 +524,11 @@ it.effect("routes VM-root worker creation away from the legacy side-chat path", 
       { action: "create_side_chat", title: "Worker", task: "Do bounded work." },
       invocationFor(mainThreadId),
     );
-    expect(result.isError).toBe(true);
-    expect(result.content[0]).toMatchObject({
-      type: "text",
-      text: expect.stringContaining("agent_collaboration.delegate"),
-    });
-    expect(harness.commands).toEqual([]);
+    expect(result.isError).toBe(false);
+    expect(harness.commands.map((command) => command.type)).toEqual([
+      "thread.fork",
+      "thread.turn.start",
+    ]);
   }).pipe(Effect.provide(harness.layer));
 });
 

@@ -32,6 +32,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     settledShelfExpanded: false,
     agentsSectionExpanded: true,
     threadsSectionExpanded: true,
+    agentHeaderCollapsed: false,
     ...overrides,
   };
 }
@@ -158,6 +159,8 @@ describe("parsePersistedState", () => {
   it("defaults the Sidebar v2 settled shelf collapsed and preserves an explicit choice", () => {
     expect(parsePersistedState({}).settledShelfExpanded).toBe(false);
     expect(parsePersistedState({ settledShelfExpanded: true }).settledShelfExpanded).toBe(true);
+    expect(parsePersistedState({}).agentHeaderCollapsed).toBe(false);
+    expect(parsePersistedState({ agentHeaderCollapsed: true }).agentHeaderCollapsed).toBe(true);
   });
 
   it("defaults the Agents and Threads sections open and preserves an explicit collapse", () => {
@@ -223,6 +226,7 @@ describe("parsePersistedState", () => {
       settledShelfExpanded: false,
       agentsSectionExpanded: true,
       threadsSectionExpanded: true,
+      agentHeaderCollapsed: false,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
           "turn-1": false,
@@ -357,6 +361,7 @@ describe("uiStateStore persistence", () => {
       settledShelfExpanded: false,
       agentsSectionExpanded: true,
       threadsSectionExpanded: true,
+      agentHeaderCollapsed: false,
       threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {

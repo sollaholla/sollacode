@@ -1,5 +1,11 @@
+import { PendingModelSelections } from "@t3tools/client-runtime/state/model-selection-sync";
+import { isResumePrompt } from "@t3tools/shared/resumePrompt";
 import { HELD_MESSAGE_PREFIX } from "@t3tools/shared/heldMessages";
-import { isThreadSessionWorking } from "@t3tools/client-runtime/state/thread-activity";
+import {
+  isThreadSessionWorking,
+  canResumeFailedThreadSession,
+  runResumeIncompleteTurn,
+} from "@t3tools/client-runtime/state/thread-activity";
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -46,7 +52,7 @@ import {
 import { setPendingConnectionError } from "../state/use-remote-environment-registry";
 import { useSelectedThreadDetailState } from "../state/use-thread-detail";
 import { useAtomCommand } from "./use-atom-command";
-import { loadThreadHistory } from "./threads";
+import { loadThreadHistory, threadEnvironment } from "./threads";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
@@ -95,6 +101,12 @@ export function useThreadDraftForThread(input: {
 }
 
 export function useThreadComposerState() {
+  const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
+    reportFailure: false,
+  });
+  const modelSelectionSyncRef = useRef(Promise.resolve());
+  const observedModelSelections = useRef(new Map<string, string>());
+  const pendingModelSelections = useRef(new PendingModelSelections());
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThreadDetailState = useSelectedThreadDetailState();
   const recentSelectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
@@ -267,6 +279,19 @@ export function useThreadComposerState() {
       consumeComposerFocusRequest(selectedThreadKey, composerFocusRequest);
     }
   }, [composerFocusRequest, selectedThreadKey]);
+  useEffect(() => {
+    if (!selectedThreadShell || !selectedThreadKey) return;
+    if (
+      !pendingModelSelections.current.accept(selectedThreadKey, selectedThreadShell.modelSelection)
+    )
+      return;
+    const fingerprint = JSON.stringify(selectedThreadShell.modelSelection);
+    if (observedModelSelections.current.get(selectedThreadKey) === fingerprint) return;
+    observedModelSelections.current.set(selectedThreadKey, fingerprint);
+    updateComposerDraftSettings(selectedThreadKey, {
+      modelSelection: selectedThreadShell.modelSelection,
+    });
+  }, [selectedThreadKey, selectedThreadShell]);
   const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
   const runtimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
   const interactionMode = selectedDraft?.interactionMode ?? selectedThread?.interactionMode ?? null;
@@ -428,6 +453,46 @@ export function useThreadComposerState() {
     queuedSendNowMessageIds,
   ]);
 
+  const queuedResume = selectedThreadQueuedMessages.some((message) => isResumePrompt(message.text));
+  const resumeInFlightRef = useRef(false);
+  const [isResumingSession, setIsResumingSession] = useState(false);
+  const onResumeSession = useCallback(async () => {
+    if (
+      !selectedThreadShell ||
+      !canResumeFailedThreadSession(selectedThread) ||
+      queuedResume ||
+      resumeInFlightRef.current
+    )
+      return;
+    const metadata = makeQueuedMessageMetadata();
+    setIsResumingSession(true);
+    try {
+      await runResumeIncompleteTurn({
+        inFlightRef: resumeInFlightRef,
+        send: async (text) => {
+          await enqueueThreadOutboxMessage({
+            environmentId: selectedThreadShell.environmentId,
+            threadId: selectedThreadShell.id,
+            messageId: MessageId.make(metadata.messageId),
+            commandId: CommandId.make(metadata.commandId),
+            text,
+            attachments: [],
+            modelSelection: selectedThreadShell.modelSelection,
+            runtimeMode: selectedThreadShell.runtimeMode,
+            interactionMode: selectedThreadShell.interactionMode,
+            createdAt: metadata.createdAt,
+          });
+        },
+      });
+    } catch (error) {
+      setPendingConnectionError(
+        error instanceof Error ? error.message : "Could not resume this thread.",
+      );
+    } finally {
+      setIsResumingSession(false);
+    }
+  }, [queuedResume, selectedThread, selectedThreadShell]);
+
   const onSendMessage = useCallback(async () => {
     if (!selectedThreadShell) {
       return null;
@@ -566,8 +631,31 @@ export function useThreadComposerState() {
         return;
       }
       updateComposerDraftSettings(selectedThreadKey, { modelSelection: value });
+      if (!selectedThreadShell) return;
+      pendingModelSelections.current.set(selectedThreadKey, value);
+      const target = {
+        environmentId: selectedThreadShell.environmentId,
+        input: {
+          threadId: selectedThreadShell.id,
+          modelSelection: value,
+        },
+      };
+      modelSelectionSyncRef.current = modelSelectionSyncRef.current
+        .then(async () => {
+          const result = await updateThreadMetadata(target);
+          if (AsyncResult.isFailure(result)) {
+            pendingModelSelections.current.failed(selectedThreadKey, value);
+            setPendingConnectionError(
+              "Model selection could not sync to the other devices. Check the connection and select the model again.",
+            );
+          }
+        })
+        .catch(() => {
+          pendingModelSelections.current.failed(selectedThreadKey, value);
+          setPendingConnectionError("Model selection could not sync to the other devices.");
+        });
     },
-    [selectedThreadKey],
+    [selectedThreadKey, selectedThreadShell, updateThreadMetadata],
   );
 
   const onUpdateRuntimeMode = useCallback(
@@ -614,6 +702,8 @@ export function useThreadComposerState() {
     onNativePasteImages,
     onRemoveDraftImage,
     onSendMessage,
+    onResumeSession,
+    isResumingSession: isResumingSession || queuedResume,
     onPromoteQueuedMessages,
     onUpdateModelSelection,
     onUpdateRuntimeMode,

@@ -18,6 +18,8 @@ import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
   FilesystemBrowseError,
+  FilesystemPathsExistInput,
+  FilesystemPathsExistResult,
 } from "./filesystem.ts";
 import { AssetAccessError, AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
 import {
@@ -165,8 +167,13 @@ import {
   PreviewRemoteSnapshotInput,
   PreviewRemoteSnapshotResult,
   PreviewReportStatusInput,
+  PreviewReportActivityInput,
   PreviewResizeInput,
   PreviewSessionSnapshot,
+  PreviewTabAudioEvent,
+  PreviewTabAudioListenerReport,
+  PreviewTabAudioPublishInput,
+  PreviewTabAudioWatchInput,
 } from "./preview.ts";
 import {
   PreviewAutomationError,
@@ -174,6 +181,10 @@ import {
   PreviewAutomationHostFocus,
   PreviewAutomationResponse,
   PreviewAutomationStreamEvent,
+  PreviewCredentialRemoveInput,
+  PreviewCredentialSaveInput,
+  PreviewCredentialSummary,
+  PreviewCredentialVaultError,
 } from "./previewAutomation.ts";
 import {
   RemoteControlCancelInput,
@@ -257,6 +268,7 @@ export const WS_METHODS = {
 
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
+  filesystemPathsExist: "filesystem.pathsExist",
   assetsCreateUrl: "assets.createUrl",
   threadArtifactsList: "threadArtifacts.list",
   threadArtifactsGet: "threadArtifacts.get",
@@ -305,10 +317,17 @@ export const WS_METHODS = {
   previewList: "preview.list",
   previewRemoteSnapshot: "preview.remoteSnapshot",
   previewRemoteInput: "preview.remoteInput",
+  previewTabAudioWatch: "preview.tabAudioWatch",
+  previewTabAudioPublish: "preview.tabAudioPublish",
+  previewTabAudioReport: "preview.tabAudioReport",
   previewReportStatus: "preview.reportStatus",
+  previewReportActivity: "preview.reportActivity",
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
   previewAutomationFocusHost: "previewAutomation.focusHost",
+  previewCredentialsList: "previewCredentials.list",
+  previewCredentialsSave: "previewCredentials.save",
+  previewCredentialsRemove: "previewCredentials.remove",
   remoteControlHostConnect: "remoteControl.hostConnect",
   remoteControlHostRespond: "remoteControl.hostRespond",
   remoteControlHostPublishFrame: "remoteControl.hostPublishFrame",
@@ -685,6 +704,12 @@ export const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
   error: Schema.Union([FilesystemBrowseError, EnvironmentAuthorizationError]),
 });
 
+export const WsFilesystemPathsExistRpc = Rpc.make(WS_METHODS.filesystemPathsExist, {
+  payload: FilesystemPathsExistInput,
+  success: FilesystemPathsExistResult,
+  error: EnvironmentAuthorizationError,
+});
+
 export const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   payload: AssetCreateUrlInput,
   success: AssetCreateUrlResult,
@@ -912,6 +937,28 @@ export const WsPreviewRemoteInputRpc = Rpc.make(WS_METHODS.previewRemoteInput, {
   error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
 });
 
+export const WsPreviewTabAudioWatchRpc = Rpc.make(WS_METHODS.previewTabAudioWatch, {
+  payload: PreviewTabAudioWatchInput,
+  success: PreviewTabAudioEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+export const WsPreviewTabAudioPublishRpc = Rpc.make(WS_METHODS.previewTabAudioPublish, {
+  payload: PreviewTabAudioPublishInput,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsPreviewTabAudioReportRpc = Rpc.make(WS_METHODS.previewTabAudioReport, {
+  payload: PreviewTabAudioListenerReport,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsPreviewReportActivityRpc = Rpc.make(WS_METHODS.previewReportActivity, {
+  payload: PreviewReportActivityInput,
+  error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
+});
+
 export const WsPreviewReportStatusRpc = Rpc.make(WS_METHODS.previewReportStatus, {
   payload: PreviewReportStatusInput,
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
@@ -932,6 +979,25 @@ export const WsPreviewAutomationRespondRpc = Rpc.make(WS_METHODS.previewAutomati
 export const WsPreviewAutomationFocusHostRpc = Rpc.make(WS_METHODS.previewAutomationFocusHost, {
   payload: PreviewAutomationHostFocus,
   error: EnvironmentAuthorizationError,
+});
+
+// Settings screens on any device manage the saved passwords kept by the
+// desktop app on the environment's own machine; the server only relays.
+export const WsPreviewCredentialsListRpc = Rpc.make(WS_METHODS.previewCredentialsList, {
+  payload: Schema.Struct({}),
+  success: Schema.Array(PreviewCredentialSummary),
+  error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
+});
+
+export const WsPreviewCredentialsSaveRpc = Rpc.make(WS_METHODS.previewCredentialsSave, {
+  payload: PreviewCredentialSaveInput,
+  success: PreviewCredentialSummary,
+  error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
+});
+
+export const WsPreviewCredentialsRemoveRpc = Rpc.make(WS_METHODS.previewCredentialsRemove, {
+  payload: PreviewCredentialRemoveInput,
+  error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
 });
 
 export const WsRemoteControlHostConnectRpc = Rpc.make(WS_METHODS.remoteControlHostConnect, {
@@ -980,9 +1046,12 @@ export const WsVmAgentDeleteRpc = Rpc.make(WS_METHODS.vmAgentDelete, {
 
 /** Switch an agent on: scheduled tasks resume and the scheduler is woken. */
 export const WsVmAgentStartRpc = Rpc.make(WS_METHODS.vmAgentStart, {
-  payload: VmAgentRef,
-  success: VmAgent,
-  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+  payload: Schema.Struct({
+    ...VmAgentRef.fields,
+    backlog: Schema.optional(Schema.Literals(["combine", "skip"])),
+  }),
+  success: Schema.Union([VmAgent, Schema.Struct({ backlogCount: Schema.Number })]),
+  error: Schema.Union([VmAgentError, VmAgentWorkspaceError, EnvironmentAuthorizationError]),
 });
 
 /**
@@ -1347,6 +1416,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
+  WsFilesystemPathsExistRpc,
   WsAssetsCreateUrlRpc,
   WsThreadArtifactsListRpc,
   WsThreadArtifactsGetRpc,
@@ -1389,10 +1459,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewListRpc,
   WsPreviewRemoteSnapshotRpc,
   WsPreviewRemoteInputRpc,
+  WsPreviewTabAudioWatchRpc,
+  WsPreviewTabAudioPublishRpc,
+  WsPreviewTabAudioReportRpc,
   WsPreviewReportStatusRpc,
+  WsPreviewReportActivityRpc,
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
   WsPreviewAutomationFocusHostRpc,
+  WsPreviewCredentialsListRpc,
+  WsPreviewCredentialsSaveRpc,
+  WsPreviewCredentialsRemoveRpc,
   WsRemoteControlHostConnectRpc,
   WsRemoteControlHostRespondRpc,
   WsRemoteControlHostPublishFrameRpc,

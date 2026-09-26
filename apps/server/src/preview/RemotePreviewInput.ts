@@ -3,6 +3,7 @@ import {
   ProviderInstanceId,
   type AuthSessionId,
   type EnvironmentId,
+  type PreviewAutomationContextMenuResult,
   type PreviewAutomationOperation,
   type PreviewAutomationStatus,
   type PreviewRemoteInputInput,
@@ -84,16 +85,34 @@ export function dispatchRemotePreviewInput(input: {
       case "click": {
         const viewport = yield* measuredViewport;
         yield* invoke("click", toCss(viewport, action.position), ACTION_TIMEOUT_MS);
-        return;
+        return {};
       }
       case "drag": {
         const viewport = yield* measuredViewport;
         yield* invoke(
           "drag",
-          { from: toCss(viewport, action.from), to: toCss(viewport, action.to) },
+          {
+            from: toCss(viewport, action.from),
+            to: toCss(viewport, action.to),
+            ...(action.button === undefined ? {} : { button: action.button }),
+            ...(action.holdMs === undefined ? {} : { holdMs: action.holdMs }),
+          },
           ACTION_TIMEOUT_MS,
         );
-        return;
+        return {};
+      }
+      case "contextMenu": {
+        const viewport = yield* measuredViewport;
+        const result = yield* invoke<PreviewAutomationContextMenuResult>(
+          "contextMenu",
+          toCss(viewport, action.position),
+          ACTION_TIMEOUT_MS,
+        );
+        return { contextMenu: result.menu };
+      }
+      case "editCommand": {
+        yield* invoke("contextMenu", { command: action.command }, ACTION_TIMEOUT_MS);
+        return {};
       }
       case "scroll": {
         const viewport = yield* measuredViewport;
@@ -102,16 +121,19 @@ export function dispatchRemotePreviewInput(input: {
           {
             deltaX: action.deltaX * viewport.width,
             deltaY: action.deltaY * viewport.height,
+            // A wheel at the finger scrolls the panel under it; web apps rarely
+            // scroll the window itself.
+            ...(action.position === undefined ? {} : toCss(viewport, action.position)),
           },
           ACTION_TIMEOUT_MS,
         );
-        return;
+        return {};
       }
       case "type": {
         const position = action.position;
         if (position === undefined) {
           yield* invoke("type", { text: action.text }, ACTION_TIMEOUT_MS);
-          return;
+          return {};
         }
         // Re-hit-test the field in the same trusted input turn as the keys.
         // The page may replace the focused node between the phone tap and the
@@ -122,11 +144,11 @@ export function dispatchRemotePreviewInput(input: {
           { text: action.text, ...toCss(viewport, position) },
           ACTION_TIMEOUT_MS,
         );
-        return;
+        return {};
       }
       case "press": {
         yield* invoke("press", { key: action.key }, ACTION_TIMEOUT_MS);
-        return;
+        return {};
       }
       case "answerDownloadApproval": {
         // No viewport round-trip: this answers a card the host is already
@@ -136,7 +158,7 @@ export function dispatchRemotePreviewInput(input: {
           { approvalId: action.approvalId, decision: action.decision },
           ACTION_TIMEOUT_MS,
         );
-        return;
+        return {};
       }
       case "history": {
         // The automation surface has no history operations; the host's
@@ -150,17 +172,18 @@ export function dispatchRemotePreviewInput(input: {
               ? "history.forward()"
               : "location.reload()";
         yield* invoke("evaluate", { expression }, ACTION_TIMEOUT_MS);
-        return;
+        return {};
       }
       case "navigate": {
         yield* invoke("navigate", { url: action.url }, ACTION_TIMEOUT_MS);
-        return;
+        return {};
       }
     }
   });
 
   return dispatch.pipe(
-    Effect.map(() => ({
+    Effect.map((extra) => ({
+      ...extra,
       deliveredAt: DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt)),
     })),
   );

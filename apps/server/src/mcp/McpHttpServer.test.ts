@@ -1,3 +1,4 @@
+import { PreviewManager } from "../preview/Manager.ts";
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -46,6 +47,14 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(
     PreviewAutomationBroker.layer.pipe(
+      Layer.provide(
+        Layer.succeed(
+          PreviewManager,
+          PreviewManager.of({
+            reportActivity: () => Effect.void,
+          } as never),
+        ),
+      ),
       Layer.provide(NodeServices.layer),
       // The broker resolves a side chat to its parent thread before routing.
       // No thread shells here, so every scope resolves to its own thread.
@@ -149,7 +158,7 @@ it.effect("returns bounded structural preview snapshot failures", () =>
         environmentId,
       });
       yield* Stream.runForEach(events, (event) =>
-        event.type === "connected"
+        event.type === "connected" || event.type === "audioDemand"
           ? Effect.void
           : broker.respond({
               clientId: "mcp-failure-client",
@@ -208,7 +217,7 @@ it.effect("returns pictureless preview snapshots without an image block", () =>
         environmentId,
       });
       yield* Stream.runForEach(events, (event) =>
-        event.type === "connected"
+        event.type === "connected" || event.type === "audioDemand"
           ? Effect.void
           : broker.respond({
               clientId: "mcp-pictureless-client",
@@ -310,7 +319,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         environmentId,
       });
       yield* Stream.runForEach(events, (event) => {
-        if (event.type === "connected") return Effect.void;
+        if (event.type !== "request") return Effect.void;
         routedRequests.push(event.request);
         return broker.respond({
           clientId: "mcp-test-client",

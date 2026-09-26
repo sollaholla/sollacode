@@ -9,6 +9,44 @@ Common reasons:
 - run Claude through a router such as Claude Code Router
 - use external providers exposed through a Claude-compatible workflow
 
+## Models update automatically
+
+Solla reads model IDs and supported options from Claude Code initialization on each provider
+health refresh (every five minutes by default, while background activity is allowed). Updating
+Claude Code can therefore add a newly released model without a Solla release. Discovery does not
+send a prompt or start a billed model turn. Settings → Providers → Refresh also updates the list.
+
+Discovery uses the exact resolved model ID, not a moving alias such as `default` or `opus`.
+Saved selections and model restrictions remain pinned to that ID. New models are available under
+Allow all or a blocklist, but an allowlist must explicitly include them. Models are discovered
+separately for each configured Claude account. The built-in catalog and explicit custom models
+remain available; a transient failed or empty probe retains the last successful list for that
+provider instance. Unknown models expose only options that the CLI reports, and their unreported
+effort/context defaults remain under the CLI's control.
+
+### Claude Opus 5.5
+
+Select **Claude → Claude Opus 5.5**. Solla uses `claude-opus-5-5`, with a fixed 1M context window,
+medium reasoning by default, low/medium/high/xhigh/max reasoning choices, and optional Fast Mode.
+The existing Ultracode and Ultrathink controls also remain available. Thinking cannot be disabled
+on this model. On Claude Code 2.1.280+, Solla requests summarized thinking so progress updates
+remain visible between tool calls, including after switching models in a session. An explicit
+`--thinking-display` launch argument takes precedence. The `opus`, `opus-5.5`, and `claude-opus-5.5` aliases resolve to Opus 5.5; explicitly
+saved Opus 5 or older model IDs remain unchanged.
+
+The built-in entry requires Claude Code 2.1.280 or newer. Opus 5.5 is available with Claude Pro,
+Max, Team, and Enterprise, or paid API access; provider/account access still applies. It is not a
+free OpenCode model. Other providers continue to advertise models from their own catalogs.
+
+Sources: [Anthropic model specifications](https://platform.claude.com/docs/en/models/opus-5-5/overview),
+[effort levels](https://platform.claude.com/docs/en/build-with-claude/effort),
+[availability](https://www.anthropic.com/claude/opus), and
+[Claude Code 2.1.280 changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md).
+
+## What shows up in the work log
+
+The work log shows what Claude did and anything that needs your attention: tool calls, high-priority Claude notices (such as a nearly full context window), and errors. Claude Code also sends status notices meant for its own terminal UI, such as a project-type guess from its project scan (`dev_intent`), a commit or push it just made, or its background-task roster. Solla Code does not show those. A kind of notice that Solla Code doesn't recognise yet is written once to the server log and never shown as a warning in the conversation.
+
 ## I Only Use One Claude Account
 
 Use the default provider.

@@ -2,11 +2,39 @@
 
 Custom agents are the named agents in the **Agents** section. Each one owns one dedicated conversation. They are separate from ordinary coding threads and from the orchestrator.
 
+Each agent gets a round, softly shaded blob character with its own automatically assigned color
+and a subtly wavy outline. Its gentle ripples are fixed to its identity, so the shape stays the
+same while blinking, going offline, or moving between clients.
+The color follows its permanent agent identity across web, desktop and mobile, including
+renames and changes to its conversation or coding provider. Existing agents get the same
+characters without re-creation. Offline characters keep a muted version of their color.
+A green dot means the agent is running and this client is connected to its environment;
+a gray dot means it is stopped, starting, failed, or the environment is disconnected.
+Work-in-progress and unread-alert indicators remain separate from online status.
+Online characters occasionally hop and sway, and blink roughly every 3–5 seconds with
+different, staggered rhythms and occasional double blinks.
+They rest between gestures, stay still offline, and respect the device's reduced-motion
+setting. Web characters also pause when offscreen or when the page is hidden; mobile
+characters pause when the app is in the background.
+
 Each newly created agent also receives its own durable working directory below the environment's
 agents folder. Its files and local instructions, including an agent-specific `AGENTS.md`, no longer
 land in the directory shared by every other agent. On upgrade, an existing agent is pointed at a
 deterministic dedicated directory and its shared-root `AGENTS.md` is copied only when the new
 directory has no rules file. Other ambiguous legacy files stay untouched at the old shared root.
+
+An agent's `AGENTS.md` has a budget of 100,000 characters. Agents can grow the file themselves, and
+Claude loads everything its `CLAUDE.md` imports, so an oversized file used to put every new Claude
+session over the context limit before it could start (or, on a model with a larger window, made
+Claude's automatic compaction give up with "Autocompact is thrashing"). When the file goes over budget, the agent's
+`CLAUDE.md` imports a generated `AGENTS.loaded.md` instead. That file holds the first 100,000
+characters and a note giving the full size. Each turn, the agent is also told to compact the file.
+Codex already reads only the first 32 KiB. Solla Code never trims `AGENTS.md` itself. Once the file is
+back under budget, the full import returns and the generated copy is deleted.
+
+If a provider rejects even a fresh session before it does any work, the thread stops with an
+explanation instead of starting new sessions that fail the same way. The usual cause is a large
+instruction file or a very long message.
 
 When an agent consults a project by opening a new thread, that thread is marked with an agent icon. A shared-browser indicator appears on both the thread and browser toolbar.
 
@@ -33,12 +61,24 @@ sees it. Windows stores this key through DPAPI and is unaffected.
 
 Opening an agent goes directly to its conversation. The header keeps only contextual controls:
 
+On web and desktop, the header controls use transparent backgrounds and outlines in both themes. Build, Open, Git actions, Start/Stop, and Panel share the agent icon’s rounded corners and spacing; split-button menus retain their separate dropdown action.
+The open Panel has a gold outline, and the remote-control icon uses the normal foreground color
+so an available connection does not look disabled.
+
 - **Chat** is the agent's single persistent conversation and primary workspace. A follow-up waits behind active work; it does not create a parallel session.
 - **Activity** is on demand under the agent tools menu. It contains bounded handoff history, questions, results, follow-ups, and cancellation controls. New delegation starts in Chat.
 - **Scheduled work** is on demand under agent tools. It contains durable prompts that run manually, once, or at a minute interval. **Build with AI** turns a plain-language request into a title, self-contained prompt, schedule, completion criteria, and notification policy using the configured **Utility AI model**. It does not silently fall back to Codex merely because the agent has a Codex-compatible workspace.
 - **Dashboard** appears only when the agent owns a meaningful view such as metrics, a checklist, a table, a timeline, cards, or an HTML/CSS web surface. The default schedule view is omitted because it duplicates Scheduled work.
 - Waiting-on-you requests and independent alerts share one compact stack at the live end of Chat. The newest card stays visible and hovering or focusing it reveals one more card, so attention never becomes a wall across the workspace. Waiting-on-you cards keep their Open, Follow up, resolve, and dismiss actions there. Follow up references that request in the composer for a correction without resolving it. Completions, failures, and direct informational messages raise an unread bell on the agent row; opening that agent scrolls the newest alert into view and marks it read only once its card is visible. There is no separate inbox to manage.
 - **Browser** is a contextual side-panel control. It appears when the agent has browser tabs, a remote window, or an open browser panel instead of occupying a permanent peer tab.
+
+On a phone-width web or desktop window, the agent's header is a card under the top bar. To give
+Chat that room back, drag the agent's avatar up and to the right: it flies into the top bar's right
+edge and the card folds away. **Collapse to top bar** in the agent tools menu (the agent's name)
+does the same without a drag. Folded, the top bar keeps the avatar and **Panel**, so the Browser,
+Terminal, and Side Chat sidebar stays one tap away. Tap the avatar to open the card again. The
+choice is remembered for every agent on that device. Activity, Scheduled work, Rules, and Dashboard
+always show the card, since it holds the way back to Chat. Wider windows keep the full header.
 
 On mobile, tapping an agent opens Chat directly. The trailing details control opens agent identity
 and an on-demand **Delegated activity** section, so collaboration history is not subscribed or
@@ -230,3 +270,7 @@ When that recovered turn finishes without `AGENT_STOP`, Agent mode schedules the
 including when additional user messages were delivered into the same turn. A newer request that has
 not been delivered, an explicit stop, or a pending user decision still takes precedence. Restart
 recovery does not create another visible user message or require reopening the chat.
+
+Scheduled tasks remain saved while their agent is stopped. Their cards show “waiting for agent,” and agent scheduling tools report that execution is blocked instead of promising a run. Starting the agent first asks how to handle overdue work. A scheduled task waits for its target conversation to become free, not for unrelated side chats.
+
+When starting an agent with overdue work, choose **Combine and start**, **Skip backlog and start**, or **Cancel**. Combine sends one catch-up task containing the retained instructions and asks the agent to reconcile them against current progress. Skip consumes the missed occurrences without sending them. Recurring tasks move to their next future run; old one-off tasks remain paused for review. Cancel keeps the agent stopped and does not change the backlog. AI-initiated starts also require this choice rather than releasing overdue tasks automatically.

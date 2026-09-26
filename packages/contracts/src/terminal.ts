@@ -91,6 +91,8 @@ export const TerminalResizeInput = Schema.Struct({
   cols: TerminalColsSchema,
   rows: TerminalRowsSchema,
   clientId: Schema.optional(TerminalClientIdSchema),
+  /** A deliberate local layout change transfers geometry to this client. */
+  claimGeometry: Schema.optional(Schema.Boolean),
 });
 export type TerminalResizeInput = Schema.Codec.Encoded<typeof TerminalResizeInput>;
 
@@ -117,7 +119,23 @@ export type TerminalCloseInput = typeof TerminalCloseInput.Type;
 export const TerminalSessionStatus = Schema.Literals(["starting", "running", "exited", "error"]);
 export type TerminalSessionStatus = typeof TerminalSessionStatus.Type;
 
+/** Host PTY compatibility, independent of the viewing device's operating system. */
+export const TerminalWindowsPty = Schema.Struct({
+  backend: Schema.Literals(["conpty", "winpty"]),
+  buildNumber: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type TerminalWindowsPty = typeof TerminalWindowsPty.Type;
+
 export const TerminalSessionSnapshot = Schema.Struct({
+  /** Parsed screen for exact reattachment; history remains a diagnostic log. */
+  screen: Schema.optionalKey(
+    Schema.Struct({
+      data: Schema.String,
+      cols: TerminalColsSchema,
+      rows: TerminalRowsSchema,
+    }),
+  ),
+  windowsPty: Schema.optionalKey(TerminalWindowsPty),
   threadId: Schema.String.check(Schema.isNonEmpty()),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
   cwd: Schema.String.check(Schema.isNonEmpty()),
@@ -142,6 +160,7 @@ export const TerminalSessionSnapshot = Schema.Struct({
 export type TerminalSessionSnapshot = typeof TerminalSessionSnapshot.Type;
 
 export const TerminalSummary = Schema.Struct({
+  windowsPty: Schema.optionalKey(TerminalWindowsPty),
   threadId: Schema.String.check(Schema.isNonEmpty()),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
   cwd: Schema.String.check(Schema.isNonEmpty()),

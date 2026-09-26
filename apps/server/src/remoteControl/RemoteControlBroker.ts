@@ -70,6 +70,19 @@ const REMOTE_CONTROL_HOST_QUEUE_CAPACITY = 256;
 const REMOTE_CONTROL_VIDEO_CHUNK_CAPACITY = 8;
 const REMOTE_CONTROL_MAX_RETAINED_TERMINAL_SESSIONS = 128;
 const REMOTE_CONTROL_TERMINAL_RETENTION_MS = 10 * 60 * 1_000;
+/**
+ * How long an unanswered request may sit before it cancels itself.
+ *
+ * A pending session is NOT terminal, so nothing used to retire it: a controller
+ * that vanished without ending its session - a closed tab, a dropped network, a
+ * quit app - left the request alive forever, and with it the host's approval
+ * dialog, which has no close button. The owner was locked out of their own app
+ * by a device that was no longer there.
+ *
+ * Long enough to walk back to the machine and answer deliberately; short enough
+ * that an abandoned request does not outlive the session that made it.
+ */
+const REMOTE_CONTROL_PENDING_EXPIRY_MS = 5 * 60 * 1_000;
 
 interface RemoteControlBrokerState {
   readonly host: RemoteControlHostConnection | null;
@@ -260,6 +273,59 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     yield* PubSub.publish(record.changes, event);
   });
 
+  /**
+   * Cancel requests nobody answered, so a pending session always resolves.
+   *
+   * Cancelling rather than deleting on purpose: "cancelled" is terminal, so the
+   * host UI receives a normal session-updated event and closes its dialog the
+   * same way it would for any other ending, and the ordinary prune reclaims the
+   * record afterwards. Deleting it outright would strand the dialog on a
+   * session that no longer exists.
+   */
+  const expireStalePendingSessions = Effect.fn("RemoteControlBroker.expireStalePendingSessions")(
+    function* () {
+      const nowDateTime = yield* DateTime.now;
+      const now = DateTime.toEpochMillis(nowDateTime);
+      const nowIso = DateTime.formatIso(nowDateTime);
+      const expired = yield* SynchronizedRef.modify(state, (current) => {
+        const stale = [...current.sessions.values()].filter((record) => {
+          // The waiting status is named for what the session is waiting ON, not
+          // "pending" - filtering on the wrong literal made this a silent no-op.
+          if (record.session.status !== "waiting-for-host-approval") return false;
+          const updatedAt = Date.parse(record.session.updatedAt);
+          return Number.isFinite(updatedAt) && now - updatedAt >= REMOTE_CONTROL_PENDING_EXPIRY_MS;
+        });
+        if (stale.length === 0) return [[] as RemoteControlSessionRecord[], current] as const;
+        const sessions = new Map(current.sessions);
+        const updated: RemoteControlSessionRecord[] = [];
+        for (const record of stale) {
+          const next = {
+            ...record,
+            session: { ...record.session, status: "cancelled" as const, updatedAt: nowIso },
+          };
+          sessions.set(next.session.sessionId, next);
+          updated.push(next);
+        }
+        return [updated, { ...current, sessions }] as const;
+      });
+      for (const record of expired) {
+        yield* Effect.logInfo("Remote control request expired without an answer.", {
+          sessionId: record.session.sessionId,
+        });
+        // The HOST queue is what closes the approval dialog - `publishSession`
+        // reaches the controller's stream, which is not where the stuck dialog
+        // lives. Notifying only the controller would have left the owner exactly
+        // as locked out as before.
+        yield* Queue.offer(record.hostQueue, {
+          type: "session-ended",
+          connectionId: record.hostConnectionId,
+          session: record.session,
+        }).pipe(Effect.ignore);
+        yield* publishSession(record);
+      }
+    },
+  );
+
   const pruneTerminalSessions = Effect.fn("RemoteControlBroker.pruneTerminalSessions")(
     function* () {
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
@@ -346,6 +412,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     );
     yield* Effect.forEach(changed, publishSession, { discard: true });
     yield* Queue.shutdown(connection.queue);
+    yield* expireStalePendingSessions();
     yield* pruneTerminalSessions();
   });
 
@@ -404,6 +471,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     if (registration.previous) {
       yield* Queue.shutdown(registration.previous.queue);
     }
+    yield* expireStalePendingSessions();
     yield* pruneTerminalSessions();
     return connection;
   });
@@ -423,6 +491,11 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
   const requestAccess: RemoteControlBroker["Service"]["requestAccess"] = Effect.fn(
     "RemoteControlBroker.requestAccess",
   )(function* (input, requester) {
+    // A new request is exactly when a stale one should go: two live prompts
+    // for the same machine is how the owner ends up staring at one they can no
+    // longer answer.
+    yield* expireStalePendingSessions();
+    yield* expireStalePendingSessions();
     yield* pruneTerminalSessions();
     const host = (yield* SynchronizedRef.get(state)).host;
     if (!host) return yield* new RemoteControlNoHostError();
@@ -573,6 +646,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
       case "Updated":
         yield* publishSession(result.record);
         if (isTerminalStatus(result.record.session.status)) {
+          yield* expireStalePendingSessions();
           yield* pruneTerminalSessions();
         }
         return result.record.session;
@@ -850,6 +924,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
         });
       case "Updated":
         yield* publishSession(result.record);
+        yield* expireStalePendingSessions();
         yield* pruneTerminalSessions();
         return result.record.session;
     }
@@ -1085,6 +1160,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
                   return { ...current, sessions };
                 });
                 yield* publishSession(result.record);
+                yield* expireStalePendingSessions();
                 yield* pruneTerminalSessions();
                 return result.record.session;
               }

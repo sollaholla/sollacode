@@ -1,3 +1,9 @@
+import {
+  isRoutineMusePollingNotice,
+  isProviderInterruptionErrorActivity,
+  recoveredRuntimeErrorIds,
+} from "@t3tools/client-runtime/state/thread-activity";
+import { inlineToolImageDataUrl, readImageToolOutputPath } from "@t3tools/shared/filePreview";
 import { ApprovalRequestId, isToolLifecycleItemType } from "@t3tools/contracts";
 import type {
   OrchestrationLatestTurn,
@@ -35,11 +41,16 @@ export interface PendingUserInputDraftAnswer {
 }
 
 export interface ThreadFeedActivity {
+  readonly sourceActivityKind?: string;
   readonly id: string;
   readonly createdAt: string;
   readonly turnId: TurnId | null;
   readonly summary: string;
   readonly detail: string | null;
+  readonly readImagePath?: string;
+  readonly readImageSourceActivityId?: string;
+  /** The image the tool returned, kept for when the file behind the path is gone. */
+  readonly readImageInlineSrc?: string;
   readonly canExpand: boolean;
   readonly getFullDetail: () => string | null;
   readonly getCopyText: () => string;
@@ -72,6 +83,9 @@ interface WorkLogEntry {
   label: string;
   detail?: string;
   command?: string;
+  readImagePath?: string;
+  readImageSourceActivityId?: string;
+  readImageInlineSrc?: string;
   rawCommand?: string;
   changedFiles?: ReadonlyArray<string>;
   tone: "thinking" | "tool" | "info" | "error";
@@ -257,12 +271,18 @@ function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): DerivedWorkLogEntry[] {
   const ordered = Arr.sort(activities, activityOrder);
+  const recoveredErrors = recoveredRuntimeErrorIds(activities);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
+    if (activity.kind === "runtime.error" && recoveredErrors.has(activity.id)) continue;
+    if (isProviderInterruptionErrorActivity(activity)) continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.kind === "provider.usage.updated") continue;
+    // Shown as the Working row's label, not as a log line.
+    if (activity.kind === "provider.overload.retrying") continue;
+    if (isRoutineMusePollingNotice(activity)) continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     entries.push(toDerivedWorkLogEntry(activity));
@@ -318,6 +338,15 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
+  const imagePath = readImageToolOutputPath(payload);
+  if (imagePath) {
+    entry.readImagePath = imagePath;
+    entry.readImageSourceActivityId = activity.id;
+    const inlineSrc = inlineToolImageDataUrl(payload);
+    if (inlineSrc) {
+      entry.readImageInlineSrc = inlineSrc;
+    }
+  }
   if (
     !taskDetailAsLabel &&
     payload &&
@@ -326,7 +355,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   ) {
     const detail = stripTrailingExitCode(payload.detail).output;
     if (detail) {
-      entry.detail = detail;
+      entry.detail = imagePath ?? detail;
     }
   }
   if (commandPreview.command) {
@@ -339,7 +368,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     entry.changedFiles = changedFiles;
   }
   if (title) {
-    entry.toolTitle = title;
+    entry.toolTitle = imagePath ? "Read image" : title;
   }
   if (itemType === "mcp_tool_call") {
     const data = asRecord(payload?.data);
@@ -1167,13 +1196,22 @@ function deriveThreadFeedTurnFolds(
           );
     const duration = elapsedMs === null ? null : formatDuration(elapsedMs);
     const interrupted = latestTurnMatches && latestTurn.state === "interrupted";
-    const label = interrupted
+    const followedUp = group.entries.some(
+      (entry) =>
+        entry.type === "activity-group" &&
+        entry.activities.some((activity) => activity.sourceActivityKind === "turn.follow-up"),
+    );
+    const label = followedUp
       ? duration
-        ? `You stopped after ${duration}`
-        : "You stopped this response"
-      : duration
-        ? `Worked for ${duration}`
-        : "Worked";
+        ? `Continued with your follow-up after ${duration}`
+        : "Continued with your follow-up"
+      : interrupted
+        ? duration
+          ? `You stopped after ${duration}`
+          : "You stopped this response"
+        : duration
+          ? `Worked for ${duration}`
+          : "Worked";
 
     foldsByAnchorId.set(firstEntry.id, {
       turnId,
@@ -1457,11 +1495,21 @@ export function buildThreadFeed(
             createdAt: entry.createdAt,
             turnId: entry.turnId,
             activity: {
+              sourceActivityKind: entry.activityKind,
               id: entry.id,
               createdAt: entry.createdAt,
               turnId: entry.turnId,
               summary,
               detail,
+              ...(entry.readImagePath
+                ? {
+                    readImagePath: entry.readImagePath,
+                    readImageSourceActivityId: entry.readImageSourceActivityId,
+                    ...(entry.readImageInlineSrc
+                      ? { readImageInlineSrc: entry.readImageInlineSrc }
+                      : {}),
+                  }
+                : {}),
               canExpand: workEntryHasExpandedBody(entry),
               getFullDetail,
               getCopyText,

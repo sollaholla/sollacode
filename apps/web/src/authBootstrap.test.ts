@@ -269,6 +269,26 @@ describe("resolveInitialServerAuthGateState", () => {
     expect(attempts).toBe(4);
   });
 
+  it("abandons a session check that never answers and sends a new one", async () => {
+    vi.useFakeTimers();
+    // A flaky phone connection can stall the request without failing it; the
+    // startup logo then stayed up for good because nothing ever retried.
+    const testApi = await installEnvironmentHttpTest({
+      session: () =>
+        testApi.calls.session === 1
+          ? Effect.never
+          : Effect.succeed(authenticatedSession(LOOPBACK_AUTH)),
+    });
+    disposeHttpTest = testApi.dispose;
+
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
+    const gateStatePromise = resolveInitialServerAuthGateState();
+    await vi.advanceTimersByTimeAsync(7_000);
+
+    await expect(gateStatePromise).resolves.toEqual({ status: "authenticated" });
+    expect(testApi.calls.session).toBe(2);
+  });
+
   it("takes a pairing token from the location hash and strips it immediately", async () => {
     const testWindow = installTestBrowser("http://localhost/#token=pairing-token");
     const { takePairingTokenFromUrl } = await import("./environments/primary");

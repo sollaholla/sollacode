@@ -551,7 +551,22 @@ export const make = Effect.gen(function* () {
       const delegationMessages = Option.isSome(delegated)
         ? yield* collaboration.listMessages(delegated.value.delegationId)
         : [];
-      const pendingMessage = delegationMessages.find((message) => message.delivery === "pending");
+      const pendingMessages = delegationMessages.filter(
+        (message) => message.delivery === "pending",
+      );
+      // Corrections accepted before dispatch belong in the same turn. Starting
+      // with only the first one can execute an obsolete request before the
+      // correction is delivered. The collaboration follow-up limit bounds this batch.
+      const pendingContext =
+        pendingMessages.length > 0
+          ? [
+              ...(Option.isSome(delegated) && delegated.value.startedAt === null
+                ? [`Original request:\n${delegated.value.task}`]
+                : []),
+              "Follow-ups in order. Apply the latest corrections and do not repeat completed actions.",
+              ...pendingMessages.map((message) => message.text),
+            ].join("\n\n")
+          : undefined;
       // Standing blockers ride along in the prompt so the run starts knowing
       // what it is waiting on. Best-effort — catchCause, not orElseSucceed:
       // nothing about reading decoration may stop the run itself, defects
@@ -560,6 +575,9 @@ export const make = Effect.gen(function* () {
         Effect.map((current) => current.blockers.filter((blocker) => blocker.resolvedAt === null)),
         Effect.catchCause(() => Effect.succeed([])),
       );
+      const sender = Option.isSome(delegated)
+        ? yield* agents.getById(delegated.value.sourceVmAgentId)
+        : Option.none();
       yield* engine.dispatch({
         type: "thread.turn.start",
         commandId: runCommandId(run.runId, attempt),
@@ -567,8 +585,11 @@ export const make = Effect.gen(function* () {
         message: {
           messageId,
           role: "user",
-          text: taskPrompt(task, Option.getOrNull(delegated), pendingMessage?.text, openBlockers),
+          text: taskPrompt(task, Option.getOrNull(delegated), pendingContext, openBlockers),
           inputOrigin: "agent-loop",
+          ...(Option.isSome(sender) && sender.value.threadId !== null
+            ? { senderThreadId: sender.value.threadId, senderThreadTitle: sender.value.name }
+            : {}),
           ...(Option.isSome(delegated) ? { delegationId: delegated.value.delegationId } : {}),
           attachments: [],
         },
@@ -576,13 +597,13 @@ export const make = Effect.gen(function* () {
         interactionMode,
         createdAt: startedAt,
       });
-      if (pendingMessage) {
+      for (const pendingMessage of pendingMessages) {
         yield* collaboration.markMessageDelivered({
           messageId: pendingMessage.messageId,
           updatedAt: startedAt,
         });
-        yield* collaborationUpdates.refresh;
       }
+      if (pendingMessages.length > 0) yield* collaborationUpdates.refresh;
     }).pipe(
       Effect.catch((error) =>
         getTask(run).pipe(Effect.flatMap((task) => failRun(task, run, error))),

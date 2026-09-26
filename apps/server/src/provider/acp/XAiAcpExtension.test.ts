@@ -314,6 +314,30 @@ describe("XAiAcpExtension", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  // 2026-09-18: on an exhausted account every Grok turn ended in about half a
+  // second with no content and no error, because this notification carried
+  // stop_reason "error", folded into "end_turn", and won its race against the
+  // failing prompt request. The turn must fail, carrying the reason.
+  it.effect("fails the turn when xAI completes it with an error stop reason", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makePromptCompletionRuntime({
+        T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
+        T3_ACP_XAI_PROMPT_COMPLETE_ERROR_RESULT:
+          "API error (status 402 Payment Required): Grok Build usage balance exhausted",
+      });
+      yield* runtime.start();
+
+      const failure = yield* Effect.flip(
+        runtime.prompt({ prompt: [{ type: "text", text: "go" }] }),
+      );
+
+      expect(failure._tag).toBe("AcpRequestError");
+      expect(String((failure as { message?: string }).message)).toMatch(
+        /usage balance is exhausted/u,
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("ignores stale xAI completion from an already settled prompt", () =>
     Effect.gen(function* () {
       const runtime = yield* makePromptCompletionRuntime({

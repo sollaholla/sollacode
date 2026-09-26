@@ -1,3 +1,5 @@
+import { agentPresence } from "@t3tools/client-runtime/state/agent-appearance";
+import { AgentAvatar } from "../../components/AgentAvatar";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -69,6 +71,23 @@ function StatusChip({ value }: { readonly value: string }) {
   );
 }
 
+function AgentPresenceChip(props: { readonly agent: VmAgent; readonly connected: boolean }) {
+  const presence = agentPresence(props.agent.status, props.connected);
+  return (
+    <View
+      accessibilityLabel={presence.description}
+      className="shrink-0 flex-row items-center gap-1.5 rounded-full bg-subtle px-2 py-1"
+    >
+      <View
+        className={`size-1.5 rounded-full ${presence.online ? "bg-emerald-500" : "bg-neutral-400"}`}
+      />
+      <Text className="text-2xs font-t3-bold text-foreground-muted">
+        {presence.online ? "Online" : props.connected ? props.agent.status : "Offline"}
+      </Text>
+    </View>
+  );
+}
+
 function AgentAttentionIndicators(props: { readonly attention: VmAgentAttentionSummary | null }) {
   if (!props.attention) return null;
   return (
@@ -100,6 +119,10 @@ function AgentEnvironmentSection(props: {
   readonly label: string;
 }) {
   const navigation = useNavigation();
+  const { environments } = useEnvironments();
+  const connected =
+    environments.find((entry) => entry.environmentId === props.environmentId)?.connection.phase ===
+    "connected";
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId: props.environmentId, input: {} }),
     [props.environmentId],
@@ -173,11 +196,12 @@ function AgentEnvironmentSection(props: {
                   });
                 }}
               >
-                <View className="size-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                  <Text className="text-base font-t3-bold text-primary">
-                    {agent.name.slice(0, 1).toUpperCase()}
-                  </Text>
-                </View>
+                <AgentAvatar
+                  agentId={agent.vmAgentId}
+                  avatarColor={agent.avatarColor}
+                  online={agentPresence(agent.status, connected).online}
+                  size={40}
+                />
                 <View className="min-w-0 flex-1">
                   <Text className="text-base font-t3-bold text-foreground" numberOfLines={1}>
                     {agent.name}
@@ -188,7 +212,7 @@ function AgentEnvironmentSection(props: {
                 </View>
                 <AgentAttentionIndicators attention={agentAttention} />
                 {activeWork > 0 ? <StatusChip value={`${activeWork} active`} /> : null}
-                <StatusChip value={agent.status} />
+                <AgentPresenceChip agent={agent} connected={connected} />
               </Pressable>
               <Pressable
                 accessibilityLabel={`Open ${agent.name} details`}
@@ -969,6 +993,10 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
   const navigation = useNavigation();
   const environmentId = EnvironmentId.make(route.params.environmentId);
   const vmAgentId = VmAgentId.make(route.params.agentId);
+  const { environments } = useEnvironments();
+  const connected =
+    environments.find((entry) => entry.environmentId === environmentId)?.connection.phase ===
+    "connected";
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId, input: {} }),
     [environmentId],
@@ -1068,18 +1096,19 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
     >
       <View className="min-w-0 gap-3 rounded-2xl border border-border bg-sheet p-4">
         <View className="min-w-0 flex-row flex-wrap items-start gap-3">
-          <View className="size-12 shrink-0 items-center justify-center rounded-full bg-primary/10">
-            <Text className="text-xl font-t3-bold text-primary">
-              {agent.name.slice(0, 1).toUpperCase()}
-            </Text>
-          </View>
+          <AgentAvatar
+            agentId={agent.vmAgentId}
+            avatarColor={agent.avatarColor}
+            online={agentPresence(agent.status, connected).online}
+            size={48}
+          />
           <View className="min-w-0 flex-1">
             <Text className="text-xl font-t3-bold text-foreground" numberOfLines={1}>
               {agent.name}
             </Text>
             <Text className="text-sm text-foreground-muted">@{agent.handle}</Text>
           </View>
-          <StatusChip value={agent.status} />
+          <AgentPresenceChip agent={agent} connected={connected} />
         </View>
         <Text className="text-base leading-6 text-foreground">{agent.purpose}</Text>
         <View className="min-w-0 flex-row flex-wrap gap-2">

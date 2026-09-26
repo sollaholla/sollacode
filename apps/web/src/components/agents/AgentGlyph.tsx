@@ -1,195 +1,89 @@
-import type { VmAgentIcon } from "@t3tools/contracts";
+import { agentAvatarSvg } from "@t3tools/client-runtime/state/agent-appearance";
 import {
-  AnchorIcon,
-  AtomIcon,
-  BikeIcon,
-  BookOpenIcon,
-  BotIcon,
-  BrainIcon,
-  BriefcaseIcon,
-  BugIcon,
-  CalculatorIcon,
-  CalendarIcon,
-  CameraIcon,
-  CarIcon,
-  ChartLineIcon,
-  ClapperboardIcon,
-  CloudIcon,
-  CodeIcon,
-  CoffeeIcon,
-  CompassIcon,
-  CpuIcon,
-  DatabaseIcon,
-  DnaIcon,
-  DumbbellIcon,
-  EyeIcon,
-  FeatherIcon,
-  FilmIcon,
-  FlameIcon,
-  FlaskConicalIcon,
-  Gamepad2Icon,
-  GemIcon,
-  GlobeIcon,
-  GraduationCapIcon,
-  HammerIcon,
-  HeadphonesIcon,
-  HeartPulseIcon,
-  HouseIcon,
-  ImageIcon,
-  KeyRoundIcon,
-  LandmarkIcon,
-  LanguagesIcon,
-  LeafIcon,
-  LightbulbIcon,
-  MailIcon,
-  MapIcon,
-  MegaphoneIcon,
-  MicIcon,
-  MonitorIcon,
-  MusicIcon,
-  NewspaperIcon,
-  PackageIcon,
-  PaletteIcon,
-  PawPrintIcon,
-  PencilRulerIcon,
-  PhoneIcon,
-  PiggyBankIcon,
-  PlaneIcon,
-  RadioIcon,
-  RocketIcon,
-  ScaleIcon,
-  ScissorsIcon,
-  SearchIcon,
-  ShieldIcon,
-  ShoppingCartIcon,
-  SparklesIcon,
-  StethoscopeIcon,
-  SunIcon,
-  TelescopeIcon,
-  TerminalIcon,
-  TrophyIcon,
-  TruckIcon,
-  UmbrellaIcon,
-  UserRoundIcon,
-  Wand2Icon,
-  WrenchIcon,
-  ZapIcon,
-  type LucideIcon,
-} from "lucide-react";
+  agentAvatarMotion,
+  scheduleAgentAvatarMotion,
+} from "@t3tools/client-runtime/state/agent-avatar-motion";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
-import { resolveAgentGlyphKey, type AgentGlyphKey } from "./agentGlyphKey";
+import { cn } from "../../lib/utils";
 
-/** Every persisted icon id the contract allows, bound to its outlined glyph. */
-const PERSISTED_ICONS: Record<VmAgentIcon, LucideIcon> = {
-  anchor: AnchorIcon,
-  atom: AtomIcon,
-  bike: BikeIcon,
-  "book-open": BookOpenIcon,
-  bot: BotIcon,
-  brain: BrainIcon,
-  briefcase: BriefcaseIcon,
-  bug: BugIcon,
-  calculator: CalculatorIcon,
-  calendar: CalendarIcon,
-  camera: CameraIcon,
-  car: CarIcon,
-  "chart-line": ChartLineIcon,
-  clapperboard: ClapperboardIcon,
-  cloud: CloudIcon,
-  code: CodeIcon,
-  coffee: CoffeeIcon,
-  compass: CompassIcon,
-  cpu: CpuIcon,
-  database: DatabaseIcon,
-  dna: DnaIcon,
-  dumbbell: DumbbellIcon,
-  eye: EyeIcon,
-  feather: FeatherIcon,
-  film: FilmIcon,
-  flame: FlameIcon,
-  "flask-conical": FlaskConicalIcon,
-  "gamepad-2": Gamepad2Icon,
-  gem: GemIcon,
-  globe: GlobeIcon,
-  "graduation-cap": GraduationCapIcon,
-  hammer: HammerIcon,
-  headphones: HeadphonesIcon,
-  "heart-pulse": HeartPulseIcon,
-  house: HouseIcon,
-  image: ImageIcon,
-  "key-round": KeyRoundIcon,
-  landmark: LandmarkIcon,
-  languages: LanguagesIcon,
-  leaf: LeafIcon,
-  lightbulb: LightbulbIcon,
-  mail: MailIcon,
-  map: MapIcon,
-  megaphone: MegaphoneIcon,
-  mic: MicIcon,
-  monitor: MonitorIcon,
-  music: MusicIcon,
-  newspaper: NewspaperIcon,
-  package: PackageIcon,
-  palette: PaletteIcon,
-  "paw-print": PawPrintIcon,
-  "pencil-ruler": PencilRulerIcon,
-  phone: PhoneIcon,
-  "piggy-bank": PiggyBankIcon,
-  plane: PlaneIcon,
-  radio: RadioIcon,
-  rocket: RocketIcon,
-  scale: ScaleIcon,
-  scissors: ScissorsIcon,
-  search: SearchIcon,
-  shield: ShieldIcon,
-  "shopping-cart": ShoppingCartIcon,
-  sparkles: SparklesIcon,
-  stethoscope: StethoscopeIcon,
-  sun: SunIcon,
-  telescope: TelescopeIcon,
-  terminal: TerminalIcon,
-  trophy: TrophyIcon,
-  truck: TruckIcon,
-  umbrella: UmbrellaIcon,
-  "user-round": UserRoundIcon,
-  "wand-2": Wand2Icon,
-  wrench: WrenchIcon,
-  zap: ZapIcon,
-};
-
-/** Name-derived stand-ins for agents that have not chosen an icon yet. */
-const FALLBACK_ICONS: Record<AgentGlyphKey, LucideIcon> = {
-  paw: PawPrintIcon,
-  heart: HeartPulseIcon,
-  user: UserRoundIcon,
-  pencil: PencilRulerIcon,
-  globe: GlobeIcon,
-  monitor: MonitorIcon,
-  bot: BotIcon,
-  cpu: CpuIcon,
-  rocket: RocketIcon,
-  compass: CompassIcon,
-  flask: FlaskConicalIcon,
-  wrench: WrenchIcon,
-};
-
-/**
- * The agent's outlined glyph. The persisted icon (chosen by the AI that
- * created the agent, or by its own first run) wins; until one exists the
- * glyph is derived from the name so rows never show a generic robot.
- *
- * Renders a bare svg so sidebar rows can style it like any other leading
- * icon (`[&>svg]` rules expect a direct child).
- */
-export function AgentGlyph({
-  name,
-  icon,
-  className,
-}: {
-  name: string;
-  icon?: VmAgentIcon | null | undefined;
-  className?: string;
+/** Decorative identity; the adjacent agent name and presence label supply accessible text. */
+export const AgentGlyph = memo(function AgentGlyph(props: {
+  readonly agentId: string;
+  readonly online: boolean;
+  readonly avatarColor?: number | null | undefined;
+  readonly className?: string;
 }) {
-  const Icon = icon ? PERSISTED_ICONS[icon] : FALLBACK_ICONS[resolveAgentGlyphKey(name)];
-  return <Icon aria-hidden className={className} />;
-}
+  const ref = useRef<HTMLImageElement>(null);
+  const [blinking, setBlinking] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!props.online || !element || typeof element.animate !== "function") return;
+    const motion = agentAvatarMotion(props.agentId);
+    const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let visible = false;
+    let cancel: (() => void) | undefined;
+    let animation: Animation | undefined;
+    const rest = () => {
+      animation?.cancel();
+      animation = undefined;
+    };
+    const update = () => {
+      const enabled = visible && document.visibilityState !== "hidden" && !preference.matches;
+      if (!enabled) {
+        cancel?.();
+        cancel = undefined;
+        return;
+      }
+      if (cancel) return;
+      cancel = scheduleAgentAvatarMotion(props.agentId, {
+        blink: setBlinking,
+        rest,
+        move: () => {
+          rest();
+          animation = element.animate(
+            motion.y.map((y, index) => ({
+              transform: `translateY(${y}px) rotate(${motion.rotate[index]}deg) scale(${motion.scaleX[index]}, ${motion.scaleY[index]})`,
+            })),
+            { duration: motion.duration, easing: "ease-in-out" },
+          );
+        },
+      });
+    };
+    const observer = new IntersectionObserver(([entry]) => {
+      visible = entry?.isIntersecting ?? false;
+      update();
+    });
+    observer.observe(element);
+    preference.addEventListener("change", update);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      observer.disconnect();
+      preference.removeEventListener("change", update);
+      document.removeEventListener("visibilitychange", update);
+      cancel?.();
+      rest();
+    };
+  }, [props.agentId, props.online]);
+  const src = useMemo(
+    () =>
+      `data:image/svg+xml,${encodeURIComponent(agentAvatarSvg(props.agentId, props.online, props.avatarColor, props.online && blinking))}`,
+    [props.agentId, props.online, props.avatarColor, blinking],
+  );
+  return (
+    <img
+      ref={ref}
+      src={src}
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+      width={80}
+      height={80}
+      data-agent-avatar={props.agentId}
+      data-online={props.online}
+      data-blinking={props.online && blinking}
+      style={{ transformOrigin: "50% 82%" }}
+      className={cn("size-7 shrink-0 object-contain", props.className)}
+    />
+  );
+});

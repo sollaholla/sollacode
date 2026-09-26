@@ -64,9 +64,10 @@ describe("the overlay orb", () => {
     ];
     const colours = cases.map((input) => {
       const markup = render(input);
-      // The black hole paints its disk from the `--orb-outer` variable; that
-      // is the colour the eye reads, so that is what must differ.
-      return /--orb-outer:\s*([^;]+);/.exec(markup)?.[1];
+      // `GalacticOrb` paints its nebula from `--orb-core`, which replaced the
+      // older `--orb-outer` when the orb became the shared galaxy. That is the
+      // colour the eye reads, so that is what must differ.
+      return /--orb-core:\s*([^;]+);/.exec(markup)?.[1];
     });
     expect(colours.every((colour) => colour !== undefined)).toBe(true);
     expect(new Set(colours).size).toBe(cases.length);

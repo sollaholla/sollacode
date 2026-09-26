@@ -4,6 +4,7 @@ import {
   agentBrowserCursorOffset,
   agentBrowserCursorOpacity,
   agentBrowserCursorPoint,
+  agentPointerFraction,
 } from "./agentBrowserCursorLogic";
 
 describe("agentBrowserCursorOpacity", () => {
@@ -162,5 +163,37 @@ describe("agentBrowserCursorPoint", () => {
         parent,
       }),
     ).toBeNull();
+  });
+});
+
+describe("agentPointerFraction", () => {
+  const event = {
+    tabId: "tab-1",
+    phase: "click" as const,
+    x: 320,
+    y: 600,
+    sequence: 7,
+    createdAt: "2026-09-25T00:00:00.000Z",
+  };
+
+  it("places the agent's point as a fraction of the page a phone sees as a frame", () => {
+    expect(agentPointerFraction({ ...event, viewportWidth: 1280, viewportHeight: 800 })).toEqual({
+      x: 0.25,
+      y: 0.75,
+      phase: "click",
+      sequence: 7,
+    });
+  });
+
+  it("keeps a point scrolled past the edge on the frame", () => {
+    expect(
+      agentPointerFraction({ ...event, y: 1600, viewportWidth: 1280, viewportHeight: 800 })?.y,
+    ).toBe(1);
+  });
+
+  it("sends nothing it cannot place", () => {
+    expect(agentPointerFraction(event)).toBeNull();
+    expect(agentPointerFraction({ ...event, viewportWidth: 0, viewportHeight: 800 })).toBeNull();
+    expect(agentPointerFraction(undefined)).toBeNull();
   });
 });

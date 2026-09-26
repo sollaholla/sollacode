@@ -264,6 +264,17 @@ export const handleAgentBuilder = Effect.fn("AgentBuilder.handle")(function* (
     }
     case "start_agent": {
       const agent = yield* resolveAgent;
+      if (agent.status !== "running") {
+        const backlogCount = yield* workspace
+          .prepareResume(agent.vmAgentId)
+          .pipe(Effect.mapError(mapFailure("checking overdue tasks")));
+        if (backlogCount > 0)
+          return {
+            action: input.action,
+            status: `${backlogCount} overdue tasks require a catch-up choice. Use the agent Start control to combine or skip the backlog. The agent remains stopped.`,
+            agent,
+          };
+      }
       const started = yield* manager
         .setStatus(agent.vmAgentId, "running")
         .pipe(Effect.mapError(mapFailure("starting the agent")));

@@ -57,6 +57,28 @@ function summary(overrides: Partial<ProviderUsageSummary> = {}): ProviderUsageSu
 }
 
 describe("ProviderSettingsUsage", () => {
+  it("explains OpenCode session usage without offering sign-in or account refresh for free models", () => {
+    const provider = {
+      ...claudeProvider(),
+      driver: ProviderDriverKind.make("opencode"),
+      instanceId: ProviderInstanceId.make("opencode"),
+      auth: { status: "unauthenticated" as const },
+    };
+    const [usage] = deriveProviderUsageSummaries([provider], []);
+    const markup = renderToStaticMarkup(
+      <ProviderSettingsUsage
+        displayName="OpenCode"
+        driverKind={provider.driver}
+        provider={provider}
+        summary={usage}
+        refreshState={IDLE_PROVIDER_USAGE_REFRESH_STATE}
+        onRefresh={() => undefined}
+      />,
+    );
+    expect(markup).toContain("OpenCode session cost");
+    expect(markup).not.toContain("Sign in");
+    expect(markup).not.toContain("Refresh OpenCode usage");
+  });
   it("omits usage for unsupported drivers and unsupported summaries", () => {
     const unsupported = summary({ state: "unsupported", windows: [], reportedAt: null });
     const markup = renderToStaticMarkup(

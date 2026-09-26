@@ -44,6 +44,9 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   onDismiss,
   onFixWithAi,
   fixingWithAi = false,
+  onResume,
+  resuming = false,
+  resumeDisabled = false,
 }: {
   error: string | null;
   /** When the provider recorded it, so an old failure cannot read as a live one. */
@@ -51,6 +54,9 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   onDismiss?: () => void;
   onFixWithAi?: () => void;
   fixingWithAi?: boolean;
+  onResume?: () => void;
+  resuming?: boolean;
+  resumeDisabled?: boolean;
 }) {
   if (!error) return null;
   const age = describeThreadErrorAge(occurredAt, Date.now());
@@ -86,8 +92,21 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
             </p>
           ) : null}
         </AlertDescription>
-        {onDismiss || onFixWithAi ? (
+        {onDismiss || onFixWithAi || onResume ? (
           <AlertAction>
+            {onResume ? (
+              <Button
+                variant="destructive-outline"
+                size="sm"
+                className="h-11 touch-manipulation sm:h-8"
+                aria-label="Resume thread"
+                disabled={resuming || resumeDisabled}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={onResume}
+              >
+                {resuming ? "Resuming…" : "Resume"}
+              </Button>
+            ) : null}
             {onFixWithAi ? (
               <Button
                 variant="destructive-outline"

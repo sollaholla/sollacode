@@ -9,6 +9,8 @@ const COMMAND_TO_DRIVER: Readonly<Record<string, ProviderDriverKind>> = {
   cursor: ProviderDriverKind.make("cursor"),
   "cursor-agent": ProviderDriverKind.make("cursor"),
   opencode: ProviderDriverKind.make("opencode"),
+  agy: ProviderDriverKind.make("antigravity"),
+  deepcode: ProviderDriverKind.make("deepcode"),
 };
 
 /** Enough of the latest frame to see interrupt hints without older turns. */
@@ -69,6 +71,8 @@ const DRIVER_TO_LAUNCH_COMMAND: Readonly<Record<string, string>> = {
   codex: "codex",
   cursor: "cursor-agent",
   opencode: "opencode",
+  antigravity: "agy",
+  deepcode: "deepcode",
 };
 
 /**

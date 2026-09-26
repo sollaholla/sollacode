@@ -87,6 +87,8 @@ import Migration0071 from "./Migrations/071_ProjectionActivityTurnIndex.ts";
 import Migration0072 from "./Migrations/072_TurnStartMessageIndex.ts";
 import Migration0073 from "./Migrations/073_VmAgentIcon.ts";
 import Migration0074 from "./Migrations/074_TurnRecoveryLookupIndexes.ts";
+import Migration0076 from "./Migrations/076_MessageSender.ts";
+import Migration0077 from "./Migrations/077_VmAgentAvatarColor.ts";
 import Migration0075 from "./Migrations/075_RepairRenewedNearbyAgentGrants.ts";
 
 /**
@@ -174,7 +176,9 @@ export const migrationEntries = [
   [72, "TurnStartMessageIndex", Migration0072],
   [73, "VmAgentIcon", Migration0073],
   [74, "TurnRecoveryLookupIndexes", Migration0074],
+  [76, "MessageSender", Migration0076],
   [75, "RepairRenewedNearbyAgentGrants", Migration0075],
+  [77, "VmAgentAvatarColor", Migration0077],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

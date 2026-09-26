@@ -60,7 +60,17 @@ export const make = Effect.fn("MobileDeferredThreadCommandStore.make")(function*
     }
     return stored.entries.flatMap((entry) =>
       isDeferredThreadCommand(entry.command)
-        ? [{ command: entry.command, enqueuedAt: entry.enqueuedAt }]
+        ? [
+            {
+              command: entry.command,
+              enqueuedAt: entry.enqueuedAt,
+              ...(entry.thread ? { thread: entry.thread } : {}),
+              ...(entry.before ? { before: entry.before } : {}),
+              ...(entry.error ? { error: entry.error } : {}),
+              ...(entry.accepted ? { accepted: true } : {}),
+              ...(entry.afterReply ? { afterReply: entry.afterReply } : {}),
+            },
+          ]
         : [],
     );
   });

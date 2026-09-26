@@ -65,3 +65,34 @@ export class FilesystemBrowseError extends Schema.TaggedErrorClass<FilesystemBro
     } as any);
   }
 }
+
+/**
+ * Existence probe for absolute host paths — the back end of bare-path
+ * detection in chat prose. A message that mentions
+ * `/Users/me/project/report.png` in plain text (no markdown link, no code
+ * span) becomes a clickable reference only once the host confirms the path
+ * is real; this is that confirmation, batched so one message costs one
+ * round trip. Relative paths and anything unreadable answer `missing`.
+ */
+export const FILESYSTEM_PATHS_EXIST_MAX_PATHS = 64;
+
+export const FilesystemPathKind = Schema.Literals(["file", "directory", "missing"]);
+export type FilesystemPathKind = typeof FilesystemPathKind.Type;
+
+export const FilesystemPathsExistInput = Schema.Struct({
+  paths: Schema.Array(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
+  ).check(Schema.isMaxLength(FILESYSTEM_PATHS_EXIST_MAX_PATHS)),
+});
+export type FilesystemPathsExistInput = typeof FilesystemPathsExistInput.Type;
+
+export const FilesystemPathExistence = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  kind: FilesystemPathKind,
+});
+export type FilesystemPathExistence = typeof FilesystemPathExistence.Type;
+
+export const FilesystemPathsExistResult = Schema.Struct({
+  entries: Schema.Array(FilesystemPathExistence),
+});
+export type FilesystemPathsExistResult = typeof FilesystemPathsExistResult.Type;

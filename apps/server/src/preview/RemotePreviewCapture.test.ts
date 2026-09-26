@@ -71,4 +71,30 @@ describe("captureRemotePreviewSnapshot", () => {
       expect(result).not.toHaveProperty("consoleEntries");
     }),
   );
+
+  it.effect("asks for the agent's pointer and hands it to the phone", () =>
+    Effect.gen(function* () {
+      const requests: PreviewAutomationInvokeInput[] = [];
+      const agentPointer = { x: 0.25, y: 0.75, phase: "click" as const, sequence: 4 };
+      const result = yield* captureRemotePreviewSnapshot({
+        broker: {
+          invoke: <A = unknown>(request: PreviewAutomationInvokeInput) => {
+            requests.push(request);
+            return Effect.succeed({ ...snapshot, agentPointer } as A);
+          },
+        },
+        environmentId: EnvironmentId.make("environment-mobile-preview"),
+        sessionId: AuthSessionId.make("session-mobile-preview"),
+        request: {
+          threadId: ThreadId.make("thread-mobile-preview"),
+          tabId: PreviewTabId.make("tab-mobile-preview"),
+        },
+        issuedAt: Date.parse("2026-08-26T00:00:00.000Z"),
+      });
+
+      // Agents' own snapshots never carry it; only this capture requests it.
+      expect(requests[0]?.input).toEqual({ includeAgentPointer: true });
+      expect(result.agentPointer).toEqual(agentPointer);
+    }),
+  );
 });

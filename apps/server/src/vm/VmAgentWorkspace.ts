@@ -62,6 +62,11 @@ export interface UpdateWorkspaceTaskInput {
 }
 
 export interface VmAgentWorkspaceShape {
+  readonly prepareResume: (
+    vmAgentId: VmAgentId,
+    policy?: "combine" | "skip",
+  ) => Effect.Effect<number, VmAgentWorkspaceError>;
+
   readonly ensure: (vmAgentId: VmAgentId) => Effect.Effect<void, VmAgentWorkspaceError>;
   readonly snapshot: (
     vmAgentId: VmAgentId,
@@ -319,6 +324,22 @@ export const make = Effect.gen(function* () {
       .getThreadShellById(agent.threadId)
       .pipe(Effect.orElseSucceed(() => Option.none()));
     return Option.isSome(shell) && shell.value.interactionMode === "agent";
+  });
+
+  const prepareResume: VmAgentWorkspaceShape["prepareResume"] = Effect.fn(
+    "VmAgentWorkspace.prepareResume",
+  )(function* (vmAgentId, policy) {
+    yield* ensure(vmAgentId);
+    const count = yield* store
+      .prepareResume({
+        vmAgentId,
+        now: yield* nowIso,
+        catchUpTaskId: VmAgentTaskId.make(NodeCrypto.randomUUID()),
+        ...(policy ? { policy } : {}),
+      })
+      .pipe(Effect.mapError(operationError("preparing scheduled catch-up")));
+    if (policy) yield* publish(vmAgentId);
+    return count;
   });
 
   const createTask: VmAgentWorkspaceShape["createTask"] = Effect.fn("VmAgentWorkspace.createTask")(
@@ -597,6 +618,7 @@ export const make = Effect.gen(function* () {
     snapshot,
     subscribe,
     subscribeAttention,
+    prepareResume,
     createTask,
     autoApprovesTasks,
     updateTask,

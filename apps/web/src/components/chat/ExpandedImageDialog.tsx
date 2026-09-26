@@ -96,7 +96,10 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
         aria-modal="true"
         aria-label="Expanded image preview"
       >
-        <header className="relative z-20 flex shrink-0 items-center justify-between px-2 py-2">
+        {/* One dismissal control only. The back arrow doubles as the phone's
+            own back gesture, which this viewer already registers, so the extra
+            X beside it just asked the same question twice. */}
+        <header className="relative z-20 flex shrink-0 items-center px-2 py-2">
           <Button
             type="button"
             size="icon"
@@ -106,16 +109,6 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
             aria-label="Back from image preview"
           >
             <ArrowLeftIcon className="size-5" />
-          </Button>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="size-11 text-white/90 hover:bg-white/10 hover:text-white"
-            onClick={dismiss}
-            aria-label="Close image preview"
-          >
-            <XIcon className="size-5" />
           </Button>
         </header>
 

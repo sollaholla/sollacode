@@ -1,4 +1,10 @@
+import {
+  enqueueThreadTurn,
+  updateOutboxMessage,
+  type EnqueueThreadTurnInput,
+} from "../operations/messageOutbox.ts";
 import { removeQueuedMessage, type RemoveQueuedMessageInput } from "../operations/commands.ts";
+import { sendQueuedMessageNow, type SendQueuedMessageNowInput } from "../operations/commands.ts";
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -185,6 +191,26 @@ export function createThreadEnvironmentAtoms<R, E>(
       execute: (input: RemoveQueuedMessageInput) => removeQueuedMessage(input),
       scheduler,
       concurrency,
+    }),
+    sendQueuedMessageNow: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:send-queued-message-now",
+      execute: (input: SendQueuedMessageNowInput) => sendQueuedMessageNow(input),
+      scheduler,
+      // Shares the control-command lane with Stop: a force-send is a stop, and
+      // running it at ordinary command concurrency would let it queue behind
+      // whatever it is trying to interrupt.
+      concurrency: threadControlCommandConcurrency,
+    }),
+    enqueueTurn: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:enqueue-turn",
+      execute: (input: EnqueueThreadTurnInput) => enqueueThreadTurn(input),
+      // A local durable write must not wait behind a stalled network request.
+      concurrency: { mode: "parallel" },
+    }),
+    updateOutboxMessage: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:update-outbox-message",
+      execute: (input: Parameters<typeof updateOutboxMessage>[0]) => updateOutboxMessage(input),
+      concurrency: { mode: "parallel" },
     }),
     startTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:start-turn",

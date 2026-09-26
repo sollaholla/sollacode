@@ -2,6 +2,7 @@
 
 import type {
   DesktopPreviewTabState,
+  PreviewAgentControl,
   PreviewReportStatusInput,
   ScopedThreadRef,
   ThreadId,
@@ -15,7 +16,12 @@ import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { previewBridge } from "./previewBridge";
+import { usePreviewHumanVerification } from "./previewHumanVerification";
 import { shouldClearBrowserPointer } from "./previewPointerLifecycle";
+import {
+  previewAgentControlFromIndicator,
+  resolvePreviewTabAgentIndicator,
+} from "./previewTabAgentIndicator";
 
 /**
  * Mirrors low-latency desktop state into the store and reflects navigation
@@ -32,32 +38,85 @@ export function usePreviewBridge(input: {
   const threadId = threadRef.threadId;
   const clearBrowserPointer = useBrowserPointerStore((state) => state.clear);
   const reportStatus = useAtomCommand(previewEnvironment.reportStatus, "preview status report");
+  const reportActivity = useAtomCommand(previewEnvironment.reportActivity, {
+    reportFailure: false,
+  });
+  const humanVerification = usePreviewHumanVerification(runtimeTabId);
+  const [downloadPending, setDownloadPending] = useState<boolean | null>(null);
   const bridge = previewBridge;
   const [snapshotStageId, setSnapshotStageId] = useState<string | null>(null);
 
   // One bridge subscription does both jobs (mirror state + forward to
   // server) so the desktop bridge keeps a single listener entry per tab.
+  const lastInteractionAt = useRef<string | undefined>(undefined);
+  const lastInteractionReportMs = useRef(0);
+  useEffect(() => {
+    if (downloadPending === null) return;
+    void reportActivity({
+      environmentId,
+      input: {
+        threadId,
+        tabId,
+        interacted: false,
+        attentionRequired: downloadPending || humanVerification !== null,
+      },
+    });
+  }, [downloadPending, humanVerification, reportActivity, environmentId, threadId, tabId]);
   const lastReportedUrl = useRef<string | null>(null);
   const lastReportedKind = useRef<DesktopPreviewTabState["navStatus"]["kind"] | null>(null);
+  const lastReportedControl = useRef<PreviewAgentControl | null>(null);
   const lastDesktopNavStatus = useRef<DesktopPreviewTabState["navStatus"] | null>(null);
   useEffect(() => {
     if (!bridge || typeof window === "undefined") return;
+    lastInteractionAt.current = undefined;
+    lastInteractionReportMs.current = 0;
+    setDownloadPending(null);
     lastReportedUrl.current = null;
     lastReportedKind.current = null;
+    lastReportedControl.current = null;
     lastDesktopNavStatus.current = null;
     setSnapshotStageId(null);
+    let activityTimer: ReturnType<typeof setTimeout> | undefined;
+    const sendActivity = () => {
+      activityTimer = undefined;
+      lastInteractionReportMs.current = Date.now();
+      void reportActivity({ environmentId, input: { threadId, tabId, interacted: true } });
+    };
     const unsubscribe = bridge.onStateChange((changedTabId, state) => {
       if (changedTabId !== runtimeTabId) return;
       setSnapshotStageId(state.snapshotStageId);
+      setDownloadPending(state.pendingDownloadApprovals.length > 0);
+      if (state.lastInteractionAt !== lastInteractionAt.current) {
+        lastInteractionAt.current = state.lastInteractionAt;
+        const now = Date.now();
+        if (state.lastInteractionAt && now - Date.parse(state.lastInteractionAt) < 30_000) {
+          const remaining = 15_000 - (now - lastInteractionReportMs.current);
+          if (remaining <= 0) sendActivity();
+          else if (activityTimer === undefined) activityTimer = setTimeout(sendActivity, remaining);
+        }
+      }
       if (shouldClearBrowserPointer(lastDesktopNavStatus.current, state.navStatus)) {
         clearBrowserPointer(runtimeTabId);
       }
       lastDesktopNavStatus.current = state.navStatus;
-      applyPreviewDesktopState(
-        scopeThreadRef(environmentId, threadId),
-        tabId,
-        projectDesktopState(state),
+      const overlay = projectDesktopState(state);
+      applyPreviewDesktopState(scopeThreadRef(environmentId, threadId), tabId, overlay);
+      // Remote viewers have no overlay of their own; tell the server who drives
+      // the tab whenever that changes (and once after every reconnect).
+      const agentControl = previewAgentControlFromIndicator(
+        resolvePreviewTabAgentIndicator(overlay),
       );
+      if (agentControl !== lastReportedControl.current) {
+        lastReportedControl.current = agentControl;
+        void reportActivity({
+          environmentId,
+          input: { threadId, tabId, interacted: false, agentControl },
+        }).then((result) => {
+          if (result._tag === "Failure" && lastReportedControl.current === agentControl) {
+            lastReportedControl.current = null;
+          }
+        });
+      }
       const reported = buildReportInput({
         threadId,
         tabId,
@@ -82,12 +141,19 @@ export function usePreviewBridge(input: {
         }
       });
     });
-    return unsubscribe;
+    return () => {
+      if (activityTimer !== undefined) {
+        clearTimeout(activityTimer);
+        sendActivity();
+      }
+      unsubscribe();
+    };
   }, [
     bridge,
     clearBrowserPointer,
     environmentId,
     reportStatus,
+    reportActivity,
     runtimeTabId,
     syncGeneration,
     tabId,

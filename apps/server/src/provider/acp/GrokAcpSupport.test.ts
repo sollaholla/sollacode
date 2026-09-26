@@ -8,6 +8,7 @@ import {
   buildGrokAcpSpawnInput,
   filterGrokAcpMcpServers,
   resolveGrokAcpBaseModelId,
+  resolveGrokAcpSessionEffort,
   resolveGrokAcpSessionModelId,
 } from "./GrokAcpSupport.ts";
 
@@ -140,6 +141,33 @@ const liveGrokSessionSetup = {
   },
 } satisfies EffectAcpSchema.NewSessionResponse;
 
+const grokEffortMeta = (efforts: ReadonlyArray<string>) => ({
+  supportsReasoningEffort: true,
+  reasoningEfforts: efforts.map((effort) => ({
+    id: effort,
+    value: effort,
+    label: effort,
+    default: effort === "high",
+  })),
+});
+
+// xAI's catalog after grok-4.6 was retired: a thread still selecting it must
+// not send that id, or every turn fails with "Invalid params".
+const retiredGrokSessionSetup = {
+  sessionId: "session-1",
+  models: {
+    currentModelId: "grok-4.7",
+    availableModels: [
+      {
+        modelId: "grok-4.7",
+        name: "Grok 4.7",
+        _meta: grokEffortMeta(["xhigh", "high", "medium", "low"]),
+      },
+      { modelId: "grok-4.7-mini", name: "Grok 4.7 Mini", _meta: grokEffortMeta(["high", "low"]) },
+    ],
+  },
+} satisfies EffectAcpSchema.NewSessionResponse;
+
 describe("resolveGrokAcpSessionModelId", () => {
   it("maps the Solla grok-build slug to the agent's advertised current model", () => {
     expect(
@@ -159,6 +187,68 @@ describe("resolveGrokAcpSessionModelId", () => {
         sessionSetupResult: liveGrokSessionSetup,
       }),
     ).toBe("grok-4.5");
+  });
+
+  it("replaces a retired model id with the agent's advertised current model", () => {
+    expect(
+      resolveGrokAcpSessionModelId({
+        requestedModelId: "grok-4.6",
+        currentModelId: undefined,
+        sessionSetupResult: retiredGrokSessionSetup,
+      }),
+    ).toBe("grok-4.7");
+  });
+
+  it("keeps the session's live model when the requested id was retired", () => {
+    expect(
+      resolveGrokAcpSessionModelId({
+        requestedModelId: "grok-4.6",
+        currentModelId: "grok-4.7-mini",
+        sessionSetupResult: retiredGrokSessionSetup,
+      }),
+    ).toBe("grok-4.7-mini");
+  });
+
+  it("passes the requested id through when the agent advertises no models", () => {
+    expect(
+      resolveGrokAcpSessionModelId({
+        requestedModelId: "grok-4.6",
+        currentModelId: undefined,
+        sessionSetupResult: { sessionId: "session-1" },
+      }),
+    ).toBe("grok-4.6");
+  });
+});
+
+describe("resolveGrokAcpSessionEffort", () => {
+  it("drops an effort the model does not list", () => {
+    expect(
+      resolveGrokAcpSessionEffort({
+        modelId: "grok-4.7-mini",
+        requestedEffort: "xhigh",
+        sessionSetupResult: retiredGrokSessionSetup,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps an effort the model lists", () => {
+    expect(
+      resolveGrokAcpSessionEffort({
+        modelId: "grok-4.7",
+        requestedEffort: "xhigh",
+        sessionSetupResult: retiredGrokSessionSetup,
+      }),
+    ).toBe("xhigh");
+  });
+
+  it("leaves the effort to the agent when the model lists no levels", () => {
+    expect(
+      resolveGrokAcpSessionEffort({
+        modelId: "grok-4.6",
+        requestedEffort: "xhigh",
+        sessionSetupResult: liveGrokSessionSetup,
+      }),
+    ).toBe("xhigh");
   });
 });
 
@@ -314,6 +404,42 @@ describe("applyGrokAcpModelSelection", () => {
       expect(modelCalls).toEqual([]);
       expect(configCalls).toEqual([]);
       expect(result).toEqual({ modelId: "grok-4.6", reasoningEffort: "low" });
+    }),
+  );
+
+  it.effect("sends the live model instead of a retired one, keeping a supported effort", () =>
+    Effect.gen(function* () {
+      const { runtime, modelCalls, modelMetaCalls, configCalls } = makeRecordingRuntime();
+      const result = yield* applyGrokAcpModelSelection({
+        runtime,
+        currentModelId: undefined,
+        requestedModelId: "grok-4.6",
+        requestedEffort: "xhigh",
+        sessionSetupResult: retiredGrokSessionSetup,
+        mapError: (cause) => cause.message,
+      });
+      expect(modelCalls).toEqual(["grok-4.7"]);
+      expect(modelMetaCalls).toEqual([{ reasoningEffort: "xhigh" }]);
+      expect(configCalls).toEqual([]);
+      expect(result).toEqual({ modelId: "grok-4.7", reasoningEffort: "xhigh" });
+    }),
+  );
+
+  it.effect("switches models without an effort the target model does not offer", () =>
+    Effect.gen(function* () {
+      const { runtime, modelCalls, modelMetaCalls } = makeRecordingRuntime();
+      const result = yield* applyGrokAcpModelSelection({
+        runtime,
+        currentModelId: "grok-4.7",
+        requestedModelId: "grok-4.7-mini",
+        currentEffort: "high",
+        requestedEffort: "xhigh",
+        sessionSetupResult: retiredGrokSessionSetup,
+        mapError: (cause) => cause.message,
+      });
+      expect(modelCalls).toEqual(["grok-4.7-mini"]);
+      expect(modelMetaCalls).toEqual([undefined]);
+      expect(result).toEqual({ modelId: "grok-4.7-mini", reasoningEffort: "high" });
     }),
   );
 

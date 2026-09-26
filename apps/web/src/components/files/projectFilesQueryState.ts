@@ -1,6 +1,7 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
+  ProjectFileFailure,
   ProjectListEntriesResult,
   ProjectReadFileResult,
 } from "@t3tools/contracts";
@@ -121,6 +122,35 @@ function errorMessage<A>(result: AsyncResult.AsyncResult<A, unknown>): string | 
   return cause instanceof Error ? cause.message : "Workspace query failed.";
 }
 
+const PROJECT_FILE_FAILURES: ReadonlySet<string> = new Set<ProjectFileFailure>([
+  "workspace_path_outside_root",
+  "resolved_path_outside_root",
+  "path_not_file",
+  "binary_file",
+  "operation_failed",
+]);
+
+/**
+ * The server's classification of a failed read, when it gave one. The panel
+ * branches on this rather than on message text: a folder is not an error to
+ * apologise for, it is something to list.
+ */
+function projectFileFailure<A>(
+  result: AsyncResult.AsyncResult<A, unknown>,
+): ProjectFileFailure | null {
+  if (result._tag !== "Failure") return null;
+  const cause: unknown = Cause.squash(result.cause);
+  if (typeof cause !== "object" || cause === null || !("failure" in cause)) return null;
+  const failure = cause.failure;
+  return typeof failure === "string" && PROJECT_FILE_FAILURES.has(failure)
+    ? (failure as ProjectFileFailure)
+    : null;
+}
+
+export interface ProjectFileQueryState extends ProjectQueryState<ProjectReadFileResult> {
+  readonly failure: ProjectFileFailure | null;
+}
+
 export function useProjectEntriesQuery(
   environmentId: EnvironmentId,
   cwd: string,
@@ -168,7 +198,7 @@ export function useProjectFileQuery(
   cwd: string,
   relativePath: string | null,
   enabled = true,
-): ProjectQueryState<ProjectReadFileResult> {
+): ProjectFileQueryState {
   const atom = enabled
     ? getProjectFileQueryAtom(environmentId, cwd, relativePath)
     : EMPTY_PROJECT_FILE_QUERY_ATOM;
@@ -184,6 +214,7 @@ export function useProjectFileQuery(
   return {
     data: optimisticFile?.data ?? data,
     error: errorMessage(result),
+    failure: projectFileFailure(result),
     isPending: result.waiting,
     refresh,
   };

@@ -16,6 +16,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 const listHarness = vi.hoisted(() => ({
   latestProps: null as Record<string, unknown> | null,
+  scroller: null as HTMLDivElement | null,
+  contentHeight: 2_000,
   state: {
     data: [] as readonly unknown[],
     scroll: 1_000,
@@ -36,6 +38,7 @@ vi.mock("@legendapp/list/react", async () => {
       readonly data?: readonly unknown[];
       readonly ListHeaderComponent?: ReactNode;
       readonly ListFooterComponent?: ReactNode;
+      readonly renderItem?: (args: { item: unknown }) => ReactNode;
     },
     ref: Ref<LegendListRef>,
   ) {
@@ -46,6 +49,7 @@ vi.mock("@legendapp/list/react", async () => {
       () =>
         ({
           getState: () => listHarness.state,
+          getScrollableNode: () => listHarness.scroller,
           scrollToEnd: listHarness.scrollToEnd,
           scrollToOffset: listHarness.scrollToOffset,
           scrollToIndex: listHarness.scrollToIndex,
@@ -53,8 +57,23 @@ vi.mock("@legendapp/list/react", async () => {
       [],
     );
     return (
-      <div data-testid="fake-legend-list">
+      <div
+        data-testid="fake-legend-list"
+        ref={(element) => {
+          listHarness.scroller = element;
+          if (element) {
+            Object.defineProperty(element, "scrollHeight", {
+              configurable: true,
+              get: () => listHarness.contentHeight,
+            });
+            Object.defineProperty(element, "clientHeight", { configurable: true, value: 600 });
+          }
+        }}
+      >
         {props.ListHeaderComponent}
+        {props.data?.map((item) => (
+          <div key={(item as { id: string }).id}>{props.renderItem?.({ item })}</div>
+        ))}
         {props.ListFooterComponent}
       </div>
     );
@@ -127,6 +146,7 @@ function buildProps(overrides: Record<string, unknown> = {}) {
 
 type CapturedListProps = {
   readonly maintainScrollAtEnd?: boolean | object;
+  readonly maintainVisibleContentPosition?: boolean | object;
   readonly onScroll?: () => void;
   readonly onItemSizeChanged?: () => void;
   readonly onWheel?: (event: { readonly deltaY: number }) => void;
@@ -199,6 +219,8 @@ beforeEach(() => {
   root = createRoot(container);
   rafCallbacks = [];
   listHarness.latestProps = null;
+  listHarness.contentHeight = 2_000;
+  listHarness.scroller = null;
   listHarness.state.scroll = 1_000;
   listHarness.state.isAtEnd = true;
   listHarness.state.isNearEnd = true;
@@ -215,16 +237,98 @@ afterEach(async () => {
 });
 
 describe("MessagesTimeline mounted scroll ownership", () => {
-  it("disables LegendList follow in the same wheel-input task", async () => {
+  it("coalesces streaming measurements into one frame and follows the latest extent", async () => {
+    await renderTimeline();
+    await flushAnimationFrames();
+    expect(listHarness.scroller?.scrollTop).toBe(1_400);
+    expect(listProps().maintainScrollAtEnd).toBe(false);
+
+    for (const height of [2_100, 2_200, 2_300, 2_400]) {
+      listHarness.contentHeight = height;
+      act(() => listProps().onItemSizeChanged?.());
+    }
+    await flushAnimationFrames();
+    expect(listHarness.scroller?.scrollTop).toBe(1_800);
+    expect(listHarness.scrollToEnd).not.toHaveBeenCalled();
+  });
+
+  it("opening real tool details releases follow before its height changes", async () => {
+    const onManualNavigation = vi.fn();
+    await renderTimeline(
+      buildProps({
+        onManualNavigation,
+        timelineEntries: [
+          ...timelineEntries,
+          {
+            id: "tool-details",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "tool-details",
+              createdAt,
+              tone: "tool",
+              label: "Read file",
+              detail: "Stored output\nSecond line",
+              sourceActivityKind: "tool.completed",
+            },
+          },
+        ],
+      }),
+    );
+    await flushAnimationFrames();
+    const disclosure = container.querySelector<HTMLElement>('[role="button"][aria-expanded]');
+    if (!disclosure) throw new Error("tool disclosure missing");
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    act(() => disclosure.click());
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(onManualNavigation).toHaveBeenLastCalledWith(false);
+    expect(listProps().maintainVisibleContentPosition).toBe(false);
+
+    listHarness.contentHeight = 2_600;
+    act(() => listProps().onItemSizeChanged?.());
+    await flushAnimationFrames();
+    expect(listHarness.scroller?.scrollTop).toBe(1_400);
+  });
+
+  it("an explicit return to end clears the previous gesture before streaming continues", async () => {
+    const props = buildProps();
+    await renderTimeline(props);
+    await flushAnimationFrames();
+    act(() => listProps().onWheel?.({ deltaY: -24 }));
+    await renderTimeline({ ...props, followEnd: false });
+    listHarness.contentHeight = 2_600;
+    await renderTimeline({ ...props, followEnd: true });
+    await flushAnimationFrames();
+    expect(listHarness.scroller?.scrollTop).toBe(2_000);
+
+    listHarness.contentHeight = 2_900;
+    act(() => listProps().onItemSizeChanged?.());
+    await flushAnimationFrames();
+    expect(listHarness.scroller?.scrollTop).toBe(2_300);
+  });
+
+  it("does not report the near-end zone as a return to the actual bottom", async () => {
+    const onIsAtEndChange = vi.fn();
+    await renderTimeline(buildProps({ onIsAtEndChange }));
+    act(() => listProps().onWheel?.({ deltaY: -24 }));
+    listHarness.state.isAtEnd = false;
+    listHarness.state.isNearEnd = true;
+    act(() => listProps().onWheel?.({ deltaY: 12 }));
+    act(() => listProps().onScroll?.());
+    expect(onIsAtEndChange).toHaveBeenLastCalledWith(false);
+    expect(listProps().maintainVisibleContentPosition).toEqual(expect.any(Object));
+  });
+
+  it("releases measured end-follow in the same wheel-input task", async () => {
     const onManualNavigation = vi.fn();
     await renderTimeline(buildProps({ onManualNavigation }));
     await flushAnimationFrames();
-    expect(listProps().maintainScrollAtEnd).toEqual(expect.any(Object));
+    expect(listProps().maintainVisibleContentPosition).toBe(false);
 
     act(() => listProps().onWheel?.({ deltaY: -24 }));
 
     expect(onManualNavigation).toHaveBeenLastCalledWith(false);
-    expect(listProps().maintainScrollAtEnd).toBe(false);
+    expect(listProps().maintainVisibleContentPosition).toEqual(expect.any(Object));
   });
 
   it("ignores programmatic offset changes without a user-input token", async () => {
@@ -237,7 +341,7 @@ describe("MessagesTimeline mounted scroll ownership", () => {
     act(() => listProps().onScroll?.());
 
     expect(onManualNavigation).not.toHaveBeenCalled();
-    expect(listProps().maintainScrollAtEnd).toEqual(expect.any(Object));
+    expect(listProps().maintainVisibleContentPosition).toBe(false);
   });
 
   it("defers resize reconciliation until a scrollbar gesture released outside settles", async () => {
@@ -255,15 +359,17 @@ describe("MessagesTimeline mounted scroll ownership", () => {
         currentTarget: listElement,
       }),
     );
+    listHarness.contentHeight = 2_600;
     act(() => listProps().onItemSizeChanged?.());
     await flushAnimationFrames(2);
-    expect(listHarness.scrollToEnd).not.toHaveBeenCalled();
+    expect(listHarness.scroller?.scrollTop).toBe(1_400);
 
     act(() => window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
     await act(async () => vi.advanceTimersByTimeAsync(TIMELINE_MOMENTUM_SETTLE_MS + 1));
     await flushAnimationFrames(2);
 
-    expect(listHarness.scrollToEnd).toHaveBeenCalledTimes(1);
+    expect(listHarness.scroller?.scrollTop).toBe(2_000);
+    expect(listHarness.scrollToEnd).not.toHaveBeenCalled();
   });
 
   it("does not let timeline keyboard handling claim an unrelated scroll surface", async () => {
@@ -317,7 +423,7 @@ describe("MessagesTimeline mounted scroll ownership", () => {
     act(() => listProps().onScroll?.());
 
     expect(onManualNavigation).toHaveBeenLastCalledWith(false);
-    expect(listProps().maintainScrollAtEnd).toBe(false);
+    expect(listProps().maintainVisibleContentPosition).toEqual(expect.any(Object));
   });
 
   it("keeps mobile touch ownership through momentum and flushes deferred resize work", async () => {
@@ -330,11 +436,12 @@ describe("MessagesTimeline mounted scroll ownership", () => {
     act(() => listProps().onTouchStart?.({ touches: [{ clientY: 200 }] }));
     act(() => listProps().onTouchMove?.({ touches: [{ clientY: 224 }] }));
     expect(onManualNavigation).toHaveBeenLastCalledWith(false);
-    expect(listProps().maintainScrollAtEnd).toBe(false);
+    expect(listProps().maintainVisibleContentPosition).toEqual(expect.any(Object));
 
+    listHarness.contentHeight = 2_600;
     act(() => listProps().onItemSizeChanged?.());
     await flushAnimationFrames(2);
-    expect(listHarness.scrollToEnd).not.toHaveBeenCalled();
+    expect(listHarness.scroller?.scrollTop).toBe(1_400);
 
     act(() => listProps().onTouchEnd?.());
     await act(async () => vi.advanceTimersByTimeAsync(TIMELINE_MOMENTUM_SETTLE_MS - 1));
@@ -347,9 +454,9 @@ describe("MessagesTimeline mounted scroll ownership", () => {
     await act(async () => vi.advanceTimersByTimeAsync(TIMELINE_MOMENTUM_SETTLE_MS + 1));
     await flushAnimationFrames(2);
 
-    expect(listHarness.scrollToEnd).not.toHaveBeenCalled();
+    expect(listHarness.scroller?.scrollTop).toBe(1_400);
     expect(onScrollStateChange).toHaveBeenCalledTimes(1);
-    expect(listProps().maintainScrollAtEnd).toBe(false);
+    expect(listProps().maintainVisibleContentPosition).toEqual(expect.any(Object));
   });
 
   it("re-enables live follow when a gesture settles at the exact bottom", async () => {
@@ -361,10 +468,10 @@ describe("MessagesTimeline mounted scroll ownership", () => {
     act(() => listProps().onWheel?.({ deltaY: -24 }));
     listHarness.state.isAtEnd = false;
     listHarness.state.isNearEnd = true;
-    expect(listProps().maintainScrollAtEnd).toBe(false);
+    expect(listProps().maintainVisibleContentPosition).toEqual(expect.any(Object));
 
     await act(async () => vi.advanceTimersByTimeAsync(TIMELINE_MOMENTUM_SETTLE_MS + 1));
-    expect(listProps().maintainScrollAtEnd).toBe(false);
+    expect(listProps().maintainVisibleContentPosition).toEqual(expect.any(Object));
 
     listHarness.state.isAtEnd = true;
     act(() => listProps().onWheel?.({ deltaY: 24 }));
@@ -373,7 +480,7 @@ describe("MessagesTimeline mounted scroll ownership", () => {
     expect(onManualNavigation).toHaveBeenNthCalledWith(1, false);
     expect(onManualNavigation).toHaveBeenLastCalledWith(true);
     expect(onIsAtEndChange).toHaveBeenLastCalledWith(true);
-    expect(listProps().maintainScrollAtEnd).toEqual(expect.any(Object));
+    expect(listProps().maintainVisibleContentPosition).toBe(false);
   });
 
   it("clears gesture ownership and pending work when the thread route changes", async () => {
@@ -381,18 +488,19 @@ describe("MessagesTimeline mounted scroll ownership", () => {
     const props = buildProps({ onManualNavigation });
     await renderTimeline(props);
     act(() => listProps().onWheel?.({ deltaY: -24 }));
+    listHarness.contentHeight = 2_600;
     act(() => listProps().onItemSizeChanged?.());
-    expect(listProps().maintainScrollAtEnd).toBe(false);
+    expect(listProps().maintainVisibleContentPosition).toEqual(expect.any(Object));
 
     await renderTimeline({
       ...props,
       routeThreadKey: "environment-local:thread-scroll-b",
     });
 
-    expect(listProps().maintainScrollAtEnd).toEqual(expect.any(Object));
+    expect(listProps().maintainVisibleContentPosition).toBe(false);
     listHarness.scrollToEnd.mockClear();
     await act(async () => vi.advanceTimersByTimeAsync(TIMELINE_MOMENTUM_SETTLE_MS + 1));
     await flushAnimationFrames(2);
-    expect(listHarness.scrollToEnd).not.toHaveBeenCalled();
+    expect(listHarness.scroller?.scrollTop).toBe(2_000);
   });
 });

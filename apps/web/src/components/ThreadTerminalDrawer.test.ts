@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   applyTerminalViewportPreviewScale,
+  canSplitTerminalGroup,
   createMissingTerminalSessionRecovery,
   createTerminalInitialFollowTail,
   createTerminalLayoutScheduler,
@@ -16,22 +17,77 @@ import {
   isGeometryDriverState,
   isMissingTerminalSessionError,
   isReportablePtyGeometry,
-  shouldDetourPtyOnNudge,
   TERMINAL_GEOMETRY_DRIVER_IDLE_MS,
-  TERMINAL_LIVE_OUTPUT_NUDGE_SKIP_MS,
+  TERMINAL_REPLAY_OVERLAY_QUIET_MS,
+  TERMINAL_REPLAY_OVERLAY_MAX_SETTLE_MS,
   longestSuffixPrefixOverlap,
   planTerminalResizeSync,
   resolveTerminalSelectionActionPosition,
   shouldHandleTerminalSelectionMouseUp,
-  shouldNudgePtyAfterBufferWrite,
+  shouldFollowInitialTerminalTail,
   shouldShowInitialTerminalReplayOverlay,
   terminalBufferWritePlan,
   terminalReplayOverlayDisposition,
   terminalSelectionActionDelayForClickCount,
+  terminalWriteParsesStaleQueries,
   terminalViewportPreviewScale,
+  terminalLayoutChangeClaimsGeometry,
 } from "./ThreadTerminalDrawer";
 
 describe("terminal viewport layout", () => {
+  it("returns the remeasured grid in the same commit before reporting to the host", () => {
+    const terminal = {
+      cols: 80,
+      rows: 24,
+      buffer: { active: { viewportY: 0, baseY: 0 } },
+      resize: vi.fn((cols: number, rows: number) => {
+        terminal.cols = cols;
+        terminal.rows = rows;
+      }),
+      scrollToBottom: vi.fn(),
+    };
+    const fitAddon = {
+      proposeDimensions: vi
+        .fn()
+        .mockReturnValueOnce({ cols: 66, rows: 18 })
+        .mockReturnValue({ cols: 66, rows: 16 }),
+    };
+    expect(
+      fitAndRefreshTerminalViewport(
+        terminal as unknown as Terminal,
+        fitAddon as unknown as FitAddon,
+      ),
+    ).toEqual({ cols: 66, rows: 16 });
+    expect(terminal.resize.mock.calls).toEqual([
+      [66, 18],
+      [66, 16],
+    ]);
+    expect(terminal.scrollToBottom).toHaveBeenCalledOnce();
+  });
+  it("starts a remote-view drag from the already scaled raster", () => {
+    expect(
+      terminalViewportPreviewScale({ width: 400, height: 200 }, { width: 600, height: 200 }, 0.5),
+    ).toEqual({ x: 0.75, y: 0.5 });
+  });
+  it("claims a remote grid only when the local pane changes after user input", () => {
+    const input = {
+      previous: { width: 800, height: 400 },
+      current: { width: 900, height: 400 },
+      hasFocus: true,
+      lastUserActivityAt: 1_000_000,
+      nowMs: 1_000_100,
+    };
+    expect(terminalLayoutChangeClaimsGeometry(input)).toBe(true);
+    // Initial attachment, metadata refresh, a background device and late
+    // unrelated layout changes never take ownership from the active device.
+    expect(terminalLayoutChangeClaimsGeometry({ ...input, previous: null })).toBe(false);
+    expect(terminalLayoutChangeClaimsGeometry({ ...input, current: input.previous })).toBe(false);
+    expect(terminalLayoutChangeClaimsGeometry({ ...input, hasFocus: false })).toBe(false);
+    expect(terminalLayoutChangeClaimsGeometry({ ...input, nowMs: 1_002_000 })).toBe(false);
+    expect(terminalLayoutChangeClaimsGeometry({ ...input, current: { width: 0, height: 0 } })).toBe(
+      false,
+    );
+  });
   it("loads xterm CSS from the app shell instead of the lazy drawer chunk", () => {
     const drawer = NodeFS.readFileSync(
       NodeURL.fileURLToPath(new URL("./ThreadTerminalDrawer.tsx", import.meta.url)),
@@ -58,25 +114,6 @@ describe("terminal viewport layout", () => {
     expect(isReportablePtyGeometry({ cols: 80, rows: 2 })).toBe(false);
     expect(isReportablePtyGeometry({ cols: 10, rows: 4 })).toBe(true);
     expect(isReportablePtyGeometry({ cols: 80, rows: 24 })).toBe(true);
-  });
-
-  it("never detours the PTY while the TUI is painting live output", () => {
-    const nowMs = 1_000_000;
-    // Streaming pane: a reveal/focus nudge must not SIGWINCH — the fullscreen
-    // TUI would clear and repaint its whole frame on screen (visible flicker).
-    expect(shouldDetourPtyOnNudge({ force: false, nowMs, lastLiveOutputAtMs: nowMs - 500 })).toBe(
-      false,
-    );
-    // Idle pane: the detour is what heals a frozen replayed frame.
-    expect(
-      shouldDetourPtyOnNudge({
-        force: false,
-        nowMs,
-        lastLiveOutputAtMs: nowMs - TERMINAL_LIVE_OUTPUT_NUDGE_SKIP_MS,
-      }),
-    ).toBe(true);
-    // First attach always repaints, however fresh the replayed bytes are.
-    expect(shouldDetourPtyOnNudge({ force: true, nowMs, lastLiveOutputAtMs: nowMs })).toBe(true);
   });
 
   it("only the focused, recently-active client drives PTY geometry", () => {
@@ -259,6 +296,40 @@ describe("terminal viewport layout", () => {
   });
 });
 
+describe("terminalWriteParsesStaleQueries", () => {
+  const live = {
+    writeKind: "append" as const,
+    dataLength: 12,
+    previousVersion: 7,
+    surfaceVisible: true,
+    documentHidden: false,
+    visibilityRestorePending: false,
+  };
+
+  it("lets a live append to a visible pane answer its queries", () => {
+    // Muse Code sends `ESC[6n` and exits when nothing answers within seconds;
+    // its reply is emitted while this very chunk is parsed.
+    expect(terminalWriteParsesStaleQueries(live)).toBe(false);
+  });
+
+  it("treats full replays and the initial attach as already-answered history", () => {
+    expect(terminalWriteParsesStaleQueries({ ...live, writeKind: "replace" })).toBe(true);
+    expect(terminalWriteParsesStaleQueries({ ...live, previousVersion: 0 })).toBe(true);
+  });
+
+  it("treats catch-up while hidden or restoring as history", () => {
+    expect(terminalWriteParsesStaleQueries({ ...live, surfaceVisible: false })).toBe(true);
+    expect(terminalWriteParsesStaleQueries({ ...live, documentHidden: true })).toBe(true);
+    expect(terminalWriteParsesStaleQueries({ ...live, visibilityRestorePending: true })).toBe(true);
+  });
+
+  it("never opens a window for an empty write", () => {
+    expect(terminalWriteParsesStaleQueries({ ...live, writeKind: "replace", dataLength: 0 })).toBe(
+      false,
+    );
+  });
+});
+
 describe("terminalBufferWritePlan", () => {
   it("appends when the new buffer is a prefix extension of the previous one", () => {
     expect(terminalBufferWritePlan("hello", "hello world")).toEqual({
@@ -304,10 +375,10 @@ describe("terminalBufferWritePlan", () => {
     });
   });
 
-  it("only nudges the PTY on the first attach, not on live output", () => {
-    expect(shouldNudgePtyAfterBufferWrite({ previousVersion: 0, currentLength: 120 })).toBe(true);
-    expect(shouldNudgePtyAfterBufferWrite({ previousVersion: 4, currentLength: 120 })).toBe(false);
-    expect(shouldNudgePtyAfterBufferWrite({ previousVersion: 0, currentLength: 0 })).toBe(false);
+  it("follows the initial replay tail without changing live-output scroll position", () => {
+    expect(shouldFollowInitialTerminalTail({ previousVersion: 0, currentLength: 120 })).toBe(true);
+    expect(shouldFollowInitialTerminalTail({ previousVersion: 4, currentLength: 120 })).toBe(false);
+    expect(shouldFollowInitialTerminalTail({ previousVersion: 0, currentLength: 0 })).toBe(false);
   });
 });
 
@@ -559,5 +630,74 @@ describe("resolveTerminalSelectionActionPosition", () => {
     expect(shouldHandleTerminalSelectionMouseUp(true, 0)).toBe(true);
     expect(shouldHandleTerminalSelectionMouseUp(false, 0)).toBe(false);
     expect(shouldHandleTerminalSelectionMouseUp(true, 1)).toBe(false);
+  });
+});
+
+describe("right panel terminals", () => {
+  // The panel shows one terminal per tab. A split would put a second terminal
+  // behind a tab that can only name and close one of them, so the panel turns
+  // the capability off rather than hiding the buttons and leaving the shortcut
+  // and drag-to-edge paths live.
+  it("refuses to split when splitting is turned off, whatever the pane count", () => {
+    expect(canSplitTerminalGroup({ allowSplit: false, groupSize: 0 })).toBe(false);
+    expect(canSplitTerminalGroup({ allowSplit: false, groupSize: 1 })).toBe(false);
+    expect(canSplitTerminalGroup({ allowSplit: false, groupSize: 5 })).toBe(false);
+  });
+
+  it("still splits where it is allowed, up to the pane limit", () => {
+    expect(canSplitTerminalGroup({ allowSplit: true, groupSize: 1 })).toBe(true);
+    expect(canSplitTerminalGroup({ allowSplit: true, groupSize: 5 })).toBe(true);
+    // The terminals view keeps its splits; only the ceiling stops it.
+    expect(canSplitTerminalGroup({ allowSplit: true, groupSize: 6 })).toBe(false);
+  });
+
+  it("mounts the right panel as tabs with splitting off", () => {
+    const chatView = NodeFS.readFileSync(
+      NodeURL.fileURLToPath(new URL("./ChatView.tsx", import.meta.url)),
+      "utf8",
+    );
+    const mount = chatView.slice(
+      chatView.indexOf('<ThreadTerminalDrawerMount\n      mode="panel"'),
+    );
+    const panelMount = mount.slice(0, mount.indexOf("/>"));
+    expect(panelMount).toContain('paneLayout="tabs"');
+    expect(panelMount).toContain("allowSplit={false}");
+    // The tab list is the thread's terminals, not a per-surface subset: that is
+    // what keeps the panel and the terminals view showing the same shells.
+    expect(panelMount).toContain("terminalIds={panelTerminalIds}");
+  });
+});
+
+it("does not hide parsed terminal output behind a multi-second loading delay", () => {
+  expect(TERMINAL_REPLAY_OVERLAY_QUIET_MS).toBeLessThanOrEqual(100);
+  expect(TERMINAL_REPLAY_OVERLAY_MAX_SETTLE_MS).toBeLessThanOrEqual(500);
+});
+
+describe("terminal stream cursor writes", () => {
+  const generation = {};
+  it("preserves repeated control bytes even when capped text is identical", () => {
+    const frame = "\x1b[1B".repeat(32);
+    expect(
+      terminalBufferWritePlan(frame, frame, {
+        previous: { generation, offset: frame.length },
+        current: { generation, offset: frame.length + 4 },
+      }),
+    ).toEqual({ kind: "append", data: "\x1b[1B" });
+  });
+  it("appends coalesced output after most of the retained buffer was trimmed", () => {
+    expect(
+      terminalBufferWritePlan("abcdefghij", "ij12345678", {
+        previous: { generation, offset: 10 },
+        current: { generation, offset: 18 },
+      }),
+    ).toEqual({ kind: "append", data: "12345678" });
+  });
+  it("replaces on a new snapshot even when its text shares the old prefix", () => {
+    expect(
+      terminalBufferWritePlan("abc", "abcdef", {
+        previous: { generation, offset: 3 },
+        current: { generation: {}, offset: 6 },
+      }),
+    ).toEqual({ kind: "replace", data: "abcdef" });
   });
 });

@@ -575,6 +575,20 @@ export function shouldDispatchStartupResume(
   );
 }
 
+/** A native handshake is temporary unavailability, not superseding user intent. */
+export function shouldWaitForStartupResume(
+  thread: OrchestrationThreadShell,
+  input: Parameters<typeof shouldDispatchStartupResume>[1],
+): boolean {
+  const session = thread.session;
+  return (
+    session != null &&
+    session.activeTurnId === null &&
+    (session.status === "starting" || session.status === "running") &&
+    shouldDispatchStartupResume({ ...thread, session: { ...session, status: "ready" } }, input)
+  );
+}
+
 export function threadWorkObligationId(input: {
   readonly threadId: string;
   readonly sourceTurnId: string;

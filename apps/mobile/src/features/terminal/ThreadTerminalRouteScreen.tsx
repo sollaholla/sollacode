@@ -3,7 +3,12 @@ import { type KnownTerminalSession } from "@t3tools/client-runtime/state/termina
 import type { MenuAction } from "@react-native-menu/menu";
 import { SymbolView } from "../../components/AppSymbol";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  StackActions,
+  useFocusEffect,
+  useNavigation,
+  type StaticScreenProps,
+} from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View, useColorScheme } from "react-native";
 import {
@@ -167,7 +172,7 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
   const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, "environment retry");
   const appearanceScheme = useColorScheme() === "light" ? "light" : "dark";
   const { state: workspaceState } = useWorkspaceState();
-  const { layout, panes, togglePrimarySidebar } = useAdaptiveWorkspaceLayout();
+  const { panes, setPrimarySidebarVisible } = useAdaptiveWorkspaceLayout();
   const params = props.route.params;
   const { selectedThread, selectedThreadProject, selectedEnvironmentConnection } =
     useThreadSelection();
@@ -519,6 +524,27 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
       keyboardWillHide.remove();
     };
   }, []);
+
+  // Mobile terminal is always fullscreen: hide the thread-list sidebar
+  // while this screen is focused and restore the previous value on blur.
+  // Web/desktop keep their split/panel workspace untouched.
+  const sidebarVisibleRef = useRef(panes.primarySidebarVisible);
+  sidebarVisibleRef.current = panes.primarySidebarVisible;
+  const sidebarRestoreRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      sidebarRestoreRef.current = sidebarVisibleRef.current;
+      if (sidebarVisibleRef.current) {
+        setPrimarySidebarVisible(false);
+      }
+      return () => {
+        if (sidebarRestoreRef.current) {
+          sidebarRestoreRef.current = false;
+          setPrimarySidebarVisible(true);
+        }
+      };
+    }, [setPrimarySidebarVisible]),
+  );
 
   const terminalMenuSessions = useMemo<ReadonlyArray<TerminalMenuSession>>(
     () =>
@@ -1094,19 +1120,6 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
           onBack={navigation.canGoBack() ? () => navigation.goBack() : undefined}
           trailing={
             <>
-              {layout.usesSplitView ? (
-                <AndroidHeaderIconButton
-                  accessibilityLabel={
-                    panes.primarySidebarVisible ? "Maximize terminal" : "Show threads"
-                  }
-                  icon={
-                    panes.primarySidebarVisible
-                      ? "arrow.up.left.and.arrow.down.right"
-                      : "sidebar.left"
-                  }
-                  onPress={togglePrimarySidebar}
-                />
-              ) : null}
               {isEnvironmentReady ? (
                 <ControlPillMenu
                   actions={androidTerminalMenuActions}
@@ -1124,19 +1137,6 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
             </>
           }
         />
-      ) : null}
-
-      {layout.usesSplitView ? (
-        <NativeHeaderToolbar placement="left">
-          <NativeHeaderToolbar.Button
-            accessibilityLabel={panes.primarySidebarVisible ? "Maximize terminal" : "Show threads"}
-            icon={
-              panes.primarySidebarVisible ? "arrow.up.left.and.arrow.down.right" : "sidebar.left"
-            }
-            onPress={togglePrimarySidebar}
-            separateBackground
-          />
-        </NativeHeaderToolbar>
       ) : null}
 
       {isEnvironmentReady ? (

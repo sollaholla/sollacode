@@ -17,13 +17,15 @@ import {
   type PreviewAutomationSnapshot,
   type PreviewAutomationHost as PreviewAutomationHostState,
   type PreviewAutomationRequest,
+  type PreviewTabAudioTarget,
   type PreviewAutomationStatus,
+  type PreviewCredentialVaultCommand,
   type PreviewRenderedViewportSize,
   type PreviewViewportSetting,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
-import { useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Atom } from "effect/unstable/reactivity";
 import { readPreviewDiagnostic } from "./previewDiagnosticDeadline";
 
@@ -43,6 +45,7 @@ import {
   stopBrowserRecording,
 } from "~/browser/browserRecording";
 import { resolveBrowserRecordingStopTarget } from "~/browser/browserRecordingScope";
+import { useBrowserPointerStore } from "~/browser/browserPointerStore";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { runBrowserViewportMutation } from "~/browser/browserViewportActions";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
@@ -57,7 +60,9 @@ import { previewEnvironment } from "~/state/preview";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+import { agentPointerFraction } from "./agentBrowserCursorLogic";
 import { previewBridge } from "./previewBridge";
+import { canCaptureTabAudio, captureTabAudio, createTabAudioStreamer } from "./tabAudioStreamer";
 import { closePreviewSession, reconcileLegacyPreviewClose } from "./closePreviewSession";
 import {
   PreviewAutomationOperationError,
@@ -111,6 +116,11 @@ import {
   resolvePreviewAutomationThreadTarget,
 } from "./previewAutomationThreadTarget";
 
+/** The server's remote-view capture (`PreviewRemoteViewSnapshotInput`) rather than an agent's snapshot. */
+const isRemoteViewSnapshotInput = (input: unknown): boolean =>
+  typeof input === "object" &&
+  input !== null &&
+  (input as { readonly includeAgentPointer?: unknown }).includeAgentPointer === true;
 const renewPreviewAutomationForeground = (): Promise<void> => {
   const automation = previewBridge?.automation;
   if (!automation) {
@@ -316,6 +326,22 @@ const raisePreviewAutomationHostError = (
   throw error;
 };
 
+// A settings screen on another device asked this desktop to change its saved
+// passwords. The bridge answers with summaries only; the vault never returns a
+// password.
+const applyCredentialVaultCommand = (command: PreviewCredentialVaultCommand): Promise<unknown> => {
+  const credentials = previewBridge?.credentials;
+  if (!credentials) return Promise.reject(new Error("Saved passwords are unavailable here."));
+  switch (command.action) {
+    case "list":
+      return credentials.list();
+    case "save":
+      return credentials.save(command.credential);
+    case "remove":
+      return credentials.remove(command.id);
+  }
+};
+
 export function PreviewAutomationHosts() {
   const { environments } = useEnvironments();
   if (!isElectron || !previewBridge?.automation) return null;
@@ -378,14 +404,22 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
   // is somebody else's machine over the network.
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const environmentLocal = primaryEnvironmentId === environmentId;
+  // Saved passwords live in this desktop's vault, so only the host for this
+  // machine's own environment offers to change them for other devices.
+  const manageCredentials = environmentLocal && previewBridge?.credentials !== undefined;
+  // This window renders tabs, so it can capture their sound for listeners on
+  // other devices.
+  const streamsTabAudio = previewBridge?.getTabAudioSource !== undefined && canCaptureTabAudio();
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
     () => ({
       clientId: automationClientId,
       environmentId,
       supportedOperations: [...PREVIEW_AUTOMATION_OPERATIONS],
       environmentLocal,
+      ...(manageCredentials ? { manageCredentials } : {}),
+      ...(streamsTabAudio ? { streamsTabAudio } : {}),
     }),
-    [automationClientId, environmentId, environmentLocal],
+    [automationClientId, environmentId, environmentLocal, manageCredentials, streamsTabAudio],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
@@ -413,6 +447,70 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
   );
   const [automationConnectionAtom] = useState(() => Atom.make<string | null>(null));
   const automationConnectionId = useAtomValue(automationConnectionAtom);
+
+  const publishTabAudio = useAtomCommand(previewEnvironment.tabAudioPublish, {
+    reportFailure: false,
+  });
+  const publishTabAudioRef = useRef(publishTabAudio);
+  publishTabAudioRef.current = publishTabAudio;
+  const browserProfilesRef = useRef(browserProfiles);
+  browserProfilesRef.current = browserProfiles;
+  const tabAudioStreamerRef = useRef<ReturnType<typeof createTabAudioStreamer> | null>(null);
+  const tabAudioDemandRef = useRef<ReadonlyArray<PreviewTabAudioTarget>>([]);
+  const [handleAudioDemand] = useState(() => (tabs: ReadonlyArray<PreviewTabAudioTarget>) => {
+    tabAudioDemandRef.current = tabs;
+    tabAudioStreamerRef.current?.setDemand(tabs);
+  });
+  useEffect(() => {
+    const bridge = previewBridge;
+    const getTabAudioSource = bridge?.getTabAudioSource;
+    if (!streamsTabAudio || !bridge || !getTabAudioSource) return;
+    const audible = new Map<string, boolean>();
+    const streamer = createTabAudioStreamer({
+      runtimeTabId: (listened) => {
+        // Side chats share their parent's browser; resolve the tab the same
+        // way an agent's request for it would be.
+        const target = resolvePreviewAutomationThreadTarget({
+          environmentId,
+          requestThreadRef: { environmentId, threadId: listened.threadId },
+          requestedTabId: listened.tabId,
+          previewByThreadKey: readActivePreviewSessions(),
+          presentationsByRuntimeTabId: useBrowserSurfaceStore.getState().byTabId,
+          profiles: browserProfilesRef.current,
+        });
+        const tabId = target.tabId ?? listened.tabId;
+        return previewRuntimeTabId(
+          target.threadRef,
+          readThreadPreviewState(target.threadRef).serverEpoch,
+          tabId,
+        );
+      },
+      isAudible: (runtimeTabId) => audible.get(runtimeTabId) ?? false,
+      startCapture: async (runtimeTabId, onPackets, onEnded) => {
+        const sourceId = await getTabAudioSource(runtimeTabId);
+        if (!sourceId) throw new Error("The desktop found no live page for this tab to capture.");
+        return captureTabAudio({ sourceId, onPackets, onEnded });
+      },
+      publish: (target, event) => {
+        void publishTabAudioRef.current({ environmentId, input: { ...target, event } });
+      },
+    });
+    const unsubscribe = bridge.onStateChange((runtimeTabId, state) => {
+      // Some state rebuilds leave the flag out; that says nothing about sound.
+      if (state.audible === undefined) return;
+      const next = state.audible;
+      if ((audible.get(runtimeTabId) ?? false) === next) return;
+      audible.set(runtimeTabId, next);
+      streamer.audibleChanged(runtimeTabId);
+    });
+    tabAudioStreamerRef.current = streamer;
+    streamer.setDemand(tabAudioDemandRef.current);
+    return () => {
+      unsubscribe();
+      streamer.dispose();
+      if (tabAudioStreamerRef.current === streamer) tabAudioStreamerRef.current = null;
+    };
+  }, [environmentId, streamsTabAudio]);
 
   const handleRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<unknown> => {
@@ -982,10 +1080,16 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
             const humanVerification = await inspectReadyTab(ready, { snapshot }).catch(() =>
               getPreviewHumanVerification(ready.runtimeTabId),
             );
+            // A remote viewer draws the agent's cursor over the frame; agents
+            // never ask for it, so their snapshots stay unchanged.
+            const agentPointer = isRemoteViewSnapshotInput(request.input)
+              ? agentPointerFraction(useBrowserPointerStore.getState().byTabId[ready.runtimeTabId])
+              : null;
             return {
               ...snapshot,
               tabId: ready.tabId,
               humanVerification,
+              ...(agentPointer ? { agentPointer } : {}),
             } satisfies PreviewAutomationSnapshot;
           }
           case "click": {
@@ -1003,6 +1107,17 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
             const result = await ready.bridge.automation.drag(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.drag>[1],
+              request.expiresAt,
+            );
+            await inspectAfterAction(ready);
+            return result;
+          }
+          case "contextMenu": {
+            // Remote viewers only: the result is the menu the viewer draws.
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.contextMenu(
+              ready.runtimeTabId,
+              request.input as Parameters<typeof ready.bridge.automation.contextMenu>[1],
               request.expiresAt,
             );
             await inspectAfterAction(ready);
@@ -1174,6 +1289,8 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
         connectionAtom: automationConnectionAtom,
         environmentId,
         requestHandlerAtom,
+        ...(manageCredentials ? { handleCredentialVault: applyCredentialVaultCommand } : {}),
+        handleAudioDemand,
         renewAutomationForeground: renewPreviewAutomationForeground,
         respond: (response) =>
           respondToAutomation({
@@ -1189,6 +1306,8 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
       requestHandlerAtom,
       respondToAutomation,
       environmentId,
+      manageCredentials,
+      handleAudioDemand,
     ],
   );
   useAtomValue(automationRequestConsumerAtom);

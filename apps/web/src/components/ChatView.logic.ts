@@ -30,8 +30,9 @@ import {
   type TerminalContextDraft,
 } from "../lib/terminalContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
-import { RESUME_PROMPT } from "../resumePrompt";
+export { runResumeIncompleteTurn } from "@t3tools/client-runtime/state/thread-activity";
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
+import { interactionModeConfig } from "./chat/interactionModes";
 
 export {
   QUEUED_MESSAGE_AUTO_PROMOTE_DELAY_MS,
@@ -49,27 +50,7 @@ export function canQueueLocalMessageDuringReconnect(input: {
   readonly phase: EnvironmentConnectionPhase;
   readonly threadDetailLoaded: boolean;
 }): boolean {
-  return (
-    input.targetKind === "PrimaryConnectionTarget" &&
-    (input.phase === "connecting" || input.phase === "reconnecting") &&
-    input.threadDetailLoaded
-  );
-}
-
-export async function runResumeIncompleteTurn(input: {
-  inFlightRef: { current: boolean };
-  send: (message: typeof RESUME_PROMPT) => Promise<void>;
-}): Promise<boolean> {
-  if (input.inFlightRef.current) {
-    return false;
-  }
-  input.inFlightRef.current = true;
-  try {
-    await input.send(RESUME_PROMPT);
-    return true;
-  } finally {
-    input.inFlightRef.current = false;
-  }
+  return input.targetKind !== null && input.phase !== "connected" && input.threadDetailLoaded;
 }
 
 export type QueuedMessagePromotionPhase = "requesting" | "awaiting-projection";
@@ -257,48 +238,65 @@ export function settleQueuedMessagePromotion(input: {
   return outcome;
 }
 
-/** Slack past the promised retry delay before the marker is considered dead. */
-const OVERLOAD_RETRY_SLACK_MS = 30_000;
-/** Marker lifetime when the heartbeat names no delay. */
-const OVERLOAD_RETRY_DEFAULT_TTL_MS = 90_000;
-
 /**
- * Is the current turn actually waiting out a provider overload right now?
+ * Is the newest user message a steer the provider accepted but cannot read yet
+ * because the turn is inside a subagent call?
  *
- * The retry heartbeat re-appends one activity id, so its `createdAt` is the
- * newest attempt. Recovery emits nothing that says "recovered" — output just
- * resumes — so the marker also expires on its own once the delay it promised
- * (plus slack) passes without another heartbeat. Without that, the label
- * outlived the outage and sat on healthy turns until they ended.
+ * OpenCode appends a mid-turn prompt to its session and only feeds it to the
+ * model at the next loop step; a synchronous `task` tool call blocks that step
+ * until the subagent returns. On 2026-09-17 two steers sat behind a 13-minute
+ * subagent retry loop with delivered checkmarks under a bare "Working" row.
+ * The checkmark is honest (the provider holds the message); this says why
+ * nothing has answered it yet.
  */
-export function isProviderOverloadRetrying(input: {
+export function isSteerWaitingBehindSubagent(input: {
   activities: Thread["activities"];
+  messages: ReadonlyArray<ChatMessage>;
   latestTurn: Thread["latestTurn"];
   isWorking: boolean;
-  nowMs?: number;
+  deliveredMessageIds: ReadonlySet<string>;
 }): boolean {
-  const startedAt = input.latestTurn?.startedAt;
-  if (!input.isWorking || !startedAt) {
+  const turn = input.latestTurn;
+  if (!input.isWorking || !turn || turn.state !== "running" || !turn.startedAt) {
     return false;
   }
-  const nowMs = input.nowMs ?? Date.now();
-  return input.activities.some((activity) => {
-    if (
-      activity.kind !== "provider.overload.retrying" ||
-      activity.createdAt < startedAt ||
-      (activity.turnId !== null && activity.turnId !== input.latestTurn?.turnId)
-    ) {
-      return false;
+  const startedAt = turn.startedAt;
+  let steer: ChatMessage | null = null;
+  for (let index = input.messages.length - 1; index >= 0; index -= 1) {
+    const message = input.messages[index];
+    if (message?.role === "user" && message.voiceTranscript !== true) {
+      steer = message;
+      break;
     }
-    const heartbeatMs = Date.parse(activity.createdAt);
-    if (!Number.isFinite(heartbeatMs)) return false;
-    const reason = (activity.payload as { reason?: unknown } | undefined)?.reason;
-    const delayMs =
-      typeof reason === "string" ? Number(/delay_ms=(\d+)/.exec(reason)?.[1] ?? NaN) : NaN;
-    const ttlMs = Number.isFinite(delayMs)
-      ? delayMs + OVERLOAD_RETRY_SLACK_MS
-      : OVERLOAD_RETRY_DEFAULT_TTL_MS;
-    return nowMs - heartbeatMs <= ttlMs;
+  }
+  // The turn's own opening message is not a steer; an undelivered one is
+  // "queued", a different label.
+  if (!steer || steer.createdAt <= startedAt || !input.deliveredMessageIds.has(steer.id)) {
+    return false;
+  }
+  const steerAt = steer.createdAt;
+  if (
+    input.messages.some((message) => message.role === "assistant" && message.createdAt > steerAt)
+  ) {
+    return false;
+  }
+  const completedTaskIds = new Set<string>();
+  for (const activity of input.activities) {
+    if (activity.kind !== "task.completed") continue;
+    const payload = activity.payload as { taskId?: unknown; metadataOnly?: unknown } | null;
+    if (payload?.metadataOnly === true) continue;
+    if (typeof payload?.taskId === "string") completedTaskIds.add(payload.taskId);
+  }
+  return input.activities.some((activity) => {
+    if (activity.kind !== "task.started") return false;
+    if (activity.turnId !== null && activity.turnId !== turn.turnId) return false;
+    // Only a subagent that was already running when the steer arrived can be
+    // holding it; one started afterwards means the model read the message.
+    if (activity.createdAt < startedAt || activity.createdAt > steerAt) return false;
+    const payload = activity.payload as { taskId?: unknown; taskType?: unknown } | null;
+    // Background monitors run beside the model, not instead of it.
+    if (payload?.taskType === "local_monitor") return false;
+    return typeof payload?.taskId === "string" && !completedTaskIds.has(payload.taskId);
   });
 }
 
@@ -347,6 +345,45 @@ export function authoritativeThreadSettingsFingerprint(
     runtimeMode: thread.runtimeMode,
     interactionMode: thread.interactionMode,
   });
+}
+
+/**
+ * The Apply confirmation copy for composer settings that differ from the
+ * thread, or null when everything already matches.
+ *
+ * Compare the saved composer selection rather than its resolved defaults,
+ * so opening an older thread does not manufacture an unapplied effort change.
+ */
+export function describeComposerSettingsUpdate(input: {
+  readonly thread: Pick<Thread, "modelSelection" | "runtimeMode" | "interactionMode">;
+  readonly modelSelection?: ModelSelection | undefined;
+  readonly runtimeMode: Thread["runtimeMode"];
+  readonly interactionMode: Thread["interactionMode"];
+}): string | null {
+  const changes: string[] = [];
+  const selection = input.modelSelection;
+  const optionsKey = (options: ModelSelection["options"]) =>
+    JSON.stringify([...(options ?? [])].sort((left, right) => left.id.localeCompare(right.id)));
+  if (
+    selection &&
+    (selection.instanceId !== input.thread.modelSelection.instanceId ||
+      selection.model !== input.thread.modelSelection.model ||
+      optionsKey(selection.options) !== optionsKey(input.thread.modelSelection.options))
+  ) {
+    const effort = selection.options?.find(
+      (option) => option.id === "reasoningEffort" || option.id === "effort",
+    )?.value;
+    changes.push(`${selection.model}${effort ? ` with ${String(effort)} effort` : ""}`);
+  }
+  if (input.thread.runtimeMode !== input.runtimeMode) {
+    changes.push(input.runtimeMode === "full-access" ? "Full access" : "Approval required");
+  }
+  if (input.thread.interactionMode !== input.interactionMode) {
+    // Read from the shared config so a new mode cannot silently render as
+    // "Build mode", which is how Agent was mislabelled here.
+    changes.push(`${interactionModeConfig[input.interactionMode].label} mode`);
+  }
+  return changes.length > 0 ? changes.join(" · ") : null;
 }
 
 export function buildLocalDraftThread(

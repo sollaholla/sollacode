@@ -1,3 +1,7 @@
+import { resolveReadImagePreview } from "@t3tools/client-runtime/state/read-image-preview";
+import { EventId, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
+import { useAssetUrlState } from "../../state/assets";
+import { WorkspaceFileImagePreview } from "../files/WorkspaceFileImagePreview";
 import * as Haptics from "expo-haptics";
 import { type AppSymbolName, SymbolView } from "../../components/AppSymbol";
 import { LayoutAnimation, Pressable, ScrollView, useColorScheme, View } from "react-native";
@@ -116,12 +120,15 @@ export function collapsedWorkLogHeight(
   return (
     WORK_LOG_BOTTOM_MARGIN +
     (onlyToolRows ? 0 : headerHeight) +
+    rows.filter((row) => row.readImagePath).length * 228 +
     rows.length * WORK_ROW_HEIGHT +
     (rows.length - 1) * WORK_ROW_GAP
   );
 }
 
 export function ThreadWorkLog(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
   readonly activities: ReadonlyArray<ThreadFeedActivity>;
   readonly copiedRowId: string | null;
   readonly expandedRows: Readonly<Record<string, boolean>>;
@@ -250,6 +257,16 @@ export function ThreadWorkLog(props: {
                 </View>
               </Pressable>
 
+              {row.readImagePath ? (
+                <ToolImagePreview
+                  environmentId={props.environmentId}
+                  threadId={props.threadId}
+                  path={row.readImagePath}
+                  sourceActivityId={row.readImageSourceActivityId ?? row.id}
+                  inlineSrc={row.readImageInlineSrc}
+                />
+              ) : null}
+
               {fullDetail ? (
                 <View className="ml-7 border-l border-neutral-300/60 pb-1 pl-3 pt-0.5 dark:border-white/[0.12]">
                   <ScrollView
@@ -329,6 +346,44 @@ export function ThreadWorkGroupToggle(props: {
           {props.expanded ? expandedLabel : `+${props.hiddenCount} previous ${noun}`}
         </Text>
       </Pressable>
+    </View>
+  );
+}
+
+const NO_FAILED_SRCS: ReadonlySet<string> = new Set();
+
+function ToolImagePreview(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly path: string;
+  readonly sourceActivityId: string;
+  readonly inlineSrc: string | undefined;
+}) {
+  const asset = useAssetUrlState(props.environmentId, {
+    _tag: "workspace-file",
+    threadId: props.threadId,
+    path: props.path,
+    sourceActivityId: EventId.make(props.sourceActivityId),
+  });
+  const preview = resolveReadImagePreview({
+    assetFailed: asset._tag === "Failure",
+    assetUrl: asset._tag === "Success" ? asset.url : null,
+    storedSrc: props.inlineSrc ?? null,
+    failedSrcs: NO_FAILED_SRCS,
+  });
+  return (
+    <View className="ml-7 my-1 overflow-hidden rounded-lg" style={{ height: 220 }}>
+      {preview._tag === "Unavailable" ? (
+        <Text className="p-4 text-xs text-foreground-muted">
+          Image preview unavailable. Nothing readable is at this path now, and the tool result kept
+          no copy of the image.
+        </Text>
+      ) : (
+        <WorkspaceFileImagePreview
+          accessibilityLabel={props.path}
+          uri={preview._tag === "Image" ? preview.src : null}
+        />
+      )}
     </View>
   );
 }
