@@ -2,7 +2,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Scope from "effect/Scope";
-import * as Tracer from "effect/Tracer";
+import type * as Tracer from "effect/Tracer";
 import { HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
@@ -40,15 +40,6 @@ let pendingConfiguration = Promise.resolve();
 export interface ClientTracingConfig {
   readonly exportIntervalMs?: number;
 }
-
-export const ClientTracingLive = Layer.succeed(
-  Tracer.Tracer,
-  Tracer.make({
-    span(options) {
-      return activeDelegate?.span(options) ?? new Tracer.NativeSpan(options);
-    },
-  }),
-);
 
 export function configureClientTracing(config: ClientTracingConfig = {}): Promise<void> {
   if (config.exportIntervalMs === undefined && activeConfigKey !== null) {
@@ -130,18 +121,4 @@ async function disposeTracerRuntime(
 
   await settleAsyncResult(() => runtime.runPromiseExit(Scope.close(scope, Exit.void)));
   runtime.dispose();
-}
-
-export async function __resetClientTracingForTests() {
-  configurationGeneration++;
-  activeConfigKey = null;
-  activeDelegate = null;
-  pendingConfiguration = Promise.resolve();
-
-  const runtime = activeRuntime;
-  const scope = activeScope;
-  activeRuntime = null;
-  activeScope = null;
-
-  await disposeTracerRuntime(runtime, scope);
 }
