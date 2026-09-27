@@ -14,13 +14,6 @@ export { DESTRUCTIVE_TOOL_NAMES, toolsForAuthority } from "./toolRegistry";
 import { toolsForAuthority } from "./toolRegistry";
 import { parseRealtimeUsage, type RealtimeUsage } from "./usageTracking";
 
-export interface RealtimeToolDefinition {
-  readonly type: "function";
-  readonly name: string;
-  readonly description: string;
-  readonly parameters: Record<string, unknown>;
-}
-
 /**
  * Human-readable names for the language pin. Codes outside this map still work
  * — the instruction falls back to naming the ISO code itself.

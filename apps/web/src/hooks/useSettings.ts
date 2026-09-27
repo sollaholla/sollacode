@@ -340,10 +340,3 @@ export function __resetClientSettingsPersistenceForTests(): void {
   clientSettingsListeners.clear();
   clientSettingsHydrationListeners.clear();
 }
-
-export function __setClientSettingsForTests(settings: ClientSettings): void {
-  clientSettingsHydrationGeneration += 1;
-  clientSettingsSnapshot = settings;
-  clientSettingsHydrated = true;
-  clientSettingsHydrationPromise = null;
-}

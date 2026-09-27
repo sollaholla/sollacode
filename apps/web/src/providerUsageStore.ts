@@ -622,7 +622,3 @@ export const useProviderUsageStore = create<ProviderUsageState>((set) => ({
       return { byAccountKey };
     }),
 }));
-
-export function resetProviderUsageStoreForTests(): void {
-  useProviderUsageStore.setState({ byAccountKey: {} });
-}

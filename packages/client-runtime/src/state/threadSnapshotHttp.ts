@@ -20,7 +20,6 @@ import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import {
   executeEnvironmentHttpRequest,
   makeEnvironmentHttpApiClient,
-  type RemoteEnvironmentRequestError,
 } from "../rpc/http.ts";
 import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./environmentHttpAuth.ts";
 import { createEnvironmentCommand } from "./runtime.ts";
@@ -60,8 +59,6 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
     ),
   );
 });
-
-export type FetchEnvironmentThreadSnapshotError = RemoteEnvironmentRequestError;
 
 export const fetchEnvironmentThreadHistoryPage = Effect.fn(
   "clientRuntime.state.fetchEnvironmentThreadHistoryPage",

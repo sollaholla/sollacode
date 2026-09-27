@@ -15,14 +15,6 @@ import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstance
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
 
-export type TextGenerationProvider =
-  | "codex"
-  | "claudeAgent"
-  | "cursor"
-  | "grok"
-  | "opencode"
-  | "mcpBridge";
-
 export const VOICE_TRANSCRIPT_CORRECTION_TIMEOUT_MS = 18_000;
 
 export interface CommitMessageGenerationInput {
@@ -127,22 +119,6 @@ export interface VmAgentTaskPromptGenerationInput {
   request: string;
   currentTime: string;
   modelSelection: ModelSelection;
-}
-
-export interface TextGenerationService {
-  generateCommitMessage(
-    input: CommitMessageGenerationInput,
-  ): Promise<CommitMessageGenerationResult>;
-  generatePrContent(input: PrContentGenerationInput): Promise<PrContentGenerationResult>;
-  generateBranchName(input: BranchNameGenerationInput): Promise<BranchNameGenerationResult>;
-  generateThreadTitle(input: ThreadTitleGenerationInput): Promise<ThreadTitleGenerationResult>;
-  correctVoiceTranscript(
-    input: VoiceTranscriptCorrectionGenerationInput,
-  ): Promise<VoiceTranscriptCorrectionGenerationResult>;
-  generatePlanRefresh(input: PlanRefreshGenerationInput): Promise<PlanRefreshGenerationResult>;
-  generateVmAgentTaskPrompt(
-    input: VmAgentTaskPromptGenerationInput,
-  ): Promise<VmAgentTaskPromptGenerationResult>;
 }
 
 /**

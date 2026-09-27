@@ -221,8 +221,6 @@ export const GitLabCliError = Schema.Union([
   GitLabNamespaceDecodeError,
 ]);
 export type GitLabCliError = typeof GitLabCliError.Type;
-export const isGitLabCliError = Schema.is(GitLabCliError);
-
 export interface GitLabMergeRequestSummary {
   readonly number: number;
   readonly title: string;

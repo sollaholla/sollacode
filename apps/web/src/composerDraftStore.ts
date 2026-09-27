@@ -1,3 +1,4 @@
+import { base64ToBytes } from "@t3tools/shared/base64";
 import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -2141,11 +2142,7 @@ function hydratePersistedComposerImageAttachment(
         type: inferredMimeType || attachment.mimeType,
       });
     }
-    const binary = atob(payload);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
+    const bytes = base64ToBytes(payload);
     return new File([bytes], attachment.name, { type: attachment.mimeType });
   } catch {
     return null;
@@ -3653,13 +3650,5 @@ export function finalizePromotedDraftThreadByRef(threadRef: ScopedThreadRef): vo
       draftStore.markDraftThreadPromoting(target, threadRef);
       draftStore.finalizePromotedDraftThread(target);
     }
-  }
-}
-
-export function finalizePromotedDraftThreadsByRef(
-  serverThreadRefs: Iterable<ScopedThreadRef>,
-): void {
-  for (const threadRef of serverThreadRefs) {
-    finalizePromotedDraftThreadByRef(threadRef);
   }
 }

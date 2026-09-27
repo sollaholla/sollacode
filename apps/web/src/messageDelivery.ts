@@ -1,4 +1,4 @@
-import type { MessageId, OrchestrationThreadActivity } from "@t3tools/contracts";
+import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 
 /**
  * Delivery state for a user message, rendered as WhatsApp-style checkmarks.
@@ -224,11 +224,4 @@ export function deriveUnsentMessage(input: {
     unsent = payload.deliveryCancelled === true ? { messageId: message.id, detail } : null;
   }
   return unsent;
-}
-
-export function isMessageDeliveredId(
-  delivered: ReadonlySet<string>,
-  messageId: MessageId | string,
-): boolean {
-  return delivered.has(messageId);
 }
