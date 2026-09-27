@@ -5,10 +5,13 @@
 Provider, model, effort, runtime mode (access level), and interaction mode picks stay staged
 until you press **Apply changes**, send a message, or resume the conversation. Applying sends a
 turn asking the agent to adopt the selected settings. The button stays labeled while an agent is
-running; narrow composers show **Apply**. Choosing the original settings removes the pending change.
-Right-click **Apply changes** and choose **Revert** to restore every staged setting to the chat's
+running; narrow composers show its icon. Choosing the original settings removes the pending change.
+Hold **Apply changes** on a touch screen, or right-click it with a mouse, and choose
+**Reset to defaults** to restore every staged setting to the chat's
 currently saved configuration. Reverting does not send a message or alter the prompt and
 attachments already in the composer.
+A quick tap still applies changes. Releasing a hold does not apply them, and moving your finger
+or starting a scroll cancels the hold.
 
 ## Add emoji
 
