@@ -28,6 +28,7 @@ import {
   QUEUED_MESSAGES_PROMOTED_ACTIVITY_KIND,
 } from "./messageDelivery";
 import { normalizeEmbeddedWindowsAbsolutePath } from "@t3tools/shared/path";
+import { normalizeOpenCodeToolPayload } from "@t3tools/shared/toolActivity";
 
 import type {
   ChatMessage,
@@ -791,7 +792,7 @@ function extractWorkLogToolLifecycleStatus(
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
   const payload =
     activity.payload && typeof activity.payload === "object"
-      ? (activity.payload as Record<string, unknown>)
+      ? normalizeOpenCodeToolPayload(activity.payload as Record<string, unknown>)
       : null;
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);

@@ -56,6 +56,41 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("shows saved OpenCode command input and its actual failure status", () => {
+    const thread = makeThread({
+      id: ThreadId.make("opencode-tools"),
+      projectId: ProjectId.make("project-1"),
+      title: "OpenCode tools",
+      activities: [
+        makeActivity({
+          id: EventId.make("bash"),
+          kind: "tool.completed",
+          summary: "bash",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: {
+            itemType: "command_execution",
+            title: "bash",
+            detail: "test failure output",
+            data: {
+              tool: "bash",
+              state: {
+                status: "completed",
+                input: { command: "run-tests" },
+                output: "test failure output",
+                metadata: { exit: 1 },
+              },
+            },
+          },
+        }),
+      ],
+    });
+    const [group] = buildThreadFeed(thread);
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") throw new Error("Expected tool group");
+    expect(group.activities[0]).toMatchObject({ detail: "run-tests", status: "failure" });
+    expect(group.activities[0]?.getFullDetail()).toContain("test failure output");
+  });
+
   it("removes recovered error cards from the native feed while retaining the switch notice", () => {
     const entries = buildThreadFeed(
       makeThread({

@@ -254,6 +254,47 @@ function buildUserTimelineEntry(text: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("shows a saved OpenCode edit's file instead of its boilerplate output", () => {
+    const entries = deriveWorkLogEntries([
+      {
+        id: EventId.make("opencode-edit"),
+        kind: "tool.completed",
+        summary: "edit",
+        tone: "tool",
+        turnId: null,
+        createdAt: MESSAGE_CREATED_AT,
+        payload: {
+          itemType: "file_change",
+          title: "edit",
+          detail: "Edit applied successfully.",
+          data: {
+            tool: "edit",
+            state: {
+              status: "completed",
+              input: { filePath: "/project/src/model.ts" },
+              output: "Edit applied successfully.",
+            },
+          },
+        },
+      },
+    ]);
+    expect(entries[0]?.detail).toBe("Edit applied successfully.");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        workspaceRoot="/project"
+        timelineEntries={entries.map((entry) => ({
+          id: entry.id,
+          kind: "work" as const,
+          createdAt: entry.createdAt,
+          entry,
+        }))}
+      />,
+    );
+    expect(markup).toContain("src/model.ts");
+    expect(markup).not.toContain("Edit applied successfully.");
+  });
+
   it.each([false, true])(
     "does not draw an empty card for a Thinking placeholder (working: %s)",
     (isWorking) => {

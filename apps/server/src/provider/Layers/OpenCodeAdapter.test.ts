@@ -527,10 +527,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         tool: "bash",
         state: {
           status: "completed",
-          input: {},
-          output: "passed",
+          input: { command: "run-tests" },
+          output: "test failed",
           title: "test",
-          metadata: {},
+          metadata: { exit: 1 },
           time: { start: 1, end: 2 },
         },
       };
@@ -545,6 +545,14 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         lifecycle.map((event) => event.type),
         ["item.completed"],
       );
+      const completed = lifecycle.find((event) => event.type === "item.completed");
+      NodeAssert.equal(completed?.payload.status, "failed");
+      NodeAssert.deepEqual(completed?.payload.data, {
+        toolCallId: "tool-call",
+        tool: "bash",
+        state: tool.state,
+        command: "run-tests",
+      });
     }),
   );
 

@@ -10,6 +10,10 @@ own usage state.
 Missing usage appears as an em dash (—) in the compact bar, including for Grok.
 Usage details explain when a value is not reported.
 
+Disabling Grok keeps its installation and version visible in **Settings > Providers**.
+Solla checks only the CLI version while it is disabled, without starting authentication or
+model discovery. The **Install** button appears only when the configured CLI cannot be found.
+
 The compact AGY chip defaults to Gemini usage. Selecting a Claude or GPT model on that AGY
 instance switches its chip to the Claude and GPT pool; switching away returns it to Gemini.
 Both pools remain visible in the details popup and Providers settings. A missing reading shows

@@ -3109,8 +3109,7 @@ function workEntryPreview(
   workspaceRoot: string | undefined,
 ) {
   if (workEntry.command) return workEntry.command;
-  if (workEntry.detail) return workEntry.detail;
-  if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
+  if ((workEntry.changedFiles?.length ?? 0) === 0) return workEntry.detail ?? null;
   const [firstPath] = workEntry.changedFiles ?? [];
   if (!firstPath) return null;
   const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
