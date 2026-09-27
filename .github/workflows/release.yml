@@ -152,13 +152,20 @@ jobs:
           fi
 
       - name: Check
-        run: vp check
+        # Vite+ panics ("failed printing to stdout ... os error 11") when the
+        # runner hands it a non-blocking stdout and the report is long; a pipe
+        # through cat gives it a blocking one. The explicit bash shell keeps
+        # pipefail, so vp's own exit status still decides the step.
+        shell: bash
+        run: vp check 2>&1 | cat
 
       - name: Typecheck
-        run: vp run typecheck
+        shell: bash
+        run: vp run typecheck 2>&1 | cat
 
       - name: Test
-        run: vp run test
+        shell: bash
+        run: vp run test 2>&1 | cat
 
       - id: previous_tag
         name: Resolve previous release tag

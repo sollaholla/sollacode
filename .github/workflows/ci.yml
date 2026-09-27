@@ -31,10 +31,16 @@ jobs:
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Check
-        run: vp check
+        # Vite+ panics ("failed printing to stdout ... os error 11") when the
+        # runner hands it a non-blocking stdout and the report is long; a pipe
+        # through cat gives it a blocking one. The explicit bash shell keeps
+        # pipefail, so vp's own exit status still decides the step.
+        shell: bash
+        run: vp check 2>&1 | cat
 
       - name: Typecheck
-        run: vpr typecheck
+        shell: bash
+        run: vpr typecheck 2>&1 | cat
 
       - name: Check resource monitor formatting
         run: cargo fmt --manifest-path native/resource-monitor/Cargo.toml -- --check
@@ -69,7 +75,9 @@ jobs:
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Test
-        run: vp run test
+        # See the Check step: a pipe keeps Vite+ from panicking on a non-blocking stdout.
+        shell: bash
+        run: vp run test 2>&1 | cat
 
       - name: Test resource monitor
         run: cargo test --locked --manifest-path native/resource-monitor/Cargo.toml
