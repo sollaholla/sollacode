@@ -15,6 +15,11 @@ This document covers the checked-in workflow for Solla Code stable and nightly d
   - macOS `x64` DMG
   - Linux `x64` AppImage
   - Windows `x64` NSIS installer
+- Smoke-tests each artifact on the machine that built it, before anything is published
+  (`scripts/smoke-packaged-desktop.ts`): it installs the artifact as a user gets it, boots the
+  shipped server on the shipped Electron runtime, serves the web client, spawns a shell through
+  node-pty, and launches the whole app until its backend answers. A build that cannot start fails
+  its job and the release is not published.
 - Publishes one GitHub Release with all produced files.
   - Stable tags with a suffix after `X.Y.Z` (for example `1.2.3-alpha.1`) are published as GitHub prereleases.
   - Only plain stable `X.Y.Z` releases are marked as the repository's latest release.
@@ -277,7 +282,10 @@ Checklist:
    - all matrix builds pass
    - `publish_cli` publishes the exact release version before the release job when enabled; otherwise it is explicitly skipped
    - release job uploads expected files
-6. Smoke test downloaded artifacts.
+6. Check each build job's "Smoke-test the packaged app" step ended with `packaged app smoke test
+passed`. To repeat it on a downloaded macOS zip, run
+   `node scripts/smoke-packaged-desktop.ts --platform mac --artifacts <dir> --skip-desktop`
+   (`--skip-desktop` avoids opening a window on your machine).
 
 ## 5) Troubleshooting
 
