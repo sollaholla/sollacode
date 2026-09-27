@@ -374,6 +374,16 @@ async function main() {
   smokePty(app, platform, workDir);
   if (!values["skip-desktop"]) await smokeDesktop(app, platform, workDir);
   console.log("packaged app smoke test passed");
+  // An unpacked app is about 700 MB. Kept only when a step failed, for
+  // inspection; a developer's disk filling up broke the running app's
+  // database once already.
+  try {
+    NodeFS.rmSync(workDir, { recursive: true, force: true, maxRetries: 5 });
+  } catch (error) {
+    // Windows can hold a just-killed app's files for a moment; the smoke
+    // test itself already passed.
+    console.warn(`could not remove ${workDir}: ${String(error)}`);
+  }
 }
 
 if (import.meta.main) {
