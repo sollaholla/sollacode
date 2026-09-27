@@ -112,3 +112,12 @@ export function shouldDockPhoneDraftComposer(input: {
 }): boolean {
   return !input.isDraftHeroState || (input.isPhonePortrait && input.isComposerFocused);
 }
+
+/** Once typing starts, keep the composer still while focus moves to Send or its other controls. */
+export function resolvePhoneComposerFocus(input: {
+  readonly withinComposer: boolean;
+  readonly editable: boolean;
+  readonly previouslyFocused: boolean;
+}): boolean {
+  return input.withinComposer && (input.editable || input.previouslyFocused);
+}

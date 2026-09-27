@@ -193,6 +193,7 @@ import { shouldOfferAppVoiceCapture } from "./chat/appVoiceCaptureAvailability";
 import {
   composerViewportBottomInset,
   resolveChatFooterLayout,
+  resolvePhoneComposerFocus,
   resolvePhoneKeyboardInset,
   shouldDockPhoneDraftComposer,
 } from "./chat/mobileComposerViewport";
@@ -2572,10 +2573,15 @@ function ChatViewContent(props: ChatViewProps) {
     let blurFrame: number | null = null;
     const syncFocus = () => {
       const activeElement = document.activeElement;
-      setPhoneComposerFocused(
-        activeElement instanceof Element &&
-          composerOverlayElement.contains(activeElement) &&
-          activeElement.matches(TYPE_TO_FOCUS_EDITABLE_SELECTOR),
+      setPhoneComposerFocused((previouslyFocused) =>
+        resolvePhoneComposerFocus({
+          withinComposer:
+            activeElement instanceof Element && composerOverlayElement.contains(activeElement),
+          editable:
+            activeElement instanceof Element &&
+            activeElement.matches(TYPE_TO_FOCUS_EDITABLE_SELECTOR),
+          previouslyFocused,
+        }),
       );
     };
     const onFocusIn = () => {

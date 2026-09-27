@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   composerViewportBottomInset,
   resolveChatFooterLayout,
+  resolvePhoneComposerFocus,
   resolvePhoneKeyboardInset,
   shouldDockPhoneDraftComposer,
   shouldDismissMobileKeyboardOnSubmit,
@@ -11,6 +12,33 @@ import {
 } from "./mobileComposerViewport";
 
 describe("phone portrait composer viewport", () => {
+  it("does not dock on a status-chip tap but stays docked when moving from typing to Send", () => {
+    let focused = resolvePhoneComposerFocus({
+      withinComposer: true,
+      editable: false,
+      previouslyFocused: false,
+    });
+    expect(focused).toBe(false);
+    focused = resolvePhoneComposerFocus({
+      withinComposer: true,
+      editable: true,
+      previouslyFocused: focused,
+    });
+    expect(focused).toBe(true);
+    focused = resolvePhoneComposerFocus({
+      withinComposer: true,
+      editable: false,
+      previouslyFocused: focused,
+    });
+    expect(focused).toBe(true);
+    focused = resolvePhoneComposerFocus({
+      withinComposer: false,
+      editable: false,
+      previouslyFocused: focused,
+    });
+    expect(focused).toBe(false);
+  });
+
   it("leaves an untouched new-chat hero unfocused and undocked", () => {
     expect(
       shouldDockPhoneDraftComposer({
