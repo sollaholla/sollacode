@@ -35,7 +35,6 @@
     "@xterm/xterm": "6.0.0",
     "class-variance-authority": "^0.7.1",
     "effect": "catalog:",
-    "jose": "catalog:",
     "lexical": "^0.41.0",
     "lucide-react": "^0.564.0",
     "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",

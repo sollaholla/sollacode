@@ -302,7 +302,6 @@
     "@noble/hashes": "catalog:",
     "@t3tools/contracts": "workspace:*",
     "effect": "catalog:",
-    "jose": "catalog:",
     "yaml": "catalog:"
   },
   "devDependencies": {
