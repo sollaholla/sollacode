@@ -295,8 +295,16 @@ async function smokeDesktop(app: InstalledApp, platform: SmokePlatform, workDir:
       ? // No display on the runner, and Ubuntu blocks the setuid sandbox of an extracted AppImage.
         ["xvfb-run", ["-a", app.executable, "--no-sandbox"]]
       : [app.executable, []];
+  // On macOS the app keeps the real home: its first act after "ready" is a
+  // synchronous safeStorage (Keychain) write, and with a made-up HOME there is
+  // no login keychain, so the main thread waits on a prompt nobody can answer.
+  // T3CODE_HOME still keeps Solla's own state isolated.
+  const env =
+    platform === "mac"
+      ? { ...process.env, ELECTRON_RUN_AS_NODE: undefined, T3CODE_HOME: home }
+      : { ...isolatedEnv(workDir, "desktop"), T3CODE_HOME: home };
   const child = NodeChildProcess.spawn(command, args, {
-    env: { ...isolatedEnv(workDir, "desktop"), T3CODE_HOME: home },
+    env,
     stdio: ["ignore", "pipe", "pipe"],
     detached: platform !== "win",
   });
@@ -318,10 +326,23 @@ async function smokeDesktop(app: InstalledApp, platform: SmokePlatform, workDir:
     console.log(`desktop app started its backend: ${JSON.stringify(environment).slice(0, 300)}`);
   } catch (error) {
     console.error(tail());
+    console.error(desktopLogTail(NodePath.join(home, "userdata", "logs")));
     throw error;
   } finally {
     stopTree(child, platform);
   }
+}
+
+/** The end of the app's own trace, which says where startup stopped. */
+function desktopLogTail(logsDir: string): string {
+  const trace = NodePath.join(logsDir, "desktop.trace.ndjson");
+  if (!NodeFS.existsSync(trace)) return `(no desktop trace at ${trace})`;
+  return NodeFS.readFileSync(trace, "utf8")
+    .trim()
+    .split("\n")
+    .slice(-25)
+    .map((line) => line.slice(0, 400))
+    .join("\n");
 }
 
 async function main() {
