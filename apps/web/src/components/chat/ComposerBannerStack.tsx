@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { XIcon } from "lucide-react";
+import { ChevronDownIcon, XIcon } from "lucide-react";
 
 import { useOnScreenKeyboard } from "~/hooks/useOnScreenKeyboard";
 import { cn } from "~/lib/utils";
@@ -28,6 +28,7 @@ export interface ComposerBannerStackItem {
   readonly variant: "error" | "info" | "success" | "warning";
   readonly icon: ReactNode;
   readonly title: ReactNode;
+  readonly collapsedLabel?: string;
   readonly description?: ReactNode;
   readonly actions?: ReactNode;
   readonly className?: string;
@@ -137,6 +138,7 @@ export function ComposerBannerStack({
           }}
         >
           <ComposerBannerStackAlert
+            key={frontItem.id}
             item={frontItem}
             exiting={exitingItemId === frontItem.id}
             onDismissRequest={() => requestDismiss(frontItem)}
@@ -199,7 +201,7 @@ function ComposerBannerStackAlert({
 }) {
   const dismissOnly = item.onDismiss && !item.actions;
 
-  return (
+  const alert = (
     <Alert
       variant={item.variant}
       className={cn("alert-glass rounded-[14px]", item.className)}
@@ -232,5 +234,28 @@ function ComposerBannerStackAlert({
         </AlertAction>
       ) : null}
     </Alert>
+  );
+
+  if (!item.collapsedLabel) return alert;
+
+  return (
+    <details className="group/notice" data-composer-collapsed-notice={item.id}>
+      <summary
+        className={cn(
+          "flex min-h-9 w-fit max-w-full cursor-pointer list-none items-center gap-1.5 rounded-full border bg-background px-3 py-1 text-xs font-medium [&::-webkit-details-marker]:hidden [&>svg]:size-3.5 [&>svg]:shrink-0",
+          "focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+          item.variant === "error"
+            ? "border-destructive/30 text-destructive"
+            : "border-warning/30 text-warning",
+        )}
+      >
+        {item.icon}
+        <span role="status" className="min-w-0 truncate">
+          {item.collapsedLabel}
+        </span>
+        <ChevronDownIcon className="group-open/notice:rotate-180" />
+      </summary>
+      <div className="mt-2">{alert}</div>
+    </details>
   );
 }

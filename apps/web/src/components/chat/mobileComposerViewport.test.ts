@@ -143,7 +143,7 @@ describe("phone portrait composer viewport", () => {
     });
   });
 
-  it("uses the keyboard edge once while draft overlays remain out of flow", () => {
+  it("docks a focused phone draft at the keyboard edge and keeps the unfocused hero in flow", () => {
     expect(
       resolveChatFooterLayout({
         isDraftHeroState: true,
@@ -163,7 +163,7 @@ describe("phone portrait composer viewport", () => {
         keyboardInset: 344,
       }),
     ).toEqual({
-      mode: "draft-hero-overlay",
+      mode: "draft-hero-flow",
       timelineEndInset: 0,
       bottomOffset: 0,
       marginBottom: 0,

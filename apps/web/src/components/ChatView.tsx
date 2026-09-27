@@ -2573,7 +2573,9 @@ function ChatViewContent(props: ChatViewProps) {
     const syncFocus = () => {
       const activeElement = document.activeElement;
       setPhoneComposerFocused(
-        activeElement instanceof Node && composerOverlayElement.contains(activeElement),
+        activeElement instanceof Element &&
+          composerOverlayElement.contains(activeElement) &&
+          activeElement.matches(TYPE_TO_FOCUS_EDITABLE_SELECTOR),
       );
     };
     const onFocusIn = () => {
@@ -3632,6 +3634,7 @@ function ChatViewContent(props: ChatViewProps) {
         variant: connection.phase === "error" ? "error" : "warning",
         icon: <WifiOffIcon />,
         title: `${activeEnvironmentUnavailableState.label}: ${connectionStatusTitle(connection)}`,
+        collapsedLabel: isReconnecting ? "Reconnecting…" : "Disconnected",
         description: canQueueLocalMessage
           ? "Messages sent now are saved on this device and dispatch when the connection returns."
           : (connection.error ??
@@ -9902,7 +9905,7 @@ function ChatViewContent(props: ChatViewProps) {
               data-chat-file-drop-active={isFileDragOverTimeline ? "true" : "false"}
               className={cn(
                 "relative flex min-h-0 flex-1 flex-col",
-                terminalMainSurfaceActive && "hidden",
+                (terminalMainSurfaceActive || isDraftHeroState) && "hidden",
                 isFileDragOverTimeline && "ring-1 ring-inset ring-primary/70",
               )}
               onDragEnter={onTimelineFileDragEnter}
@@ -10038,7 +10041,7 @@ function ChatViewContent(props: ChatViewProps) {
               )}
             </div>
 
-            {/* Input bar — centered hero while a draft has no messages, docked at the bottom otherwise */}
+            {/* The complete draft form takes space below the header and usage row, and scrolls when it cannot fit. */}
             <div
               ref={setComposerOverlayElement}
               data-chat-composer-overlay="true"
@@ -10049,8 +10052,8 @@ function ChatViewContent(props: ChatViewProps) {
               data-chat-composer-phone-focused={phoneComposerFocused ? "true" : "false"}
               data-chat-composer-viewport-inset={phoneVisualViewportBottomInset}
               className={cn(
-                chatFooterLayout.mode === "draft-hero-overlay"
-                  ? "pointer-events-none absolute inset-0 z-20 flex items-center"
+                chatFooterLayout.mode === "draft-hero-flow"
+                  ? "relative z-20 flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain"
                   : chatFooterLayout.mode === "draft-docked-overlay"
                     ? "pointer-events-none absolute inset-x-0 bottom-0 z-20 overscroll-none pt-1.5 sm:pt-2"
                     : "pointer-events-none relative z-20 shrink-0 overscroll-none pt-1.5 sm:pt-2",
@@ -10066,7 +10069,10 @@ function ChatViewContent(props: ChatViewProps) {
             >
               <div
                 ref={attachDraftHeroTransitionGroupRef}
-                className="chat-composer-horizontal-inset w-full"
+                className={cn(
+                  "chat-composer-horizontal-inset w-full",
+                  chatFooterLayout.mode === "draft-hero-flow" && "my-auto shrink-0 py-6",
+                )}
               >
                 <ComposerStatusRail
                   voice={
@@ -10140,10 +10146,10 @@ function ChatViewContent(props: ChatViewProps) {
                   }
                 />
                 <div className="pointer-events-auto relative z-10">
-                  {isDraftHeroState ? (
-                    <div className="absolute inset-x-0 bottom-full z-0">
+                  {isDraftHeroState && !dockPhoneDraftComposer ? (
+                    <div>
                       <div
-                        className="pb-8"
+                        className="pb-6"
                         style={
                           forceExpandedMobileComposer
                             ? {
@@ -10182,11 +10188,9 @@ function ChatViewContent(props: ChatViewProps) {
                           </div>
                         ) : null}
                       </div>
-                      <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                     </div>
-                  ) : (
-                    <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
-                  )}
+                  ) : null}
+                  <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   {activeProject ? (
                     <ProjectFolderMissingBanner
                       environmentId={activeProject.environmentId}
