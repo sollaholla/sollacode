@@ -20,7 +20,6 @@
     "@t3tools/tailscale": "workspace:*",
     "effect": "catalog:",
     "electron": "41.5.0",
-    "electron-store": "^8.2.0",
     "playwright-core": "1.60.0",
     "react-grab": "^0.1.32"
   },
