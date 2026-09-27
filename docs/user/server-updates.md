@@ -60,7 +60,9 @@ For source-hosted servers, build the matching Solla revision on the host and res
 ## After the Update
 
 Keep the web or desktop app open while the server restarts. When it reconnects with the matching
-version, the warning and update action disappear.
+version, the warning and update action disappear. A browser that opens Solla Code while the server
+is still starting sees a short "Solla Code is starting…" page that refreshes itself until the server
+is ready.
 
 If a route change (for example, switching a thread from chat to terminal mode) reaches an old cached
 module after an update, Solla Code retries that route once with a fresh app-shell URL. The retry
