@@ -117,7 +117,7 @@ describe("formatPendingPrimaryActionLabel", () => {
 });
 
 describe("showSettingsUpdateContextMenu", () => {
-  it("offers Revert and invokes it when selected", async () => {
+  it("offers Reset to defaults and invokes the existing revert action when selected", async () => {
     const showContextMenu = vi.fn().mockResolvedValue("revert");
     const onRevert = vi.fn();
 
@@ -127,7 +127,7 @@ describe("showSettingsUpdateContextMenu", () => {
       onRevert,
     });
 
-    expect(showContextMenu).toHaveBeenCalledWith([{ id: "revert", label: "Revert" }], {
+    expect(showContextMenu).toHaveBeenCalledWith([{ id: "revert", label: "Reset to defaults" }], {
       x: 12,
       y: 34,
     });

@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useState,
   type KeyboardEventHandler,
   type MouseEventHandler,
   type PointerEventHandler,
@@ -21,6 +22,7 @@ import {
 } from "./microphoneHold";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Popover, PopoverPopup } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
@@ -115,7 +117,7 @@ export const formatPushToTalkActionLabel = (
 type SettingsUpdateContextMenuAction = "revert";
 
 export const SETTINGS_UPDATE_CONTEXT_MENU_ITEMS = [
-  { id: "revert", label: "Revert" },
+  { id: "revert", label: "Reset to defaults" },
 ] as const satisfies readonly ContextMenuItem<SettingsUpdateContextMenuAction>[];
 
 export async function showSettingsUpdateContextMenu(input: {
@@ -192,6 +194,56 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   );
   const microphoneHoldRef = useRef<MicrophoneHold | null>(null);
   const stopPushToTalkRef = useRef(onPushToTalkStop);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsHoldRef = useRef<{
+    timer: ReturnType<typeof setTimeout>;
+    pointerId: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  const settingsTouchRef = useRef(false);
+  const settingsHoldConsumedRef = useRef(false);
+  const [settingsResetOpen, setSettingsResetOpen] = useState(false);
+  const settingsDisabled =
+    isApplyingSettings ||
+    isSendBusy ||
+    isConnecting ||
+    isEnvironmentUnavailable ||
+    isPreparingWorktree;
+  const cancelSettingsHold = useCallback(() => {
+    if (settingsHoldRef.current) clearTimeout(settingsHoldRef.current.timer);
+    settingsHoldRef.current = null;
+  }, []);
+  useEffect(() => {
+    setSettingsResetOpen(false);
+    return cancelSettingsHold;
+  }, [cancelSettingsHold, settingsUpdateLabel, settingsDisabled, pendingAction]);
+  const startSettingsHold: PointerEventHandler<HTMLButtonElement> = (event) => {
+    cancelSettingsHold();
+    settingsHoldConsumedRef.current = false;
+    settingsTouchRef.current = event.pointerType === "touch" || event.pointerType === "pen";
+    if (preserveComposerFocusOnPointerDown) event.preventDefault();
+    if (settingsDisabled || event.button !== 0 || !settingsTouchRef.current) return;
+    settingsHoldRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      timer: setTimeout(() => {
+        settingsHoldConsumedRef.current = true;
+        setSettingsResetOpen(true);
+      }, 450),
+    };
+  };
+  const moveSettingsHold: PointerEventHandler<HTMLButtonElement> = (event) => {
+    const hold = settingsHoldRef.current;
+    if (
+      hold &&
+      (event.pointerId !== hold.pointerId ||
+        Math.hypot(event.clientX - hold.x, event.clientY - hold.y) > 10)
+    ) {
+      cancelSettingsHold();
+    }
+  };
   stopPushToTalkRef.current = onPushToTalkStop;
   useEffect(() => () => microphoneHoldRef.current?.dispose(), []);
   const microphoneButtonRef = useCallback((button: HTMLButtonElement | null) => {
@@ -232,6 +284,12 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const showSettingsContextMenu: MouseEventHandler<HTMLButtonElement> = (event) => {
     event.preventDefault();
     event.stopPropagation();
+    cancelSettingsHold();
+    if (settingsTouchRef.current) {
+      settingsHoldConsumedRef.current = true;
+      setSettingsResetOpen(true);
+      return;
+    }
     const api = readLocalApi();
     if (!api) return;
     void showSettingsUpdateContextMenu({
@@ -278,39 +336,94 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     </Tooltip>
   ) : null;
   const settingsUpdateAction = settingsUpdateLabel ? (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className={cn("h-9 shrink-0 rounded-full sm:h-8", compact ? "w-9 px-0 sm:w-8" : "px-3")}
-            {...pointerFocusProps}
-            disabled={
-              isApplyingSettings ||
-              isSendBusy ||
-              isConnecting ||
-              isEnvironmentUnavailable ||
-              isPreparingWorktree
-            }
-            onClick={onApplySettings}
-            onContextMenu={showSettingsContextMenu}
-            aria-label={`Apply conversation changes: ${settingsUpdateLabel}`}
-          />
+    <Popover
+      open={settingsResetOpen && !settingsDisabled}
+      onOpenChange={(open, details) => {
+        // The release click belongs to the hold, not to a new outside tap.
+        if (
+          !open &&
+          details.reason === "outside-press" &&
+          settingsHoldConsumedRef.current &&
+          details.event.target instanceof Node &&
+          settingsButtonRef.current?.contains(details.event.target)
+        ) {
+          details.cancel();
+          return;
         }
+        setSettingsResetOpen(open);
+      }}
+    >
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              ref={settingsButtonRef}
+              type="button"
+              size="sm"
+              variant="outline"
+              className={cn(
+                "h-9 shrink-0 touch-manipulation select-none rounded-full sm:h-8 [-webkit-touch-callout:none]",
+                compact ? "w-9 px-0 sm:w-8" : "px-3",
+              )}
+              disabled={settingsDisabled}
+              onPointerDown={startSettingsHold}
+              onPointerMove={moveSettingsHold}
+              onPointerUp={cancelSettingsHold}
+              onPointerCancel={cancelSettingsHold}
+              onPointerLeave={cancelSettingsHold}
+              onClick={(event) => {
+                if (settingsHoldConsumedRef.current) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  return;
+                }
+                onApplySettings();
+              }}
+              onKeyDown={() => {
+                settingsTouchRef.current = false;
+                settingsHoldConsumedRef.current = false;
+              }}
+              onContextMenu={showSettingsContextMenu}
+              aria-haspopup="dialog"
+              aria-expanded={settingsResetOpen && !settingsDisabled}
+              aria-label={`Apply conversation changes: ${settingsUpdateLabel}`}
+            />
+          }
+        >
+          {isApplyingSettings ? (
+            <Spinner className="size-3.5" aria-hidden="true" />
+          ) : (
+            <RefreshCwIcon className="size-3.5" aria-hidden="true" />
+          )}
+          <span className={compact ? "sr-only" : undefined}>
+            {isApplyingSettings ? "Applying…" : "Apply changes"}
+          </span>
+        </TooltipTrigger>
+        <TooltipPopup side="top">
+          {settingsUpdateLabel}. Hold or right-click to reset changes.
+        </TooltipPopup>
+      </Tooltip>
+      <PopoverPopup
+        anchor={settingsButtonRef}
+        side="top"
+        align="end"
+        initialFocus={false}
+        aria-label="Reset conversation changes"
+        viewportClassName="p-1"
       >
-        {isApplyingSettings ? (
-          <Spinner className="size-3.5" aria-hidden="true" />
-        ) : (
-          <RefreshCwIcon className="size-3.5" aria-hidden="true" />
-        )}
-        <span className={compact ? "sr-only" : undefined}>
-          {isApplyingSettings ? "Applying…" : "Apply changes"}
-        </span>
-      </TooltipTrigger>
-      <TooltipPopup side="top">{settingsUpdateLabel}</TooltipPopup>
-    </Tooltip>
+        <Button
+          type="button"
+          variant="ghost"
+          className="min-h-11 w-full justify-start"
+          onClick={() => {
+            setSettingsResetOpen(false);
+            onRevertSettings();
+          }}
+        >
+          Reset to defaults
+        </Button>
+      </PopoverPopup>
+    </Popover>
   ) : null;
 
   if (pendingAction) {
