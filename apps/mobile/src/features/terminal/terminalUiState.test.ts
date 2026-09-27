@@ -50,4 +50,22 @@ describe("terminalUiState", () => {
     });
     expect(getCachedTerminalGridSize(otherTarget)).toBeNull();
   });
+
+  it("bounds old terminal sizes while preserving recently read or resized terminals", () => {
+    const target = (id: number) => ({
+      environmentId: EnvironmentId.make("env-1"),
+      threadId: ThreadId.make(`thread-${id}`),
+      terminalId: "default",
+    });
+    for (let id = 0; id < 256; id++) {
+      cacheTerminalGridSize(target(id), { cols: 80, rows: 24 });
+    }
+    expect(getCachedTerminalGridSize(target(0))).toEqual({ cols: 80, rows: 24 });
+    cacheTerminalGridSize(target(1), { cols: 120, rows: 40 });
+    cacheTerminalGridSize(target(256), { cols: 100, rows: 30 });
+    expect(getCachedTerminalGridSize(target(2))).toBeNull();
+    expect(getCachedTerminalGridSize(target(0))).toEqual({ cols: 80, rows: 24 });
+    expect(getCachedTerminalGridSize(target(1))).toEqual({ cols: 120, rows: 40 });
+    expect(getCachedTerminalGridSize(target(256))).toEqual({ cols: 100, rows: 30 });
+  });
 });

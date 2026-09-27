@@ -75,19 +75,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
-@keyframes provider-usage-elapsed-dots {
-  from {
-    background-position: 0 center;
-  }
-  to {
-    background-position: 6px center;
-  }
-}
-
-/* A marching dotted line distinguishes elapsed wall-clock time from the solid
-   quota-consumption fill without obscuring either side of their crossover.
-   The light core plus dark halo keeps every dot legible over yellow/red fills,
-   the neutral track, and both color schemes. */
+/* Static dots distinguish elapsed wall-clock time from quota consumption.
+   Keeping the pattern still avoids repainting every usage bar on every frame. */
 .provider-usage-elapsed-dots {
   background-image: radial-gradient(
     circle at center,
@@ -98,15 +87,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   background-repeat: repeat-x;
   background-position: 0 center;
   background-size: 6px 100%;
-  animation: provider-usage-elapsed-dots 900ms linear infinite;
-  will-change: background-position;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .provider-usage-elapsed-dots {
-    animation: none;
-    will-change: auto;
-  }
 }
 
 :root {
@@ -216,14 +196,30 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   );
 }
 
-@theme inline {
-  --color-zinc-25: oklch(99.2% 0 0);
-  --animate-skeleton: skeleton 2s -1s infinite linear;
+@theme {
+  /* Busy feedback advances at eight discrete frames per second, independent
+     of a high-refresh display's refresh rate. Decorative surfaces stay still. */
+  --animate-spin: spin 1s steps(8) infinite;
+  --animate-pulse: status-pulse 2s infinite;
   /* Duty-cycled indicator animations: long holds with stepped ramps, so the
      compositor updates discrete frames instead of every vsync. */
   --animate-status-pulse: status-pulse 2s infinite;
   --animate-status-ping: status-ping 2s infinite;
   --animate-sidebar-working-text: sidebar-working-text 3.4s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --animate-spin: none;
+    --animate-pulse: none;
+    --animate-status-pulse: none;
+    --animate-status-ping: none;
+    --animate-sidebar-working-text: none;
+  }
+}
+
+@theme inline {
+  --color-zinc-25: oklch(99.2% 0 0);
   --font-sans:
     "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
     sans-serif;
@@ -281,11 +277,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
-  @keyframes skeleton {
-    to {
-      background-position: -200% 0;
-    }
-  }
   @keyframes status-pulse {
     0%,
     40% {
@@ -1819,24 +1810,6 @@ label:has(> select#reasoning-effort) select {
   background: color-mix(in srgb, var(--card) 92%, var(--background));
 }
 
-@keyframes ultrathink-rainbow {
-  0% {
-    background-position: 0% 50%;
-  }
-  100% {
-    background-position: 200% 50%;
-  }
-}
-
-@keyframes ultrathink-chroma-shift {
-  0% {
-    filter: hue-rotate(0deg) saturate(1.2);
-  }
-  100% {
-    filter: hue-rotate(360deg) saturate(1.2);
-  }
-}
-
 .ultrathink-frame {
   --ultrathink-spectrum: linear-gradient(
     120deg,
@@ -1870,7 +1843,6 @@ label:has(> select#reasoning-effort) select {
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   mask-composite: exclude;
-  animation: ultrathink-rainbow 10s linear infinite;
 }
 
 .ultrathink-frame > * {
@@ -1878,7 +1850,7 @@ label:has(> select#reasoning-effort) select {
 }
 
 .ultrathink-chroma {
-  animation: ultrathink-chroma-shift 10s linear infinite;
+  filter: saturate(1.2);
 }
 
 .ultrathink-pill {
@@ -1891,7 +1863,6 @@ label:has(> select#reasoning-effort) select {
   background-position:
     0 0,
     0% 50%;
-  animation: ultrathink-rainbow 10s linear infinite;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--card) 82%, transparent);
 }
 
@@ -1903,7 +1874,6 @@ label:has(> select#reasoning-effort) select {
   background-position: 0% 50%;
   background-clip: text;
   -webkit-background-clip: text;
-  animation: ultrathink-rainbow 10s linear infinite;
 }
 
 /* Composer chips are non-editable decorators, so the browser skips them when
@@ -2110,52 +2080,10 @@ label:has(> select#reasoning-effort) select {
   }
 }
 
-/* The "Working for …" equalizer icon. Each of lucide's six bars is scaled
-   about its own centre on a staggered cycle, so the pillars change height
-   independently. `non-scaling-stroke` keeps every bar the same thickness
-   while its height changes; without it the short bars render fatter. */
-@keyframes working-pillar {
-  0%,
-  100% {
-    transform: scaleY(0.4);
-  }
-  50% {
-    transform: scaleY(1.15);
-  }
-}
-
+/* The working label and elapsed timer convey live progress; keep its
+   decorative equalizer still instead of animating six SVG paths per turn. */
 .working-pillars > path {
-  transform-box: fill-box;
-  transform-origin: center;
   vector-effect: non-scaling-stroke;
-  animation: working-pillar 1150ms ease-in-out infinite;
-}
-
-/* Prime-ish offsets rather than a uniform ramp: an even stagger reads as a
-   travelling wave, which looks like a progress bar instead of activity. */
-.working-pillars > path:nth-child(1) {
-  animation-delay: -900ms;
-}
-.working-pillars > path:nth-child(2) {
-  animation-delay: -240ms;
-}
-.working-pillars > path:nth-child(3) {
-  animation-delay: -660ms;
-}
-.working-pillars > path:nth-child(4) {
-  animation-delay: -80ms;
-}
-.working-pillars > path:nth-child(5) {
-  animation-delay: -480ms;
-}
-.working-pillars > path:nth-child(6) {
-  animation-delay: -1020ms;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .working-pillars > path {
-    animation: none;
-  }
 }
 
 /* Enabled header actions share one contrast level; disabled buttons keep their

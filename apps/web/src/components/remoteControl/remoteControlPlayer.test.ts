@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   bufferedDrift,
   liveEdgeSeekTarget,
   LIVE_EDGE_MAX_DRIFT_SECONDS,
   LIVE_EDGE_TARGET_LAG_SECONDS,
+  createRemoteControlVideoSink,
+  VIDEO_MAX_QUEUED_BYTES,
+  VIDEO_MAX_QUEUED_CHUNKS,
 } from "./remoteControlPlayer";
 import { selectRemoteControlMimeType } from "./remoteControlEncoder";
 
@@ -22,6 +25,167 @@ describe("bufferedDrift", () => {
     // Only the newest range matters — earlier ones are already played out.
     expect(bufferedDrift(buffered([2, 10]), 9)).toBeCloseTo(1);
   });
+});
+
+function installVideoStandIns() {
+  class Buffer extends EventTarget {
+    updating = false;
+    oldest = 0;
+    newest = 0;
+    buffered = {
+      length: 1,
+      start: () => this.oldest,
+      end: () => this.newest,
+    };
+    appendBuffer = vi.fn(() => {
+      this.updating = true;
+    });
+    remove = vi.fn((_start: number, end: number) => {
+      this.oldest = end;
+      this.updating = true;
+    });
+    complete() {
+      this.updating = false;
+      this.dispatchEvent(new Event("updateend"));
+    }
+  }
+  const buffer = new Buffer();
+  const media = new EventTarget();
+  vi.stubGlobal(
+    "MediaSource",
+    class {
+      static isTypeSupported() {
+        return true;
+      }
+      constructor() {
+        return Object.assign(media, {
+          readyState: "open",
+          addSourceBuffer: () => buffer,
+          endOfStream: vi.fn(),
+        });
+      }
+    },
+  );
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:test-stream");
+  const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  const video = Object.assign(new EventTarget(), {
+    currentTime: 0,
+    buffered: buffer.buffered,
+    paused: false,
+    play: vi.fn(() => Promise.resolve()),
+    pause: vi.fn(),
+    removeAttribute: vi.fn(),
+    load: vi.fn(),
+  });
+  return { buffer, media, video, revoke };
+}
+
+describe("remote video resource lifetime", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("bounds queued chunks when MediaSource never opens and reports failure only once", () => {
+    const { video } = installVideoStandIns();
+    const error = vi.fn();
+    const sink = createRemoteControlVideoSink(
+      "video/webm",
+      video as unknown as HTMLVideoElement,
+      error,
+    )!;
+    for (let i = 0; i < VIDEO_MAX_QUEUED_CHUNKS + 100; i++) {
+      sink.append({ data: "AAEC", isInit: i === 0 });
+    }
+    expect(sink.stats().queued).toBe(0);
+    expect(error).toHaveBeenCalledOnce();
+    sink.dispose();
+  });
+
+  it("rejects an oversized encoded chunk before allocating its decoded bytes", () => {
+    const { video } = installVideoStandIns();
+    const decode = vi.spyOn(globalThis, "atob");
+    const error = vi.fn();
+    const sink = createRemoteControlVideoSink(
+      "video/webm",
+      video as unknown as HTMLVideoElement,
+      error,
+    )!;
+    sink.append({
+      data: "A".repeat(Math.ceil((VIDEO_MAX_QUEUED_BYTES * 4) / 3) + 4),
+      isInit: true,
+    });
+    expect(decode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledOnce();
+    expect(sink.stats().queued).toBe(0);
+    sink.dispose();
+  });
+
+  it("trims played history during a long session while continuing to append", () => {
+    const { video, media, buffer } = installVideoStandIns();
+    const error = vi.fn();
+    const sink = createRemoteControlVideoSink(
+      "video/webm",
+      video as unknown as HTMLVideoElement,
+      error,
+    )!;
+    media.dispatchEvent(new Event("sourceopen"));
+    for (let second = 0; second < 1800; second++) {
+      video.currentTime = second;
+      buffer.newest = second + 0.1;
+      sink.append({ data: "AAEC", isInit: second === 0 });
+      // Removal and append each emit their own completion receipt.
+      while (buffer.updating) buffer.complete();
+      expect(video.currentTime - buffer.oldest).toBeLessThan(15);
+    }
+    expect(buffer.appendBuffer).toHaveBeenCalledTimes(1800);
+    expect(buffer.remove).toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    sink.dispose();
+  });
+
+  it("releases the media element and ignores late events after disposal", () => {
+    const { video, media, buffer, revoke } = installVideoStandIns();
+    const sink = createRemoteControlVideoSink("video/webm", video as unknown as HTMLVideoElement)!;
+    sink.append({ data: "AAEC", isInit: true });
+    sink.dispose();
+    sink.dispose();
+    media.dispatchEvent(new Event("sourceopen"));
+    buffer.complete();
+    expect(buffer.appendBuffer).not.toHaveBeenCalled();
+    expect(video.pause).toHaveBeenCalledOnce();
+    expect(video.removeAttribute).toHaveBeenCalledWith("src");
+    expect(video.load).toHaveBeenCalledOnce();
+    expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:test-stream");
+  });
+
+  it.each(["buffer", "video"] as const)(
+    "recovers from an asynchronous %s error after the first frame without awaiting another chunk",
+    (target) => {
+      const { video, media, buffer } = installVideoStandIns();
+      const error = vi.fn();
+      const sink = createRemoteControlVideoSink(
+        "video/webm",
+        video as unknown as HTMLVideoElement,
+        error,
+      )!;
+      media.dispatchEvent(new Event("sourceopen"));
+      sink.append({ data: "AAEC", isInit: true });
+      buffer.complete();
+      sink.append({ data: "AAEC", isInit: false });
+      sink.append({ data: "AAEC", isInit: false });
+      expect(sink.stats().queued).toBe(1);
+      const emitter = target === "buffer" ? buffer : video;
+      emitter.dispatchEvent(new Event("error"));
+      expect(error).toHaveBeenCalledOnce();
+      expect(sink.stats().queued).toBe(0);
+      buffer.complete();
+      expect(buffer.appendBuffer).toHaveBeenCalledTimes(2);
+      sink.dispose();
+      emitter.dispatchEvent(new Event("error"));
+      expect(error).toHaveBeenCalledOnce();
+    },
+  );
 });
 
 describe("liveEdgeSeekTarget", () => {

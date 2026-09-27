@@ -2318,8 +2318,6 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
     <div className="py-0.5 pl-1">
       <div className="flex items-center gap-2 pt-1 text-[12px] text-muted-foreground tabular-nums">
         <span className="inline-flex size-5 shrink-0 items-center justify-center rounded-md bg-[var(--gold-tint)] text-gold-600 dark:text-gold-400">
-          {/* The equalizer's six bars each rise and fall on their own phase,
-              so the icon reads as live work rather than a pulsing block. */}
           <AudioLinesIcon className="working-pillars size-3.5" aria-hidden />
         </span>
         <span>

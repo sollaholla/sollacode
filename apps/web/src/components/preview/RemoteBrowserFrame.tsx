@@ -41,6 +41,7 @@ import { RemoteViewZoomReadout, useRemoteViewZoom } from "../remoteView/RemoteVi
 import { RemoteAgentCursor } from "./RemoteAgentCursor";
 import { RemoteBrowserContextMenu } from "./RemoteBrowserContextMenu";
 import { RemoteTabAudioButton, useRemoteTabAudio } from "./RemoteTabAudio";
+import { usePreviewPageVisible } from "./previewPageVisibility";
 import {
   createRemoteBrowserTouchGestures,
   attachRemoteKeyboardInput,
@@ -135,6 +136,7 @@ export function RemoteBrowserFrame(props: {
   readonly onOpenInNewTab?: (url: string) => void;
 }) {
   const { threadRef, tabId, visible, agentControl, onOpenInNewTab } = props;
+  const pageVisible = usePreviewPageVisible();
   const frameIntervalRef = useRef(LIVE_FRAME_INTERVAL_MS);
   frameIntervalRef.current =
     agentControl === "agent" ? AGENT_FRAME_INTERVAL_MS : LIVE_FRAME_INTERVAL_MS;
@@ -300,7 +302,7 @@ export function RemoteBrowserFrame(props: {
   );
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || !pageVisible) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
@@ -312,7 +314,7 @@ export function RemoteBrowserFrame(props: {
       active = false;
       if (timer !== null) clearTimeout(timer);
     };
-  }, [capture, visible]);
+  }, [capture, pageVisible, visible]);
 
   const contentGeometry = useCallback((): {
     readonly origin: FramePoint;

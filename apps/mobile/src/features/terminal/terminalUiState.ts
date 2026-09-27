@@ -14,6 +14,7 @@ export interface TerminalUiStateTarget {
 }
 
 const terminalGridSizeCache = new Map<string, TerminalGridSize>();
+const MAX_CACHED_TERMINAL_GRIDS = 256;
 let cachedTerminalFontSize: number | null = null;
 
 function terminalUiStateKey(target: TerminalUiStateTarget): string {
@@ -31,7 +32,12 @@ export function cacheTerminalFontSize(value: number | null | undefined): number 
 }
 
 export function getCachedTerminalGridSize(target: TerminalUiStateTarget): TerminalGridSize | null {
-  return terminalGridSizeCache.get(terminalUiStateKey(target)) ?? null;
+  const key = terminalUiStateKey(target);
+  const size = terminalGridSizeCache.get(key);
+  if (!size) return null;
+  terminalGridSizeCache.delete(key);
+  terminalGridSizeCache.set(key, size);
+  return size;
 }
 
 export function cacheTerminalGridSize(
@@ -42,7 +48,13 @@ export function cacheTerminalGridSize(
     cols: Math.max(1, Math.floor(size.cols)),
     rows: Math.max(1, Math.floor(size.rows)),
   };
-  terminalGridSizeCache.set(terminalUiStateKey(target), normalized);
+  const key = terminalUiStateKey(target);
+  terminalGridSizeCache.delete(key);
+  terminalGridSizeCache.set(key, normalized);
+  if (terminalGridSizeCache.size > MAX_CACHED_TERMINAL_GRIDS) {
+    const oldestKey = terminalGridSizeCache.keys().next().value;
+    if (oldestKey !== undefined) terminalGridSizeCache.delete(oldestKey);
+  }
   return normalized;
 }
 

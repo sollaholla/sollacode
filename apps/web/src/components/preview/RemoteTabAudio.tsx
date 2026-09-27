@@ -3,26 +3,20 @@ import { PreviewTabId, type PreviewTabAudioEvent, type ScopedThreadRef } from "@
 import * as Schema from "effect/Schema";
 import { AsyncResult, type Atom, type AtomRegistry } from "effect/unstable/reactivity";
 import { Volume2Icon, VolumeIcon, VolumeXIcon } from "lucide-react";
-import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { cn } from "~/lib/utils";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { canPlayTabAudio, createTabAudioPlayer } from "./tabAudioPlayback";
+import { usePreviewPageVisible } from "./previewPageVisibility";
 
 /** How often a listening device reports what its player did. */
 const TAB_AUDIO_REPORT_INTERVAL_MS = 5_000;
 
 /** Whether this device plays the sound of browser tabs it views remotely. */
 const REMOTE_TAB_SOUND_STORAGE_KEY = "solla:remote-tab-sound:v1";
-
-function subscribeVisibility(onChange: () => void): () => void {
-  document.addEventListener("visibilitychange", onChange);
-  return () => document.removeEventListener("visibilitychange", onChange);
-}
-const pageVisible = () => document.visibilityState === "visible";
-const pageVisibleOnServer = () => false;
 
 /**
  * Opens a tab-audio subscription and hands over every event, in order.
@@ -73,7 +67,7 @@ export function useRemoteTabAudio(input: {
 }) {
   const supported = canPlayTabAudio();
   const [enabled, setEnabled] = useLocalStorage(REMOTE_TAB_SOUND_STORAGE_KEY, true, Schema.Boolean);
-  const visible = useSyncExternalStore(subscribeVisibility, pageVisible, pageVisibleOnServer);
+  const visible = usePreviewPageVisible();
   const listening = supported && enabled && input.visible && visible;
   const [playing, setPlaying] = useState(false);
   const [tabAudible, setTabAudible] = useState(false);
