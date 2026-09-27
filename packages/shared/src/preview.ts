@@ -61,6 +61,42 @@ export function isPreviewableUrl(rawUrl: string): boolean {
   }
 }
 
+/** Client-side affordance only: omit URLs known to require the preview host's private network. */
+export function isPublicWebPreviewUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+    const host = url.hostname.toLowerCase().replace(/\.$/u, "");
+    if (host.startsWith("[")) {
+      // Global-unicast IPv6; loopback, mapped IPv4, link-local and private IPv6 stay on the host.
+      return /^\[[23][0-9a-f]{3}:/u.test(host) && !host.startsWith("[2001:db8:");
+    }
+    if (/^\d+\.\d+\.\d+\.\d+$/u.test(host)) {
+      const [a = 0, b = 0, c = 0] = host.split(".").map(Number);
+      return !(
+        a === 0 ||
+        a === 10 ||
+        a === 127 ||
+        a >= 224 ||
+        (a === 100 && b >= 64 && b <= 127) ||
+        (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && (b === 168 || b === 0 || (b === 88 && c === 99))) ||
+        (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+        (a === 203 && b === 0 && c === 113)
+      );
+    }
+    return (
+      host.includes(".") &&
+      !/(?:^|\.)(?:localhost|local|internal|lan|home|test|invalid)$/u.test(host) &&
+      !host.endsWith(".home.arpa") &&
+      !host.endsWith(".ts.net")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export class PreviewUrlNormalizationError extends Schema.TaggedErrorClass<PreviewUrlNormalizationError>()(
   "PreviewUrlNormalizationError",
   {

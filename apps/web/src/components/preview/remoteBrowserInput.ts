@@ -1,4 +1,5 @@
 import type { PreviewContextMenuTarget } from "@t3tools/contracts";
+import { isPublicWebPreviewUrl } from "@t3tools/shared/preview";
 
 import type { TouchAction, TouchMenuState, TouchPoint } from "../remoteControl/touchActionMenu";
 
@@ -185,7 +186,8 @@ export function remoteContextMenuItems(
     if (isOpenableUrl(target.linkUrl)) {
       if (options.canOpenInNewTab)
         group.push({ id: "open-link-host", label: "Open link in new tab" });
-      group.push({ id: "open-link-here", label: "Open link on this device" });
+      if (isPublicWebPreviewUrl(target.linkUrl))
+        group.push({ id: "open-link-here", label: "Open link on this device" });
     }
     group.push({ id: "copy-link", label: "Copy link address" });
     groups.push(group);

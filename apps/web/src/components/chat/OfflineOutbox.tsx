@@ -6,6 +6,10 @@ import { cn } from "~/lib/utils";
 import { formatShortTimestamp } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import {
+  COMPOSER_STATUS_ICON_CHIP_CLASS_NAME,
+  COMPOSER_WAITING_CHIP_CLASS_NAME,
+} from "./composerStatusIconChip";
 
 export interface OfflineOutboxMessage {
   readonly id: string;
@@ -71,9 +75,6 @@ export function useOfflineOutboxChipPhase(
   return count === 0 ? "sent" : "waiting";
 }
 
-const CHIP_CLASS_NAME =
-  "chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border bg-background/95 px-2.5 py-1 text-xs font-medium";
-
 function attachmentLabel(count: number): string {
   return count === 1 ? "1 attachment" : `${count} attachments`;
 }
@@ -93,12 +94,17 @@ export function OfflineOutboxChip(props: {
   if (props.phase === "sent") {
     return (
       <span
-        className={cn(CHIP_CLASS_NAME, "border-border/60 font-normal text-muted-foreground")}
+        className={cn(
+          COMPOSER_STATUS_ICON_CHIP_CLASS_NAME,
+          "border-border/60 font-normal text-muted-foreground",
+        )}
+        role="status"
+        aria-label="Saved messages sent"
+        title="Saved messages sent"
         data-chat-composer-status-chip="outbox"
         data-offline-outbox="sent"
       >
         <CheckIcon aria-hidden className="size-3" />
-        Sent
       </span>
     );
   }
@@ -113,11 +119,11 @@ export function OfflineOutboxChip(props: {
         aria-label={`${summary}. Show details.`}
         title={summary}
         className={cn(
-          CHIP_CLASS_NAME,
+          COMPOSER_STATUS_ICON_CHIP_CLASS_NAME,
           "cursor-pointer transition-colors",
           failed
             ? "border-destructive/40 text-destructive hover:bg-destructive/5"
-            : "border-amber-500/35 text-amber-700 hover:border-amber-500/60 dark:text-amber-300",
+            : COMPOSER_WAITING_CHIP_CLASS_NAME,
         )}
         data-chat-composer-status-chip="outbox"
         data-offline-outbox={props.phase}
@@ -127,17 +133,6 @@ export function OfflineOutboxChip(props: {
         ) : (
           <CloudOffIcon aria-hidden className="size-3" />
         )}
-        <span aria-hidden className="chat-composer-status-label-full">
-          {failed ? "Not sent" : "Waiting to send"}
-        </span>
-        <span aria-hidden className="chat-composer-status-label-compact">
-          {failed ? "Not sent" : "Waiting"}
-        </span>
-        {count > 1 ? (
-          <span aria-hidden className="tabular-nums">
-            {count}
-          </span>
-        ) : null}
       </PopoverTrigger>
       <PopoverPopup
         side="top"

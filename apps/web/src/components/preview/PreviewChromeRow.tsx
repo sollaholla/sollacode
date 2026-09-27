@@ -21,6 +21,7 @@ import { Button } from "~/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "~/components/ui/input-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
+import { isPublicWebPreviewUrl } from "@t3tools/shared/preview";
 
 interface Props {
   url: string;
@@ -96,6 +97,7 @@ export function PreviewChromeRow({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [draft, setDraft] = useState(url);
   const [inputFocused, setInputFocused] = useState(false);
+  const showOpenInBrowser = Boolean(onOpenInBrowser) && isPublicWebPreviewUrl(url) && !inputFocused;
 
   useEffect(() => {
     if (focusUrlNonce == null) return;
@@ -115,7 +117,7 @@ export function PreviewChromeRow({
   return (
     <div className="relative">
       <form onSubmit={submit} className="surface-subheader gap-1 px-2" data-surface-subheader>
-        <div className="flex items-center gap-0.5" role="group" aria-label="Navigation">
+        <div className="flex shrink-0 items-center gap-0.5" role="group" aria-label="Navigation">
           <Tooltip>
             <TooltipTrigger
               render={
@@ -188,18 +190,14 @@ export function PreviewChromeRow({
           </Tooltip>
         ) : null}
 
-        <InputGroup variant="ghost" className="group/address h-7 flex-1 rounded-md">
+        <InputGroup variant="ghost" className="group/address h-7 min-w-0 flex-1 rounded-md">
           <Tooltip>
             <TooltipTrigger
               render={
                 <InputGroupInput
                   ref={inputRef}
                   value={inputFocused ? draft : (displayUrl ?? url)}
-                  className={cn(
-                    onOpenInBrowser &&
-                      !inputFocused &&
-                      "group-hover/address:pe-7 transition-[padding]",
-                  )}
+                  className="min-w-0 truncate"
                   onChange={(event) => setDraft(event.target.value)}
                   onFocus={() => {
                     setDraft(url);
@@ -227,11 +225,8 @@ export function PreviewChromeRow({
             />
             {!inputFocused && displayUrl ? <TooltipPopup>{url}</TooltipPopup> : null}
           </Tooltip>
-          {onOpenInBrowser && !inputFocused ? (
-            <InputGroupAddon
-              align="inline-end"
-              className="pointer-events-none absolute inset-y-0 right-0 opacity-0 transition-opacity group-hover/address:pointer-events-auto group-hover/address:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100"
-            >
+          {showOpenInBrowser ? (
+            <InputGroupAddon align="inline-end" className="shrink-0">
               <Tooltip>
                 <TooltipTrigger
                   render={

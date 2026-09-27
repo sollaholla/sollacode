@@ -3,10 +3,51 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   isLoopbackHost,
   isPreviewableUrl,
+  isPublicWebPreviewUrl,
   normalizePreviewUrl,
   PreviewUrlNormalizationError,
   restartSafePreviewUrl,
 } from "./preview.ts";
+
+describe("isPublicWebPreviewUrl", () => {
+  it.each([
+    "http://localhost:3000/",
+    "http://app.localhost/",
+    "http://127.1:3000/",
+    "http://2130706433/",
+    "http://0.0.0.0/",
+    "http://10.1.2.3/",
+    "http://172.16.4.2/",
+    "http://172.31.0.1/",
+    "http://192.168.1.4/",
+    "http://169.254.1.2/",
+    "http://100.100.1.2/",
+    "https://host.tail123.ts.net/",
+    "http://macbook/",
+    "http://macbook.local/",
+    "http://router.home.arpa/",
+    "http://[::1]/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://[fd7a:115c:a1e0::1]/",
+    "http://[fe80::1]/",
+    "file:///tmp/index.html",
+    "about:blank",
+    "javascript:alert(1)",
+    "not a url",
+  ])("keeps host-only URL %s inside the preview", (url) => {
+    expect(isPublicWebPreviewUrl(url)).toBe(false);
+  });
+
+  it.each([
+    "https://example.com/a/long/path?query=value",
+    "http://8.8.8.8/",
+    "http://172.32.0.1/",
+    "https://[2606:4700:4700::1111]/",
+    "https://localhost.example.com/",
+  ])("offers a client link for %s", (url) => {
+    expect(isPublicWebPreviewUrl(url)).toBe(true);
+  });
+});
 
 describe("isLoopbackHost", () => {
   it.each(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"])("%s is loopback", (host) => {

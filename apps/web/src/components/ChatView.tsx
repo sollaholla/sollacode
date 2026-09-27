@@ -259,7 +259,6 @@ import {
   RotateCcwIcon,
   SendHorizontalIcon,
   TriangleAlertIcon,
-  WifiOffIcon,
   XIcon,
 } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
@@ -378,6 +377,7 @@ import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { RenderErrorBoundary } from "./RenderErrorBoundary";
 import { ComposerStatusRail } from "./chat/ComposerStatusRail";
+import { ComposerConnectionChip } from "./chat/ComposerConnectionChip";
 import { useTerminalLayoutSync } from "../hooks/useTerminalLayoutSync";
 import type { TerminalLaunchProvider } from "./terminal/TerminalLaunchPad";
 import { useThreadActions } from "../hooks/useThreadActions";
@@ -3631,44 +3631,6 @@ function ChatViewContent(props: ChatViewProps) {
         ),
       });
     }
-    if (activeEnvironmentUnavailableState) {
-      const connection = activeEnvironmentUnavailableState.connection;
-      const isReconnecting =
-        connection.phase === "connecting" || connection.phase === "reconnecting";
-      items.push({
-        id: `environment-unavailable:${activeEnvironmentUnavailableState.environmentId}`,
-        variant: connection.phase === "error" ? "error" : "warning",
-        icon: <WifiOffIcon />,
-        title: `${activeEnvironmentUnavailableState.label}: ${connectionStatusTitle(connection)}`,
-        collapsedLabel: isReconnecting ? "Reconnecting…" : "Disconnected",
-        description: canQueueLocalMessage
-          ? "Messages sent now are saved on this device and dispatch when the connection returns."
-          : (connection.error ??
-            "Reconnect this environment before sending messages or running actions."),
-        actions: (
-          <>
-            <Button
-              size="xs"
-              disabled={isReconnecting}
-              onClick={() =>
-                void handleReconnectActiveEnvironment(
-                  activeEnvironmentUnavailableState.environmentId,
-                )
-              }
-            >
-              {isReconnecting ? "Reconnecting..." : "Reconnect"}
-            </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => void navigate({ to: "/settings/connections" })}
-            >
-              Connections
-            </Button>
-          </>
-        ),
-      });
-    }
     if (pendingPreviewDownloadApprovals.length > 0) {
       const first = pendingPreviewDownloadApprovals[0]!;
       items.push({
@@ -3728,10 +3690,6 @@ function ChatViewContent(props: ChatViewProps) {
     activeProviderAuthenticationPaused,
     activeThread?.modelSelection.instanceId,
     activeThread?.session?.providerInstanceId,
-    activeEnvironmentUnavailableState,
-    canQueueLocalMessage,
-    handleReconnectActiveEnvironment,
-    navigate,
     requestProviderAccountSwitch,
     setDismissedVersionMismatchKey,
     showVersionMismatchBanner,
@@ -10080,6 +10038,50 @@ function ChatViewContent(props: ChatViewProps) {
                   chatFooterLayout.mode === "draft-hero-flow" && "my-auto shrink-0 py-6",
                 )}
               >
+                {isDraftHeroState && !dockPhoneDraftComposer ? (
+                  <div>
+                    <div
+                      className="pb-6"
+                      style={
+                        forceExpandedMobileComposer
+                          ? {
+                              viewTransitionName: MOBILE_DRAFT_HEADLINE_VIEW_TRANSITION_NAME,
+                            }
+                          : undefined
+                      }
+                    >
+                      <DraftHeroHeadline
+                        activeProjectRef={activeProjectRef}
+                        activeProjectTitle={activeProject?.title ?? null}
+                      />
+                      {routeThreadRef ? (
+                        <div className="pointer-events-auto mt-4 flex justify-center">
+                          <div className="inline-flex items-center gap-0.5 rounded-full border border-border bg-background/80 p-0.5 text-xs">
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 rounded-full bg-accent px-3 py-1 text-foreground"
+                              aria-pressed
+                            >
+                              <MessageSquareIcon className="size-3" />
+                              Chat
+                            </button>
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-muted-foreground transition-colors hover:text-foreground"
+                              onClick={() => handleMainSurfaceChange("terminal")}
+                            >
+                              <TerminalSessionIcon
+                                className="size-3"
+                                working={activeTerminalActivity !== null}
+                              />
+                              Terminal
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
                 <ComposerStatusRail
                   voice={
                     visiblePushToTalkStatus ? (
@@ -10104,10 +10106,32 @@ function ChatViewContent(props: ChatViewProps) {
                     ) : null
                   }
                   actions={
+                    activeEnvironmentUnavailableState ||
                     activeSideChatActivity ||
                     activeTerminalActivity ||
                     outboxChipPhase !== "hidden" ? (
                       <>
+                        {activeEnvironmentUnavailableState ? (
+                          <ComposerConnectionChip
+                            title={`${activeEnvironmentUnavailableState.label}: ${connectionStatusTitle(activeEnvironmentUnavailableState.connection)}`}
+                            description={
+                              canQueueLocalMessage
+                                ? "Messages sent now are saved on this device and dispatch when the connection returns."
+                                : (activeEnvironmentUnavailableState.connection.error ??
+                                  "Reconnect this environment before sending messages or running actions.")
+                            }
+                            reconnecting={
+                              activeEnvironmentUnavailableState.connection.phase === "connecting" ||
+                              activeEnvironmentUnavailableState.connection.phase === "reconnecting"
+                            }
+                            onReconnect={() =>
+                              void handleReconnectActiveEnvironment(
+                                activeEnvironmentUnavailableState.environmentId,
+                              )
+                            }
+                            onConnections={() => void navigate({ to: "/settings/connections" })}
+                          />
+                        ) : null}
                         {outboxChipPhase !== "hidden" ? (
                           <OfflineOutboxChip
                             phase={outboxChipPhase}
@@ -10152,50 +10176,6 @@ function ChatViewContent(props: ChatViewProps) {
                   }
                 />
                 <div className="pointer-events-auto relative z-10">
-                  {isDraftHeroState && !dockPhoneDraftComposer ? (
-                    <div>
-                      <div
-                        className="pb-6"
-                        style={
-                          forceExpandedMobileComposer
-                            ? {
-                                viewTransitionName: MOBILE_DRAFT_HEADLINE_VIEW_TRANSITION_NAME,
-                              }
-                            : undefined
-                        }
-                      >
-                        <DraftHeroHeadline
-                          activeProjectRef={activeProjectRef}
-                          activeProjectTitle={activeProject?.title ?? null}
-                        />
-                        {routeThreadRef ? (
-                          <div className="pointer-events-auto mt-4 flex justify-center">
-                            <div className="inline-flex items-center gap-0.5 rounded-full border border-border bg-background/80 p-0.5 text-xs">
-                              <button
-                                type="button"
-                                className="inline-flex items-center gap-1.5 rounded-full bg-accent px-3 py-1 text-foreground"
-                                aria-pressed
-                              >
-                                <MessageSquareIcon className="size-3" />
-                                Chat
-                              </button>
-                              <button
-                                type="button"
-                                className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-muted-foreground transition-colors hover:text-foreground"
-                                onClick={() => handleMainSurfaceChange("terminal")}
-                              >
-                                <TerminalSessionIcon
-                                  className="size-3"
-                                  working={activeTerminalActivity !== null}
-                                />
-                                Terminal
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
                   <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   {activeProject ? (
                     <ProjectFolderMissingBanner

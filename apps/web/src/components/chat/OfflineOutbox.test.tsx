@@ -117,9 +117,10 @@ describe("OfflineOutboxChip", () => {
     const markup = renderChip("waiting", [message(), message({ id: "command-2" })]);
     expect(markup).toContain('data-offline-outbox="waiting"');
     expect(markup).toContain('aria-label="2 messages waiting to send. Show details."');
-    expect(markup).toContain(">Waiting to send<");
-    expect(markup).toContain(">Waiting<");
-    expect(markup).toContain(">2<");
+    expect(markup).not.toContain(">Waiting to send<");
+    expect(markup).not.toContain(">Waiting<");
+    expect(markup).not.toContain(">2<");
+    expect(markup).toContain("h-7 min-w-7");
     // The list stays behind the tap.
     expect(markup).not.toContain("Ship the fix tonight");
   });
@@ -127,13 +128,15 @@ describe("OfflineOutboxChip", () => {
   it("turns red when a saved message was refused", () => {
     const markup = renderChip("failed", [message({ error: "Refused" })]);
     expect(markup).toContain('data-offline-outbox="failed"');
-    expect(markup).toContain(">Not sent<");
+    expect(markup).toContain("couldn&#x27;t be sent");
+    expect(markup).not.toContain(">Not sent<");
     expect(markup).toContain("text-destructive");
   });
 
-  it("says Sent without anything to open", () => {
+  it("announces Sent without visible text or anything to open", () => {
     const markup = renderChip("sent", []);
-    expect(markup).toContain(">Sent</span>");
+    expect(markup).toContain('aria-label="Saved messages sent"');
+    expect(markup).not.toContain(">Sent</span>");
     expect(markup).not.toContain("<button");
   });
 });
