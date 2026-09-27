@@ -60,6 +60,8 @@ For a direct DeepSeek account, the server reads the official balance endpoint an
 USD/CNY credit, including granted and topped-up balances. These are credit amounts, not subscription
 percentages: DeepSeek supplies neither a quota denominator nor a reset date. An insufficient-credit
 response makes that account unavailable as an automatic fallback target while the report is fresh.
+The composer pill still shows the reported credit balance when it is zero or negative; API access
+status remains available in the usage details.
 
 Open **Settings > Providers > Deep Code > API-key accounts**, choose **Add key**, and supply an
 account name and API key. The default endpoint is DeepSeek. Save separate names such as Personal
