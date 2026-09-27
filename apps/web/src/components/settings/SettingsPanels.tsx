@@ -113,6 +113,7 @@ import { ThreadListSettingsSection } from "./ThreadListSettings";
 import { ProviderUsageGuardControls, UsageGuardMasterRow } from "./UsageGuardSettings";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import {
   canOneClickUpdateProviderCandidate,
@@ -2281,8 +2282,35 @@ export function ProviderSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <SettingsSection id="setting-fallback-models" title="Automatic fallback models">
-        <p className="mb-4 text-sm text-muted-foreground">
+      <SettingsSection
+        id="setting-fallback-models"
+        title="Automatic fallback models"
+        headerAction={
+          <div className="sm:hidden">
+            <Popover>
+              <PopoverTrigger
+                render={
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label="About automatic fallback models"
+                  />
+                }
+              >
+                <InfoIcon aria-hidden className="size-4" />
+              </PopoverTrigger>
+              <PopoverPopup side="bottom" align="end" className="w-[min(20rem,calc(100vw-2rem))]">
+                <p className="text-sm">
+                  Choose which models automatic fallback and quota-reset restoration may use. Thread
+                  and agent restrictions also apply. When no allowed model is available, work waits
+                  instead of switching. Manual model selection is unaffected by this global rule.
+                </p>
+              </PopoverPopup>
+            </Popover>
+          </div>
+        }
+      >
+        <p className="mb-4 hidden text-sm text-muted-foreground sm:block">
           Choose which models automatic fallback and quota-reset restoration may use. Thread and
           agent restrictions also apply. When no allowed model is available, work waits instead of
           switching. Manual model selection is unaffected by this global rule.

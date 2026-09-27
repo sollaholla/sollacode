@@ -24,6 +24,10 @@ the environment. This rule covers automatic fallback, same-provider model downsh
 and automatic return to an earlier model after its quota resets. It does not restrict
 manual selection unless a thread or parent rule also excludes that model.
 
+On phone-sized web screens, the model checklist starts collapsed behind **Models · N selected**.
+Tap it to search or change selections, then save. The information icon beside **Automatic fallback
+models** opens the full explanation. An empty allowlist warning stays visible even when collapsed.
+
 Every applicable rule must allow a fallback candidate. If none qualify, Solla stops and
 shows an actionable notice instead of switching to an excluded model. Allow a suitable
 model and resume the work. To remove a restriction, save **Allow all models** at the scope
