@@ -1497,8 +1497,10 @@ it.live("a settings update sent mid-turn interrupts the codex turn and starts a 
         (entry) => entry.session?.status === "running" && entry.session?.activeTurnId != null,
       );
 
-      // The fresh turn the parked delivery is expected to start.
-      yield* harness.adapterHarness!.queueTurnResponse(THREAD_ID, {
+      // The fresh turn the parked delivery is expected to start. The reactor
+      // may reuse the interrupted session or resume it in a new one, so the
+      // turn is scripted for either.
+      const freshTurn = {
         events: [
           {
             type: "turn.started",
@@ -1521,7 +1523,9 @@ it.live("a settings update sent mid-turn interrupts the codex turn and starts a 
             status: "completed",
           },
         ],
-      });
+      } as const;
+      yield* harness.adapterHarness!.queueTurnResponse(THREAD_ID, freshTurn);
+      yield* harness.adapterHarness!.queueTurnResponseForNextSession(freshTurn);
 
       yield* startTurn({
         harness,

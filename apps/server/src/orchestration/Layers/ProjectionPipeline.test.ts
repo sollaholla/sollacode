@@ -185,6 +185,8 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-backlog
       `;
         assert.equal(projectCountRows[0]?.count, 1001);
 
+        // projection_state also holds one-time repair markers
+        // (repairMuseActivityChronology); only the projector cursors count here.
         const projectionStateRows = yield* sql<{
           readonly projector: string;
           readonly lastAppliedSequence: number;
@@ -193,6 +195,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-backlog
           projector,
           last_applied_sequence AS "lastAppliedSequence"
         FROM projection_state
+        WHERE projector LIKE 'projection.%'
         ORDER BY projector
       `;
         assert.equal(projectionStateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
@@ -740,6 +743,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           projector,
           last_applied_sequence AS "lastAppliedSequence"
         FROM projection_state
+        WHERE projector LIKE 'projection.%'
         ORDER BY projector ASC
       `;
       assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
@@ -2145,6 +2149,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           projector,
           last_applied_sequence AS "lastAppliedSequence"
         FROM projection_state
+        WHERE projector LIKE 'projection.%'
       `;
       const maxSequenceRows = yield* sql<{ readonly maxSequence: number }>`
         SELECT MAX(sequence) AS "maxSequence" FROM orchestration_events
