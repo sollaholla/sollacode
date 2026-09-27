@@ -82,6 +82,7 @@ export function isDeepCodeEffort(value: string): value is DeepCodeEffort {
 /** Match Deep Code's project folder name under `~/.deepcode/projects`. */
 export function deepCodeProjectCode(
   projectRoot: string,
+  // eslint-disable-next-line t3code/no-global-process-runtime -- Mirrors the CLI's own folder naming on the host it runs on, like NodePath.resolve below; tests pass the platform.
   platform: NodeJS.Platform = process.platform,
 ): string {
   const normalizedRoot = NodePath.resolve(projectRoot);

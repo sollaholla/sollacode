@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 /**
@@ -29,10 +29,10 @@ const BANNED = [
 
 function sourceFiles(directory: string): string[] {
   const found: string[] = [];
-  for (const entry of readdirSync(directory)) {
+  for (const entry of NodeFS.readdirSync(directory)) {
     if (entry === "node_modules" || entry === "dist") continue;
-    const path = join(directory, entry);
-    if (statSync(path).isDirectory()) {
+    const path = NodePath.join(directory, entry);
+    if (NodeFS.statSync(path).isDirectory()) {
       found.push(...sourceFiles(path));
       continue;
     }
@@ -45,8 +45,8 @@ function sourceFiles(directory: string): string[] {
 describe("no native dialogs", () => {
   it("never calls a renderer-blocking dialog anywhere in the web app", () => {
     const offenders: string[] = [];
-    for (const file of sourceFiles(join(import.meta.dirname, "."))) {
-      const contents = readFileSync(file, "utf8");
+    for (const file of sourceFiles(NodePath.join(import.meta.dirname, "."))) {
+      const contents = NodeFS.readFileSync(file, "utf8");
       for (const banned of BANNED) {
         if (banned.pattern.test(contents)) {
           offenders.push(

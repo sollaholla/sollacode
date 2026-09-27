@@ -79,6 +79,7 @@ export interface ProviderInstallScriptDefinition {
 
 export function resolveProviderInstallScript(
   definition: ProviderInstallScriptDefinition,
+  // eslint-disable-next-line t3code/no-global-process-runtime -- Capability tables are built synchronously for the host they run on; tests pass the platform.
   platform: NodeJS.Platform = process.platform,
 ): ProviderMaintenanceCommandAction {
   const target = platform === "win32" ? definition.windows : definition.posix;

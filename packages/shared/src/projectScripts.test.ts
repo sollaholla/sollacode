@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ThreadId, type ProjectScript } from "@t3tools/contracts";
-import { scriptsForThread, setupProjectScript } from "./projectScripts";
+import { scriptsForThread, setupProjectScript } from "./projectScripts.ts";
 const base: ProjectScript = {
   id: "build",
   name: "Build",
