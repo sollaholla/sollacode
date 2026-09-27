@@ -42,7 +42,7 @@ export function composerViewportBottomInset(input: {
   return Math.max(0, input.composerHeight) + Math.max(0, input.keyboardInset);
 }
 
-export type ChatFooterLayoutMode = "draft-hero-overlay" | "draft-docked-overlay" | "flow";
+export type ChatFooterLayoutMode = "draft-hero-flow" | "draft-docked-overlay" | "flow";
 
 export interface ChatFooterLayout {
   readonly mode: ChatFooterLayoutMode;
@@ -76,7 +76,7 @@ export function resolveChatFooterLayout(input: {
   }
 
   return {
-    mode: "draft-hero-overlay",
+    mode: "draft-hero-flow",
     timelineEndInset: 0,
     bottomOffset: 0,
     marginBottom: 0,
