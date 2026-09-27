@@ -261,19 +261,6 @@ export function readThreadPreviewState(ref: ScopedThreadRef): ThreadPreviewState
   return appAtomRegistry.get(previewStateAtom(scopedThreadKey(ref)));
 }
 
-export function subscribeThreadPreviewState(
-  ref: ScopedThreadRef,
-  listener: (state: ThreadPreviewState, previous: ThreadPreviewState) => void,
-): () => void {
-  const atom = previewStateAtom(scopedThreadKey(ref));
-  let previous = appAtomRegistry.get(atom);
-  return appAtomRegistry.subscribe(atom, (state) => {
-    const prior = previous;
-    previous = state;
-    listener(state, prior);
-  });
-}
-
 const transitionPreviewServerEpoch = (
   current: ThreadPreviewState,
   serverEpoch: string,

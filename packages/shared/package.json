@@ -287,6 +287,10 @@
     "./deepcodeUsage": {
       "types": "./src/deepcodeUsage.ts",
       "import": "./src/deepcodeUsage.ts"
+    },
+    "./base64": {
+      "types": "./src/base64.ts",
+      "import": "./src/base64.ts"
     }
   },
   "scripts": {

@@ -40,9 +40,6 @@ export const PROVIDER_DRIVER_KINDS_WITH_SOLLA_MCP_TOOLS = [
   "opencode",
 ] as const satisfies ReadonlyArray<BuiltInProviderDriverKind>;
 
-export type ProviderDriverKindWithSollaMcpTools =
-  (typeof PROVIDER_DRIVER_KINDS_WITH_SOLLA_MCP_TOOLS)[number];
-
 export function providerDriverHasSollaMcpTools(driver: string): boolean {
   return (PROVIDER_DRIVER_KINDS_WITH_SOLLA_MCP_TOOLS as ReadonlyArray<string>).includes(driver);
 }

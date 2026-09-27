@@ -24,16 +24,6 @@
  * @module provider/antigravityProtocol
  */
 
-/** Terminal and transient run states reported by `result.status`. */
-export type AntigravityRunStatus =
-  | "SUCCESS"
-  | "ERROR"
-  | "CANCELED"
-  | "INTERRUPTED"
-  | "INVALID"
-  | "WAITING"
-  | "RUNNING";
-
 const TERMINAL_FAILURE_STATUSES: ReadonlySet<string> = new Set([
   "ERROR",
   "CANCELED",

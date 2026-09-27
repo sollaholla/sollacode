@@ -1,6 +1,5 @@
 import type { ContextMenuItem, LocalApi } from "@t3tools/contracts";
 
-import { resetRequestLatencyStateForTests } from "./rpc/requestLatencyState";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
 import { confirmInApp } from "./components/ui/appConfirm";
@@ -86,11 +85,4 @@ export function ensureLocalApi(): LocalApi {
     throw new Error("Local API not found");
   }
   return api;
-}
-
-export async function __resetLocalApiForTests() {
-  cachedApi = undefined;
-  const { __resetClientSettingsPersistenceForTests } = await import("./hooks/useSettings");
-  __resetClientSettingsPersistenceForTests();
-  resetRequestLatencyStateForTests();
 }

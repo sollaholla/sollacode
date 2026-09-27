@@ -1,4 +1,3 @@
-import { useAtomValue } from "@effect/atom-react";
 import { WS_METHODS } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -124,12 +123,4 @@ function evictOldestPendingRpcRequestIfNeeded(): void {
 export function resetRequestLatencyStateForTests(): void {
   slowRpcAckThresholdMs = SLOW_RPC_ACK_THRESHOLD_MS;
   clearAllTrackedRpcRequests();
-}
-
-export function setSlowRpcAckThresholdMsForTests(thresholdMs: number): void {
-  slowRpcAckThresholdMs = thresholdMs;
-}
-
-export function useSlowRpcAckRequests(): ReadonlyArray<SlowRpcAckRequest> {
-  return useAtomValue(slowRpcAckRequestsAtom);
 }

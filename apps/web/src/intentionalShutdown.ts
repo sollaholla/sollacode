@@ -13,7 +13,3 @@ export const useIntentionalShutdownStore = create<IntentionalShutdownState>((set
 export function beginIntentionalShutdown(): void {
   useIntentionalShutdownStore.getState().begin();
 }
-
-export function resetIntentionalShutdownForTests(): void {
-  useIntentionalShutdownStore.setState({ active: false });
-}

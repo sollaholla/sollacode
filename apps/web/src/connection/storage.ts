@@ -659,37 +659,38 @@ export const connectionStorageLayer = Layer.effectContext(
 
     const loadDeferredThreadCommands = Effect.fn(
       "web.connectionStorage.loadDeferredThreadCommands",
-    )(function* (environmentId: EnvironmentId) {
-      const raw = yield* readDatabaseValue(
-        database,
-        DEFERRED_THREAD_COMMAND_STORE_NAME,
-        environmentId,
-      ).pipe(Effect.mapError((cause) => persistenceError("load-deferred-thread-commands", cause)));
-      if (typeof raw !== "string") {
-        return [] as ReadonlyArray<DeferredThreadCommandEntry>;
-      }
-      const stored = yield* decodeStoredDeferredThreadCommands(raw).pipe(
-        Effect.mapError((cause) => persistenceError("load-deferred-thread-commands", cause)),
-      );
-      if (stored.environmentId !== environmentId) {
-        return [];
-      }
-      return stored.entries.flatMap((entry) =>
-        isDeferredThreadCommand(entry.command)
-          ? [
-              {
-                command: entry.command,
-                enqueuedAt: entry.enqueuedAt,
-                ...(entry.thread ? { thread: entry.thread } : {}),
-                ...(entry.before ? { before: entry.before } : {}),
-                ...(entry.error ? { error: entry.error } : {}),
-                ...(entry.accepted ? { accepted: true } : {}),
-                ...(entry.afterReply ? { afterReply: entry.afterReply } : {}),
-              },
-            ]
-          : [],
-      );
-    });
+    )(
+      function* (environmentId: EnvironmentId) {
+        const raw = yield* readDatabaseValue(
+          database,
+          DEFERRED_THREAD_COMMAND_STORE_NAME,
+          environmentId,
+        );
+        if (typeof raw !== "string") {
+          return [] as ReadonlyArray<DeferredThreadCommandEntry>;
+        }
+        const stored = yield* decodeStoredDeferredThreadCommands(raw);
+        if (stored.environmentId !== environmentId) {
+          return [];
+        }
+        return stored.entries.flatMap((entry) =>
+          isDeferredThreadCommand(entry.command)
+            ? [
+                {
+                  command: entry.command,
+                  enqueuedAt: entry.enqueuedAt,
+                  ...(entry.thread ? { thread: entry.thread } : {}),
+                  ...(entry.before ? { before: entry.before } : {}),
+                  ...(entry.error ? { error: entry.error } : {}),
+                  ...(entry.accepted ? { accepted: true } : {}),
+                  ...(entry.afterReply ? { afterReply: entry.afterReply } : {}),
+                },
+              ]
+            : [],
+        );
+      },
+      Effect.mapError((cause) => persistenceError("load-deferred-thread-commands", cause)),
+    );
     const mutateDeferredThreadCommands = (
       environmentId: EnvironmentId,
       update: (

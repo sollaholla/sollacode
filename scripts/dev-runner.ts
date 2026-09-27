@@ -199,8 +199,6 @@ export const DevRunnerError = Schema.Union([
   DevRunnerProcessExitError,
 ]);
 export type DevRunnerError = typeof DevRunnerError.Type;
-export const isDevRunnerError = Schema.is(DevRunnerError);
-
 const optionalStringConfig = (name: string): Config.Config<string | undefined> =>
   Config.string(name).pipe(
     Config.option,

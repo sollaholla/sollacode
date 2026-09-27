@@ -270,11 +270,6 @@ export function emittedAgentStop(text: string): boolean {
   return false;
 }
 
-/** Strips the control token before assistant text is reused as prompt context. */
-export function stripAgentStopToken(text: string): string {
-  return text.replaceAll(new RegExp(`(^|[^A-Za-z0-9_])${AGENT_STOP_TOKEN}`, "gu"), "$1").trimEnd();
-}
-
 const PROVIDER_AUTHENTICATION_FAILURE_SIGNATURES = [
   /\bfailed to authenticate\b/i,
   /\bnot logged in\b/i,

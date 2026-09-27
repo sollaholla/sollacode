@@ -371,7 +371,7 @@ export function transcribeRecordedAudio(
           controller.signal,
         );
         if (nativeResult.status === "success") return nativeResult.text.trim();
-      } catch (cause) {
+      } catch {
         if (controller.signal.aborted) throw transcriptionCancellationError(controller.signal);
         // A missing native model, unsupported OS, or helper failure is not a
         // lost dictation: retry the same PCM through the free local fallback.
@@ -418,10 +418,4 @@ export function cancelActiveTranscription(): boolean {
   controller.abort(error);
   resetTranscriptionWorker(error);
   return true;
-}
-
-export function disposeTranscriptionWorker(): void {
-  const error = createTranscriptionCancellationError();
-  activeTranscriptionController?.abort(error);
-  resetTranscriptionWorker(error);
 }
