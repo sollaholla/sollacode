@@ -22,7 +22,7 @@ import {
   makeMcpBridgeAdapter,
   mapMcpBridgeEvent,
 } from "./McpBridgeAdapter.ts";
-import type { McpBridgeClient } from "./McpBridgeConnection.ts";
+import { McpBridgeTransportError, type McpBridgeClient } from "./McpBridgeConnection.ts";
 import {
   MCP_BRIDGE_PROTOCOL_VERSION,
   type McpBridgeDescriptor,
@@ -130,7 +130,12 @@ class FakeBridgeClient implements McpBridgeClient {
         ) {
           await this.eventFailureGate;
           this.eventFailuresRemaining -= 1;
-          throw this.eventFailureCause ?? new Error("simulated provider bridge process crash");
+          // A crashed bridge reaches the adapter as a transport error, as the real
+          // connection reports it.
+          throw (
+            this.eventFailureCause ??
+            new McpBridgeTransportError("simulated provider bridge process crash")
+          );
         }
         const page = this.pages.get(sessionId)?.shift();
         if (page) return page;
@@ -885,7 +890,7 @@ it.effect("restarts the bridge session after an event-process failure", () =>
   ),
 );
 
-it.effect("fails an active turn exactly once when the bridge process fails", () =>
+it.effect("ends an active turn exactly once across a bridge process crash", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const fake = new FakeBridgeClient();
@@ -955,10 +960,12 @@ it.effect("fails an active turn exactly once when the bridge process fails", () 
       const terminalEvents = observed.filter(
         (candidate) => candidate.type === "turn.completed" && candidate.turnId === started.turnId,
       );
+      // A crash is a transport failure: the adapter reconnects without
+      // failing the turn, and the bridge's own late terminal event ends it.
       assert.equal(terminalEvents.length, 1);
       assert.equal(
         terminalEvents[0]?.type === "turn.completed" ? terminalEvents[0].payload.state : "missing",
-        "failed",
+        "completed",
       );
       assert.equal(fake.sessionStartCount, 2);
       yield* adapter.stopSession(threadId);
