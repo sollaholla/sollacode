@@ -1,5 +1,5 @@
 import { Outlet, useCanGoBack, useLocation, useNavigate } from "@tanstack/react-router";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
@@ -10,6 +10,7 @@ import {
 import { SidebarInset } from "../ui/sidebar";
 import { SettingsMobileTabs, useSettingsMobileTabs } from "./SettingsMobileTabs";
 import { SettingsMobileSearch } from "./SettingsMobileSearch";
+import { highlightSettingsSearchResult } from "./settingsSearchHighlight";
 
 // Preview webviews live outside the router so they survive navigation and are
 // presented at z-index 30. Keep settings in a higher stacking context so a
@@ -39,6 +40,7 @@ export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) 
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const [restoreSignal, setRestoreSignal] = useState(0);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const showMobileTabs = useSettingsMobileTabs();
   const showRestoreDefaults = location.pathname === "/settings/general";
   const handleRestored = () => setRestoreSignal((value) => value + 1);
@@ -54,33 +56,8 @@ export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) 
   // panel has rendered that row, bring it into view and flash it gold.
   const targetRowId = typeof location.hash === "string" ? location.hash.replace(/^#/, "") : "";
   useEffect(() => {
-    if (targetRowId.length === 0) return;
-    let cancelled = false;
-    let attempts = 0;
-    let clearHighlight: (() => void) | null = null;
-    const tick = () => {
-      if (cancelled) return;
-      const row = document.getElementById(targetRowId);
-      if (row) {
-        row.scrollIntoView({ block: "center" });
-        row.setAttribute("data-settings-highlight", "");
-        const timer = setTimeout(() => row.removeAttribute("data-settings-highlight"), 2400);
-        clearHighlight = () => {
-          clearTimeout(timer);
-          row.removeAttribute("data-settings-highlight");
-        };
-        return;
-      }
-      attempts += 1;
-      if (attempts < 60) {
-        requestAnimationFrame(tick);
-      }
-    };
-    tick();
-    return () => {
-      cancelled = true;
-      clearHighlight?.();
-    };
+    if (targetRowId.length === 0 || !surfaceRef.current) return;
+    return highlightSettingsSearchResult(surfaceRef.current, targetRowId);
   }, [location.pathname, targetRowId]);
 
   useEffect(() => {
@@ -106,6 +83,7 @@ export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) 
 
   return (
     <SidebarInset
+      ref={surfaceRef}
       className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate"
       style={{ zIndex: SETTINGS_ROUTE_SURFACE_Z_INDEX }}
     >

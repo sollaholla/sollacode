@@ -16,6 +16,11 @@
 export const LIVE_EDGE_MAX_DRIFT_SECONDS = 0.35;
 /** Leave a sliver behind the edge so the decoder is never starved. */
 export const LIVE_EDGE_TARGET_LAG_SECONDS = 0.08;
+/** Keep enough decoded history for keyframes without retaining a whole session. */
+export const VIDEO_BUFFER_HISTORY_SECONDS = 10;
+const VIDEO_BUFFER_TRIM_INTERVAL_SECONDS = 5;
+export const VIDEO_MAX_QUEUED_BYTES = 8 * 1024 * 1024;
+export const VIDEO_MAX_QUEUED_CHUNKS = 128;
 
 export function decodeBase64Chunk(data: string): Uint8Array {
   const binary = atob(data);
@@ -123,56 +128,101 @@ export function createRemoteControlVideoSink(
   let sourceOpen = false;
   let chunksAppended = 0;
   let bytesAppended = 0;
+  let queuedBytes = 0;
+  let failed = false;
+
+  const fail = (detail: string) => {
+    if (disposed || failed) return;
+    failed = true;
+    queue.length = 0;
+    queuedBytes = 0;
+    onError?.(detail);
+  };
+  const handleBufferError = () => {
+    fail("The video stream could not be parsed. Falling back to image frames.");
+  };
+  const handleVideoError = () => {
+    fail("The video stream could not be decoded. Falling back to image frames.");
+  };
+  video.addEventListener("error", handleVideoError);
 
   const pump = () => {
-    if (disposed || !sourceBuffer || sourceBuffer.updating || queue.length === 0) return;
-    const next = queue.shift();
-    if (!next) return;
+    if (disposed || failed || !sourceBuffer || sourceBuffer.updating) return;
     try {
+      const trimBefore = video.currentTime - VIDEO_BUFFER_HISTORY_SECONDS;
+      if (
+        sourceBuffer.buffered.length > 0 &&
+        trimBefore - sourceBuffer.buffered.start(0) >= VIDEO_BUFFER_TRIM_INTERVAL_SECONDS
+      ) {
+        sourceBuffer.remove(0, trimBefore);
+        return; // updateend resumes appending after the asynchronous removal.
+      }
+      const next = queue.shift();
+      if (!next) return;
+      queuedBytes -= next.byteLength;
       // `as ArrayBuffer` — a Uint8Array view is a valid BufferSource at runtime.
       sourceBuffer.appendBuffer(next as unknown as ArrayBuffer);
       chunksAppended += 1;
       bytesAppended += next.byteLength;
     } catch (cause) {
-      // Drop the backlog so the next init segment can resynchronise, but do not
-      // swallow the reason: a persistently rejected append renders as a black
-      // frame, which is indistinguishable from a blank screen without this.
-      queue.length = 0;
-      onError?.(cause instanceof Error ? cause.message : String(cause));
+      fail(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
-  mediaSource.addEventListener("sourceopen", () => {
-    if (disposed) return;
+  const handleUpdateEnd = () => {
+    if (disposed || failed) return;
+    const target = liveEdgeSeekTarget(video.buffered, video.currentTime);
+    if (target !== null) video.currentTime = target;
+    if (video.paused) void video.play().catch(() => undefined);
+    pump();
+  };
+  const handleSourceOpen = () => {
+    if (disposed || failed || sourceBuffer) return;
     sourceOpen = true;
     try {
       sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-      sourceBuffer.addEventListener("updateend", () => {
-        pump();
-        const target = liveEdgeSeekTarget(video.buffered, video.currentTime);
-        if (target !== null) video.currentTime = target;
-        if (video.paused) void video.play().catch(() => undefined);
-      });
+      sourceBuffer.addEventListener("updateend", handleUpdateEnd);
+      sourceBuffer.addEventListener("error", handleBufferError);
       pump();
     } catch (cause) {
       sourceBuffer = null;
-      onError?.(
+      fail(
         `The video buffer could not be initialised for ${mimeType}: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
       );
     }
-  });
+  };
+  mediaSource.addEventListener("sourceopen", handleSourceOpen);
 
   return {
     url,
     append: (chunk) => {
-      if (disposed) return;
+      if (disposed || failed) return;
       // A new init segment means the host restarted its encoder (a monitor
       // switch). Drop anything still queued from the previous container so the
       // two are never interleaved.
-      if (chunk.isInit) queue.length = 0;
-      queue.push(decodeBase64Chunk(chunk.data));
+      if (chunk.isInit) {
+        queue.length = 0;
+        queuedBytes = 0;
+      }
+      // Check before decoding as well: a stalled decoder must not cause an
+      // unbounded queue or allocate a huge temporary byte array.
+      if (
+        queue.length >= VIDEO_MAX_QUEUED_CHUNKS ||
+        queuedBytes + Math.ceil((chunk.data.length * 3) / 4) > VIDEO_MAX_QUEUED_BYTES
+      ) {
+        fail("The video decoder fell behind the live stream. Falling back to image frames.");
+        return;
+      }
+      try {
+        const bytes = decodeBase64Chunk(chunk.data);
+        queue.push(bytes);
+        queuedBytes += bytes.byteLength;
+      } catch (cause) {
+        fail(cause instanceof Error ? cause.message : String(cause));
+        return;
+      }
       pump();
     },
     stats: () => ({
@@ -186,8 +236,17 @@ export function createRemoteControlVideoSink(
       mediaSourceState: mediaSource.readyState,
     }),
     dispose: () => {
+      if (disposed) return;
       disposed = true;
       queue.length = 0;
+      queuedBytes = 0;
+      mediaSource.removeEventListener("sourceopen", handleSourceOpen);
+      sourceBuffer?.removeEventListener("updateend", handleUpdateEnd);
+      sourceBuffer?.removeEventListener("error", handleBufferError);
+      video.removeEventListener("error", handleVideoError);
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
       try {
         if (mediaSource.readyState === "open") mediaSource.endOfStream();
       } catch {
