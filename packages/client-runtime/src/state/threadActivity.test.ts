@@ -1,11 +1,51 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  isReasoningStatusPlaceholder,
   isRoutineMusePollingNotice,
   recoveredRuntimeErrorIds,
   isSideChatSessionPreparing,
   isThreadSessionWorking,
   canResumeFailedThreadSession,
 } from "./threadActivity.ts";
+
+describe("reasoning status placeholders", () => {
+  it.each([undefined, null, {}, { title: "Thinking" }, { detail: " \n " }, { detail: "Thinking" }])(
+    "hides generic Thinking receipts with payload %s",
+    (payload) => {
+      expect(
+        isReasoningStatusPlaceholder({ kind: "reasoning.updated", summary: "Thinking", payload }),
+      ).toBe(true);
+    },
+  );
+
+  it("recognizes Generating receipts but preserves actual thoughts and titled status", () => {
+    expect(
+      isReasoningStatusPlaceholder({
+        kind: "reasoning.updated",
+        summary: "Generating",
+        payload: { title: "Generating", detail: "Generating" },
+      }),
+    ).toBe(true);
+    for (const payload of [
+      { detail: "Checking the scene" },
+      { title: "Inspecting files" },
+      { title: "Thinking", detail: "Checking the scene" },
+    ]) {
+      expect(
+        isReasoningStatusPlaceholder({ kind: "reasoning.updated", summary: "Thinking", payload }),
+      ).toBe(false);
+    }
+    expect(
+      isReasoningStatusPlaceholder({ kind: "reasoning.updated", summary: "Inspecting files" }),
+    ).toBe(false);
+  });
+
+  it("never hides tool, failure, or provider transition receipts", () => {
+    for (const kind of ["tool.completed", "runtime.error", "thread.settings.applied"]) {
+      expect(isReasoningStatusPlaceholder({ kind, summary: "Thinking" })).toBe(false);
+    }
+  });
+});
 
 describe("side chat session preparation", () => {
   const blank = {

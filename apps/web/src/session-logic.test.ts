@@ -840,7 +840,7 @@ describe("deriveWorkLogEntries", () => {
         kind: "reasoning.updated",
         summary: "Thinking",
         tone: "info",
-        payload: { itemType: "reasoning", title: "Thinking" },
+        payload: { itemType: "reasoning", title: "Thinking", detail: "Checking the scene" },
       }),
     ]);
     expect(entry?.tone).toBe("thinking");

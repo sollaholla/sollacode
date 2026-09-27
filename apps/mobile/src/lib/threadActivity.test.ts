@@ -263,28 +263,32 @@ describe("buildThreadFeed", () => {
     expect(buildThreadFeed(thread).map((entry) => entry.type)).toEqual(["activity-group"]);
   });
 
-  it("leaves a titled placeholder reasoning row in the activity group", () => {
-    // "Thinking" as a literal title over a placeholder body reads the same as
-    // the default heading an untitled row gets, so matching on the heading
-    // drew a feed paragraph saying only "Thinking".
-    const thread = makeThread({
-      id: ThreadId.make("thread-placeholder"),
-      projectId: ProjectId.make("project-1"),
-      title: "Placeholder reasoning",
-      activities: [
-        makeActivity({
-          id: EventId.make("placeholder"),
-          kind: "reasoning.updated",
-          summary: "Thinking",
-          turnId: TurnId.make("turn-placeholder"),
-          createdAt: "2026-04-01T00:00:01.000Z",
-          payload: { itemType: "reasoning", title: "Thinking", detail: "Thinking" },
-        }),
-      ],
-    });
+  it.each([undefined, "", " \n ", "Thinking"])(
+    "omits a placeholder reasoning row with detail %s before grouping",
+    (detail) => {
+      const thread = makeThread({
+        id: ThreadId.make("thread-placeholder"),
+        projectId: ProjectId.make("project-1"),
+        title: "Placeholder reasoning",
+        activities: [
+          makeActivity({
+            id: EventId.make("placeholder"),
+            kind: "reasoning.updated",
+            summary: "Thinking",
+            turnId: TurnId.make("turn-placeholder"),
+            createdAt: "2026-04-01T00:00:01.000Z",
+            payload: {
+              itemType: "reasoning",
+              title: "Thinking",
+              ...(detail === undefined ? {} : { detail }),
+            },
+          }),
+        ],
+      });
 
-    expect(buildThreadFeed(thread).map((entry) => entry.type)).toEqual(["activity-group"]);
-  });
+      expect(buildThreadFeed(thread)).toEqual([]);
+    },
+  );
 
   it("hides provider usage refresh success activities while keeping other activity rows", () => {
     const thread = makeThread({

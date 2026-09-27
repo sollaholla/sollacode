@@ -1,5 +1,21 @@
 import { RESUME_PROMPT } from "@t3tools/shared/resumePrompt";
 
+/** Generic reasoning receipts have no transcript body; the Working row owns that status. */
+export function isReasoningStatusPlaceholder(activity: {
+  readonly kind: string;
+  readonly summary: string;
+  readonly payload?: unknown;
+}): boolean {
+  if (activity.kind !== "reasoning.updated") return false;
+  const isPlaceholder = (value: string) => /^(?:thinking|generating)?$/i.test(value.trim());
+  if (!isPlaceholder(activity.summary)) return false;
+  const payload = activity.payload;
+  if (typeof payload !== "object" || payload === null) return true;
+  const title = "title" in payload && typeof payload.title === "string" ? payload.title : "";
+  const detail = "detail" in payload && typeof payload.detail === "string" ? payload.detail : "";
+  return isPlaceholder(title) && isPlaceholder(detail);
+}
+
 /** A completed failover receipt answers for its exact triggering runtime error. */
 /**
  * A persisted "Runtime error: Aborted" is the provider acknowledging our own

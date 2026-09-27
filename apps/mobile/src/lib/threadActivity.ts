@@ -1,4 +1,5 @@
 import {
+  isReasoningStatusPlaceholder,
   isRoutineMusePollingNotice,
   isProviderInterruptionErrorActivity,
   recoveredRuntimeErrorIds,
@@ -283,6 +284,7 @@ function deriveWorkLogEntries(
     // Shown as the Working row's label, not as a log line.
     if (activity.kind === "provider.overload.retrying") continue;
     if (isRoutineMusePollingNotice(activity)) continue;
+    if (isReasoningStatusPlaceholder(activity)) continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     entries.push(toDerivedWorkLogEntry(activity));
