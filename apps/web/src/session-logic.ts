@@ -1,4 +1,5 @@
 import {
+  isReasoningStatusPlaceholder,
   isRoutineMusePollingNotice,
   isProviderInterruptionErrorActivity,
   recoveredRuntimeErrorIds,
@@ -743,15 +744,9 @@ export function deriveWorkLogEntries(
     // a second line in the log for the same fact was reported as noise.
     if (activity.kind === "provider.overload.retrying") continue;
     if (isRoutineMusePollingNotice(activity)) continue;
-    // "Generating" is only the provider saying the turn is still alive. The
-    // existing Working row already communicates that, so rendering another
-    // activity row adds noise without new information.
-    if (
-      activity.kind === "reasoning.updated" &&
-      activity.summary.trim().toLowerCase() === "generating"
-    ) {
-      continue;
-    }
+    // Filter before grouping/folding: hiding only the inner content leaves
+    // a bordered, padded work card behind for persisted Thinking receipts.
+    if (isReasoningStatusPlaceholder(activity)) continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     entries.push(toDerivedWorkLogEntry(activity));

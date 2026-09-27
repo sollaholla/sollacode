@@ -7,3 +7,5 @@ Expanding or collapsing a tool, a turn, a long message, or a file list also paus
 Use **Scroll to end**, send a message, or scroll all the way to the bottom to follow new output again. Scrolling close to the bottom does not resume following early.
 
 This behavior applies to the web client and the desktop apps that use it, including a web client connected to a remote environment.
+
+Generic provider “Thinking” and “Generating” receipts without content do not create empty reply boxes or work-log entries. The Working indicator shows active progress; actual reasoning, tool results, and errors remain in the conversation. This also applies to saved conversations and the native mobile feed.

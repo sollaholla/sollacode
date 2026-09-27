@@ -254,6 +254,54 @@ function buildUserTimelineEntry(text: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it.each([false, true])(
+    "does not draw an empty card for a Thinking placeholder (working: %s)",
+    (isWorking) => {
+      // Persisted Grok event from a turn interrupted by a provider switch.
+      const entries = deriveWorkLogEntries([
+        {
+          id: EventId.make("empty-thinking"),
+          kind: "reasoning.updated",
+          summary: "Thinking",
+          tone: "info",
+          turnId: null,
+          createdAt: MESSAGE_CREATED_AT,
+          payload: { itemType: "reasoning", title: "Thinking" },
+        },
+        {
+          id: EventId.make("provider-switch"),
+          kind: "thread.settings.applied",
+          summary: "Conversation settings updated",
+          tone: "info",
+          turnId: null,
+          createdAt: MESSAGE_CREATED_AT,
+          payload: { detail: "opencode/space-bunny-free" },
+        },
+      ]);
+      const markup = renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          isWorking={isWorking}
+          timelineEntries={[
+            buildUserTimelineEntry("Continue the task"),
+            ...entries.map((entry) => ({
+              id: entry.id,
+              kind: "work" as const,
+              createdAt: entry.createdAt,
+              entry,
+            })),
+          ]}
+        />,
+      );
+
+      expect(markup).not.toContain('data-timeline-row-id="empty-thinking"');
+      expect(markup).toContain("Conversation settings updated");
+      expect(markup).toContain("opencode/space-bunny-free");
+      expect(markup.includes("data-work-card-edge")).toBe(isWorking);
+      expect(markup.includes("Working...")).toBe(isWorking);
+    },
+  );
+
   it("shows a persisted newest message as explicitly queued for Codex", () => {
     const entry = buildUserTimelineEntry("Please inspect the model");
     const markup = renderToStaticMarkup(
