@@ -56,7 +56,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # The whole suite takes about ten minutes on a laptop; leave headroom.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
