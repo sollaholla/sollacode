@@ -185,8 +185,14 @@ describe("remote page menu items", () => {
 
   it("never offers to open a script link, only to copy it", () => {
     expect(ids({ ...blank, linkUrl: "javascript:alert(1)" })).toEqual([["copy-link"]]);
-    expect(ids({ ...blank, linkUrl: "https://a.test/" }, false)).toEqual([
+    expect(ids({ ...blank, linkUrl: "https://example.com/" }, false)).toEqual([
       ["open-link-here", "copy-link"],
+    ]);
+  });
+
+  it("keeps private links on the host while allowing copying the address", () => {
+    expect(ids({ ...blank, linkUrl: "http://192.168.1.20:3000/" })).toEqual([
+      ["open-link-host", "copy-link"],
     ]);
   });
 

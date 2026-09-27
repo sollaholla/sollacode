@@ -586,14 +586,14 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       justify-items: center;
     }
 
-    .chat-composer-status-voice,
-    .chat-composer-status-actions {
+    .chat-composer-status-voice {
       justify-self: center;
     }
 
     .chat-composer-status-actions {
+      justify-self: end;
       flex-wrap: wrap;
-      justify-content: center;
+      justify-content: flex-end;
     }
 
     .chat-composer-status-label-compact {

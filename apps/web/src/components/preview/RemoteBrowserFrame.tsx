@@ -16,6 +16,7 @@ import {
   type FrameSize,
 } from "@t3tools/shared/remoteFrameGestures";
 import { RemotePreviewCommandCoordinator } from "@t3tools/client-runtime/preview/remote-command-coordinator";
+import { isPublicWebPreviewUrl } from "@t3tools/shared/preview";
 import * as Cause from "effect/Cause";
 import { KeyboardIcon } from "lucide-react";
 import {
@@ -675,7 +676,8 @@ export function RemoteBrowserFrame(props: {
         onOpenInNewTab?.(target.linkUrl);
         return;
       case "open-link-here":
-        window.open(target.linkUrl, "_blank", "noopener,noreferrer");
+        if (isPublicWebPreviewUrl(target.linkUrl))
+          window.open(target.linkUrl, "_blank", "noopener,noreferrer");
         return;
       case "copy-link":
         void copyWithNotice(target.linkUrl, "Link address");

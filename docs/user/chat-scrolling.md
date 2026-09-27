@@ -12,9 +12,10 @@ The new-thread heading, notices, and composer share one layout below the toolbar
 On short screens the form scrolls instead of overlapping those controls. Focusing the phone's
 message editor docks the composer above the keyboard; tapping a status chip does not dock it.
 
-Connection notices start as a compact **Reconnecting…** or **Disconnected** chip. Tap or click it
-to expand the connection details, saved-message guidance, and reconnect/settings controls. Tap
-again to collapse it. The notice disappears when the connection recovers.
+Connection and waiting-message indicators are separate icon buttons with matching styling, aligned
+on the right beside the terminal and side-chat indicators. Tap either icon for its details and
+actions; message counts and status are also available to screen readers and in hover text.
+The connection icon disappears when the connection recovers.
 
 Generic provider “Thinking” and “Generating” receipts without content do not create empty reply boxes or work-log entries. The Working indicator shows active progress; actual reasoning, tool results, and errors remain in the conversation. This also applies to saved conversations and the native mobile feed.
 

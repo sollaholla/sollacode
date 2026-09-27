@@ -8,6 +8,11 @@ on the desktop.
 There are two ways to use it. Both talk to the same desktop host and require the desktop app to
 be running with the tab open.
 
+Long addresses shorten within the address field and never cover the Open Link control.
+Open Link and the page menu's **Open link on this device** appear only for public web addresses;
+localhost, LAN, private IPv6, and tailnet addresses stay inside the host browser. You can still
+copy those addresses or open them in another host tab.
+
 ## Phone Browser (Safari over Tailscale) — no install needed
 
 Open the web app from your phone's browser the way you already do for remote access (see
