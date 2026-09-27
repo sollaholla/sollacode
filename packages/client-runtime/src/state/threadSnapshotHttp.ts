@@ -17,10 +17,7 @@ import type { PreparedConnection } from "../connection/model.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import { environmentEndpointUrl } from "../environment/endpoint.ts";
-import {
-  executeEnvironmentHttpRequest,
-  makeEnvironmentHttpApiClient,
-} from "../rpc/http.ts";
+import { executeEnvironmentHttpRequest, makeEnvironmentHttpApiClient } from "../rpc/http.ts";
 import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./environmentHttpAuth.ts";
 import { createEnvironmentCommand } from "./runtime.ts";
 

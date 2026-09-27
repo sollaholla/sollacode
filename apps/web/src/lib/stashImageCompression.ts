@@ -46,7 +46,6 @@ export type CompressStashImageResult =
   | { ok: true; image: CompressedStashImage }
   | { ok: false; reason: StashImageFailureReason };
 
-
 /**
  * Blob → base64 data URL. Uses `arrayBuffer()` rather than `FileReader` so
  * the module works anywhere `Blob` does (including non-DOM test runners).
