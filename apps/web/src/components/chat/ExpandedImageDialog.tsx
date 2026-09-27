@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { ArrowLeftIcon, ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
+import { ZoomableImage } from "./ZoomableImage";
 
 interface ExpandedImageDialogProps {
   preview: ExpandedImagePreview;
@@ -125,11 +126,13 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
               <ChevronLeftIcon className="size-5" />
             </Button>
           )}
-          <img
+          {/* Keyed per image, so moving to another image starts it unzoomed. */}
+          <ZoomableImage
+            key={`${index}:${item.src}`}
             src={item.src}
             alt={item.name}
-            className="max-h-full max-w-full select-none object-contain"
-            draggable={false}
+            className="max-h-full max-w-full object-contain"
+            surfaceClassName="absolute inset-0 flex items-center justify-center overflow-hidden px-2"
           />
           {preview.images.length > 1 && (
             <Button
@@ -183,17 +186,18 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
           type="button"
           size="icon-xs"
           variant="ghost"
-          className="absolute right-2 top-2"
+          className="absolute right-2 top-2 z-10"
           onClick={dismiss}
           aria-label="Close image preview"
         >
           <XIcon />
         </Button>
-        <img
+        <ZoomableImage
+          key={`${index}:${item.src}`}
           src={item.src}
           alt={item.name}
-          className="max-h-[86vh] max-w-[92vw] select-none rounded-lg border border-border/70 bg-background object-contain shadow-2xl"
-          draggable={false}
+          className="block max-h-[86vh] max-w-[92vw] object-contain"
+          surfaceClassName="overflow-hidden rounded-lg border border-border/70 bg-background shadow-2xl"
         />
         <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground/80">
           {item.name}

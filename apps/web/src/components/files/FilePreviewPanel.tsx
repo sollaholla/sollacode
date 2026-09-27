@@ -84,6 +84,7 @@ import {
   useProjectFileQuery,
 } from "./projectFilesQueryState";
 import { directChildEntries, entryName, parentFolderPath } from "./folderEntries";
+import { ZoomableImage } from "../chat/ZoomableImage";
 
 interface FilePreviewPanelProps {
   environmentId: EnvironmentId;
@@ -160,14 +161,14 @@ function WorkspaceImagePreview(props: {
   }
 
   return assetUrl._tag === "Success" ? (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
-      <img
-        className="max-h-full max-w-full object-contain"
-        src={assetUrl.url}
-        alt={props.alt}
-        onError={() => setFailedUrl(assetUrl.url)}
-      />
-    </div>
+    <ZoomableImage
+      key={assetUrl.url}
+      src={assetUrl.url}
+      alt={props.alt}
+      className="max-h-full max-w-full object-contain"
+      surfaceClassName="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4"
+      onError={() => setFailedUrl(assetUrl.url)}
+    />
   ) : (
     <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
       <LoaderCircle className="size-5 animate-spin" />
