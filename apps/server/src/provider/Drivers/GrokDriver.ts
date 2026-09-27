@@ -134,7 +134,10 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
         initialSnapshot: (settings) =>
-          buildInitialGrokProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
+          settings.provider.enabled
+            ? buildInitialGrokProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity))
+            : checkProvider,
+        refreshOnCreate: effectiveConfig.enabled,
         checkProvider,
         enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
           enrichGrokSnapshot({

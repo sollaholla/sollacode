@@ -1,6 +1,64 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveToolActivityPresentation } from "./toolActivity.ts";
+import { deriveToolActivityPresentation, normalizeOpenCodeToolPayload } from "./toolActivity.ts";
+
+describe("OpenCode tool payloads", () => {
+  it.each([
+    [0, "passed", "completed"],
+    [1, "test failed", "failed"],
+    [0, "BUILD OK\n  FAILED [Fail] PressureInvariants", "completed"],
+  ])("keeps command and outcome for exit %s and output %s", (exit, output, status) => {
+    const state = {
+      status: "completed",
+      input: { command: "run-tests" },
+      metadata: { exit },
+      output,
+    };
+    const payload = normalizeOpenCodeToolPayload({ data: { tool: "bash", state } });
+    expect(payload).toMatchObject({ status, data: { command: "run-tests", state } });
+    expect(payload.data.state).toBe(state);
+  });
+
+  it("extracts edit paths without duplicating the edit body", () => {
+    const state = {
+      status: "completed",
+      input: { filePath: "/project/src/model.ts", oldString: "before", newString: "after" },
+      output: "Edit applied successfully.",
+    };
+    expect(normalizeOpenCodeToolPayload({ data: { tool: "edit", state } })).toEqual({
+      status: "completed",
+      data: { tool: "edit", state, changes: [{ path: "/project/src/model.ts" }] },
+    });
+  });
+
+  it("retains explicit tool errors and extracts multiple patch paths", () => {
+    expect(
+      normalizeOpenCodeToolPayload({
+        data: {
+          tool: "apply_patch",
+          state: {
+            status: "error",
+            input: {},
+            metadata: { files: [{ filePath: "/project/a.ts" }, { filePath: "/project/b.ts" }] },
+          },
+        },
+      }),
+    ).toMatchObject({
+      status: "failed",
+      data: { changes: [{ path: "/project/a.ts" }, { path: "/project/b.ts" }] },
+    });
+  });
+
+  it("preserves other provider payloads and pending OpenCode tool status", () => {
+    const other = { data: { item: { command: "run-tests" } } };
+    expect(normalizeOpenCodeToolPayload(other)).toBe(other);
+    expect(
+      normalizeOpenCodeToolPayload({
+        data: { tool: "bash", state: { status: "running", input: { command: "run-tests" } } },
+      }),
+    ).toMatchObject({ status: "inProgress" });
+  });
+});
 
 describe("toolActivity", () => {
   it("names t3-code preview MCP calls as computer control", () => {

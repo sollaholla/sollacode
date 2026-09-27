@@ -15,6 +15,7 @@ import type {
   UserInputQuestion,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { normalizeOpenCodeToolPayload } from "@t3tools/shared/toolActivity";
 import {
   previewComputerControlAction,
   previewComputerControlHeading,
@@ -307,7 +308,7 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
   const payload =
     activity.payload && typeof activity.payload === "object"
-      ? (activity.payload as Record<string, unknown>)
+      ? normalizeOpenCodeToolPayload(activity.payload as Record<string, unknown>)
       : null;
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
@@ -660,8 +661,7 @@ function workEntryPreview(
   workEntry: Pick<WorkLogEntry, "detail" | "command" | "changedFiles">,
 ): string | null {
   if (workEntry.command) return workEntry.command;
-  if (workEntry.detail) return workEntry.detail;
-  if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
+  if ((workEntry.changedFiles?.length ?? 0) === 0) return workEntry.detail ?? null;
   const [firstPath] = workEntry.changedFiles ?? [];
   if (!firstPath) return null;
   return workEntry.changedFiles!.length === 1

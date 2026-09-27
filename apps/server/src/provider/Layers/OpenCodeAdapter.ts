@@ -34,6 +34,7 @@ import type {
   QuestionRequest,
 } from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { normalizeOpenCodeToolPayload } from "@t3tools/shared/toolActivity";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -1565,7 +1566,7 @@ export function makeOpenCodeAdapter(
             const title =
               part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
             const detail = detailFromToolPart(part);
-            const payload = {
+            const payload = normalizeOpenCodeToolPayload({
               itemType,
               ...(part.state.status === "error"
                 ? { status: "failed" as const }
@@ -1575,10 +1576,11 @@ export function makeOpenCodeAdapter(
               ...(title ? { title } : {}),
               ...(detail ? { detail } : {}),
               data: {
+                toolCallId: part.callID,
                 tool: part.tool,
                 state: part.state,
               },
-            };
+            });
             const runtimeEvent: ProviderRuntimeEvent = {
               ...(yield* buildEventBase({
                 threadId: context.session.threadId,

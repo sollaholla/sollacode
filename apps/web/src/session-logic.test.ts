@@ -768,6 +768,36 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("reads saved OpenCode commands and failed exit codes from nested state", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "opencode-bash",
+        kind: "tool.completed",
+        summary: "bash",
+        payload: {
+          itemType: "command_execution",
+          title: "bash",
+          detail: "test failure output",
+          data: {
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { command: "run-tests" },
+              metadata: { exit: 1 },
+              output: "test failure output",
+            },
+          },
+        },
+      }),
+    ]);
+    expect(entry).toMatchObject({
+      command: "run-tests",
+      detail: "test failure output",
+      toolLifecycleStatus: "failed",
+    });
+    expect(workEntryIndicatesToolFailure(entry!)).toBe(true);
+  });
+
   it("hides only the runtime error with a successful failover receipt", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({

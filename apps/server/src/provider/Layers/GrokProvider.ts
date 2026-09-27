@@ -257,22 +257,6 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const fallbackModels = grokModelsFromSettings(grokSettings.customModels);
 
-  if (!grokSettings.enabled) {
-    return buildServerProvider({
-      presentation: GROK_PRESENTATION,
-      enabled: false,
-      checkedAt,
-      models: fallbackModels,
-      probe: {
-        installed: false,
-        version: null,
-        status: "warning",
-        auth: { status: "unknown" },
-        message: "Grok is disabled in Solla Code settings.",
-      },
-    });
-  }
-
   const versionResult = yield* runGrokVersionCommand(grokSettings, environment).pipe(
     Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS),
     Effect.result,
@@ -318,6 +302,22 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
 
   const versionOutput = versionResult.success.value;
   const version = parseGenericCliVersion(`${versionOutput.stdout}\n${versionOutput.stderr}`);
+  // Disabling a provider stops auth/model discovery, not installation detection.
+  if (!grokSettings.enabled) {
+    return buildServerProvider({
+      presentation: GROK_PRESENTATION,
+      enabled: false,
+      checkedAt,
+      models: fallbackModels,
+      probe: {
+        installed: true,
+        version,
+        status: "warning",
+        auth: { status: "unknown" },
+        message: "Grok is disabled in Solla Code settings.",
+      },
+    });
+  }
   if (versionOutput.code !== 0) {
     yield* Effect.logWarning("Grok CLI version probe exited with a non-zero status.", {
       exitCode: versionOutput.code,

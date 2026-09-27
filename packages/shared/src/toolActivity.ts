@@ -18,6 +18,43 @@ function asTrimmedString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/** Expose OpenCode's nested tool state to the common tool readers, including saved receipts. */
+export function normalizeOpenCodeToolPayload<T extends { readonly data?: unknown }>(payload: T) {
+  const data = asRecord(payload.data);
+  const state = asRecord(data?.state);
+  if (!data || typeof data.tool !== "string" || !state) return payload;
+
+  const input = asRecord(state.input);
+  const metadata = asRecord(state.metadata);
+  const command = asTrimmedString(input?.command);
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  collectPaths(input, paths, seen, 0);
+  collectPaths(metadata?.files, paths, seen, 0);
+  const exit = metadata?.exit;
+  const status =
+    state.status === "error" ||
+    (state.status === "completed" &&
+      typeof exit === "number" &&
+      Number.isFinite(exit) &&
+      exit !== 0)
+      ? ("failed" as const)
+      : state.status === "completed"
+        ? ("completed" as const)
+        : state.status === "pending" || state.status === "running"
+          ? ("inProgress" as const)
+          : undefined;
+  return {
+    ...payload,
+    ...(status ? { status } : {}),
+    data: {
+      ...data,
+      ...(command ? { command } : {}),
+      ...(paths.length > 0 ? { changes: paths.map((path) => ({ path })) } : {}),
+    },
+  };
+}
+
 function normalizeCommandValue(value: unknown): string | undefined {
   const direct = asTrimmedString(value);
   if (direct) {

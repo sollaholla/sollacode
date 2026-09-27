@@ -52,6 +52,45 @@ describe("buildInitialGrokProviderSnapshot", () => {
 });
 
 it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
+  it.effect("detects a disabled installation using only --version", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-disabled-" });
+      const binaryPath = path.join(dir, "grok");
+      const callsPath = path.join(dir, "calls");
+      yield* fs.writeFileString(
+        binaryPath,
+        [
+          "#!/bin/sh",
+          `printf '%s\\n' "$*" >> ${shellQuote(callsPath)}`,
+          'printf "grok-cli 0.0.99\\n"',
+          "",
+        ].join("\n"),
+      );
+      yield* fs.chmod(binaryPath, 0o755);
+      const snapshot = yield* checkGrokProviderStatus(
+        decodeGrokSettings({ enabled: false, binaryPath }),
+      );
+      expect(snapshot).toMatchObject({
+        enabled: false,
+        installed: true,
+        version: "0.0.99",
+        status: "disabled",
+      });
+      expect(yield* fs.readFileString(callsPath)).toBe("--version\n");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("still reports a missing disabled binary as not installed", () =>
+    Effect.gen(function* () {
+      const snapshot = yield* checkGrokProviderStatus(
+        decodeGrokSettings({ enabled: false, binaryPath: "/definitely/not/installed/grok-binary" }),
+      );
+      expect(snapshot).toMatchObject({ enabled: false, installed: false, status: "disabled" });
+    }),
+  );
+
   it.effect("reports the binary as missing when the binary path does not resolve", () =>
     Effect.gen(function* () {
       const snapshot = yield* checkGrokProviderStatus(
