@@ -160,6 +160,37 @@ describe("provider usage summaries", () => {
     expect(markup).not.toContain("Account-level provider usage");
   });
 
+  it.each([
+    ["0.00", "$0"],
+    ["-0.03", "$-0.03"],
+  ])("shows the actual Deep Code balance %s when credit is insufficient", (balance, label) => {
+    const provider: ServerProvider = {
+      ...makeProvider("deepcode"),
+      accountUsageReportedAt: "2026-07-29T15:00:00.000Z",
+      accountUsage: {
+        is_available: false,
+        balance_infos: [
+          {
+            currency: "USD",
+            total_balance: balance,
+            granted_balance: "0",
+            topped_up_balance: balance,
+          },
+        ],
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <ProviderUsageBar
+        environmentId={localEnvironmentId}
+        providers={[provider]}
+        activities={[]}
+      />,
+    );
+    expect(markup).toContain(`Credit: ${label}`);
+    expect(markup).toContain(`>${label}</span>`);
+    expect(markup).not.toContain("Empty");
+  });
+
   it("shows Deep Code credit and billing state without a percentage", () => {
     const provider: ServerProvider = {
       ...makeProvider("deepcode"),

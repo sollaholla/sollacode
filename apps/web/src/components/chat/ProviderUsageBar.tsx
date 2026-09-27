@@ -1083,10 +1083,7 @@ export function compactProviderUsageMetric(
       summary.windows.find((window) => window.key.startsWith("balance-"));
     return {
       label: "Credit",
-      window:
-        billing?.detail === "Insufficient credit"
-          ? { ...billing, detail: "Empty" }
-          : (balance ?? billing ?? null),
+      window: balance ?? billing ?? null,
     };
   }
   // Muse has no account quota to report: neither `muse --help` nor the MSP
