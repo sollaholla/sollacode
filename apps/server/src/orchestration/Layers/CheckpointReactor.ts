@@ -39,6 +39,8 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+/** A finishing turn's last assistant message is always among a thread's newest. */
+const CHECKPOINT_RECENT_MESSAGE_LIMIT = 100;
 
 type ReactorInput =
   | {
@@ -161,9 +163,17 @@ const make = Effect.gen(function* () {
       : Option.none();
   });
 
+  /**
+   * Checkpointing reads a thread's checkpoints in full but only needs the
+   * newest messages, to find the finishing turn's assistant message. Loading
+   * every message ran on each turn start and read 8-17k rows on long threads.
+   */
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
-      .getThreadDetailById(threadId, { activityLimit: 0 })
+      .getThreadDetailById(threadId, {
+        activityLimit: 0,
+        messageLimit: CHECKPOINT_RECENT_MESSAGE_LIMIT,
+      })
       .pipe(Effect.map(Option.getOrUndefined));
   });
 

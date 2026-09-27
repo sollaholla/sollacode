@@ -17,7 +17,44 @@ import * as BrowserTraceCollector from "../BrowserTraceCollector.ts";
 
 const otlpSerializationLayer = OtlpSerialization.layerJson;
 
-const HIGH_FREQUENCY_LOCAL_SPANS = new Set(["sql.execute"]);
+/**
+ * Spans that fire per streamed message, per projected event, or per running
+ * turn each second. Measured on a live install they were ~88% of the trace
+ * file (about 100 KB/s while three turns streamed), which cut the retained
+ * window to minutes. A failed or slow one is still written.
+ */
+const HIGH_FREQUENCY_LOCAL_SPANS = new Set([
+  "sql.execute",
+  // Claude adapter, once per SDK message.
+  "handleSdkMessage",
+  "handleStreamEvent",
+  "handleSystemMessage",
+  "ensureThreadId",
+  "updateResumeCursor",
+  // Ingestion and projection, once per runtime or domain event.
+  "resolveThreadShell",
+  "decideOrchestrationCommand",
+  "processAssistantMessageSent",
+  "runAttachmentSideEffects",
+  "wakeDeliveryStateWaiters",
+  "ProjectionLiveBuffer.offer",
+  "ProjectionLiveBuffer.offerWithState",
+  "applyProjectsProjection",
+  "applyThreadsProjection",
+  "applyThreadSessionsProjection",
+  "applyThreadTurnsProjection",
+  "applyThreadMessagesProjection",
+  "applyThreadProposedPlansProjection",
+  "applyThreadActivitiesProjection",
+  "applyPendingApprovalsProjection",
+  "applyThreadWorkProjection",
+  // Settings reads and the usage guard's per-second check of each running turn.
+  "ServerSecretStore.get",
+  "ServerSettings.overlayOrchestratorKeyPresence",
+  "ProviderUsageGuard.decide",
+  "ProviderUsageGuard.readInstance",
+  "ProviderUsageGuard.overrideActive",
+]);
 
 export function shouldPersistServerEffectSpan(
   record: Pick<EffectTraceRecord, "durationMs" | "exit" | "name">,

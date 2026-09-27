@@ -323,7 +323,7 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getThreadDetailById: (
     threadId: ThreadId,
-    options?: { readonly activityLimit?: number },
+    options?: { readonly activityLimit?: number; readonly messageLimit?: number },
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
 
   /**
