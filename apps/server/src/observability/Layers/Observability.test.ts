@@ -27,6 +27,23 @@ describe("server local trace filtering", () => {
     );
   });
 
+  it("drops fast successful per-message spans but keeps failed ones", () => {
+    assert.isFalse(
+      shouldPersistServerEffectSpan({
+        name: "handleSdkMessage",
+        durationMs: 0.1,
+        exit: { _tag: "Success" },
+      }),
+    );
+    assert.isTrue(
+      shouldPersistServerEffectSpan({
+        name: "handleSdkMessage",
+        durationMs: 0.1,
+        exit: { _tag: "Failure", cause: "malformed message" },
+      }),
+    );
+  });
+
   it("retains startup and normal operational spans", () => {
     assert.isTrue(
       shouldPersistServerEffectSpan({

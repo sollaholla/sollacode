@@ -461,6 +461,34 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     ),
   );
 
+  it.effect("reads voice key presence from disk once, until a settings write changes a key", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+
+      const before = yield* serverSettings.getSettings;
+      assert.strictEqual(before.orchestrator.openAiApiKeyConfigured, false);
+
+      // Keys only change through settings writes; a file appearing behind the
+      // service's back is not re-read on every settings read.
+      yield* fileSystem.writeFile(
+        `${serverConfig.secretsDir}/${ORCHESTRATOR_OPENAI_API_KEY_SECRET_NAME}.bin`,
+        new TextEncoder().encode("sk-outside"),
+      );
+      const remembered = yield* serverSettings.getSettings;
+      assert.strictEqual(remembered.orchestrator.openAiApiKeyConfigured, false);
+
+      yield* serverSettings.updateSettings({ orchestrator: { xaiApiKey: "xai-key" } });
+      const after = yield* serverSettings.getSettings;
+      assert.strictEqual(after.orchestrator.openAiApiKeyConfigured, true);
+      assert.strictEqual(after.orchestrator.xaiApiKeyConfigured, true);
+    }).pipe(
+      Effect.provide(makeServerSettingsLayer()),
+      Effect.provideService(HostProcessEnvironment, {}),
+    ),
+  );
+
   it.effect("migrates the legacy shared voice key to the selected provider", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;

@@ -379,15 +379,59 @@ const make = Effect.gen(function* () {
       };
     });
 
+  /** A failed read counts as absent for this answer, but is not remembered. */
   const readSecretPresence = (name: string) =>
     secretStore.get(name).pipe(
-      Effect.map(Option.isSome),
+      Effect.map((secret) => ({ present: Option.isSome(secret), known: true })),
       Effect.catchCause((cause) =>
         Effect.logWarning("failed to read orchestrator key presence", { name, cause }).pipe(
-          Effect.as(false),
+          Effect.as({ present: false, known: false }),
         ),
       ),
     );
+
+  interface OrchestratorKeyPresence {
+    readonly openAiStored: boolean;
+    readonly xaiStored: boolean;
+    readonly legacyStored: boolean;
+  }
+  /**
+   * The orchestrator keys are only written through this service, so their
+   * presence is read from disk once and forgotten on every write here. Every
+   * settings read overlays it, and running turns read settings each second.
+   */
+  const keyPresenceRef = yield* Ref.make({
+    generation: 0,
+    remembered: Option.none<OrchestratorKeyPresence>(),
+  });
+  // A write bumps the generation, so a read that raced it never files its
+  // older answer.
+  const forgetKeyPresence = Ref.update(keyPresenceRef, ({ generation }) => ({
+    generation: generation + 1,
+    remembered: Option.none<OrchestratorKeyPresence>(),
+  }));
+  const readKeyPresence = Effect.gen(function* () {
+    const { generation, remembered } = yield* Ref.get(keyPresenceRef);
+    if (Option.isSome(remembered)) return remembered.value;
+    const [openAi, xai, legacy] = yield* Effect.all([
+      readSecretPresence(ORCHESTRATOR_OPENAI_API_KEY_SECRET_NAME),
+      readSecretPresence(ORCHESTRATOR_XAI_API_KEY_SECRET_NAME),
+      readSecretPresence(LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME),
+    ]);
+    const presence: OrchestratorKeyPresence = {
+      openAiStored: openAi.present,
+      xaiStored: xai.present,
+      legacyStored: legacy.present,
+    };
+    if (openAi.known && xai.known && legacy.known) {
+      yield* Ref.update(keyPresenceRef, (current) =>
+        current.generation === generation
+          ? { generation, remembered: Option.some(presence) }
+          : current,
+      );
+    }
+    return presence;
+  });
 
   /**
    * Reports each backend independently. Grok can also start from `XAI_API_KEY`
@@ -397,11 +441,7 @@ const make = Effect.gen(function* () {
    */
   const overlayOrchestratorKeyPresence = Effect.fn("ServerSettings.overlayOrchestratorKeyPresence")(
     function* (settings: ServerSettings) {
-      const [openAiStored, xaiStored, legacyStored] = yield* Effect.all([
-        readSecretPresence(ORCHESTRATOR_OPENAI_API_KEY_SECRET_NAME),
-        readSecretPresence(ORCHESTRATOR_XAI_API_KEY_SECRET_NAME),
-        readSecretPresence(LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME),
-      ]);
+      const { openAiStored, xaiStored, legacyStored } = yield* readKeyPresence;
       const env = yield* HostProcessEnvironment;
       const fromEnv = env[XAI_API_KEY_ENV]?.trim();
       const xaiFromEnv = fromEnv !== undefined && fromEnv.length > 0;
@@ -440,17 +480,19 @@ const make = Effect.gen(function* () {
     if (Option.isNone(legacy)) return;
 
     const targetName = orchestratorApiKeySecretName(settings.orchestrator.provider);
-    const target = yield* secretStore
-      .get(targetName)
-      .pipe(Effect.mapError(mapOrchestratorSecretError("read-secret")));
-    if (Option.isNone(target)) {
+    yield* Effect.gen(function* () {
+      const target = yield* secretStore
+        .get(targetName)
+        .pipe(Effect.mapError(mapOrchestratorSecretError("read-secret")));
+      if (Option.isNone(target)) {
+        yield* secretStore
+          .set(targetName, legacy.value)
+          .pipe(Effect.mapError(mapOrchestratorSecretError("write-secret")));
+      }
       yield* secretStore
-        .set(targetName, legacy.value)
-        .pipe(Effect.mapError(mapOrchestratorSecretError("write-secret")));
-    }
-    yield* secretStore
-      .remove(LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME)
-      .pipe(Effect.mapError(mapOrchestratorSecretError("remove-secret")));
+        .remove(LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME)
+        .pipe(Effect.mapError(mapOrchestratorSecretError("remove-secret")));
+    }).pipe(Effect.ensuring(forgetKeyPresence));
   });
 
   const materializeChanges = (changes: Stream.Stream<ServerSettings>) =>
@@ -503,16 +545,19 @@ const make = Effect.gen(function* () {
           : [{ name: ORCHESTRATOR_XAI_API_KEY_SECRET_NAME, value: xaiApiKey }]),
       ];
 
-      for (const write of writes) {
-        if (write.value.length === 0) {
-          yield* secretStore
-            .remove(write.name)
-            .pipe(Effect.mapError(mapOrchestratorSecretError("remove-secret")));
-        } else {
-          yield* secretStore
-            .set(write.name, textEncoder.encode(write.value))
-            .pipe(Effect.mapError(mapOrchestratorSecretError("write-secret")));
-        }
+      if (writes.length > 0) {
+        yield* Effect.forEach(
+          writes,
+          (write) =>
+            write.value.length === 0
+              ? secretStore
+                  .remove(write.name)
+                  .pipe(Effect.mapError(mapOrchestratorSecretError("remove-secret")))
+              : secretStore
+                  .set(write.name, textEncoder.encode(write.value))
+                  .pipe(Effect.mapError(mapOrchestratorSecretError("write-secret"))),
+          { discard: true },
+        ).pipe(Effect.ensuring(forgetKeyPresence));
       }
 
       return yield* overlayOrchestratorKeyPresence(next);

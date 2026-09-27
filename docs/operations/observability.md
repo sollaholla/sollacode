@@ -24,6 +24,8 @@ If you want a log message to show up in the trace file, emit it inside an active
 
 Completed spans are written as NDJSON records to `serverTracePath` (`~/.solla-code/userdata/logs/server.trace.ndjson` for packaged desktop, or `~/.t3/userdata/logs/server.trace.ndjson` for a standalone source server).
 
+Spans that fire per streamed message, per projected event, or once a second per running turn (the list is `HIGH_FREQUENCY_LOCAL_SPANS` in `apps/server/src/observability/Layers/Observability.ts`, which also covers `sql.execute`) are written only when they fail or take 100 ms or longer. They were about 88% of the file, which cut the rotated window to minutes; they still reach an OTLP collector when one is configured.
+
 Important fields in each record:
 
 - `name`: span name
