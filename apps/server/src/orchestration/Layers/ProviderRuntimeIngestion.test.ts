@@ -3005,9 +3005,14 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
+    // Failover writes the model first and the handoff session second; wait
+    // for both, or a slow run reads the old turn id in between.
     const afterFable = await waitForThread(
       harness.readModel,
-      (entry) => entry.modelSelection.model === "claude-opus-5",
+      (entry) =>
+        entry.modelSelection.model === "claude-opus-5" &&
+        entry.session?.activeTurnId != null &&
+        entry.session.activeTurnId !== asTurnId("turn-fable-chain"),
       10_000,
     );
     expect(afterFable.session?.providerInstanceId).toBe("claudeAgent");
