@@ -114,6 +114,7 @@ const makeHarness = (options: {
   readonly agentOwnThreadId?: string;
 }) => {
   const commands: OrchestrationCommand[] = [];
+  const detailReads: Array<{ activityLimit?: number; messageLimit?: number } | undefined> = [];
   const storeLayer = Layer.mock(VmAgentStore)({
     getByThreadId: (threadId) =>
       Effect.succeed(
@@ -135,14 +136,15 @@ const makeHarness = (options: {
       Effect.succeed(
         options.shellById === undefined ? Option.none() : Option.some(options.shellById as never),
       ),
-    getThreadDetailById: () =>
-      Effect.succeed(
-        Option.some({
+    getThreadDetailById: (_threadId, readOptions) =>
+      Effect.sync(() => {
+        detailReads.push(readOptions);
+        return Option.some({
           messages: options.messages ?? [],
           proposedPlans: [],
           taskTitle: null,
-        } as never),
-      ),
+        } as never);
+      }),
   });
   const engineLayer = Layer.mock(OrchestrationEngineService)({
     dispatch: (command: OrchestrationCommand) =>
@@ -162,6 +164,7 @@ const makeHarness = (options: {
   );
   return {
     commands,
+    detailReads,
     layer: Layer.mergeAll(storeLayer, projectionLayer, engineLayer, cryptoLayer),
   };
 };
@@ -274,7 +277,7 @@ it.effect("opens a thread in the project and asks the question there", () =>
 
 it.effect("returns the reply once the consulted thread has answered", () =>
   Effect.gen(function* () {
-    const { layer } = makeHarness({
+    const { layer, detailReads } = makeHarness({
       shellById: threadShell({ latestTurn: completedTurn }),
       messages: [
         {
@@ -309,6 +312,27 @@ it.effect("returns the reply once the consulted thread has answered", () =>
     if (result.action !== "ask") return assert.fail("expected an ask result");
     assert.strictEqual(result.answered, true);
     assert.strictEqual(result.answer, "Yes — exports check the licence flag before rendering.");
+    assert.deepStrictEqual(detailReads, [{ activityLimit: 0 }]);
+  }),
+);
+
+it.effect("reads conversation messages without materializing tool history", () =>
+  Effect.gen(function* () {
+    const { layer, detailReads } = makeHarness({
+      messages: [
+        { role: "user", text: "First", createdAt: iso },
+        { role: "assistant", text: "", createdAt: iso },
+        { role: "assistant", text: "Latest answer", createdAt: iso },
+      ],
+    });
+    const result = yield* run(
+      handleWorkspaceConsult({ action: "read_thread", threadId: medicalThreadId, limit: 1 }),
+      layer,
+    );
+    assert.deepStrictEqual(result.messages, [
+      { role: "assistant", text: "Latest answer", createdAt: iso },
+    ]);
+    assert.deepStrictEqual(detailReads, [{ activityLimit: 0 }]);
   }),
 );
 

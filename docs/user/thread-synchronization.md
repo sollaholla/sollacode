@@ -8,6 +8,8 @@ A dropped network works the same way. When Wi-Fi drops or the phone sleeps, the 
 
 This behavior is shared by the web, desktop, and mobile clients. You never need to refresh the page to restart an unfinished synchronization handshake.
 
+When a tool finishes, its final result replaces the intermediate output records in the live client's memory. Unfinished tools keep their output, and completed results remain available in the conversation. Workspace consultations that read messages also skip loading the unrelated tool history.
+
 ## Starting the app
 
 The Solla Code logo covers the app while it starts, and only then. It stays up until the first screen is ready: the app's code, the sign-in check, your workspace (from the last session's cache when there is one), and — when you open a conversation — the conversation view's code. It fades out once and never comes back while the page stays open. A fast start is just the logo. On a slow connection, after a moment a gold bar and one line say which step it is on: "Loading Solla Code…", "Signing in…", "Loading your workspace…", "Opening…".
