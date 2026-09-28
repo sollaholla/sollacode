@@ -35,6 +35,14 @@ const activityOrder = O.combineAll<OrchestrationThreadActivity>([
   O.mapInput(O.String, (a) => a.id),
 ]);
 
+function toolCallId(activity: OrchestrationThreadActivity): string | null {
+  const payload = activity.payload;
+  if (typeof payload !== "object" || payload === null || !("data" in payload)) return null;
+  const data = payload.data;
+  if (typeof data !== "object" || data === null || !("toolCallId" in data)) return null;
+  return typeof data.toolCallId === "string" && data.toolCallId.length > 0 ? data.toolCallId : null;
+}
+
 /**
  * Apply a single orchestration event to an `OrchestrationThread`, returning
  * the updated thread, a deletion signal, or an "unchanged" marker when the
@@ -550,8 +558,30 @@ export function applyThreadDetailEvent(
       // of events that alone pinned the CPU. Drop any previous copy in one
       // pass, then insert at the sorted position scanning back from the tail.
       let appended = event.payload.activity;
+      const appendedToolCallId =
+        appended.kind === "tool.completed" || appended.kind === "tool.updated"
+          ? toolCallId(appended)
+          : null;
       const activities: Array<OrchestrationThreadActivity> = [];
       for (const activity of thread.activities) {
+        // A completed call owns its final output. Match the snapshot behavior
+        // during live streaming too, rather than retaining every output frame
+        // until the user closes a long-running thread.
+        if (
+          appendedToolCallId !== null &&
+          activity.turnId === appended.turnId &&
+          toolCallId(activity) === appendedToolCallId
+        ) {
+          if (
+            appended.kind === "tool.completed" &&
+            activity.kind === "tool.updated" &&
+            activity.id !== appended.id
+          )
+            continue;
+          if (appended.kind === "tool.updated" && activity.kind === "tool.completed") {
+            return { kind: "unchanged" };
+          }
+        }
         if (activity.id !== appended.id) {
           activities.push(activity);
         } else if (event.payload.historicalReplay) {

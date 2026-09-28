@@ -9,7 +9,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import type { OrchestrationThread } from "@t3tools/contracts";
+import type { OrchestrationThread, OrchestrationThreadActivity } from "@t3tools/contracts";
 
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 
@@ -627,6 +627,80 @@ describe("applyThreadDetailEvent", () => {
   });
 
   describe("thread.activity-appended", () => {
+    const toolActivity = (
+      id: string,
+      kind = "tool.updated",
+      callId: string | null = "call-1",
+      turnId = TurnId.make("turn-1"),
+    ): OrchestrationThreadActivity => ({
+      id: EventId.make(id),
+      tone: "tool",
+      kind,
+      summary: "Tool output",
+      payload: { data: { toolCallId: callId, rawOutput: { content: "output" } } },
+      turnId,
+      sequence: 1,
+      createdAt: baseThread.createdAt,
+    });
+    const append = (
+      activities: ReadonlyArray<OrchestrationThreadActivity>,
+      activity: OrchestrationThreadActivity,
+    ) =>
+      applyThreadDetailEvent(
+        { ...baseThread, activities },
+        {
+          ...baseEventFields,
+          sequence: 500,
+          occurredAt: baseThread.updatedAt,
+          aggregateKind: "thread",
+          aggregateId: baseThread.id,
+          type: "thread.activity-appended",
+          payload: { threadId: baseThread.id, activity },
+        },
+      );
+
+    it("releases hundreds of superseded output frames when a tool completes", () => {
+      const started = toolActivity("start", "tool.started");
+      const updates = Array.from({ length: 250 }, (_, i) => ({
+        ...toolActivity(`update-${i}`),
+        sequence: i + 2,
+        payload: { data: { toolCallId: "call-1", rawOutput: "x".repeat(16_384) + i } },
+      }));
+      const completed = { ...toolActivity("end", "tool.completed"), sequence: 499 };
+      const result = append([started, ...updates], completed);
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.activities).toEqual([started, completed]);
+        expect(JSON.stringify(result.thread.activities).length).toBeLessThan(1_000);
+      }
+    });
+
+    it("keeps other calls, reused IDs in other turns, and unidentified output", () => {
+      const otherCall = toolActivity("other", "tool.updated", "call-2");
+      const otherTurn = toolActivity("old-turn", "tool.updated", "call-1", TurnId.make("turn-0"));
+      const unidentified = toolActivity("unknown", "tool.updated", null);
+      const retained = [otherCall, otherTurn, unidentified];
+      const result = append(
+        [...retained, toolActivity("update")],
+        toolActivity("end", "tool.completed"),
+      );
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated")
+        expect(result.thread.activities).toEqual(expect.arrayContaining(retained));
+      expect(append([unidentified], toolActivity("end", "tool.completed", null)).kind).toBe(
+        "updated",
+      );
+    });
+
+    it("ignores late updates for completed calls but keeps unfinished output", () => {
+      expect(append([toolActivity("end", "tool.completed")], toolActivity("late")).kind).toBe(
+        "unchanged",
+      );
+      const result = append([toolActivity("first")], toolActivity("second"));
+      if (result.kind !== "updated") throw new Error("Expected live output");
+      expect(result.thread.activities).toHaveLength(2);
+    });
+
     it("repairs historical activity content without moving it after live work", () => {
       const original = {
         id: EventId.make("old-tool"),

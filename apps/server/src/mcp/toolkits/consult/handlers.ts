@@ -174,7 +174,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
         Math.max(1, Math.trunc(input.limit ?? DEFAULT_MESSAGE_LIMIT)),
       );
       const detail = yield* projection
-        .getThreadDetailById(input.threadId)
+        .getThreadDetailById(input.threadId, { activityLimit: 0 })
         .pipe(Effect.mapError(failed("reading the conversation")));
       if (Option.isNone(detail)) {
         return yield* new WorkspaceConsultNotFoundError({
@@ -343,7 +343,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
           continue;
         }
         const detail = yield* projection
-          .getThreadDetailById(targetId)
+          .getThreadDetailById(targetId, { activityLimit: 0 })
           .pipe(Effect.mapError(failed("reading the reply")));
         if (Option.isNone(detail)) continue;
         const replies = detail.value.messages.filter(
