@@ -4914,7 +4914,7 @@ describe("PreviewManager", () => {
         const debuggerMessages = new Set<
           (event: unknown, method: string, params: Record<string, unknown>) => void
         >();
-        const sendCommand = vi.fn(async (method: string) => {
+        const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
           if (method === "Runtime.evaluate") {
             runtimeReadCount += 1;
             if (runtimeReadCount === advanceNavigationGenerationAtRuntimeRead) {
@@ -4939,6 +4939,11 @@ describe("PreviewManager", () => {
             };
           }
           if (method === "Page.captureScreenshot") {
+            // Chromium's view fallback can succeed with pixels from Solla's
+            // enclosing window even while the requested page has no surface.
+            if (params?.fromSurface === false) {
+              return { data: Buffer.from("wrong-solla-window").toString("base64") };
+            }
             return debuggerScreenshotAvailable
               ? { data: debuggerScreenshots.shift() ?? debuggerPng }
               : {};
@@ -5484,6 +5489,11 @@ describe("PreviewManager", () => {
           expect(degradedSnapshot.value.visibleText).toBe("Example");
           expect(degradedSnapshot.value.url).toBe("https://example.com");
         }
+        expect(
+          sendCommand.mock.calls
+            .filter(([method]) => method === "Page.captureScreenshot")
+            .every(([, params]) => params?.fromSurface === true),
+        ).toBe(true);
         expect(browserWindowConstructor).not.toHaveBeenCalled();
       }),
     ),
@@ -5622,7 +5632,8 @@ describe("PreviewManager", () => {
         const capturePage = vi.fn(() => new Promise<never>(() => {}));
         const beginFrameSubscription = vi.fn();
         const endFrameSubscription = vi.fn();
-        const sendCommand = vi.fn(async (method: string) => {
+        let surfaceReady = true;
+        const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
           if (method === "Runtime.evaluate") {
             return {
               result: {
@@ -5638,7 +5649,12 @@ describe("PreviewManager", () => {
               },
             };
           }
-          if (method === "Page.captureScreenshot") return { data: debuggerPng };
+          if (method === "Page.captureScreenshot") {
+            if (params?.fromSurface === false) {
+              return { data: Buffer.from("wrong-solla-window").toString("base64") };
+            }
+            return surfaceReady ? { data: debuggerPng } : {};
+          }
           if (method === "Accessibility.getFullAXTree") return { nodes: [] };
           return {};
         });
@@ -5693,6 +5709,22 @@ describe("PreviewManager", () => {
           width: 800,
           height: 600,
         });
+
+        surfaceReady = false;
+        const unavailableFiber = yield* manager
+          .automationSnapshot("tab_snapshot_timeout")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("5 seconds");
+        const unavailable = yield* Fiber.join(unavailableFiber);
+        expect(unavailable.screenshot).toBeUndefined();
+        expect(unavailable.screenshotError).toBeTruthy();
+        expect(unavailable.url).toBe("https://example.com");
+        expect(
+          sendCommand.mock.calls
+            .filter(([method]) => method === "Page.captureScreenshot")
+            .every(([, params]) => params?.fromSurface === true),
+        ).toBe(true);
       }),
     ),
   );

@@ -154,6 +154,10 @@ a pure JavaScript change, so an over-the-air update or Metro reload is enough.
 - Frames come from the existing `preview.remoteSnapshot` path: the desktop captures its own
   rendered tab and returns a JPEG over the environment WebSocket, so Tailscale connections keep
   the desktop's cookies and signed-in state.
+- While a page is loading or its frame is unavailable, the viewer freezes the last valid
+  page picture and resumes automatically when a new frame arrives, without flickering to black.
+  Before the first valid frame, it shows a waiting state. Capture stays on the tab's own surface;
+  it never falls back to a screenshot of the Solla window.
 - Input goes through a `preview.remoteInput` RPC that forwards your gesture into the same
   per-tab, serialized automation operations agents use (`click`, `scroll`, `type`, `press`,
   `drag`, and `contextMenu`, which right-clicks and hands back what was under the pointer instead

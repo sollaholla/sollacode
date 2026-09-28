@@ -6037,11 +6037,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 }),
               ),
         );
-      const captureDebuggerScreenshot = (fromSurface: boolean) => {
+      const captureDebuggerScreenshot = () => {
         return send("Page.captureScreenshot", {
           format: "jpeg",
           quality: AUTOMATION_SNAPSHOT_JPEG_QUALITY,
-          fromSurface,
+          // View capture can include the enclosing Solla window when the guest
+          // has no surface. Every screenshot must stay scoped to the page.
+          fromSurface: true,
           captureBeyondViewport: false,
         }).pipe(
           Effect.flatMap((result) => {
@@ -6172,10 +6174,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }).pipe(Effect.ensuring(cleanup));
         },
       );
-      const debuggerScreenshot = () =>
-        captureDebuggerScreenshot(true).pipe(Effect.catch(() => captureDebuggerScreenshot(false)));
       const debuggerScreenshotWithScreencast = () =>
-        debuggerScreenshot().pipe(Effect.catch(() => captureDebuggerScreencast()));
+        captureDebuggerScreenshot().pipe(Effect.catch(() => captureDebuggerScreencast()));
       const captureHiddenFallback = (debuggerCause: unknown) =>
         stageSnapshotSurface!(
           nativeScreenshot().pipe(
@@ -6186,15 +6186,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               ),
             ),
             Effect.catch((nativeCause) =>
-              captureDebuggerScreenshot(false).pipe(
-                Effect.catch((viewCause) =>
-                  captureDebuggerScreencast().pipe(
-                    Effect.tap(() =>
-                      Effect.logWarning(
-                        "Direct and native capture were unavailable; a live screencast frame succeeded.",
-                        { tabId, debuggerCause, nativeCause, viewCause },
-                      ),
-                    ),
+              captureDebuggerScreencast().pipe(
+                Effect.tap(() =>
+                  Effect.logWarning(
+                    "Direct and native capture were unavailable; a live screencast frame succeeded.",
+                    { tabId, debuggerCause, nativeCause },
                   ),
                 ),
                 Effect.tapError((screencastCause) =>
@@ -6229,7 +6225,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const captureSameRendererScreenshot = () =>
         (stageSnapshotSurface === null
           ? captureVisibleScreenshot()
-          : captureDebuggerScreenshot(true).pipe(Effect.catch(captureHiddenFallback))
+          : captureDebuggerScreenshot().pipe(Effect.catch(captureHiddenFallback))
         ).pipe(
           // A picture is one field of a snapshot. Failing the whole call for
           // it throws away the live URL, text, accessibility tree and
