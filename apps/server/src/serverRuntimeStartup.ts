@@ -24,6 +24,7 @@ import * as Scope from "effect/Scope";
 
 import * as ServerConfig from "./config.ts";
 import { startAttachmentRetention } from "./attachmentRetention.ts";
+import { startArchivedThreadRetention } from "./archivedThreadRetention.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
@@ -371,6 +372,8 @@ export const make = Effect.gen(function* () {
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
       }),
     );
+
+    yield* startArchivedThreadRetention.pipe(Effect.forkScoped);
 
     const welcomeBase = yield* resolveWelcomeBase;
     const environment = yield* serverEnvironment.getDescriptor;

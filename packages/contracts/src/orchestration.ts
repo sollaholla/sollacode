@@ -798,6 +798,8 @@ const ThreadDeleteCommand = Schema.Struct({
   type: Schema.Literal("thread.delete"),
   commandId: CommandId,
   threadId: ThreadId,
+  /** Retention deletes must still be archived before this cutoff when dispatched. */
+  archivedBefore: Schema.optionalKey(IsoDateTime),
 });
 
 const ThreadArchiveCommand = Schema.Struct({

@@ -158,6 +158,7 @@ import {
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { threadEnvironment } from "../../state/threads";
 import { useUiStateStore } from "../../uiStateStore";
 import { useProviderUsageStore } from "../../providerUsageStore";
 
@@ -463,6 +464,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
         ? ["Provider update checks"]
         : []),
+      ...(settings.archivedThreadAutoDelete ? ["Auto-delete archived chats"] : []),
       ...(isBackgroundActivityDirty ? ["Background activity"] : []),
       ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
         ? ["New thread mode"]
@@ -496,6 +498,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.glassOpacity,
       settings.enableAssistantStreaming,
       settings.enableProviderUpdateChecks,
+      settings.archivedThreadAutoDelete,
       settings.voiceTranscriptionCorrectionEnabled,
       settings.voiceTranscriptionCorrectionModelSelection,
       settings.sidebarProjectGroupingMode,
@@ -532,6 +535,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled,
       voiceTranscriptionCorrectionModelSelection:
         DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionModelSelection,
+      archivedThreadAutoDelete: DEFAULT_UNIFIED_SETTINGS.archivedThreadAutoDelete,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
       backgroundActivityProfile: DEFAULT_UNIFIED_SETTINGS.backgroundActivityProfile,
@@ -1677,6 +1681,20 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          title="Auto-delete archived chats"
+          description="Permanently delete chats 48 hours after archiving in this environment. Restore a chat before then to keep it."
+          control={
+            <Switch
+              checked={settings.archivedThreadAutoDelete}
+              onCheckedChange={(checked) =>
+                updateSettings({ archivedThreadAutoDelete: Boolean(checked) })
+              }
+              aria-label="Auto-delete archived chats after 48 hours"
+            />
+          }
+        />
+
+        <SettingsRow
           title="Attachment retention"
           description="Automatically remove stored chat attachments after this many hours. Cleanup runs in the background and deleted files cannot be recovered."
           resetAction={
@@ -2645,6 +2663,10 @@ export function ProviderSettingsPanel() {
 }
 
 export function ArchivedThreadsPanel() {
+  const [isDeletingArchive, setIsDeletingArchive] = useState(false);
+  const deleteArchivedThread = useAtomCommand(threadEnvironment.delete, {
+    reportFailure: false,
+  });
   const projects = useProjects();
   const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
   const environmentIds = useMemo(
@@ -2756,8 +2778,66 @@ export function ArchivedThreadsPanel() {
     [confirmAndDeleteThread, refreshArchivedThreads, unarchiveThread],
   );
 
+  const deleteAllArchivedThreads = async () => {
+    const targets = archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
+      snapshot.threads
+        .filter((thread) => thread.archivedAt !== null)
+        .map((thread) => ({
+          environmentId,
+          input: { threadId: thread.id, archivedBefore: thread.archivedAt! },
+        })),
+    );
+    const api = readLocalApi();
+    if (!api || targets.length === 0 || isDeletingArchive) return;
+    setIsDeletingArchive(true);
+    const outcome = await settlePromise(async () => {
+      if (
+        !(await api.dialogs.confirm(
+          `Permanently delete all ${targets.length} archived chats across connected environments? This clears their conversation history and cannot be undone.`,
+        ))
+      )
+        return;
+      for (const target of targets) {
+        const result = await deleteArchivedThread(target);
+        if (result._tag !== "Success") {
+          throw squashAtomCommandFailure(result);
+        }
+      }
+    });
+    setIsDeletingArchive(false);
+    refreshArchivedThreads();
+    if (outcome._tag === "Failure") {
+      toastManager.add({
+        type: "error",
+        title: "Could not delete all archived chats",
+        description: "Cleanup stopped. Refresh the archive and try again for the remaining chats.",
+      });
+    }
+  };
+
   return (
     <SettingsPageContainer>
+      <SettingsSection title="Archive cleanup">
+        <SettingsRow
+          title="Delete all archived chats"
+          description="Permanently clear archived conversations across connected environments."
+          control={
+            <Button
+              variant="destructive"
+              disabled={
+                isDeletingArchive ||
+                isLoadingArchive ||
+                Boolean(archiveError) ||
+                archivedGroups.length === 0
+              }
+              onClick={() => void deleteAllArchivedThreads()}
+            >
+              {isDeletingArchive ? "Deleting archived chats…" : "Delete all archived chats"}
+            </Button>
+          }
+        />
+      </SettingsSection>
+
       {archivedGroups.length === 0 ? (
         <SettingsSection id="setting-archived-threads" title="Archived threads">
           <SettingsRow
