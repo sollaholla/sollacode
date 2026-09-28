@@ -1,5 +1,9 @@
 # Controlling the Desktop Browser from Your Phone
 
+Frame-capture and remote-input errors appear as a small red icon in the browser controls.
+Tap it for the full message and **Retry**. The icon disappears after a successful frame capture
+or input request; error text no longer covers the page.
+
 Solla Code's collaborative browser renders on the desktop host — that machine owns the tabs,
 cookies, and logins. From any other device you can now _see_ those tabs as near-live frames and
 _control_ them with touch: taps, scrolling, dragging, and typing are forwarded to the real page
