@@ -41,6 +41,7 @@ import {
 import { RemoteViewZoomReadout, useRemoteViewZoom } from "../remoteView/RemoteViewZoom";
 import { RemoteAgentCursor } from "./RemoteAgentCursor";
 import { RemoteBrowserContextMenu } from "./RemoteBrowserContextMenu";
+import { RemoteBrowserErrorChip } from "./RemoteBrowserErrorChip";
 import { RemoteTabAudioButton, useRemoteTabAudio } from "./RemoteTabAudio";
 import { usePreviewPageVisible } from "./previewPageVisibility";
 import {
@@ -820,11 +821,6 @@ export function RemoteBrowserFrame(props: {
             ))}
           </div>
         ) : null}
-        {frameError ? (
-          <div className="absolute inset-x-3 bottom-3 rounded-lg border border-red-500/30 bg-red-950/80 px-3 py-2 text-xs text-red-200">
-            {frameError}
-          </div>
-        ) : null}
       </div>
       {contextMenu ? (
         <RemoteBrowserContextMenu
@@ -860,6 +856,7 @@ export function RemoteBrowserFrame(props: {
         ) : null}
         <RemoteViewZoomReadout view={zoomView.view} onReset={zoomView.reset} />
         <div className="min-w-0 flex-1" />
+        <RemoteBrowserErrorChip error={frameError} onRetry={capture} />
         <RemoteTabAudioButton state={tabAudio.state} onToggle={tabAudio.toggle} />
         {touchClient ? (
           <button

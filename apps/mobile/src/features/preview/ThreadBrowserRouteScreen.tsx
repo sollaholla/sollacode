@@ -12,6 +12,7 @@ import * as Cause from "effect/Cause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   PanResponder,
   Pressable,
@@ -21,6 +22,7 @@ import {
 } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
+import { ControlPill } from "../../components/ControlPill";
 import { EmptyState } from "../../components/EmptyState";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -353,6 +355,19 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
             Live frames from the desktop tab — your touches are forwarded
           </Text>
         </View>
+        {frameError ? (
+          <ControlPill
+            icon="exclamationmark.triangle"
+            variant="danger"
+            accessibilityLabel="Browser error: show details"
+            onPress={() =>
+              Alert.alert("Browser preview error", frameError, [
+                { text: "Close", style: "cancel" },
+                { text: "Retry", onPress: () => void capture() },
+              ])
+            }
+          />
+        ) : null}
         <Pressable
           accessibilityLabel="Open browser tab"
           accessibilityRole="button"
@@ -574,11 +589,6 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
           </View>
         </>
       )}
-      {frameError ? (
-        <View className="rounded-2xl border border-red-500/25 bg-red-500/8 p-4">
-          <Text className="text-sm text-red-700 dark:text-red-300">{frameError}</Text>
-        </View>
-      ) : null}
     </ScrollView>
   );
 }
