@@ -23,6 +23,21 @@ Database pages freed by deletion are reused by SQLite. Solla Code does not run a
 `VACUUM` during startup because compacting a large database would block launch and temporarily
 require substantial additional disk space.
 
+## Archived chat retention
+
+**Settings → Archive → Delete all archived chats** deletes the currently listed archives
+across connected environments after one confirmation. Active chats are kept.
+
+Enable **Settings → General → Auto-delete archived chats** to permanently delete chats
+48 hours after they were archived. This setting is off by default and applies to the
+primary environment, including chats archived from web, desktop, or mobile. Each environment
+owns its own setting. Disabling it stops future automatic deletions.
+
+Cleanup runs on server startup and once per minute while the server is running, using the
+same deletion workflow as manual deletion. If the server is offline at the deadline, cleanup
+runs after it starts again. Restoring a chat before cleanup keeps it; archiving it again starts
+a new 48-hour period. Already deleted chats cannot be restored.
+
 ## Attachment retention
 
 **Settings → General → Attachment retention** controls how long chat attachments remain on disk.

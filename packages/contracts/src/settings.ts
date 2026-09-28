@@ -976,6 +976,7 @@ export const ServerSettings = Schema.Struct({
   threadModelPolicies: Schema.Record(TrimmedNonEmptyString, ModelAccessPolicy).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  archivedThreadAutoDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   attachmentRetentionHours: AttachmentRetentionHours.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ATTACHMENT_RETENTION_HOURS)),
   ),
@@ -1216,6 +1217,7 @@ export const ServerSettingsPatch = Schema.Struct({
   // Merge individual thread entries, replacing each entire policy atomically.
   threadModelPolicies: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, ModelAccessPolicy)),
   // Server settings
+  archivedThreadAutoDelete: Schema.optionalKey(Schema.Boolean),
   attachmentRetentionHours: Schema.optionalKey(AttachmentRetentionHours),
   autoCompactionThresholdPercentage: Schema.optionalKey(AutoCompactionThresholdPercentage),
   claudeTokenOptimizerEnabled: Schema.optionalKey(Schema.Boolean),

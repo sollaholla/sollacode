@@ -153,6 +153,36 @@ function singleEventOfType<T extends TypedPlannedEvent["type"]>(
 }
 
 it.layer(NodeServices.layer)("decider deletion flows", (it) => {
+  it.effect("retention deletion rechecks the current archive deadline", () =>
+    Effect.gen(function* () {
+      const seeded = yield* seedReadModel;
+      const cutoff = "2026-01-03T00:00:00.000Z";
+      for (const archivedAt of [null, "2026-01-03T00:00:00.001Z", cutoff]) {
+        const readModel = {
+          ...seeded,
+          threads: seeded.threads.map((thread) => ({ ...thread, archivedAt })),
+        };
+        const deletion = decideOrchestrationCommand({
+          command: {
+            type: "thread.delete",
+            commandId: asCommandId(`retention-${archivedAt}`),
+            threadId: asThreadId("thread-delete-1"),
+            archivedBefore: cutoff,
+          },
+          readModel,
+        });
+        if (archivedAt === cutoff) {
+          expect(singleEventOfType(yield* deletion, "thread.deleted").payload.threadId).toBe(
+            "thread-delete-1",
+          );
+        } else {
+          const error = yield* Effect.flip(deletion);
+          expect(error.message).toContain("no longer eligible");
+        }
+      }
+    }),
+  );
+
   it.effect("rejects promotion of agent side chats, including deleted ones", () =>
     Effect.gen(function* () {
       const seeded = yield* seedReadModel;

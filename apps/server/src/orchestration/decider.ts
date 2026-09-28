@@ -512,11 +512,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "The Agent Builder thread cannot be deleted.",
         });
       }
-      yield* requireThreadNotDeleted({
+      const thread = yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (
+        command.archivedBefore !== undefined &&
+        (thread.archivedAt === null ||
+          Date.parse(thread.archivedAt) > Date.parse(command.archivedBefore))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The thread is no longer eligible for archive retention cleanup.",
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
