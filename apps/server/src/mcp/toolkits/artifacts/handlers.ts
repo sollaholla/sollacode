@@ -7,7 +7,6 @@ import {
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 
 import { issueArtifactAssetUrl } from "../../../assets/AssetAccess.ts";
 import { ThreadArtifactService } from "../../../artifacts/ThreadArtifactService.ts";
@@ -24,7 +23,6 @@ import {
 } from "./assetReferences.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { resolveOwningThreadId } from "../../owningThread.ts";
-import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadArtifactToolkit } from "./tools.ts";
 import type { ThreadArtifactToolInput } from "./types.ts";
 
@@ -164,6 +162,15 @@ export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function*
         status: `Artifact revision ${detail.revision.revision} published.`,
         detail,
         ...urls,
+      };
+    }
+    case "delete": {
+      const artifactId = yield* requireField(input, "artifactId");
+      const deleted = yield* service.deleteArtifact({ threadId: artifactThreadId, artifactId });
+      return {
+        action: input.action,
+        status: "Artifact permanently deleted. All revisions were removed and storage quota freed.",
+        deleted,
       };
     }
     case "archive":

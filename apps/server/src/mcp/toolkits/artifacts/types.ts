@@ -1,5 +1,6 @@
 import {
   ThreadArtifactDetail,
+  ThreadArtifactDeleteResult,
   ThreadArtifactError,
   ThreadArtifactId,
   ThreadArtifactKey,
@@ -20,7 +21,7 @@ const ArtifactFile = Schema.Struct({
 });
 
 export const ThreadArtifactToolInput = Schema.Struct({
-  action: Schema.Literals(["list", "get", "publish", "archive", "restore"]),
+  action: Schema.Literals(["list", "get", "publish", "archive", "restore", "delete"]),
   artifactId: Schema.optional(ThreadArtifactId),
   key: Schema.optional(ThreadArtifactKey).annotate({
     description:
@@ -45,6 +46,7 @@ export const ThreadArtifactToolResult = Schema.Struct({
   status: Schema.String,
   list: Schema.optional(ThreadArtifactListResult),
   detail: Schema.optional(ThreadArtifactDetail),
+  deleted: Schema.optional(ThreadArtifactDeleteResult),
   contentUrl: Schema.optional(Schema.String),
   iconUrl: Schema.optional(Schema.String),
   openPath: Schema.optional(Schema.String),
