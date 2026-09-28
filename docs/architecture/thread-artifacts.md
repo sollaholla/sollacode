@@ -7,7 +7,7 @@ the declarative `VmAgentArtifact` workspace model.
 ## Read model and live updates
 
 `threadArtifacts.subscribe` sends an initial whole-thread snapshot and a replacement snapshot after
-publish, archive, or restore. Clients do not poll. List entries include the artifact identity, its
+publish, archive, restore, or delete. Clients do not poll. List entries include the artifact identity, its
 current revision metadata, and exact `entryResource` and `iconResource` descriptors. Detail adds
 the bounded revision history.
 
@@ -27,5 +27,9 @@ uses a WebView restricted to the signed entry subtree with multiple windows and 
 disabled. Server CSP is defense in depth. Icons are served through the same signed asset path and
 rendered as images rather than injected SVG.
 
-Archive and restore are reversible mutations. Publishing remains agent/MCP-owned; clients list,
-open, deep-link, archive, and restore.
+Archive and restore are reversible mutations. Permanent deletion removes all revision bytes and
+metadata, then broadcasts the updated list. The agent `thread_artifact` tool exposes `delete` through
+the same service as the client delete command; it resolves ownership from the credential and the
+connected side-chat parent, never a caller-supplied thread id. Its MCP destructive annotation covers
+this irreversible action. Publishing remains agent/MCP-owned; clients list, open, deep-link, archive,
+and restore, and web/desktop also offer permanent deletion.

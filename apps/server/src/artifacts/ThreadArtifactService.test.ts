@@ -22,6 +22,7 @@ import { decodeArtifactManifest } from "./ArtifactManifest.ts";
 import {
   sanitizeArtifactIconSvg,
   ThreadArtifactService,
+  THREAD_ARTIFACT_THREAD_MAX_BYTES,
   layer as ThreadArtifactServiceLive,
 } from "./ThreadArtifactService.ts";
 
@@ -229,6 +230,27 @@ layer("ThreadArtifactService", (it) => {
         const doomedDirectory = path.join(config.artifactsDir, doomed.artifact.artifactId);
         assert.isTrue(yield* fileSystem.exists(doomedDirectory));
 
+        const otherThreadId = ThreadId.make("thread-artifact-delete-other");
+        yield* insertThread(otherThreadId);
+        const forbidden = yield* service
+          .deleteArtifact({ threadId: otherThreadId, artifactId: doomed.artifact.artifactId })
+          .pipe(Effect.flip);
+        assert.strictEqual(forbidden._tag, "ThreadArtifactNotFoundError");
+        assert.isTrue(yield* fileSystem.exists(doomedDirectory));
+
+        // Seed quota accounting without writing a 200 MiB test fixture. Archive
+        // must still count these revisions; permanent deletion must free them.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE thread_artifact_revisions SET byte_length = ${THREAD_ARTIFACT_THREAD_MAX_BYTES}
+          WHERE artifact_id = ${doomed.artifact.artifactId} AND revision = 1`;
+        yield* service.setArchived({
+          threadId,
+          artifactId: doomed.artifact.artifactId,
+          archived: true,
+        });
+        const full = yield* publish("replacement", "new content").pipe(Effect.flip);
+        assert.strictEqual(full._tag, "ThreadArtifactQuotaExceededError");
+
         const deleted = yield* service.deleteArtifact({
           threadId,
           artifactId: doomed.artifact.artifactId,
@@ -262,6 +284,8 @@ layer("ThreadArtifactService", (it) => {
           ),
         );
         assert.strictEqual(survivorBytes, "still here");
+        const replacement = yield* publish("replacement", "new content");
+        assert.strictEqual(replacement.revision.revision, 1);
       }),
   );
 

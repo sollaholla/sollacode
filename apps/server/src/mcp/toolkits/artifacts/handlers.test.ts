@@ -7,6 +7,7 @@ import {
   ThreadArtifactKey,
   type ThreadArtifactDetail,
   type ThreadArtifactListInput,
+  type ThreadArtifactDeleteResult,
   ThreadId,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -16,6 +17,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 
 import {
   ThreadArtifactService,
@@ -27,7 +29,10 @@ import * as WorkspacePaths from "../../../workspace/WorkspacePaths.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { handleThreadArtifact } from "./handlers.ts";
-import type { ThreadArtifactToolInput } from "./types.ts";
+import { ThreadArtifactToolInput, ThreadArtifactToolResult } from "./types.ts";
+
+const decodeInput = Schema.decodeUnknownEffect(ThreadArtifactToolInput);
+const decodeResult = Schema.decodeUnknownEffect(ThreadArtifactToolResult);
 
 const callerThreadId = ThreadId.make("thread-artifact-caller");
 const otherThreadId = ThreadId.make("thread-artifact-other");
@@ -109,6 +114,7 @@ const invocation = (
 const makeHarness = () => {
   const listInputs: ThreadArtifactListInput[] = [];
   const publishInputs: ThreadArtifactPublishInput[] = [];
+  const deleteInputs: ThreadArtifactDeleteResult[] = [];
   const service = ThreadArtifactService.of({
     list: (input) =>
       Effect.sync(() => {
@@ -122,11 +128,15 @@ const makeHarness = () => {
         return detail;
       }),
     setArchived: () => Effect.die("unused"),
-    deleteArtifact: () => Effect.die("unused"),
+    deleteArtifact: (input) =>
+      Effect.sync(() => {
+        deleteInputs.push(input);
+        return input;
+      }),
     subscribe: () => Stream.die("unused"),
     cleanupDeletedThread: () => Effect.die("unused"),
   });
-  return { service, listInputs, publishInputs };
+  return { service, listInputs, publishInputs, deleteInputs };
 };
 
 /**
@@ -167,6 +177,83 @@ const runAs = <A, E, R>(
   );
 
 it.layer(testLayer)("thread artifact toolkit", (it) => {
+  it.effect("accepts delete through the tool schema and binds it to the credential owner", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const input = yield* decodeInput({
+        action: "delete",
+        artifactId,
+        threadId: otherThreadId,
+      });
+      const result = yield* runAs(handleThreadArtifact(input), harness.service);
+      expect(yield* decodeResult(result)).toMatchObject({
+        action: "delete",
+        deleted: { threadId: callerThreadId, artifactId },
+      });
+      expect(harness.deleteInputs).toEqual([{ threadId: callerThreadId, artifactId }]);
+      expect(result).not.toHaveProperty("contentUrl");
+    }),
+  );
+
+  it.effect("rejects deletion without an artifact id or artifacts capability", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const missing = yield* Effect.flip(
+        runAs(handleThreadArtifact({ action: "delete" }), harness.service),
+      );
+      expect(missing).toMatchObject({
+        _tag: "ThreadArtifactInvalidInputError",
+        field: "artifactId",
+      });
+      const forbidden = yield* Effect.flip(
+        runAs(handleThreadArtifact({ action: "delete", artifactId }), harness.service, new Set()),
+      );
+      expect(forbidden).toMatchObject({
+        _tag: "ThreadArtifactInvalidInputError",
+        field: "capability",
+      });
+      expect(harness.deleteInputs).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "uses the connected parent for deletion and the caller after promotion or parent removal",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        const shells = new Map([
+          [callerThreadId as string, { isSideChat: true, sideChatParentThreadId: otherThreadId }],
+          [otherThreadId as string, {}],
+        ]);
+        yield* runAs(
+          handleThreadArtifact({ action: "delete", artifactId }),
+          harness.service,
+          undefined,
+          shells,
+        );
+        shells.delete(otherThreadId);
+        yield* runAs(
+          handleThreadArtifact({ action: "delete", artifactId }),
+          harness.service,
+          undefined,
+          shells,
+        );
+        shells.set(callerThreadId, { isSideChat: false, sideChatParentThreadId: otherThreadId });
+        shells.set(otherThreadId, {});
+        yield* runAs(
+          handleThreadArtifact({ action: "delete", artifactId }),
+          harness.service,
+          undefined,
+          shells,
+        );
+        expect(harness.deleteInputs.map((input) => input.threadId)).toEqual([
+          otherThreadId,
+          callerThreadId,
+          callerThreadId,
+        ]);
+      }),
+  );
+
   it.effect("rejects credentials without the artifacts capability before service access", () =>
     Effect.gen(function* () {
       const harness = makeHarness();

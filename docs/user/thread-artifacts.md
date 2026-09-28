@@ -22,6 +22,13 @@ When a newer revision arrives, an update banner lets you move to it explicitly. 
 open stays pinned to its displayed revision until you choose **Use latest**. Archive marks an
 artifact inactive without deleting its revision history; **Restore** reverses it.
 
+Agents can permanently delete their own artifacts with `thread_artifact` using `action: "delete"`
+and the `artifactId` returned by **list**. Include `includeArchived: true` when listing to find
+archived artifacts too. Deletion removes every revision and its files, frees the thread's storage
+quota, and cannot be undone. Archive only hides an artifact and does not free quota.
+Connected side chats manage their parent's artifacts until promoted or the parent is gone;
+agents cannot choose an unrelated thread as the owner for deletion.
+
 ## Preview boundary
 
 Web bundles run in an opaque, script-only sandbox. Popups, downloads, forms, modal dialogs,
