@@ -45,9 +45,9 @@ export function captureRemotePreviewSnapshot(input: {
     })
     .pipe(
       // This feed exists to show the tab, so a snapshot with no picture is
-      // nothing to show. Failing lets the phone keep its last good frame and
-      // say why, rather than going blank. Agents are handed the snapshot
-      // itself, with `screenshotError` explaining the gap.
+      // nothing to show. Clients freeze the last valid page frame and expose
+      // error details separately. Agents receive the snapshot itself, with
+      // `screenshotError` explaining the gap.
       Effect.flatMap((snapshot) =>
         // Refuse a frame from a tab other than the one asked for. The host
         // resolves targets through a fallback chain, and this layer used to

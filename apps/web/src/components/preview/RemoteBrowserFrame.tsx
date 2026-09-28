@@ -229,7 +229,7 @@ export function RemoteBrowserFrame(props: {
         }
         return false;
       }
-      setFrame(result.value);
+      if (!result.value.loading) setFrame(result.value);
       setFrameError(null);
       return true;
     },
@@ -730,7 +730,7 @@ export function RemoteBrowserFrame(props: {
         aria-label={
           frame
             ? `Rendered browser tab ${frame.title || frame.url}. Touches are sent to the desktop tab.`
-            : "Waiting for the desktop browser host"
+            : "Waiting for the browser page"
         }
         className="relative min-h-0 flex-1 select-none overflow-hidden bg-black outline-none"
         role="application"
@@ -772,7 +772,7 @@ export function RemoteBrowserFrame(props: {
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-white/70">
-            Waiting for the desktop browser host…
+            Waiting for the browser page…
           </div>
         )}
         {frame ? (

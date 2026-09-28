@@ -171,7 +171,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
       );
       return false;
     }
-    setFrame(result.value);
+    if (!result.value.loading) setFrame(result.value);
     setFrameError(null);
     return true;
   }, [captureRemoteSnapshot, environmentId, threadId]);
@@ -450,7 +450,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
               <View className="min-h-72 items-center justify-center gap-3 px-6">
                 <ActivityIndicator color="#ffffff" />
                 <Text className="text-center text-sm text-white/70">
-                  Waiting for the desktop browser host…
+                  Waiting for the browser page…
                 </Text>
               </View>
             )}
