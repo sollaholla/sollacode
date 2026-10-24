@@ -1,7 +1,11 @@
 import { expect, it } from "vite-plus/test";
 import { CommandId, MessageId, ThreadId } from "@t3tools/contracts";
 import type { DeferredThreadCommandEntry } from "@t3tools/client-runtime/platform";
-import { composerDraftMatchesSend, pendingSendMessages } from "./pendingSends";
+import {
+  acknowledgeableSendCommandIds,
+  composerDraftMatchesSend,
+  pendingSendMessages,
+} from "./pendingSends";
 const threadId = ThreadId.make("side-chat");
 const entry: DeferredThreadCommandEntry = {
   command: {
@@ -49,6 +53,41 @@ it("recovers the same side-chat echo and both attachment previews after remount/
 it("preserves a server-accepted echo until the server row arrives and leaves rejections to the recovery card", () => {
   expect(pendingSendMessages([{ ...entry, accepted: true }], threadId)).toHaveLength(1);
   expect(pendingSendMessages([{ ...entry, error: "Rejected" }], threadId)).toEqual([]);
+});
+
+const queuedSend = (messageId: string): DeferredThreadCommandEntry => {
+  if (entry.command.type !== "thread.turn.start") throw new Error("fixture is a turn start");
+  return {
+    ...entry,
+    command: {
+      ...entry.command,
+      commandId: CommandId.make(`queue:${messageId}`),
+      message: { ...entry.command.message, messageId: MessageId.make(messageId) },
+    },
+  };
+};
+
+it("never echoes a queued send into the timeline, accepted or not", () => {
+  const held = queuedSend("held-user-message:2");
+  expect(pendingSendMessages([held], threadId)).toEqual([]);
+  expect(pendingSendMessages([{ ...held, accepted: true }], threadId)).toEqual([]);
+  expect(pendingSendMessages([held, entry], threadId).map((message) => message.id)).toEqual(["1"]);
+});
+
+it("releases an accepted send once the server stores its message in any state", () => {
+  const held: DeferredThreadCommandEntry = { ...queuedSend("held-user-message:3"), accepted: true };
+  // Stored but hidden from the timeline (queued, or removed from the queue).
+  expect(acknowledgeableSendCommandIds([held], new Set(["held-user-message:3"]))).toEqual([
+    "queue:held-user-message:3",
+  ]);
+  // Not stored yet, or never accepted: the echo is still the only copy.
+  expect(acknowledgeableSendCommandIds([held], new Set())).toEqual([]);
+  expect(acknowledgeableSendCommandIds([{ ...entry, accepted: false }], new Set(["1"]))).toEqual(
+    [],
+  );
+  expect(acknowledgeableSendCommandIds([{ ...entry, accepted: true }], new Set(["1"]))).toEqual([
+    "send:1",
+  ]);
 });
 
 it("only clears the submitted draft, preserving edits to text or any attached context", () => {

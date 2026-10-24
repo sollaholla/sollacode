@@ -1,4 +1,8 @@
-import { composerDraftMatchesSend, pendingSendMessages } from "./chat/pendingSends";
+import {
+  acknowledgeableSendCommandIds,
+  composerDraftMatchesSend,
+  pendingSendMessages,
+} from "./chat/pendingSends";
 import { isAgentsProjectId } from "@t3tools/contracts";
 import { collectThreadFileReferencesByTurnId } from "@t3tools/client-runtime/state/turn-file-references";
 import {
@@ -4373,20 +4377,26 @@ function ChatViewContent(props: ChatViewProps) {
     };
   }, [attachmentPreviewHandoffByMessageId, clearAttachmentPreviewHandoff, displayServerMessages]);
   useEffect(() => {
-    const serverIds = new Set(displayServerMessages.map((message) => message.id));
-    for (const entry of pendingSends) {
-      if (
-        entry.accepted &&
-        entry.command.type === "thread.turn.start" &&
-        serverIds.has(entry.command.message.messageId)
-      ) {
-        void updateOutboxMessage({
-          environmentId,
-          input: { threadId, commandId: entry.command.commandId, action: "acknowledge" },
-        });
-      }
+    // A removal receipt also proves the server stored the message, and outlasts
+    // the message window of a long thread.
+    const storedMessageIds = new Set<string>([
+      ...(serverMessages ?? []).map((message) => message.id),
+      ...removedHeldMessageIds(threadActivities),
+    ]);
+    for (const commandId of acknowledgeableSendCommandIds(pendingSends, storedMessageIds)) {
+      void updateOutboxMessage({
+        environmentId,
+        input: { threadId, commandId, action: "acknowledge" },
+      });
     }
-  }, [pendingSends, displayServerMessages, environmentId, threadId, updateOutboxMessage]);
+  }, [
+    pendingSends,
+    serverMessages,
+    threadActivities,
+    environmentId,
+    threadId,
+    updateOutboxMessage,
+  ]);
   const timelineMessages = useMemo(() => {
     const messages = displayServerMessages;
     const serverMessagesWithPreviewHandoff =
