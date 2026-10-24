@@ -2061,14 +2061,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // assistant messages per turn (commentary between tool calls), and
           // the turn must stay unsettled until the provider reports turn end
           // (projected as thread.session-set leaving the "running" status).
-          const session = yield* projectionThreadSessionRepository.getByThreadId({
-            threadId: event.payload.threadId,
-          });
-          const turnStillRunning =
-            Option.isSome(session) &&
-            session.value.status === "running" &&
-            session.value.activeTurnId === event.payload.turnId;
-          const settlesTurn = !event.payload.streaming && !turnStillRunning;
+          // A streamed chunk never settles the turn, so only a finished
+          // message reads the session (most message events are chunks).
+          let settlesTurn = false;
+          if (!event.payload.streaming) {
+            const session = yield* projectionThreadSessionRepository.getByThreadId({
+              threadId: event.payload.threadId,
+            });
+            const turnStillRunning =
+              Option.isSome(session) &&
+              session.value.status === "running" &&
+              session.value.activeTurnId === event.payload.turnId;
+            settlesTurn = !turnStillRunning;
+          }
           const existingTurn = yield* projectionTurnRepository.getByTurnId({
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
@@ -2969,6 +2974,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
+      // Streamed text and tool activity never touch attachment files, and
+      // that is nearly every event: skip setting up the file effects.
+      if (
+        attachmentSideEffects.forkedAttachments.length === 0 &&
+        attachmentSideEffects.deletedThreadRelativePaths.size === 0 &&
+        attachmentSideEffects.prunedThreadRelativePaths.size === 0
+      ) {
+        return;
+      }
       yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("failed to apply projected attachment side-effects", {
