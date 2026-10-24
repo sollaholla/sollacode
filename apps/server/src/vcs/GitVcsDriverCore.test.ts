@@ -957,6 +957,44 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("reads remote status without listing remotes", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(cwd, ["checkout", "-b", "feature/remote-status"]);
+        yield* git(cwd, ["push", "-u", "origin", "feature/remote-status"]);
+
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const commands: Array<ReadonlyArray<string>> = [];
+        const recordingSpawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (ChildProcess.isStandardCommand(command)) commands.push(command.args);
+            return yield* delegate.spawn(command);
+          }),
+        );
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, recordingSpawner),
+          Effect.provide(ServerConfigLayer),
+        );
+
+        const status = yield* driver.statusDetailsRemote(cwd, { refreshUpstream: false });
+
+        assert.equal(status.upstreamRef, "origin/feature/remote-status");
+        assert.equal(status.hasUpstream, true);
+        // The ref string is all a status read needs; listing remotes is an
+        // extra git process on every poll.
+        assert.deepEqual(
+          commands.filter((args) => args.at(-1) === "remote"),
+          [],
+          commands.map((args) => args.join(" ")).join("; "),
+        );
+      }),
+    );
+
     it.effect("reports remote status on unborn HEAD without failing", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
