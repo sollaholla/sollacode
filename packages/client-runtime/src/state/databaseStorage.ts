@@ -7,14 +7,15 @@ import type { DatabaseCompactionResult, DatabaseStorageStatus } from "@t3tools/c
 
 const UNITS = ["KB", "MB", "GB", "TB"] as const;
 
+/** Decimal units, as Finder and Explorer's "on disk" figures use them. */
 export function formatStorageBytes(bytes: number): string {
-  if (bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`;
+  if (bytes < 1000) return `${Math.max(0, Math.round(bytes))} B`;
   let value = bytes;
   let unit: (typeof UNITS)[number] = "KB";
   for (const next of UNITS) {
-    value /= 1024;
+    value /= 1000;
     unit = next;
-    if (value < 1024) break;
+    if (value < 1000) break;
   }
   return `${value.toFixed(value < 100 ? 1 : 0)} ${unit}`;
 }

@@ -9,31 +9,31 @@ import {
   formatStorageBytes,
 } from "./databaseStorage.ts";
 
-const GIB = 1024 ** 3;
+const GB = 1000 ** 3;
 
 // The live database this feature was built for: 20.2 GB, 56% free pages.
 const status: DatabaseStorageStatus = {
-  fileBytes: Math.round(20.2 * GIB),
+  fileBytes: Math.round(20.2 * GB),
   walBytes: 0,
   pageSize: 4096,
-  pageCount: Math.round((20.2 * GIB) / 4096),
-  freePageCount: Math.round((11.4 * GIB) / 4096),
-  liveBytes: Math.round(8.8 * GIB),
-  reclaimableBytes: Math.round(11.4 * GIB),
-  requiredFreeBytes: Math.round(10.2 * GIB),
-  availableDiskBytes: Math.round(28 * GIB),
+  pageCount: Math.round((20.2 * GB) / 4096),
+  freePageCount: Math.round((11.4 * GB) / 4096),
+  liveBytes: Math.round(8.8 * GB),
+  reclaimableBytes: Math.round(11.4 * GB),
+  requiredFreeBytes: Math.round(10.2 * GB),
+  availableDiskBytes: Math.round(28 * GB),
   estimatedSeconds: 264,
   scheduled: null,
   lastResult: null,
 };
 
 describe("formatStorageBytes", () => {
-  it("uses the largest unit under 1024 with one decimal below a hundred", () => {
+  it("uses decimal units, the largest under 1000, with one decimal below a hundred", () => {
     expect(formatStorageBytes(512)).toBe("512 B");
-    expect(formatStorageBytes(1536)).toBe("1.5 KB");
-    expect(formatStorageBytes(486_051_840)).toBe("464 MB");
-    expect(formatStorageBytes(20.2 * GIB)).toBe("20.2 GB");
-    expect(formatStorageBytes(8.8 * GIB)).toBe("8.8 GB");
+    expect(formatStorageBytes(1500)).toBe("1.5 KB");
+    expect(formatStorageBytes(486_051_840)).toBe("486 MB");
+    expect(formatStorageBytes(20.2 * GB)).toBe("20.2 GB");
+    expect(formatStorageBytes(8.8 * GB)).toBe("8.8 GB");
   });
 });
 
@@ -61,7 +61,7 @@ describe("describeDatabaseStorage", () => {
   });
 
   it("warns when the disk is too full for the next start", () => {
-    const view = describeDatabaseStorage({ ...status, availableDiskBytes: 6 * GIB });
+    const view = describeDatabaseStorage({ ...status, availableDiskBytes: 6 * GB });
     expect(view.diskWarning).toBe(
       "Only 6.0 GB is free. Free up 4.2 GB or the next start will skip compaction.",
     );
@@ -100,7 +100,7 @@ describe("describeCompactionResult", () => {
     startedAt: "2026-10-24T10:00:00.000Z",
     finishedAt: "2026-10-24T10:02:05.000Z",
     durationMs: 125_000,
-    beforeBytes: Math.round(20.2 * GIB),
+    beforeBytes: Math.round(20.2 * GB),
   };
 
   it("reports each outcome with its reason", () => {
@@ -108,7 +108,7 @@ describe("describeCompactionResult", () => {
       describeCompactionResult({
         ...base,
         outcome: "compacted",
-        afterBytes: Math.round(8.8 * GIB),
+        afterBytes: Math.round(8.8 * GB),
         reason: null,
       }),
     ).toEqual({
