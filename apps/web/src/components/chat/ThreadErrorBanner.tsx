@@ -4,6 +4,7 @@ import { Button } from "../ui/button";
 import { CircleAlertIcon, LoaderCircleIcon, SparklesIcon, XIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { describeThreadErrorAge } from "../ChatView.logic";
+import { useNowMinuteValue } from "../../hooks/useNowMinute";
 
 const HOST_REPAIR_ERROR_PATTERNS = [
   "did not respond to 'thread/resume'",
@@ -58,8 +59,10 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   resuming?: boolean;
   resumeDisabled?: boolean;
 }) {
+  // Read through the minute clock: a bare Date.now() here was memoized on
+  // occurredAt by the React Compiler, so "Last failed …" never advanced.
+  const age = useNowMinuteValue(() => describeThreadErrorAge(occurredAt, Date.now()));
   if (!error) return null;
-  const age = describeThreadErrorAge(occurredAt, Date.now());
   const guidance = describeThreadErrorGuidance(error);
   return (
     <div
