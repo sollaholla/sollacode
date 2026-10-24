@@ -68,7 +68,10 @@ describe("server state projection", () => {
       type: "snapshot",
       config: CONFIG,
     });
-    const settings = { ...CONFIG.settings };
+    const settings = {
+      ...CONFIG.settings,
+      enableAssistantStreaming: false,
+    } as typeof CONFIG.settings;
     const projected = applyServerConfigProjection(snapshot, {
       version: 1,
       type: "settingsUpdated",
@@ -76,8 +79,56 @@ describe("server state projection", () => {
     });
 
     const result = Option.getOrThrow(projected);
-    expect(result.config.settings).toBe(settings);
+    expect(result.config.settings).toEqual(settings);
     expect(result.latestEvent.type).toBe("settingsUpdated");
+  });
+
+  it("keeps unchanged parts identical across pushes and reconnects", () => {
+    const provider = (id: string, checkedAt: string) =>
+      ({
+        instanceId: id,
+        driver: "codex",
+        status: "ready",
+        checkedAt,
+        models: [{ slug: `${id}-model` }],
+      }) as unknown as ServerConfig["providers"][number];
+    const first = applyServerConfigProjection(
+      Option.none(),
+      snapshotEvent({ ...CONFIG, providers: [provider("codex", "t0"), provider("grok", "t0")] }),
+    );
+    const before = Option.getOrThrow(first).config;
+
+    // A push that changes nothing keeps the whole list identical.
+    const same = Option.getOrThrow(
+      applyServerConfigProjection(first, {
+        version: 1,
+        type: "providerStatuses",
+        payload: { providers: [provider("codex", "t0"), provider("grok", "t0")] },
+      } as ServerConfigStreamEvent),
+    ).config;
+    expect(same.providers).toBe(before.providers);
+
+    // One provider moving keeps the other, and its own unchanged models.
+    const moved = Option.getOrThrow(
+      applyServerConfigProjection(first, {
+        version: 1,
+        type: "providerStatuses",
+        payload: { providers: [provider("codex", "t1"), provider("grok", "t0")] },
+      } as ServerConfigStreamEvent),
+    ).config;
+    expect(moved.providers).not.toBe(before.providers);
+    expect(moved.providers[0]?.checkedAt).toBe("t1");
+    expect(moved.providers[0]?.models).toBe(before.providers[0]?.models);
+    expect(moved.providers[1]).toBe(before.providers[1]);
+
+    // A reconnect snapshot with the same config changes nothing it carries.
+    const reconnected = Option.getOrThrow(
+      applyServerConfigProjection(
+        first,
+        snapshotEvent({ ...CONFIG, providers: [provider("codex", "t0"), provider("grok", "t0")] }),
+      ),
+    ).config;
+    expect(reconnected).toBe(before);
   });
 
   describe("provider status patches", () => {
@@ -280,7 +331,9 @@ describe("server state projection", () => {
             ),
             Stream.runHead,
           );
-          expect(Option.getOrThrow(Option.getOrThrow(projected)).config.providers).toBe(providers);
+          expect(Option.getOrThrow(Option.getOrThrow(projected)).config.providers).toEqual(
+            providers,
+          );
         }),
       );
 
