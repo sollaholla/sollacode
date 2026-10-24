@@ -367,12 +367,34 @@ const TurnStartedPayload = Schema.Struct({
 });
 export type TurnStartedPayload = typeof TurnStartedPayload.Type;
 
+/**
+ * What one turn consumed, normalized by the adapter from the provider's own
+ * accounting, sub-agents included where the provider reports them.
+ *
+ * The counts are disjoint, so their sum is everything the models read and
+ * wrote: `inputTokens` excludes cache reads and writes. `reasoningTokens`,
+ * when reported, is the part of `outputTokens` spent reasoning. `costUsd` is
+ * the provider's own figure, the API price even on a subscription plan.
+ */
+export const ProviderTurnUsage = Schema.Struct({
+  inputTokens: NonNegativeInt,
+  cachedInputTokens: NonNegativeInt,
+  cacheWriteTokens: NonNegativeInt,
+  outputTokens: NonNegativeInt,
+  reasoningTokens: Schema.optional(NonNegativeInt),
+  costUsd: Schema.optional(Schema.Number),
+  /** The model that did most of the turn's work. */
+  model: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type ProviderTurnUsage = typeof ProviderTurnUsage.Type;
+
 const TurnCompletedPayload = Schema.Struct({
   state: RuntimeTurnState,
   stopReason: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   usage: Schema.optional(Schema.Unknown),
   modelUsage: Schema.optional(UnknownRecordSchema),
   totalCostUsd: Schema.optional(Schema.Number),
+  turnUsage: Schema.optional(ProviderTurnUsage),
   errorMessage: Schema.optional(TrimmedNonEmptyStringSchema),
   failureKind: Schema.optional(ProviderRuntimeFailureKind),
 });

@@ -1,4 +1,6 @@
 import { isHeldMessageId } from "@t3tools/shared/heldMessages";
+import { waitingProposedPlan } from "@t3tools/shared/proposedPlans";
+import { isResumePrompt } from "@t3tools/shared/resumePrompt";
 import {
   AGENT_BUILDER_THREAD_ID,
   EventId,
@@ -1027,6 +1029,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
       }
+      // A person who answers a waiting plan with a Build or Agent message has
+      // approved it: "go ahead", or switching modes and continuing, is how most
+      // plans get built (both cases in the 2026-10-10 report), and switching
+      // back to Build is the documented way to apply a plan. It is recorded at
+      // once and the turn carries the plan, so every client shows it as the
+      // work in progress and it never comes back as the plan to approve.
+      // Implementing a different plan instead closes the waiting one. Plan mode
+      // keeps refining. Only the person decides, typing or through the
+      // orchestrator that relays them: housekeeping (agent-loop), resumes
+      // ("pick up where you left off" is not an answer), delegated runs, and
+      // another agent's question never settle a plan.
+      // Rule: @t3tools/shared/proposedPlans.
+      const sentByPerson =
+        command.message.inputOrigin !== "agent-loop" &&
+        expectedResume === undefined &&
+        !isResumePrompt(command.message.text) &&
+        command.message.delegationId === undefined &&
+        (command.message.senderThreadId === undefined ||
+          isOrchestratorThreadId(command.message.senderThreadId));
+      const waitingPlan =
+        targetThread.interactionMode !== "plan" && sentByPerson
+          ? waitingProposedPlan(targetThread.proposedPlans)
+          : null;
+      const implementsWaitingPlanImplicitly =
+        waitingPlan !== null && sourceProposedPlan === undefined;
+      const implementsAnotherPlan =
+        waitingPlan !== null &&
+        sourceProposedPlan !== undefined &&
+        !(
+          sourceProposedPlan.threadId === targetThread.id &&
+          sourceProposedPlan.planId === waitingPlan.id
+        );
+      const turnSourceProposedPlan =
+        sourceProposedPlan ??
+        (implementsWaitingPlanImplicitly && waitingPlan !== null
+          ? { threadId: targetThread.id, planId: waitingPlan.id }
+          : undefined);
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -1077,7 +1116,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
-          ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
+          ...(turnSourceProposedPlan !== undefined
+            ? { sourceProposedPlan: turnSourceProposedPlan }
+            : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1119,7 +1160,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
-      return [...lifecycleResetEvents, userMessageEvent, turnStartRequestedEvent];
+      const planDecisionEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (waitingPlan !== null && (implementsWaitingPlanImplicitly || implementsAnotherPlan)) {
+        planDecisionEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          causationEventId: turnStartRequestedEvent.eventId,
+          type: "thread.proposed-plan-upserted",
+          payload: {
+            threadId: command.threadId,
+            proposedPlan: implementsWaitingPlanImplicitly
+              ? {
+                  ...waitingPlan,
+                  implementedAt: command.createdAt,
+                  implementationThreadId: targetThread.id,
+                  updatedAt: command.createdAt,
+                }
+              : { ...waitingPlan, closedAt: command.createdAt, updatedAt: command.createdAt },
+          },
+        });
+      }
+      return [
+        ...lifecycleResetEvents,
+        userMessageEvent,
+        turnStartRequestedEvent,
+        ...planDecisionEvents,
+      ];
     }
 
     case "thread.turn.interrupt": {
@@ -1308,6 +1378,49 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.proposed-plan.close":
+    case "thread.proposed-plan.reopen": {
+      const thread = yield* requireThreadNotDeleted({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const plan = thread.proposedPlans.find((candidate) => candidate.id === command.planId);
+      if (plan === undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Plan '${command.planId}' does not exist on thread '${command.threadId}'.`,
+        });
+      }
+      // An implemented plan is history either way: its work already started.
+      if (plan.implementedAt !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Plan '${command.planId}' was already implemented.`,
+        });
+      }
+      const closing = command.type === "thread.proposed-plan.close";
+      // Repeating either is harmless: a second tap must not fail or append.
+      if ((plan.closedAt !== null) === closing) return [];
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.proposed-plan-upserted",
+        payload: {
+          threadId: command.threadId,
+          proposedPlan: {
+            ...plan,
+            closedAt: closing ? command.createdAt : null,
+            updatedAt: command.createdAt,
+          },
         },
       };
     }
@@ -1557,12 +1670,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.revert.complete": {
-      yield* requireThreadNotDeleted({
+      const thread = yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const revertedEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1575,6 +1688,53 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           turnCount: command.turnCount,
         },
       };
+      // The turns after `turnCount` are gone, and so is any answer they gave
+      // a plan: a plan they implemented here or closed is waiting again, so
+      // the person decides it afresh instead of it reading as built. A plan
+      // implemented in another thread was built there and stays that way.
+      const retainedCheckpoints = thread.checkpoints.filter(
+        (checkpoint) => checkpoint.checkpointTurnCount <= command.turnCount,
+      );
+      const retainedTurnIds = new Set<string>(
+        retainedCheckpoints.map((checkpoint) => checkpoint.turnId),
+      );
+      const keptUntil = retainedCheckpoints.reduce(
+        (latest, checkpoint) => (checkpoint.completedAt > latest ? checkpoint.completedAt : latest),
+        "",
+      );
+      const reopenedPlans = thread.proposedPlans.flatMap((plan) => {
+        if (plan.turnId !== null && !retainedTurnIds.has(plan.turnId)) return [];
+        const undoImplemented =
+          plan.implementedAt !== null &&
+          plan.implementedAt > keptUntil &&
+          plan.implementationThreadId === thread.id;
+        const undoClosed = plan.closedAt !== null && plan.closedAt > keptUntil;
+        if (!undoImplemented && !undoClosed) return [];
+        return [
+          {
+            ...plan,
+            ...(undoImplemented ? { implementedAt: null, implementationThreadId: null } : {}),
+            ...(undoClosed ? { closedAt: null } : {}),
+            updatedAt: command.createdAt,
+          },
+        ];
+      });
+      if (reopenedPlans.length === 0) return revertedEvent;
+      const reopenEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      for (const proposedPlan of reopenedPlans) {
+        reopenEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          causationEventId: revertedEvent.eventId,
+          type: "thread.proposed-plan-upserted",
+          payload: { threadId: command.threadId, proposedPlan },
+        });
+      }
+      return [revertedEvent, ...reopenEvents];
     }
 
     case "thread.activity.append": {

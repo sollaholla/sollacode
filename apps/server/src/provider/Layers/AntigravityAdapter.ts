@@ -22,6 +22,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { collaborationModePrompt } from "../collaborationMode.ts";
+import { makeProposedPlanCapture } from "../proposedPlanBlocks.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import {
@@ -85,7 +86,13 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     createdAt: now(),
     ...(turnId ? { turnId } : {}),
   });
-  const emit = (event: ProviderRuntimeEvent) => PubSub.publishUnsafe(events, event);
+  // Plan mode asks AGY for a `<proposed_plan>` block (see sendTurn); this
+  // turns it into a plan the person can implement.
+  const captureProposedPlans = makeProposedPlanCapture();
+  const emit = (event: ProviderRuntimeEvent): void => {
+    PubSub.publishUnsafe(events, event);
+    for (const planEvent of captureProposedPlans(event)) PubSub.publishUnsafe(events, planEvent);
+  };
   const error = (method: string, detail: string) =>
     new ProviderAdapterRequestError({
       provider: ANTIGRAVITY_DRIVER_KIND,
@@ -172,14 +179,17 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         let textReceived = false;
         let delivered = false;
         let stderr = "";
-        // `--mode plan|accept-edits` above already carries Plan and Build, so
-        // only Agent needs stating here - and it needs it badly: AGY is not
-        // connected to the Solla MCP server, so nothing else ever tells it
-        // about `AGENT_STOP`, and the server's continuation loop keeps
-        // starting turns until something says the word.
-        const agentModeInstructions =
-          input.interactionMode === "agent" ? `${collaborationModePrompt("agent")}\n\n` : "";
-        const prompt = `${agentModeInstructions}The Solla project working directory is ${encodeString(context.session.cwd ?? config.cwd)}. Use that directory explicitly for command tools; AGY's default scratch directory is not this project.\n\n${input.input}`;
+        // `--mode plan|accept-edits` above already enforces Plan and Build,
+        // but AGY is not connected to the Solla MCP server, so nothing else
+        // tells it two contracts: Agent mode ends only on `AGENT_STOP` (the
+        // server's continuation loop keeps starting turns until something
+        // says the word), and Plan mode hands its plan over in a
+        // `<proposed_plan>` block, which becomes the plan card with Implement.
+        const modeInstructions =
+          input.interactionMode === "agent" || input.interactionMode === "plan"
+            ? `${collaborationModePrompt(input.interactionMode)}\n\n`
+            : "";
+        const prompt = `${modeInstructions}The Solla project working directory is ${encodeString(context.session.cwd ?? config.cwd)}. Use that directory explicitly for command tools; AGY's default scratch directory is not this project.\n\n${input.input}`;
         const run = Effect.gen(function* () {
           const command = yield* resolveSpawnCommand(config.binaryPath, args, {
             env: config.environment,

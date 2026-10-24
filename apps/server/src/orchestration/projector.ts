@@ -50,6 +50,7 @@ const forkedTurnId = (threadId: ThreadId, turnId: string) =>
   TurnId.make(`${threadId}:fork:${turnId}`);
 const forkedActivityId = (threadId: ThreadId, activityId: string) =>
   EventId.make(`${threadId}:fork:${activityId}`);
+const forkedProposedPlanId = (threadId: ThreadId, planId: string) => `${threadId}:fork:${planId}`;
 
 function forkedAttachmentId(threadId: ThreadId, attachmentId: string): string {
   const threadSegment = toSafeThreadAttachmentSegment(threadId);
@@ -89,12 +90,26 @@ function settledTurnStateForSessionStatus(
   }
 }
 
+// Runs for every thread event (including streaming deltas) against every
+// thread the server has ever seen, so copy the array rather than map it.
 function updateThread(
   threads: ReadonlyArray<OrchestrationThread>,
   threadId: ThreadId,
   patch: ThreadPatch,
-): OrchestrationThread[] {
-  return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+): ReadonlyArray<OrchestrationThread> {
+  const index = threads.findIndex((thread) => thread.id === threadId);
+  return index === -1 ? threads : patchThreadAt(threads, index, patch);
+}
+
+/** For callers that already located the thread and must not scan again. */
+function patchThreadAt(
+  threads: ReadonlyArray<OrchestrationThread>,
+  index: number,
+  patch: ThreadPatch,
+): ReadonlyArray<OrchestrationThread> {
+  const next = threads.slice();
+  next[index] = { ...threads[index]!, ...patch };
+  return next;
 }
 
 function decodeForEvent<A>(
@@ -425,6 +440,7 @@ export function projectEvent(
             proposedPlans: copiesVisibleHistory
               ? source.proposedPlans.map((plan) => ({
                   ...plan,
+                  id: forkedProposedPlanId(payload.threadId, plan.id),
                   turnId: mapTurnId(plan.turnId),
                 }))
               : [],
@@ -592,7 +608,8 @@ export function projectEvent(
           event.type,
           "payload",
         );
-        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        const threadIndex = nextBase.threads.findIndex((entry) => entry.id === payload.threadId);
+        const thread = nextBase.threads[threadIndex];
         if (!thread) {
           return nextBase;
         }
@@ -650,7 +667,7 @@ export function projectEvent(
 
         return {
           ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
+          threads: patchThreadAt(nextBase.threads, threadIndex, {
             messages: cappedMessages,
             updatedAt: event.occurredAt,
           }),
@@ -977,7 +994,8 @@ export function projectEvent(
         "payload",
       ).pipe(
         Effect.map((payload) => {
-          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          const threadIndex = nextBase.threads.findIndex((entry) => entry.id === payload.threadId);
+          const thread = nextBase.threads[threadIndex];
           if (!thread) {
             return nextBase;
           }
@@ -1002,7 +1020,7 @@ export function projectEvent(
 
           return {
             ...nextBase,
-            threads: updateThread(nextBase.threads, payload.threadId, {
+            threads: patchThreadAt(nextBase.threads, threadIndex, {
               activities,
               updatedAt: event.occurredAt,
             }),

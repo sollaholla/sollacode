@@ -13,6 +13,7 @@ import "./index.css";
 import "@xterm/xterm/css/xterm.css";
 
 import { preventPagePinchZoom } from "./lib/preventPagePinchZoom";
+import { preventPageHistorySwipe } from "./lib/preventPageHistorySwipe";
 import { APP_VERSION } from "./branding";
 import { isElectron } from "./env";
 import { getRouter } from "./router";
@@ -30,6 +31,8 @@ setStartupStage("signing-in");
 
 const removePagePinchGuard = preventPagePinchZoom(document);
 if (import.meta.hot) import.meta.hot.dispose(removePagePinchGuard);
+const removePageHistorySwipeGuard = preventPageHistorySwipe(document);
+if (import.meta.hot) import.meta.hot.dispose(removePageHistorySwipeGuard);
 
 const OrchestratorBubbleApp = lazy(() =>
   import("./orchestrator/OrchestratorBubbleApp").then((module) => ({

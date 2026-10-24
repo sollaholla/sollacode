@@ -1,5 +1,7 @@
 "use client";
 
+import { acknowledgeRemoteClick } from "./acknowledgeRemoteClick";
+
 import { pollRemoteControlPointer } from "./pollRemoteControlPointer";
 
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -17,6 +19,11 @@ import { REMOTE_CONTROL_CHUNK_MAX_BASE64_LENGTH } from "@t3tools/contracts";
 import { MonitorUpIcon, ShieldCheckIcon } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
+import {
+  INITIAL_EVENT_CURSOR,
+  takeUnseenEvents,
+  type EventCursor,
+} from "@t3tools/client-runtime/state/event-window";
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { remoteControlEnvironment } from "~/state/remoteControl";
@@ -148,6 +155,9 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     label: "remote control host status",
     reportFailure: false,
   });
+  const acknowledgeInput = useAtomCommand(remoteControlEnvironment.acknowledgeInput, {
+    reportFailure: false,
+  });
   const [pending, setPending] = useState<PendingApproval | null>(null);
   const [active, setActive] = useState<ActiveShare | null>(null);
   const [isResponding, setIsResponding] = useState(false);
@@ -236,6 +246,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         inputBlockRef.current = result.blocked ?? null;
         inputInterruptedRef.current = false;
         syncHostStatus();
+        return result;
       } catch (cause: unknown) {
         const failure = classifyInputFailure(cause);
         if (failure.kind === "transient") {
@@ -266,7 +277,12 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
   );
 
   const hostInputScheduler = useMemo(
-    () => createRemoteControlInputScheduler({ send: dispatchHostInput }),
+    () =>
+      createRemoteControlInputScheduler({
+        send: async (input) => {
+          await dispatchHostInput(input);
+        },
+      }),
     [dispatchHostInput],
   );
 
@@ -310,118 +326,144 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
 
   useEffect(() => () => hostInputScheduler.clear(), [hostInputScheduler]);
 
+  // Every host event not yet handled, in order. `hostEvents.data` is a window
+  // of recent events, because an atom shows only the newest event of a batch:
+  // a key's `up` arriving with its `down` would leave the key stuck, and an
+  // access request arriving with another event would never show its prompt.
+  const hostCursorRef = useRef<EventCursor>(INITIAL_EVENT_CURSOR);
   useEffect(() => {
-    const event: RemoteControlHostStreamEvent | null = hostEvents.data;
-    if (!event) return;
-    if (event.type === "input") {
-      const current = activeRef.current;
-      if (!current || current.session.sessionId !== event.sessionId) return;
-      // Display selection retargets our own capture loop; it is never handed to
-      // the OS input controller, which has no notion of it.
-      if (event.input.type === "select-display") {
-        selectedDisplayIdRef.current = event.input.displayId;
-        displaySelectionListenerRef.current?.();
-        return;
-      }
-      // The controller cannot decode our video; drop to JPEG for this session.
-      if (event.input.type === "request-image-fallback") {
-        setImageFallback(true);
-        return;
-      }
-      // Expanded here rather than on the controller, because the right gesture
-      // depends on the OS this host is running. Task View instead of Alt+Tab on
-      // Windows: Alt+Tab only stays open while Alt is held, so a single tap
-      // from a phone would flip to the last window instead of offering a
-      // choice. Both of these open an overlay the user can then tap.
-      if (event.input.type === "show-window-switcher") {
-        const platform = hostPlatform();
-        const modifier = platform === "macos" ? "ControlLeft" : "MetaLeft";
-        const modifierKey = platform === "macos" ? "Control" : "Meta";
-        const trigger = platform === "macos" ? "ArrowUp" : "Tab";
-        for (const step of [
-          { code: modifier, key: modifierKey, action: "down" as const },
-          { code: trigger, key: trigger, action: "down" as const },
-          { code: trigger, key: trigger, action: "up" as const },
-          { code: modifier, key: modifierKey, action: "up" as const },
-        ]) {
-          hostInputScheduler.enqueue({
-            type: "key",
-            action: step.action,
-            code: step.code,
-            key: step.key,
-            repeat: false,
-          });
+    const unseen = takeUnseenEvents(hostEvents.data, hostCursorRef.current);
+    hostCursorRef.current = unseen.cursor;
+    const applyHostEvent = (event: RemoteControlHostStreamEvent): void => {
+      if (event.type === "input") {
+        const current = activeRef.current;
+        if (!current || current.session.sessionId !== event.sessionId) return;
+        // Display selection retargets our own capture loop; it is never handed to
+        // the OS input controller, which has no notion of it.
+        if (event.input.type === "select-display") {
+          selectedDisplayIdRef.current = event.input.displayId;
+          displaySelectionListenerRef.current?.();
+          return;
+        }
+        // The controller cannot decode our video; drop to JPEG for this session.
+        if (event.input.type === "request-image-fallback") {
+          setImageFallback(true);
+          return;
+        }
+        // Expanded here rather than on the controller, because the right gesture
+        // depends on the OS this host is running. Task View instead of Alt+Tab on
+        // Windows: Alt+Tab only stays open while Alt is held, so a single tap
+        // from a phone would flip to the last window instead of offering a
+        // choice. Both of these open an overlay the user can then tap.
+        if (event.input.type === "show-window-switcher") {
+          const platform = hostPlatform();
+          const modifier = platform === "macos" ? "ControlLeft" : "MetaLeft";
+          const modifierKey = platform === "macos" ? "Control" : "Meta";
+          const trigger = platform === "macos" ? "ArrowUp" : "Tab";
+          for (const step of [
+            { code: modifier, key: modifierKey, action: "down" as const },
+            { code: trigger, key: trigger, action: "down" as const },
+            { code: trigger, key: trigger, action: "up" as const },
+            { code: modifier, key: modifierKey, action: "up" as const },
+          ]) {
+            hostInputScheduler.enqueue({
+              type: "key",
+              action: step.action,
+              code: step.code,
+              key: step.key,
+              repeat: false,
+            });
+          }
+          return;
+        }
+        if (event.acknowledge && event.input.type === "pointer" && event.input.action === "down") {
+          hostInputScheduler.discardPointerMotion();
+          void acknowledgeRemoteClick(
+            () => dispatchHostInput(event.input),
+            (applied) =>
+              acknowledgeInput({
+                environmentId,
+                input: {
+                  clientId,
+                  connectionId: event.connectionId,
+                  sessionId: event.sessionId,
+                  sequence: event.sequence,
+                  applied,
+                },
+              }),
+          );
+        } else {
+          hostInputScheduler.enqueue(event.input);
         }
         return;
       }
-      hostInputScheduler.enqueue(event.input);
-      return;
-    }
-    if (event.type === "video-restart-requested") {
-      const current = activeRef.current;
-      if (!current || current.session.sessionId !== event.sessionId) return;
-      videoRestartListenerRef.current?.();
-      return;
-    }
-    if (event.type === "access-requested") {
-      const request = {
-        connectionId: event.connectionId,
-        requestId: event.requestId,
-        session: event.session,
-      };
-      if (
-        isRemoteControlDeviceRemembered(
-          environmentId,
-          event.session.requester.deviceId,
-          event.session.requestedCapabilities,
-        )
-      ) {
-        if (autoApprovalRequestIdRef.current === event.requestId) return;
-        autoApprovalRequestIdRef.current = event.requestId;
-        setPending(null);
-        setIsResponding(true);
-        void (async () => {
-          try {
-            const outcome = await respond({
-              environmentId,
-              input: {
-                clientId,
-                connectionId: event.connectionId,
-                requestId: event.requestId,
-                decision: "approve",
-                grantedCapabilities: event.session.requestedCapabilities,
-              },
-            });
-            if (outcome._tag === "Failure") throw commandError(outcome);
-            await bridge.activateRemoteControlHost().catch(() => undefined);
-            setCaptureError(null);
-            setActive({
-              connectionId: event.connectionId,
-              session: outcome.value,
-            });
-          } catch {
-            // Trust only removes the consent prompt. Any stale connection or
-            // capability mismatch falls back to the normal explicit prompt.
-            setRememberDevice(false);
-            setPending(request);
-          } finally {
-            setIsResponding(false);
-          }
-        })();
+      if (event.type === "video-restart-requested") {
+        const current = activeRef.current;
+        if (!current || current.session.sessionId !== event.sessionId) return;
+        videoRestartListenerRef.current?.();
         return;
       }
-      setRememberDevice(false);
-      setPending(request);
-      return;
-    }
-    if (event.type === "session-ended") {
-      setPending((current) =>
-        current?.session.sessionId === event.session.sessionId ? null : current,
-      );
-      setActive((current) =>
-        current?.session.sessionId === event.session.sessionId ? null : current,
-      );
-    }
+      if (event.type === "access-requested") {
+        const request = {
+          connectionId: event.connectionId,
+          requestId: event.requestId,
+          session: event.session,
+        };
+        if (
+          isRemoteControlDeviceRemembered(
+            environmentId,
+            event.session.requester.deviceId,
+            event.session.requestedCapabilities,
+          )
+        ) {
+          if (autoApprovalRequestIdRef.current === event.requestId) return;
+          autoApprovalRequestIdRef.current = event.requestId;
+          setPending(null);
+          setIsResponding(true);
+          void (async () => {
+            try {
+              const outcome = await respond({
+                environmentId,
+                input: {
+                  clientId,
+                  connectionId: event.connectionId,
+                  requestId: event.requestId,
+                  decision: "approve",
+                  grantedCapabilities: event.session.requestedCapabilities,
+                },
+              });
+              if (outcome._tag === "Failure") throw commandError(outcome);
+              await bridge.activateRemoteControlHost().catch(() => undefined);
+              setCaptureError(null);
+              setActive({
+                connectionId: event.connectionId,
+                session: outcome.value,
+              });
+            } catch {
+              // Trust only removes the consent prompt. Any stale connection or
+              // capability mismatch falls back to the normal explicit prompt.
+              setRememberDevice(false);
+              setPending(request);
+            } finally {
+              setIsResponding(false);
+            }
+          })();
+          return;
+        }
+        setRememberDevice(false);
+        setPending(request);
+        return;
+      }
+      if (event.type === "session-ended") {
+        setPending((current) =>
+          current?.session.sessionId === event.session.sessionId ? null : current,
+        );
+        setActive((current) =>
+          current?.session.sessionId === event.session.sessionId ? null : current,
+        );
+      }
+    };
+    for (const event of unseen.events) applyHostEvent(event);
   }, [clientId, environmentId, hostEvents.data, hostInputScheduler, respond]);
 
   // Video path: a live MediaStream encoded by the platform codec. Falls back to

@@ -10,6 +10,7 @@ import {
   REVISIONED_ASSET_CACHE_CONTROL,
   resolveByteRange,
   resolveDevRedirectUrl,
+  wantsAssetThumbnail,
 } from "./http.ts";
 
 describe("http dev routing", () => {
@@ -97,6 +98,31 @@ describe("assetResponseHeaders", () => {
         path: "/attachments/p.png",
       })["Cache-Control"],
     ).toBe(REVISIONED_ASSET_CACHE_CONTROL);
+  });
+});
+
+describe("wantsAssetThumbnail", () => {
+  const file = { kind: "file", path: "/repo/shot.png" } as const;
+  const thumbnailUrl = new URL(
+    "http://remote.test/api/assets/t/shot.png?solla_revision=r&thumbnail=1",
+  );
+
+  it("resizes an image file only when a tile asks for it", () => {
+    expect(wantsAssetThumbnail(thumbnailUrl, file)).toBe(true);
+    expect(wantsAssetThumbnail(new URL("http://remote.test/api/assets/t/shot.png"), file)).toBe(
+      false,
+    );
+  });
+
+  it("never resizes artifacts or bytes made in memory", () => {
+    expect(wantsAssetThumbnail(thumbnailUrl, { ...file, artifact: true })).toBe(false);
+    expect(
+      wantsAssetThumbnail(thumbnailUrl, {
+        kind: "bytes",
+        bytes: new Uint8Array(),
+        contentType: "image/jpeg",
+      }),
+    ).toBe(false);
   });
 });
 

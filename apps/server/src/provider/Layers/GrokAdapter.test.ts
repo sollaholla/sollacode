@@ -37,6 +37,7 @@ import {
   makeGrokAdapter,
   preserveAcceptedGrokTurn,
 } from "./GrokAdapter.ts";
+import { GrokAuthFileStat } from "../acp/GrokAcpSupport.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
@@ -51,8 +52,10 @@ class SimulatedGrokFinalizationError extends Data.TaggedError("SimulatedGrokFina
 async function makeMockGrokWrapper(extraEnv?: Record<string, string>) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-mock-"));
   const wrapperPath = NodePath.join(dir, "fake-grok.sh");
+  // Single-quoted so values reach the agent verbatim: in a double-quoted sh
+  // export, a JSON-escaped newline stays a backslash followed by "n".
   const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
+    .map(([key, value]) => `export ${key}='${value.replaceAll("'", "'\\''")}'`)
     .join("\n");
   const childCommand = `${JSON.stringify(mockAgentCommand)} ${JSON.stringify(mockAgentPath)} "$@"`;
   const captureWrapperPid = extraEnv?.T3_ACP_WRAPPER_PID_LOG_PATH
@@ -120,7 +123,11 @@ async function readJsonLines(filePath: string) {
 
 const grokAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-grok-adapter-test-",
-}).pipe(Layer.provideMerge(NodeServices.layer));
+}).pipe(
+  Layer.provideMerge(NodeServices.layer),
+  // A stored Grok sign-in, so the mock agent is started at all.
+  Layer.provideMerge(Layer.succeed(GrokAuthFileStat, () => ({ mtimeMs: 1, size: 1 }))),
+);
 
 const makeTestAdapter = (binaryPath: string, options?: Parameters<typeof makeGrokAdapter>[1]) =>
   makeGrokAdapter(decodeGrokSettings({ binaryPath }), options).pipe(Effect.orDie);
@@ -1909,7 +1916,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const wrapperPath = yield* Effect.promise(() =>
         makeMockGrokWrapper({
           T3_ACP_PROMPT_RESPONSE_TEXT:
-            "Here is the approach. <proposed_plan> # Auth rewrite Use the existing session store. </proposed_plan>",
+            "Here is the approach.\n<proposed_plan>\n# Auth rewrite\n\nUse the existing session store.\n</proposed_plan>\n",
         }),
       );
       const adapter = yield* makeTestAdapter(wrapperPath);
@@ -1937,8 +1944,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const completed = yield* Deferred.await(proposedPlan);
       assert.equal(
         completed.payload.planMarkdown,
-        "# Auth rewrite Use the existing session store.",
+        "# Auth rewrite\n\nUse the existing session store.",
       );
+      // Each block is its own plan, so a second block cannot overwrite it.
+      assert.equal(completed.itemId, "proposed-plan-0");
 
       yield* Fiber.interrupt(eventsFiber);
       yield* adapter.stopSession(threadId);

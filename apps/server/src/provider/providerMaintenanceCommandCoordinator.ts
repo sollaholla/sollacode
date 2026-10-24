@@ -7,6 +7,7 @@ export interface ProviderMaintenanceCommandCoordinatorShape<E> {
     readonly targetKey: string;
     readonly lockKey: string;
     readonly onQueued?: Effect.Effect<void, E, R>;
+    readonly onInterrupted?: Effect.Effect<void, E, R>;
     readonly run: Effect.Effect<A, E, R>;
   }) => Effect.Effect<A, E, R>;
 }
@@ -57,22 +58,30 @@ export const makeProviderMaintenanceCommandCoordinator = Effect.fn(
     targetKey,
     lockKey,
     onQueued,
+    onInterrupted,
     run,
   }) =>
-    Effect.gen(function* () {
-      const acquired = yield* acquireTarget(targetKey);
-      if (!acquired) {
-        return yield* Effect.fail(input.makeAlreadyRunningError(targetKey));
-      }
-
-      return yield* Effect.gen(function* () {
-        const lock = yield* getLock(lockKey);
-        if (onQueued) {
-          yield* onQueued;
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const acquired = yield* acquireTarget(targetKey);
+        if (!acquired) {
+          return yield* Effect.fail(input.makeAlreadyRunningError(targetKey));
         }
-        return yield* lock.withPermits(1)(run);
-      }).pipe(Effect.ensuring(releaseTarget(targetKey)));
-    });
+
+        return yield* Effect.gen(function* () {
+          const lock = yield* getLock(lockKey);
+          if (onQueued) {
+            yield* onQueued;
+          }
+          return yield* lock.withPermits(1)(run);
+        }).pipe(
+          restore,
+          // Publish the interruption before another request can acquire this target.
+          Effect.onInterrupt(() => onInterrupted ?? Effect.void),
+          Effect.ensuring(releaseTarget(targetKey)),
+        );
+      }),
+    );
 
   return {
     withCommandLock,

@@ -39,7 +39,7 @@ export interface ExecuteGitInput {
   readonly stdin?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly allowNonZeroExit?: boolean;
-  readonly timeoutMs?: number;
+  readonly timeoutMs?: number | null;
   readonly maxOutputBytes?: number;
   readonly appendTruncationMarker?: boolean;
   readonly progress?: ExecuteGitProgress;
@@ -70,6 +70,7 @@ export interface GitStatusDetails {
 
 export interface GitRemoteStatusDetails {
   isRepo: boolean;
+  defaultBranch: string | null;
   isDefaultBranch: boolean;
   branch: string | null;
   upstreamRef: string | null;
@@ -111,6 +112,8 @@ export interface GitCommitProgress {
 export interface GitCommitOptions {
   readonly timeoutMs?: number;
   readonly progress?: GitCommitProgress;
+  /** Stage the current working tree immediately before committing. */
+  readonly stage?: { readonly filePaths?: readonly string[] };
 }
 
 export interface GitPushResult {
@@ -202,6 +205,7 @@ export class GitVcsDriver extends Context.Service<
     readonly prepareCommitContext: (
       cwd: string,
       filePaths?: readonly string[],
+      options?: { readonly includePatch?: boolean },
     ) => Effect.Effect<GitPreparedCommitContext | null, GitCommandError>;
     readonly commit: (
       cwd: string,
@@ -237,6 +241,10 @@ export class GitVcsDriver extends Context.Service<
     ) => Effect.Effect<void, GitCommandError>;
     readonly ensureRemote: (input: GitEnsureRemoteInput) => Effect.Effect<string, GitCommandError>;
     readonly resolvePrimaryRemoteName: (cwd: string) => Effect.Effect<string, GitCommandError>;
+    readonly resolveDefaultBranchName: (
+      cwd: string,
+      remoteName: string,
+    ) => Effect.Effect<string | null, GitCommandError>;
     readonly fetchRemote: (input: GitFetchRemoteInput) => Effect.Effect<void, GitCommandError>;
     readonly resolveRemoteTrackingCommit: (
       input: GitResolveRemoteTrackingCommitInput,

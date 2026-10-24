@@ -805,6 +805,7 @@ function ThreadRouteContent(
           olderHistoryLoading={composer.olderHistoryLoading}
           onLoadOlderHistory={composer.onLoadOlderHistory}
           activeWorkStartedAt={composer.activeWorkStartedAt}
+          backgroundWork={composer.backgroundWork}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
           activePendingUserInput={requests.activePendingUserInput}
@@ -834,6 +835,13 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
           onSendMessage={composer.onSendMessage}
+          pendingProposedPlan={composer.pendingProposedPlan}
+          isImplementingProposedPlan={composer.isImplementingProposedPlan}
+          onImplementProposedPlan={composer.onImplementProposedPlan}
+          onCloseProposedPlan={composer.onCloseProposedPlan}
+          recentlyClosedProposedPlan={composer.recentlyClosedProposedPlan}
+          onReopenProposedPlan={composer.onReopenProposedPlan}
+          composerInteractionMode={composer.interactionMode}
           onResumeSession={composer.onResumeSession}
           isResumingSession={composer.isResumingSession}
           onPromoteQueuedMessages={composer.onPromoteQueuedMessages}

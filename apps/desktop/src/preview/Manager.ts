@@ -47,6 +47,7 @@ import {
   webSearchUrl,
 } from "./contextMenu.ts";
 import {
+  boundAccessibilityTree,
   collectFrameIdsFromTree,
   isPdfPreviewDocument,
   mergeAccessibilityTrees,
@@ -106,6 +107,7 @@ import {
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { playwrightInjectedRuntimeInstallExpression } from "./PlaywrightInjectedRuntime.ts";
 import { makePreviewAutomationKeySequence } from "./PreviewKeyboard.ts";
+import { PREVIEW_POPUP_WEB_PREFERENCES } from "./WebviewPreferences.ts";
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -236,6 +238,82 @@ export function isPopupOauthCallbackNavigation(currentUrl: string, nextUrl: stri
     );
   } catch {
     return false;
+  }
+}
+
+/** A path segment that starts a sign-in, such as `/auth/google` or `/login`. */
+const SIGN_IN_PATH_SEGMENT =
+  /^(oauth2?|openid(-connect)?|authorize|authenticate|auth|login|signin|sign-in|sso|saml2?)([._-].*)?$/i;
+
+/** HTML's boolean window feature: bare or "yes"/"true"/non-zero means on. */
+const windowFeatureIsOn = (value: string | undefined): boolean => {
+  if (value === undefined || value === "" || value === "yes" || value === "true") return true;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed !== 0;
+};
+
+/**
+ * Decides whether a guest's window-open request becomes a real child window or
+ * a sibling preview tab. A child keeps the WindowProxy that sign-in SDKs
+ * message and close, but it floats outside the preview panel, so the user
+ * watches a stale page while the agent works somewhere else. Everything a
+ * browser would show as a tab therefore becomes a tab:
+ *
+ * - `noopener`/`noreferrer` hand the page `null`; there is no handle to keep.
+ * - A click on a `target="_blank"` link (the preload reports its URL).
+ * - A featureless scripted open of a same-origin page, the way single-page
+ *   apps open a record "in a new tab", unless its path starts a sign-in.
+ *
+ * Sized or named windows, POST bodies, `new-window` dispositions, and
+ * featureless opens of another origin (an OAuth provider) stay real children.
+ */
+export function guestWindowOpenTarget(request: {
+  readonly url: string;
+  readonly openerUrl: string;
+  readonly disposition: string;
+  readonly features: string;
+  readonly frameName: string;
+  readonly hasPostBody: boolean;
+  readonly requestedDirectTab: boolean;
+}): "child-window" | "preview-tab" {
+  // The renderer's asynchronous tab path cannot replay a POST body.
+  if (request.hasPostBody) return "child-window";
+  const features = request.features
+    .split(",")
+    .map((entry) => {
+      const [name = "", value] = entry.split("=", 2);
+      return { name: name.trim().toLowerCase(), value: value?.trim().toLowerCase() };
+    })
+    .filter((feature) => feature.name.length > 0);
+  const dropsOpener = features.some(
+    (feature) =>
+      (feature.name === "noopener" || feature.name === "noreferrer") &&
+      windowFeatureIsOn(feature.value),
+  );
+  if (dropsOpener || request.requestedDirectTab) return "preview-tab";
+  const frameName = request.frameName.trim().toLowerCase();
+  const popupFeatures = features.filter(
+    (feature) => feature.name !== "noopener" && feature.name !== "noreferrer",
+  );
+  if (
+    popupFeatures.length > 0 ||
+    (frameName.length > 0 && frameName !== "_blank") ||
+    request.disposition === "new-window"
+  ) {
+    return "child-window";
+  }
+  if (request.disposition !== "foreground-tab") return "preview-tab";
+  try {
+    const opener = new URL(request.openerUrl);
+    const next = new URL(request.url);
+    const samePageOrigin =
+      (next.protocol === "https:" || next.protocol === "http:") && next.origin === opener.origin;
+    const startsSignIn = next.pathname
+      .split("/")
+      .some((segment) => SIGN_IN_PATH_SEGMENT.test(segment));
+    return samePageOrigin && !startsSignIn ? "preview-tab" : "child-window";
+  } catch {
+    return "child-window";
   }
 }
 
@@ -704,6 +782,12 @@ export function shouldReclaimGuestKeyForApp(input: {
   return input.focusIntent.kind === "app" || input.focusIntent.tabId !== input.currentTabId;
 }
 
+/**
+ * Between announcing a click point and clicking it. Clients glide the cursor
+ * there over at most `AGENT_CURSOR_GLIDE_MAX_MS` (180 ms, client-runtime
+ * `preview/agentCursorMotion`), so this plus the click lead has to outlast
+ * that or the page reacts before the cursor arrives.
+ */
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 /** Per-step pause during a drag stroke so per-frame sampling captures the path. */
@@ -1611,6 +1695,30 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
     }
     return null;
+  };
+
+  /**
+   * Puts a preview page's new sign-in window in front. macOS gives a covered
+   * window no frames, so its page stalls on its next animation frame and paints
+   * nothing: the window stays white and a phone driving it sees no change.
+   * Electron shows a new window by bringing Solla forward, which macOS refuses
+   * while someone works in another app; order it to the front without focus.
+   */
+  const raisePopupWindow = (window: BrowserWindow): void => {
+    if (window.isDestroyed() || mainWindowFocused) return;
+    window.showInactive();
+  };
+
+  /**
+   * Uncovers a sign-in window that something buried after it opened, before a
+   * phone or agent reads it. A child window cannot rise above its parent, so a
+   * covered one is detached first. A minimized one was put away on purpose.
+   */
+  const uncoverPopupWindow = (popup: PopupWindowSession): void => {
+    const { window } = popup;
+    if (window.isDestroyed() || window.isMinimized() || window.isVisible()) return;
+    if (window.getParentWindow() !== null) window.setParentWindow(null);
+    window.showInactive();
   };
 
   const currentWebContentsForTab = (tab: PreviewTabState): Electron.WebContents | null => {
@@ -3718,6 +3826,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       runFork(showGuestContextMenu(tabId, wc, params));
     };
     const didCreateWindow = (window: BrowserWindow): void => {
+      raisePopupWindow(window);
       if (listenersActive) runFork(attachPopupWindow(tabId, wc.id, window));
     };
     yield* Scope.addFinalizer(scope, Deferred.succeed(unavailable, undefined).pipe(Effect.asVoid));
@@ -3759,31 +3868,30 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         wc.setWindowOpenHandler(({ url, disposition, features, frameName, postBody }) => {
           if (!listenersActive) return { action: "deny" };
-          // A Chromium `new-window` request needs a real child window. OAuth
-          // SDKs commonly open an unnamed/_blank child and retain its
-          // WindowProxy so the provider can message the opener and close the
-          // child. Some providers also submit POST data to that child. Denying
-          // the request and creating a sibling preview later breaks both
-          // contracts and turns the sign-in button into an apparent no-op.
+          // OAuth SDKs retain the child's WindowProxy so the provider can
+          // message the opener and close the child, and some submit POST data
+          // to it. Denying such a request returns null, which reads as a popup
+          // blocker and turns the sign-in button into an apparent no-op. Every
+          // other request becomes a sibling preview tab so the page stays in
+          // the panel; see guestWindowOpenTarget.
           //
-          // Chromium reports both a direct `<a target="_blank">` click and a
-          // featureless `window.open(url, "_blank")` as a foreground tab with
-          // an empty frame name. The preload records the direct-link URL before
-          // this synchronous callback. Keep that explicit tab request on the
-          // sibling-preview path; every other foreground request needs a real
-          // child and WindowProxy or Google reports a false popup blocker.
+          // Chromium reports a direct `<a target="_blank">` click exactly like
+          // a featureless `window.open(url, "_blank")`. The preload records the
+          // direct-link URL before this synchronous callback.
           const requestedDirectTab = directNewTabIntent === url;
           directNewTabIntent = null;
           directNewTabIntentGeneration += 1;
           const hasWindowFeatures = features.trim().length > 0;
-          const hasFrameTarget = frameName.trim().length > 0;
           const isChildWindow =
-            !requestedDirectTab &&
-            (disposition === "foreground-tab" ||
-              disposition === "new-window" ||
-              postBody !== undefined ||
-              hasWindowFeatures ||
-              hasFrameTarget);
+            guestWindowOpenTarget({
+              url,
+              openerUrl: wc.getURL(),
+              disposition,
+              features,
+              frameName,
+              hasPostBody: postBody !== undefined,
+              requestedDirectTab,
+            }) === "child-window";
           runFork(
             Effect.logInfo("Desktop preview handled a guest window-open request.", {
               tabId,
@@ -3802,8 +3910,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             }),
           );
           if (isChildWindow) {
+            // A child window is only ever as visible as its parent: macOS
+            // hides it with a minimized Solla window and buries it under
+            // whatever covers one. Parent it only to a window on screen.
             const parent =
-              mainWindowForPopups && !mainWindowForPopups.isDestroyed()
+              mainWindowForPopups &&
+              !mainWindowForPopups.isDestroyed() &&
+              mainWindowForPopups.isVisible() &&
+              !mainWindowForPopups.isMinimized()
                 ? mainWindowForPopups
                 : undefined;
             return {
@@ -3811,13 +3925,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               // Centred on the app rather than wherever the OS would drop it.
               // The window itself has to stay real — the OAuth WindowProxy
               // contract above depends on it — but an unparented sign-in
-              // window opening off to one side is easy to miss entirely, and
-              // is invisible to anyone watching this machine through the
-              // browser panel from another device.
+              // window opening off to one side is easy to miss entirely.
+              // `did-create-window` raises it; see raisePopupWindow.
               overrideBrowserWindowOptions: {
                 autoHideMenuBar: true,
                 center: true,
                 ...(parent ? { parent, modal: false } : {}),
+                webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
               },
             };
           }
@@ -4676,18 +4790,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         };
         const onDestroyed = () => settle(null);
         const onNavigated = (
-          _event: Electron.Event,
-          _url: string,
-          _isInPlace: boolean,
-          isMainFrame: boolean,
+          event: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
         ) => {
-          if (isMainFrame) settle(null);
+          if (event.isMainFrame) settle(null);
         };
         const registerPickElement = Effect.fn("PreviewManager.registerPickElement")(function* () {
           yield* attempt({ operation: "pickElement.register", tabId, webContentsId: wc.id }, () => {
             wc.ipc.on(ELEMENT_PICKED_CHANNEL, onMessage);
             wc.once("destroyed", onDestroyed);
-            wc.once("did-start-navigation", onNavigated);
+            wc.on("did-start-navigation", onNavigated);
             if (!wc.isFocused()) wc.focus();
             wc.send(START_PICK_CHANNEL, annotationTheme);
           });
@@ -6371,7 +6482,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const readBack = redactFilledSecrets(
         {
           ...snapshotPage,
-          accessibilityTree: accessibility,
+          accessibilityTree: boundAccessibilityTree(accessibility),
           consoleEntries: [...(browserDiagnostics?.consoleEntries ?? [])],
           networkEntries: [...(browserDiagnostics?.networkEntries ?? [])],
           actionTimeline: [...(timelines.get(tabId) ?? [])],
@@ -6495,13 +6606,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // retrying capturePage alone against a stale guest.
       const wc = yield* requireWebContents(tabId);
       return yield* withControlSession(tabId, wc, "snapshot", () => {
-        const popupVisible = currentPopupForTab(tabId)?.webContents.id === wc.id;
+        const popup = currentPopupForTab(tabId);
+        const popupVisible = popup?.webContents.id === wc.id;
         const stageSnapshotSurface: StageSnapshotSurface | null =
           popupVisible ||
           (mainWindowFocused && activityLeases.has(tabId, PreviewActivityConsumer.Ui))
             ? null
             : (capture) => withStagedSnapshotSurface(tabId, wc, capture);
-        return captureAutomationSnapshot(tabId, wc, stageSnapshotSurface);
+        const capture = captureAutomationSnapshot(tabId, wc, stageSnapshotSurface);
+        if (!popupVisible || popup === null) return capture;
+        return attempt({ operation: "uncoverPopupWindow", tabId, webContentsId: wc.id }, () =>
+          uncoverPopupWindow(popup),
+        ).pipe(Effect.ignore, Effect.andThen(capture));
       });
     }).pipe(
       Effect.retry({

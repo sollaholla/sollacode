@@ -16,6 +16,7 @@ import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as SettingsSourceControlRouteImport } from './routes/settings.source-control'
 import { Route as SettingsProvidersRouteImport } from './routes/settings.providers'
+import { Route as SettingsProjectsRouteImport } from './routes/settings.projects'
 import { Route as SettingsPermissionsRouteImport } from './routes/settings.permissions'
 import { Route as SettingsOrchestratorRouteImport } from './routes/settings.orchestrator'
 import { Route as SettingsKeybindingsRouteImport } from './routes/settings.keybindings'
@@ -27,9 +28,11 @@ import { Route as SettingsBetaRouteImport } from './routes/settings.beta'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
 import { Route as SettingsAppearanceRouteImport } from './routes/settings.appearance'
 import { Route as SettingsAgentsRouteImport } from './routes/settings.agents'
+import { Route as OrchestratorLiveRouteImport } from './routes/orchestrator_.live'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatAgentsAgentIdRouteImport } from './routes/_chat.agents.$agentId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
+import { Route as SettingsProjectsEnvironmentIdProjectIdRouteImport } from './routes/settings.projects_.$environmentId.$projectId'
 import { Route as ChatAgentsEnvironmentIdAgentIdRouteImport } from './routes/_chat.agents.$environmentId.$agentId'
 
 const SettingsRoute = SettingsRouteImport.update({
@@ -64,6 +67,11 @@ const SettingsSourceControlRoute = SettingsSourceControlRouteImport.update({
 const SettingsProvidersRoute = SettingsProvidersRouteImport.update({
   id: '/providers',
   path: '/providers',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsProjectsRoute = SettingsProjectsRouteImport.update({
+  id: '/projects',
+  path: '/projects',
   getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsPermissionsRoute = SettingsPermissionsRouteImport.update({
@@ -121,6 +129,11 @@ const SettingsAgentsRoute = SettingsAgentsRouteImport.update({
   path: '/agents',
   getParentRoute: () => SettingsRoute,
 } as any)
+const OrchestratorLiveRoute = OrchestratorLiveRouteImport.update({
+  id: '/orchestrator_/live',
+  path: '/orchestrator/live',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ChatDraftDraftIdRoute = ChatDraftDraftIdRouteImport.update({
   id: '/draft/$draftId',
   path: '/draft/$draftId',
@@ -137,6 +150,12 @@ const ChatEnvironmentIdThreadIdRoute =
     path: '/$environmentId/$threadId',
     getParentRoute: () => ChatRoute,
   } as any)
+const SettingsProjectsEnvironmentIdProjectIdRoute =
+  SettingsProjectsEnvironmentIdProjectIdRouteImport.update({
+    id: '/projects_/$environmentId/$projectId',
+    path: '/projects/$environmentId/$projectId',
+    getParentRoute: () => SettingsRoute,
+  } as any)
 const ChatAgentsEnvironmentIdAgentIdRoute =
   ChatAgentsEnvironmentIdAgentIdRouteImport.update({
     id: '/agents/$environmentId/$agentId',
@@ -149,6 +168,7 @@ export interface FileRoutesByFullPath {
   '/orchestrator': typeof OrchestratorRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
+  '/orchestrator/live': typeof OrchestratorLiveRoute
   '/settings/agents': typeof SettingsAgentsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -160,17 +180,20 @@ export interface FileRoutesByFullPath {
   '/settings/keybindings': typeof SettingsKeybindingsRoute
   '/settings/orchestrator': typeof SettingsOrchestratorRoute
   '/settings/permissions': typeof SettingsPermissionsRoute
+  '/settings/projects': typeof SettingsProjectsRoute
   '/settings/providers': typeof SettingsProvidersRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/agents/$agentId': typeof ChatAgentsAgentIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/agents/$environmentId/$agentId': typeof ChatAgentsEnvironmentIdAgentIdRoute
+  '/settings/projects/$environmentId/$projectId': typeof SettingsProjectsEnvironmentIdProjectIdRoute
 }
 export interface FileRoutesByTo {
   '/orchestrator': typeof OrchestratorRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
+  '/orchestrator/live': typeof OrchestratorLiveRoute
   '/settings/agents': typeof SettingsAgentsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -182,6 +205,7 @@ export interface FileRoutesByTo {
   '/settings/keybindings': typeof SettingsKeybindingsRoute
   '/settings/orchestrator': typeof SettingsOrchestratorRoute
   '/settings/permissions': typeof SettingsPermissionsRoute
+  '/settings/projects': typeof SettingsProjectsRoute
   '/settings/providers': typeof SettingsProvidersRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/': typeof ChatIndexRoute
@@ -189,6 +213,7 @@ export interface FileRoutesByTo {
   '/agents/$agentId': typeof ChatAgentsAgentIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/agents/$environmentId/$agentId': typeof ChatAgentsEnvironmentIdAgentIdRoute
+  '/settings/projects/$environmentId/$projectId': typeof SettingsProjectsEnvironmentIdProjectIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -196,6 +221,7 @@ export interface FileRoutesById {
   '/orchestrator': typeof OrchestratorRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
+  '/orchestrator_/live': typeof OrchestratorLiveRoute
   '/settings/agents': typeof SettingsAgentsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -207,6 +233,7 @@ export interface FileRoutesById {
   '/settings/keybindings': typeof SettingsKeybindingsRoute
   '/settings/orchestrator': typeof SettingsOrchestratorRoute
   '/settings/permissions': typeof SettingsPermissionsRoute
+  '/settings/projects': typeof SettingsProjectsRoute
   '/settings/providers': typeof SettingsProvidersRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/_chat/': typeof ChatIndexRoute
@@ -214,6 +241,7 @@ export interface FileRoutesById {
   '/_chat/agents/$agentId': typeof ChatAgentsAgentIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/_chat/agents/$environmentId/$agentId': typeof ChatAgentsEnvironmentIdAgentIdRoute
+  '/settings/projects_/$environmentId/$projectId': typeof SettingsProjectsEnvironmentIdProjectIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -222,6 +250,7 @@ export interface FileRouteTypes {
     | '/orchestrator'
     | '/pair'
     | '/settings'
+    | '/orchestrator/live'
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings/archived'
@@ -233,17 +262,20 @@ export interface FileRouteTypes {
     | '/settings/keybindings'
     | '/settings/orchestrator'
     | '/settings/permissions'
+    | '/settings/projects'
     | '/settings/providers'
     | '/settings/source-control'
     | '/$environmentId/$threadId'
     | '/agents/$agentId'
     | '/draft/$draftId'
     | '/agents/$environmentId/$agentId'
+    | '/settings/projects/$environmentId/$projectId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/orchestrator'
     | '/pair'
     | '/settings'
+    | '/orchestrator/live'
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings/archived'
@@ -255,6 +287,7 @@ export interface FileRouteTypes {
     | '/settings/keybindings'
     | '/settings/orchestrator'
     | '/settings/permissions'
+    | '/settings/projects'
     | '/settings/providers'
     | '/settings/source-control'
     | '/'
@@ -262,12 +295,14 @@ export interface FileRouteTypes {
     | '/agents/$agentId'
     | '/draft/$draftId'
     | '/agents/$environmentId/$agentId'
+    | '/settings/projects/$environmentId/$projectId'
   id:
     | '__root__'
     | '/_chat'
     | '/orchestrator'
     | '/pair'
     | '/settings'
+    | '/orchestrator_/live'
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings/archived'
@@ -279,6 +314,7 @@ export interface FileRouteTypes {
     | '/settings/keybindings'
     | '/settings/orchestrator'
     | '/settings/permissions'
+    | '/settings/projects'
     | '/settings/providers'
     | '/settings/source-control'
     | '/_chat/'
@@ -286,6 +322,7 @@ export interface FileRouteTypes {
     | '/_chat/agents/$agentId'
     | '/_chat/draft/$draftId'
     | '/_chat/agents/$environmentId/$agentId'
+    | '/settings/projects_/$environmentId/$projectId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -293,6 +330,7 @@ export interface RootRouteChildren {
   OrchestratorRoute: typeof OrchestratorRoute
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
+  OrchestratorLiveRoute: typeof OrchestratorLiveRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -344,6 +382,13 @@ declare module '@tanstack/react-router' {
       path: '/providers'
       fullPath: '/settings/providers'
       preLoaderRoute: typeof SettingsProvidersRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/projects': {
+      id: '/settings/projects'
+      path: '/projects'
+      fullPath: '/settings/projects'
+      preLoaderRoute: typeof SettingsProjectsRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/permissions': {
@@ -423,6 +468,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsAgentsRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/orchestrator_/live': {
+      id: '/orchestrator_/live'
+      path: '/orchestrator/live'
+      fullPath: '/orchestrator/live'
+      preLoaderRoute: typeof OrchestratorLiveRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_chat/draft/$draftId': {
       id: '/_chat/draft/$draftId'
       path: '/draft/$draftId'
@@ -443,6 +495,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/$environmentId/$threadId'
       preLoaderRoute: typeof ChatEnvironmentIdThreadIdRouteImport
       parentRoute: typeof ChatRoute
+    }
+    '/settings/projects_/$environmentId/$projectId': {
+      id: '/settings/projects_/$environmentId/$projectId'
+      path: '/projects/$environmentId/$projectId'
+      fullPath: '/settings/projects/$environmentId/$projectId'
+      preLoaderRoute: typeof SettingsProjectsEnvironmentIdProjectIdRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/_chat/agents/$environmentId/$agentId': {
       id: '/_chat/agents/$environmentId/$agentId'
@@ -484,8 +543,10 @@ interface SettingsRouteChildren {
   SettingsKeybindingsRoute: typeof SettingsKeybindingsRoute
   SettingsOrchestratorRoute: typeof SettingsOrchestratorRoute
   SettingsPermissionsRoute: typeof SettingsPermissionsRoute
+  SettingsProjectsRoute: typeof SettingsProjectsRoute
   SettingsProvidersRoute: typeof SettingsProvidersRoute
   SettingsSourceControlRoute: typeof SettingsSourceControlRoute
+  SettingsProjectsEnvironmentIdProjectIdRoute: typeof SettingsProjectsEnvironmentIdProjectIdRoute
 }
 
 const SettingsRouteChildren: SettingsRouteChildren = {
@@ -500,8 +561,11 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsKeybindingsRoute: SettingsKeybindingsRoute,
   SettingsOrchestratorRoute: SettingsOrchestratorRoute,
   SettingsPermissionsRoute: SettingsPermissionsRoute,
+  SettingsProjectsRoute: SettingsProjectsRoute,
   SettingsProvidersRoute: SettingsProvidersRoute,
   SettingsSourceControlRoute: SettingsSourceControlRoute,
+  SettingsProjectsEnvironmentIdProjectIdRoute:
+    SettingsProjectsEnvironmentIdProjectIdRoute,
 }
 
 const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
@@ -513,6 +577,7 @@ const rootRouteChildren: RootRouteChildren = {
   OrchestratorRoute: OrchestratorRoute,
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,
+  OrchestratorLiveRoute: OrchestratorLiveRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

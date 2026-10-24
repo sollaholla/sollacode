@@ -264,6 +264,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       const { prompt, outputSchema } = buildPlanRefreshPrompt({
         transcript: input.transcript,
         currentSteps: input.currentSteps,
+        proposedPlanMarkdown: input.proposedPlanMarkdown,
       });
 
       const generated = yield* runGrokJson({

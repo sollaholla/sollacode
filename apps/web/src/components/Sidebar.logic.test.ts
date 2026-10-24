@@ -683,6 +683,37 @@ describe("resolveSidebarV2Status", () => {
     }
   });
 
+  it("keeps a settled turn working while the tasks it started still run", () => {
+    const nowMs = Date.parse("2026-10-10T12:00:00.000Z");
+    const ready = {
+      ...idle,
+      session: { ...session, status: "ready" as const, activeTurnId: null },
+    };
+    const backgroundTasks = {
+      count: 4,
+      startedAt: "2026-10-10T11:40:00.000Z",
+      lastActivityAt: "2026-10-10T11:59:00.000Z",
+    };
+    expect(resolveSidebarV2Status({ ...ready, backgroundTasks }, nowMs)).toBe("working");
+    // Gone quiet past the staleness window: no longer claimed as running.
+    expect(
+      resolveSidebarV2Status(
+        {
+          ...ready,
+          backgroundTasks: { ...backgroundTasks, lastActivityAt: "2026-10-10T11:00:00.000Z" },
+        },
+        nowMs,
+      ),
+    ).toBe("ready");
+    // A stopped session has no process left to run them.
+    expect(
+      resolveSidebarV2Status(
+        { ...ready, session: { ...ready.session, status: "stopped" as const }, backgroundTasks },
+        nowMs,
+      ),
+    ).toBe("ready");
+  });
+
   it("prioritizes approval over a running session", () => {
     expect(resolveSidebarV2Status({ ...idle, hasPendingApprovals: true, session })).toBe(
       "approval",
@@ -882,6 +913,23 @@ describe("resolveWorkingStartedAt", () => {
   it("returns null with neither a running turn nor a session", () => {
     expect(resolveWorkingStartedAt({ latestTurn: null, session: null })).toBeNull();
   });
+
+  it("counts background work from when its tasks started", () => {
+    expect(
+      resolveWorkingStartedAt(
+        {
+          latestTurn: makeLatestTurn(),
+          session: { ...session, status: "ready", activeTurnId: null },
+          backgroundTasks: {
+            count: 1,
+            startedAt: "2026-03-09T10:01:00.000Z",
+            lastActivityAt: "2026-03-09T10:05:00.000Z",
+          },
+        },
+        Date.parse("2026-03-09T10:06:00.000Z"),
+      ),
+    ).toBe("2026-03-09T10:01:00.000Z");
+  });
 });
 
 describe("formatWorkingDurationLabel", () => {
@@ -917,6 +965,23 @@ describe("resolveThreadStatusPill", () => {
       updatedAt: "2026-03-09T10:00:00.000Z",
     },
   };
+
+  it("shows working while background tasks outlive the turn", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          session: { ...baseThread.session, status: "ready", activeTurnId: null },
+          backgroundTasks: {
+            count: 2,
+            startedAt: "2026-03-09T10:00:00.000Z",
+            lastActivityAt: "2026-03-09T10:05:00.000Z",
+          },
+        },
+        nowMs: Date.parse("2026-03-09T10:06:00.000Z"),
+      }),
+    ).toMatchObject({ label: "Working", pulse: true });
+  });
 
   it("shows pending approval before all other statuses", () => {
     expect(
@@ -1519,10 +1584,8 @@ describe("resolveSidebarV2Status — unreachable host", () => {
     expect(resolveSidebarV2Status({ ...running })).toBe("working");
   });
 
-  // Reported 2026-08-15: a row read "Working 3h 4m" for a host that was
-  // offline, counting up state nobody could observe or stop.
-  it("stops claiming working once the host is unreachable", () => {
-    expect(resolveSidebarV2Status({ ...running, environmentUnreachable: true })).toBe("ready");
+  it("retains working while the host is unreachable", () => {
+    expect(resolveSidebarV2Status({ ...running, environmentUnreachable: true })).toBe("working");
   });
 
   it("still surfaces work that needs the user", () => {
@@ -1657,17 +1720,14 @@ describe("promoteAgentRowStatus", () => {
     ).toBeNull();
   });
 
-  it("does not climb a timer on an unreachable host", () => {
-    // Suppression runs after the promotion: a last-known side chat on a host
-    // nobody can reach never drains, so promoting first and suppressing second
-    // is the only order that cannot pin "working" on a dead row.
+  it("retains side-chat work on an unreachable host", () => {
     expect(
       promoteAgentRowStatus({
         ownStatus: "ready",
         hasWorkingSideChat: true,
         environmentUnreachable: true,
       }),
-    ).toBe("ready");
+    ).toBe("working");
     expect(
       promoteAgentRowStatus({
         ownStatus: "approval",

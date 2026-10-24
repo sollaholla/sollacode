@@ -75,6 +75,53 @@ export function mergeAccessibilityTrees(trees: ReadonlyArray<unknown>): { nodes:
   return { nodes };
 }
 
+/**
+ * Serialized budget for the accessibility tree an agent receives.
+ *
+ * The raw tree of a busy page runs to hundreds of KB, and a snapshot is
+ * repeated every few actions: it was ~230 KB of a ~350 KB snapshot, and the
+ * provider keeps each result more than once in its own history (one Codex
+ * session held 762 MB of snapshots from 741 calls). The interactive elements
+ * and visible text carry what an agent acts on; this tree is for orientation.
+ */
+export const MAX_SNAPSHOT_ACCESSIBILITY_BYTES = 48 * 1024;
+
+/**
+ * The tree to hand to an agent: nodes Chromium marked ignored are not exposed
+ * to assistive technology and carry no information, and the rest are kept in
+ * document order until the byte budget is spent. Visible text is derived from
+ * the full tree before this runs, so PDF text is unaffected.
+ */
+export function boundAccessibilityTree(
+  tree: { readonly nodes: ReadonlyArray<unknown> },
+  maxBytes: number = MAX_SNAPSHOT_ACCESSIBILITY_BYTES,
+): { nodes: unknown[]; omittedNodeCount?: number } {
+  const nodes: unknown[] = [];
+  let bytes = 0;
+  let omitted = 0;
+  for (const node of tree.nodes) {
+    if (
+      node !== null &&
+      typeof node === "object" &&
+      (node as { ignored?: unknown }).ignored === true
+    ) {
+      continue;
+    }
+    if (omitted > 0) {
+      omitted += 1;
+      continue;
+    }
+    const size = JSON.stringify(node)?.length ?? 0;
+    if (bytes + size > maxBytes) {
+      omitted += 1;
+      continue;
+    }
+    bytes += size;
+    nodes.push(node);
+  }
+  return omitted > 0 ? { nodes, omittedNodeCount: omitted } : { nodes };
+}
+
 export function visibleTextFromAccessibilityTree(tree: unknown, maxLength: number): string {
   const names: string[] = [];
   const visit = (node: unknown, accept: (role: string, name: string) => boolean) => {

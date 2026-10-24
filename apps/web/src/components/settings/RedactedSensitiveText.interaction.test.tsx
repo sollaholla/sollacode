@@ -28,7 +28,7 @@ it("confirms account reveal inside the usage popup without dismissing it", async
               state="available"
               windows={[]}
               reportedAt={null}
-              account={{ email: "fixture@example.com", label: null, type: null }}
+              account={{ email: "fixture@example.com", label: null, type: "Claude Max" }}
             />
           </PopoverPopup>
         </Popover>,
@@ -36,7 +36,14 @@ it("confirms account reveal inside the usage popup without dismissing it", async
     );
     expect(document.body.textContent).not.toContain("fixture@example.com");
     await click("Codex account");
-    expect(document.querySelector('[aria-label="Confirm account reveal"]')).not.toBeNull();
+    const warning = document.querySelector('[aria-label="Confirm account reveal"]');
+    expect(warning).not.toBeNull();
+    expect(warning?.classList.contains("basis-full")).toBe(true);
+    expect(warning?.classList.contains("order-last")).toBe(true);
+    expect(warning?.parentElement?.classList.contains("flex-wrap")).toBe(true);
+    expect(warning?.parentElement?.querySelector('[aria-label="Codex account"]')).not.toBeNull();
+    expect(warning?.textContent).not.toContain("Claude Max");
+    expect(warning?.parentElement?.textContent).toContain("Claude Max");
     expect(document.body.textContent).not.toContain("fixture@example.com");
     await click("Cancel");
     expect(document.body.textContent).not.toContain("fixture@example.com");

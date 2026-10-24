@@ -7,6 +7,8 @@ for (const stream of [process.stdout, process.stderr]) {
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Version output must flush before Electron exits, without acquiring the runtime.
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -57,6 +59,9 @@ import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopTelemetryPublisher from "./telemetry/DesktopTelemetryPublisher.ts";
 import * as BrowserSession from "./preview/BrowserSession.ts";
 import * as PreviewManager from "./preview/Manager.ts";
+import * as BrowserArtifactsRetention from "./preview/browserArtifactsRetention.ts";
+import * as BrowserCacheMaintenance from "./preview/browserCacheMaintenance.ts";
+import * as RuntimeMaintenance from "./storage/runtimeMaintenance.ts";
 import * as BrowserCredentialVault from "./preview/BrowserCredentialVault.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as OrchestratorBubbleWindow from "./window/OrchestratorBubbleWindow.ts";
@@ -147,6 +152,15 @@ const developmentRoot = process.argv
   .find((argument) => argument.startsWith("--t3code-dev-root="))
   ?.slice("--t3code-dev-root=".length);
 
+if (process.argv.includes("--version")) {
+  try {
+    NodeFS.writeSync(process.stdout.fd, `${Electron.app.getVersion()}\n`);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "EPIPE") throw error;
+  }
+  Electron.app.exit(0);
+}
+
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
     const metadata = yield* Effect.service(ElectronApp.ElectronApp).pipe(
@@ -226,10 +240,13 @@ const desktopServerExposureLayer = DesktopServerExposure.layer.pipe(
   Layer.provideMerge(desktopFoundationLayer),
 );
 
-const desktopPreviewLayer = Layer.mergeAll(PreviewManager.layer, BrowserCredentialVault.layer).pipe(
-  Layer.provideMerge(BrowserSession.layer),
-  Layer.provideMerge(desktopFoundationLayer),
-);
+const desktopPreviewLayer = Layer.mergeAll(
+  PreviewManager.layer,
+  BrowserCredentialVault.layer,
+  BrowserArtifactsRetention.layer,
+  BrowserCacheMaintenance.layer,
+  RuntimeMaintenance.layer,
+).pipe(Layer.provideMerge(BrowserSession.layer), Layer.provideMerge(desktopFoundationLayer));
 
 const desktopWindowLayer = Layer.mergeAll(DesktopWindow.layer, OrchestratorBubbleWindow.layer).pipe(
   Layer.provideMerge(desktopServerExposureLayer),

@@ -27,6 +27,7 @@ Solla Code is an independent fork. Start with [fork identity and compatibility n
   - [Provider usage and resets](./user/provider-usage.md)
   - [Provider usage-limit failover](./user/provider-failover.md)
   - [Model restrictions](./user/model-restrictions.md)
+  - [Managing projects: rename, delete, storage, and token usage](./user/projects.md)
   - [Storage and conversation cleanup](./user/storage.md)
   - [Remote access](./user/remote-access.md)
   - [Keeping Solla Code in sync](./user/server-updates.md)
@@ -41,6 +42,7 @@ Solla Code is an independent fork. Start with [fork identity and compatibility n
   - [Claude](./providers/claude.md)
   - [Codex](./providers/codex.md)
   - [External MCP provider bridges](./providers/mcp-bridge.md)
+  - [Kimi Code](./providers/kimi.md)
 - [Reference](./reference/encyclopedia.md)
 - [Project notices](./reference/project-notices.md)
 

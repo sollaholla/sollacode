@@ -6,6 +6,7 @@ import {
   type PreviewAutomationSnapshot,
   type PreviewRemoteSnapshotInput,
   type PreviewRemoteSnapshotResult,
+  type PreviewRemoteSnapshotUnchangedResult,
   type PreviewRemoteViewSnapshotInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -18,6 +19,38 @@ type RemotePreviewInvoker = Pick<
   "invoke"
 >;
 
+/**
+ * Identifies one exact picture: its length plus a 32-bit FNV-1a over the base64.
+ * If two different frames ever shared an id the viewer would keep the older
+ * picture until the page next changed. At about 2^-32 per comparison that is
+ * not worth a stronger hash on every frame of a 1 to 2.5 second poll.
+ */
+export function remoteFrameId(data: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < data.length; index += 1) {
+    hash ^= data.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${data.length.toString(36)}-${(hash >>> 0).toString(36)}`;
+}
+
+/**
+ * The frame, or, when the caller says it already holds exactly this picture,
+ * everything about the frame except the picture. A phone watching a page that
+ * is not moving otherwise downloads the same JPEG every poll.
+ */
+function answerFrame(
+  frame: PreviewRemoteSnapshotResult,
+  unchangedSince: string | undefined,
+): PreviewRemoteSnapshotResult | PreviewRemoteSnapshotUnchangedResult {
+  const frameId = remoteFrameId(frame.screenshot.data);
+  if (unchangedSince !== frameId) {
+    return { ...frame, frameId };
+  }
+  const { screenshot: _picture, ...rest } = frame;
+  return { ...rest, unchanged: true, frameId };
+}
+
 export function captureRemotePreviewSnapshot(input: {
   readonly broker: RemotePreviewInvoker;
   readonly environmentId: EnvironmentId;
@@ -25,7 +58,7 @@ export function captureRemotePreviewSnapshot(input: {
   readonly request: PreviewRemoteSnapshotInput;
   readonly issuedAt: number;
 }): Effect.Effect<
-  PreviewRemoteSnapshotResult,
+  PreviewRemoteSnapshotResult | PreviewRemoteSnapshotUnchangedResult,
   import("@t3tools/contracts").PreviewAutomationError
 > {
   return input.broker
@@ -72,20 +105,25 @@ export function captureRemotePreviewSnapshot(input: {
                   reason: snapshot.screenshotError ?? "No reason was reported.",
                 }),
               )
-            : Effect.succeed({
-                tabId: input.request.tabId,
-                url: snapshot.url,
-                title: snapshot.title,
-                loading: snapshot.loading,
-                capturedAt: DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt)),
-                screenshot: snapshot.screenshot,
-                ...(snapshot.pendingDownloadApprovals === undefined
-                  ? {}
-                  : { pendingDownloadApprovals: snapshot.pendingDownloadApprovals }),
-                ...(snapshot.agentPointer === undefined
-                  ? {}
-                  : { agentPointer: snapshot.agentPointer }),
-              }),
+            : Effect.succeed(
+                answerFrame(
+                  {
+                    tabId: input.request.tabId,
+                    url: snapshot.url,
+                    title: snapshot.title,
+                    loading: snapshot.loading,
+                    capturedAt: DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt)),
+                    screenshot: snapshot.screenshot,
+                    ...(snapshot.pendingDownloadApprovals === undefined
+                      ? {}
+                      : { pendingDownloadApprovals: snapshot.pendingDownloadApprovals }),
+                    ...(snapshot.agentPointer === undefined
+                      ? {}
+                      : { agentPointer: snapshot.agentPointer }),
+                  },
+                  input.request.unchangedSince,
+                ),
+              ),
       ),
     );
 }

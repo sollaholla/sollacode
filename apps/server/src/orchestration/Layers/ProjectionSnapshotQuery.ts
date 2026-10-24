@@ -15,6 +15,7 @@ import {
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadHistoryPage,
+  type OrchestrationThreadBackgroundTasks,
   type OrchestrationThreadPendingWork,
   ProjectScript,
   TurnId,
@@ -41,7 +42,11 @@ import {
   ACTIVE_TURN_WORK_SOURCE_PREFIX,
   activeTurnMessageIdFromSourceTurnId,
 } from "../agentModeContinuation.ts";
-import { HELD_MESSAGE_PREFIX, isHeldMessageId } from "@t3tools/shared/heldMessages";
+import {
+  HELD_MESSAGE_PREFIX,
+  HELD_MESSAGE_REMOVED,
+  isHeldMessageId,
+} from "@t3tools/shared/heldMessages";
 import { STOPPED_BEFORE_SEND_REASON } from "../../persistence/Services/ThreadWorkObligations.ts";
 import * as Arr from "effect/Array";
 import * as DateTime from "effect/DateTime";
@@ -68,6 +73,13 @@ import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionTh
 import { ProjectionThreadProposedPlan } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
+import { listOpenBackgroundTasksBefore } from "../../persistence/BackgroundTaskProjection.ts";
+import { TURN_USAGE_ACTIVITY_KIND } from "@t3tools/shared/turnUsage";
+import type {
+  ProjectStatisticsRows,
+  ProjectStatisticsThreadRow,
+  ProjectStatisticsUsageRow,
+} from "../projectStatistics.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
@@ -386,6 +398,23 @@ function mapPendingWork(row: {
     : null;
 }
 
+function mapBackgroundTasks(row: {
+  readonly backgroundTaskCount?: number;
+  readonly backgroundTasksStartedAt?: string | null;
+  readonly backgroundTasksActivityAt?: string | null;
+}): OrchestrationThreadBackgroundTasks | null {
+  return row.backgroundTaskCount !== undefined &&
+    row.backgroundTaskCount > 0 &&
+    row.backgroundTasksStartedAt != null &&
+    row.backgroundTasksActivityAt != null
+    ? {
+        count: row.backgroundTaskCount,
+        startedAt: row.backgroundTasksStartedAt,
+        lastActivityAt: row.backgroundTasksActivityAt,
+      }
+    : null;
+}
+
 function mapSessionRow(
   row: Schema.Schema.Type<typeof ProjectionThreadSessionDbRowSchema>,
 ): OrchestrationSession {
@@ -427,6 +456,7 @@ function mapProposedPlanRow(
     planMarkdown: row.planMarkdown,
     implementedAt: row.implementedAt,
     implementationThreadId: row.implementationThreadId,
+    closedAt: row.closedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -501,6 +531,39 @@ function heldMessageQueueStates(
             ? "delivered"
             : "queued",
     );
+  }
+  return states;
+}
+
+/**
+ * Where held messages got to, read from their receipt activities.
+ *
+ * The fallback for a held message whose obligation is gone: terminal rows are
+ * pruned after 7 days, and the client cannot settle the message itself because
+ * a "load older" page brings 150 messages but only 150 activities, so on a
+ * busy thread the receipts sit thousands of activities further back. Without
+ * this, scrolling up put every week-old held message back in the queue panel.
+ * A delivery receipt wins over a removal: the text reached the provider.
+ */
+function heldMessageReceiptStates(
+  rows: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>,
+): ReadonlyMap<string, "delivered" | "removed"> {
+  const states = new Map<string, "delivered" | "removed">();
+  for (const row of rows) {
+    if (typeof row.payload !== "object" || row.payload === null) continue;
+    const payload = row.payload as { messageId?: unknown; messageIds?: unknown };
+    const delivered = row.kind === "message.delivered" || row.kind === "provider.queue.promoted";
+    const ids =
+      row.kind === "message.delivered" || row.kind === HELD_MESSAGE_REMOVED
+        ? [payload.messageId]
+        : Array.isArray(payload.messageIds)
+          ? payload.messageIds
+          : [];
+    for (const id of ids) {
+      if (typeof id !== "string" || !isHeldMessageId(id)) continue;
+      if (delivered) states.set(id, "delivered");
+      else if (!states.has(id)) states.set(id, "removed");
+    }
   }
   return states;
 }
@@ -709,6 +772,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_work_kind AS "pendingWorkKind",
           pending_work_state AS "pendingWorkState",
           pending_work_since AS "pendingWorkSince",
+          background_task_count AS "backgroundTaskCount",
+          background_tasks_started_at AS "backgroundTasksStartedAt",
+          background_tasks_activity_at AS "backgroundTasksActivityAt",
           deleted_at AS "deletedAt"
         FROM projection_threads
         ORDER BY created_at ASC, thread_id ASC
@@ -748,6 +814,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_work_kind AS "pendingWorkKind",
           pending_work_state AS "pendingWorkState",
           pending_work_since AS "pendingWorkSince",
+          background_task_count AS "backgroundTaskCount",
+          background_tasks_started_at AS "backgroundTasksStartedAt",
+          background_tasks_activity_at AS "backgroundTasksActivityAt",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE deleted_at IS NULL
@@ -789,6 +858,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_work_kind AS "pendingWorkKind",
           pending_work_state AS "pendingWorkState",
           pending_work_since AS "pendingWorkSince",
+          background_task_count AS "backgroundTaskCount",
+          background_tasks_started_at AS "backgroundTasksStartedAt",
+          background_tasks_activity_at AS "backgroundTasksActivityAt",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE deleted_at IS NULL
@@ -834,6 +906,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           plan_markdown AS "planMarkdown",
           implemented_at AS "implementedAt",
           implementation_thread_id AS "implementationThreadId",
+          closed_at AS "closedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_proposed_plans
@@ -1265,6 +1338,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_work_kind AS "pendingWorkKind",
           pending_work_state AS "pendingWorkState",
           pending_work_since AS "pendingWorkSince",
+          background_task_count AS "backgroundTaskCount",
+          background_tasks_started_at AS "backgroundTasksStartedAt",
+          background_tasks_activity_at AS "backgroundTasksActivityAt",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE thread_id = ${threadId}
@@ -1336,6 +1412,66 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           AND created_at >= ${since}
       `,
   });
+
+  /**
+   * Every delivery and removal receipt since `since`, for
+   * {@link heldMessageReceiptStates}. A few thousand small rows on the largest
+   * thread; pinned to the kind index so it never walks the thread's activities.
+   */
+  const listHeldMessageReceiptRows = SqlSchema.findAll({
+    Request: ThreadDeliveredMessagesInput,
+    Result: ProjectionDeliveredMessageRowSchema,
+    execute: ({ threadId, since }) =>
+      sql`
+        SELECT
+          kind,
+          payload_json AS "payload"
+        FROM projection_thread_activities
+          INDEXED BY idx_projection_thread_activities_thread_kind_created_id
+        WHERE thread_id = ${threadId}
+          AND kind IN (
+            'message.delivered',
+            'provider.queue.promoted',
+            'queue.message-removed',
+            'queue.messages-cancelled'
+          )
+          AND created_at >= ${since}
+      `,
+  });
+
+  /**
+   * Queue states for the held messages in a window of message rows: the work
+   * obligation when one is left, otherwise the receipts. Messages neither can
+   * answer stay unstamped, as before — including one whose obligation the
+   * projector has not written yet.
+   */
+  const resolveHeldMessageQueueStates = (
+    threadId: ThreadId,
+    messageRows: ReadonlyArray<{ readonly messageId: string; readonly createdAt: string }>,
+    obligationRows: Parameters<typeof heldMessageQueueStates>[0],
+    operation: string,
+  ) =>
+    Effect.gen(function* () {
+      const states = new Map(heldMessageQueueStates(obligationRows));
+      let since: string | null = null;
+      for (const row of messageRows) {
+        if (!isHeldMessageId(row.messageId) || states.has(row.messageId)) continue;
+        if (since === null || row.createdAt < since) since = row.createdAt;
+      }
+      if (since === null) return states;
+      const receiptRows = yield* listHeldMessageReceiptRows({ threadId, since }).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            `ProjectionSnapshotQuery.${operation}:listHeldReceipts:query`,
+            `ProjectionSnapshotQuery.${operation}:listHeldReceipts:decodeRows`,
+          ),
+        ),
+      );
+      for (const [messageId, state] of heldMessageReceiptStates(receiptRows)) {
+        if (!states.has(messageId)) states.set(messageId, state);
+      }
+      return states;
+    });
 
   const getThreadTurnStartContextRow = SqlSchema.findOneOption({
     Request: ThreadMessageLookupInput,
@@ -1590,6 +1726,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           plan_markdown AS "planMarkdown",
           implemented_at AS "implementedAt",
           implementation_thread_id AS "implementationThreadId",
+          closed_at AS "closedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_proposed_plans
@@ -1752,6 +1889,23 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     `,
   });
 
+  // The task checklist the plan panel shows is pinned like the task lifecycle
+  // rows above: on a tool-heavy thread the 200-row window is minutes long, and
+  // a list still in force used to vanish from the panel on the next reload.
+  const listLatestThreadTaskListRows = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId }) => sql`
+      SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
+        tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
+      FROM projection_thread_activities
+      WHERE thread_id = ${threadId}
+        AND kind = 'turn.plan.updated'
+      ORDER BY created_at DESC, activity_id DESC
+      LIMIT 1
+    `,
+  });
+
   const getThreadHistoryCountsRow = SqlSchema.findOne({
     Request: ThreadIdLookupInput,
     Result: ThreadHistoryCountsRowSchema,
@@ -1817,11 +1971,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Request: ThreadTaskLookupInput,
     Result: ProjectionTaskTitleRowSchema,
     execute: ({ threadId, taskId }) =>
+      // Pinned: for `kind IN (...)` ordered by created_at the planner picks the
+      // (thread_id, created_at) index and reads every activity the thread has.
+      // node:sqlite is synchronous, so on a 320k-activity thread that froze the
+      // whole server for 13 s per task an orphan sweep looked up (2026-10-14).
       sql`
         SELECT
           kind,
           payload_json AS "payload"
         FROM projection_thread_activities
+          INDEXED BY idx_projection_thread_activities_thread_kind_created_id
         WHERE thread_id = ${threadId}
           AND kind IN ('task.started', 'task.progress')
           AND json_valid(payload_json)
@@ -1884,6 +2043,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE threads.thread_id = ${threadId}
           AND threads.deleted_at IS NULL
           AND threads.archived_at IS NULL
+        LIMIT 1
+      `,
+  });
+
+  // The plan a thread is implementing outlives the turn that carried it, so an
+  // implementation thread keeps its plan in view after its first turn ends.
+  // Rides the partial idx_projection_turns_source_proposed_plan (migration 079).
+  const getThreadSourceProposedPlanRow = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: Schema.Struct({
+      sourceProposedPlanThreadId: ThreadId,
+      sourceProposedPlanId: OrchestrationProposedPlanId,
+    }),
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
+          source_proposed_plan_id AS "sourceProposedPlanId"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND source_proposed_plan_id IS NOT NULL
+          AND source_proposed_plan_thread_id IS NOT NULL
+        ORDER BY requested_at DESC, row_id DESC
         LIMIT 1
       `,
   });
@@ -2109,6 +2291,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   planMarkdown: row.planMarkdown,
                   implementedAt: row.implementedAt,
                   implementationThreadId: row.implementationThreadId,
+                  closedAt: row.closedAt,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                 });
@@ -2596,6 +2779,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       snoozedUntil: row.snoozedUntil,
                       snoozedAt: row.snoozedAt,
                       pendingWork: mapPendingWork(row),
+                      backgroundTasks: mapBackgroundTasks(row),
                       session: sessionByThread.get(row.threadId) ?? null,
                       latestUserMessageAt: row.latestUserMessageAt,
                       hasPendingApprovals: row.pendingApprovalCount > 0,
@@ -2743,6 +2927,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   snoozedUntil: row.snoozedUntil,
                   snoozedAt: row.snoozedAt,
                   pendingWork: mapPendingWork(row),
+                  backgroundTasks: mapBackgroundTasks(row),
                   session: sessionByThread.get(row.threadId) ?? null,
                   latestUserMessageAt: row.latestUserMessageAt,
                   hasPendingApprovals: row.pendingApprovalCount > 0,
@@ -3022,6 +3207,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         snoozedUntil: threadRow.value.snoozedUntil,
         snoozedAt: threadRow.value.snoozedAt,
         pendingWork: mapPendingWork(threadRow.value),
+        backgroundTasks: mapBackgroundTasks(threadRow.value),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
@@ -3029,6 +3215,97 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
       } satisfies OrchestrationThreadShell);
     });
+
+  const getProjectStatisticsRows: NonNullable<
+    ProjectionSnapshotQueryShape["getProjectStatisticsRows"]
+  > = () =>
+    Effect.gen(function* () {
+      const projects = yield* sql<{ readonly projectId: string }>`
+        SELECT project_id AS "projectId"
+        FROM projection_projects
+        WHERE deleted_at IS NULL
+        ORDER BY created_at, project_id
+      `;
+      const threads = yield* sql<ProjectStatisticsThreadRow>`
+        SELECT
+          threads.thread_id AS "threadId",
+          threads.project_id AS "projectId",
+          threads.title AS "title",
+          threads.archived_at AS "archivedAt",
+          threads.updated_at AS "updatedAt",
+          threads.worktree_path AS "worktreePath",
+          COALESCE(storage.activity_bytes, 0) + COALESCE(storage.message_bytes, 0)
+            AS "historyBytes",
+          COALESCE(storage.message_count, 0) AS "messages",
+          (
+            SELECT COUNT(*) FROM projection_turns AS turns
+            WHERE turns.thread_id = threads.thread_id AND turns.turn_id IS NOT NULL
+          ) AS "turns",
+          COALESCE((
+            SELECT SUM(revisions.byte_length)
+            FROM thread_artifacts AS artifacts
+            JOIN thread_artifact_revisions AS revisions
+              ON revisions.artifact_id = artifacts.artifact_id
+            WHERE artifacts.thread_id = threads.thread_id
+          ), 0) AS "artifactBytes"
+        FROM projection_threads AS threads
+        LEFT JOIN projection_thread_storage AS storage ON storage.thread_id = threads.thread_id
+        WHERE threads.deleted_at IS NULL
+      `;
+      // Driven from the thread list so each lookup seeks the
+      // (thread_id, kind) index: one row per turn that reported usage.
+      const usage = yield* sql<ProjectStatisticsUsageRow>`
+        SELECT
+          activities.thread_id AS "threadId",
+          COALESCE(
+            json_extract(activities.payload_json, '$.providerInstanceId'),
+            json_extract(activities.payload_json, '$.provider')
+          ) AS "providerInstanceId",
+          json_extract(activities.payload_json, '$.provider') AS "provider",
+          substr(activities.created_at, 1, 10) AS "day",
+          COUNT(*) AS "turns",
+          SUM(COALESCE(json_extract(activities.payload_json, '$.inputTokens'), 0))
+            AS "inputTokens",
+          SUM(COALESCE(json_extract(activities.payload_json, '$.cachedInputTokens'), 0))
+            AS "cachedInputTokens",
+          SUM(COALESCE(json_extract(activities.payload_json, '$.cacheWriteTokens'), 0))
+            AS "cacheWriteTokens",
+          SUM(COALESCE(json_extract(activities.payload_json, '$.outputTokens'), 0))
+            AS "outputTokens",
+          SUM(COALESCE(json_extract(activities.payload_json, '$.reasoningTokens'), 0))
+            AS "reasoningTokens",
+          SUM(COALESCE(json_extract(activities.payload_json, '$.costUsd'), 0)) AS "costUsd"
+        FROM projection_threads AS threads
+        JOIN projection_thread_activities AS activities
+          ON activities.thread_id = threads.thread_id
+          AND activities.kind = ${TURN_USAGE_ACTIVITY_KIND}
+        WHERE threads.deleted_at IS NULL
+          AND json_valid(activities.payload_json)
+          AND json_type(activities.payload_json, '$.provider') = 'text'
+        GROUP BY activities.thread_id, "providerInstanceId", "provider", "day"
+      `;
+      return {
+        projectIds: projects.map((project) => project.projectId),
+        threads,
+        usage,
+      } satisfies ProjectStatisticsRows;
+    }).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionSnapshotQuery.getProjectStatisticsRows:query"),
+      ),
+    );
+
+  const listOpenBackgroundTasksBeforeQuery: NonNullable<
+    ProjectionSnapshotQueryShape["listOpenBackgroundTasksBefore"]
+  > = (input) =>
+    listOpenBackgroundTasksBefore(sql, input).pipe(
+      Effect.map((tasks) =>
+        tasks.map((task) => ({ threadId: ThreadId.make(task.threadId), taskId: task.taskId })),
+      ),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionSnapshotQuery.listOpenBackgroundTasksBefore:query"),
+      ),
+    );
 
   const getThreadLatestTurnStartContext: NonNullable<
     ProjectionSnapshotQueryShape["getThreadLatestTurnStartContext"]
@@ -3233,6 +3510,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       readonly checkpointLimit?: number;
       /** Snapshot reads only — see {@link dropSupersededToolUpdates}. */
       readonly dropSupersededToolUpdates?: boolean;
+      /**
+       * Snapshot reads only — see {@link heldMessageReceiptStates}. Server
+       * callers act only on "queued", which the obligation already answers.
+       */
+      readonly resolveHeldMessageReceipts?: boolean;
     },
   ) =>
     Effect.gen(function* () {
@@ -3333,6 +3615,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       if (Option.isNone(threadRow)) {
         return Option.none<OrchestrationThread>();
       }
+      const heldQueueStates =
+        options?.resolveHeldMessageReceipts === true
+          ? yield* resolveHeldMessageQueueStates(
+              threadId,
+              messageRows,
+              activeHeldRows,
+              "getThreadDetailById",
+            )
+          : heldMessageQueueStates(activeHeldRows);
 
       const thread = {
         id: threadRow.value.threadId,
@@ -3361,10 +3652,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         snoozedAt: threadRow.value.snoozedAt,
         pendingWork: mapPendingWork(threadRow.value),
         deletedAt: null,
-        messages: stampHeldMessageQueueState(
-          messageRows.map(mapMessageRow),
-          heldMessageQueueStates(activeHeldRows),
-        ),
+        messages: stampHeldMessageQueueState(messageRows.map(mapMessageRow), heldQueueStates),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
         activities:
           options?.dropSupersededToolUpdates === true
@@ -3412,38 +3700,57 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             activityLimit: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
             checkpointLimit: THREAD_DETAIL_SNAPSHOT_CHECKPOINT_LIMIT,
             dropSupersededToolUpdates: true,
+            resolveHeldMessageReceipts: true,
           });
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }
-          const [{ snapshotSequence }, counts, taskRows] = yield* Effect.all([
-            getSnapshotSequence(),
-            getThreadHistoryCountsRow({ threadId }).pipe(
-              Effect.mapError(
-                toPersistenceSqlOrDecodeError(
-                  "ProjectionSnapshotQuery.getThreadDetailSnapshot:getHistoryCounts:query",
-                  "ProjectionSnapshotQuery.getThreadDetailSnapshot:getHistoryCounts:decodeRow",
+          const [{ snapshotSequence }, counts, taskRows, taskListRows, sourcePlanRow] =
+            yield* Effect.all([
+              getSnapshotSequence(),
+              getThreadHistoryCountsRow({ threadId }).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getThreadDetailSnapshot:getHistoryCounts:query",
+                    "ProjectionSnapshotQuery.getThreadDetailSnapshot:getHistoryCounts:decodeRow",
+                  ),
                 ),
               ),
-            ),
-            listThreadTaskLifecycleRows({
-              threadId,
-              since: DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { hours: 24 })),
-            }).pipe(
-              Effect.mapError(
-                toPersistenceSqlOrDecodeError(
-                  "ProjectionSnapshotQuery.getThreadDetailSnapshot:listTasks:query",
-                  "ProjectionSnapshotQuery.getThreadDetailSnapshot:listTasks:decodeRows",
+              listThreadTaskLifecycleRows({
+                threadId,
+                since: DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { hours: 24 })),
+              }).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getThreadDetailSnapshot:listTasks:query",
+                    "ProjectionSnapshotQuery.getThreadDetailSnapshot:listTasks:decodeRows",
+                  ),
                 ),
               ),
-            ),
-          ]);
+              listLatestThreadTaskListRows({ threadId }).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getThreadDetailSnapshot:listTaskList:query",
+                    "ProjectionSnapshotQuery.getThreadDetailSnapshot:listTaskList:decodeRows",
+                  ),
+                ),
+              ),
+              getThreadSourceProposedPlanRow({ threadId }).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getThreadDetailSnapshot:getSourcePlan:query",
+                    "ProjectionSnapshotQuery.getThreadDetailSnapshot:getSourcePlan:decodeRow",
+                  ),
+                ),
+              ),
+            ]);
           const activities = Array.from(
             new Map(
-              [...taskRows.map(mapActivityRow), ...thread.value.activities].map((activity) => [
-                activity.id,
-                activity,
-              ]),
+              [
+                ...taskRows.map(mapActivityRow),
+                ...taskListRows.map(mapActivityRow),
+                ...thread.value.activities,
+              ].map((activity) => [activity.id, activity]),
             ).values(),
           ).sort(
             (left, right) =>
@@ -3457,7 +3764,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           const oldestActivity = thread.value.activities[0];
           return Option.some({
             snapshotSequence,
-            thread: { ...thread.value, activities },
+            thread: {
+              ...thread.value,
+              activities,
+              ...(Option.isSome(sourcePlanRow)
+                ? {
+                    sourceProposedPlan: {
+                      threadId: sourcePlanRow.value.sourceProposedPlanThreadId,
+                      planId: sourcePlanRow.value.sourceProposedPlanId,
+                    },
+                  }
+                : {}),
+            },
             history: {
               totalMessages: counts.totalMessages,
               totalActivities: counts.totalActivities,
@@ -3563,12 +3881,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
           const selectedMessageRows = messageRows.slice(0, limit);
           const selectedActivityRows = activityRows.slice(0, limit);
+          const heldQueueStates = yield* resolveHeldMessageQueueStates(
+            threadId,
+            selectedMessageRows,
+            activeHeldRows,
+            "getThreadHistoryPage",
+          );
           const oldestMessage = selectedMessageRows[selectedMessageRows.length - 1];
           const oldestActivity = selectedActivityRows[selectedActivityRows.length - 1];
           return Option.some({
             messages: stampHeldMessageQueueState(
               selectedMessageRows.toReversed().map(mapMessageRow),
-              heldMessageQueueStates(activeHeldRows),
+              heldQueueStates,
             ),
             activities: trimSnapshotToolRawOutput(
               dropSupersededToolUpdates(selectedActivityRows.toReversed().map(mapActivityRow)),
@@ -3637,6 +3961,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadCheckpointContext,
     getFullThreadDiffContext,
     getThreadShellById,
+    listOpenBackgroundTasksBefore: listOpenBackgroundTasksBeforeQuery,
+    getProjectStatisticsRows,
     getThreadLatestTurnStartContext,
     getThreadTurnStartContext,
     getThreadDeliveredMessageIds,

@@ -9,6 +9,7 @@ import { LoaderCircleIcon, MonitorSmartphoneIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { environmentCatalog } from "~/connection/catalog";
+import { isRemoteDeviceEnvironment } from "~/lib/remoteDevice";
 import { cn } from "~/lib/utils";
 import { useEnvironment, usePrimaryEnvironmentId } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -25,16 +26,9 @@ export function remoteConnectionHeaderAction(input: {
   /** True when this client IS the desktop app — i.e. the machine itself. */
   readonly isDesktopApp: boolean;
 }): "hidden" | "connect-control" | "open-control" {
-  if (input.primaryEnvironmentId === null) return "hidden";
   // The one case remote control makes no sense is controlling the machine you
-  // are sitting at: the desktop app viewing its own environment. A phone or
-  // browser viewing its *primary* environment is still a remote device — that
-  // environment's desktop is somewhere else — so the button must show there.
-  // (This is what previously buried remote control in Settings → Connections
-  // for anyone connected to a single machine.)
-  if (input.activeEnvironmentId === input.primaryEnvironmentId && input.isDesktopApp) {
-    return "hidden";
-  }
+  // are sitting at; see `isRemoteDeviceEnvironment`.
+  if (!isRemoteDeviceEnvironment(input)) return "hidden";
   return input.connectionPhase === "connected" ? "open-control" : "connect-control";
 }
 

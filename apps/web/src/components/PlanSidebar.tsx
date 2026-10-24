@@ -1,4 +1,4 @@
-import { memo, useState, useCallback } from "react";
+import { memo, useState, useCallback, useMemo } from "react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -18,12 +18,12 @@ import {
   RefreshCwIcon,
 } from "lucide-react";
 import { cn } from "~/lib/utils";
-import type { ActivePlanState } from "../session-logic";
-import type { LatestProposedPlanState } from "../session-logic";
+import type { PanelProposedPlan, TaskListState } from "../session-logic";
 import { formatTimestamp } from "../timestampFormat";
 import {
   proposedPlanTitle,
   buildProposedPlanMarkdownFilename,
+  describeProposedPlanStatus,
   normalizePlanMarkdownForExport,
   downloadPlanAsTextFile,
   stripDisplayedPlanMarkdown,
@@ -65,9 +65,14 @@ function stepStatusIcon(status: string): React.ReactNode {
   );
 }
 
+/**
+ * Two different things, kept apart: the proposed plan (a proposal, with what
+ * became of it) and the task list (the agent's progress checklist). Each says
+ * when it is from, so tasks from other work never read as the plan's steps.
+ */
 interface PlanSidebarProps {
-  activePlan: ActivePlanState | null;
-  activeProposedPlan: LatestProposedPlanState | null;
+  taskList: TaskListState | null;
+  proposedPlan: PanelProposedPlan | null;
   label?: string;
   environmentId: EnvironmentId;
   threadRef?: ScopedThreadRef | undefined;
@@ -78,8 +83,8 @@ interface PlanSidebarProps {
 }
 
 const PlanSidebar = memo(function PlanSidebar({
-  activePlan,
-  activeProposedPlan,
+  taskList,
+  proposedPlan,
   label = "Plan",
   environmentId,
   threadRef,
@@ -88,7 +93,11 @@ const PlanSidebar = memo(function PlanSidebar({
   timestampFormat,
   mode = "sidebar",
 }: PlanSidebarProps) {
-  const [proposedPlanExpanded, setProposedPlanExpanded] = useState(false);
+  // Per plan: a plan waiting for approval opens expanded, history collapsed.
+  const [planExpansion, setPlanExpansion] = useState<{
+    readonly planId: string;
+    readonly expanded: boolean;
+  } | null>(null);
   const [isSavingToWorkspace, setIsSavingToWorkspace] = useState(false);
   const [isRefreshingPlan, setIsRefreshingPlan] = useState(false);
   const refreshPlan = useAtomCommand(threadEnvironment.refreshPlan, "plan refresh");
@@ -97,9 +106,28 @@ const PlanSidebar = memo(function PlanSidebar({
   });
   const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "plan" });
 
-  const planMarkdown = activeProposedPlan?.planMarkdown ?? null;
+  const planMarkdown = proposedPlan?.plan.planMarkdown ?? null;
   const displayedPlanMarkdown = planMarkdown ? stripDisplayedPlanMarkdown(planMarkdown) : null;
   const planTitle = planMarkdown ? proposedPlanTitle(planMarkdown) : null;
+  const planStatus = proposedPlan ? describeProposedPlanStatus(proposedPlan.status) : null;
+  const proposedPlanExpanded =
+    proposedPlan !== null &&
+    (planExpansion?.planId === proposedPlan.plan.id
+      ? planExpansion.expanded
+      : proposedPlan.status === "waiting");
+  // Step text is the identity; a repeated step gets its occurrence number.
+  const taskStepKeys = useMemo(() => {
+    const seen = new Map<string, number>();
+    return (taskList?.steps ?? []).map((step) => {
+      const occurrence = seen.get(step.step) ?? 0;
+      seen.set(step.step, occurrence + 1);
+      return occurrence === 0 ? step.step : `${step.step}#${occurrence}`;
+    });
+  }, [taskList]);
+  const toggleProposedPlanExpanded = useCallback(() => {
+    if (!proposedPlan) return;
+    setPlanExpansion({ planId: proposedPlan.plan.id, expanded: !proposedPlanExpanded });
+  }, [proposedPlan, proposedPlanExpanded]);
 
   /**
    * Hand the refresh to the server and return.
@@ -202,11 +230,6 @@ const PlanSidebar = memo(function PlanSidebar({
           >
             {label}
           </Badge>
-          {activePlan ? (
-            <span className="text-[11px] text-muted-foreground/60 tabular-nums">
-              {formatTimestamp(activePlan.createdAt, timestampFormat)}
-            </span>
-          ) : null}
         </div>
         <div className="flex items-center gap-1">
           {threadRef ? (
@@ -256,22 +279,69 @@ const PlanSidebar = memo(function PlanSidebar({
       {/* Content */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="p-3 space-y-4">
-          {/* Explanation */}
-          {activePlan?.explanation ? (
-            <p className="text-[13px] leading-relaxed text-muted-foreground/80">
-              {activePlan.explanation}
-            </p>
+          {/* Proposed plan: the proposal, and what became of it */}
+          {proposedPlan && planMarkdown && planStatus ? (
+            <section className="space-y-2" aria-label="Proposed plan">
+              <div className="flex items-start gap-2">
+                <button
+                  type="button"
+                  className="group flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                  onClick={toggleProposedPlanExpanded}
+                  aria-expanded={proposedPlanExpanded}
+                >
+                  {proposedPlanExpanded ? (
+                    <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground/40" />
+                  ) : (
+                    <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/40" />
+                  )}
+                  <span className="min-w-0 truncate text-[13px] font-medium text-foreground/90 group-hover:text-foreground">
+                    {planTitle ?? "Proposed plan"}
+                  </span>
+                </button>
+                <Badge
+                  variant={planStatus.variant}
+                  size="sm"
+                  className="shrink-0 rounded-md px-1.5 py-0 font-medium"
+                  title={planStatus.detail}
+                >
+                  {planStatus.label}
+                </Badge>
+              </div>
+              <p className="pl-[18px] text-[11px] text-muted-foreground/60 tabular-nums">
+                Proposed {formatTimestamp(proposedPlan.plan.createdAt, timestampFormat)}
+              </p>
+              {proposedPlanExpanded ? (
+                <div className="rounded-lg border border-border/50 bg-background/50 p-3">
+                  <ChatMarkdown
+                    text={displayedPlanMarkdown ?? ""}
+                    cwd={markdownCwd}
+                    threadRef={threadRef}
+                    isStreaming={false}
+                  />
+                </div>
+              ) : null}
+            </section>
           ) : null}
 
-          {/* Plan Steps */}
-          {activePlan && activePlan.steps.length > 0 ? (
-            <div className="space-y-1">
-              <p className="mb-2 text-[10px] font-semibold tracking-widest text-muted-foreground/40 uppercase">
-                Steps
-              </p>
-              {activePlan.steps.map((step) => (
+          {/* Tasks: the agent's progress checklist, separate from any plan */}
+          {taskList && taskList.steps.length > 0 ? (
+            <section className="space-y-1" aria-label="Tasks">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-[10px] font-semibold tracking-widest text-muted-foreground/40 uppercase">
+                  Tasks
+                </p>
+                <span className="text-[11px] text-muted-foreground/60 tabular-nums">
+                  {formatTimestamp(taskList.createdAt, timestampFormat)}
+                </span>
+              </div>
+              {taskList.explanation ? (
+                <p className="pb-1 text-[13px] leading-relaxed text-muted-foreground/80">
+                  {taskList.explanation}
+                </p>
+              ) : null}
+              {taskList.steps.map((step, index) => (
                 <div
-                  key={`${step.status}:${step.step}`}
+                  key={taskStepKeys[index]}
                   className={cn(
                     "flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors duration-200",
                     step.status === "inProgress" && "bg-blue-500/5",
@@ -293,45 +363,15 @@ const PlanSidebar = memo(function PlanSidebar({
                   </p>
                 </div>
               ))}
-            </div>
-          ) : null}
-
-          {/* Proposed Plan Markdown */}
-          {planMarkdown ? (
-            <div className="space-y-2">
-              <button
-                type="button"
-                className="group flex w-full items-center gap-1.5 text-left"
-                onClick={() => setProposedPlanExpanded((v) => !v)}
-              >
-                {proposedPlanExpanded ? (
-                  <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground/40 transition-transform" />
-                ) : (
-                  <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/40 transition-transform" />
-                )}
-                <span className="text-[10px] font-semibold tracking-widest text-muted-foreground/40 uppercase group-hover:text-muted-foreground/60">
-                  {planTitle ?? "Full Plan"}
-                </span>
-              </button>
-              {proposedPlanExpanded ? (
-                <div className="rounded-lg border border-border/50 bg-background/50 p-3">
-                  <ChatMarkdown
-                    text={displayedPlanMarkdown ?? ""}
-                    cwd={markdownCwd}
-                    threadRef={threadRef}
-                    isStreaming={false}
-                  />
-                </div>
-              ) : null}
-            </div>
+            </section>
           ) : null}
 
           {/* Empty state */}
-          {!activePlan && !planMarkdown ? (
+          {!taskList && !planMarkdown ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <p className="text-[13px] text-muted-foreground/40">No active plan yet.</p>
+              <p className="text-[13px] text-muted-foreground/40">No plan or tasks yet.</p>
               <p className="mt-1 text-[11px] text-muted-foreground/30">
-                Plans will appear here when generated.
+                Proposed plans and the agent's task list appear here.
               </p>
             </div>
           ) : null}

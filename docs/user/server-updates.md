@@ -52,8 +52,10 @@ swap - those change across the install and would restart the wrong process.
   authorized that exact artifact and restart.
 
 The tool is available only from a desktop-managed server on macOS or Windows. Verification or
-installer-launch failures leave the running installation unchanged. Installation diagnostics are
-written to `desktop-app-update.log` in the server logs directory.
+installer-launch failures leave the running installation unchanged. On macOS, if the new app's
+server does not answer within about two minutes, the installer stops that launch and the backend
+it started, then restores and relaunches the previous app, so only one copy is left running.
+Installation diagnostics are written to `desktop-app-update.log` in the server logs directory.
 
 For source-hosted servers, build the matching Solla revision on the host and restart the same launch command with the same state directory and connection options. The inherited systemd installer currently fetches upstream packages; see [Background services](./background-service.md).
 

@@ -328,6 +328,16 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   * {
     @apply border-border outline-ring/50;
   }
+  /* No double-tap zoom, anywhere. WebKit resets touch-action at every scroll
+     container, so the `html` rule further down only reaches what does not
+     scroll; inside the transcript, sidebar and lists it falls back to `auto`,
+     which lets iOS zoom the page on a double tap. `manipulation` leaves panning
+     and pinch exactly as they were and removes just that gesture. It is in the
+     base layer so every `touch-*` utility (`touch-none` on gesture surfaces,
+     `touch-auto` on the composer) still wins over it. */
+  * {
+    touch-action: manipulation;
+  }
   :where([data-slot="menu-popup"], [data-slot="select-popup"], [data-slot="popover-popup"]):focus,
   :where(
     [data-slot="menu-popup"],
@@ -355,10 +365,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   @media (min-width: 48rem) {
-    @container sidebar-header (min-width: 13.5rem) {
-      .sidebar-brand {
-        display: flex;
-      }
+    .sidebar-brand {
+      display: flex;
     }
 
     @container sidebar-header (min-width: 15.75rem) {
@@ -646,27 +654,31 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   .chat-composer-glass-shell-with-context::before {
     border-radius: 0;
     /*
-     * One continuous glass layer: a 22px composer joined to a 16px strip,
-     * whose visible sides align with the composer's bottom tangents.
+     * One continuous glass layer: a 22px composer joined to a 16px strip. The
+     * strip is inset 1.375rem per side, so the step-in positions and their
+     * curve controls stay in rem to keep tracking it at non-default interface
+     * font sizes; the composer's 22px top radius and the strip's 16px bottom
+     * radius are px by design.
      */
     clip-path: shape(
       from 0 22px,
       curve to 22px 0 with 0 9.85px / 9.85px 0,
       line to calc(100% - 22px) 0,
       curve to 100% 22px with calc(100% - 9.85px) 0 / 100% 9.85px,
-      line to 100% calc(100% - var(--chat-composer-context-extension) - 22px),
-      curve to calc(100% - 22px) calc(100% - var(--chat-composer-context-extension)) with 100%
-        calc(100% - var(--chat-composer-context-extension) - 9.85px) / calc(100% - 9.85px)
+      line to 100% calc(100% - var(--chat-composer-context-extension) - 1.375rem),
+      curve to calc(100% - 1.375rem) calc(100% - var(--chat-composer-context-extension)) with 100%
+        calc(100% - var(--chat-composer-context-extension) - 0.6156rem) / calc(100% - 0.6156rem)
         calc(100% - var(--chat-composer-context-extension)),
-      line to calc(100% - 22px) calc(100% - 16px),
-      curve to calc(100% - 38px) 100% with calc(100% - 22px) calc(100% - 7.16px) /
-        calc(100% - 29.16px) 100%,
-      line to 38px 100%,
-      curve to 22px calc(100% - 16px) with 29.16px 100% / 22px calc(100% - 7.16px),
-      line to 22px calc(100% - var(--chat-composer-context-extension)),
-      curve to 0 calc(100% - var(--chat-composer-context-extension) - 22px) with 9.85px
+      line to calc(100% - 1.375rem) calc(100% - 16px),
+      curve to calc(100% - 1.375rem - 16px) 100% with calc(100% - 1.375rem) calc(100% - 7.16px) /
+        calc(100% - 1.375rem - 7.16px) 100%,
+      line to calc(1.375rem + 16px) 100%,
+      curve to 1.375rem calc(100% - 16px) with calc(1.375rem + 7.16px) 100% / 1.375rem
+        calc(100% - 7.16px),
+      line to 1.375rem calc(100% - var(--chat-composer-context-extension)),
+      curve to 0 calc(100% - var(--chat-composer-context-extension) - 1.375rem) with 0.6156rem
         calc(100% - var(--chat-composer-context-extension)) / 0
-        calc(100% - var(--chat-composer-context-extension) - 9.85px),
+        calc(100% - var(--chat-composer-context-extension) - 0.6156rem),
       line to 0 22px,
       close
     );
@@ -1255,6 +1267,16 @@ code {
   -webkit-app-region: drag;
 }
 
+/* Electron 44 inherits app-region. Reset children to the initial value so they
+   do not add drag rectangles over fixed controls. Explicit `none` is treated
+   as `no-drag` and breaks titlebar dragging; `initial` emits no rectangle.
+   The base layer lets explicit drag/no-drag utilities take precedence. */
+@layer base {
+  .drag-region > * {
+    -webkit-app-region: initial;
+  }
+}
+
 .drag-region button,
 .drag-region input,
 .drag-region textarea,
@@ -1452,13 +1474,27 @@ label:has(> select#reasoning-effort) select {
 }
 
 .chat-markdown ul {
+  /* Reset for nested uls under a widened ol. --list-gutter is an inherited
+     custom property, so without this a task-list under a multi-digit ordered
+     list would inherit the outer gutter instead of its own default. */
+  --list-gutter: 1.25rem;
   padding-left: 1.25rem;
   list-style-type: disc;
 }
 
+/* --list-gutter defaults to the same 1.25rem as .chat-markdown ul, but
+   ChatMarkdown's `ol` renderer widens it (via inline style) for lists whose
+   widest marker has multiple characters so it isn't clipped by list-style-position:
+   outside painting the marker past the padding box. Reset it here too so a
+   nested ol without its own widened marker doesn't inherit the outer one. */
 .chat-markdown ol {
-  padding-left: 1.25rem;
+  --list-gutter: 1.25rem;
+  padding-left: var(--list-gutter, 1.25rem);
   list-style-type: decimal;
+}
+
+.chat-markdown ol > li::marker {
+  font-variant-numeric: tabular-nums;
 }
 
 .chat-markdown ul ul {
@@ -1487,7 +1523,7 @@ label:has(> select#reasoning-effort) select {
 }
 
 .chat-markdown li.task-list-item input[type="checkbox"] {
-  margin: 0 0.35em 0.15em -1.25rem;
+  margin: 0 0.35em 0.15em calc(-1 * var(--list-gutter, 1.25rem));
   vertical-align: middle;
 }
 
@@ -1555,7 +1591,6 @@ label:has(> select#reasoning-effort) select {
 
 .chat-markdown section[data-footnotes] ol {
   margin: 0;
-  padding-left: 1.25rem;
 }
 
 .chat-markdown section[data-footnotes] li + li {
@@ -1577,6 +1612,8 @@ label:has(> select#reasoning-effort) select {
 .chat-markdown :not(pre) > code {
   border: 1px solid var(--border);
   border-radius: 0.375rem;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
   background: var(--muted);
   padding: 0.1rem 0.35rem;
   color: var(--foreground);
@@ -1620,7 +1657,7 @@ label:has(> select#reasoning-effort) select {
 }
 
 .chat-markdown pre::-webkit-scrollbar {
-  height: 7px;
+  height: var(--app-scrollbar-width);
 }
 
 .chat-markdown pre::-webkit-scrollbar-track {
@@ -1653,9 +1690,7 @@ label:has(> select#reasoning-effort) select {
 .chat-markdown .chat-markdown-codeblock {
   margin: 0.65rem 0;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  background: color-mix(in srgb, var(--muted) 78%, var(--background));
+  border-radius: var(--radius);
 }
 
 .chat-markdown .chat-markdown-codeblock-header {
@@ -1663,10 +1698,8 @@ label:has(> select#reasoning-effort) select {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--muted);
-  padding: 0.25rem 0.375rem 0.25rem 0.7rem;
-  color: var(--muted-foreground);
+  padding: 0.375rem 0.375rem 0 0.75rem;
+  color: color-mix(in srgb, var(--foreground) 72%, transparent);
 }
 
 .chat-markdown .chat-markdown-codeblock-title {
@@ -1679,7 +1712,7 @@ label:has(> select#reasoning-effort) select {
 }
 
 .chat-markdown .chat-markdown-chrome-action {
-  color: var(--muted-foreground);
+  color: color-mix(in srgb, var(--foreground) 72%, transparent);
 }
 
 .chat-markdown .chat-markdown-chrome-action:hover {
@@ -2110,4 +2143,49 @@ label:has(> select#reasoning-effort) select {
 /* App surfaces own pinch gestures; keep native single-finger panning. */
 html {
   touch-action: pan-x pan-y;
+}
+
+/* A compositor-only pulse exists only while a remote click awaits the host. */
+@keyframes remote-click-waiting {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.25);
+  }
+}
+.remote-click-marker {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  color: #3b82f6;
+}
+.remote-click-marker-pulse {
+  position: absolute;
+  inset: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  animation: remote-click-waiting 1s ease-in-out infinite;
+}
+.remote-click-marker-dot {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 1px #0009;
+}
+.remote-click-marker[data-remote-click="failed"] {
+  color: #f87171;
+}
+.remote-click-marker[data-remote-click="failed"] .remote-click-marker-pulse {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .remote-click-marker-pulse {
+    animation: none;
+  }
 }

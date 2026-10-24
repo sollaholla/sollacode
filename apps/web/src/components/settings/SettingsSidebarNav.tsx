@@ -6,6 +6,7 @@ import {
   XIcon,
   AudioLinesIcon,
   BotIcon,
+  FoldersIcon,
   GitBranchIcon,
   KeyboardIcon,
   KeyRoundIcon,
@@ -26,12 +27,13 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "../ui/sidebar";
-import { useNavigateBackWithinApp } from "../navigateBackWithinApp";
+import { useCloseSettings } from "./closeSettings";
 import { searchSettings, type SettingsSearchResult } from "./settingsSearchIndex";
 
 export type SettingsSectionPath =
   | "/settings/general"
   | "/settings/permissions"
+  | "/settings/projects"
   | "/settings/credentials"
   | "/settings/appearance"
   | "/settings/keybindings"
@@ -49,6 +51,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   icon: ComponentType<{ className?: string }>;
 }> = [
   { label: "General", to: "/settings/general", icon: Settings2Icon },
+  { label: "Projects", to: "/settings/projects", icon: FoldersIcon },
   { label: "Credentials", to: "/settings/credentials", icon: KeyRoundIcon },
   { label: "Appearance", to: "/settings/appearance", icon: PaletteIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
@@ -77,6 +80,11 @@ export function visibleSettingsNavItems(): ReadonlyArray<(typeof SETTINGS_NAV_IT
     { label: "Permissions", to: "/settings/permissions", icon: ShieldCheckIcon },
     ...SETTINGS_NAV_ITEMS.slice(1),
   ];
+}
+
+/** A section stays selected on the pages beneath it, such as one project's details. */
+export function isSettingsSectionActive(pathname: string, to: SettingsSectionPath): boolean {
+  return pathname === to || pathname.startsWith(`${to}/`);
 }
 
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {
@@ -109,13 +117,13 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
     },
     [isMobile, navigate, setOpenMobile],
   );
-  const goBack = useNavigateBackWithinApp();
+  const closeSettings = useCloseSettings();
   const handleBackClick = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
     }
-    goBack();
-  }, [goBack, isMobile, setOpenMobile]);
+    closeSettings();
+  }, [closeSettings, isMobile, setOpenMobile]);
 
   return (
     <>
@@ -181,7 +189,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
           <SidebarMenu>
             {visibleSettingsNavItems().map((item) => {
               const Icon = item.icon;
-              const isActive = pathname === item.to;
+              const isActive = isSettingsSectionActive(pathname, item.to);
               return (
                 <SidebarMenuItem key={item.to}>
                   <SidebarMenuButton

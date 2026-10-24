@@ -1,9 +1,12 @@
 import { PendingModelSelections } from "@t3tools/client-runtime/state/model-selection-sync";
 import { isResumePrompt } from "@t3tools/shared/resumePrompt";
 import { HELD_MESSAGE_PREFIX } from "@t3tools/shared/heldMessages";
+import { buildPlanImplementationPrompt, waitingProposedPlan } from "@t3tools/shared/proposedPlans";
+import { isLatestTurnSettled } from "../features/threads/threadPresentation";
 import {
   isThreadSessionWorking,
   canResumeFailedThreadSession,
+  liveBackgroundTasks,
   runResumeIncompleteTurn,
 } from "@t3tools/client-runtime/state/thread-activity";
 import { useAtomValue } from "@effect/atom-react";
@@ -15,6 +18,7 @@ import {
   type EnvironmentId,
   type ModelSelection,
   type OrchestrationMessage,
+  type OrchestrationProposedPlan,
   type OrchestrationThreadActivity,
   type OrchestrationThreadHistoryWindow,
   type ProviderInteractionMode,
@@ -321,6 +325,14 @@ export function useThreadComposerState() {
     );
   }, [selectedThreadDetail, selectedThreadSessionActivity, selectedThreadShell]);
 
+  // The turn settled but the tasks it started are still running: the feed
+  // keeps a working row naming them rather than reading as done.
+  const backgroundWork = useMemo(
+    () =>
+      activeWorkStartedAt === null ? liveBackgroundTasks(selectedThreadShell, Date.now()) : null,
+    [activeWorkStartedAt, selectedThreadShell],
+  );
+
   const activeThreadBusy = isThreadSessionWorking(selectedThread);
   const serverQueuedMessageIds = useMemo(
     () =>
@@ -537,6 +549,104 @@ export function useThreadComposerState() {
     }
   }, [onPromoteQueuedMessages, selectedThreadDetail, selectedThreadShell]);
 
+  // The plan this thread is waiting on: its newest plan, still open, once the
+  // turn that proposed it has settled. Rule: @t3tools/shared/proposedPlans.
+  const pendingProposedPlan = useMemo(() => {
+    if (
+      !selectedThreadDetail ||
+      !isLatestTurnSettled(selectedThreadDetail.latestTurn, selectedThreadDetail.session)
+    ) {
+      return null;
+    }
+    return waitingProposedPlan(selectedThreadDetail.proposedPlans);
+  }, [selectedThreadDetail]);
+  const implementInFlightRef = useRef(false);
+  const [isImplementingProposedPlan, setIsImplementingProposedPlan] = useState(false);
+  // Same message, mode, and plan reference as the web Implement button, so the
+  // server marks exactly this plan implemented. Agent stays Agent.
+  const onImplementProposedPlan = useCallback(async () => {
+    const plan = pendingProposedPlan;
+    if (!selectedThreadShell || !selectedThreadDetail || !plan || implementInFlightRef.current) {
+      return;
+    }
+    const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
+    const draft = getComposerDraftSnapshot(threadKey);
+    const implementationMode =
+      (draft.interactionMode ?? selectedThreadDetail.interactionMode) === "agent"
+        ? "agent"
+        : "default";
+    const metadata = makeQueuedMessageMetadata();
+    implementInFlightRef.current = true;
+    setIsImplementingProposedPlan(true);
+    try {
+      await enqueueThreadOutboxMessage({
+        environmentId: selectedThreadShell.environmentId,
+        threadId: selectedThreadShell.id,
+        messageId: MessageId.make(metadata.messageId),
+        commandId: CommandId.make(metadata.commandId),
+        text: buildPlanImplementationPrompt(plan.planMarkdown),
+        attachments: [],
+        modelSelection: draft.modelSelection ?? selectedThreadDetail.modelSelection,
+        runtimeMode: draft.runtimeMode ?? selectedThreadDetail.runtimeMode,
+        interactionMode: implementationMode,
+        sourceProposedPlanId: plan.id,
+        createdAt: metadata.createdAt,
+      });
+      updateComposerDraftSettings(threadKey, { interactionMode: implementationMode });
+    } catch (error) {
+      setPendingConnectionError(
+        error instanceof Error ? error.message : "Could not start implementing the plan.",
+      );
+    } finally {
+      implementInFlightRef.current = false;
+      setIsImplementingProposedPlan(false);
+    }
+  }, [pendingProposedPlan, selectedThreadDetail, selectedThreadShell]);
+
+  const closeProposedPlanCommand = useAtomCommand(
+    threadEnvironment.closeProposedPlan,
+    "plan close",
+  );
+  const reopenProposedPlanCommand = useAtomCommand(
+    threadEnvironment.reopenProposedPlan,
+    "plan reopen",
+  );
+  // The plan just closed here, kept so the phone can offer Reopen: it shows no
+  // plan history, and undoing a slip should not need another device.
+  const [closedProposedPlan, setClosedProposedPlan] = useState<{
+    readonly threadKey: string;
+    readonly plan: OrchestrationProposedPlan;
+  } | null>(null);
+  const recentlyClosedProposedPlan =
+    pendingProposedPlan === null && closedProposedPlan?.threadKey === selectedThreadKey
+      ? closedProposedPlan.plan
+      : null;
+  // Sets the plan aside without sending the agent anything, for a plan the
+  // person will not answer.
+  const onCloseProposedPlan = useCallback(async () => {
+    const plan = pendingProposedPlan;
+    if (!selectedThreadShell || !plan) return;
+    const result = await closeProposedPlanCommand({
+      environmentId: selectedThreadShell.environmentId,
+      input: { threadId: selectedThreadShell.id, planId: plan.id },
+    });
+    if (result._tag === "Success") {
+      setClosedProposedPlan({
+        threadKey: scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id),
+        plan,
+      });
+    }
+  }, [closeProposedPlanCommand, pendingProposedPlan, selectedThreadShell]);
+  const onReopenProposedPlan = useCallback(async () => {
+    const plan = recentlyClosedProposedPlan;
+    if (!selectedThreadShell || !plan) return;
+    const result = await reopenProposedPlanCommand({
+      environmentId: selectedThreadShell.environmentId,
+      input: { threadId: selectedThreadShell.id, planId: plan.id },
+    });
+    if (result._tag === "Success") setClosedProposedPlan(null);
+  }, [recentlyClosedProposedPlan, reopenProposedPlanCommand, selectedThreadShell]);
+
   const onChangeDraftMessage = useCallback(
     (value: string) => {
       if (!selectedThreadShell) {
@@ -690,6 +800,7 @@ export function useThreadComposerState() {
     composerFocusRequest,
     onConsumeComposerFocusRequest,
     activeWorkStartedAt,
+    backgroundWork,
     draftMessage,
     draftAttachments,
     modelSelection,
@@ -702,6 +813,12 @@ export function useThreadComposerState() {
     onNativePasteImages,
     onRemoveDraftImage,
     onSendMessage,
+    pendingProposedPlan,
+    onImplementProposedPlan,
+    isImplementingProposedPlan,
+    onCloseProposedPlan,
+    recentlyClosedProposedPlan,
+    onReopenProposedPlan,
     onResumeSession,
     isResumingSession: isResumingSession || queuedResume,
     onPromoteQueuedMessages,

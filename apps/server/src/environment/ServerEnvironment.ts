@@ -143,6 +143,7 @@ export const make = Effect.gen(function* () {
       threadSettlement: true,
       threadSnooze: true,
       threadSideChats: true,
+      archivedThreadBulkDelete: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
     },
   };

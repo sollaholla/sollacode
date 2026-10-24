@@ -5,7 +5,12 @@ import { WebView } from "react-native-webview";
 import { AppText as Text } from "../../components/AppText";
 import { useEnvironments } from "../../state/environments";
 import { usePreparedConnection } from "../../state/session";
-import { buildOrchestratorUrl, isSameEnvironmentOrigin } from "./orchestratorUrl";
+import {
+  buildOrchestratorUrl,
+  isSameEnvironmentOrigin,
+  LIVE_INSPECTOR_ROUTE_PATH,
+  ORCHESTRATOR_ROUTE_PATH,
+} from "./orchestratorUrl";
 
 /**
  * The orchestrator, full screen, on the phone.
@@ -18,6 +23,35 @@ import { buildOrchestratorUrl, isSameEnvironmentOrigin } from "./orchestratorUrl
  * audio on the phone, which is what makes it usable on a walk with headphones.
  */
 export function OrchestratorRouteScreen() {
+  return (
+    <EnvironmentWebScreen
+      routePath={ORCHESTRATOR_ROUTE_PATH}
+      query=""
+      notConnected="Connect to a Solla Code environment to talk to the orchestrator from here."
+    />
+  );
+}
+
+/**
+ * The Live Inspector, full screen: every thread's work as it happens, with the
+ * orchestrator a chat button away. `embedded=1` hands closing and opening
+ * threads to this native screen rather than the page.
+ */
+export function LiveInspectorRouteScreen() {
+  return (
+    <EnvironmentWebScreen
+      routePath={LIVE_INSPECTOR_ROUTE_PATH}
+      query="embedded=1"
+      notConnected="Connect to a Solla Code environment to watch your threads from here."
+    />
+  );
+}
+
+function EnvironmentWebScreen(props: {
+  readonly routePath: string;
+  readonly query: string;
+  readonly notConnected: string;
+}) {
   // The first connected environment: on a phone there is one Mac being driven,
   // and making the user pick before they can talk defeats the point.
   const { environments } = useEnvironments();
@@ -25,22 +59,23 @@ export function OrchestratorRouteScreen() {
   const preparedConnection = usePreparedConnection(environmentId);
   const httpBaseUrl =
     preparedConnection._tag === "Some" ? preparedConnection.value.httpBaseUrl : null;
-  const url = useMemo(() => buildOrchestratorUrl(httpBaseUrl), [httpBaseUrl]);
+  const source = useMemo(() => {
+    const uri = buildOrchestratorUrl(httpBaseUrl, props.routePath, props.query);
+    return uri === null ? null : { uri };
+  }, [httpBaseUrl, props.query, props.routePath]);
 
-  if (url === null) {
+  if (source === null) {
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyTitle}>Not connected</Text>
-        <Text style={styles.emptyBody}>
-          Connect to a Solla Code environment to talk to the orchestrator from here.
-        </Text>
+        <Text style={styles.emptyBody}>{props.notConnected}</Text>
       </View>
     );
   }
 
   return (
     <WebView
-      source={{ uri: url }}
+      source={source}
       style={styles.web}
       // The voice session starts audio without a further gesture once the user
       // taps the orb, and inline playback keeps it out of the fullscreen video

@@ -10,6 +10,7 @@ import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Schema from "effect/Schema";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -34,7 +35,9 @@ import {
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
 import {
+  GROK_NOT_SIGNED_IN_MESSAGE,
   grokReasoningEffortLevelsFromModelMeta,
+  isGrokAuthenticateFailure,
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
@@ -196,6 +199,7 @@ type GrokAcpDiscovery = {
 const discoverGrokModelsViaAcp = (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  authenticateTimeout?: Duration.Input,
 ) =>
   Effect.gen(function* () {
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -205,6 +209,7 @@ const discoverGrokModelsViaAcp = (
       childProcessSpawner,
       cwd: process.cwd(),
       clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
+      ...(authenticateTimeout !== undefined ? { authenticateTimeout } : {}),
       // Health checks must not call session/new. Grok waits for the user's
       // configured MCP servers there (npx plugins included), which routinely
       // exceeds the probe budget and used to mark a working CLI as broken.
@@ -246,7 +251,10 @@ const runGrokVersionCommand = (
 export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(function* (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
-  options?: { readonly acpDiscoveryTimeoutMs?: number },
+  options?: {
+    readonly acpDiscoveryTimeoutMs?: number;
+    readonly authenticateTimeout?: Duration.Input;
+  },
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -339,14 +347,16 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
-  const discoveryExit = yield* discoverGrokModelsViaAcp(grokSettings, environment).pipe(
-    Effect.timeoutOption(acpDiscoveryTimeoutMs),
-    Effect.exit,
-  );
+  const discoveryExit = yield* discoverGrokModelsViaAcp(
+    grokSettings,
+    environment,
+    options?.authenticateTimeout,
+  ).pipe(Effect.timeoutOption(acpDiscoveryTimeoutMs), Effect.exit);
   if (Exit.isFailure(discoveryExit)) {
     yield* Effect.logWarning("Grok ACP model discovery failed", {
       errorTag: causeErrorTag(discoveryExit.cause),
     });
+    const signInNeeded = isGrokAuthenticateFailure(discoveryExit.cause);
     return buildServerProvider({
       presentation: GROK_PRESENTATION,
       enabled: grokSettings.enabled,
@@ -356,8 +366,10 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
         installed: true,
         version,
         status: "error",
-        auth: { status: "unknown" },
-        message: "Grok CLI is installed but ACP startup failed. Check server logs for details.",
+        auth: { status: signInNeeded ? "unauthenticated" : "unknown" },
+        message: signInNeeded
+          ? GROK_NOT_SIGNED_IN_MESSAGE
+          : "Grok CLI is installed but ACP startup failed. Check server logs for details.",
       },
     });
   }

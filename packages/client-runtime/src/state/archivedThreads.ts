@@ -3,7 +3,7 @@ import {
   rememberThreadShells,
 } from "../operations/deferredThreadCommandState.ts";
 import type { DeferredThreadCommandEntry } from "../platform/persistence.ts";
-import { EnvironmentId, type OrchestrationShellSnapshot } from "@t3tools/contracts";
+import { EnvironmentId, type OrchestrationShellSnapshot, type ThreadId } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
@@ -19,6 +19,32 @@ export interface ArchivedThreadSnapshotsState {
   readonly snapshots: ReadonlyArray<ArchivedSnapshotEntry>;
   readonly error: string | null;
   readonly isLoading: boolean;
+}
+
+/** One environment's share of "Delete all archived chats". */
+export interface ArchivedThreadCleanupGroup {
+  readonly environmentId: EnvironmentId;
+  readonly threads: ReadonlyArray<{ readonly threadId: ThreadId; readonly archivedAt: string }>;
+  /** The newest archive time shown, so a chat archived after that is left alone. */
+  readonly archivedBefore: string;
+}
+
+export function planArchivedThreadCleanup(
+  snapshots: ReadonlyArray<ArchivedSnapshotEntry>,
+): ReadonlyArray<ArchivedThreadCleanupGroup> {
+  return snapshots.flatMap(({ environmentId, snapshot }) => {
+    const threads = snapshot.threads.flatMap((thread) =>
+      thread.archivedAt === null ? [] : [{ threadId: thread.id, archivedAt: thread.archivedAt }],
+    );
+    const newest = threads.reduce<string | null>(
+      (latest, thread) =>
+        latest === null || Date.parse(thread.archivedAt) > Date.parse(latest)
+          ? thread.archivedAt
+          : latest,
+      null,
+    );
+    return newest === null ? [] : [{ environmentId, threads, archivedBefore: newest }];
+  });
 }
 
 const ARCHIVED_THREADS_ENVIRONMENT_KEY_SEPARATOR = "\u001f";

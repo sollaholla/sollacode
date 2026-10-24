@@ -1,3 +1,9 @@
+import { messageImageId } from "@t3tools/client-runtime/state/thread-images";
+import {
+  collectWorkLogImages,
+  workLogImageId,
+} from "@t3tools/client-runtime/state/work-log-images";
+import { CollapsedWorkLogImages } from "./CollapsedWorkLogImages";
 import { Link } from "@tanstack/react-router";
 import type { TurnFileReference } from "@t3tools/client-runtime/state/turn-file-references";
 import { collapseSenderSideChats } from "../../lib/senderThreadNavigation";
@@ -99,7 +105,9 @@ import {
 } from "@t3tools/shared/previewComputerControl";
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
-import { ProposedPlanCard } from "./ProposedPlanCard";
+import { timelineImagePreview } from "./timelineImageGallery";
+import { ProposedPlanCard, type ProposedPlanImplementTarget } from "./ProposedPlanCard";
+import type { ProposedPlanStatus } from "@t3tools/shared/proposedPlans";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import { MessageCopyButton } from "./MessageCopyButton";
@@ -227,6 +235,11 @@ interface TimelineRowSharedState {
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  /**
+   * Opens an image by its id among every image the conversation shows, so the
+   * viewer can move on to the others; `fallback` shows it alone if it isn't one.
+   */
+  onOpenTimelineImage: (imageId: string, fallback: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string) => void;
@@ -237,6 +250,11 @@ interface TimelineRowSharedState {
   onResumeIncompleteTurn: () => void;
   isResumeIncompleteTurnBusy: boolean;
   isResumeIncompleteTurnDisabled: boolean;
+  /** What became of each proposed plan, by id; a thread can hold many. */
+  proposedPlanStatuses: ReadonlyMap<string, ProposedPlanStatus>;
+  /** Plans the timeline draws as cards, left out of the messages that carried them. */
+  proposedPlanMarkdowns: ReadonlySet<string>;
+  onImplementProposedPlan: ((planId: string, target: ProposedPlanImplementTarget) => void) | null;
 }
 
 interface TimelineRowActivityState {
@@ -257,6 +275,8 @@ const EMPTY_TIMELINE_SLASH_COMMANDS: ReadonlyArray<ServerProviderSlashCommand> =
 // Stable identity: a fresh Set here would rebuild the row context every render.
 const EMPTY_DELIVERED_MESSAGE_IDS: ReadonlySet<string> = new Set<string>();
 const noopSendAgain = (_messageId: MessageId) => {};
+const EMPTY_PROPOSED_PLAN_STATUSES: ReadonlyMap<string, ProposedPlanStatus> = new Map();
+const EMPTY_PROPOSED_PLAN_MARKDOWNS: ReadonlySet<string> = new Set();
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -324,6 +344,11 @@ interface MessagesTimelineProps {
   olderHistoryMessageCount?: number;
   olderHistoryLoading?: boolean;
   onLoadOlderHistory?: () => void;
+  proposedPlanStatuses?: ReadonlyMap<string, ProposedPlanStatus>;
+  /** Each plan's trimmed markdown. Must keep a stable identity, like the statuses. */
+  proposedPlanMarkdowns?: ReadonlySet<string>;
+  /** Must keep a stable identity: it reaches every row through shared state. */
+  onImplementProposedPlan?: (planId: string, target: ProposedPlanImplementTarget) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +409,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   olderHistoryMessageCount = 0,
   olderHistoryLoading = false,
   onLoadOlderHistory,
+  proposedPlanStatuses = EMPTY_PROPOSED_PLAN_STATUSES,
+  proposedPlanMarkdowns = EMPTY_PROPOSED_PLAN_MARKDOWNS,
+  onImplementProposedPlan,
 }: MessagesTimelineProps) {
   const drawDistance = resolveTimelineDrawDistance(
     typeof window !== "undefined" && window.desktopBridge !== undefined,
@@ -1039,6 +1067,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // fresh object here reached every message's markdown as a "new" thread and
   // remounted its DOM, which is what wiped a text selection on mouse-up.
   const threadRef = useMemo(() => parseScopedThreadKey(routeThreadKey), [routeThreadKey]);
+  // Read when an image is opened rather than on every render: the gallery is
+  // built from the whole conversation, which changes with each streamed event.
+  const timelineEntriesRef = useRef(timelineEntries);
+  useLayoutEffect(() => {
+    timelineEntriesRef.current = timelineEntries;
+  }, [timelineEntries]);
+  const onOpenTimelineImage = useCallback(
+    (imageId: string, fallback: ExpandedImagePreview) =>
+      onImageExpand(
+        timelineImagePreview(
+          timelineEntriesRef.current,
+          { environmentId: activeThreadEnvironmentId, threadId: threadRef?.threadId ?? null },
+          imageId,
+          fallback,
+        ),
+      ),
+    [activeThreadEnvironmentId, onImageExpand, threadRef],
+  );
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
       turnFileReferences,
@@ -1061,6 +1107,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
+      onOpenTimelineImage,
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
@@ -1071,6 +1118,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onResumeIncompleteTurn,
       isResumeIncompleteTurnBusy,
       isResumeIncompleteTurnDisabled,
+      proposedPlanStatuses,
+      proposedPlanMarkdowns,
+      onImplementProposedPlan: onImplementProposedPlan ?? null,
     }),
     [
       turnFileReferences,
@@ -1093,6 +1143,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
+      onOpenTimelineImage,
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
@@ -1103,6 +1154,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onResumeIncompleteTurn,
       isResumeIncompleteTurnBusy,
       isResumeIncompleteTurnDisabled,
+      proposedPlanStatuses,
+      proposedPlanMarkdowns,
+      onImplementProposedPlan,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -1758,12 +1812,18 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       <div
         className="flex items-center gap-3 py-1"
         role="separator"
-        aria-label={`Settings updated: ${settingsUpdate.description}`}
+        aria-label={`Settings updated: ${settingsUpdate.description}${row.settingsUpdateCompleted ? ". Switch complete" : ". Applying settings"}`}
       >
         <div className="h-px flex-1 bg-border/70" />
         <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/60 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
           <SlidersHorizontalIcon className="size-3" aria-hidden />
           {settingsUpdate.description}
+          {row.settingsUpdateCompleted ? (
+            <CheckIcon
+              className="size-3 text-emerald-600 dark:text-emerald-400"
+              aria-label="Switch complete"
+            />
+          ) : null}
         </span>
         <div className="h-px flex-1 bg-border/70" />
       </div>
@@ -1916,7 +1976,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                     onClick={() => {
                       const preview = buildExpandedImagePreview(regularImages, image.id);
                       if (!preview) return;
-                      ctx.onImageExpand(preview);
+                      ctx.onOpenTimelineImage(messageImageId(image.id), preview);
                     }}
                   >
                     <img
@@ -2156,7 +2216,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText =
-    visibleAssistantMessageText(row.message.text) ||
+    visibleAssistantMessageText(row.message.text, ctx.proposedPlanMarkdowns) ||
     (row.message.streaming ? "" : "(empty response)");
   const stopSignoff = row.message.streaming
     ? { hasStop: false, text: messageText }
@@ -2260,10 +2320,12 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
 }
 
 function AssistantCopyButton({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
   const assistantCopyState = resolveAssistantMessageCopyState({
     text: row.message.text ?? null,
     showCopyButton: row.showAssistantCopyButton,
     streaming: row.assistantCopyStreaming,
+    shownPlanMarkdowns: ctx.proposedPlanMarkdowns,
   });
 
   if (!assistantCopyState.visible) {
@@ -2279,41 +2341,38 @@ function ProposedPlanTimelineRow({
   row: Extract<TimelineRow, { kind: "proposed-plan" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const { isWorking } = use(TimelineRowActivityCtx);
+  const planId = row.proposedPlan.id;
+  const implement = ctx.onImplementProposedPlan;
+  const onImplement = useMemo(
+    () =>
+      implement === null
+        ? undefined
+        : (target: ProposedPlanImplementTarget) => implement(planId, target),
+    [implement, planId],
+  );
 
   return (
     <div className="min-w-0 px-1 py-0.5">
       <ProposedPlanCard
+        planId={planId}
         planMarkdown={row.proposedPlan.planMarkdown}
         environmentId={ctx.activeThreadEnvironmentId}
         threadRef={ctx.threadRef ?? undefined}
         cwd={ctx.markdownCwd}
         workspaceRoot={ctx.workspaceRoot}
+        status={ctx.proposedPlanStatuses.get(planId) ?? null}
+        onImplement={onImplement}
+        implementDisabled={isWorking}
       />
     </div>
   );
 }
 
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { workingStatusLabel, environmentUnreachable } = use(TimelineRowActivityCtx);
-  // While the host is unreachable this thread's state is last-known, not live:
-  // the turn may have finished, failed, or still be going, and there is no way
-  // to find out or to stop it from here. Animating a pulse and counting the
-  // seconds up claims live progress we cannot observe, so the row goes static
-  // and says what is actually true.
-  if (environmentUnreachable) {
-    return (
-      <div className="py-0.5 pl-1.5">
-        <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/50">
-          <span className="inline-flex items-center gap-[3px]">
-            <span className="h-1 w-1 rounded-full bg-muted-foreground/25" />
-            <span className="h-1 w-1 rounded-full bg-muted-foreground/25" />
-            <span className="h-1 w-1 rounded-full bg-muted-foreground/25" />
-          </span>
-          <span>Was working when the host went offline — reconnecting…</span>
-        </div>
-      </div>
-    );
-  }
+  const { workingStatusLabel } = use(TimelineRowActivityCtx);
+  // The local clock keeps running from the last observed start time. Connection
+  // state belongs to the Wi-Fi chip; fresh host data settles this row on reconnect.
   return (
     <div className="py-0.5 pl-1">
       <div className="flex items-center gap-2 pt-1 text-[12px] text-muted-foreground tabular-nums">
@@ -2461,7 +2520,7 @@ function WorkGroupToggleTimelineRow({
       : "log entries";
 
   return (
-    <div className="flex items-center py-0.5">
+    <div className="min-w-0 py-0.5">
       <button
         type="button"
         className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--line)] bg-surface-row px-3 text-left text-[12px] font-medium leading-5 text-foreground/85 transition-colors duration-150 hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
@@ -2484,6 +2543,14 @@ function WorkGroupToggleTimelineRow({
           aria-hidden
         />
       </button>
+      {!row.expanded && row.images.length > 0 ? (
+        <CollapsedWorkLogImages
+          images={row.images}
+          environmentId={ctx.activeThreadEnvironmentId}
+          threadId={ctx.threadRef?.threadId ?? null}
+          onImageOpen={ctx.onOpenTimelineImage}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2628,7 +2695,7 @@ function UserMessagePreviewAnnotationCard(props: {
           onClick={() => {
             if (!props.image) return;
             const preview = buildExpandedImagePreview([props.image], props.image.id);
-            if (preview) ctx.onImageExpand(preview);
+            if (preview) ctx.onOpenTimelineImage(messageImageId(props.image.id), preview);
           }}
         >
           <img
@@ -3259,6 +3326,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 }) {
   const { workEntry, workspaceRoot } = props;
   const activity = use(TimelineRowActivityCtx);
+  const ctx = use(TimelineRowCtx);
+  const images = useMemo(() => collectWorkLogImages([workEntry]), [workEntry]);
   const [expanded, setExpanded] = useState(false);
   const isInlineReasoning =
     workEntry.sourceActivityKind === "reasoning.updated" &&
@@ -3288,7 +3357,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : rawPreview;
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
-  const canExpand = expandedBody !== null;
+  const canExpand = expandedBody !== null || images.length > 0;
   const showFailedIndicator = workEntryIndicatesToolFailure(workEntry);
   const showDestructiveRowStyle =
     showFailedIndicator &&
@@ -3325,7 +3394,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         "aria-label": displayText,
         onClick: () => setExpanded((v) => !v),
         onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
-          if (e.key === "Enter" || e.key === " ") {
+          if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
             setExpanded((v) => !v);
           }
@@ -3433,13 +3502,31 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           </div>
         </div>
       </div>
-      {workEntry.readImagePath ? (
+      {!expanded && images.length > 0 ? (
+        <div className="ms-7 min-w-0">
+          <CollapsedWorkLogImages
+            images={images}
+            environmentId={ctx.activeThreadEnvironmentId}
+            threadId={ctx.threadRef?.threadId ?? null}
+            onImageOpen={ctx.onOpenTimelineImage}
+          />
+        </div>
+      ) : null}
+      {expanded && workEntry.readImagePath ? (
         <ToolReadImagePreview
           path={workEntry.readImagePath}
           revision={workEntry.id}
           sourceActivityId={workEntry.readImageSourceActivityId ?? workEntry.id}
           inlineSrc={workEntry.readImageInlineSrc}
           workspaceRoot={workspaceRoot}
+        />
+      ) : null}
+      {expanded && workEntry.snapshotAttachmentId ? (
+        <ToolSnapshotAttachmentPreview attachmentId={workEntry.snapshotAttachmentId} />
+      ) : expanded && workEntry.snapshotImageSrc ? (
+        <ToolSnapshotImagePreview
+          src={workEntry.snapshotImageSrc}
+          imageId={workLogImageId.stored(workEntry.id)}
         />
       ) : null}
       {expanded && canExpand && expandedBody ? (
@@ -3496,7 +3583,9 @@ function TokenOptimizerPage(props: {
 
   useEffect(() => setFailedUrl(null), [previewUrl]);
 
-  const canOpen = previewUrl !== null && !failed;
+  // A page whose picture is gone or undecodable leaves the grid.
+  if (failed) return null;
+  const canOpen = previewUrl !== null;
   return (
     <button
       type="button"
@@ -3505,7 +3594,7 @@ function TokenOptimizerPage(props: {
       onClick={(event) => {
         event.stopPropagation();
         if (!canOpen || previewUrl === null) return;
-        ctx.onImageExpand({
+        ctx.onOpenTimelineImage(workLogImageId.attachment(props.attachment.id), {
           images: [{ src: previewUrl, name: props.attachment.name }],
           index: 0,
         });
@@ -3523,8 +3612,6 @@ function TokenOptimizerPage(props: {
             decoding="async"
             onError={() => setFailedUrl(previewUrl)}
           />
-        ) : failed ? (
-          <span className="px-3 text-center text-[11px]">Optimized page preview unavailable.</span>
         ) : (
           <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading optimized page" />
         )}
@@ -3533,6 +3620,74 @@ function TokenOptimizerPage(props: {
         {props.attachment.name}
       </span>
     </button>
+  );
+}
+
+/** A snapshot stored as an attachment: fetched only when its row is opened. */
+function ToolSnapshotAttachmentPreview(props: { readonly attachmentId: string }) {
+  const ctx = use(TimelineRowCtx);
+  const resource = useMemo(
+    () => ({ _tag: "attachment" as const, attachmentId: props.attachmentId }),
+    [props.attachmentId],
+  );
+  const asset = useAssetUrlState(ctx.activeThreadEnvironmentId, resource);
+  if (asset._tag === "Success") {
+    return (
+      <ToolSnapshotImagePreview
+        src={asset.url}
+        imageId={workLogImageId.attachment(props.attachmentId)}
+      />
+    );
+  }
+  // Its picture is no longer stored: nothing to show.
+  if (asset._tag === "Failure") return null;
+  return (
+    <div
+      className="mt-1 ms-7 flex h-48 max-w-xl items-center justify-center rounded-lg border border-border bg-background/55 px-4 py-3 text-center text-[11px] text-muted-foreground sm:h-64"
+      onClick={stopRowToggle}
+      onPointerDown={stopRowToggle}
+    >
+      <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading snapshot preview" />
+    </div>
+  );
+}
+
+/** The page a browser snapshot captured. */
+function ToolSnapshotImagePreview(props: { readonly src: string; readonly imageId: string }) {
+  const ctx = use(TimelineRowCtx);
+  const [failed, setFailed] = useState(false);
+  // A stored picture that can't be decoded shows nothing.
+  if (failed) return null;
+  return (
+    <div
+      className="mt-1 ms-7 max-w-xl cursor-default overflow-hidden rounded-lg border border-border bg-background/55"
+      aria-label="Browser snapshot preview"
+      onClick={stopRowToggle}
+      onPointerDown={stopRowToggle}
+    >
+      <button
+        type="button"
+        className="block h-48 w-full cursor-zoom-in bg-black/10 sm:h-64"
+        aria-label="Open browser snapshot"
+        onClick={(event) => {
+          event.stopPropagation();
+          ctx.onOpenTimelineImage(props.imageId, {
+            images: [{ src: props.src, name: "Browser snapshot" }],
+            index: 0,
+          });
+        }}
+        onPointerDown={stopRowToggle}
+      >
+        <img
+          src={props.src}
+          alt="Browser snapshot"
+          className="block size-full object-contain"
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailed(true)}
+        />
+      </button>
+    </div>
   );
 }
 
@@ -3760,6 +3915,10 @@ function ToolReadImagePreviewWithThread(props: {
     ],
   );
 
+  // Nothing readable at the path and no copy kept: show nothing rather than
+  // a frame announcing an image that isn't there.
+  if (failed) return null;
+
   return (
     <div
       className="mt-1 ms-7 max-w-xl cursor-default overflow-hidden rounded-lg border border-border bg-background/55"
@@ -3774,7 +3933,7 @@ function ToolReadImagePreviewWithThread(props: {
           aria-label={`Open image preview: ${displayPath}`}
           onClick={(event) => {
             event.stopPropagation();
-            ctx.onImageExpand({
+            ctx.onOpenTimelineImage(workLogImageId.file(props.sourceActivityId, props.path), {
               images: [{ src: previewSrc, name: displayPath }],
               index: 0,
             });
@@ -3790,11 +3949,6 @@ function ToolReadImagePreviewWithThread(props: {
             onError={() => markSrcFailed(previewSrc)}
           />
         </button>
-      ) : failed ? (
-        <div className="flex h-48 items-center justify-center px-4 py-3 text-center text-[11px] text-muted-foreground sm:h-64">
-          Image preview unavailable. Nothing readable is at this path now, and the tool result kept
-          no copy of the image.
-        </div>
       ) : (
         <div className="flex h-48 items-center justify-center text-muted-foreground sm:h-64">
           <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading image preview" />

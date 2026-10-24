@@ -1,5 +1,12 @@
+import { RemoteClickFeedback } from "@t3tools/client-runtime/preview/click-feedback";
+import { RemoteClickMarkers } from "./RemoteClickMarkers";
 import { useFocusEffect, type StaticScreenProps } from "@react-navigation/native";
 import { RemotePreviewCommandCoordinator } from "@t3tools/client-runtime/preview/remote-command-coordinator";
+import { formatPreviewTitle } from "@t3tools/client-runtime/preview/title";
+import {
+  mergeRemoteSnapshot,
+  remoteSnapshotRequest,
+} from "@t3tools/client-runtime/preview/remote-frame";
 import {
   EnvironmentId,
   ThreadId,
@@ -9,7 +16,7 @@ import {
   type PreviewSessionSnapshot,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -32,6 +39,7 @@ import { AgentCursorGlyph, RemoteAgentCursor } from "./RemoteAgentCursor";
 import { watchBrowserFrames } from "./watchBrowserFrames";
 import {
   FRAME_TAP_SLOP_PX,
+  frameFraction,
   resolveFrameGesture,
   type FrameGestureSample,
   type FrameSize,
@@ -44,12 +52,13 @@ const AGENT_FRAME_INTERVAL_MS = 1_000;
 type ThreadBrowserRouteProps = StaticScreenProps<{
   readonly environmentId: string;
   readonly threadId: string;
+  readonly tabId?: string;
 }>;
 
 function snapshotTitle(snapshot: PreviewSessionSnapshot): string {
   return snapshot.navStatus._tag === "Idle"
     ? "New tab"
-    : snapshot.navStatus.title.trim() || "New tab";
+    : formatPreviewTitle(snapshot.navStatus.title).trim() || "New tab";
 }
 
 function snapshotUrl(snapshot: PreviewSessionSnapshot): string {
@@ -94,8 +103,17 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
     // an agent taking or releasing a tab) are what make it stale.
     if (latestPreviewEvent?.threadId === threadId) refreshPreviews();
   }, [latestPreviewEvent, threadId]);
-  const [selectedTabId, setSelectedTabId] = useState<string | null>(null);
+  const requestedTabId = route.params.tabId;
+  const appliedRequestedTabId = useRef<string | undefined>(undefined);
+  useFocusEffect(
+    useCallback(() => {
+      refreshPreviews();
+    }, [refreshPreviews, requestedTabId]),
+  );
+  const [selectedTabId, setSelectedTabId] = useState<string | null>(requestedTabId ?? null);
   const [frame, setFrame] = useState<PreviewRemoteSnapshotResult | null>(null);
+  const frameRef = useRef(frame);
+  frameRef.current = frame;
   const frameIntervalRef = useRef(LIVE_FRAME_INTERVAL_MS);
   frameIntervalRef.current =
     frame?.agentControl === "agent" ? AGENT_FRAME_INTERVAL_MS : LIVE_FRAME_INTERVAL_MS;
@@ -105,6 +123,13 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
   const typingSequenceRef = useRef(0);
   const selectedTabIdRef = useRef<string | null>(null);
   const coordinatorRef = useRef(new RemotePreviewCommandCoordinator());
+  const [clickFeedback] = useState(() => new RemoteClickFeedback());
+  const clickMarkers = useSyncExternalStore(
+    clickFeedback.subscribe,
+    clickFeedback.getSnapshot,
+    clickFeedback.getSnapshot,
+  );
+  useEffect(() => () => clickFeedback.reset(), [clickFeedback, environmentId, threadId]);
   const captureRemoteSnapshot = useAtomCommand(previewEnvironment.remoteSnapshot, {
     reportFailure: false,
   });
@@ -132,25 +157,36 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
   const [frameInteracting, setFrameInteracting] = useState(false);
   const [keyboardText, setKeyboardText] = useState("");
 
-  const selectTab = useCallback((next: string | null) => {
-    if (selectedTabIdRef.current !== next) {
-      coordinatorRef.current.reset();
-      setFrameError(null);
-      typingSequenceRef.current += 1;
-      setTyping(false);
-      gestureRef.current = null;
-    }
-    selectedTabIdRef.current = next;
-    setSelectedTabId(next);
-    setFrame((current) => (current?.tabId === next ? current : null));
-  }, []);
+  const selectTab = useCallback(
+    (next: string | null) => {
+      if (selectedTabIdRef.current !== next) {
+        coordinatorRef.current.reset();
+        clickFeedback.reset();
+        setFrameError(null);
+        typingSequenceRef.current += 1;
+        setTyping(false);
+        gestureRef.current = null;
+      }
+      selectedTabIdRef.current = next;
+      setSelectedTabId(next);
+      setFrame((current) => (current?.tabId === next ? current : null));
+    },
+    [clickFeedback],
+  );
 
   useEffect(() => {
+    if (requestedTabId && appliedRequestedTabId.current !== requestedTabId) {
+      if (sessions.some((session) => session.tabId === requestedTabId)) {
+        appliedRequestedTabId.current = requestedTabId;
+        selectTab(requestedTabId);
+      }
+      return;
+    }
     const next = sessions.some((session) => session.tabId === selectedTabId)
       ? selectedTabId
       : (sessions[0]?.tabId ?? null);
     selectTab(next);
-  }, [selectTab, selectedTabId, sessions]);
+  }, [selectTab, selectedTabId, sessions, requestedTabId]);
 
   useEffect(() => () => coordinatorRef.current.reset(), []);
 
@@ -160,7 +196,9 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
     const coordinated = await coordinatorRef.current.latestCapture(() =>
       captureRemoteSnapshot({
         environmentId,
-        input: { threadId, tabId },
+        // Names the frame already on screen, so a page that has not moved is
+        // answered without downloading the same JPEG again.
+        input: remoteSnapshotRequest({ threadId, tabId }, frameRef.current),
       }),
     );
     if (coordinated.status === "stale") return false;
@@ -171,7 +209,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
       );
       return false;
     }
-    if (!result.value.loading) setFrame(result.value);
+    if (!result.value.loading) setFrame((held) => mergeRemoteSnapshot(held, result.value));
     setFrameError(null);
     return true;
   }, [captureRemoteSnapshot, environmentId, threadId]);
@@ -184,16 +222,18 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
         intervalMs: () => frameIntervalRef.current,
         onPause: () => {
           coordinatorRef.current.reset();
+          clickFeedback.reset();
           setFrame(null);
         },
       });
-    }, [capture, selectedTabId]),
+    }, [capture, clickFeedback, selectedTabId]),
   );
 
   const dispatchInput = useCallback(
     async (action: PreviewRemoteInputAction): Promise<boolean> => {
       const tabId = selectedTabIdRef.current;
       if (tabId === null) return false;
+      const clickId = action.kind === "click" ? clickFeedback.submit(action.position) : null;
       const coordinated = await coordinatorRef.current.queueInput(() =>
         sendRemoteInput({
           environmentId,
@@ -202,6 +242,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
       );
       if (coordinated.status === "stale") return false;
       const result = coordinated.value;
+      if (clickId !== null) clickFeedback.settle(clickId, result._tag === "Success");
       if (result._tag === "Failure") {
         setFrameError(commandError(result.cause, "The desktop browser did not accept the input."));
         return false;
@@ -211,7 +252,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
       await capture();
       return true;
     },
-    [capture, environmentId, sendRemoteInput, threadId],
+    [capture, clickFeedback, environmentId, sendRemoteInput, threadId],
   );
   const dispatchInputRef = useRef(dispatchInput);
   dispatchInputRef.current = dispatchInput;
@@ -225,6 +266,9 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
         // belongs to the page under it and must not be stolen mid-gesture.
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (event) => {
+          const contact = { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY };
+          const point = frameLayoutRef.current && frameFraction(frameLayoutRef.current, contact);
+          if (point) clickFeedback.press(point, contact);
           gestureRef.current = {
             startedAt: Date.now(),
             start: { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY },
@@ -237,6 +281,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
           const gesture = gestureRef.current;
           if (gesture === null) return;
           const distance = Math.hypot(gestureState.dx, gestureState.dy);
+          if (distance > FRAME_TAP_SLOP_PX) clickFeedback.cancelPress();
           gestureRef.current = {
             ...gesture,
             maxDistancePx: Math.max(gesture.maxDistancePx, distance),
@@ -249,6 +294,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
           };
         },
         onPanResponderRelease: (_event, gestureState) => {
+          clickFeedback.cancelPress();
           const gesture = gestureRef.current;
           gestureRef.current = null;
           setFrameInteracting(false);
@@ -264,11 +310,12 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
           if (action !== null) void dispatchInputRef.current(action);
         },
         onPanResponderTerminate: () => {
+          clickFeedback.cancelPress();
           gestureRef.current = null;
           setFrameInteracting(false);
         },
       }),
-    [],
+    [clickFeedback],
   );
 
   const sendKeyboardText = async () => {
@@ -445,6 +492,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
                   }}
                 />
                 <RemoteAgentCursor pointer={frame.agentPointer} />
+                <RemoteClickMarkers markers={clickMarkers} />
               </View>
             ) : (
               <View className="min-h-72 items-center justify-center gap-3 px-6">

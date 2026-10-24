@@ -1,4 +1,5 @@
 import {
+  isOrchestratorThreadId,
   type EnvironmentId,
   type EditorId,
   type ProjectScript,
@@ -7,7 +8,8 @@ import {
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { isElectron } from "~/env";
-import { MessageSquareIcon } from "lucide-react";
+import { MessageSquareIcon, MonitorPlayIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
@@ -17,6 +19,8 @@ import {
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
+import { HostVitalsChip } from "./HostVitalsChip";
+import { ThreadTitle } from "./ThreadTitle";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { ProjectFavicon } from "../ProjectFavicon";
@@ -120,9 +124,12 @@ export const ChatHeader = memo(function ChatHeader({
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
         {/* The project always leads the header: knowing which project a
             thread lives in is priority zero, and the thread title alone
-            doesn't answer it. */}
+            doesn't answer it. It is the one that gives way when the row is
+            tight: it shrinks (its name truncates) down to a floor, while the
+            title keeps a tappable minimum of its own. As `shrink-0` a long
+            project name left the title a few pixels wide on a phone. */}
         {activeProjectName ? (
-          <span className="inline-flex shrink-0 items-center gap-2">
+          <span className="inline-flex min-w-[5.5rem] shrink items-center gap-2">
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -137,30 +144,20 @@ export const ChatHeader = memo(function ChatHeader({
                 <ProjectFavicon
                   environmentId={activeThreadEnvironmentId}
                   cwd={activeProjectCwd ?? ""}
-                  className="size-3.5 text-foreground opacity-100"
+                  className="size-3.5 shrink-0 text-foreground opacity-100"
                 />
-                <span className="max-w-40 truncate text-sm font-medium">{activeProjectName}</span>
+                <span className="min-w-0 max-w-40 truncate text-sm font-medium">
+                  {activeProjectName}
+                </span>
               </TooltipTrigger>
               <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
             </Tooltip>
-            <span aria-hidden className="text-muted-foreground/40">
+            <span aria-hidden className="shrink-0 text-muted-foreground/40">
               /
             </span>
           </span>
         ) : null}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <h2
-                aria-label={activeThreadTitle}
-                className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
-              >
-                {activeThreadTitle}
-              </h2>
-            }
-          />
-          <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
-        </Tooltip>
+        <ThreadTitle title={activeThreadTitle} />
       </div>
       <div
         data-chat-header-actions
@@ -173,6 +170,23 @@ export const ChatHeader = memo(function ChatHeader({
           rightPanelOpen ? "pr-0" : "pr-[var(--workspace-titlebar-content-right)]",
         )}
       >
+        {isOrchestratorThreadId(activeThreadId) ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Link
+                  to="/orchestrator/live"
+                  aria-label="Open the Live Inspector"
+                  data-testid="chat-header-live-inspector"
+                  className="inline-flex cursor-pointer items-center rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              }
+            >
+              <MonitorPlayIcon className="size-4" aria-hidden />
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">Live Inspector: watch every thread work</TooltipPopup>
+          </Tooltip>
+        ) : null}
         {mainSurface !== undefined && onMainSurfaceChange ? (
           <Tooltip>
             <TooltipTrigger
@@ -251,6 +265,9 @@ export const ChatHeader = memo(function ChatHeader({
             {...(draftId ? { draftId } : {})}
           />
         )}
+        {/* Last, so it ends the header row on a wide layout. Below `md` the
+            phone top bar above carries it at the very top right instead. */}
+        <HostVitalsChip environmentId={activeThreadEnvironmentId} className="max-md:hidden" />
       </div>
     </div>
   );

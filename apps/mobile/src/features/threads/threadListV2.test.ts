@@ -89,6 +89,47 @@ describe("resolveThreadListV2Status", () => {
     expect(resolveThreadListV2Status(thread)).toBe("approval");
   });
 
+  it("keeps a settled turn working while the tasks it started still run", () => {
+    const backgroundTasks = {
+      count: 2,
+      startedAt: "2026-06-01T23:40:00.000Z",
+      lastActivityAt: "2026-06-01T23:59:00.000Z",
+    };
+    expect(
+      resolveThreadListV2Status(
+        makeThread({ id: ThreadId.make("t"), title: "t", backgroundTasks }),
+        Date.parse(NOW),
+      ),
+    ).toBe("working");
+    expect(
+      resolveThreadListV2Status(
+        makeThread({
+          id: ThreadId.make("t"),
+          title: "t",
+          backgroundTasks: { ...backgroundTasks, lastActivityAt: "2026-06-01T23:00:00.000Z" },
+        }),
+        Date.parse(NOW),
+      ),
+    ).toBe("ready");
+  });
+
+  it("reads a started turn as working while its session lags, as the web sidebar does", () => {
+    const latestTurn = {
+      turnId: TurnId.make("turn-1"),
+      state: "running" as const,
+      requestedAt: "2026-06-01T23:58:00.000Z",
+      startedAt: "2026-06-01T23:58:00.000Z",
+      completedAt: null,
+      assistantMessageId: null,
+    };
+    expect(
+      resolveThreadListV2Status(
+        makeThread({ id: ThreadId.make("t"), title: "t", latestTurn }),
+        Date.parse(NOW),
+      ),
+    ).toBe("working");
+  });
+
   it("resolves ready for quiescent threads", () => {
     expect(resolveThreadListV2Status(makeThread({ id: ThreadId.make("t"), title: "t" }))).toBe(
       "ready",

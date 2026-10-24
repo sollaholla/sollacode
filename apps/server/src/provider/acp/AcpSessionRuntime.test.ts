@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
@@ -20,6 +22,8 @@ const makeRuntime = (
   options?: {
     concurrentPrompts?: boolean;
     requestLogger?: AcpSessionRuntime.AcpSessionRuntimeOptions["requestLogger"];
+    resolveAuthMethodId?: AcpSessionRuntime.AcpSessionRuntimeOptions["resolveAuthMethodId"];
+    authenticateTimeout?: AcpSessionRuntime.AcpSessionRuntimeOptions["authenticateTimeout"];
   },
 ) =>
   AcpSessionRuntime.make({
@@ -35,6 +39,10 @@ const makeRuntime = (
       ? { concurrentPrompts: options.concurrentPrompts }
       : {}),
     ...(options?.requestLogger ? { requestLogger: options.requestLogger } : {}),
+    ...(options?.resolveAuthMethodId ? { resolveAuthMethodId: options.resolveAuthMethodId } : {}),
+    ...(options?.authenticateTimeout !== undefined
+      ? { authenticateTimeout: options.authenticateTimeout }
+      : {}),
   });
 
 const waitForHangingPromptAnnouncement = (
@@ -63,6 +71,39 @@ describe("descendantProcessGroupsFromPs", () => {
 
     expect(AcpSessionRuntime.descendantProcessGroupsFromPs(100, 500, psOutput)).toEqual([102, 103]);
   });
+});
+
+describe("AcpSessionRuntime authentication", () => {
+  it.effect("authenticates with the method picked from the agent's initialize answer", () =>
+    Effect.gen(function* () {
+      const requestLogDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "acp-auth-"));
+      const requestLogPath = NodePath.join(requestLogDir, "requests.ndjson");
+      const runtime = yield* makeRuntime(
+        { T3_ACP_AUTH_METHODS: "grok.com", T3_ACP_REQUEST_LOG_PATH: requestLogPath },
+        { resolveAuthMethodId: (initialize) => initialize.authMethods?.[0]?.id ?? "test" },
+      );
+      yield* runtime.start();
+      const authenticateMethodIds = NodeFS.readFileSync(requestLogPath, "utf8")
+        .split("\n")
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as { method?: string; params?: { methodId?: string } })
+        .filter((message) => message.method === "authenticate")
+        .map((message) => message.params?.methodId);
+      NodeFS.rmSync(requestLogDir, { recursive: true, force: true });
+      expect(authenticateMethodIds).toEqual(["grok.com"]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("gives up on an authenticate that waits for a person to sign in", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeRuntime(
+        { T3_ACP_HANG_AUTHENTICATE: "1" },
+        { authenticateTimeout: "200 millis" },
+      );
+      const error = yield* Effect.flip(runtime.start());
+      expect(error).toMatchObject({ _tag: "AcpTransportError", method: "authenticate" });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });
 
 describe("AcpSessionRuntime concurrent prompts", () => {

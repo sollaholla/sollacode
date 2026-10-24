@@ -44,6 +44,8 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   // Start/stop talking to the orchestrator. Deliberately not a hold-to-talk
   // binding: the session is a conversation, not a single utterance.
   { key: "mod+shift+v", command: "orchestrator.voice.toggle", when: "!terminalFocus" },
+  // Open or close the Live Inspector: every thread's work as it happens.
+  { key: "mod+shift+l", command: "orchestrator.live.toggle", when: "!terminalFocus" },
   { key: "mod+shift+[", command: "thread.previous" },
   { key: "mod+shift+]", command: "thread.next" },
   ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({

@@ -10,9 +10,12 @@ On web and desktop, open the right drawer. When no surface tab is selected, **Ar
 expanded at the top of the empty picker, above the surface choices. Selecting an artifact opens its
 current revision, and the list hides while any tab is active. The surface add menu still includes an
 **Artifacts** submenu. On mobile, choose **Artifacts** from the thread header.
-Links shaped like `/<environment>/<thread>?artifact=<artifact>` open the same artifact directly on
-web. Opening one of those addresses uses in-app navigation, so the conversation and its running
-surfaces stay mounted.
+Links shaped like `/<environment>/<thread>?artifact=<artifact>` open the artifact directly.
+Tapping one in a chat or terminal opens the artifact preview in the current browser tab, including
+links using another LAN or Tailscale address for a connected environment. A link to another thread
+selects that conversation in the same tab; an already-open artifact is brought back into view.
+The native mobile app opens its artifact viewer. Explicitly choosing **Open in external browser**
+still opens the link externally.
 
 Connected devices request a fresh signed asset URL from the selected host. This means a phone using
 the mobile app or the browser through a LAN, relay, or Tailscale connection can render the artifact

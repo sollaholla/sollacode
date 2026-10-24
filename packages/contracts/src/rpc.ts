@@ -1,3 +1,10 @@
+import {
+  WebPushStatusInput,
+  WebPushStatus,
+  WebPushSubscribeInput,
+  WebPushEndpointInput,
+  WebPushError,
+} from "./webPush.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
@@ -74,6 +81,11 @@ import {
   OrchestrationGetSnapshotError,
   OrchestrationSearchThreadsError,
   OrchestrationSearchThreadsInput,
+  OrchestrationGetProjectStatisticsError,
+  OrchestrationGetProjectStatisticsInput,
+  OrchestrationMeasureProjectFoldersInput,
+  OrchestrationLiveFeedEvent,
+  OrchestrationProjectFolders,
   OrchestrationGetTurnDiffError,
   OrchestrationGetTurnDiffInput,
   OrchestrationRpcSchemas,
@@ -166,6 +178,7 @@ import {
   PreviewRemoteInputResult,
   PreviewRemoteSnapshotInput,
   PreviewRemoteSnapshotResult,
+  PreviewRemoteSnapshotUnchangedResult,
   PreviewReportStatusInput,
   PreviewReportActivityInput,
   PreviewResizeInput,
@@ -193,6 +206,7 @@ import {
   RemoteControlHost,
   RemoteControlHostEndInput,
   RemoteControlHostReportStatusInput,
+  RemoteControlHostAcknowledgeInputInput,
   RemoteControlHostPublishFrameInput,
   RemoteControlHostPublishVideoChunkInput,
   RemoteControlHostRespondInput,
@@ -203,6 +217,9 @@ import {
   RemoteControlWatchInput,
 } from "./remoteControl.ts";
 import {
+  StorageCleanupStartError,
+  StorageCleanupStartInput,
+  StorageCleanupStartResult,
   HostRepairStartError,
   HostRepairStartInput,
   HostRepairStartResult,
@@ -231,6 +248,7 @@ import {
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
+import { HostVitals } from "./hostVitals.ts";
 import {
   ResourceTelemetryHistory,
   ResourceTelemetryHistoryInput,
@@ -334,6 +352,7 @@ export const WS_METHODS = {
   remoteControlHostPublishVideoChunk: "remoteControl.hostPublishVideoChunk",
   remoteControlHostEnd: "remoteControl.hostEnd",
   remoteControlHostReportStatus: "remoteControl.hostReportStatus",
+  remoteControlHostAcknowledgeInput: "remoteControl.hostAcknowledgeInput",
   remoteControlRequestAccess: "remoteControl.requestAccess",
   remoteControlWatch: "remoteControl.watch",
   remoteControlSendInput: "remoteControl.sendInput",
@@ -388,6 +407,11 @@ export const WS_METHODS = {
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverGetResourceTelemetryHistory: "server.getResourceTelemetryHistory",
   serverRetryResourceTelemetry: "server.retryResourceTelemetry",
+  serverStartStorageCleanup: "server.startStorageCleanup",
+  webPushStatus: "webPush.status",
+  webPushSubscribe: "webPush.subscribe",
+  webPushUnsubscribe: "webPush.unsubscribe",
+  webPushTest: "webPush.test",
   serverStartHostRepair: "server.startHostRepair",
   serverSignalProcess: "server.signalProcess",
   serverReportClientActivity: "server.reportClientActivity",
@@ -411,6 +435,7 @@ export const WS_METHODS = {
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
+  subscribeHostVitals: "subscribeHostVitals",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -603,6 +628,36 @@ export const WsServerRetryResourceTelemetryRpc = Rpc.make(WS_METHODS.serverRetry
   payload: Schema.Struct({}),
   success: ResourceTelemetryRetryResult,
   error: EnvironmentAuthorizationError,
+});
+
+export const WsWebPushStatusRpc = Rpc.make(WS_METHODS.webPushStatus, {
+  payload: WebPushStatusInput,
+  success: WebPushStatus,
+  error: Schema.Union([WebPushError, EnvironmentAuthorizationError]),
+});
+
+export const WsWebPushSubscribeRpc = Rpc.make(WS_METHODS.webPushSubscribe, {
+  payload: WebPushSubscribeInput,
+  success: Schema.Void,
+  error: Schema.Union([WebPushError, EnvironmentAuthorizationError]),
+});
+
+export const WsWebPushUnsubscribeRpc = Rpc.make(WS_METHODS.webPushUnsubscribe, {
+  payload: WebPushEndpointInput,
+  success: Schema.Void,
+  error: Schema.Union([WebPushError, EnvironmentAuthorizationError]),
+});
+
+export const WsWebPushTestRpc = Rpc.make(WS_METHODS.webPushTest, {
+  payload: WebPushEndpointInput,
+  success: Schema.Void,
+  error: Schema.Union([WebPushError, EnvironmentAuthorizationError]),
+});
+
+export const WsServerStartStorageCleanupRpc = Rpc.make(WS_METHODS.serverStartStorageCleanup, {
+  payload: StorageCleanupStartInput,
+  success: StorageCleanupStartResult,
+  error: Schema.Union([StorageCleanupStartError, EnvironmentAuthorizationError]),
 });
 
 export const WsServerStartHostRepairRpc = Rpc.make(WS_METHODS.serverStartHostRepair, {
@@ -927,7 +982,7 @@ export const WsPreviewListRpc = Rpc.make(WS_METHODS.previewList, {
 
 export const WsPreviewRemoteSnapshotRpc = Rpc.make(WS_METHODS.previewRemoteSnapshot, {
   payload: PreviewRemoteSnapshotInput,
-  success: PreviewRemoteSnapshotResult,
+  success: Schema.Union([PreviewRemoteSnapshotResult, PreviewRemoteSnapshotUnchangedResult]),
   error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
 });
 
@@ -1205,6 +1260,14 @@ export const WsRemoteControlHostReportStatusRpc = Rpc.make(
   },
 );
 
+export const WsRemoteControlHostAcknowledgeInputRpc = Rpc.make(
+  WS_METHODS.remoteControlHostAcknowledgeInput,
+  {
+    payload: RemoteControlHostAcknowledgeInputInput,
+    error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsRemoteControlHostEndRpc = Rpc.make(WS_METHODS.remoteControlHostEnd, {
   payload: RemoteControlHostEndInput,
   success: RemoteControlSession,
@@ -1282,12 +1345,59 @@ export const WsOrchestrationSearchThreadsRpc = Rpc.make(ORCHESTRATION_WS_METHODS
   error: Schema.Union([OrchestrationSearchThreadsError, EnvironmentAuthorizationError]),
 });
 
+export const WsOrchestrationGetProjectStatisticsRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getProjectStatistics,
+  {
+    payload: OrchestrationGetProjectStatisticsInput,
+    success: OrchestrationRpcSchemas.getProjectStatistics.output,
+    error: Schema.Union([OrchestrationGetProjectStatisticsError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationSubscribeProjectFoldersRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.subscribeProjectFolders,
+  {
+    payload: Schema.Struct({}),
+    success: OrchestrationProjectFolders,
+    error: EnvironmentAuthorizationError,
+    stream: true,
+  },
+);
+
+export const WsOrchestrationMeasureProjectFoldersRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.measureProjectFolders,
+  {
+    payload: OrchestrationMeasureProjectFoldersInput,
+    success: Schema.Struct({}),
+    error: EnvironmentAuthorizationError,
+  },
+);
+
+export const WsOrchestrationSubscribeLiveFeedRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.subscribeLiveFeed,
+  {
+    payload: Schema.Struct({}),
+    success: OrchestrationLiveFeedEvent,
+    error: EnvironmentAuthorizationError,
+    stream: true,
+  },
+);
+
 export const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
   {
     payload: OrchestrationRpcSchemas.getArchivedShellSnapshot.input,
     success: OrchestrationRpcSchemas.getArchivedShellSnapshot.output,
     error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationDeleteArchivedThreadsRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.deleteArchivedThreads,
+  {
+    payload: OrchestrationRpcSchemas.deleteArchivedThreads.input,
+    success: OrchestrationRpcSchemas.deleteArchivedThreads.output,
+    error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
   },
 );
 
@@ -1342,7 +1452,9 @@ export const WsTerminalSetLayoutRpc = Rpc.make(WS_METHODS.terminalSetLayout, {
 });
 
 export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerConfig, {
-  payload: Schema.Struct({}),
+  // A client that understands `providerStatusesPatch` says so; a server that
+  // predates it ignores the key and keeps sending full `providerStatuses`.
+  payload: Schema.Struct({ acceptsProviderPatches: Schema.optionalKey(Schema.Boolean) }),
   success: ServerConfigStreamEvent,
   error: Schema.Union([KeybindingsConfigError, ServerSettingsError, EnvironmentAuthorizationError]),
   stream: true,
@@ -1376,7 +1488,18 @@ export const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeReso
   stream: true,
 });
 
+export const WsSubscribeHostVitalsRpc = Rpc.make(WS_METHODS.subscribeHostVitals, {
+  payload: Schema.Struct({}),
+  success: HostVitals,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 export const WsRpcGroup = RpcGroup.make(
+  WsWebPushStatusRpc,
+  WsWebPushSubscribeRpc,
+  WsWebPushUnsubscribeRpc,
+  WsWebPushTestRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -1400,6 +1523,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessResourceHistoryRpc,
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,
+  WsServerStartStorageCleanupRpc,
   WsServerStartHostRepairRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,
@@ -1476,6 +1600,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRemoteControlHostPublishVideoChunkRpc,
   WsRemoteControlHostEndRpc,
   WsRemoteControlHostReportStatusRpc,
+  WsRemoteControlHostAcknowledgeInputRpc,
   WsRemoteControlRequestAccessRpc,
   WsRemoteControlWatchRpc,
   WsRemoteControlSendInputRpc,
@@ -1510,11 +1635,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
+  WsSubscribeHostVitalsRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationSearchThreadsRpc,
+  WsOrchestrationGetProjectStatisticsRpc,
+  WsOrchestrationSubscribeProjectFoldersRpc,
+  WsOrchestrationMeasureProjectFoldersRpc,
+  WsOrchestrationSubscribeLiveFeedRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
+  WsOrchestrationDeleteArchivedThreadsRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
 );

@@ -15,8 +15,13 @@ import { AGENT_STOP_TOKEN } from "@t3tools/shared/agentMode";
  * leading instruction block on the turn. That makes the toggle mean the same
  * thing everywhere instead of meaning nothing on three providers.
  *
- * Deliberately free of any `preview_*`/MCP tool references. The block is only
- * used by providers that are not connected to the Solla MCP server, and
+ * The Plan block also carries the plan handoff - one `<proposed_plan>` block
+ * that the adapter turns into a plan card with Implement
+ * (proposedPlanBlocks.ts) - so Antigravity and OpenCode, whose native plan
+ * modes only keep the turn read-only, receive it too.
+ *
+ * Deliberately free of any `preview_*`/MCP tool references. Most providers
+ * that receive these blocks are not connected to the Solla MCP server, and
  * describing tools the model cannot call is how a prompt teaches it to
  * hallucinate tool calls.
  */

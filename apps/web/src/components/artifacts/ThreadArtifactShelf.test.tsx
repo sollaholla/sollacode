@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { AsyncResult } from "effect/unstable/reactivity";
 import {
   EnvironmentId,
@@ -7,6 +8,8 @@ import {
   type ThreadArtifactSummary,
 } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
@@ -25,7 +28,7 @@ vi.mock("~/state/threadArtifacts", () => ({
   threadArtifactEnvironment: { list: () => Symbol.for("artifact-list-query") },
 }));
 
-import { ThreadArtifactShelf } from "./ThreadArtifactShelf";
+import { ThreadArtifactDeepLinkOpener, ThreadArtifactShelf } from "./ThreadArtifactShelf";
 
 const threadRef = {
   environmentId: EnvironmentId.make("environment-1"),
@@ -117,4 +120,49 @@ describe("ThreadArtifactShelf ordering", () => {
     expect(markup).toContain('aria-current="page"');
     expect(markup).toMatch(/<details[^>]*\sopen[=\s>]/);
   });
+});
+
+it("waits for the artifact snapshot and reopens the same link after closing", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const summary = artifactSummary({
+    id: "linked-artifact",
+    title: "Linked artifact",
+    updatedAt: "2026-10-07T15:00:00.000Z",
+  });
+  const onOpen = vi.fn();
+  const root = createRoot(document.createElement("div"));
+  const render = (requestedArtifactId: string | null) =>
+    act(async () => {
+      root.render(
+        <ThreadArtifactDeepLinkOpener
+          threadRef={threadRef}
+          requestedArtifactId={requestedArtifactId}
+          onOpen={onOpen}
+        />,
+      );
+    });
+  try {
+    mocks.listResult = AsyncResult.initial();
+    await render(summary.artifact.artifactId);
+    expect(onOpen).not.toHaveBeenCalled();
+
+    mocks.listResult = AsyncResult.success({ threadId: threadRef.threadId, artifacts: [summary] });
+    await render(summary.artifact.artifactId);
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith({
+      environmentId: threadRef.environmentId,
+      artifactId: summary.artifact.artifactId,
+      summary,
+    });
+    // An ordinary render or replacement snapshot must not keep reopening the tab.
+    mocks.listResult = AsyncResult.success({ threadId: threadRef.threadId, artifacts: [summary] });
+    await render(summary.artifact.artifactId);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+
+    await render(null);
+    await render(summary.artifact.artifactId);
+    expect(onOpen).toHaveBeenCalledTimes(2);
+  } finally {
+    await act(async () => root.unmount());
+    vi.unstubAllGlobals();
+  }
 });

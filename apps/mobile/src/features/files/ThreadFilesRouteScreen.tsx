@@ -1,3 +1,4 @@
+import { useThreadUrlOpener } from "../preview/useThreadUrlOpener";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -83,6 +84,7 @@ function defaultViewMode(path: string | null): FileViewMode {
 }
 
 function FileContent(props: {
+  readonly onLinkPress: (href: string) => void;
   readonly activeMode: FileViewMode;
   readonly previewUri: string | null;
   readonly fileContents: string | null;
@@ -169,7 +171,11 @@ function FileContent(props: {
         </View>
       ) : null}
       {props.activeMode === "preview" && isMarkdown ? (
-        <FileMarkdownPreview markdown={props.fileContents} onRefresh={props.onRefresh} />
+        <FileMarkdownPreview
+          markdown={props.fileContents}
+          onRefresh={props.onRefresh}
+          onLinkPress={props.onLinkPress}
+        />
       ) : (
         <SourceFileSurface
           contents={props.fileContents}
@@ -495,6 +501,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
   const { cwd, environmentId, projectName, selectedThread, threadId } = useThreadFilesWorkspace(
     props.route.params,
   );
+  const openThreadUrl = useThreadUrlOpener(environmentId, threadId);
   const [modeOverride, setModeOverride] = useState<{
     readonly path: string;
     readonly mode: FileViewMode;
@@ -692,6 +699,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
         </NativeHeaderToolbar.Menu>
       </NativeHeaderToolbar>
       <FileContent
+        onLinkPress={openThreadUrl}
         activeMode={resolvedActiveMode}
         previewUri={previewUri}
         fileContents={fileData?.contents ?? null}

@@ -1,3 +1,4 @@
+import { openThreadUrl } from "@t3tools/client-runtime/preview/link-routing";
 import type { ContextMenuItem } from "@t3tools/contracts";
 
 export type ExternalLinkContextMenuAction = "open-in-preview" | "open-external" | "copy-link";
@@ -76,9 +77,18 @@ export async function openExternalLinkDirectly(input: {
   readonly href: string;
   readonly openExternal: (href: string) => Promise<void>;
   readonly reportFailure: (cause: unknown) => void;
+  readonly hostPreview?: {
+    readonly isRemoteClient: boolean;
+    readonly open: (href: string) => Promise<void>;
+  };
 }): Promise<void> {
   try {
-    await input.openExternal(input.href);
+    await openThreadUrl({
+      url: input.href,
+      isRemoteClient: input.hostPreview?.isRemoteClient ?? false,
+      openInPreview: input.hostPreview?.open ?? input.openExternal,
+      openExternally: input.openExternal,
+    });
   } catch (cause) {
     input.reportFailure(cause);
   }

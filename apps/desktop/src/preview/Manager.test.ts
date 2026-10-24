@@ -22,6 +22,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import { HUMAN_INPUT_CHANNEL } from "./GuestProtocol.ts";
 import * as PreviewManager from "./Manager.ts";
+import { PREVIEW_POPUP_WEB_PREFERENCES } from "./WebviewPreferences.ts";
 
 describe("fitPictureInPictureContentSize", () => {
   it("preserves the PiP content area across aspect-ratio changes", () => {
@@ -82,6 +83,70 @@ describe("interpolateDragMoves", () => {
         1,
       ),
     ).toEqual([{ x: 9, y: 12 }]);
+  });
+});
+
+describe("guestWindowOpenTarget", () => {
+  const request = {
+    url: "https://publisher.example.com/packages/7/edit",
+    openerUrl: "https://publisher.example.com/packages?status=published",
+    disposition: "foreground-tab",
+    features: "",
+    frameName: "",
+    hasPostBody: false,
+    requestedDirectTab: false,
+  };
+
+  it("opens same-origin scripted links and opener-free windows as tabs", () => {
+    expect(PreviewManager.guestWindowOpenTarget(request)).toBe("preview-tab");
+    expect(
+      PreviewManager.guestWindowOpenTarget({
+        ...request,
+        url: "https://docs.example.net/",
+        features: "noopener",
+      }),
+    ).toBe("preview-tab");
+    expect(
+      PreviewManager.guestWindowOpenTarget({ ...request, disposition: "background-tab" }),
+    ).toBe("preview-tab");
+  });
+
+  it("keeps sign-in windows real so the page holds its WindowProxy", () => {
+    expect(
+      PreviewManager.guestWindowOpenTarget({
+        ...request,
+        url: "https://publisher.example.com/api/auth/signin/google",
+      }),
+    ).toBe("child-window");
+    expect(
+      PreviewManager.guestWindowOpenTarget({ ...request, url: "https://accounts.example.net/o" }),
+    ).toBe("child-window");
+    expect(PreviewManager.guestWindowOpenTarget({ ...request, url: "about:blank" })).toBe(
+      "child-window",
+    );
+    expect(PreviewManager.guestWindowOpenTarget({ ...request, frameName: "oauth-login" })).toBe(
+      "child-window",
+    );
+    expect(
+      PreviewManager.guestWindowOpenTarget({ ...request, features: "width=500,height=600" }),
+    ).toBe("child-window");
+    expect(
+      PreviewManager.guestWindowOpenTarget({
+        ...request,
+        url: "https://accounts.example.net/o",
+        features: "noopener=0",
+      }),
+    ).toBe("child-window");
+    expect(PreviewManager.guestWindowOpenTarget({ ...request, disposition: "new-window" })).toBe(
+      "child-window",
+    );
+    expect(
+      PreviewManager.guestWindowOpenTarget({
+        ...request,
+        features: "noopener",
+        hasPostBody: true,
+      }),
+    ).toBe("child-window");
   });
 });
 
@@ -3167,21 +3232,41 @@ describe("PreviewManager", () => {
         ]);
         expect(loadURL).not.toHaveBeenCalled();
 
-        // A featureless script-created window has the same Electron details as
-        // the direct link above after Chromium normalizes `_blank`. With no
-        // direct-link intent from the preload, preserve the real WindowProxy.
+        // The regression this exists for: a single-page app opened a record
+        // with a featureless same-origin `window.open`. It floated in a
+        // separate window while the panel kept showing the list it came from.
         expect(
           openHandler?.({
-            url: "https://example.com/scripted",
+            url: "https://example.com/packages/7/edit",
+            disposition: "foreground-tab",
+            features: "",
+            frameName: "_blank",
+          }),
+        ).toEqual({ action: "deny" });
+        yield* Effect.yieldNow;
+        expect(requests).toEqual([
+          { sourceTabId: "runtime-source", url: "https://example.com/next" },
+          { sourceTabId: "runtime-source", url: "https://example.com/packages/7/edit" },
+        ]);
+
+        // A featureless open of another origin is how some OAuth clients reach
+        // their provider. Preserve the real WindowProxy.
+        expect(
+          openHandler?.({
+            url: "https://partner.example.net/start",
             disposition: "foreground-tab",
             features: "",
             frameName: "",
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            center: true,
+            webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
+          },
         });
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(2);
 
         // The regression this exists for: Google Identity Services opens a
         // sized popup that Chromium does not report as `new-window`. Denying it
@@ -3196,9 +3281,13 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            center: true,
+            webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
+          },
         });
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(2);
 
         // Chromium can classify featureless script-created windows as a
         // foreground tab. The explicit frame target is what distinguishes the
@@ -3212,9 +3301,13 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            center: true,
+            webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
+          },
         });
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(2);
 
         expect(
           openHandler?.({
@@ -3225,24 +3318,26 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            center: true,
+            webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
+          },
         });
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(2);
 
-        // Scripted OAuth clients often use an unnamed/_blank child without
-        // popup-shaped features. It still needs a synchronous WindowProxy.
+        // `noopener` hands the page null, so there is no handle to preserve:
+        // the common "open in a new tab" call of single-page apps.
         expect(
           openHandler?.({
-            url: "https://example.com/target-blank",
+            url: "https://partner.example.net/target-blank",
             disposition: "new-window",
             features: "noopener,noreferrer",
             frameName: "_blank",
           }),
-        ).toEqual({
-          action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
-        });
-        expect(requests).toHaveLength(1);
+        ).toEqual({ action: "deny" });
+        yield* Effect.yieldNow;
+        expect(requests).toHaveLength(3);
 
         expect(
           openHandler?.({
@@ -3253,9 +3348,13 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            center: true,
+            webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
+          },
         });
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(3);
 
         // OAuth clients commonly create a named about:blank child first and
         // navigate it only after obtaining a provider URL. It still needs a
@@ -3269,9 +3368,13 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            center: true,
+            webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
+          },
         });
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(3);
 
         // Form-backed OAuth launches carry a POST body. That body cannot be
         // reconstructed by the renderer's asynchronous sibling-tab path.
@@ -3285,13 +3388,20 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            center: true,
+            webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
+          },
         });
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(3);
 
+        let mainWindowOnScreen = true;
         const mainWindow = {
           isDestroyed: () => false,
           isFocused: () => true,
+          isVisible: () => mainWindowOnScreen,
+          isMinimized: () => false,
           once: vi.fn(),
           on: vi.fn(),
           off: vi.fn(),
@@ -3317,6 +3427,26 @@ describe("PreviewManager", () => {
             center: true,
             parent: mainWindow,
             modal: false,
+            webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
+          },
+        });
+
+        // A child window is buried or hidden along with its parent, so a
+        // covered or minimized Solla window gets no child.
+        mainWindowOnScreen = false;
+        expect(
+          openHandler?.({
+            url: "https://accounts.example.com/oauth",
+            disposition: "new-window",
+            features: "popup,width=500,height=700",
+            frameName: "oauth-login",
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            center: true,
+            webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
           },
         });
       }),
@@ -3492,6 +3622,121 @@ describe("PreviewManager", () => {
         });
       }),
     ),
+  );
+
+  effectIt.effect(
+    "puts a sign-in window opened from the background in front, and uncovers it to read it",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          // 2026-10-11: a phone tapped Continue with Google while Solla sat behind
+          // another app. macOS refused to bring Solla forward, the popup opened
+          // covered, got no frames, and stayed white on the Mac and frozen on
+          // the phone until someone uncovered it by hand.
+          let didCreateWindow: ((window: Electron.BrowserWindow) => void) | undefined;
+          const mainWebContents = {
+            isDestroyed: () => false,
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+          };
+          const source = {
+            id: 52,
+            hostWebContents: mainWebContents,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://www.kraken.com/sign-in",
+            getTitle: () => "Kraken",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            executeJavaScript: vi.fn(async () => ({ width: 1280, height: 800 })),
+            on: vi.fn((event: string, listener: (window: Electron.BrowserWindow) => void) => {
+              if (event === "did-create-window") didCreateWindow = listener;
+            }),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              detach: vi.fn(),
+              sendCommand: vi.fn(async () => undefined),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never;
+          const popupWebContents = {
+            id: 53,
+            isDestroyed: () => false,
+            getType: () => "window",
+            getURL: () => "https://accounts.google.com/o/oauth2/v2/auth",
+            getTitle: () => "Sign in with Google",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            executeJavaScript: vi.fn(async () => ({ width: 500, height: 600 })),
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              detach: vi.fn(),
+              sendCommand: vi.fn(async () => undefined),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never;
+          let popupOnScreen = true;
+          let popupParent: unknown = { id: "solla-main-window" };
+          const popupWindow = {
+            webContents: popupWebContents,
+            isDestroyed: () => false,
+            isMinimized: () => false,
+            isVisible: () => popupOnScreen,
+            getParentWindow: () => popupParent,
+            setParentWindow: vi.fn((parent: unknown) => {
+              popupParent = parent;
+            }),
+            showInactive: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            close: vi.fn(),
+          };
+          fromId.mockImplementation((id) =>
+            id === 52 ? source : id === 53 ? popupWebContents : null,
+          );
+          yield* manager.setMainWindow({
+            isDestroyed: () => false,
+            isFocused: () => false,
+            once: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            webContents: mainWebContents,
+          } as never);
+          yield* manager.createTab("runtime-background-oauth");
+          yield* manager.registerWebview("runtime-background-oauth", 52);
+
+          didCreateWindow?.(popupWindow as never);
+          // In front without taking focus from whatever the person is doing.
+          expect(popupWindow.showInactive).toHaveBeenCalledOnce();
+          yield* Effect.yieldNow;
+
+          // Covered again later: reading it uncovers it first. A child cannot
+          // rise above its parent, so it is detached to come forward.
+          popupOnScreen = false;
+          const snapshot = yield* manager
+            .automationSnapshot("runtime-background-oauth")
+            .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(60_000);
+          yield* Fiber.interrupt(snapshot);
+          expect(popupWindow.setParentWindow).toHaveBeenCalledWith(null);
+          expect(popupWindow.showInactive).toHaveBeenCalledTimes(2);
+        }),
+      ),
   );
 
   effectIt.effect("forwards both halves of push-to-talk when a guest owns keyboard focus", () =>
@@ -6528,7 +6773,10 @@ describe("PreviewManager", () => {
             listeners.set(event, listener);
           }),
           once: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
-            listeners.set(event, listener);
+            listeners.set(event, (...args) => {
+              listeners.delete(event);
+              listener(...args);
+            });
           }),
           off: vi.fn(),
           ipc: { on: vi.fn(), off: vi.fn(), removeListener: vi.fn() },
@@ -6549,11 +6797,23 @@ describe("PreviewManager", () => {
         const pick = yield* manager.pickElement("tab_1").pipe(Effect.forkChild);
         yield* Effect.yieldNow;
 
-        listeners.get("did-start-navigation")?.({}, "about:blank", false, false);
+        listeners.get("did-start-navigation")?.({
+          url: "about:blank",
+          isSameDocument: false,
+          isMainFrame: false,
+          frame: null,
+        });
         yield* Effect.yieldNow;
         expect(pick.pollUnsafe()).toBeUndefined();
 
-        listeners.get("did-start-navigation")?.({}, "https://example.com/next", false, true);
+        listeners.get("did-start-navigation")?.({
+          url: "https://example.com/next",
+          isSameDocument: false,
+          isMainFrame: true,
+          frame: null,
+        });
+        yield* Effect.yieldNow;
+        expect(pick.pollUnsafe()).toBeDefined();
         expect(yield* Fiber.join(pick)).toBeNull();
       }),
     ),

@@ -26,6 +26,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import { collectUint8StreamText } from "../../stream/collectUint8StreamText.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { collaborationModePrompt } from "../collaborationMode.ts";
+import { makeProposedPlanCapture } from "../proposedPlanBlocks.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import {
@@ -248,7 +249,13 @@ export const makeDeepCodeAdapter = Effect.fn("makeDeepCodeAdapter")(function* (c
     createdAt: now(),
     ...(turnId ? { turnId } : {}),
   });
-  const emit = (event: ProviderRuntimeEvent) => PubSub.publishUnsafe(events, event);
+  // Plan mode asks Deep Code for a `<proposed_plan>` block
+  // (collaborationModePrompt); this turns it into a plan the person can implement.
+  const captureProposedPlans = makeProposedPlanCapture();
+  const emit = (event: ProviderRuntimeEvent): void => {
+    PubSub.publishUnsafe(events, event);
+    for (const planEvent of captureProposedPlans(event)) PubSub.publishUnsafe(events, planEvent);
+  };
   const error = (method: string, detail: string) =>
     new ProviderAdapterRequestError({
       provider: DEEPCODE_DRIVER_KIND,

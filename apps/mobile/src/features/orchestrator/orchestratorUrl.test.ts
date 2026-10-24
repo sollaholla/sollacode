@@ -9,6 +9,16 @@ describe("buildOrchestratorUrl", () => {
     );
   });
 
+  it("points at the Live Inspector, embedded, when asked to", () => {
+    expect(
+      buildOrchestratorUrl(
+        "https://relay.example.com/solla/?token=x",
+        "/orchestrator/live",
+        "embedded=1",
+      ),
+    ).toBe("https://relay.example.com/solla/orchestrator/live?embedded=1");
+  });
+
   it("does not double the slash on a base that already ends in one", () => {
     expect(buildOrchestratorUrl("https://mac.local:3773/")).toBe(
       "https://mac.local:3773/orchestrator",

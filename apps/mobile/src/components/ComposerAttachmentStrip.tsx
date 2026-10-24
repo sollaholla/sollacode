@@ -1,5 +1,6 @@
 import { SymbolView } from "../components/AppSymbol";
 import { Image, Pressable, ScrollView, View } from "react-native";
+import ImageViewing from "react-native-image-viewing";
 import { useThemeColor } from "../lib/useThemeColor";
 
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
@@ -86,5 +87,32 @@ export function ComposerAttachmentStrip(props: ComposerAttachmentStripProps) {
         ))}
       </View>
     </ScrollView>
+  );
+}
+
+/** The full-screen view of a draft's images, opened on the one tapped; swipe for the others. */
+export function DraftImagesViewer(props: {
+  readonly attachments: ReadonlyArray<DraftComposerImageAttachment>;
+  /** The tapped image's preview, or null while closed. */
+  readonly openUri: string | null;
+  readonly onClose: () => void;
+}) {
+  const index = props.attachments.findIndex((image) => image.previewUri === props.openUri);
+  const images =
+    index < 0
+      ? props.openUri === null
+        ? []
+        : [{ uri: props.openUri }]
+      : props.attachments.map((image) => ({ uri: image.previewUri }));
+  return (
+    <ImageViewing
+      images={images}
+      keyExtractor={(_image, at) => props.attachments[at]?.id ?? String(at)}
+      imageIndex={Math.max(0, index)}
+      visible={props.openUri !== null}
+      onRequestClose={props.onClose}
+      swipeToCloseEnabled
+      doubleTapToZoomEnabled
+    />
   );
 }

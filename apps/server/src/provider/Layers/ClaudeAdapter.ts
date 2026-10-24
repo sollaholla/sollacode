@@ -79,7 +79,14 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { prepareModelCompatibleImage } from "../../modelImageCompatibility.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { spawnClaudeProcessGroup } from "../claudeProcessGroup.ts";
 import { type ContextRecoveryReason, withContextRecoveryReminder } from "../contextRecovery.ts";
+import {
+  claudeTurnUsage,
+  EMPTY_CLAUDE_USAGE_LEDGER,
+  type ClaudeUsageLedger,
+} from "../claudeTurnUsage.ts";
 import {
   isMissingClaudeSdkExecutable,
   resolveClaudeSdkExecutablePath,
@@ -203,9 +210,42 @@ interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
 }
 
+/**
+ * Permission updates applied for an "Always allow this session" decision.
+ *
+ * Claude Code's suggestions are reused when present but rescoped to
+ * `destination: "session"` — echoing them verbatim would persist the
+ * session-only choice as a permanent rule (suggestions typically target
+ * `localSettings`, i.e. `.claude/settings.local.json`). When Claude Code
+ * offers no suggestion — common for MCP tools — fall back to a whole-tool
+ * session allow rule so the decision still sticks for the session instead of
+ * silently degrading into a one-shot accept.
+ */
+function toSessionPermissionUpdates(
+  toolName: string,
+  suggestions: ReadonlyArray<PermissionUpdate> | undefined,
+): Array<PermissionUpdate> {
+  const sessionScoped = (suggestions ?? []).map(
+    (suggestion): PermissionUpdate => ({ ...suggestion, destination: "session" }),
+  );
+  if (sessionScoped.length > 0) {
+    return sessionScoped;
+  }
+  return [
+    {
+      type: "addRules",
+      rules: [{ toolName }],
+      behavior: "allow",
+      destination: "session",
+    },
+  ];
+}
+
 interface PendingUserInput {
   readonly questions: ReadonlyArray<UserInputQuestion>;
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  /** Unparks the waiting handler as cancelled. Session teardown must run it. */
+  readonly cancel: Effect.Effect<void>;
 }
 
 interface ToolInFlight {
@@ -254,6 +294,8 @@ interface ClaudeSessionContext {
   autoCompactionBaseWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
+  /** Session usage as of the last result; undefined until a resumed session reports one. */
+  usageLedger: ClaudeUsageLedger | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   lastApiError: { readonly message: string; readonly retryable: boolean } | undefined;
@@ -1663,6 +1705,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const managedNativeEventLogger =
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
 
+  // Windows has no process groups, so there the SDK spawns the CLI itself.
+  const groupClaudeProcesses = (yield* HostProcessPlatform) !== "win32";
   const createQuery =
     options?.createQuery ??
     (async (input: {
@@ -1675,7 +1719,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // still answers the resulting tool call with "No such tool available".
       // Warm startup completes the initialize handshake (including always-load
       // MCP servers) before releasing the first prompt to Claude.
-      const warmQuery = await startup({ options: input.options });
+      const warmQuery = await startup({
+        options:
+          !groupClaudeProcesses || input.options.spawnClaudeCodeProcess !== undefined
+            ? input.options
+            : { ...input.options, spawnClaudeCodeProcess: spawnClaudeProcessGroup },
+      });
       return warmQuery.query(input.prompt) as ClaudeQueryRuntime;
     });
   const createMcpProxy = options?.createMcpProxy ?? createClaudeMcpSdkProxy;
@@ -2221,6 +2270,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (accumulatedTotalProcessedTokens !== undefined) {
       context.lastKnownTotalProcessedTokens = accumulatedTotalProcessedTokens;
     }
+    const turnUsage = claudeTurnUsage({
+      ledger: context.usageLedger,
+      result,
+      model: context.currentApiModelId,
+    });
+    context.usageLedger = turnUsage.ledger;
 
     const contextUsageSnapshot = yield* queryCurrentContextUsage(
       context,
@@ -2303,6 +2358,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(typeof result?.total_cost_usd === "number"
             ? { totalCostUsd: result.total_cost_usd }
             : {}),
+          ...(turnUsage.usage ? { turnUsage: turnUsage.usage } : {}),
           ...(errorMessage ? { errorMessage } : {}),
           ...(failureKind !== undefined ? { failureKind } : {}),
         },
@@ -2379,6 +2435,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(typeof result?.total_cost_usd === "number"
           ? { totalCostUsd: result.total_cost_usd }
           : {}),
+        ...(turnUsage.usage ? { turnUsage: turnUsage.usage } : {}),
         ...(errorMessage ? { errorMessage } : {}),
         ...(failureKind !== undefined ? { failureKind } : {}),
       },
@@ -3491,6 +3548,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
     context.pendingApprovals.clear();
 
+    // Same reason as the approvals above: a request nobody can answer any more
+    // must not stay open, or the thread can never be settled.
+    for (const pending of [...context.pendingUserInputs.values()]) {
+      yield* pending.cancel;
+    }
+
     if (context.turnState) {
       yield* completeTurn(context, "interrupted", "Session stopped.");
     }
@@ -3500,13 +3563,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       method: "session/prompt",
       detail: `Claude session for thread '${context.session.threadId}' stopped before queued input reached the SDK.`,
     });
+    // Shut the queue before failing what is waiting on it: a send that slips
+    // in between would otherwise enqueue onto a queue nobody reads, with an
+    // acceptance this loop has already passed.
+    yield* Queue.shutdown(context.promptQueue);
     yield* Effect.forEach(
       context.pendingPromptAcceptances,
       (acceptance) => Deferred.fail(acceptance, stoppedPromptError),
       { discard: true },
     );
     context.pendingPromptAcceptances.clear();
-    yield* Queue.shutdown(context.promptQueue);
 
     const streamFiber = context.streamFiber;
     context.streamFiber = undefined;
@@ -3820,9 +3886,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
         const answersDeferred = yield* Deferred.make<ProviderUserInputAnswers>();
         let aborted = false;
+        const settleAsAborted = Effect.suspend(() => {
+          if (!pendingUserInputs.has(requestId)) {
+            return Effect.void;
+          }
+          aborted = true;
+          pendingUserInputs.delete(requestId);
+          return Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers).pipe(
+            Effect.ignore,
+          );
+        });
         const pendingInput: PendingUserInput = {
           questions,
           answers: answersDeferred,
+          cancel: settleAsAborted,
         };
 
         // Emit user-input.requested so the UI can present the questions.
@@ -3857,12 +3934,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
         // Handle abort (e.g. turn interrupted while waiting for user input).
         const onAbort = () => {
-          if (!pendingUserInputs.has(requestId)) {
-            return;
-          }
-          aborted = true;
-          pendingUserInputs.delete(requestId);
-          runFork(Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers));
+          runFork(settleAsAborted);
         };
         callbackOptions.signal.addEventListener("abort", onAbort, {
           once: true,
@@ -4053,9 +4125,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           return {
             behavior: "allow",
             updatedInput: toolInput,
-            ...(decision === "acceptForSession" && pendingApproval.suggestions
+            ...(decision === "acceptForSession"
               ? {
-                  updatedPermissions: [...pendingApproval.suggestions],
+                  updatedPermissions: toSessionPermissionUpdates(
+                    toolName,
+                    pendingApproval.suggestions,
+                  ),
                 }
               : {}),
           } satisfies PermissionResult;
@@ -4150,16 +4225,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
 
+        const settleAsAborted = Effect.suspend(() => {
+          if (!pendingUserInputs.has(requestId)) return Effect.void;
+          aborted = true;
+          pendingUserInputs.delete(requestId);
+          return Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers).pipe(
+            Effect.ignore,
+          );
+        });
         pendingUserInputs.set(requestId, {
           questions,
           answers: answersDeferred,
+          cancel: settleAsAborted,
         });
 
         const onAbort = () => {
-          if (!pendingUserInputs.has(requestId)) return;
-          aborted = true;
-          pendingUserInputs.delete(requestId);
-          runFork(Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers));
+          runFork(settleAsAborted);
         };
         callbackOptions.signal.addEventListener("abort", onAbort, { once: true });
 
@@ -4606,6 +4687,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         autoCompactionBaseWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
+        usageLedger: existingResumeSessionId === undefined ? EMPTY_CLAUDE_USAGE_LEDGER : undefined,
         lastAssistantUuid: effectiveResumeSessionAt,
         lastThreadStartedId: undefined,
         lastApiError: undefined,
@@ -4748,10 +4830,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
-  const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+  const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input, opts) {
     const context = yield* requireSession(input.threadId);
+    // A synthetic turn is the agent working on its own between prompts, so the
+    // session reads as running and orchestration asks to steer into it. There
+    // is no prompt to join: like any other send, this one closes it and starts
+    // the person's turn. Refusing instead left a queued message retrying every
+    // second for good, since a synthetic turn an interrupt cannot reach never
+    // ends (thread 3eaaae86, 2026-10-11).
+    const liveSteerTarget =
+      input.liveSteerTarget !== undefined &&
+      context.turnState?.synthetic === true &&
+      context.turnState.turnId === input.liveSteerTarget.activeTurnId
+        ? undefined
+        : input.liveSteerTarget;
     const requireExactLiveSteerTarget = () => {
-      const target = input.liveSteerTarget;
+      const target = liveSteerTarget;
       if (target === undefined) return Effect.void;
       const turnState = context.turnState?.synthetic !== true ? context.turnState : undefined;
       if (
@@ -4908,19 +5002,27 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // final queue boundary so a completed turn or successor cannot inherit a
     // steer that orchestration targeted at its predecessor.
     yield* requireExactLiveSteerTarget();
+    const stoppedBeforeQueue = new ProviderAdapterRequestError({
+      provider: PROVIDER,
+      method: liveSteerTarget === undefined ? "session/prompt" : "turn/steer",
+      detail: `Claude session for thread '${input.threadId}' stopped before queued input reached the SDK.`,
+    });
+    if (context.stopped) {
+      return yield* stoppedBeforeQueue;
+    }
     const promptAcceptance =
-      input.liveSteerTarget !== undefined || input.messageId !== undefined
+      liveSteerTarget !== undefined || input.messageId !== undefined
         ? yield* Deferred.make<void, ProviderAdapterRequestError>()
         : undefined;
     if (promptAcceptance !== undefined) {
       context.pendingPromptAcceptances.add(promptAcceptance);
     }
-    yield* Queue.offer(context.promptQueue, {
+    const queued = yield* Queue.offer(context.promptQueue, {
       type: "message",
       turnId,
       message,
       ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
-      ...(input.liveSteerTarget !== undefined ? { liveSteerTarget: input.liveSteerTarget } : {}),
+      ...(liveSteerTarget !== undefined ? { liveSteerTarget } : {}),
       ...(promptAcceptance !== undefined ? { acceptance: promptAcceptance } : {}),
     }).pipe(
       Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)),
@@ -4932,6 +5034,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }),
       ),
     );
+    // A stopped session's queue refuses the offer without failing it, and
+    // nothing would ever settle this acceptance. Awaiting it anyway hung the
+    // send for good, and with a steer it held the thread's steer lane: every
+    // later message waited for the turn to end, for hours, across restarts.
+    if (!queued) {
+      if (promptAcceptance !== undefined) {
+        context.pendingPromptAcceptances.delete(promptAcceptance);
+      }
+      return yield* stoppedBeforeQueue;
+    }
     if (promptAcceptance !== undefined) {
       yield* Deferred.await(promptAcceptance).pipe(
         Effect.ensuring(
@@ -4941,6 +5053,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ),
       );
     }
+    // The SDK has taken the prompt into its agent loop. A steer's caller holds
+    // the thread's steer order until this point and no longer, so the next
+    // message does not wait on this one's delivery bookkeeping.
+    yield* opts?.onNativeDispatch ?? Effect.void;
 
     return {
       threadId: context.session.threadId,

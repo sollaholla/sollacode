@@ -517,23 +517,35 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
-      it.effect("returns unavailable when codex is missing", () =>
+      it.effect.each([
+        "codex",
+        "/Applications/Custom App.app/Contents/Resources/codex",
+        "C:\\Tools\\codex.exe",
+      ])("explains how to configure a Codex executable that cannot start: %s", (binaryPath) =>
         Effect.gen(function* () {
-          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
-            Effect.fail(
+          const settings = { ...defaultCodexSettings, binaryPath };
+          const status = yield* checkCodexProviderStatus(settings, (input) => {
+            assert.strictEqual(input.binaryPath, binaryPath);
+            return Effect.fail(
               new CodexErrors.CodexAppServerSpawnError({
-                command: "codex app-server",
-                cause: new Error("spawn codex ENOENT"),
+                command: `${binaryPath} app-server`,
+                cause: new Error("spawn ENOENT"),
               }),
-            ),
-          );
+            );
+          });
           assert.strictEqual(status.status, "error");
           assert.strictEqual(status.installed, false);
           assert.strictEqual(status.auth.status, "unknown");
-          assert.strictEqual(
+          assert.include(status.message, binaryPath);
+          assert.include(
             status.message,
-            "Codex CLI (`codex`) is not installed or not on PATH.",
+            "Settings → Providers → Codex → Binary path on the server",
           );
+          assert.strictEqual(
+            status.message?.includes("Installing ChatGPT or Codex desktop"),
+            binaryPath === "codex",
+          );
+          assert.strictEqual(settings.binaryPath, binaryPath);
         }),
       );
 
@@ -688,6 +700,59 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         assert.strictEqual(
           mergeProviderSnapshot(previousProvider, switchedAccount).accountUsage,
           undefined,
+        );
+      });
+
+      // 2026-10-14: a custom id removed in Settings stayed in the picker for
+      // good, because every refresh carried it over as a "missing" model.
+      it("carries discovered models over a refresh but never a removed custom model", () => {
+        const discovered = {
+          slug: "claude-sonnet-5-5",
+          name: "Claude Sonnet 5.5",
+          isCustom: false,
+          capabilities: null,
+        } as const;
+        const removedCustom = {
+          slug: "opus-5",
+          name: "opus-5",
+          isCustom: true,
+          capabilities: null,
+        } as const;
+        const builtIn = {
+          slug: "claude-opus-5",
+          name: "Claude Opus 5",
+          isCustom: false,
+          capabilities: null,
+        } as const;
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-10-14T00:00:00.000Z",
+          version: "2.1.290",
+          models: [builtIn, discovered, removedCustom],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const refreshedProvider = {
+          ...previousProvider,
+          checkedAt: "2026-10-14T00:01:00.000Z",
+          models: [builtIn],
+        } satisfies ServerProvider;
+
+        assert.deepStrictEqual(mergeProviderSnapshot(previousProvider, refreshedProvider).models, [
+          builtIn,
+          discovered,
+        ]);
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(
+            { ...previousProvider, models: [removedCustom] },
+            { ...refreshedProvider, models: [] },
+          ).models,
+          [],
         );
       });
 
@@ -1686,10 +1751,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               "Real Codex probe against a missing binary should surface as 'error' in the aggregator",
             );
             assert.strictEqual(codexPersonal?.installed, false);
-            assert.strictEqual(
-              codexPersonal?.message,
-              "Codex CLI (`codex`) is not installed or not on PATH.",
-            );
+            assert.include(codexPersonal?.message, missingBinary);
+            assert.include(codexPersonal?.message, "Settings → Providers → Codex → Binary path");
           }).pipe(Effect.provide(runtimeServices));
         }),
       );
@@ -2722,10 +2785,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           assert.strictEqual(status.status, "error");
           assert.strictEqual(status.installed, false);
           assert.strictEqual(status.auth.status, "unknown");
-          assert.strictEqual(
-            status.message,
-            "Claude Agent CLI (`claude`) is not installed or not on PATH.",
-          );
+          assert.strictEqual(status.message, "Claude Agent CLI (`claude`) was not found on PATH.");
         }).pipe(Effect.provide(failingSpawnerLayer("spawn claude ENOENT"))),
       );
 

@@ -1,3 +1,6 @@
+/** Room the macOS window buttons take at the top left of a desktop window, outside full screen. */
+export const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "90px";
+
 export const COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS =
   "[[data-sidebar-state=collapsed]_&]:pl-[var(--workspace-titlebar-content-left)]";
 

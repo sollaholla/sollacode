@@ -3,7 +3,6 @@ import { describe, expect, it } from "@effect/vitest";
 import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
 import {
   buildGrokCollaborationInstructions,
-  extractCompletedProposedPlans,
   grokCollaborationPromptBlock,
   resolveGrokPermissionAction,
 } from "./GrokCollaboration.ts";
@@ -32,24 +31,6 @@ describe("grokCollaborationPromptBlock", () => {
       type: "text",
       text: buildGrokCollaborationInstructions("plan"),
     });
-  });
-});
-
-describe("extractCompletedProposedPlans", () => {
-  it("extracts complete proposed-plan blocks and ignores unfinished ones", () => {
-    expect(
-      extractCompletedProposedPlans(`
-Some preamble
-<proposed_plan>
-# Auth rewrite
-
-Use the existing session store.
-</proposed_plan>
-trailing text
-<proposed_plan>
-# Incomplete
-`),
-    ).toEqual(["# Auth rewrite\n\nUse the existing session store."]);
   });
 });
 

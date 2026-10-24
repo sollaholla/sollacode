@@ -19,13 +19,22 @@ background.
 
 Side-chat agents receive private concurrency guidance. They know they are working beside a main
 conversation and avoid workspace changes that could interfere with it unless the user explicitly
-asks for those changes in the side chat.
+asks for those changes in the side chat. The guidance exists because a side chat shares the main
+thread's workspace while both run. For the same reason, a side chat opened from a side chat joins
+the same main thread's panel instead of nesting under it. That works from the **Side Chat** button
+in a side chat you have open full-screen: Solla opens the new one beside it in the main thread.
+Before 0.1.726 that button was disabled in a side chat, although the side chat's agent could open
+one.
 
 Closing a side chat always asks for confirmation. Confirming closes its panel tab and archives the
 backing conversation instead of deleting it, so it can be restored later from Archived. Cancelling
 leaves both the tab and conversation untouched. A side chat that is still running must be stopped
 before it can be archived. In an ordinary project, promote it to keep it as a normal thread;
 promoted threads appear in the project sidebar and retain their independent provider conversation.
+A promoted thread is a main chat in every way: it opens its own side chats, and its agent is told
+on its next turn that the side-chat guidance no longer applies, so it edits files and runs commands
+like any other thread. Before 0.1.725 that agent was never told, and kept treating itself as a
+read-only helper of a conversation it no longer belonged to.
 Side chats belonging to custom agents stay attached to their agent and cannot be promoted.
 Previously promoted agent side chats are reattached to their original agent when the server starts,
 preserving the existing conversation.

@@ -365,6 +365,27 @@ export const ORCHESTRATOR_TOOLS: ReadonlyArray<OrchestratorToolDefinition> = [
   },
   {
     type: "function",
+    name: "close_proposed_plan",
+    description:
+      "Close the plan a thread is waiting on without building it, so the thread stops waiting. Use it when the user tells you to drop, dismiss or close that plan, including for a thread that can no longer take messages. Nothing is sent to the thread, and the plan's card can reopen it.",
+    minAuthority: "send",
+    // Reversible from the plan's card and sends nothing, like settling.
+    requiresConfirmation: false,
+    parameters: {
+      type: "object",
+      properties: {
+        thread: {
+          type: "string",
+          description: "The thread whose waiting plan should be closed, by name or id.",
+        },
+        ...REASON_PARAMETER,
+      },
+      required: ["thread"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
     name: "get_usage",
     description:
       "Read how much the user has used: each provider's remaining quota — the same figures the Providers tab shows, with the percentage used and when each window resets — and separately the orchestrator's own voice usage, in spoken minutes and estimated cost. Use it whenever the user asks how much they have used, how much is left, whether they are near a limit, or what talking to you is costing.",

@@ -264,6 +264,16 @@ export const RemoteControlHostReportStatusInput = Schema.Struct({
 });
 export type RemoteControlHostReportStatusInput = typeof RemoteControlHostReportStatusInput.Type;
 
+export const RemoteControlHostAcknowledgeInputInput = Schema.Struct({
+  clientId: RemoteControlClientId,
+  connectionId: RemoteControlConnectionId,
+  sessionId: RemoteControlSessionId,
+  sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  applied: Schema.Boolean,
+});
+export type RemoteControlHostAcknowledgeInputInput =
+  typeof RemoteControlHostAcknowledgeInputInput.Type;
+
 export const RemoteControlHostEndInput = Schema.Struct({
   clientId: RemoteControlClientId,
   connectionId: RemoteControlConnectionId,
@@ -364,6 +374,8 @@ export const RemoteControlSendInputInput = Schema.Struct({
   sessionId: RemoteControlSessionId,
   sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   input: RemoteControlInput,
+  /** Requests a receipt after native input injection, not merely broker delivery. */
+  acknowledge: Schema.optional(Schema.Boolean),
 });
 export type RemoteControlSendInputInput = typeof RemoteControlSendInputInput.Type;
 
@@ -389,6 +401,7 @@ export const RemoteControlHostStreamEvent = Schema.Union([
     sessionId: RemoteControlSessionId,
     sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     input: RemoteControlInput,
+    acknowledge: Schema.optional(Schema.Boolean),
   }),
   // A controller attached (or re-attached) to an approved session's stream.
   // WebM over MSE cannot decode from the middle of a container — Chromium's
@@ -404,6 +417,12 @@ export const RemoteControlHostStreamEvent = Schema.Union([
 export type RemoteControlHostStreamEvent = typeof RemoteControlHostStreamEvent.Type;
 
 export const RemoteControlControllerStreamEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("input-acknowledged"),
+    sessionId: RemoteControlSessionId,
+    sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    applied: Schema.Boolean,
+  }),
   Schema.Struct({
     type: Schema.Literal("session-updated"),
     session: RemoteControlSession,

@@ -3,7 +3,11 @@ import { useNavigate } from "@tanstack/react-router";
 
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
-import { visibleSettingsNavItems, type SettingsSectionPath } from "./SettingsSidebarNav";
+import {
+  isSettingsSectionActive,
+  visibleSettingsNavItems,
+  type SettingsSectionPath,
+} from "./SettingsSidebarNav";
 
 /**
  * Phone-held-upright only.
@@ -50,7 +54,7 @@ export function SettingsMobileTabs({ pathname }: { pathname: string }): React.JS
     >
       {visibleSettingsNavItems().map((item) => {
         const Icon = item.icon;
-        const isActive = pathname === item.to;
+        const isActive = isSettingsSectionActive(pathname, item.to);
         return (
           <button
             key={item.to}
@@ -59,7 +63,8 @@ export function SettingsMobileTabs({ pathname }: { pathname: string }): React.JS
             aria-current={isActive ? "page" : undefined}
             data-settings-mobile-tab={item.to}
             onClick={() => {
-              if (isActive) return;
+              // Below a section (one project's page), its tab leads back up.
+              if (pathname === item.to) return;
               void navigate({ to: item.to as SettingsSectionPath, replace: true });
             }}
             className={cn(

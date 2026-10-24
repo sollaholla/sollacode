@@ -20,6 +20,27 @@ import type { ThreadWorkKind } from "../persistence/Services/ThreadWorkObligatio
 
 type AssistantMessageEvent = Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
 
+/**
+ * A person owes the thread a decision: an action approval, a provider
+ * question, or a proposed plan waiting on approval.
+ *
+ * Synthetic follow-up turns (agent continuation, resumes, housekeeping) wait
+ * until it is answered - one started in the meantime would either act for the
+ * person (an Agent-mode "continue" straight past its own plan) or bury the
+ * decision under an unrelated exchange. Not a liveness or delivery gate: the
+ * person's own reply must always go through.
+ */
+export function isAwaitingPersonDecision(
+  thread: Pick<
+    OrchestrationThreadShell,
+    "hasPendingApprovals" | "hasPendingUserInput" | "hasActionableProposedPlan"
+  >,
+): boolean {
+  return (
+    thread.hasPendingApprovals || thread.hasPendingUserInput || thread.hasActionableProposedPlan
+  );
+}
+
 export function shouldAutoContinueCompletedAgentTurn(
   thread: OrchestrationThreadShell,
   input: {
@@ -32,7 +53,7 @@ export function shouldAutoContinueCompletedAgentTurn(
   if (thread.latestTurn?.turnId !== input.turnId || thread.latestTurn.state !== "completed") {
     return false;
   }
-  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
+  if (isAwaitingPersonDecision(thread)) return false;
   if (thread.session?.activeTurnId !== null && thread.session?.activeTurnId !== undefined) {
     return false;
   }
@@ -548,8 +569,7 @@ export function shouldDispatchStartupResume(
   if (
     thread.archivedAt !== null ||
     thread.settledOverride === "settled" ||
-    thread.hasPendingApprovals ||
-    thread.hasPendingUserInput ||
+    isAwaitingPersonDecision(thread) ||
     input.hasLaterRealUserTurn
   ) {
     return false;
@@ -619,8 +639,7 @@ export function shouldResumeProviderAuthenticationPausedThread(
     session.activeTurnId !== null ||
     !isProviderAuthenticationFailure(session.lastError ?? "") ||
     latestTurn?.state !== "completed" ||
-    thread.hasPendingApprovals ||
-    thread.hasPendingUserInput
+    isAwaitingPersonDecision(thread)
   ) {
     return false;
   }

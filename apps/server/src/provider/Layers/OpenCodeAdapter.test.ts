@@ -71,6 +71,7 @@ const runtimeMock = {
     authHeaders: [] as Array<string | null>,
     abortCalls: [] as string[],
     closeCalls: [] as string[],
+    revertMessageID: undefined as string | undefined,
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
     promptCalls: [] as Array<unknown>,
     promptAsyncError: null as Error | null,
@@ -98,6 +99,7 @@ const runtimeMock = {
     this.state.authHeaders.length = 0;
     this.state.abortCalls.length = 0;
     this.state.closeCalls.length = 0;
+    this.state.revertMessageID = undefined;
     this.state.revertCalls.length = 0;
     this.state.promptCalls.length = 0;
     this.state.promptAsyncError = null;
@@ -185,6 +187,9 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           return {
             data: {
               id: sessionID,
+              ...(runtimeMock.state.revertMessageID
+                ? { revert: { messageID: runtimeMock.state.revertMessageID } }
+                : {}),
               ...(directory ? { directory } : {}),
               ...runtimeMock.state.sessionUsageById.get(sessionID),
             },
@@ -228,17 +233,16 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             ...(messageID ? { messageID } : {}),
           });
           if (!messageID) {
-            runtimeMock.state.messages = [];
-            return;
+            throw new Error("Expected messageID");
           }
-
-          const targetIndex = runtimeMock.state.messages.findIndex(
-            (entry) => entry.info.id === messageID,
-          );
-          runtimeMock.state.messages =
-            targetIndex >= 0
-              ? runtimeMock.state.messages.slice(0, targetIndex + 1)
-              : runtimeMock.state.messages;
+          let lastUserID: string | undefined;
+          for (const entry of runtimeMock.state.messages) {
+            if (entry.info.role === "user") lastUserID = entry.info.id;
+            if (entry.info.id === messageID && entry.parts.length > 0) {
+              runtimeMock.state.revertMessageID = lastUserID ?? messageID;
+              break;
+            }
+          }
         },
       },
       event: {
@@ -457,6 +461,25 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       );
       NodeAssert.ok(deltas.every((event) => event.turnId === turn.turnId));
       NodeAssert.equal(events.filter((event) => event.type === "item.completed").length, 1);
+    }),
+  );
+
+  it.effect("turns a plan block in assistant text into a plan for the turn", () =>
+    Effect.gen(function* () {
+      const { events, turn } = yield* replay([
+        message(),
+        update({
+          ...textPart,
+          text: "Here is the plan.\n<proposed_plan>\n# Ship it\n\n- Step one\n</proposed_plan>\n",
+          time: { start: 1, end: 2 },
+        }),
+      ]);
+      const plans = events.flatMap((event) =>
+        event.type === "turn.proposed.completed"
+          ? [[event.turnId, event.itemId, event.payload.planMarkdown]]
+          : [],
+      );
+      NodeAssert.deepEqual(plans, [[turn.turnId, "proposed-plan-0", "# Ship it\n\n- Step one"]]);
     }),
   );
 
@@ -809,6 +832,45 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         schemaVersion: 1,
         sessionId: "ses_persisted",
       });
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("asks the plan agent for a plan block only in Plan mode", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-plan-mode");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const modelSelection = createModelSelection(
+        ProviderInstanceId.make("opencode"),
+        "anthropic/sonnet",
+      );
+      const planTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "plan the change",
+        interactionMode: "plan",
+        modelSelection,
+      });
+      const planCall = runtimeMock.state.promptCalls[0] as { agent?: string; system?: string };
+      // The plan agent keeps the turn read-only; the system block is what asks
+      // for the `<proposed_plan>` handoff that becomes the plan card.
+      NodeAssert.equal(planCall.agent, "plan");
+      NodeAssert.ok(planCall.system?.includes("<proposed_plan>"));
+      yield* adapter.interruptTurn(threadId, planTurn.turnId);
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "build it",
+        interactionMode: "default",
+        modelSelection,
+      });
+      const buildCall = runtimeMock.state.promptCalls.at(-1) as { system?: string };
+      NodeAssert.equal(buildCall.system, undefined);
 
       yield* adapter.stopSession(threadId);
     }),
@@ -1695,7 +1757,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }).pipe(Effect.provide(adapterLayer));
   });
 
-  it.effect("reverts the full thread when rollback removes every assistant turn", () =>
+  it.effect("reverts the first removed assistant message and returns only retained turns", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
       const threadId = asThreadId("thread-rollback-all");
@@ -1706,22 +1768,62 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
 
       runtimeMock.state.messages = [
+        { info: { id: "user-1", role: "user" }, parts: [] },
         {
           info: { id: "assistant-1", role: "assistant" },
-          parts: [],
+          parts: [{ id: "part-1", type: "text", text: "first answer" }],
         },
+        { info: { id: "user-2", role: "user" }, parts: [] },
         {
           info: { id: "assistant-2", role: "assistant" },
-          parts: [],
+          parts: [{ id: "part-2", type: "text", text: "second answer" }],
         },
       ];
 
-      const snapshot = yield* adapter.rollbackThread(threadId, 2);
+      for (const numTurns of [0, 1, 2, 3]) {
+        runtimeMock.state.revertMessageID = undefined;
+        runtimeMock.state.revertCalls.length = 0;
+        const snapshot = yield* adapter.rollbackThread(threadId, numTurns);
+        NodeAssert.deepEqual(
+          runtimeMock.state.revertCalls,
+          numTurns === 0
+            ? []
+            : [
+                {
+                  sessionID: "http://127.0.0.1:9999/session",
+                  messageID: numTurns === 1 ? "assistant-2" : "assistant-1",
+                },
+              ],
+        );
+        NodeAssert.deepEqual(
+          snapshot.turns.map((turn) => turn.id),
+          ["assistant-1", "assistant-2"].slice(0, Math.max(0, 2 - numTurns)),
+        );
+      }
+      runtimeMock.state.revertMessageID = undefined;
+      for (const remaining of [1, 0]) {
+        const snapshot = yield* adapter.rollbackThread(threadId, 1);
+        NodeAssert.equal(snapshot.turns.length, remaining);
+        NodeAssert.deepEqual((yield* adapter.readThread(threadId)).turns, snapshot.turns);
+      }
+      NodeAssert.deepEqual(
+        runtimeMock.state.revertCalls.slice(-2).map((call) => call.messageID),
+        ["assistant-2", "assistant-1"],
+      );
+      runtimeMock.state.revertMessageID = undefined;
+      runtimeMock.state.messages = runtimeMock.state.messages.filter(
+        (entry) => entry.info.id !== "user-2",
+      );
+      const sharedUserSnapshot = yield* adapter.rollbackThread(threadId, 1);
+      NodeAssert.equal(runtimeMock.state.revertMessageID, "user-1");
+      NodeAssert.deepEqual(sharedUserSnapshot.turns, []);
+      NodeAssert.deepEqual((yield* adapter.readThread(threadId)).turns, []);
 
-      NodeAssert.deepEqual(runtimeMock.state.revertCalls, [
-        { sessionID: "http://127.0.0.1:9999/session" },
-      ]);
-      NodeAssert.deepEqual(snapshot.turns, []);
+      runtimeMock.state.messages = [];
+      runtimeMock.state.revertCalls.length = 0;
+      const emptySnapshot = yield* adapter.rollbackThread(threadId, 1);
+      NodeAssert.deepEqual(runtimeMock.state.revertCalls, []);
+      NodeAssert.deepEqual(emptySnapshot.turns, []);
     }),
   );
 

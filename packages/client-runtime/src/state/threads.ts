@@ -73,9 +73,8 @@ const TRANSPORT_RESET_AFTER_STALLS = 3;
 function shouldPersistThread(thread: OrchestrationThread): boolean {
   const status = thread.session?.status;
   if (status === "starting" || status === "running") return false;
-  // A snapshot with a still-streaming bubble is a lie once restored: it
-  // re-renders minutes-old mid-turn text as if it were current. Only settled
-  // bodies are worth caching.
+  // During healthy streaming, defer persistence until the turn settles. A
+  // disconnect separately saves the active snapshot for offline rendering.
   return !thread.messages.some((message) => message.streaming === true);
 }
 
@@ -208,10 +207,25 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   const setDisconnected = Effect.gen(function* () {
     yield* Ref.set(awaitingCompletion, false);
+    const previous = yield* SubscriptionRef.get(state);
     yield* SubscriptionRef.update(state, (current) => ({
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
     }));
+    // Save active work once when the connection drops, so revisiting the thread
+    // offline restores what was visible instead of an older, settled conversation.
+    // Keep serialization off the per-token path while the connection is healthy.
+    const current = yield* SubscriptionRef.get(state);
+    if (
+      (previous.status === "live" || previous.status === "synchronizing") &&
+      Option.isSome(current.data)
+    ) {
+      yield* Queue.offer(persistence, {
+        snapshotSequence: yield* SubscriptionRef.get(lastSequence),
+        thread: current.data.value,
+        ...(current.history === null ? {} : { history: current.history }),
+      });
+    }
   });
   const setStreamError = (cause: Cause.Cause<unknown>) =>
     Ref.set(awaitingCompletion, false).pipe(
@@ -578,7 +592,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         Option.match(current.data, {
           onNone: () => Effect.void,
           onSome: (thread) =>
-            shouldPersistThread(thread)
+            shouldPersistThread(thread) || current.status === "cached"
               ? persist({
                   snapshotSequence,
                   thread,

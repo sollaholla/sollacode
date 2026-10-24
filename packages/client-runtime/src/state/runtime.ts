@@ -458,31 +458,54 @@ function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
   );
   const family = Atom.family((key: string) => {
     const target = parseEnvironmentRpcKey<Input>(key);
-    const idleTtlMs = options.idleTtlMs ?? 5 * 60_000;
-    const queryAtom = runtime
-      .atom((get) => {
-        const generation = Option.getOrNull(
-          AsyncResult.value(get(rpcGenerationAtom(target.environmentId))),
-        );
-        if (generation === null) {
-          return Effect.never;
-        }
-        return runInEnvironment(target.environmentId, options.execute(target.input));
-      })
-      .pipe(
-        Atom.swr({
-          staleTime: options.staleTimeMs ?? 30_000,
-          revalidateOnMount: true,
-        }),
-        Atom.setIdleTTL(idleTtlMs),
+    const queryAtom = runtime.atom((get) => {
+      const generation = Option.getOrNull(
+        AsyncResult.value(get(rpcGenerationAtom(target.environmentId))),
       );
-    return (
-      options.refreshIntervalMs === undefined
-        ? queryAtom
-        : queryAtom.pipe(Atom.withRefresh(options.refreshIntervalMs))
-    ).pipe(Atom.setIdleTTL(idleTtlMs), Atom.withLabel(`${options.label}:${key}`));
+      if (generation === null) {
+        return Effect.never;
+      }
+      return runInEnvironment(target.environmentId, options.execute(target.input));
+    });
+    return cachedQueryAtom(queryAtom, options).pipe(Atom.withLabel(`${options.label}:${key}`));
   });
   return (target) => family(environmentRpcKey(target));
+}
+
+/**
+ * Wraps a query in stale-while-revalidate caching, an idle TTL, and an
+ * optional periodic refresh.
+ *
+ * The refresh sits inside the SWR wrapper. Wrapped the other way round, the
+ * refresh still pending when the last reader left fired once more and pinned
+ * the nodes for good: the next reader, even a day later, got that value with
+ * no revalidation. Signed asset links came back many hours past their
+ * one-hour expiry, and every image that used one failed.
+ */
+export function cachedQueryAtom<A, E>(
+  queryAtom: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+  options: {
+    readonly staleTimeMs?: number;
+    readonly idleTtlMs?: number;
+    readonly refreshIntervalMs?: number;
+  },
+): Atom.Atom<AsyncResult.AsyncResult<A, E>> {
+  const idleTtlMs = options.idleTtlMs ?? 5 * 60_000;
+  const refreshing =
+    options.refreshIntervalMs === undefined
+      ? queryAtom.pipe(Atom.setIdleTTL(idleTtlMs))
+      : queryAtom.pipe(
+          Atom.setIdleTTL(idleTtlMs),
+          Atom.withRefresh(options.refreshIntervalMs),
+          Atom.setIdleTTL(idleTtlMs),
+        );
+  return refreshing.pipe(
+    Atom.swr({
+      staleTime: options.staleTimeMs ?? 30_000,
+      revalidateOnMount: true,
+    }),
+    Atom.setIdleTTL(idleTtlMs),
+  );
 }
 
 export function createEnvironmentSubscriptionAtomFamily<R, ER, Input, A, E>(

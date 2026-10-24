@@ -382,6 +382,10 @@ const PROVIDER_UNUSABLE_SIGNATURES: ReadonlyArray<RegExp> = [
   /\bno credit left\b/iu,
   /\bHTTP 402\b/iu,
   /\bpayment required\b/iu,
+  // The Meta API's typed billing refusal, as Muse relays it: "API error 402
+  // […]: Billing verification failed. … (billing_error)". Muse retried it
+  // eight times, restarting its host each time (2026-10-12).
+  /\bbilling_error\b/iu,
   /\bstream idle timeout after \d+\s*ms\b/iu,
   /\bmodel not found\b/iu,
   /\bmodel is (?:no longer |not )available\b/iu,
@@ -407,6 +411,7 @@ const ACCOUNT_WIDE_UNUSABLE_SIGNATURES: ReadonlyArray<RegExp> = [
   /\bno credit left\b/iu,
   /\bHTTP 402\b/iu,
   /\bpayment required\b/iu,
+  /\bbilling_error\b/iu,
   // A protocol rejection is the provider's, not the model's: every model
   // behind it speaks the same protocol and rejects the same request.
   ...PROTOCOL_REJECTION_SIGNATURES,

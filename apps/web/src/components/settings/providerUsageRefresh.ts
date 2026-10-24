@@ -6,6 +6,7 @@ const REFRESHABLE_USAGE_DRIVERS = new Set([
   "grok",
   "antigravity",
   "deepcode",
+  "kimi",
 ]);
 export const PROVIDER_USAGE_REFRESH_FAILURE_BACKOFF_MS = 30_000;
 

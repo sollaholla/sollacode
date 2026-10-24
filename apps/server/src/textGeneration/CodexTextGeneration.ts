@@ -420,6 +420,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       const { prompt, outputSchema } = buildPlanRefreshPrompt({
         transcript: input.transcript,
         currentSteps: input.currentSteps,
+        proposedPlanMarkdown: input.proposedPlanMarkdown,
       });
 
       const generated = yield* runCodexJson({

@@ -7,6 +7,14 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { RemoteBrowserFrame } from "./RemoteBrowserFrame";
 
+function deferred<A>() {
+  let resolve!: (value: A) => void;
+  const promise = new Promise<A>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 const mocks = vi.hoisted(() => ({ capture: vi.fn(), input: vi.fn() }));
 vi.mock("~/state/preview", () => ({
   previewEnvironment: { remoteSnapshot: "snapshot", remoteInput: "input" },
@@ -17,11 +25,20 @@ vi.mock("~/state/use-atom-command", () => ({
 vi.mock("~/hooks/useOnScreenKeyboard", () => ({ useOnScreenKeyboard: () => false }));
 vi.mock("./previewPageVisibility", () => ({ usePreviewPageVisible: () => true }));
 vi.mock("./RemoteTabAudio", () => ({
-  useRemoteTabAudio: () => ({ state: {}, toggle: vi.fn() }),
+  useRemoteTabAudio: () => ({ state: {}, toggle: vi.fn(), unlockFromGesture: vi.fn() }),
   RemoteTabAudioButton: () => null,
 }));
 vi.mock("../remoteView/RemoteViewZoom", () => ({
-  useRemoteViewZoom: () => ({ style: {}, pinching: false, reset: vi.fn(), paneRef: () => {} }),
+  useRemoteViewZoom: () => ({
+    style: {},
+    pinching: false,
+    pinchingRef: { current: false },
+    reset: vi.fn(),
+    paneRef: () => {},
+    onPointerDown: () => false,
+    onPointerMove: () => false,
+    onPointerUp: () => false,
+  }),
   RemoteViewZoomReadout: () => null,
 }));
 vi.mock("./RemoteAgentCursor", () => ({ RemoteAgentCursor: () => null }));
@@ -55,6 +72,7 @@ describe("remote browser frame availability", () => {
     container.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
   const render = () =>
     act(async () =>
@@ -74,6 +92,54 @@ describe("remote browser frame availability", () => {
     act(async () => {
       await vi.advanceTimersByTimeAsync(2_500);
     });
+
+  it("shows the tap immediately and removes only its dot when input is acknowledged, before recapture", async () => {
+    const input = deferred<{ _tag: "Success"; value: { deliveredAt: string } }>();
+    const recapture = deferred<ReturnType<typeof ready>>();
+    mocks.capture.mockResolvedValueOnce(ready()).mockReturnValue(recapture.promise);
+    mocks.input.mockReturnValue(input.promise);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(800);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 800, 600),
+    );
+    await render();
+    const surface = container.querySelector('[role="application"]') as HTMLDivElement;
+    surface.setPointerCapture = vi.fn();
+    surface.hasPointerCapture = () => false;
+    const pointer = (type: string, x = 200) =>
+      act(async () => {
+        surface.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            pointerId: 1,
+            pointerType: "mouse",
+            button: 0,
+            clientX: x,
+            clientY: 300,
+          }),
+        );
+      });
+    await pointer("pointerdown");
+    expect(container.querySelector('[data-remote-click="pressed"]')).not.toBeNull();
+    expect(mocks.input).not.toHaveBeenCalled();
+    await pointer("pointerup");
+    const dot = container.querySelector('[data-remote-click="pending"]') as HTMLElement;
+    expect(dot.style.left).toBe("200px");
+    expect(dot.style.top).toBe("300px");
+    expect(mocks.input).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          action: { kind: "click", position: { x: 0.25, y: 0.5 } },
+        }),
+      }),
+    );
+    await act(async () => input.resolve({ _tag: "Success", value: { deliveredAt: "now" } }));
+    expect(container.querySelector("[data-remote-click]")).toBeNull();
+    // The next image is still unresolved: input receipt, not a frame timer, retired the dot.
+    expect(container.querySelector("img")?.getAttribute("src")).toContain("page-frame");
+    await act(async () => recapture.resolve(ready("after-click")));
+  });
 
   it("freezes the last valid frame during capture failures and resumes automatically", async () => {
     mocks.capture

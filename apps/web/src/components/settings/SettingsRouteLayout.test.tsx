@@ -10,9 +10,11 @@ import {
 
 vi.mock("@tanstack/react-router", () => ({
   Outlet: () => <div data-testid="settings-outlet" />,
-  useCanGoBack: () => false,
   useLocation: () => ({ pathname: "/settings/appearance" }),
-  useNavigate: () => () => Promise.resolve(),
+  useRouter: () => ({
+    history: { location: { state: { __TSR_index: 0 } }, go: () => {} },
+    navigate: () => Promise.resolve(),
+  }),
 }));
 
 vi.mock("../../env", () => ({ isElectron: false }));

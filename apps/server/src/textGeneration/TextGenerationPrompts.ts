@@ -276,6 +276,8 @@ export function buildVoiceTranscriptCorrectionPrompt(input: VoiceTranscriptCorre
 export interface PlanRefreshPromptInput {
   transcript: string;
   currentSteps: ReadonlyArray<{ step: string; status: string }>;
+  /** The proposed plan being waited on or carried out, when there is one. */
+  proposedPlanMarkdown?: string | undefined;
   policy?: TextGenerationPolicy | undefined;
 }
 
@@ -316,17 +318,20 @@ export function buildVmAgentTaskPrompt(input: VmAgentTaskPromptInput) {
 }
 
 /**
- * Re-derive a plan's task list from the conversation.
+ * Re-derive a conversation's task list.
  *
  * The current list is included so the model *corrects* it rather than inventing
  * a fresh one — the point of a refresh is that finished work stops claiming to
- * be in progress, not that the plan is replaced with something unrecognisable.
+ * be in progress, not that the list is replaced with something unrecognisable.
+ * The proposed plan, when there is one, is the work the tasks should track; it
+ * is context, never something to rewrite.
  */
 export function buildPlanRefreshPrompt(input: PlanRefreshPromptInput) {
   const currentList =
     input.currentSteps.length > 0
       ? input.currentSteps.map((entry) => `- [${entry.status}] ${entry.step}`).join("\n")
-      : "(the plan is currently empty)";
+      : "(the task list is currently empty)";
+  const proposedPlan = input.proposedPlanMarkdown?.trim() ?? "";
 
   const prompt = [
     "You maintain the task list for a coding conversation.",
@@ -337,11 +342,17 @@ export function buildPlanRefreshPrompt(input: PlanRefreshPromptInput) {
     "Current task list:",
     currentList,
     "",
+    ...(proposedPlan.length > 0
+      ? ["Proposed plan the work follows (context only; do not rewrite it):", proposedPlan, ""]
+      : []),
     "Recent conversation:",
     input.transcript,
     "",
     "Rules:",
     "- Mark a step completed only when the conversation shows it finished.",
+    ...(proposedPlan.length > 0
+      ? ["- When the list is empty or unrelated to the plan, build it from the plan's steps."]
+      : []),
     "- At most one step should be inProgress; use it for what is being worked on now.",
     "- Keep existing wording where the step still applies, so the list stays recognisable.",
     "- Add steps for newly agreed work, and drop steps that were explicitly abandoned.",

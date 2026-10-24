@@ -384,6 +384,27 @@ describe("Deep Code adapter process lifecycle", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.live("turns a plan block in the reply into a plan for the turn", () =>
+    Effect.gen(function* () {
+      const { adapter } = yield* setup();
+      const { events, first } = yield* observe(adapter);
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      // The fake CLI echoes its prompt, so its reply carries this block after
+      // the Plan-mode instructions, which only mention the tags in prose.
+      yield* adapter.sendTurn({
+        threadId,
+        input: "<proposed_plan>\n# Echoed plan\n</proposed_plan>",
+        interactionMode: "plan",
+      });
+      yield* Deferred.await(first);
+      expect(
+        events.flatMap((e) =>
+          e.type === "turn.proposed.completed" ? [[e.itemId, e.payload.planMarkdown]] : [],
+        ),
+      ).toEqual([["proposed-plan-0", "# Echoed plan"]]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.live("publishes thinking and tool calls while the turn is still running", () =>
     Effect.gen(function* () {
       // The fixture blocks until we touch the release file, so every assertion

@@ -35,6 +35,19 @@ export function parseAssetCollectionKey(
   }
 }
 
+/**
+ * The same image as a small JPEG, for a thumbnail tile: the server sends the
+ * original when it can't make one. Plain string work, since React Native's
+ * `URL` has no writable search params.
+ */
+export function assetThumbnailUrl(url: string): string {
+  const hashAt = url.indexOf("#");
+  const base = hashAt < 0 ? url : url.slice(0, hashAt);
+  const hash = hashAt < 0 ? "" : url.slice(hashAt);
+  if (/[?&]thumbnail=1(?:&|$)/u.test(base)) return url;
+  return `${base}${base.includes("?") ? "&" : "?"}thumbnail=1${hash}`;
+}
+
 export function resolveAssetUrl(httpBaseUrl: string, relativeUrl: string): string | null {
   try {
     return new URL(relativeUrl, httpBaseUrl).toString();

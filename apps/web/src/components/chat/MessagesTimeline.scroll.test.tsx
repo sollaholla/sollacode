@@ -12,7 +12,7 @@ import {
   type Ref,
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 const listHarness = vi.hoisted(() => ({
   latestProps: null as Record<string, unknown> | null,
@@ -237,6 +237,235 @@ afterEach(async () => {
 });
 
 describe("MessagesTimeline mounted scroll ownership", () => {
+  it("shows the compact image index only while its tool card is collapsed", async () => {
+    const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 400,
+      height: 52,
+      top: 0,
+      left: 0,
+      right: 400,
+      bottom: 52,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    try {
+      await renderTimeline(
+        buildProps({
+          isWorking: false,
+          timelineEntries: [
+            {
+              id: "image-work",
+              kind: "work",
+              createdAt,
+              entry: {
+                id: "image-work",
+                createdAt,
+                label: "Image view",
+                tone: "tool",
+                readImagePath: "/tmp/scene.png",
+              },
+            },
+          ],
+        }),
+      );
+      expect(container.querySelector("[data-work-log-images]")).not.toBeNull();
+      const card = container.querySelector<HTMLDivElement>(
+        '[role="button"][aria-expanded="false"]',
+      );
+      expect(card).not.toBeNull();
+      await act(async () => card!.click());
+      expect(card?.getAttribute("aria-expanded")).toBe("true");
+      expect(container.querySelector("[data-work-log-images]")).toBeNull();
+      expect(container.querySelector('button[aria-label^="Open image preview:"]')).not.toBeNull();
+      await act(async () => card!.click());
+      expect(container.querySelector("[data-work-log-images]")).not.toBeNull();
+    } finally {
+      bounds.mockRestore();
+    }
+  });
+
+  it("opens any image in the conversation among all of them, oldest first", async () => {
+    // Room for the work log's thumbnail row to draw its tile.
+    const bounds = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue(DOMRect.fromRect({ width: 400, height: 52 }));
+    onTestFinished(() => bounds.mockRestore());
+    const onImageExpand = vi.fn();
+    await renderTimeline(
+      buildProps({
+        isWorking: false,
+        onImageExpand,
+        timelineEntries: [
+          {
+            id: "ask",
+            kind: "message",
+            createdAt,
+            message: {
+              id: MessageId.make("ask"),
+              role: "user",
+              text: "Match this mock",
+              turnId: null,
+              createdAt,
+              updatedAt: createdAt,
+              streaming: false,
+              attachments: [
+                {
+                  type: "image",
+                  id: "mock",
+                  name: "mock.png",
+                  mimeType: "image/png",
+                  sizeBytes: 10,
+                  previewUrl: "blob:mock",
+                },
+              ],
+            },
+          },
+          {
+            id: "image-work",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "image-work",
+              createdAt,
+              label: "Image view",
+              tone: "tool",
+              readImagePath: "/tmp/scene.png",
+            },
+          },
+        ],
+      }),
+    );
+    const open = async (label: string) => {
+      const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+      expect(button).not.toBeNull();
+      await act(async () => button!.click());
+      return onImageExpand.mock.lastCall?.[0];
+    };
+    const gallery = [
+      { name: "mock.png", src: "blob:mock" },
+      {
+        name: "scene.png",
+        asset: expect.objectContaining({
+          resource: expect.objectContaining({ _tag: "workspace-file", path: "/tmp/scene.png" }),
+        }),
+      },
+    ];
+    expect(await open("Preview mock.png")).toEqual({ images: gallery, index: 0 });
+    expect(await open("Open image: scene.png")).toEqual({ images: gallery, index: 1 });
+    // The open tool card's own preview opens the same way.
+    await act(async () =>
+      container.querySelector<HTMLDivElement>('[role="button"][aria-expanded="false"]')!.click(),
+    );
+    const cardPreview = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Open image preview:"]',
+    );
+    await act(async () => cardPreview!.click());
+    expect(onImageExpand.mock.lastCall?.[0]).toEqual({ images: gallery, index: 1 });
+  });
+
+  it("removes the group image index when earlier tool calls are expanded", async () => {
+    await renderTimeline(
+      buildProps({
+        isWorking: false,
+        timelineEntries: [
+          {
+            id: "first-image",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "first-image",
+              createdAt,
+              label: "Image view",
+              tone: "tool",
+              readImagePath: "/tmp/scene.png",
+            },
+          },
+          {
+            id: "last-call",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "last-call",
+              createdAt,
+              label: "Ran command",
+              tone: "tool",
+              command: "pwd",
+            },
+          },
+        ],
+      }),
+    );
+    const toggle = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("previous tool call"),
+    );
+    expect(toggle?.parentElement?.querySelector("[data-work-log-images]")).not.toBeNull();
+    await act(async () => toggle!.click());
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle?.parentElement?.querySelector("[data-work-log-images]")).toBeNull();
+  });
+
+  it("keeps one working timer ticking through disconnect and settles it on reconnect", async () => {
+    vi.setSystemTime(new Date("2026-10-01T22:00:10Z"));
+    const active = buildProps({ isWorking: true, activeTurnStartedAt: "2026-10-01T22:00:00Z" });
+    await renderTimeline(active);
+    const workingRow = container.querySelector('[data-timeline-row-kind="working"]');
+    expect(workingRow?.textContent).toContain("10s");
+    await renderTimeline(buildProps({ ...active, environmentUnreachable: true }));
+    expect(container.querySelector('[data-timeline-row-kind="working"]')).toBe(workingRow);
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(workingRow?.textContent).toContain("15s");
+    expect(workingRow?.textContent).not.toContain("offline");
+    await renderTimeline(
+      buildProps({ ...active, environmentUnreachable: false, isWorking: false }),
+    );
+    expect(container.querySelector('[data-timeline-row-kind="working"]')).toBeNull();
+  });
+
+  it("checks the original settings separator when its receipt arrives without adding another", async () => {
+    const message = {
+      id: MessageId.make("settings-change"),
+      role: "user",
+      text: "Settings updated: gpt-6-astra with high effort. Apply these settings immediately and continue the current task without waiting for another message.",
+      createdAt,
+      updatedAt: createdAt,
+      streaming: false,
+    };
+    const change = { id: message.id, kind: "message", createdAt, message };
+    const pending = buildProps({ isWorking: false, timelineEntries: [change] });
+    await renderTimeline(pending);
+    const separator = container.querySelector('[role="separator"]');
+    expect(separator).not.toBeNull();
+    expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1);
+    expect(separator?.getAttribute("aria-label")).toContain("Applying settings");
+    await renderTimeline(
+      buildProps({
+        ...pending,
+        timelineEntries: [
+          change,
+          {
+            kind: "work",
+            id: "switch-receipt",
+            createdAt,
+            entry: {
+              id: "switch-receipt",
+              createdAt,
+              label: "Switched from Claude to Codex",
+              tone: "info",
+              sourceActivityKind: "provider.handoff.completed",
+            },
+          },
+        ],
+      }),
+    );
+    expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1);
+    expect(container.querySelector('[role="separator"]')).toBe(separator);
+    expect(separator?.querySelector('[aria-label="Switch complete"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Switched from Claude to Codex");
+  });
+
   it("coalesces streaming measurements into one frame and follows the latest extent", async () => {
     await renderTimeline();
     await flushAnimationFrames();

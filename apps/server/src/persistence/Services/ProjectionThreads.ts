@@ -55,6 +55,11 @@ export const ProjectionThread = Schema.Struct({
   pendingWorkKind: Schema.optionalKey(Schema.NullOr(Schema.String)),
   pendingWorkState: Schema.optionalKey(Schema.NullOr(Schema.String)),
   pendingWorkSince: Schema.optionalKey(Schema.NullOr(IsoDateTime)),
+  // Derived from task activities; read-only here like the pending-work
+  // columns, written only by refreshProjectionThreadBackgroundTasks.
+  backgroundTaskCount: Schema.optionalKey(NonNegativeInt),
+  backgroundTasksStartedAt: Schema.optionalKey(Schema.NullOr(IsoDateTime)),
+  backgroundTasksActivityAt: Schema.optionalKey(Schema.NullOr(IsoDateTime)),
   deletedAt: Schema.NullOr(IsoDateTime),
 });
 export type ProjectionThread = typeof ProjectionThread.Type;

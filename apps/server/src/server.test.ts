@@ -1,3 +1,4 @@
+import { WebPush } from "./notifications/WebPush.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -24,6 +25,8 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationProject,
+  type OrchestrationLiveFeedEvent,
+  type OrchestrationProjectFolders,
   ORCHESTRATION_WS_METHODS,
   type PreviewEvent,
   ProjectId,
@@ -135,6 +138,10 @@ import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
+import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
+import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
+import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
+import * as LiveFeed from "./orchestration/LiveFeed.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as Data from "effect/Data";
 import { ProviderUsageGuardNoop } from "./orchestration/Layers/ProviderUsageGuard.ts";
@@ -379,6 +386,9 @@ const buildAppUnderTest = (options?: {
     desktopTelemetryReceiver?: Partial<
       DesktopTelemetryReceiver.DesktopTelemetryReceiver["Service"]
     >;
+    imageThumbnails?: Partial<ImageThumbnails.ImageThumbnails["Service"]>;
+    projectFolderUsage?: Partial<ProjectFolderUsage.ProjectFolderUsage["Service"]>;
+    liveFeed?: Partial<LiveFeed.LiveFeed["Service"]>;
   };
 }) =>
   Effect.gen(function* () {
@@ -802,6 +812,7 @@ const buildAppUnderTest = (options?: {
       .pipe(
         Layer.provide(
           Layer.mergeAll(
+            Layer.mock(WebPush)({}),
             ThreadSubscriptionRegistryLive,
             Layer.mock(ThreadPendingWorkSignal.ThreadPendingWorkSignal)({
               publish: () => Effect.void,
@@ -821,6 +832,26 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(resourceTelemetryLayer),
+      Layer.provide(Layer.mock(HostVitalsMonitor.HostVitalsMonitor)({ stream: Stream.empty })),
+      Layer.provide(
+        Layer.mock(ImageThumbnails.ImageThumbnails)({
+          thumbnail: () => Effect.succeed(null),
+          ...options?.layers?.imageThumbnails,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ProjectFolderUsage.ProjectFolderUsage)({
+          stream: Stream.empty,
+          refresh: () => Effect.void,
+          ...options?.layers?.projectFolderUsage,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(LiveFeed.LiveFeed)({
+          stream: Stream.empty,
+          ...options?.layers?.liveFeed,
+        }),
+      ),
       Layer.provide(
         Layer.mock(BrowserTraceCollector.BrowserTraceCollector)({
           record: () => Effect.void,
@@ -1314,6 +1345,32 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
       assert.equal(missingBundleResponse.status, 404);
       assert.equal(missingBundleResponse.headers["cache-control"], "no-store, max-age=0");
       assert.notInclude(yield* missingBundleResponse.text, "router-static-shell");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("serves push workers and manifests with updatable caching and correct MIME types", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const staticDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-push-static-" });
+      yield* fileSystem.writeFileString(
+        path.join(staticDir, "web-push-worker.js"),
+        "self.addEventListener('push', () => {});",
+      );
+      yield* fileSystem.writeFileString(
+        path.join(staticDir, "manifest.webmanifest"),
+        '{"name":"Solla Code","display":"standalone"}',
+      );
+      yield* buildAppUnderTest({ config: { staticDir } });
+      const worker = yield* HttpClient.get("/web-push-worker.js");
+      assert.equal(worker.status, 200);
+      assert.include(worker.headers["content-type"], "javascript");
+      assert.notInclude(worker.headers["cache-control"], "immutable");
+      assert.include(yield* worker.text, "addEventListener");
+      const manifest = yield* HttpClient.get("/manifest.webmanifest");
+      assert.equal(manifest.status, 200);
+      assert.include(manifest.headers["content-type"], "manifest+json");
+      assert.notInclude(manifest.headers["cache-control"], "immutable");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -3274,6 +3331,111 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  const patchTestProvider = (checkedAt: string, extra: Record<string, unknown> = {}) => ({
+    instanceId: ProviderInstanceId.make("codex"),
+    driver: ProviderDriverKind.make("codex"),
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready" as const,
+    auth: { status: "authenticated" as const },
+    checkedAt,
+    models: [],
+    slashCommands: [],
+    skills: [],
+    ...extra,
+  });
+
+  it.effect(
+    "routes websocket rpc subscribeServerConfig sends a usage-only provider change as a patch to a client that asked for patches",
+    () =>
+      Effect.gen(function* () {
+        const before = patchTestProvider("2026-04-11T00:00:00.000Z");
+        const after = patchTestProvider("2026-04-11T00:05:00.000Z", {
+          accountUsageReportedAt: "2026-04-11T00:05:00.000Z",
+        });
+
+        yield* buildAppUnderTest({
+          layers: {
+            keybindings: {
+              loadConfigState: Effect.succeed({ keybindings: [], issues: [] }),
+              streamChanges: Stream.empty,
+            },
+            providerRegistry: {
+              getProviders: Effect.succeed([before]),
+              streamChanges: Stream.succeed([after]),
+              subscribeChanges: Effect.succeed(Stream.succeed([after])),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const events = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.subscribeServerConfig]({ acceptsProviderPatches: true }).pipe(
+              Stream.take(2),
+              Stream.runCollect,
+            ),
+          ),
+        );
+
+        const [first, second] = Array.from(events);
+        assert.equal(first?.type, "snapshot");
+        assert.deepEqual(second, {
+          version: 1,
+          type: "providerStatusesPatch",
+          payload: {
+            order: [after.instanceId],
+            upserted: [],
+            volatile: [
+              {
+                instanceId: after.instanceId,
+                checkedAt: after.checkedAt,
+                accountUsageReportedAt: "2026-04-11T00:05:00.000Z",
+              },
+            ],
+          },
+        });
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "routes websocket rpc subscribeServerConfig keeps sending the full provider list to a client that did not ask for patches",
+    () =>
+      Effect.gen(function* () {
+        const before = patchTestProvider("2026-04-11T00:00:00.000Z");
+        const after = patchTestProvider("2026-04-11T00:05:00.000Z");
+
+        yield* buildAppUnderTest({
+          layers: {
+            keybindings: {
+              loadConfigState: Effect.succeed({ keybindings: [], issues: [] }),
+              streamChanges: Stream.empty,
+            },
+            providerRegistry: {
+              getProviders: Effect.succeed([before]),
+              streamChanges: Stream.succeed([after]),
+              subscribeChanges: Effect.succeed(Stream.succeed([after])),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const events = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.subscribeServerConfig]({}).pipe(Stream.take(2), Stream.runCollect),
+          ),
+        );
+
+        const [, second] = Array.from(events);
+        assert.deepEqual(second, {
+          version: 1,
+          type: "providerStatuses",
+          payload: { providers: [after] },
+        });
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("subscribes to provider refreshes before creating the config snapshot", () =>
     Effect.gen(function* () {
       const nextProviders = [
@@ -3677,6 +3839,80 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("deletes the archived chats shown up to the cutoff over websocket rpc", () =>
+    Effect.gen(function* () {
+      const dispatched: OrchestrationCommand[] = [];
+      const archivedThread = (id: string, archivedAt: string | null) =>
+        ({
+          id: ThreadId.make(id),
+          projectId: ProjectId.make("project-archive-cleanup"),
+          title: id,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          latestTurn: null,
+          createdAt: "2026-10-10T00:00:00.000Z",
+          updatedAt: "2026-10-12T19:39:23.880Z",
+          archivedAt,
+          settledOverride: null,
+          settledAt: null,
+          snoozedUntil: null,
+          snoozedAt: null,
+          session: null,
+          latestUserMessageAt: null,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+        }) satisfies OrchestrationThreadShell;
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getArchivedShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                projects: [],
+                threads: [
+                  archivedThread("shown", "2026-10-12T19:39:23.880Z"),
+                  archivedThread("archived-after-looking", "2026-10-12T19:39:24.000Z"),
+                  archivedThread("active", null),
+                ],
+                updatedAt: "2026-10-12T19:39:24.000Z",
+              }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatched.push(command);
+                return { sequence: dispatched.length };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.deleteArchivedThreads]({
+            archivedBefore: "2026-10-12T19:39:23.880Z",
+          }),
+        ),
+      );
+
+      assert.deepEqual(response, { deleted: 1, skipped: 0 });
+      assert.deepEqual(
+        dispatched.flatMap((command) =>
+          command.type === "thread.delete" ? [String(command.threadId)] : [],
+        ),
+        ["shown"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("creates a missing workspace root during websocket project.create dispatch", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -3708,6 +3944,177 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
 
       assert.isAtLeast(response.sequence, 0);
       assert.equal(stat.type, "Directory");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "starts storage cleanup with Auto approval in a host-owned workspace and restores its missing folder",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-storage-cleanup-" });
+        const expectedRoot = path.join(baseDir, "maintenance", "storage-cleanup");
+        const dispatched: OrchestrationCommand[] = [];
+        let project: OrchestrationProject | null = null;
+        const threads = new Map<ThreadId, OrchestrationThreadShell>();
+        const receipts = new Map<CommandId, ThreadId>();
+        const utilityModel = {
+          instanceId: ProviderInstanceId.make("claude-local"),
+          model: "sonnet-5.5",
+        };
+        yield* buildAppUnderTest({
+          config: { baseDir, cwd: path.join(baseDir, "missing-project-on-offline-device") },
+          layers: {
+            serverSettings: {
+              getSettings: Effect.succeed({
+                ...DEFAULT_SERVER_SETTINGS,
+                textGenerationModelSelection: utilityModel,
+              }),
+            },
+            projectionSnapshotQuery: {
+              getActiveProjectByWorkspaceRoot: (workspaceRoot) =>
+                Effect.sync(() =>
+                  project?.workspaceRoot === workspaceRoot ? Option.some(project) : Option.none(),
+                ),
+              getThreadShellById: (threadId) =>
+                Effect.sync(() => Option.fromUndefinedOr(threads.get(threadId))),
+            },
+            commandReceipts: {
+              getByCommandId: ({ commandId }) =>
+                Effect.sync(() => {
+                  const threadId = receipts.get(commandId);
+                  return threadId
+                    ? Option.some({
+                        commandId,
+                        aggregateKind: "thread" as const,
+                        aggregateId: threadId,
+                        acceptedAt: DateTime.formatIso(TEST_EPOCH),
+                        resultSequence: 3,
+                        status: "accepted" as const,
+                        error: null,
+                      })
+                    : Option.none();
+                }),
+            },
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.gen(function* () {
+                  dispatched.push(command);
+                  if (command.type === "project.create") {
+                    project = {
+                      id: command.projectId,
+                      title: command.title,
+                      workspaceRoot: command.workspaceRoot,
+                      defaultModelSelection: command.defaultModelSelection ?? null,
+                      scripts: [],
+                      createdAt: command.createdAt,
+                      updatedAt: command.createdAt,
+                      deletedAt: null,
+                    };
+                  }
+                  if (command.type === "thread.create") {
+                    threads.set(
+                      command.threadId,
+                      makeDefaultOrchestrationThreadShell({
+                        id: command.threadId,
+                        projectId: command.projectId,
+                      }),
+                    );
+                  }
+                  if (command.type === "thread.turn.start") {
+                    // The provider's cwd must already exist before its start is dispatched.
+                    assert.equal(
+                      (yield* fs.stat(expectedRoot).pipe(Effect.orDie)).type,
+                      "Directory",
+                    );
+                    receipts.set(command.commandId, command.threadId);
+                  }
+                  return { sequence: dispatched.length };
+                }),
+            },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const input = {
+          commandId: CommandId.make("storage-cleanup-start"),
+          threadId: ThreadId.make("storage-cleanup-thread"),
+          messageId: MessageId.make("storage-cleanup-message"),
+        };
+        const first = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverStartStorageCleanup](input)),
+        );
+        const retry = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverStartStorageCleanup](input)),
+        );
+        assert.deepEqual(retry, first);
+        assert.equal(dispatched.filter((c) => c.type === "thread.turn.start").length, 1);
+        yield* fs.remove(expectedRoot, { recursive: true });
+        const next = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.serverStartStorageCleanup]({
+              commandId: CommandId.make("storage-cleanup-next"),
+              threadId: ThreadId.make("storage-cleanup-next-thread"),
+              messageId: MessageId.make("storage-cleanup-next-message"),
+            }),
+          ),
+        );
+        assert.equal((yield* fs.stat(expectedRoot)).type, "Directory");
+        assert.equal(next.projectId, first.projectId);
+        assert.notEqual(next.threadId, first.threadId);
+        assert.equal(dispatched.filter((c) => c.type === "project.create").length, 1);
+        assert.equal(dispatched.filter((c) => c.type === "thread.create").length, 2);
+        const create = dispatched.find((c) => c.type === "project.create");
+        assert.equal(create?.title, "Storage cleanup");
+        assert.equal(create?.workspaceRoot, expectedRoot);
+        assert.notEqual(first.projectId, defaultProjectId);
+        const start = dispatched.find((c) => c.type === "thread.turn.start");
+        assert.include(start?.message.text ?? "", "login cookies");
+        assert.include(start?.message.text ?? "", "live Solla Code databases");
+        const cleanupCommands = dispatched.filter(
+          (command) => command.type === "thread.create" || command.type === "thread.turn.start",
+        );
+        assert.equal(cleanupCommands.length, 4);
+        for (const command of cleanupCommands) {
+          assert.equal(command.runtimeMode, "auto");
+          assert.equal(command.interactionMode, "default");
+        }
+        assert.deepEqual(start?.modelSelection, utilityModel);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("storage cleanup reports an unusable maintenance path without creating a thread", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-storage-cleanup-blocked-" });
+      yield* fs.makeDirectory(path.join(baseDir, "maintenance"));
+      yield* fs.writeFileString(
+        path.join(baseDir, "maintenance", "storage-cleanup"),
+        "preserve this file",
+      );
+      const dispatch = vi.fn(() => Effect.succeed({ sequence: 1 }));
+      yield* buildAppUnderTest({
+        config: { baseDir },
+        layers: { orchestrationEngine: { dispatch } },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverStartStorageCleanup]({
+            commandId: CommandId.make("storage-cleanup-blocked"),
+            threadId: ThreadId.make("storage-cleanup-blocked-thread"),
+            messageId: MessageId.make("storage-cleanup-blocked-message"),
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.equal(result.failure._tag, "StorageCleanupStartError");
+      assert.equal(dispatch.mock.calls.length, 0);
+      assert.equal(
+        yield* fs.readFileString(path.join(baseDir, "maintenance", "storage-cleanup")),
+        "preserve this file",
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -4789,6 +5196,127 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
       assertTrue(result.failure._tag === "OrchestrationGetSnapshotError");
       assertTrue(result.failure.cause instanceof Error);
       assert.include(result.failure.cause.message, projectionError.message);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("streams project folder sizes and re-measures the projects asked for", () =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project-folders");
+      const folders: OrchestrationProjectFolders = {
+        folders: [
+          {
+            projectId,
+            bytes: 4_096,
+            measuredAt: "2026-10-11T19:00:00.000Z",
+            measuring: false,
+            skippedFolders: ["Library/Containers"],
+            unreadableFolders: 1,
+            error: null,
+          },
+        ],
+      };
+      const refreshed: Array<ReadonlyArray<string>> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          projectFolderUsage: {
+            stream: Stream.make(folders),
+            refresh: (projectIds) => Effect.sync(() => void refreshed.push(projectIds)),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const first = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const head = yield* client[ORCHESTRATION_WS_METHODS.subscribeProjectFolders]({}).pipe(
+              Stream.runHead,
+            );
+            yield* client[ORCHESTRATION_WS_METHODS.measureProjectFolders]({
+              projectIds: [projectId],
+            });
+            return head;
+          }),
+        ),
+      );
+
+      assert.deepEqual(Option.getOrUndefined(first), folders);
+      assert.deepEqual(refreshed, [[projectId]]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("serves a thumbnail for an image asset asked for with thumbnail=1", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const original = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+      const thumbnail = new Uint8Array([255, 216, 255, 9]);
+      const requested: Array<string> = [];
+      const config = yield* buildAppUnderTest({
+        layers: {
+          imageThumbnails: {
+            thumbnail: (source) => Effect.sync(() => (requested.push(source), thumbnail)),
+          },
+        },
+      });
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      const attachmentPath = path.join(config.attachmentsDir, "thread-shot.png");
+      yield* fileSystem.writeFile(attachmentPath, original);
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const { relativeUrl } = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.assetsCreateUrl]({
+            resource: { _tag: "attachment", attachmentId: "thread-shot" },
+          }),
+        ),
+      );
+      const thumbnailUrl = new URL(relativeUrl, "http://localhost");
+      thumbnailUrl.searchParams.set("thumbnail", "1");
+
+      const small = yield* HttpClient.get(`${thumbnailUrl.pathname}${thumbnailUrl.search}`);
+      assert.equal(small.status, 200);
+      assert.equal(small.headers["content-type"], "image/jpeg");
+      assert.deepEqual(new Uint8Array(yield* small.arrayBuffer), thumbnail);
+      assert.deepEqual(requested, [attachmentPath]);
+
+      const full = yield* HttpClient.get(relativeUrl);
+      assert.equal(full.status, 200);
+      assert.deepEqual(new Uint8Array(yield* full.arrayBuffer), original);
+      assert.deepEqual(requested, [attachmentPath]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("streams the live feed's recent beats and then each new one", () =>
+    Effect.gen(function* () {
+      const events: ReadonlyArray<OrchestrationLiveFeedEvent> = [
+        { type: "snapshot", beats: [] },
+        {
+          type: "beat",
+          beat: {
+            id: "beat-1",
+            threadId: ThreadId.make("thread-live"),
+            kind: "command",
+            title: "Ran",
+            detail: "pnpm test",
+            live: false,
+            at: "2026-10-11T20:00:00.000Z",
+          },
+        },
+      ];
+      yield* buildAppUnderTest({ layers: { liveFeed: { stream: Stream.fromIterable(events) } } });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const received = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeLiveFeed]({}).pipe(
+            Stream.take(2),
+            Stream.runCollect,
+          ),
+        ),
+      );
+
+      assert.deepEqual([...received], [...events]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

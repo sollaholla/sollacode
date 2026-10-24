@@ -82,9 +82,63 @@ describe("trimToolRawOutputInPayload", () => {
     assert.equal(payload.data.item.result.screenshot.length, 400);
   });
 
+  it("caps Claude tool result text and image data without changing input or metadata", () => {
+    const payload = {
+      detail: "visible detail ".repeat(20),
+      data: {
+        toolName: "Read",
+        input: { content: "input ".repeat(100) },
+        result: {
+          type: "tool_result",
+          tool_use_id: "call-claude",
+          is_error: false,
+          content: [
+            { type: "text", text: "t".repeat(300) },
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: "a".repeat(400) },
+            },
+          ],
+        },
+      },
+    };
+
+    const trimmed = trimToolRawOutputInPayload(payload, 100);
+    assert.isTrue(trimmed.changed);
+    const next = trimmed.payload as typeof payload;
+    assert.equal(next.data.result.content[0]?.text?.length, 100);
+    assert.equal(next.data.result.content[1]?.source?.data.length, 100);
+    assert.equal(next.data.result.content[1]?.source?.media_type, "image/png");
+    assert.equal(next.data.result.tool_use_id, "call-claude");
+    assert.isFalse(next.data.result.is_error);
+    assert.strictEqual(next.data.input, payload.data.input);
+    assert.equal(next.detail, payload.detail);
+    assert.equal(payload.data.result.content[0]?.text?.length, 300);
+    assert.equal(payload.data.result.content[1]?.source?.data.length, 400);
+  });
+
+  it("caps Claude's string content alongside other provider result shapes", () => {
+    const payload = {
+      data: {
+        result: { content: "c".repeat(200) },
+        rawOutput: "r".repeat(200),
+        item: { result: "i".repeat(200), aggregatedOutput: "a".repeat(200) },
+      },
+    };
+    const trimmed = trimToolRawOutputInPayload(payload, 100).payload as typeof payload;
+    assert.equal(trimmed.data.result.content.length, 100);
+    assert.equal(trimmed.data.rawOutput.length, 100);
+    assert.equal(trimmed.data.item.result.length, 100);
+    assert.equal(trimmed.data.item.aggregatedOutput.length, 100);
+  });
+
   it("returns the identical payload when nothing exceeds the cap", () => {
     const payload = {
-      data: { rawOutput: { content: "short" }, item: { result: { text: "ok" } } },
+      data: {
+        rawOutput: { content: "short" },
+        result: { content: "short" },
+        item: { result: { text: "ok" } },
+      },
     };
     const result = trimToolRawOutputInPayload(payload, 100);
     assert.isFalse(result.changed);
@@ -97,6 +151,7 @@ describe("trimToolRawOutputInPayload", () => {
       "text",
       { data: null },
       { data: { rawOutput: null } },
+      { data: { result: null } },
       { data: { item: null } },
       { data: { item: { result: null } } },
       { noData: true },

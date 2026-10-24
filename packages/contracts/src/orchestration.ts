@@ -22,7 +22,7 @@ import {
   TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { VmAgentDelegationId } from "./vm.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
@@ -30,7 +30,12 @@ export const ORCHESTRATION_WS_METHODS = {
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
+  getProjectStatistics: "orchestration.getProjectStatistics",
+  subscribeProjectFolders: "orchestration.subscribeProjectFolders",
+  measureProjectFolders: "orchestration.measureProjectFolders",
+  subscribeLiveFeed: "orchestration.subscribeLiveFeed",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
+  deleteArchivedThreads: "orchestration.deleteArchivedThreads",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -298,9 +303,11 @@ export const OrchestrationMessage = Schema.Struct({
    * queued" but belong in different places — a cancelled message appears
    * nowhere, a delivered one belongs in the timeline like any other.
    *
-   * Absent when the server could not resolve it (live event fanout, an
-   * obligation pruned after its 7-day retention, older servers) — treat
-   * `undefined` as "fall back to the activity receipts".
+   * Once the obligation is pruned (7-day retention), snapshots and history
+   * pages read the message's receipt activities instead. Absent when the
+   * server could not resolve it (live event fanout, a pruned obligation with
+   * no receipt, older servers) — treat `undefined` as "fall back to the
+   * activity receipts".
    */
   queueState: Schema.optional(Schema.Literals(["queued", "delivered", "removed"])),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
@@ -322,6 +329,13 @@ export const OrchestrationProposedPlan = Schema.Struct({
   implementationThreadId: Schema.NullOr(ThreadId).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /**
+   * When the person implemented a different plan while this one was waiting.
+   * (Answering a waiting plan with a Build or Agent message implements it.)
+   * A closed plan is history, never the plan a thread is waiting on.
+   * `implementedAt` wins when both are set.
+   */
+  closedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -446,6 +460,25 @@ export const OrchestrationThreadPendingWork = Schema.Struct({
 });
 export type OrchestrationThreadPendingWork = typeof OrchestrationThreadPendingWork.Type;
 
+/**
+ * Background work a provider is still running for the thread: sub-agents,
+ * workflows, monitors, and backgrounded commands, which outlive the turn that
+ * started them.
+ *
+ * Projected from the thread's `task.*` activities: tasks still open and heard
+ * from within the staleness window of the newest task report. Clients apply
+ * the same window to `lastActivityAt` against their own clock, so work whose
+ * runtime died silently stops counting without needing another event.
+ */
+export const OrchestrationThreadBackgroundTasks = Schema.Struct({
+  count: NonNegativeInt,
+  /** When the earliest of them started. */
+  startedAt: IsoDateTime,
+  /** The newest report from any of them. */
+  lastActivityAt: IsoDateTime,
+});
+export type OrchestrationThreadBackgroundTasks = typeof OrchestrationThreadBackgroundTasks.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -490,6 +523,14 @@ export const OrchestrationThread = Schema.Struct({
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /**
+   * The plan this thread's work implements: the newest turn that carried one
+   * (Implement, or Implement in a new thread). Unlike `latestTurn`, it outlives
+   * the turn that started the work, so an implementation thread keeps its plan
+   * in view. Absent when the thread never implemented a plan, and from servers
+   * that predate it.
+   */
+  sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
@@ -544,6 +585,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   // Optional so payloads from servers predating pending-work exposure still
   // decode; `undefined` tells clients to fall back to local prediction.
   pendingWork: Schema.optional(Schema.NullOr(OrchestrationThreadPendingWork)),
+  // Optional so payloads from servers predating it still decode.
+  backgroundTasks: Schema.optional(Schema.NullOr(OrchestrationThreadBackgroundTasks)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
@@ -1065,6 +1108,31 @@ const ThreadPlanRefreshCommand = Schema.Struct({
 });
 
 /**
+ * Close a proposed plan without implementing it, so the thread stops waiting
+ * on it. This is how a person sets a plan aside without answering it, even in
+ * a thread that can no longer take messages. Sends nothing to the agent.
+ */
+const ThreadProposedPlanCloseCommand = Schema.Struct({
+  type: Schema.Literal("thread.proposed-plan.close"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  planId: OrchestrationProposedPlanId,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Undo a close. The plan waits again only while it is still the thread's
+ * newest plan; an older one reopens as superseded history.
+ */
+const ThreadProposedPlanReopenCommand = Schema.Struct({
+  type: Schema.Literal("thread.proposed-plan.reopen"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  planId: OrchestrationProposedPlanId,
+  createdAt: IsoDateTime,
+});
+
+/**
  * Record spoken orchestrator conversation into the thread's message history.
  *
  * Deliberately NOT a turn: the voice model already answered aloud, so nothing
@@ -1115,6 +1183,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadPlanRefreshCommand,
+  ThreadProposedPlanCloseCommand,
+  ThreadProposedPlanReopenCommand,
   ThreadVoiceTranscriptRecordCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
@@ -1147,6 +1217,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadPlanRefreshCommand,
+  ThreadProposedPlanCloseCommand,
+  ThreadProposedPlanReopenCommand,
   ThreadVoiceTranscriptRecordCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
@@ -1852,6 +1924,196 @@ export const OrchestrationSearchThreadsResult = Schema.Struct({
 });
 export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
 
+/**
+ * Tokens consumed by a set of turns, summed from each turn's provider-reported
+ * usage. The counts are disjoint: together they are everything the models read
+ * and wrote. `reasoningTokens` is the part of `outputTokens` spent reasoning.
+ */
+export const OrchestrationTokenUsageTotals = Schema.Struct({
+  turns: NonNegativeInt,
+  inputTokens: NonNegativeInt,
+  cachedInputTokens: NonNegativeInt,
+  cacheWriteTokens: NonNegativeInt,
+  outputTokens: NonNegativeInt,
+  reasoningTokens: NonNegativeInt,
+  /** Provider-reported prices: API rates, even when a subscription covers the work. */
+  costUsd: Schema.Number,
+});
+export type OrchestrationTokenUsageTotals = typeof OrchestrationTokenUsageTotals.Type;
+
+export const OrchestrationProjectProviderUsage = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  provider: ProviderDriverKind,
+  usage: OrchestrationTokenUsageTotals,
+});
+export type OrchestrationProjectProviderUsage = typeof OrchestrationProjectProviderUsage.Type;
+
+export const OrchestrationProjectDailyTokens = Schema.Struct({
+  /** A UTC calendar day, `YYYY-MM-DD`. */
+  day: TrimmedNonEmptyString,
+  tokens: NonNegativeInt,
+});
+export type OrchestrationProjectDailyTokens = typeof OrchestrationProjectDailyTokens.Type;
+
+export const OrchestrationProjectThreadStatistics = Schema.Struct({
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  archived: Schema.Boolean,
+  lastActivityAt: IsoDateTime,
+  turns: NonNegativeInt,
+  /** Conversation history kept in the environment's database. */
+  historyBytes: NonNegativeInt,
+  /** Attachments and artifacts kept on the environment's disk. */
+  fileBytes: NonNegativeInt,
+  tokens: NonNegativeInt,
+});
+export type OrchestrationProjectThreadStatistics = typeof OrchestrationProjectThreadStatistics.Type;
+
+export const OrchestrationProjectStorage = Schema.Struct({
+  historyBytes: NonNegativeInt,
+  attachmentBytes: NonNegativeInt,
+  artifactBytes: NonNegativeInt,
+  /** Threads working in a git worktree of their own. Their checkouts are not measured. */
+  worktrees: NonNegativeInt,
+});
+export type OrchestrationProjectStorage = typeof OrchestrationProjectStorage.Type;
+
+/** What one project holds and has used, for Settings → Projects. Deleted threads are left out. */
+export const OrchestrationProjectStatistics = Schema.Struct({
+  projectId: ProjectId,
+  activeThreads: NonNegativeInt,
+  archivedThreads: NonNegativeInt,
+  turns: NonNegativeInt,
+  messages: NonNegativeInt,
+  lastActivityAt: Schema.NullOr(IsoDateTime),
+  storage: OrchestrationProjectStorage,
+  tokens: Schema.Struct({
+    allTime: OrchestrationTokenUsageTotals,
+    last30Days: OrchestrationTokenUsageTotals,
+    /** Days of the last 30 with any usage, oldest first. */
+    daily: Schema.Array(OrchestrationProjectDailyTokens),
+    byProvider: Schema.Array(OrchestrationProjectProviderUsage),
+  }),
+  /** The largest live threads, at most 50; the counts above cover every one. */
+  threads: Schema.Array(OrchestrationProjectThreadStatistics),
+});
+export type OrchestrationProjectStatistics = typeof OrchestrationProjectStatistics.Type;
+
+/**
+ * Settings → Archive cleanup. The server deletes every chat archived at or
+ * before `archivedBefore` — the newest archive time the person was shown — so
+ * a chat archived after they looked is left alone.
+ */
+export const OrchestrationDeleteArchivedThreadsInput = Schema.Struct({
+  archivedBefore: IsoDateTime,
+});
+export type OrchestrationDeleteArchivedThreadsInput =
+  typeof OrchestrationDeleteArchivedThreadsInput.Type;
+
+export const OrchestrationDeleteArchivedThreadsResult = Schema.Struct({
+  deleted: NonNegativeInt,
+  /** Chats the server refused, such as one unarchived or already removed meanwhile. */
+  skipped: NonNegativeInt,
+});
+export type OrchestrationDeleteArchivedThreadsResult =
+  typeof OrchestrationDeleteArchivedThreadsResult.Type;
+
+export const OrchestrationGetProjectStatisticsInput = Schema.Struct({});
+export type OrchestrationGetProjectStatisticsInput =
+  typeof OrchestrationGetProjectStatisticsInput.Type;
+
+export const OrchestrationGetProjectStatisticsResult = Schema.Struct({
+  generatedAt: IsoDateTime,
+  /** When this environment recorded its first turn's usage; earlier turns are not counted. */
+  tokenTrackingSince: Schema.NullOr(IsoDateTime),
+  projects: Schema.Array(OrchestrationProjectStatistics),
+});
+export type OrchestrationGetProjectStatisticsResult =
+  typeof OrchestrationGetProjectStatisticsResult.Type;
+
+/**
+ * A project folder's size on disk, for Settings → Projects. A large folder
+ * takes a while to walk, so it is measured in the background and kept; only
+ * the folder's own volume is counted.
+ */
+export const OrchestrationProjectFolderUsage = Schema.Struct({
+  projectId: ProjectId,
+  /** Bytes its files take on disk, or null until first measured. */
+  bytes: Schema.NullOr(NonNegativeInt),
+  measuredAt: Schema.NullOr(IsoDateTime),
+  /** A measurement is queued or under way; `bytes` is the last one until it ends. */
+  measuring: Schema.Boolean,
+  /** Folders inside left out, relative to it, because macOS asks before an app reads them. */
+  skippedFolders: Schema.Array(Schema.String),
+  /** Folders inside that couldn't be read, so `bytes` counts less than is there. */
+  unreadableFolders: NonNegativeInt,
+  /** Why it couldn't be measured, such as the folder no longer existing. */
+  error: Schema.NullOr(Schema.String),
+});
+export type OrchestrationProjectFolderUsage = typeof OrchestrationProjectFolderUsage.Type;
+
+/** Every live project's folder, sent again whenever a measurement starts or ends. */
+export const OrchestrationProjectFolders = Schema.Struct({
+  folders: Schema.Array(OrchestrationProjectFolderUsage),
+});
+export type OrchestrationProjectFolders = typeof OrchestrationProjectFolders.Type;
+
+export const OrchestrationMeasureProjectFoldersInput = Schema.Struct({
+  /** Measure these projects' folders again now, even if they were measured recently. */
+  projectIds: Schema.Array(ProjectId).check(Schema.isMaxLength(1_000)),
+});
+export type OrchestrationMeasureProjectFoldersInput =
+  typeof OrchestrationMeasureProjectFoldersInput.Type;
+
+/**
+ * The sort of thing a Live Inspector beat shows. Tool calls are named for what
+ * they did (ran a command, read or edited a file, searched), not for the tool.
+ */
+export const OrchestrationLiveBeatKind = Schema.Literals([
+  "command",
+  "read",
+  "edit",
+  "search",
+  "think",
+  "tool",
+  "said",
+  "asked",
+  "task",
+  "attention",
+  "error",
+  "notice",
+]);
+export type OrchestrationLiveBeatKind = typeof OrchestrationLiveBeatKind.Type;
+
+/** One moment of an agent's work, cut down to a line a person can take in at a glance. */
+export const OrchestrationLiveBeat = Schema.Struct({
+  /** Stable while it changes: a running command and its completion share one id. */
+  id: TrimmedNonEmptyString,
+  threadId: ThreadId,
+  kind: OrchestrationLiveBeatKind,
+  /** What happened, in a few plain words: "Ran a command", "Asked you a question". */
+  title: Schema.String,
+  /** What it happened to: the command, the file, the words said. Never a tool's output. */
+  detail: Schema.NullOr(Schema.String),
+  /** Still under way: a command running, or a reply still being written. */
+  live: Schema.Boolean,
+  at: IsoDateTime,
+});
+export type OrchestrationLiveBeat = typeof OrchestrationLiveBeat.Type;
+
+/** The Live Inspector feed: the recent beats first, then each new or changed beat as it lands. */
+export const OrchestrationLiveFeedEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("snapshot"),
+    beats: Schema.Array(OrchestrationLiveBeat),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("beat"),
+    beat: OrchestrationLiveBeat,
+  }),
+]);
+export type OrchestrationLiveFeedEvent = typeof OrchestrationLiveFeedEvent.Type;
+
 export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
@@ -1869,9 +2131,17 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationSearchThreadsInput,
     output: OrchestrationSearchThreadsResult,
   },
+  getProjectStatistics: {
+    input: OrchestrationGetProjectStatisticsInput,
+    output: OrchestrationGetProjectStatisticsResult,
+  },
   getArchivedShellSnapshot: {
     input: Schema.Struct({}),
     output: OrchestrationShellSnapshot,
+  },
+  deleteArchivedThreads: {
+    input: OrchestrationDeleteArchivedThreadsInput,
+    output: OrchestrationDeleteArchivedThreadsResult,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,
@@ -1917,6 +2187,14 @@ export class OrchestrationGetFullThreadDiffError extends Schema.TaggedErrorClass
 
 export class OrchestrationSearchThreadsError extends Schema.TaggedErrorClass<OrchestrationSearchThreadsError>()(
   "OrchestrationSearchThreadsError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationGetProjectStatisticsError extends Schema.TaggedErrorClass<OrchestrationGetProjectStatisticsError>()(
+  "OrchestrationGetProjectStatisticsError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

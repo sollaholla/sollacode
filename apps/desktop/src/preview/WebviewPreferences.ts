@@ -50,3 +50,14 @@
  */
 export const PREVIEW_WEBVIEW_PREFERENCES =
   "contextIsolation=false,sandbox=true,nodeIntegration=false,backgroundThrottling=false,disableBlinkFeatures=FedCm";
+
+/**
+ * What a sign-in window opened by a preview page keeps from the tab that
+ * opened it. Electron copies only the security preferences to a child window,
+ * so without these a Google popup throttled itself in the background and
+ * offered FedCM, which Electron cannot show, exactly like a bare tab would.
+ */
+export const PREVIEW_POPUP_WEB_PREFERENCES = {
+  backgroundThrottling: false,
+  disableBlinkFeatures: "FedCm",
+} as const;

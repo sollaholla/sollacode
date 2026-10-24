@@ -14,6 +14,7 @@ import { lazy, Suspense, useEffect, useEffectEvent, useRef, useState } from "rea
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
+import { useRememberSettingsReturn } from "../components/settings/closeSettings";
 import { CommandPaletteLoader } from "../components/CommandPaletteLoader";
 import { DesktopPermissionsGate } from "../components/desktop/DesktopPermissions";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
@@ -125,6 +126,7 @@ export const Route = createRootRoute({
 
 function RootRouteView() {
   const pathname = useLocation({ select: (location) => location.pathname });
+  useRememberSettingsReturn();
   const initialPathnameRef = useRef(pathname);
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";

@@ -317,6 +317,8 @@ export interface OrchestratorToolContext {
     awaited?: boolean;
     /** Spoken stand-in for the message when the message is machine text. */
     requestLabel?: string;
+    /** The plan this turn implements; the server records it as implemented. */
+    sourceProposedPlanId?: string;
   }) => Promise<void>;
   readonly interruptThread: (input: { environmentId: string; threadId: string }) => Promise<void>;
   readonly renameThread: (input: {
@@ -401,6 +403,12 @@ export interface OrchestratorToolContext {
     environmentId: string;
     threadId: string;
   }) => Promise<ReadonlyArray<ProposedPlanInput>>;
+  /** Closes a thread's plan without implementing it. Sends the thread nothing. */
+  readonly closeProposedPlan: (input: {
+    environmentId: string;
+    threadId: string;
+    planId: string;
+  }) => Promise<void>;
   /**
    * Opens a web address on the user's screen. The only capability that reaches
    * outside the app, and deliberately the narrowest one that answers "put that
@@ -1355,6 +1363,9 @@ async function runTool(
         // for; the raw message here is an entire plan document.
         requestLabel: "implement the approved plan",
         interactionMode: "default",
+        // Exactly what the Implement button sends: without it the plan stayed
+        // open and could be "approved" - and built - a second time.
+        sourceProposedPlanId: actionable.planId,
       });
 
       return {
@@ -1362,6 +1373,43 @@ async function runTool(
           approved: true,
           plan: plan.title,
           say: `Approved. Say that ${thread.title} is starting on it, in a few words.`,
+        },
+        outcome: "ok",
+        detail: `${thread.title}: ${plan.title}`,
+      };
+    }
+
+    case "close_proposed_plan": {
+      const target = resolveTarget(context, call.args, "close the plan for");
+      if (!target.ok) return target.result;
+      const thread = target.thread;
+      const actionable = findActionablePlan(
+        await context.readProposedPlans({
+          environmentId: thread.environmentId,
+          threadId: thread.threadId,
+        }),
+      );
+      if (actionable === null) {
+        return {
+          value: {
+            closed: false,
+            say: `${thread.title} has no plan waiting. Say that rather than closing anything.`,
+          },
+          outcome: "error",
+          detail: `${thread.title} (no plan)`,
+        };
+      }
+      await context.closeProposedPlan({
+        environmentId: thread.environmentId,
+        threadId: thread.threadId,
+        planId: actionable.planId,
+      });
+      const plan = summarizeProposedPlan(actionable);
+      return {
+        value: {
+          closed: true,
+          plan: plan.title,
+          say: `Closed. Say that ${thread.title} is no longer waiting on it, in a few words.`,
         },
         outcome: "ok",
         detail: `${thread.title}: ${plan.title}`,

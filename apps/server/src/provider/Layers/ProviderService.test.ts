@@ -1079,6 +1079,46 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("tells a promoted side chat's session once that it is a main chat now", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-promoted-side-chat");
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-promoted-side-chat",
+        runtimeMode: "full-access",
+      });
+      routing.codex.sendTurn.mockClear();
+
+      yield* provider.sendTurn({
+        threadId,
+        input: "Look into it.",
+        attachments: [],
+        isSideChat: true,
+      });
+      // After promotion the orchestrator stops marking turns as side-chat turns.
+      yield* provider.sendTurn({ threadId, input: "Now fix it.", attachments: [] });
+      yield* provider.sendTurn({ threadId, input: "And ship it.", attachments: [] });
+
+      const inputs = routing.codex.sendTurn.mock.calls.map((call) => call[0]?.input ?? "");
+      assert.equal(inputs.length, 3);
+      assert.include(inputs[0], "<solla_side_chat_context>");
+      assert.notInclude(inputs[0], "<solla_promoted_chat_context>");
+      assert.include(inputs[1], "<solla_promoted_chat_context>");
+      assert.notInclude(inputs[1], "interactive side-chat sub-agent");
+      assert.include(inputs[1], "Now fix it.");
+      assert.notInclude(inputs[2], "<solla_promoted_chat_context>");
+      assert.include(inputs[2], "And ship it.");
+
+      yield* provider.stopSession({ threadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.stopSession.mockClear();
+    }),
+  );
+
   it.effect("keeps a side chat's live session when its fork finishes copying late", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

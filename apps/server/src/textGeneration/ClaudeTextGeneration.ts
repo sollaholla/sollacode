@@ -374,6 +374,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       const { prompt, outputSchema } = buildPlanRefreshPrompt({
         transcript: input.transcript,
         currentSteps: input.currentSteps,
+        proposedPlanMarkdown: input.proposedPlanMarkdown,
       });
 
       const generated = yield* runClaudeJson({

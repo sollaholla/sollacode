@@ -106,7 +106,7 @@ export function AgentPowerToggle(props: {
   const { agent } = props;
   const environment = useEnvironment(props.environmentId);
   const connected = environment?.connection.phase === "connected";
-  const presence = agentPresence(agent.status, connected);
+  const presence = agentPresence(agent.status);
   const { toggle, busyAgentId } = useAgentPowerToggle(props.environmentId);
   const busy = busyAgentId === agent.vmAgentId;
   const running = agent.status === "running";

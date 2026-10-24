@@ -78,6 +78,57 @@ separate AI reviewer, so **Auto** auto-accepts file edits the same way
 **Auto-accept edits** does; commands still ask unless the chat is in
 **Full access**.
 
+## Proposed plans
+
+A thread can propose any number of plans, and each one keeps its own state.
+The thread waits on its **newest** plan until you either implement it or move
+on; older plans are history and never come back as the plan to approve.
+
+Every provider's Plan mode ends in a plan you can implement. Claude, Codex and
+Cursor propose plans through their own plan tools; Grok, Muse, Deep Code,
+OpenCode and Antigravity are asked to put the final plan in one
+`<proposed_plan>` block, which becomes the plan card. The card shows the plan,
+so the message that carried it no longer repeats it.
+
+- **Plan Ready** names the waiting plan above the composer, in any mode
+  (Claude can switch itself into plan mode while you are in Build). Tap its
+  title to open the plan. Pressing **Implement** — or sending an empty
+  composer — implements exactly that plan; **Implement in a new thread** starts
+  the work in a fresh chat. Agent mode stays Agent; Plan and Build implement in
+  Build.
+- In **Plan** mode, anything you type or attach is feedback that refines the
+  plan, and slash commands still run. In **Build** or **Agent**, a message
+  ("go ahead", or instructions to go with it) approves the plan: it is marked
+  **Implemented** and the agent builds it. Switching the composer to Build or
+  Agent and pressing **Apply** does the same.
+- Each plan card in the chat shows what became of it: **Waiting for
+  approval**, **Implemented**, **Superseded** (a newer plan replaced it), or
+  **Closed** (you closed it, or implemented a different plan instead). Its
+  menu can implement that exact plan, including an older one.
+- **Close plan** stops the thread waiting on a plan without implementing it
+  and without sending the agent anything, for a plan you will not answer, even
+  in a thread that can no longer take messages. It is on the **Plan Ready**
+  bar, in the plan card's menu, and on the phone's plan card; the orchestrator
+  can also do it when you ask. **Reopen plan** in the card's menu undoes it, and
+  the phone offers **Reopen** right after you close one there.
+- Reverting to before the message that answered a plan undoes the answer
+  too: the plan is waiting again. A plan implemented in another thread stays
+  implemented.
+- Automatic turns — Agent-mode auto-continue, resumes after a restart, and the
+  browser-tab cleanup reminder — wait while a plan is waiting, so nothing lands
+  between you and the decision. Only you decide a plan: a Resume, a scheduled
+  or delegated run, or another agent's question never marks it implemented.
+  The orchestrator, relaying you, can.
+
+The plan panel keeps the two things that used to share one list apart:
+**Plan** is the proposal and its status; **Tasks** is the agent's progress
+checklist (TodoWrite, Claude Tasks, Codex's plan tool), each with its own
+time. Tasks from before the newest plan are not shown as its steps. The refresh
+button, or `/refresh-plan`, rebuilds the task list from the conversation and
+the current plan. An implementation thread keeps showing the plan it is
+implementing. On the native phone app, a waiting plan appears as a card above
+the composer with **Read plan** and **Implement**.
+
 ## Approve external actions
 
 Agents can pause before consequential external actions such as sending an email or message,

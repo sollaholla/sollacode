@@ -11,6 +11,7 @@ const COMMAND_TO_DRIVER: Readonly<Record<string, ProviderDriverKind>> = {
   opencode: ProviderDriverKind.make("opencode"),
   agy: ProviderDriverKind.make("antigravity"),
   deepcode: ProviderDriverKind.make("deepcode"),
+  kimi: ProviderDriverKind.make("kimi"),
 };
 
 /** Enough of the latest frame to see interrupt hints without older turns. */
@@ -73,6 +74,7 @@ const DRIVER_TO_LAUNCH_COMMAND: Readonly<Record<string, string>> = {
   opencode: "opencode",
   antigravity: "agy",
   deepcode: "deepcode",
+  kimi: "kimi",
 };
 
 /**

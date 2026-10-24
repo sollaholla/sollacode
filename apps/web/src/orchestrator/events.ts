@@ -187,15 +187,14 @@ export function threadSnapshotKey(shell: {
  * request is raised *by* a turn that is still in flight — the turn stays
  * running while it waits — so those are real even while the thread is working.
  *
- * A proposed plan is not. Having a plan in history is not a wait. The record
- * stays on the thread after the user leaves Plan mode, after later turns, and
- * after they start building. waitingOn is "proposed-plan" only when the thread
- * is actually stopped for approval — the same gate as the sidebar's "Plan
- * Ready" row: plan mode, settled latest turn, unimplemented plan on that turn.
+ * A proposed plan is not, until the thread settles. Having a plan in history
+ * is not a wait: `hasActionableProposedPlan` is only the newest plan that is
+ * neither implemented nor closed, and a plan is implemented when the person answers
+ * in Build or Agent. In any mode - an agent can propose a plan on its own
+ * outside Plan mode. Same gate as the sidebar's "Plan Ready" row.
  */
 function isStoppedForProposedPlan(shell: EnvironmentThreadShell, isWorking: boolean): boolean {
   if (isWorking) return false;
-  if (shell.interactionMode !== "plan") return false;
   if (!shell.hasActionableProposedPlan) return false;
   const latestTurn = shell.latestTurn;
   if (!latestTurn?.startedAt || !latestTurn.completedAt) return false;

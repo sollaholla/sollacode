@@ -18,7 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { RemoteConnectionControl } from "../remoteControl/RemoteConnectionControl";
-import { useEnvironment, usePrimaryEnvironmentId } from "../../state/environments";
+import { usePrimaryEnvironmentId } from "../../state/environments";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { isElectron } from "../../env";
@@ -75,7 +75,6 @@ function AgentWorkspaceResolved(props: {
   readonly environmentId: EnvironmentId;
 }) {
   const { environmentId } = props;
-  const environment = useEnvironment(environmentId);
   const [view, setView] = useState<AgentWorkspaceView>("chat");
   const [projectScriptsPortalTarget, setProjectScriptsPortalTarget] =
     useState<HTMLDivElement | null>(null);
@@ -181,7 +180,7 @@ function AgentWorkspaceResolved(props: {
     setCollapsed: setAgentHeaderCollapsed,
   });
 
-  if (registryUnavailable) {
+  if (registryUnavailable && registrySnapshot === null) {
     return <CenteredNote text="Agents are unavailable. Reconnect to the host and try again." />;
   }
 
@@ -192,10 +191,7 @@ function AgentWorkspaceResolved(props: {
   if (!agent) {
     return <CenteredNote text="This agent no longer exists." />;
   }
-  const agentOnline = agentPresence(
-    agent.status,
-    environment?.connection.phase === "connected",
-  ).online;
+  const agentOnline = agentPresence(agent.status).online;
   const panelToggle = agentThreadId ? (
     <ToolbarControl
       type="button"

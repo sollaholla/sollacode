@@ -11,15 +11,60 @@ import { ServerSettingsService } from "./serverSettings.ts";
 
 export const ARCHIVED_THREAD_RETENTION_HOURS = 48;
 
-/** Uses ordinary deletion so all clients and cleanup reactors see the same events. */
+/**
+ * Deletes one archived chat through an ordinary `thread.delete`, so all clients
+ * and cleanup reactors see the same events. False when the server refuses it,
+ * such as a chat unarchived or already removed since it was listed.
+ */
+const deleteArchivedThread = Effect.fn("deleteArchivedThread")(function* (
+  threadId: string,
+  archivedBefore: string,
+) {
+  const engine = yield* OrchestrationEngineService;
+  const crypto = yield* Crypto.Crypto;
+  const commandId = CommandId.make(yield* crypto.randomUUIDv4);
+  return yield* engine
+    .dispatch({
+      type: "thread.delete",
+      commandId,
+      threadId: ThreadId.make(threadId),
+      archivedBefore,
+    })
+    .pipe(
+      Effect.as(true),
+      Effect.catch((error) =>
+        Effect.logWarning("archived thread deletion skipped", { threadId, error }).pipe(
+          Effect.as(false),
+        ),
+      ),
+    );
+});
+
+/**
+ * Settings → Archive cleanup: deletes the listed chats, each only while still
+ * archived at or before `archivedBefore`, carrying on past any the server
+ * refuses.
+ */
+export const deleteArchivedThreads = Effect.fn("deleteArchivedThreads")(function* (
+  threadIds: ReadonlyArray<string>,
+  archivedBefore: string,
+) {
+  let deleted = 0;
+  let skipped = 0;
+  for (const threadId of threadIds) {
+    if (yield* deleteArchivedThread(threadId, archivedBefore)) deleted += 1;
+    else skipped += 1;
+  }
+  return { deleted, skipped };
+});
+
+/** Retention: chats archived longer than the window go, while the setting stays on. */
 export const purgeExpiredArchivedThreads = Effect.fn("purgeExpiredArchivedThreads")(function* (
   now: DateTime.Utc,
 ) {
   const settings = yield* ServerSettingsService;
   if (!(yield* settings.getSettings).archivedThreadAutoDelete) return 0;
   const sql = yield* SqlClient.SqlClient;
-  const engine = yield* OrchestrationEngineService;
-  const crypto = yield* Crypto.Crypto;
   const cutoff = DateTime.formatIso(
     DateTime.subtract(now, { hours: ARCHIVED_THREAD_RETENTION_HOURS }),
   );
@@ -35,24 +80,7 @@ export const purgeExpiredArchivedThreads = Effect.fn("purgeExpiredArchivedThread
     if (rows.length === 0) return deleted;
     for (const row of rows) {
       if (!(yield* settings.getSettings).archivedThreadAutoDelete) return deleted;
-      const commandId = CommandId.make(yield* crypto.randomUUIDv4);
-      const result = yield* engine
-        .dispatch({
-          type: "thread.delete",
-          commandId,
-          threadId: ThreadId.make(row.threadId),
-          archivedBefore: cutoff,
-        })
-        .pipe(
-          Effect.as(true),
-          Effect.catch((error) =>
-            Effect.logWarning("archived thread retention skipped deletion", {
-              threadId: row.threadId,
-              error,
-            }).pipe(Effect.as(false)),
-          ),
-        );
-      if (result) deleted += 1;
+      if (yield* deleteArchivedThread(row.threadId, cutoff)) deleted += 1;
       cursor = row.threadId;
     }
   }

@@ -1118,6 +1118,70 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("holds the cleanup turn while a proposed plan waits for the person", async () => {
+    // Observed 2026-10-10: a cleanup reminder started 13s after a plan and
+    // became the latest turn, putting an unrelated exchange between the person
+    // and the plan they had to approve.
+    const harness = await createHarness({ interactionMode: "plan" });
+    const threadId = asThreadId("thread-1");
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-plan-browser-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-10-10T14:35:08.000Z",
+      turnId: asTurnId("turn-plan-browser"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-plan-browser",
+    );
+    await harness.drain();
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "turn.proposed.completed",
+      eventId: asEventId("evt-plan-browser-proposed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-10-10T14:40:44.000Z",
+      turnId: asTurnId("turn-plan-browser"),
+      providerRefs: { providerItemId: asItemId("toolu-exit-plan") },
+      payload: { planMarkdown: "# Security hardening\n\n- fix the relay" },
+    });
+    await waitForThread(harness.readModel, (thread) => thread.proposedPlans.length === 1);
+    await harness.drain();
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-plan-browser-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-10-10T14:40:57.000Z",
+      turnId: asTurnId("turn-plan-browser"),
+      payload: { state: "completed" },
+    });
+    const settled = await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.latestTurn?.turnId === "turn-plan-browser" &&
+        thread.latestTurn.state === "completed",
+    );
+    await harness.drain();
+
+    expect(
+      settled.messages.some((message) =>
+        String(message.id).startsWith("browser-tab-cleanup-message:"),
+      ),
+    ).toBe(false);
+    const work = await harness.readThreadWork(threadId);
+    expect(
+      work.filter((entry) => entry.sourceTurnId.includes("browser-tab-cleanup-message:")),
+    ).toEqual([]);
+  });
+
   it("queues one changed-tab cleanup turn and suppresses its own completion", async () => {
     const harness = await createHarness({ interactionMode: "agent" });
     const threadId = asThreadId("thread-1");
@@ -4520,6 +4584,93 @@ describe("ProviderRuntimeIngestion", () => {
     expect(proposedPlan?.planMarkdown).toBe(
       "## Ship plan\n\n- wire projection\n- render follow-up",
     );
+  });
+
+  it("keeps two plans proposed in one turn apart", async () => {
+    // A revision after a mid-turn message, or a second Grok block, used to
+    // overwrite the first plan under one turn-keyed id.
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    for (const [itemId, markdown] of [
+      ["plan-a", "## First plan\n\n- one"],
+      ["plan-b", "## Revised plan\n\n- two"],
+    ] as const) {
+      harness.emit({
+        type: "turn.proposed.completed",
+        eventId: asEventId(`evt-${itemId}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-two-plans"),
+        providerRefs: { providerItemId: asItemId(itemId) },
+        payload: { planMarkdown: markdown },
+      });
+    }
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.proposedPlans.filter((plan: ProviderRuntimeTestProposedPlan) =>
+          plan.id.startsWith("plan:thread-1:turn:turn-two-plans:item:"),
+        ).length === 2,
+    );
+    expect(
+      thread.proposedPlans
+        .filter((plan: ProviderRuntimeTestProposedPlan) => plan.turnId === "turn-two-plans")
+        .map((plan: ProviderRuntimeTestProposedPlan) => [plan.id, plan.planMarkdown]),
+    ).toEqual([
+      ["plan:thread-1:turn:turn-two-plans:item:plan-a", "## First plan\n\n- one"],
+      ["plan:thread-1:turn:turn-two-plans:item:plan-b", "## Revised plan\n\n- two"],
+    ]);
+  });
+
+  it("flushes a streamed plan under its own item id when the turn ends", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-item-plan"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-item-plan"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-item-plan",
+    );
+    harness.emit({
+      type: "turn.proposed.delta",
+      eventId: asEventId("evt-item-plan-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-item-plan"),
+      itemId: RuntimeItemId.make("codex-plan-item"),
+      payload: { delta: "## Streamed plan\n\n- only" },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-item-plan"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-item-plan"),
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.proposedPlans.some(
+        (plan: ProviderRuntimeTestProposedPlan) =>
+          plan.id === "plan:thread-1:turn:turn-item-plan:item:codex-plan-item",
+      ),
+    );
+    expect(
+      thread.proposedPlans.find(
+        (plan: ProviderRuntimeTestProposedPlan) =>
+          plan.id === "plan:thread-1:turn:turn-item-plan:item:codex-plan-item",
+      )?.planMarkdown,
+    ).toBe("## Streamed plan\n\n- only");
   });
 
   it("marks the source proposed plan implemented only after the target turn starts", async () => {

@@ -14,6 +14,7 @@ import {
   type RemoteControlHostEndInput,
   type RemoteControlHostPublishFrameInput,
   type RemoteControlHostReportStatusInput,
+  type RemoteControlHostAcknowledgeInputInput,
   type RemoteControlHostPublishVideoChunkInput,
   type RemoteControlVideoChunk,
   type RemoteControlHostRespondInput,
@@ -57,6 +58,7 @@ interface RemoteControlSessionRecord {
   readonly lastFrameSequence: number;
   readonly lastFramePublishedAt: number;
   readonly lastInputSequence: number;
+  readonly pendingInputAcknowledgements: ReadonlySet<number>;
   readonly lastChunkSequence: number;
   // Retained so a controller that subscribes mid-stream can be handed the
   // container header it needs before any media chunk makes sense.
@@ -155,6 +157,10 @@ export class RemoteControlBroker extends Context.Service<
     ) => Effect.Effect<void, RemoteControlBrokerError>;
     readonly publishVideoChunk: (
       input: RemoteControlHostPublishVideoChunkInput,
+      hostSessionId: AuthSessionId,
+    ) => Effect.Effect<void, RemoteControlBrokerError>;
+    readonly acknowledgeInput: (
+      input: RemoteControlHostAcknowledgeInputInput,
       hostSessionId: AuthSessionId,
     ) => Effect.Effect<void, RemoteControlBrokerError>;
     readonly reportHostStatus: (
@@ -536,6 +542,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
       lastFrameSequence: -1,
       lastFramePublishedAt: 0,
       lastInputSequence: -1,
+      pendingInputAcknowledgements: new Set(),
       lastChunkSequence: -1,
       videoInitChunk: null,
     };
@@ -868,6 +875,53 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     yield* PubSub.publish(record.changes, { type: "host-status", status: input.status });
   });
 
+  // The host reports only after native injection completes. Broker enqueueing
+  // deliberately cannot satisfy this receipt. The delivery lock also prevents
+  // a very fast host from acknowledging before sendInput records the request.
+  const acknowledgeInput: RemoteControlBroker["Service"]["acknowledgeInput"] = Effect.fn(
+    "RemoteControlBroker.acknowledgeInput",
+  )(function* (input, hostSessionId) {
+    const initial = (yield* SynchronizedRef.get(state)).sessions.get(input.sessionId);
+    if (!initial) return;
+    yield* initial.deliveryLock.withPermit(
+      Effect.gen(function* () {
+        const current = yield* SynchronizedRef.get(state);
+        const host = current.host;
+        const record = current.sessions.get(input.sessionId);
+        if (!record) return;
+        if (
+          !host ||
+          host.sessionId !== hostSessionId ||
+          host.host.clientId !== input.clientId ||
+          host.connectionId !== input.connectionId ||
+          record.hostConnectionId !== input.connectionId
+        ) {
+          return yield* new RemoteControlSessionAccessDeniedError({ sessionId: input.sessionId });
+        }
+        if (
+          record.session.status !== "approved" ||
+          !record.pendingInputAcknowledgements.has(input.sequence)
+        )
+          return;
+        yield* SynchronizedRef.update(state, (current) => {
+          const sessions = new Map(current.sessions);
+          const latest = current.sessions.get(input.sessionId);
+          if (!latest) return current;
+          const pending = new Set(latest.pendingInputAcknowledgements);
+          pending.delete(input.sequence);
+          sessions.set(input.sessionId, { ...latest, pendingInputAcknowledgements: pending });
+          return { ...current, sessions };
+        });
+        yield* PubSub.publish(record.changes, {
+          type: "input-acknowledged",
+          sessionId: input.sessionId,
+          sequence: input.sequence,
+          applied: input.applied,
+        });
+      }),
+    );
+  });
+
   const endByHostUnlocked: RemoteControlBroker["Service"]["endByHost"] = Effect.fn(
     "RemoteControlBroker.endByHostUnlocked",
   )(function* (input, hostSessionId) {
@@ -942,6 +996,8 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
   const sendInput: RemoteControlBroker["Service"]["sendInput"] = Effect.fn(
     "RemoteControlBroker.sendInput",
   )(function* (input, controllerSessionId) {
+    const acknowledge =
+      input.acknowledge === true && input.input.type === "pointer" && input.input.action === "down";
     // Retargeting capture is a screen concern, not an input one, so a
     // view-only grant can still switch monitors without gaining pointer rights.
     const requiredCapability: RemoteControlCapability =
@@ -1013,6 +1069,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
                   sessionId: input.sessionId,
                   sequence: input.sequence,
                   input: input.input,
+                  ...(acknowledge ? { acknowledge: true } : {}),
                 }),
               );
               if (!offered) return yield* new RemoteControlNoHostError();
@@ -1026,7 +1083,18 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
                   return current;
                 }
                 const sessions = new Map(current.sessions);
-                sessions.set(input.sessionId, { ...record, lastInputSequence: input.sequence });
+                const pending = new Set(record.pendingInputAcknowledgements);
+                if (acknowledge) pending.add(input.sequence);
+                // Receipts are transient UI feedback, never durable history.
+                if (pending.size > REMOTE_CONTROL_HOST_QUEUE_CAPACITY) {
+                  const oldest = pending.values().next().value;
+                  if (oldest !== undefined) pending.delete(oldest);
+                }
+                sessions.set(input.sessionId, {
+                  ...record,
+                  lastInputSequence: input.sequence,
+                  pendingInputAcknowledgements: pending,
+                });
                 return { ...current, sessions };
               });
             }
@@ -1179,6 +1247,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     publishVideoChunk,
     endByHost,
     reportHostStatus,
+    acknowledgeInput,
     watch,
     sendInput,
     cancel,

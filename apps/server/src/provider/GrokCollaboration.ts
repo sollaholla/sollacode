@@ -57,8 +57,6 @@ Prefer making reasonable assumptions and doing the requested work. Do not stop t
 ${T3_CODE_BROWSER_TOOL_INSTRUCTIONS}
 </collaboration_mode>`;
 
-const PROPOSED_PLAN_BLOCK_PATTERN = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/iu;
-
 const MUTATING_PERMISSION_KINDS = new Set(["edit", "delete", "move", "execute"]);
 const READ_PERMISSION_KINDS = new Set(["read", "search", "fetch", "think", "lookup"]);
 
@@ -80,18 +78,6 @@ export function grokCollaborationPromptBlock(
     type: "text",
     text: buildGrokCollaborationInstructions(interactionMode),
   };
-}
-
-export function extractCompletedProposedPlans(text: string): ReadonlyArray<string> {
-  const plans: Array<string> = [];
-  const pattern = new RegExp(PROPOSED_PLAN_BLOCK_PATTERN, "giu");
-  for (const match of text.matchAll(pattern)) {
-    const plan = match[1]?.trim();
-    if (plan) {
-      plans.push(plan);
-    }
-  }
-  return plans;
 }
 
 export function resolveGrokPermissionAction(input: {

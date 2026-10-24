@@ -1,11 +1,14 @@
 "use client";
 
+import { RemoteClickMarkers, useRemoteClickFeedback } from "../preview/RemoteClickMarkers";
+
 import { createTouchActionMenu, type TouchMenuState } from "./touchActionMenu";
 import { TouchActionRadialMenu } from "./TouchActionRadialMenu";
 
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
+  RemoteControlControllerStreamEvent,
   RemoteControlDisplay,
   RemoteControlInput,
   RemoteControlPointerButton,
@@ -33,6 +36,11 @@ import {
 } from "react";
 
 import { useEnvironmentQuery } from "~/state/query";
+import {
+  INITIAL_EVENT_CURSOR,
+  takeUnseenEvents,
+  type EventCursor,
+} from "@t3tools/client-runtime/state/event-window";
 import { remoteControlEnvironment } from "~/state/remoteControl";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useOnScreenKeyboard } from "~/hooks/useOnScreenKeyboard";
@@ -182,6 +190,17 @@ export function RemoteControlViewerDialog(props: {
   // directly, so there the buttons are dead weight.
   const touchClient = useOnScreenKeyboard();
   const virtualKeyboardInputRef = useRef<HTMLInputElement>(null);
+  const { feedback: clickFeedback, markers: clickMarkers } = useRemoteClickFeedback(
+    JSON.stringify([environmentId, session?.sessionId, session?.status, activeDisplayId]),
+  );
+  const [clickFrameSize, setClickFrameSize] = useState<{ width: number; height: number } | null>(
+    null,
+  );
+  const updateClickFrameSize = (width: number, height: number) => {
+    setClickFrameSize((current) =>
+      current?.width === width && current.height === height ? current : { width, height },
+    );
+  };
   const sessionRef = useRef(session);
   sessionRef.current = session;
   const inputSequenceRef = useRef(0);
@@ -190,7 +209,10 @@ export function RemoteControlViewerDialog(props: {
   const touchCallbacksRef = useRef<Parameters<typeof createTouchActionMenu>[0] | null>(null);
   const [touchActions] = useState(() =>
     createTouchActionMenu({
-      menu: setTouchMenu,
+      menu: (state) => {
+        if (state) clickFeedback.cancelPress();
+        setTouchMenu(state);
+      },
       pointer: (...args) => touchCallbacksRef.current?.pointer(...args),
       scroll: (...args) => touchCallbacksRef.current?.scroll(...args),
     }),
@@ -356,46 +378,59 @@ export function RemoteControlViewerDialog(props: {
     [],
   );
 
+  // Everything the host and broker have sent that this component has not yet
+  // handled. `watch.data` is a window of recent events, not the latest one: an
+  // instantly-approved session delivers "approved" and the retained video chunk
+  // together, and reacting to only the newest of them left this on "Approve on
+  // <host>" while the host streamed.
+  const watchCursorRef = useRef<EventCursor>(INITIAL_EVENT_CURSOR);
   useEffect(() => {
-    const event = watch.data;
-    if (!event) return;
-    if (event.type === "video-chunk") {
-      if (event.chunk.displays) setDisplays(event.chunk.displays);
-      if (event.chunk.displayId) setActiveDisplayId(event.chunk.displayId);
-      appendVideoChunk(event.chunk);
-      return;
-    }
-    if (event.type === "pointer-lock-changed") {
-      setRemoteLocked(event.locked);
-      return;
-    }
-    if (event.type === "cursor-changed") {
-      setRemoteCursorShape(event.shape);
-      return;
-    }
-    if (event.type === "host-status") {
-      // Transient by definition: the session is still approved and the stream
-      // is expected back, so this is a notice rather than an error.
-      setHostNotice(describeHostStatus(event.status));
-      if (event.status.state === "ok") setInputError(null);
-      return;
-    }
-    if (event.type === "frame") {
-      setFrameData(`data:${event.frame.mimeType};base64,${event.frame.data}`);
-      if (event.frame.displays) setDisplays(event.frame.displays);
-      // Track what the host is actually sending rather than what we asked for,
-      // so the picker self-corrects if a requested monitor was unavailable.
-      if (event.frame.displayId) setActiveDisplayId(event.frame.displayId);
-      return;
-    }
-    setSession(event.session);
-    if (event.session.status === "declined") {
-      setError(`${environmentLabel} declined the screen-sharing request.`);
-    } else if (event.session.status === "failed") {
-      setError(
-        event.session.failureReason ?? `${environmentLabel} could not start screen sharing.`,
-      );
-    }
+    const unseen = takeUnseenEvents(watch.data, watchCursorRef.current);
+    watchCursorRef.current = unseen.cursor;
+    const applyWatchEvent = (event: RemoteControlControllerStreamEvent): void => {
+      if (event.type === "input-acknowledged") {
+        clickFeedback.settle(`${event.sessionId}:${event.sequence}`, event.applied);
+        return;
+      }
+      if (event.type === "video-chunk") {
+        if (event.chunk.displays) setDisplays(event.chunk.displays);
+        if (event.chunk.displayId) setActiveDisplayId(event.chunk.displayId);
+        appendVideoChunk(event.chunk);
+        return;
+      }
+      if (event.type === "pointer-lock-changed") {
+        setRemoteLocked(event.locked);
+        return;
+      }
+      if (event.type === "cursor-changed") {
+        setRemoteCursorShape(event.shape);
+        return;
+      }
+      if (event.type === "host-status") {
+        // Transient by definition: the session is still approved and the stream
+        // is expected back, so this is a notice rather than an error.
+        setHostNotice(describeHostStatus(event.status));
+        if (event.status.state === "ok") setInputError(null);
+        return;
+      }
+      if (event.type === "frame") {
+        setFrameData(`data:${event.frame.mimeType};base64,${event.frame.data}`);
+        if (event.frame.displays) setDisplays(event.frame.displays);
+        // Track what the host is actually sending rather than what we asked for,
+        // so the picker self-corrects if a requested monitor was unavailable.
+        if (event.frame.displayId) setActiveDisplayId(event.frame.displayId);
+        return;
+      }
+      setSession(event.session);
+      if (event.session.status === "declined") {
+        setError(`${environmentLabel} declined the screen-sharing request.`);
+      } else if (event.session.status === "failed") {
+        setError(
+          event.session.failureReason ?? `${environmentLabel} could not start screen sharing.`,
+        );
+      }
+    };
+    for (const event of unseen.events) applyWatchEvent(event);
   }, [environmentLabel, watch.data]);
 
   useEffect(() => {
@@ -406,22 +441,29 @@ export function RemoteControlViewerDialog(props: {
     async (input: RemoteControlInput) => {
       const currentSession = sessionRef.current;
       if (currentSession?.status !== "approved") return;
+      const sequence = inputSequenceRef.current++;
+      const acknowledge = input.type === "pointer" && input.action === "down";
+      const clickId = acknowledge
+        ? clickFeedback.submit(input, `${currentSession.sessionId}:${sequence}`)
+        : null;
       const outcome = await sendInputCommand({
         environmentId,
         input: {
           sessionId: currentSession.sessionId,
-          sequence: inputSequenceRef.current++,
+          sequence,
           input,
+          ...(acknowledge ? { acknowledge: true } : {}),
         },
       });
       if (outcome._tag === "Failure") {
+        if (clickId !== null) clickFeedback.settle(clickId, false);
         throw new Error(failureMessage(outcome));
       }
       // Recovery is only observable here, so a stale error must not outlive
       // the condition that caused it.
       setInputError((current) => (current === null ? current : null));
     },
-    [environmentId, sendInputCommand],
+    [clickFeedback, environmentId, sendInputCommand],
   );
 
   const inputScheduler = useMemo(
@@ -1311,6 +1353,7 @@ export function RemoteControlViewerDialog(props: {
               onPointerDown={(event) => {
                 if (!canControl) return;
                 if (zoomView.onPointerDown(event)) {
+                  clickFeedback.cancelPress();
                   // Cancel the pending first-finger press before starting the pinch.
                   zoomViewAdjustingRef.current = true;
                   releasePressedInputs();
@@ -1331,6 +1374,13 @@ export function RemoteControlViewerDialog(props: {
                 const button = remotePointerButton(event.button);
                 event.preventDefault();
                 const sample = pointerSample(event);
+                const rect = remoteSurfaceRect();
+                if (rect && event.pointerType === "touch") {
+                  clickFeedback.press(
+                    normalizedRemotePoint({ clientX: event.clientX, clientY: event.clientY, rect }),
+                    { x: event.clientX, y: event.clientY },
+                  );
+                }
                 const press = () => {
                   pressedPointerButtonRef.current = button;
                   sendPointer(sample, "down", button);
@@ -1346,6 +1396,7 @@ export function RemoteControlViewerDialog(props: {
                 } else press();
               }}
               onPointerMove={(event) => {
+                clickFeedback.movePress({ x: event.clientX, y: event.clientY }, 10);
                 if (zoomView.onPointerMove(event)) return;
                 if (
                   event.pointerType === "touch" &&
@@ -1357,6 +1408,7 @@ export function RemoteControlViewerDialog(props: {
                 sendPointer(event, "move", pressedPointerButtonRef.current ?? "left");
               }}
               onPointerUp={(event) => {
+                clickFeedback.cancelPress();
                 if (zoomView.onPointerUp(event)) {
                   zoomViewAdjustingRef.current = zoomView.pinchingRef.current;
                   if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -1380,8 +1432,12 @@ export function RemoteControlViewerDialog(props: {
                   event.currentTarget.releasePointerCapture(event.pointerId);
                 }
               }}
-              onLostPointerCapture={() => touchActions.cancel()}
+              onLostPointerCapture={() => {
+                clickFeedback.cancelPress();
+                touchActions.cancel();
+              }}
               onPointerCancel={(event) => {
+                clickFeedback.cancelPress();
                 touchActions.cancel();
                 if (zoomView.onPointerUp(event)) {
                   zoomViewAdjustingRef.current = zoomView.pinchingRef.current;
@@ -1408,9 +1464,19 @@ export function RemoteControlViewerDialog(props: {
                     // `loadeddata` is the first moment a frame is actually
                     // decoded, which is also what the 5s watchdog is waiting to
                     // hear about — marking it here spares the fallback.
-                    onLoadedData={() => {
+                    onLoadedData={(event) => {
+                      updateClickFrameSize(
+                        event.currentTarget.videoWidth,
+                        event.currentTarget.videoHeight,
+                      );
                       setHasRenderedFrame(true);
                     }}
+                    onResize={(event) =>
+                      updateClickFrameSize(
+                        event.currentTarget.videoWidth,
+                        event.currentTarget.videoHeight,
+                      )
+                    }
                     onPlaying={() => setHasRenderedFrame(true)}
                     // Transform rather than layout: pointer math reads the
                     // element's bounding rect, which already reflects it, so
@@ -1427,12 +1493,25 @@ export function RemoteControlViewerDialog(props: {
                     // Receiving bytes is not the same as painting them. Keep the
                     // loading overlay up until the browser has decoded the first
                     // JPEG, otherwise a slow image decode still exposes black.
-                    onLoad={() => setHasRenderedFrame(true)}
+                    onLoad={(event) => {
+                      updateClickFrameSize(
+                        event.currentTarget.naturalWidth,
+                        event.currentTarget.naturalHeight,
+                      );
+                      setHasRenderedFrame(true);
+                    }}
                     // Transform rather than layout: pointer math reads the
                     // element's bounding rect, which already reflects it, so
                     // clicks keep landing where the user aimed while zoomed.
                     style={zoomView.style}
                     className="pointer-events-none absolute inset-0 size-full touch-none select-none object-contain"
+                  />
+                ) : null}
+                {clickFrameSize ? (
+                  <RemoteClickMarkers
+                    markers={clickMarkers}
+                    frame={clickFrameSize}
+                    style={zoomView.style}
                   />
                 ) : null}
                 {surface.showLoadingOverlay ? (

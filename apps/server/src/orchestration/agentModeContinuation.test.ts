@@ -147,6 +147,14 @@ describe("server-owned Agent continuation", () => {
     ).toBe(false);
   });
 
+  it("waits for the person when the agent has proposed a plan", () => {
+    // Claude can enter plan mode on its own in Agent mode; continuing would
+    // tell it to "continue" straight past the plan it was told to stop at.
+    expect(
+      shouldAutoContinueAgentThread(shell({ hasActionableProposedPlan: true }), assistantEvent()),
+    ).toBe(false);
+  });
+
   it("counts a resolved blocker as the user acting, not as machinery", () => {
     // A blocker exists because the agent stopped and asked for something only
     // the user could do, so the thread is signed off by construction. Reading
@@ -444,6 +452,9 @@ describe("server-owned Agent continuation", () => {
     expect(shouldDispatchStartupResume({ ...resumable, hasPendingUserInput: true }, input)).toBe(
       false,
     );
+    expect(
+      shouldDispatchStartupResume({ ...resumable, hasActionableProposedPlan: true }, input),
+    ).toBe(false);
     expect(shouldDispatchStartupResume(resumable, { ...input, hasLaterRealUserTurn: true })).toBe(
       false,
     );

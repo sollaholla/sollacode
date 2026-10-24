@@ -131,6 +131,7 @@ const makeContext = (
         createdAt: "2026-01-01T00:00:00Z",
       },
     ]),
+    closeProposedPlan: vi.fn(async () => undefined),
     describeUsage: () => ({
       providers: [
         {
@@ -551,8 +552,38 @@ describe("approve_proposed_plan", () => {
         threadId: "thread-a",
         interactionMode: "default",
         message: expect.stringContaining("PLEASE IMPLEMENT THIS PLAN"),
+        // Marks exactly this plan implemented, as the Implement button does.
+        sourceProposedPlanId: expect.any(String),
       }),
     );
+  });
+
+  it("never approves an older plan once the newest is closed", async () => {
+    // A plan built by switching modes used to stay "outstanding" and was the
+    // one approved - and built again - days later.
+    const context = makeContext({
+      readProposedPlans: vi.fn(async () => [
+        {
+          planId: "plan-built-by-mode-switch",
+          planMarkdown: "# Old plan",
+          implementedAt: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          planId: "plan-set-aside",
+          planMarkdown: "# Newer plan",
+          implementedAt: null,
+          closedAt: "2026-01-03T00:00:00.000Z",
+          createdAt: "2026-01-02T00:00:00.000Z",
+        },
+      ]),
+    });
+    const result = (await executeOrchestratorTool(context, {
+      name: "approve_proposed_plan",
+      args: { thread: "Rover" },
+    })) as { approved: boolean };
+    expect(result.approved).toBe(false);
+    expect(context.sendToThread).not.toHaveBeenCalled();
   });
 
   it("refuses rather than approving something that is not waiting", async () => {
@@ -583,6 +614,36 @@ describe("approve_proposed_plan", () => {
       args: { thread: "Rover" },
     })) as { approved: boolean };
     expect(result.approved).toBe(false);
+  });
+});
+
+describe("close_proposed_plan", () => {
+  it("closes the plan the thread is waiting on without sending it anything", async () => {
+    const context = makeContext();
+    const result = (await executeOrchestratorTool(context, {
+      name: "close_proposed_plan",
+      args: { thread: "Rover" },
+    })) as { closed: boolean };
+
+    expect(result.closed).toBe(true);
+    expect(context.closeProposedPlan).toHaveBeenCalledWith({
+      environmentId: expect.any(String),
+      threadId: "thread-a",
+      planId: "plan-1",
+    });
+    expect(context.sendToThread).not.toHaveBeenCalled();
+  });
+
+  it("says so rather than closing anything when no plan is waiting", async () => {
+    const context = makeContext({ readProposedPlans: vi.fn(async () => []) });
+    const result = (await executeOrchestratorTool(context, {
+      name: "close_proposed_plan",
+      args: { thread: "Rover" },
+    })) as { closed: boolean; say: string };
+
+    expect(result.closed).toBe(false);
+    expect(result.say).toContain("no plan waiting");
+    expect(context.closeProposedPlan).not.toHaveBeenCalled();
   });
 });
 

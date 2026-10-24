@@ -208,6 +208,29 @@ describe("extractUsageWindows", () => {
     expect(extractUsageWindows("cursor", { anything: true })).toEqual([]);
   });
 
+  it("reads Kimi plan windows as account limits", () => {
+    const windows = extractUsageWindows("kimi", {
+      source: "kimi-usages",
+      windows: [
+        {
+          key: "weekly",
+          label: "Weekly",
+          usedPercent: 25,
+          resetsAt: "2026-09-08T00:00:00.000Z",
+          windowDurationMs: 7 * DAY,
+        },
+        { key: "300m", label: "5h limit", usedPercent: 75, resetsAt: null, windowDurationMs: null },
+      ],
+      extraUsage: { balanceCents: 1250, totalCents: 2000, currency: "USD" },
+    });
+    expect(windows.map((entry) => [entry.key, entry.usedPercent, entry.scope])).toEqual([
+      ["weekly", 25, "account"],
+      ["300m", 75, "account"],
+    ]);
+    expect(windows[0]?.resetsAtMs).toBe(Date.parse("2026-09-08T00:00:00.000Z"));
+    expect(extractUsageWindows("kimi", { windows: [{ key: "x", usedPercent: 1 }] })).toEqual([]);
+  });
+
   it("scopes AGY remaining-percent rows to Gemini versus Claude/GPT families", () => {
     const windows = extractUsageWindows("antigravity", {
       windows: [

@@ -170,6 +170,9 @@ const DEFAULT_PENDING_PROCESS_EVENT_BYTE_LIMIT = 256 * 1024;
 const MAX_COALESCED_OUTPUT_CHARS = 128 * 1024;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
 const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 1_000;
+// While every running terminal is quiet, the process snapshot runs only on
+// every Nth tick, to still catch a child started without terminal I/O.
+const QUIET_SUBPROCESS_SNAPSHOT_EVERY_TICKS = 30;
 const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
 const FINAL_SUBPROCESS_POLL_TIMEOUT_MS = 5_000;
@@ -1206,7 +1209,29 @@ function shouldStripCsiSequence(body: string, finalByte: string): boolean {
   if (finalByte === "c" && /^[>0-9;?]*$/.test(body)) {
     return true;
   }
+  // DECRQM mode queries (…$p) and DECRPM replies (…$y): replaying a stored
+  // query makes the terminal answer again, and the shell echoes the answer as
+  // junk at the prompt. The `$` guard keeps setters like DECSTR (!p) and
+  // DECSCL ("p) intact.
+  if ((finalByte === "p" || finalByte === "y") && /^[0-9;?]*\$$/.test(body)) {
+    return true;
+  }
+  // XTVERSION query (>q). DECSCUSR (space-intermediate q) stays.
+  if (finalByte === "q" && /^>[0-9;]*$/.test(body)) {
+    return true;
+  }
+  // Kitty keyboard protocol query/reply (?u). Restore-cursor (bare u) stays.
+  if (finalByte === "u" && body.startsWith("?")) {
+    return true;
+  }
   return false;
+}
+
+// DECRQSS ($q) and XTGETTCAP (+q) queries plus their replies ([01]$r / [01]+r):
+// pure request/response traffic with no visual value, and replaying a stored
+// query triggers a fresh reply.
+function shouldStripDcsSequence(content: string): boolean {
+  return /^[01]?[$+][qr]/.test(content);
 }
 
 function shouldStripOscSequence(content: string): boolean {
@@ -1311,7 +1336,10 @@ function sanitizeTerminalHistoryChunk(
         }
         const sequence = input.slice(index, terminatorIndex);
         const content = stripStringTerminator(input.slice(index + 2, terminatorIndex));
-        if (nextCodePoint !== 0x5d || !shouldStripOscSequence(content)) {
+        const strip =
+          (nextCodePoint === 0x5d && shouldStripOscSequence(content)) ||
+          (nextCodePoint === 0x50 && shouldStripDcsSequence(content));
+        if (!strip) {
           append(sequence);
         }
         index = terminatorIndex;
@@ -1354,7 +1382,10 @@ function sanitizeTerminalHistoryChunk(
       }
       const sequence = input.slice(index, terminatorIndex);
       const content = stripStringTerminator(input.slice(index + 1, terminatorIndex));
-      if (codePoint !== 0x9d || !shouldStripOscSequence(content)) {
+      const strip =
+        (codePoint === 0x9d && shouldStripOscSequence(content)) ||
+        (codePoint === 0x90 && shouldStripDcsSequence(content));
+      if (!strip) {
         append(sequence);
       }
       index = terminatorIndex;
@@ -1402,10 +1433,19 @@ function shouldExcludeTerminalEnvKey(key: string): boolean {
 // They describe the AppImage itself, not the user's session, so terminals must
 // not inherit them.
 const APPIMAGE_RUNTIME_ENV_KEYS = ["APPIMAGE", "APPDIR", "ARGV0", "OWD"] as const;
-// PATH-style variables the AppImage runtime prepends with its temporary mount
-// (e.g. /tmp/.mount_T3-XXXX/usr/bin). Only the mount segments are dropped; the
-// user's real entries are preserved.
-const APPIMAGE_PATH_LIKE_ENV_KEYS = ["PATH", "LD_LIBRARY_PATH"] as const;
+// Colon-separated search-path variables the AppImage runtime points at its
+// temporary mount (e.g. /tmp/.mount_T3-XXXX/usr/bin, the bundled glib schemas,
+// and an $APPDIR/usr/share XDG data entry). Only the mount segments are
+// dropped; the user's real entries are preserved. When nothing but mount
+// segments remain the variable is removed entirely so consumers fall back to
+// their platform default (e.g. gsettings finds the host schemas instead of
+// reporting "No schemas installed"). See issues #1699 and #5059.
+const APPIMAGE_PATH_LIKE_ENV_KEYS = [
+  "PATH",
+  "LD_LIBRARY_PATH",
+  "XDG_DATA_DIRS",
+  "GSETTINGS_SCHEMA_DIR",
+] as const;
 
 function isPathSegmentUnderAppDir(segment: string, appDir: string): boolean {
   return segment === appDir || segment.startsWith(`${appDir}/`);
@@ -3259,6 +3299,52 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return owners;
   });
 
+  // An idle shell's process table does not change, yet the snapshot spawned
+  // `ps` (or a CIM query on Windows) every second for as long as a terminal
+  // was open. A session is quiet once two snapshots in a row saw no child and
+  // no output or events in between; the same PTY process guards against a
+  // restarted shell inheriting the state.
+  const quietSessions = new WeakMap<
+    TerminalSessionState,
+    { readonly process: PtyAdapter.PtyProcess | null; readonly mark: string; readonly idle: number }
+  >();
+  let skippedQuietTicks = 0;
+  const terminalActivityMark = (session: TerminalSessionState) =>
+    `${session.eventSequence}:${session.lastDataAtMs ?? ""}`;
+  const isQuietSession = (session: TerminalSessionState) => {
+    const quiet = quietSessions.get(session);
+    return (
+      quiet !== undefined &&
+      quiet.idle >= 2 &&
+      quiet.process === session.process &&
+      quiet.mark === terminalActivityMark(session) &&
+      !session.hasRunningSubprocess &&
+      !session.working
+    );
+  };
+  const recordQuietSessions = (
+    before: ReadonlyArray<{
+      readonly session: TerminalSessionState;
+      readonly process: PtyAdapter.PtyProcess | null;
+      readonly mark: string;
+    }>,
+  ) => {
+    for (const { session, process, mark } of before) {
+      const previous = quietSessions.get(session);
+      if (
+        session.status !== "running" ||
+        session.process !== process ||
+        session.hasRunningSubprocess ||
+        terminalActivityMark(session) !== mark
+      ) {
+        quietSessions.delete(session);
+        continue;
+      }
+      const continues = previous?.process === process && previous.mark === mark;
+      quietSessions.set(session, { process, mark, idle: (continues ? previous.idle : 0) + 1 });
+    }
+  };
+
   const pollSubprocessActivity = Effect.fn("terminal.pollSubprocessActivity")(function* (
     force = false,
   ) {
@@ -3388,6 +3474,23 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       yield* applySubprocessInspect(session, inspectResult);
     });
 
+    if (options.subprocessInspector === undefined) {
+      if (
+        !force &&
+        runningSessions.every(isQuietSession) &&
+        skippedQuietTicks < QUIET_SUBPROCESS_SNAPSHOT_EVERY_TICKS - 1
+      ) {
+        skippedQuietTicks += 1;
+        return;
+      }
+      skippedQuietTicks = 0;
+    }
+    const beforeSnapshot = runningSessions.map((session) => ({
+      session,
+      process: session.process,
+      mark: terminalActivityMark(session),
+    }));
+
     if (platform === "win32" && options.subprocessInspector === undefined) {
       const snapshot = yield* captureWindowsProcessSnapshot(
         runningSessions.map((session) => session.pid),
@@ -3428,6 +3531,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           ),
         { concurrency: "unbounded", discard: true },
       );
+      recordQuietSessions(beforeSnapshot);
       return;
     }
 
@@ -3452,6 +3556,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           ),
         { concurrency: "unbounded", discard: true },
       );
+      recordQuietSessions(beforeSnapshot);
       return;
     }
 

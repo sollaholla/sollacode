@@ -1,11 +1,15 @@
-import { CommandId, EventId, type OrchestrationEvent, ThreadId } from "@t3tools/contracts";
+import { CommandId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { purgeDeletedThreadPersistence } from "../../persistence/DeletedThreadPersistence.ts";
+import {
+  listUnfinishedThreadDeletions,
+  PURGE_BATCH_ROWS,
+  purgeDeletedThreadPersistence,
+} from "../../persistence/DeletedThreadPersistence.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 
 import {
@@ -46,29 +50,13 @@ describe("logCleanupCauseUnlessInterrupted", () => {
   it.effect("drains queued deleted-thread cleanup without sleeps", () =>
     Effect.gen(function* () {
       const processed: string[] = [];
-      const worker = yield* makeThreadDeletionWorker((event) =>
+      const worker = yield* makeThreadDeletionWorker((deletedThreadId) =>
         Effect.sync(() => {
-          processed.push(event.payload.threadId);
+          processed.push(deletedThreadId);
         }),
       );
-      const event = {
-        sequence: 1,
-        type: "thread.deleted",
-        eventId: EventId.make("event-artifact-cleanup"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: "2026-08-21T00:00:00.000Z",
-        commandId: CommandId.make("command-artifact-cleanup"),
-        causationEventId: null,
-        correlationId: CommandId.make("command-artifact-cleanup"),
-        metadata: {},
-        payload: {
-          threadId,
-          deletedAt: "2026-08-21T00:00:00.000Z",
-        },
-      } satisfies Extract<OrchestrationEvent, { type: "thread.deleted" }>;
 
-      yield* worker.enqueue(event);
+      yield* worker.enqueue(threadId);
       yield* worker.drain;
       expect(processed).toEqual([threadId]);
     }),
@@ -177,6 +165,77 @@ it.layer(SqlitePersistenceMemory)("purgeDeletedThreadPersistence", (it) => {
         WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
       `;
       expect(tombstones).toEqual([{ eventType: "thread.deleted", commandId: deleteCommandId }]);
+    }),
+  );
+  it.effect("finishes a long deletion a batch at a time, counters included", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-long-delete");
+      const now = "2026-10-11T03:00:00.000Z";
+      const rows = PURGE_BATCH_ROWS * 2 + 500;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('project-long-delete', 'Project', '/tmp/long', '[]', ${now}, ${now})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, created_at, updated_at, deleted_at
+        ) VALUES (${threadId}, 'project-long-delete', 'Long thread', ${now}, ${now}, ${now})
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, tone, kind, summary, payload_json, created_at
+        )
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${rows})
+        SELECT 'activity-long-' || i, ${threadId}, 'tool', 'tool-result', 'result',
+          '{"n":' || i || '}', ${now}
+        FROM n
+      `;
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, actor_kind, payload_json, metadata_json
+        )
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${rows})
+        SELECT 'event-long-' || i, 'thread', ${threadId}, i,
+          CASE WHEN i = ${rows} THEN 'thread.deleted' ELSE 'thread.activity-appended' END,
+          ${now}, 'command-long-' || i, 'client', '{}', '{}'
+        FROM n
+      `;
+      yield* sql`
+        INSERT INTO orchestration_command_receipts (
+          command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status
+        )
+        SELECT command_id, 'thread', ${threadId}, ${now}, sequence, 'accepted'
+        FROM orchestration_events WHERE stream_id = ${threadId}
+      `;
+      const counters = sql<{ readonly rows: number }>`
+        SELECT COUNT(*) AS "rows" FROM projection_thread_storage WHERE thread_id = ${threadId}
+      `;
+      expect(yield* counters).toEqual([{ rows: 1 }]);
+      expect(yield* listUnfinishedThreadDeletions()).toEqual([threadId]);
+
+      yield* purgeDeletedThreadPersistence(threadId);
+
+      const left = yield* sql<{
+        readonly activities: number;
+        readonly events: number;
+        readonly receipts: number;
+      }>`
+        SELECT
+          (SELECT COUNT(*) FROM projection_thread_activities WHERE thread_id = ${threadId})
+            AS activities,
+          (SELECT COUNT(*) FROM orchestration_events WHERE stream_id = ${threadId}) AS events,
+          (
+            SELECT COUNT(*) FROM orchestration_command_receipts WHERE aggregate_id = ${threadId}
+          ) AS receipts
+      `;
+      // Only the tombstone and its receipt survive, and the counters go with the row.
+      expect(left).toEqual([{ activities: 0, events: 1, receipts: 1 }]);
+      expect(yield* counters).toEqual([{ rows: 0 }]);
+      expect(yield* listUnfinishedThreadDeletions()).toEqual([]);
     }),
   );
 });

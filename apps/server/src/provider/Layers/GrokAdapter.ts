@@ -88,11 +88,8 @@ import {
   XAiQueueChangedNotification,
   xAiQueueInterjectPayloads,
 } from "../acp/XAiAcpExtension.ts";
-import {
-  extractCompletedProposedPlans,
-  grokCollaborationPromptBlock,
-  resolveGrokPermissionAction,
-} from "../GrokCollaboration.ts";
+import { grokCollaborationPromptBlock, resolveGrokPermissionAction } from "../GrokCollaboration.ts";
+import { makeProposedPlanBlockTracker } from "../proposedPlanBlocks.ts";
 import { type GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
@@ -195,10 +192,10 @@ interface GrokSessionContext {
   /** Last reasoning effort applied via session/set_model metadata. */
   currentEffort: string | undefined;
   interactionMode: ProviderInteractionMode | undefined;
-  assistantTextByTurn: string;
+  /** The turn's `<proposed_plan>` blocks, read from its assistant text. */
+  proposedPlanBlocks: ReturnType<typeof makeProposedPlanBlockTracker>;
   /** One "Thinking" activity per turn — Grok can emit thousands of thought chunks. */
   reasoningAnnounced: boolean;
-  capturedProposedPlanKeys: Set<string>;
   sessionSetupResult: AcpSessionRuntime.AcpSessionRuntimeStartResult["sessionSetupResult"];
   stopped: boolean;
   stopCompletion: Deferred.Deferred<void> | undefined;
@@ -1184,9 +1181,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             currentModelId: boundModelId,
             currentEffort: boundSelection.reasoningEffort,
             interactionMode: undefined,
-            assistantTextByTurn: "",
+            proposedPlanBlocks: makeProposedPlanBlockTracker(),
             reasoningAnnounced: false,
-            capturedProposedPlanKeys: new Set(),
             sessionSetupResult: started.sessionSetupResult,
             stopped: false,
             stopCompletion: undefined,
@@ -1328,14 +1324,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       }
                       return;
                     }
-                    ctx.assistantTextByTurn += event.text;
-                    for (const planMarkdown of extractCompletedProposedPlans(
-                      ctx.assistantTextByTurn,
-                    )) {
-                      if (ctx.capturedProposedPlanKeys.has(planMarkdown)) {
-                        continue;
-                      }
-                      ctx.capturedProposedPlanKeys.add(planMarkdown);
+                    for (const block of ctx.proposedPlanBlocks.append(event.text)) {
                       const proposedStamp = yield* makeEventStamp();
                       yield* offerRuntimeEvent({
                         type: "turn.proposed.completed",
@@ -1343,7 +1332,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: notificationTurnId,
-                        payload: { planMarkdown },
+                        itemId: block.itemId,
+                        payload: { planMarkdown: block.planMarkdown },
                         raw: {
                           source: "acp.jsonrpc",
                           method: "session/update",
@@ -1543,9 +1533,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               }
               if (steeringTurnId === undefined) {
                 ctx.lastPlanFingerprint = undefined;
-                ctx.assistantTextByTurn = "";
+                ctx.proposedPlanBlocks = makeProposedPlanBlockTracker();
                 ctx.reasoningAnnounced = false;
-                ctx.capturedProposedPlanKeys = new Set();
               }
               ctx.session = {
                 ...ctx.session,

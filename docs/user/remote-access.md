@@ -31,6 +31,61 @@ credentials retain their restrictions.
 Use Tailscale or another trusted HTTPS/private-network endpoint when the devices are not on the
 same LAN or when you need a stable address across networks.
 
+## Push notifications
+
+For alerts while the page is closed, enable [push notifications](push-notifications.md) from
+**Settings → Agents**. Use the HTTPS Tailscale address; on iPhone/iPad, first add Solla Code to the
+Home Screen and open it from that icon. No App Store app is required.
+
+## Double-tap
+
+Double-tapping no longer zooms the page anywhere on a phone, including inside the chat, the sidebar
+and other scrolling lists. Pinching and panning are unchanged, and the image viewer keeps its own
+pinch and double-tap zoom.
+
+The size of the interface on a phone follows Safari's own **aA** text size for the site. The app does
+not scale itself; set the percentage there to taste (75% suits the phone layout).
+
+## Bandwidth
+
+Solla Code keeps a phone's data use low without changing what you see.
+
+- **Compression.** The live connection and the web app's files are compressed.
+- **Provider status.** A change that only moves a usage reading or a "last checked" time is sent as a
+  few hundred bytes instead of every provider's full model, command, and skill catalogue (about 15 KB).
+  Anything else about a provider is still sent in full. Older apps that do not ask for this keep
+  receiving the full list.
+- **Long tool results.** When a thread opens or catches up, an MCP tool result longer than 8,000
+  characters is cut there, with "… N more characters not shown" at the cut, and the duplicate
+  `structuredContent` copy of a result is not sent. This roughly halves what a busy thread sends.
+  The expanded row and Copy show the shortened text; the full result stays in the saved history.
+  Images and the tool's arguments are never cut.
+- **Remote browser.** While a browser tab is open on your phone, a page that has not changed since
+  the last picture is answered with its address, title, agent cursor, and pending approvals, without
+  the picture again. Only a changed page downloads a new frame.
+
+## Long thread names
+
+The thread name in the header stays on one line and is cut off with an ellipsis when it does not fit.
+When the row is tight, a long project name shortens first so the thread name always keeps room to be
+tapped. Tap the thread name to see its full name in a popover under the header (a mouse can also hover
+it). A name that already fits does nothing when tapped. The header has a fixed height, so the name never expands in
+place.
+
+## Host battery and storage
+
+A thread, draft, or agent that runs on another machine shows that machine's free disk space, and its
+battery when it has one. On a phone it sits at the very top right of the top bar, on the same row as
+the Solla Code icon and title; inside an agent it stays to the left of the agent's avatar, including
+when the agent card is collapsed into that bar. On a wider layout it ends the thread header row. A
+laptop shows both (for example `87%` and `66 GB`); a desktop or server shows only storage. The
+battery icon changes while the machine is charging. Home and Settings show no chip.
+Values turn amber below 20 GB free or 20% battery, and red below 5 GB free or 10% battery. A
+charging machine never turns red or amber for battery. The chip retains its last reading while
+disconnected; the Wi-Fi icon shows the connection state. The desktop app hides the chip for its own
+environment. The reading is taken from the disk holding the environment's state directory and
+refreshes every 30 seconds only while the chip is on screen.
+
 ## Remote Control
 
 Only remote-hosted threads show **Remote control** beside the project action controls. Selecting it
@@ -43,9 +98,21 @@ between Command on macOS and Control on Windows. The host can stop the session a
 Pointer motion is sampled to the current display frame and stale unsent motion is replaced rather
 than replayed. Keyboard holds use down/up state edges instead of buffering browser repeat events.
 
+A small blue pulsing dot appears immediately where you tap, matching the agent cursor. It remains until the host confirms that
+the mouse press was applied, then disappears. A red dot means the press failed or was blocked;
+it clears on your next gesture. Turning a touch into a scroll or pinch cancels its initial dot.
+Reduced-motion settings show a steady dot instead. This feedback also appears in the remote
+browser preview, where it waits for the browser action to complete.
+
 Selecting **Remember for this device** remembers only the capabilities approved for that paired
 device. A later request for additional capabilities still requires approval, and removing then
 pairing the device again clears the remembered approval.
+
+For a remembered device the computer approves instantly and shows no prompt, because there is
+nothing left to approve. The requesting device should then go straight to the screen. If it ever
+sits on "Approve on <computer>" while the computer shows nothing to approve, update both Solla Code
+installs: before 0.1.686 the requesting device could miss the approval, because the host sent it in
+the same batch as the first video data and only the last item of a batch was read.
 
 On macOS, screen streaming requires Screen Recording permission and interactive control requires
 Accessibility permission under **System Settings** → **Privacy & Security**.
@@ -295,3 +362,15 @@ For a Tailscale connection, use the remote computer's verified HTTPS address, su
 In web and desktop, **Edit address** preserves the environment and existing pairing while replacing its HTTP/WebSocket address. Mobile's environment editor uses the same shared connection operation. The server's environment identity is checked before the saved credential is used. Older installed clients without the editor need to pair again using the correct address.
 
 Disconnected version information is cached: “last seen” is not proof of the version currently running remotely. Check the remote server's current descriptor or reconnect before diagnosing version drift.
+
+## Connection interruptions
+
+While reconnecting, threads and agents retain their last observed content, appearance, and work
+status. A working thread keeps its local elapsed-time counter running from the same start time.
+The Wi-Fi indicator carries connection details and reconnect controls. These retained states update
+when the host reconnects; the counter measures elapsed time, not newly confirmed progress. A thread
+that has never been loaded still needs a connection before its conversation can be displayed.
+
+Settings and provider changes appear as one separator at the original settings message. When the
+host confirms the change, that separator gains a checkmark instead of adding a second separator.
+Automatic provider transitions without a settings message still have their own entry.

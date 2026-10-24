@@ -1,3 +1,4 @@
+import { formatPreviewTitle } from "@t3tools/client-runtime/preview/title";
 import type {
   ContextMenuItem,
   PreviewSessionSnapshot,
@@ -7,7 +8,7 @@ import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
   DndContext,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
   closestCenter,
   useSensor,
   useSensors,
@@ -64,6 +65,7 @@ import {
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { faviconUrlForOrigin } from "~/lib/favicon";
 import { useTheme } from "~/hooks/useTheme";
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
@@ -513,7 +515,9 @@ export function resolveRightPanelSurfaceTitle(
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
-      if (snapshot.navStatus.title.trim().length > 0) return snapshot.navStatus.title;
+      if (snapshot.navStatus.title.trim().length > 0) {
+        return formatPreviewTitle(snapshot.navStatus.title);
+      }
       try {
         return new URL(snapshot.navStatus.url).host || "Browser";
       } catch {
@@ -720,11 +724,12 @@ export function shouldShowFloatingPreviewIcon(
 }
 
 /**
- * One tab, draggable by its label. The close button is deliberately not a drag
- * handle: it is a 16px target whose only job is closing the tab.
+ * One tab, draggable by its label on desktop. The close button is deliberately
+ * not a drag handle: it is a 16px target whose only job is closing the tab.
  */
 function SortableTab(props: {
   surface: RightPanelSurface;
+  reorderable: boolean;
   active: boolean;
   pending: boolean;
   title: string;
@@ -760,7 +765,7 @@ function SortableTab(props: {
     transition,
     isDragging,
     isOver,
-  } = useSortable({ id: props.surface.id });
+  } = useSortable({ id: props.surface.id, disabled: !props.reorderable });
 
   return (
     <div
@@ -815,7 +820,7 @@ function SortableTab(props: {
                   }
                   props.onActivate(props.surface);
                 }}
-                {...attributes}
+                {...(props.reorderable ? attributes : {})}
                 {...listeners}
               >
                 <SurfaceIcon
@@ -849,15 +854,10 @@ function SortableTab(props: {
       )}
       <button
         type="button"
-        className={cn(
-          "relative flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted focus:opacity-100",
-          // Touch has no hover to reveal the close control with, and an
-          // invisible-but-tappable X is worse than a visible one: it is the
-          // only way to close a tab, so coarse pointers always see it.
-          props.pending
-            ? "opacity-100"
-            : "opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100",
-        )}
+        // Always visible: a close control that appears only on hover cannot be
+        // aimed at, and touch has no hover at all. An unsaved file keeps its
+        // dot until hovered, like an editor tab.
+        className="relative flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted"
         aria-label={`Close ${props.title}`}
         onClick={() => props.onCloseSurface(props.surface)}
       >
@@ -879,6 +879,9 @@ function SortableTab(props: {
 
 export function RightPanelTabs(props: RightPanelTabsProps) {
   const ownsDesktopTitleBar = isElectron && props.mode === "inline";
+  // Swiping the strip on a phone or tablet must only scroll it. MouseSensor
+  // also leaves touch alone on desktops that have both touch and mouse input.
+  const canReorderTabs = useMediaQuery({ min: "md", pointer: "fine" });
   const { resolvedTheme } = useTheme();
   const tabListRef = useRef<HTMLDivElement>(null);
   const [renamingSurfaceId, setRenamingSurfaceId] = useState<string | null>(null);
@@ -935,7 +938,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
   }, []);
   const dragSuppressedRef = useRef(false);
   const tabSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const handleTabDragStart = useCallback(() => {
@@ -946,13 +949,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
   }, []);
   const handleTabDragEnd = useCallback(
     (event: DragEndEvent) => {
+      if (!canReorderTabs) return;
       const { active, over } = event;
       if (!over || active.id === over.id) return;
       const surface = props.surfaces.find((entry) => entry.id === active.id);
       if (!surface) return;
       props.onReorderSurface(surface, String(over.id));
     },
-    [props],
+    [props, canReorderTabs],
   );
   const handleTabAuxClick = useCallback(
     (event: ReactMouseEvent, surface: RightPanelSurface) => {
@@ -1037,6 +1041,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                   <SortableTab
                     key={surface.id}
                     surface={surface}
+                    reorderable={canReorderTabs}
                     active={surface.id === props.activeSurfaceId}
                     pending={props.pendingSurfaceIds.has(surface.id)}
                     title={resolveRightPanelSurfaceTitle(

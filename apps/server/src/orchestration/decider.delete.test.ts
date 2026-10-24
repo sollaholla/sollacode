@@ -424,6 +424,27 @@ it.layer(NodeServices.layer)("decider deletion flows", (it) => {
         sideChatParentThreadId: mainThreadId,
       });
 
+      // The Side Chat button names no parent; the decider files it under the main thread too.
+      const buttonFork = singleEventOfType(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.fork",
+            commandId: asCommandId("cmd-side-chat-button"),
+            threadId: asThreadId("thread-side-chat-from-button"),
+            sourceThreadId: sideChatId,
+            isSideChat: true,
+            createdAt: "2026-01-01T00:00:02.500Z",
+          },
+          readModel: withSideChat,
+        }),
+        "thread.forked",
+      );
+      expect(buttonFork.payload).toMatchObject({
+        sourceThreadId: sideChatId,
+        isSideChat: true,
+        sideChatParentThreadId: mainThreadId,
+      });
+
       const error = yield* Effect.flip(
         decideOrchestrationCommand({
           command: {

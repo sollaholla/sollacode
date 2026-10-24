@@ -389,3 +389,22 @@ High-value follow-up work can use the existing service boundaries:
 These additions should preserve the current rules: direct platform APIs,
 schema-validated boundaries, explicit metric semantics, bounded retention, and
 no mandatory telemetry persistence.
+
+## Storage cleanup threads
+
+The storage indicator opens a descriptive popup. Its action calls `server.startStorageCleanup`
+on the environment whose disk reading is shown, using stable command, thread, and message IDs.
+It does not select a client-side project or enqueue an offline draft. The server advertises
+`storageCleanupThreads` in its config; older or disconnected hosts cannot start the action.
+
+The host validates or creates `<baseDir>/maintenance/storage-cleanup` on every request, reuses
+its active project, and starts a dedicated thread with the host's Utility AI model. Workspace
+creation failures return a typed error before thread creation. Thread bootstrap and command
+receipts deduplicate retries; concurrent project creation resolves the same workspace. Clients
+navigate only after the RPC succeeds and both scoped project and thread shell records are
+visible in the client. The receipt and shell subscription are separate deliveries: navigating on
+the receipt alone lets the missing-thread route redirect to the index draft before the shell
+arrives. This readiness watcher survives popup dismissal, and failed navigation retries opening
+the acknowledged thread without sending another cleanup request. Cleanup itself runs as a normal
+approval-required agent turn with explicit instructions to preserve cookies, credentials, user
+files, and live state.

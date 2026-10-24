@@ -156,6 +156,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const lastSubscribeAfterSequence = yield* Ref.make<number | undefined>(undefined);
   const lastRequestCompletionMarker = yield* Ref.make<boolean | undefined>(undefined);
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationThreadDetailSnapshot>>([]);
+  const persisted = yield* Queue.unbounded<OrchestrationThreadDetailSnapshot>();
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
@@ -235,7 +236,10 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
           : Option.none(),
       ),
     saveThread: (_environmentId, thread) =>
-      Ref.update(savedThreads, (current) => [...current, thread]),
+      Ref.update(savedThreads, (current) => [...current, thread]).pipe(
+        Effect.andThen(Queue.offer(persisted, thread)),
+        Effect.asVoid,
+      ),
     removeThread: (_environmentId, threadId) =>
       Ref.update(removedThreads, (current) => [...current, threadId]),
     loadServerConfig: () => Effect.succeed(Option.none()),
@@ -275,6 +279,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     supervisorState,
     supervisorSession,
     savedThreads,
+    persisted,
     removedThreads,
     wakeups,
     replaceSession: SubscriptionRef.set(
@@ -424,11 +429,44 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("retains and saves active work on disconnect, then reconciles the host snapshot", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: ACTIVE_THREAD, connected: true });
+      yield* Queue.offer(harness.inputs, snapshot(ACTIVE_THREAD));
+      yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+      yield* SubscriptionRef.set(harness.supervisorSession, Option.none());
+      yield* SubscriptionRef.set(harness.supervisorState, AVAILABLE_CONNECTION_STATE);
+      const offline = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "cached",
+      );
+      expect(Option.getOrThrow(offline.data)).toEqual(ACTIVE_THREAD);
+      yield* TestClock.adjust("500 millis");
+      const saved = yield* Queue.take(harness.persisted);
+      expect(saved.thread).toEqual(ACTIVE_THREAD);
+      const restored = yield* makeHarness({ cached: saved.thread });
+      const restoredState = yield* awaitThreadState(restored.observed, (value) =>
+        Option.isSome(value.data),
+      );
+      expect(Option.getOrThrow(restoredState.data)).toEqual(ACTIVE_THREAD);
+      yield* harness.replaceSession;
+      yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
+      const refreshed = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.session?.status !== "running",
+      );
+      expect(Option.getOrThrow(refreshed.data)).toEqual(BASE_THREAD);
+    }),
+  );
+
   it.effect("does not persist active thread snapshots during streaming or teardown", () =>
     Effect.gen(function* () {
       const savedThreads = yield* Effect.scoped(
         Effect.gen(function* () {
-          const harness = yield* makeHarness({ cached: ACTIVE_THREAD });
+          const harness = yield* makeHarness({ cached: ACTIVE_THREAD, connected: true });
           yield* awaitThreadState(
             harness.observed,
             (value) =>

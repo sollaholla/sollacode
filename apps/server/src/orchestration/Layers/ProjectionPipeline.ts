@@ -34,6 +34,7 @@ import {
 } from "@t3tools/shared/browserTabCleanup";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import { refreshProjectionThreadBackgroundTasks } from "../../persistence/BackgroundTaskProjection.ts";
 import { refreshProjectionThreadPendingWork } from "../../persistence/PendingWorkProjection.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
@@ -166,6 +167,10 @@ const forkedProjectionTurnId = (threadId: ThreadId, turnId: string) =>
   TurnId.make(`${threadId}:fork:${turnId}`);
 const forkedProjectionActivityId = (threadId: ThreadId, activityId: string) =>
   EventId.make(`${threadId}:fork:${activityId}`);
+// Plan ids are the table's primary key: a fork that reused the source id moved
+// the source thread's plan row to the fork instead of copying it.
+const forkedProjectionProposedPlanId = (threadId: ThreadId, planId: string) =>
+  `${threadId}:fork:${planId}`;
 
 function forkedProjectionAttachment(
   threadId: ThreadId,
@@ -610,27 +615,32 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     PARTITION BY json_extract(activity.payload_json, '$.requestId')
                     ORDER BY activity.created_at DESC, activity.activity_id DESC
                   ) AS row_number
+                -- One kind list the index can seek on, pinned to that index. As an
+                -- OR across kinds the planner walked every activity in the thread,
+                -- and node:sqlite blocks the server for the whole walk: 24 s on a
+                -- 320k-activity thread (2026-10-14).
                 FROM projection_thread_activities AS activity
+                  INDEXED BY idx_projection_thread_activities_thread_kind_created_id
                 WHERE activity.thread_id = ${threadId}
+                  AND activity.kind IN (
+                    'user-input.requested',
+                    'user-input.resolved',
+                    'provider.user-input.respond.failed'
+                  )
                   AND json_valid(activity.payload_json)
                   AND json_extract(activity.payload_json, '$.requestId') IS NOT NULL
                   AND (
-                    activity.kind IN ('user-input.requested', 'user-input.resolved')
-                    OR (
-                      activity.kind = 'provider.user-input.respond.failed'
-                      AND (
-                        lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
-                          LIKE '%stale pending user-input request%'
-                        OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
-                          LIKE '%unknown pending user-input request%'
-                        OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
-                          LIKE '%unknown pending user input request%'
-                        OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
-                          LIKE '%unknown pending codex user input request%'
-                        OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
-                          LIKE '%no active provider session is bound%'
-                      )
-                    )
+                    activity.kind <> 'provider.user-input.respond.failed'
+                    OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                      LIKE '%stale pending user-input request%'
+                    OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                      LIKE '%unknown pending user-input request%'
+                    OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                      LIKE '%unknown pending user input request%'
+                    OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                      LIKE '%unknown pending codex user input request%'
+                    OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                      LIKE '%no active provider session is bound%'
                   )
               ) AS latest
               WHERE latest.row_number = 1
@@ -649,34 +659,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const refreshActionableProposedPlanSummary = Effect.fn("refreshActionableProposedPlanSummary")(
       function* (threadId: ThreadId) {
-        // Only the latest turn's unimplemented plan is actionable. An older
-        // leftover plan is history, not a wait — falling back to "any plan on
-        // the thread" made almost every thread look blocked.
+        // The thread waits on its newest plan while that plan is neither
+        // implemented nor closed — the rule in @t3tools/shared/proposedPlans.
+        // A Build or Agent message from the person implements the plan, so
+        // an older plan is history and a later housekeeping or Plan-mode turn
+        // without a plan of its own no longer hides the one still waiting.
         yield* sql`
           UPDATE projection_threads
           SET has_actionable_proposed_plan = COALESCE((
             SELECT CASE
-              WHEN projection_threads.latest_turn_id IS NOT NULL
-                AND EXISTS (
-                  SELECT 1
-                  FROM projection_thread_proposed_plans AS latest_turn_plan_exists
-                  WHERE latest_turn_plan_exists.thread_id = projection_threads.thread_id
-                    AND latest_turn_plan_exists.turn_id = projection_threads.latest_turn_id
-                )
-                THEN CASE
-                  WHEN (
-                    SELECT latest_turn_plan.implemented_at
-                    FROM projection_thread_proposed_plans AS latest_turn_plan
-                    WHERE latest_turn_plan.thread_id = projection_threads.thread_id
-                      AND latest_turn_plan.turn_id = projection_threads.latest_turn_id
-                    ORDER BY latest_turn_plan.updated_at DESC, latest_turn_plan.plan_id DESC
-                    LIMIT 1
-                  ) IS NULL
-                    THEN 1
-                    ELSE 0
-                  END
+              WHEN newest.implemented_at IS NULL AND newest.closed_at IS NULL THEN 1
               ELSE 0
             END
+            FROM projection_thread_proposed_plans AS newest
+            WHERE newest.thread_id = projection_threads.thread_id
+            ORDER BY newest.created_at DESC, newest.plan_id DESC
+            LIMIT 1
           ), 0)
           WHERE thread_id = ${threadId}
         `.pipe(
@@ -686,6 +684,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         );
       },
     );
+
+    const refreshBackgroundTaskSummary = Effect.fn("refreshBackgroundTaskSummary")(function* (
+      threadId: ThreadId,
+    ) {
+      yield* refreshProjectionThreadBackgroundTasks(sql, threadId).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.refreshBackgroundTaskSummary:query"),
+        ),
+      );
+    });
 
     // The obligation repository refreshes these columns on every mutation, so
     // this is the safety net for shell reads that follow event application:
@@ -722,6 +730,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       yield* refreshPendingUserInputSummary(threadId);
       yield* refreshActionableProposedPlanSummary(threadId);
       yield* refreshPendingWorkSummary(threadId);
+      yield* refreshBackgroundTaskSummary(threadId);
     });
 
     const applyThreadsProjection = Effect.fn("applyThreadsProjection")(function* (
@@ -1051,6 +1060,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           ) {
             yield* refreshPendingUserInputSummary(event.payload.threadId);
           }
+          if (
+            event.payload.activity.kind === "task.started" ||
+            event.payload.activity.kind === "task.progress" ||
+            event.payload.activity.kind === "task.completed"
+          ) {
+            yield* refreshBackgroundTaskSummary(event.payload.threadId);
+          }
           return;
         }
 
@@ -1328,6 +1344,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             (plan) =>
               projectionThreadProposedPlanRepository.upsert({
                 ...plan,
+                planId: forkedProjectionProposedPlanId(event.payload.threadId, plan.planId),
                 threadId: event.payload.threadId,
                 turnId:
                   plan.turnId === null
@@ -1347,6 +1364,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             planMarkdown: event.payload.proposedPlan.planMarkdown,
             implementedAt: event.payload.proposedPlan.implementedAt,
             implementationThreadId: event.payload.proposedPlan.implementationThreadId,
+            closedAt: event.payload.proposedPlan.closedAt,
             createdAt: event.payload.proposedPlan.createdAt,
             updatedAt: event.payload.proposedPlan.updatedAt,
           });
@@ -2162,6 +2180,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
           });
+          // Do not let a placeholder (status "missing") overwrite a checkpoint
+          // that has already been captured with a real git ref. In-memory
+          // projectEvent already refuses this. SQL did not, so thread detail
+          // and diffs could show missing after a ready capture.
+          if (
+            Option.isSome(existingTurn) &&
+            existingTurn.value.checkpointStatus !== null &&
+            existingTurn.value.checkpointStatus !== "missing" &&
+            event.payload.status === "missing"
+          ) {
+            return;
+          }
           const nextState = event.payload.status === "error" ? "error" : "completed";
           yield* projectionTurnRepository.clearCheckpointTurnConflict({
             threadId: event.payload.threadId,
@@ -3982,6 +4012,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               json_extract(payload_json, '$.taskType') AS "taskType",
               json_extract(payload_json, '$.status') AS "status"
             FROM projection_thread_activities
+              -- Pinned like the task-title lookup: left to the planner, this
+              -- walks every activity since oldestCompletedAt, not just tasks.
+              INDEXED BY idx_projection_thread_activities_thread_kind_created_id
             WHERE thread_id = ${row.threadId}
               AND kind IN ('task.started', 'task.completed')
               AND created_at >= ${oldestCompletedAt}

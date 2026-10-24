@@ -63,7 +63,11 @@ export function ThreadArtifactDeepLinkOpener(props: {
     : null;
 
   useEffect(() => {
-    if (!key || openedKeyRef.current === key) return;
+    if (!key) {
+      openedKeyRef.current = null;
+      return;
+    }
+    if (openedKeyRef.current === key) return;
     const summary = list?.artifacts.find(
       (entry) => entry.artifact.artifactId === requestedArtifactId,
     );

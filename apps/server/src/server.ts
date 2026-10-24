@@ -1,3 +1,5 @@
+import { WebPushLive, WebPushTransport } from "./notifications/WebPush.ts";
+import { WebPushReactorLive } from "./notifications/WebPushReactor.ts";
 import * as PreviewExpiry from "./preview/Expiry.ts";
 import { OrchestratorLiveLayer } from "./orchestrator/OrchestratorLive.ts";
 import { EnvironmentHttpApi } from "@t3tools/contracts";
@@ -110,6 +112,10 @@ import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryR
 import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
+import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
+import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
+import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
+import * as LiveFeed from "./orchestration/LiveFeed.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { ThreadWorkObligationRepositoryLive } from "./persistence/Layers/ThreadWorkObligations.ts";
@@ -232,6 +238,8 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ProviderCommandReactorWithActionApprovalLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive.pipe(Layer.provide(ThreadArtifactLayerLive))),
+  // Watches domain events like the reactors above, for the Live Inspector.
+  Layer.provideMerge(LiveFeed.layer),
   Layer.provideMerge(RuntimeReceiptBusLive),
   // Provided last so both the runtime ingestion (which feeds it usage reports
   // and token counts) and the command reactor (which gates work on it) resolve
@@ -448,10 +456,23 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(ServerSecretStore.layer),
 );
 
-const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
+const WebPushLayerLive = WebPushLive.pipe(
+  Layer.provide(WebPushTransport.layer),
+  Layer.provide(PersistenceLayerLive),
+  Layer.provide(ServerSecretStore.layer),
+);
+const WebPushRuntimeLive = WebPushReactorLive.pipe(
+  Layer.provideMerge(RuntimeCoreDependenciesLive),
+  Layer.provideMerge(WebPushLayerLive),
+);
+
+const RuntimeDependenciesLive = WebPushRuntimeLive.pipe(
   // Misc.
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
+  Layer.provideMerge(HostVitalsMonitor.layer),
+  Layer.provideMerge(ImageThumbnails.layer),
+  Layer.provideMerge(ProjectFolderUsage.layer.pipe(Layer.provide(PersistenceLayerLive))),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),

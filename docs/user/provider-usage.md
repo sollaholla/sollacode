@@ -14,6 +14,14 @@ Disabling Grok keeps its installation and version visible in **Settings > Provid
 Solla checks only the CLI version while it is disabled, without starting authentication or
 model discovery. The **Install** button appears only when the configured CLI cannot be found.
 
+Solla never starts Grok's sign-in by itself. It starts the Grok CLI only when Grok has a stored
+sign-in: the `~/.grok/auth.json` that `grok login` writes, or an API key such as `XAI_API_KEY`.
+Without one, Settings > Providers shows **Grok CLI is not signed in. Run `grok login` and try
+again.**, and Grok chats stop with the same message. Run that command in a terminal to sign in.
+If Grok cannot renew a stored sign-in without you, Solla stops starting it on that sign-in until
+`grok login` replaces it or Solla restarts. Earlier builds started Grok anyway, and it opened its
+auth.x.ai sign-in or device-code page in your browser on every provider check.
+
 The compact AGY chip defaults to Gemini usage. Selecting a Claude or GPT model on that AGY
 instance switches its chip to the Claude and GPT pool; switching away returns it to Gemini.
 Both pools remain visible in the details popup and Providers settings. A missing reading shows
@@ -94,6 +102,25 @@ reading. Without credentials the display links the setup to Providers settings.
 Deep Code Plus and custom API endpoints have separate billing. Their CLI support remains available,
 but Solla labels account usage unsupported until those services provide a supported balance API.
 It does not send their credentials to DeepSeek or invent a 100% reading.
+
+## Kimi Code plan usage
+
+The Kimi chip shows the plan limit closest to running out. Its details list
+Kimi's **Weekly** limit and each rolling window it reports (such as a
+**5h limit**), each with a reset time, plus any **Extra usage** booster balance
+in dollars. These are the same numbers Kimi's own `/usage` command shows. A
+window in a unit Solla does not recognise is left out rather than guessed.
+
+Solla reads the sign-in token Kimi stores in `~/.kimi-code/credentials/`
+(or `KIMI_CODE_HOME`) but never refreshes it, because refreshing would race
+Kimi for its single-use refresh token. Kimi's tokens last 15 minutes and Kimi
+renews them while it works, so readings arrive after each Kimi turn and on
+health checks soon after one. After Kimi has been idle a while, **Refresh**
+keeps the last reading, marked stale, until the next Kimi turn. Signed out, or
+on an API-key setup, there is no plan to read.
+
+Available in web, desktop, and mobile web. The native mobile app does not yet
+have a provider usage bar.
 
 ## Muse progress and session spend
 

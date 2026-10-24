@@ -1,7 +1,16 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { type GrokSettings, ProviderDriverKind } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as EffectAcpErrors from "effect-acp/errors";
@@ -85,6 +94,135 @@ function resolveGrokAuthMethodId(environment: NodeJS.ProcessEnv | undefined): st
     : GROK_AUTH_METHOD_CACHED_TOKEN;
 }
 
+/**
+ * A silent token refresh answers in a second or two. Past this, Grok is
+ * waiting for a person to finish signing in, and nobody is watching.
+ */
+const GROK_AUTHENTICATE_TIMEOUT = "20 seconds" as const;
+
+/**
+ * The auth method to send, chosen from what this Grok build advertises.
+ *
+ * Grok 1.0.41 advertises only `grok.com`. Sent the retired `cached_token` id,
+ * it ignored `headless` and ran its browser login, so every background start
+ * without a usable sign-in opened a Chrome tab at auth.x.ai (2026-10-11). Sent
+ * an advertised id, `headless` holds and a stored session refreshes silently.
+ * Without one, Grok falls back to its device-code login, which opens the
+ * browser too, so `makeGrokAcpRuntime` only starts Grok on a stored sign-in.
+ */
+export function selectGrokAuthMethodId(
+  initializeResult: Pick<EffectAcpSchema.InitializeResponse, "authMethods" | "_meta">,
+  environment: NodeJS.ProcessEnv | undefined,
+): string {
+  const advertised = (initializeResult.authMethods ?? []).map((method) => method.id);
+  const fallback = resolveGrokAuthMethodId(environment);
+  if (advertised.length === 0 || advertised.includes(fallback)) return fallback;
+  if (fallback === GROK_AUTH_METHOD_API_KEY) {
+    const apiKeyMethod = advertised.find((id) => /api[._-]?key/i.test(id));
+    if (apiKeyMethod !== undefined) return apiKeyMethod;
+  }
+  const preferred = initializeResult._meta?.["defaultAuthMethodId"];
+  return typeof preferred === "string" && advertised.includes(preferred)
+    ? preferred
+    : advertised[0]!;
+}
+
+const isAcpTransportError = Schema.is(EffectAcpErrors.AcpTransportError);
+const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
+const ACP_AUTH_REQUIRED_CODE = -32000;
+
+export const GROK_NOT_SIGNED_IN_MESSAGE =
+  "Grok CLI is not signed in. Run `grok login` and try again.";
+
+/** Environment variables that sign Grok in without a person. */
+const GROK_CREDENTIAL_ENV = [
+  GROK_API_KEY_ENV,
+  "GROK_CODE_XAI_API_KEY",
+  "GROK_AUTH",
+  "GROK_AUTH_PROVIDER_COMMAND",
+  "GROK_AUTH_PROVIDER_ACCESS_TOKEN",
+] as const;
+const GROK_ENVIRONMENT_SIGN_IN = "environment";
+
+export type GrokAuthFileStat = (
+  filePath: string,
+) => { readonly mtimeMs: number; readonly size: number } | undefined;
+
+function statGrokAuthFile(filePath: string) {
+  try {
+    const stat = NodeFS.statSync(filePath);
+    return stat.isFile() ? { mtimeMs: stat.mtimeMs, size: stat.size } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Injectable so tests can describe a signed-in or signed-out Grok home. */
+export const GrokAuthFileStat = Context.Reference<GrokAuthFileStat>(
+  "server/provider/acp/GrokAuthFileStat",
+  { defaultValue: () => statGrokAuthFile },
+);
+
+/**
+ * The sign-in Grok can use without a person: credentials in its environment,
+ * or a non-empty `auth.json` it can refresh, keyed by path, mtime and size so
+ * a fresh `grok login` reads as a new sign-in. Null when there is none.
+ */
+export function findGrokStoredSignIn(
+  environment: NodeJS.ProcessEnv,
+  statFile: GrokAuthFileStat,
+): string | null {
+  if (GROK_CREDENTIAL_ENV.some((name) => environment[name]?.trim())) {
+    return GROK_ENVIRONMENT_SIGN_IN;
+  }
+  const homes = [environment.HOME, environment.USERPROFILE].flatMap((home) =>
+    home?.trim() ? [home.trim()] : [],
+  );
+  const grokHome = environment.GROK_HOME?.trim();
+  const candidates = [
+    environment.GROK_AUTH_PATH?.trim(),
+    grokHome ? NodePath.join(grokHome, "auth.json") : undefined,
+    ...(homes.length > 0 ? homes : [NodeOS.homedir()]).map((home) =>
+      NodePath.join(home, ".grok", "auth.json"),
+    ),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const stat = statFile(candidate);
+    if (stat !== undefined && stat.size > 0) {
+      return `${candidate}:${stat.mtimeMs}:${stat.size}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Stored sign-ins whose silent refresh failed and left Grok waiting for a
+ * person. Grok is not started on them again until `auth.json` changes, so a
+ * stale sign-in cannot open a browser tab on every status check.
+ */
+const grokSignInsAwaitingPerson = new Set<string>();
+
+/**
+ * Whether a Grok start failed at `authenticate`, by refusal or by waiting past
+ * GROK_AUTHENTICATE_TIMEOUT, or was refused before starting for want of a
+ * stored sign-in: either way the CLI needs `grok login`.
+ */
+export function isGrokAuthenticateFailure(cause: Cause.Cause<unknown>): boolean {
+  const error = Option.getOrNull(Cause.findErrorOption(cause));
+  return (
+    ((isAcpTransportError(error) || isAcpRequestError(error)) && error.method === "authenticate") ||
+    (isAcpRequestError(error) && error.code === ACP_AUTH_REQUIRED_CODE)
+  );
+}
+
+function isGrokSignInWait(cause: Cause.Cause<unknown>): boolean {
+  const error = Option.getOrNull(Cause.findErrorOption(cause));
+  return (
+    isAcpTransportError(error) && error.method === "authenticate" && error.operation === "call-rpc"
+  );
+}
+
 export const makeGrokAcpRuntime = (
   input: GrokAcpRuntimeInput,
 ): Effect.Effect<
@@ -93,12 +231,24 @@ export const makeGrokAcpRuntime = (
   Crypto.Crypto | Scope.Scope
 > =>
   Effect.gen(function* () {
+    // Without a stored sign-in, `authenticate` can only run Grok's browser or
+    // device-code login: a sign-in tab nobody asked for.
+    const signIn = findGrokStoredSignIn(
+      { ...process.env, ...input.environment },
+      yield* GrokAuthFileStat,
+    );
+    if (signIn === null || grokSignInsAwaitingPerson.has(signIn)) {
+      return yield* EffectAcpErrors.AcpRequestError.authRequired(GROK_NOT_SIGNED_IN_MESSAGE);
+    }
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...input,
         spawn: buildGrokAcpSpawnInput(input.grokSettings, input.cwd, input.environment),
         authMethodId: resolveGrokAuthMethodId(input.environment),
+        resolveAuthMethodId: (initializeResult) =>
+          selectGrokAuthMethodId(initializeResult, input.environment),
         authenticateMeta: input.authenticateMeta ?? { headless: true },
+        authenticateTimeout: input.authenticateTimeout ?? GROK_AUTHENTICATE_TIMEOUT,
         filterMcpServers: input.filterMcpServers ?? filterGrokAcpMcpServers,
         // Grok's TTY CLI often needs a second confirm (Enter / Esc while
         // already cancelling) before the turn actually stops. Repeat the ACP
@@ -122,7 +272,19 @@ export const makeGrokAcpRuntime = (
     const runtime = yield* Effect.service(AcpSessionRuntime.AcpSessionRuntime).pipe(
       Effect.provide(acpContext),
     );
-    return yield* makeXAiPromptCompletionRuntime(runtime);
+    return yield* makeXAiPromptCompletionRuntime({
+      ...runtime,
+      start: () =>
+        runtime
+          .start()
+          .pipe(
+            Effect.tapCause((cause) =>
+              signIn !== GROK_ENVIRONMENT_SIGN_IN && isGrokSignInWait(cause)
+                ? Effect.sync(() => grokSignInsAwaitingPerson.add(signIn))
+                : Effect.void,
+            ),
+          ),
+    });
   });
 
 export function resolveGrokAcpBaseModelId(model: string | null | undefined): string {

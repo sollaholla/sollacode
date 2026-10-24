@@ -21,8 +21,10 @@ Saved selections and model restrictions remain pinned to that ID. New models are
 Allow all or a blocklist, but an allowlist must explicitly include them. Models are discovered
 separately for each configured Claude account. The built-in catalog and explicit custom models
 remain available; a transient failed or empty probe retains the last successful list for that
-provider instance. Unknown models expose only options that the CLI reports, and their unreported
-effort/context defaults remain under the CLI's control.
+provider instance. Only discovered models are retained that way: a custom model ID you remove in
+Settings leaves the list at the next refresh and stays gone after a restart, on every provider.
+Unknown models expose only options that the CLI reports, and their unreported effort/context
+defaults remain under the CLI's control.
 
 ### Claude Opus 5.5
 

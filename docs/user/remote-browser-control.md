@@ -13,6 +13,14 @@ There are two ways to use it. Both talk to the same desktop host and require the
 be running with the tab open.
 
 Long addresses shorten within the address field and never cover the Open Link control.
+On a remote device, opening a localhost, LAN, private IPv6, or tailnet web link in chat,
+terminal output, or a markdown file opens the thread's host preview tab automatically. The
+page loads on the environment's network, so the address does not need to be reachable from
+your phone. Native mobile chat and markdown file links behave the same way. Public web links
+keep opening in your device's browser. If the host preview is unavailable, an error is shown;
+the app does not fall back to opening the private address on your device. You can still choose
+**Open in system browser** explicitly from a chat link's context menu.
+
 Open Link and the page menu's **Open link on this device** appear only for public web addresses;
 localhost, LAN, private IPv6, and tailnet addresses stay inside the host browser. You can still
 copy those addresses or open them in another host tab.
@@ -26,10 +34,26 @@ Open the web app from your phone's browser the way you already do for remote acc
   the blank pane older builds showed.
 - If the panel shows the empty state, enter a URL — it opens as a real tab on the desktop host
   and the frame appears.
+- Tapping shows a small blue pulsing dot immediately at the target, matching the agent cursor. It stays while the click is
+  queued or travelling to the host, then disappears when the browser confirms the action.
+  A failed click leaves a red dot until your next gesture. Scrolling, pinching, or cancelling
+  a touch removes the initial tap marker without sending a click. Native mobile uses the same
+  feedback, and reduced-motion settings replace the pulse with a steady dot.
+- Browser-tab labels repair stray `Â` characters caused by misencoded middle dots or nonbreaking
+  spaces in page titles. This applies on web, desktop, and native mobile; custom tab names stay as entered.
 - While an agent drives a tab, its blue cursor is drawn on the frame where it last pointed or
   clicked, and the tab's icon in the panel strip turns into the agent cursor (bright while the
   agent works, dimmed while it waits for you). Frames refresh every second while an agent is
   working in the tab, instead of every 2.5 seconds.
+- The agent's cursor glides to each new point instead of jumping there: it sets off quickly,
+  slows as it settles on the target, and bows slightly on the way, like a hand moving a mouse. It
+  always starts from where it is drawn, so it no longer snaps back to an old spot partway through.
+  A drag's points flow on without stopping between them. A glide takes at most 180 ms and finishes
+  before the click lands. This applies on web, desktop, and native mobile; reduced-motion settings
+  move the cursor at once.
+- A finished download shows a **Downloaded** notice with **Show** and a close button. A notice you
+  close stays closed when you switch tabs or chats and after a reload; downloading the same file
+  again shows a new one. With more than one notice, **Clear all** closes them all.
 - In the remote-control viewer, **Full screen** uses native element fullscreen where the browser
   supports it. On iPhone Safari, where arbitrary elements cannot enter true fullscreen, Solla Code
   switches to an immersive app-level overlay instead: the viewer fills the dynamic webpage viewport,
@@ -100,7 +124,12 @@ as an input failure. Text is inserted atomically into the focused page field, pr
 and normalizing line breaks for Chromium without borrowing the desktop's keyboard focus.
 
 OAuth and other real popup windows become the active remote frame until they close, then the frame
-returns to the opener. A held download appears as an approval card with Allow once, Allow always,
+returns to the opener. A sign-in window stays live in the background like the tab that opened it.
+When it opens while Solla Code is behind another app, or while its window is minimized, it comes to
+the front of the Mac's screen without taking focus. Each time a phone or agent reads it, it is
+uncovered again if something has covered it since. macOS draws nothing for a covered window, so
+before this a sign-in started from a phone could sit white on the Mac while the phone showed no
+change. A held download appears as an approval card with Allow once, Allow always,
 and Deny actions on both mobile surfaces.
 
 ## Hearing the tab
@@ -163,6 +192,12 @@ a pure JavaScript change, so an over-the-air update or Metro reload is enough.
   `drag`, and `contextMenu`, which right-clicks and hands back what was under the pointer instead
   of opening the desktop's native menu). Your phone sends coordinates as fractions of the frame; the server converts them
   against the host's measured viewport at dispatch time, so window resizes can't skew a tap.
+- Tap feedback is local and independent of frame polling. Preview markers retire when
+  `preview.remoteInput` completes. Full remote control opts pointer-down events into receipts
+  with `acknowledge`; the desktop sends `remoteControl.hostAcknowledgeInput` after the native
+  helper responds. The broker forwards the matching session/sequence as `input-acknowledged`.
+  Enqueueing input alone never clears the marker, and blocked or failed injection is reported
+  as unapplied. Keyboard and pointer-motion traffic do not request receipts.
 - The desktop always keeps rendering its own guest. Remote viewers are only viewers plus input
   senders — nothing about host selection, rendering, or navigation semantics changes when a
   remote device connects.
@@ -244,6 +279,18 @@ currently lacks the browser-mediated FedCM account dialog, so previews disable t
 unsupported API and allow sign-in libraries to use their popup fallback. Account
 selection and any verification still happen on the provider's own sign-in page.
 
+### Passkeys
+
+The preview browser cannot use passkeys stored in iCloud Keychain, Google Password Manager, or on
+your phone. macOS only lets browsers that Apple has approved reach iCloud Keychain passkeys. Using
+a phone as a passkey needs the browser to show a QR code and to be within Bluetooth range of the
+phone, and the desktop engine has neither. When a site asks for one, the request fails, and the
+site usually says something like "Passkey authentication failed".
+
+Sign in another way, such as a password with a code from an authenticator app, or an email or text
+code. If a site only offers a passkey, add a second sign-in method in its security settings from a
+browser where your passkey works, then use that method here.
+
 ## Inactive tabs
 
 Browser tabs close automatically after **30 minutes without interaction**, checked once a
@@ -260,3 +307,18 @@ shared browser. Resolving the request starts a fresh 30-minute inactivity window
 
 Closing a browser tab does not archive its chat. Use **+** in the browser tab strip to open the
 page again. The same policy applies to desktop, the remote web client, and the native mobile app.
+
+On phones and touch-first tablets, swiping the panel tab strip scrolls it without reordering
+tabs. Tab reordering is available on desktop-sized screens with a mouse or keyboard.
+
+## Closing a tab yourself
+
+Closing a browser tab or a terminal from the tab strip (the tab's **X**, middle-click, or **Close**,
+**Close others**, **Close to the right**, and **Close all** in its menu) asks first, because the open
+page is lost and a terminal's running processes and history are deleted. The question counts
+everything the action would close, for example "Close 2 browser tabs and 1 terminal?". A blank new
+browser tab, files, diffs, the plan, and artifacts close without asking, and side chats keep their
+own archive confirmation.
+
+Only a close you start asks. An agent closing its own tab with `preview_close` and a tab expiring
+after 30 minutes of inactivity never show the question.

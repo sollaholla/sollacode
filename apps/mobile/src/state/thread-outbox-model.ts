@@ -51,6 +51,8 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   // Present when the queued item creates a brand-new thread (pending task)
   // instead of appending a turn to an existing one.
   creation: Schema.optional(QueuedThreadCreationSchema),
+  // The plan this message implements, so the server marks that exact plan.
+  sourceProposedPlanId: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
 
@@ -79,6 +81,8 @@ export interface QueuedThreadMessage {
   readonly runtimeMode?: RuntimeModeType;
   readonly interactionMode?: ProviderInteractionModeType;
   readonly creation?: QueuedThreadCreation;
+  /** The plan this message implements, in the same thread. */
+  readonly sourceProposedPlanId?: string;
   readonly createdAt: string;
 }
 

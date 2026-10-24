@@ -237,6 +237,13 @@ export type PreviewListResult = typeof PreviewListResult.Type;
 export const PreviewRemoteSnapshotInput = Schema.Struct({
   threadId: ThreadId,
   tabId: PreviewTabId,
+  /**
+   * The `frameId` of the frame the caller already holds. A capture that is
+   * byte-identical to it is answered without its screenshot (see
+   * `PreviewRemoteSnapshotUnchangedResult`). A server that predates this
+   * ignores it and sends the frame, so it is always safe to send.
+   */
+  unchangedSince: Schema.optionalKey(Schema.String),
 });
 
 /** Asks the desktop to add the agent's latest pointer to a snapshot for a remote viewer. */
@@ -250,18 +257,12 @@ export type PreviewRemoteSnapshotInput = typeof PreviewRemoteSnapshotInput.Type;
  * Mobile only needs the visible browser frame and navigation identity. Keep
  * console/network/accessibility payloads out of this high-frequency path.
  */
-export const PreviewRemoteSnapshotResult = Schema.Struct({
+const previewRemoteSnapshotFields = {
   tabId: PreviewTabId,
   url: Schema.String,
   title: Schema.String,
   loading: Schema.Boolean,
   capturedAt: Schema.String,
-  screenshot: Schema.Struct({
-    mimeType: Schema.Literal("image/jpeg"),
-    data: Schema.String,
-    width: Schema.Int,
-    height: Schema.Int,
-  }),
   /**
    * Downloads the desktop is holding for an answer. Optional so hosts that
    * predate remote approval still decode. Without this a remote client could
@@ -281,8 +282,33 @@ export const PreviewRemoteSnapshotResult = Schema.Struct({
   agentPointer: Schema.optional(PreviewAgentPointer),
   /** Who the rendering desktop last reported driving the tab; absent is "none". */
   agentControl: Schema.optional(PreviewAgentControl),
+};
+
+export const PreviewRemoteSnapshotResult = Schema.Struct({
+  ...previewRemoteSnapshotFields,
+  screenshot: Schema.Struct({
+    mimeType: Schema.Literal("image/jpeg"),
+    data: Schema.String,
+    width: Schema.Int,
+    height: Schema.Int,
+  }),
+  /** Identifies this exact picture, for the caller's next `unchangedSince`. */
+  frameId: Schema.optionalKey(Schema.String),
 });
 export type PreviewRemoteSnapshotResult = typeof PreviewRemoteSnapshotResult.Type;
+
+/**
+ * Answer to a snapshot whose picture is the one the caller said it holds. A
+ * phone watching a page that is not moving used to download the same JPEG
+ * every couple of seconds; this is the few hundred bytes around it. Everything
+ * but the picture is current, so the caller keeps its frame and takes these.
+ */
+export const PreviewRemoteSnapshotUnchangedResult = Schema.Struct({
+  ...previewRemoteSnapshotFields,
+  unchanged: Schema.Literal(true),
+  frameId: Schema.String,
+});
+export type PreviewRemoteSnapshotUnchangedResult = typeof PreviewRemoteSnapshotUnchangedResult.Type;
 
 /**
  * Tab audio for remote viewers. The desktop that renders a tab captures its

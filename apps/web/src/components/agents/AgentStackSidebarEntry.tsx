@@ -1,3 +1,4 @@
+import { isBrowserPushEnabled } from "../../browser/webPush";
 import { useAtomValue } from "@effect/atom-react";
 import { useParams, useRouter } from "@tanstack/react-router";
 import {
@@ -107,7 +108,7 @@ type AgentBuilderStatusThread = Pick<
 /**
  * Project the singleton builder thread onto the four states its icon can show.
  * Pending interaction wins over all other state, matching ordinary thread
- * rows; a disconnected host suppresses an unverifiable working state.
+ * rows; connectivity does not change the last observed working state.
  */
 export function resolveAgentBuilderButtonStatus(
   thread: AgentBuilderStatusThread | null,
@@ -335,7 +336,7 @@ function AgentDesktopNotificationObserver(props: { readonly environmentId: Envir
         document.hasFocus();
       if (
         !shouldSendAgentDesktopNotification({
-          enabled: true,
+          enabled: !isBrowserPushEnabled(props.environmentId),
           permission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
           previousUnreadCount: previous.get(String(entry.vmAgentId)) ?? 0,
           unreadCount: entry.unreadNotificationCount,
@@ -400,7 +401,7 @@ function AgentSidebarRow(props: {
   );
   const rowEnvironment = useEnvironment(props.environmentId);
   const environmentUnreachable = rowEnvironment?.connection.phase !== "connected";
-  const presence = agentPresence(agent.status, !environmentUnreachable);
+  const presence = agentPresence(agent.status);
   // An agent delegates its real work to side chats, and its own chat thread
   // sits "ready" while they run — so reading only its own shell lit nothing at
   // all while the agent was plainly busy. An ordinary thread row already gets
@@ -879,12 +880,6 @@ function AgentEnvironmentSection(props: {
           );
         })
       )}
-
-      {agents.length > 0 && notice === "stale" ? (
-        <p className="min-w-0 break-words px-2 py-1 text-[11px] leading-relaxed text-sidebar-muted-foreground/55">
-          Reconnecting… showing last-known agents.
-        </p>
-      ) : null}
 
       <CreateAgentDialog
         open={props.createOpen}

@@ -1,16 +1,19 @@
+import { type WorkLogImage } from "@t3tools/client-runtime/state/work-log-images";
+import { CollapsedWorkLogImages } from "./CollapsedWorkLogImages";
+import { shownWorkLogImages, visibleWorkLogActivities } from "./workLogLayout";
+import { pressedThreadImage, type ThreadImageGalleryOpener } from "./threadImageGallery";
 import { resolveReadImagePreview } from "@t3tools/client-runtime/state/read-image-preview";
 import { EventId, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
 import { useAssetUrlState } from "../../state/assets";
 import { WorkspaceFileImagePreview } from "../files/WorkspaceFileImagePreview";
 import * as Haptics from "expo-haptics";
 import { type AppSymbolName, SymbolView } from "../../components/AppSymbol";
+import { useState } from "react";
 import { LayoutAnimation, Pressable, ScrollView, useColorScheme, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
-import { scaledTypographyLineHeight } from "../../lib/appearancePreferences";
 import { cn } from "../../lib/cn";
 import type { ThreadFeedActivity } from "../../lib/threadActivity";
-import { MOBILE_TYPOGRAPHY } from "../../lib/typography";
 import Animated, { FadeIn } from "react-native-reanimated";
 
 const WORK_LOG_LAYOUT_ANIMATION = {
@@ -85,46 +88,12 @@ function isFreshRow(createdAt: string): boolean {
   return Number.isFinite(timestamp) && Date.now() - timestamp < FRESH_ROW_WINDOW_MS;
 }
 
-// Tool-like activities with a neutral status carry no signal worth a row.
-export function visibleWorkLogActivities(
-  activities: ReadonlyArray<ThreadFeedActivity>,
-): ReadonlyArray<ThreadFeedActivity> {
-  return activities.filter((activity) => !(activity.toolLike && activity.status === "neutral"));
-}
-
-// Pre-measurement heights for the feed's getFixedItemSize. Collapsed work-log
-// rows are single-line (numberOfLines={1}) inside a min-height that stays
-// taller than the text at every supported base font size (text-xs reaches
-// 23px at the 22pt maximum, under the 32px min-h-8), so row height is
-// deterministic. The "work log" label has no such clamp — its height follows
-// the scaled text-2xs line height. Values mirror the classNames below — keep
-// them in sync; a mismatch only costs a one-time correction on measure.
-const WORK_ROW_HEIGHT = 32; // min-h-8
-const WORK_ROW_GAP = 1; // gap-px
-const WORK_LOG_HEADER_PADDING = 2; // pb-0.5 under the "work log" label
-const WORK_LOG_BOTTOM_MARGIN = 4; // mb-1
-
-export const WORK_GROUP_TOGGLE_HEIGHT = 36; // min-h-8 (32) + mb-1 (4)
-
-export function collapsedWorkLogHeight(
-  activities: ReadonlyArray<ThreadFeedActivity>,
-  baseFontSize: number,
-): number {
-  const rows = visibleWorkLogActivities(activities);
-  if (rows.length === 0) {
-    return 0;
-  }
-  const onlyToolRows = rows.every((row) => row.toolLike);
-  const headerHeight =
-    scaledTypographyLineHeight(MOBILE_TYPOGRAPHY.caption, baseFontSize) + WORK_LOG_HEADER_PADDING;
-  return (
-    WORK_LOG_BOTTOM_MARGIN +
-    (onlyToolRows ? 0 : headerHeight) +
-    rows.filter((row) => row.readImagePath).length * 228 +
-    rows.length * WORK_ROW_HEIGHT +
-    (rows.length - 1) * WORK_ROW_GAP
-  );
-}
+export {
+  collapsedWorkLogHeight,
+  shownWorkLogImages,
+  visibleWorkLogActivities,
+  WORK_GROUP_TOGGLE_HEIGHT,
+} from "./workLogLayout";
 
 export function ThreadWorkLog(props: {
   readonly environmentId: EnvironmentId;
@@ -135,9 +104,18 @@ export function ThreadWorkLog(props: {
   readonly iconSubtleColor: import("react-native").ColorValue;
   readonly onCopyRow: (rowId: string, value: string) => void;
   readonly onToggleRow: (rowId: string) => void;
+  readonly imageGallery: ThreadImageGalleryOpener;
 }) {
   const colorScheme = useColorScheme();
   const pressedBackground = colorScheme === "dark" ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.035)";
+  // An image opened from a row's own preview pages through the conversation's images.
+  const openImage = (image: WorkLogImage | undefined) =>
+    image
+      ? (uri: string) =>
+          props.imageGallery.open(
+            props.imageGallery.galleryFor(pressedThreadImage(image.id, image.name, uri)),
+          )
+      : undefined;
   const rows = visibleWorkLogActivities(props.activities).map((activity) => ({
     ...activity,
     detail: compactActivityDetail(activity.detail),
@@ -160,7 +138,8 @@ export function ThreadWorkLog(props: {
       <View className="gap-px">
         {rows.map((row) => {
           const expanded = props.expandedRows[row.id] ?? false;
-          const canExpand = row.canExpand;
+          const images = shownWorkLogImages(row, props.imageGallery.unavailable);
+          const canExpand = row.canExpand || images.length > 0;
           const fullDetail = expanded ? row.getFullDetail() : null;
           const displayText = row.detail ? `${row.summary} ${row.detail}` : row.summary;
           const iconIsDestructive = row.icon === "alert" || row.icon === "warning";
@@ -257,13 +236,36 @@ export function ThreadWorkLog(props: {
                 </View>
               </Pressable>
 
-              {row.readImagePath ? (
+              {!expanded && images.length > 0 ? (
+                <View className="ml-7">
+                  <CollapsedWorkLogImages
+                    images={images}
+                    environmentId={props.environmentId}
+                    threadId={props.threadId}
+                    imageGallery={props.imageGallery}
+                  />
+                </View>
+              ) : null}
+              {expanded && row.readImagePath ? (
                 <ToolImagePreview
                   environmentId={props.environmentId}
                   threadId={props.threadId}
                   path={row.readImagePath}
                   sourceActivityId={row.readImageSourceActivityId ?? row.id}
                   inlineSrc={row.readImageInlineSrc}
+                  onOpenFullScreen={openImage(images.find((image) => image.kind === "file"))}
+                />
+              ) : null}
+              {expanded && row.snapshotAttachmentId ? (
+                <ToolSnapshotAttachmentPreview
+                  environmentId={props.environmentId}
+                  attachmentId={row.snapshotAttachmentId}
+                  onOpenFullScreen={openImage(images.find((image) => image.kind === "attachment"))}
+                />
+              ) : expanded && row.snapshotImageSrc ? (
+                <ToolSnapshotPreview
+                  src={row.snapshotImageSrc}
+                  onOpenFullScreen={openImage(images.find((image) => image.kind === "stored"))}
                 />
               ) : null}
 
@@ -294,6 +296,10 @@ export function ThreadWorkLog(props: {
 }
 
 export function ThreadWorkGroupToggle(props: {
+  readonly images: readonly WorkLogImage[];
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly imageGallery: ThreadImageGalleryOpener;
   readonly expanded: boolean;
   readonly hiddenCount: number;
   readonly iconSubtleColor: import("react-native").ColorValue;
@@ -310,6 +316,7 @@ export function ThreadWorkGroupToggle(props: {
       ? "log entry"
       : "log entries";
   const collapsedLabel = `Show ${props.hiddenCount} previous ${noun}`;
+  const images = props.images.filter((image) => !props.imageGallery.unavailable.has(image.id));
   const expandedLabel = props.onlyToolActivities
     ? "Show fewer tool calls"
     : "Show fewer log entries";
@@ -346,11 +353,61 @@ export function ThreadWorkGroupToggle(props: {
           {props.expanded ? expandedLabel : `+${props.hiddenCount} previous ${noun}`}
         </Text>
       </Pressable>
+      {!props.expanded && images.length > 0 ? (
+        <CollapsedWorkLogImages
+          images={images}
+          environmentId={props.environmentId}
+          threadId={props.threadId}
+          imageGallery={props.imageGallery}
+        />
+      ) : null}
     </View>
   );
 }
 
-const NO_FAILED_SRCS: ReadonlySet<string> = new Set();
+/** A snapshot stored as an attachment: fetched only when its row is opened. */
+function ToolSnapshotAttachmentPreview(props: {
+  readonly environmentId: EnvironmentId;
+  readonly attachmentId: string;
+  readonly onOpenFullScreen: ((uri: string) => void) | undefined;
+}) {
+  const asset = useAssetUrlState(props.environmentId, {
+    _tag: "attachment",
+    attachmentId: props.attachmentId,
+  });
+  const [failed, setFailed] = useState(false);
+  // Its picture is no longer stored, or can't be decoded: show nothing.
+  if (asset._tag === "Failure" || failed) return null;
+  return (
+    <View className="ml-7 my-1 overflow-hidden rounded-lg" style={{ height: 220 }}>
+      <WorkspaceFileImagePreview
+        accessibilityLabel="Browser snapshot"
+        uri={asset._tag === "Success" ? asset.url : null}
+        onOpenFullScreen={props.onOpenFullScreen}
+        onUnavailable={() => setFailed(true)}
+      />
+    </View>
+  );
+}
+
+/** The page a browser snapshot captured. */
+function ToolSnapshotPreview(props: {
+  readonly src: string;
+  readonly onOpenFullScreen: ((uri: string) => void) | undefined;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <View className="ml-7 my-1 overflow-hidden rounded-lg" style={{ height: 220 }}>
+      <WorkspaceFileImagePreview
+        accessibilityLabel="Browser snapshot"
+        uri={props.src}
+        onOpenFullScreen={props.onOpenFullScreen}
+        onUnavailable={() => setFailed(true)}
+      />
+    </View>
+  );
+}
 
 function ToolImagePreview(props: {
   readonly environmentId: EnvironmentId;
@@ -358,6 +415,7 @@ function ToolImagePreview(props: {
   readonly path: string;
   readonly sourceActivityId: string;
   readonly inlineSrc: string | undefined;
+  readonly onOpenFullScreen: ((uri: string) => void) | undefined;
 }) {
   const asset = useAssetUrlState(props.environmentId, {
     _tag: "workspace-file",
@@ -365,25 +423,23 @@ function ToolImagePreview(props: {
     path: props.path,
     sourceActivityId: EventId.make(props.sourceActivityId),
   });
+  // A file that is gone falls back to the copy the tool kept, then to nothing.
+  const [failedSrcs, setFailedSrcs] = useState<ReadonlySet<string>>(() => new Set());
   const preview = resolveReadImagePreview({
     assetFailed: asset._tag === "Failure",
     assetUrl: asset._tag === "Success" ? asset.url : null,
     storedSrc: props.inlineSrc ?? null,
-    failedSrcs: NO_FAILED_SRCS,
+    failedSrcs,
   });
+  if (preview._tag === "Unavailable") return null;
   return (
     <View className="ml-7 my-1 overflow-hidden rounded-lg" style={{ height: 220 }}>
-      {preview._tag === "Unavailable" ? (
-        <Text className="p-4 text-xs text-foreground-muted">
-          Image preview unavailable. Nothing readable is at this path now, and the tool result kept
-          no copy of the image.
-        </Text>
-      ) : (
-        <WorkspaceFileImagePreview
-          accessibilityLabel={props.path}
-          uri={preview._tag === "Image" ? preview.src : null}
-        />
-      )}
+      <WorkspaceFileImagePreview
+        accessibilityLabel={props.path}
+        uri={preview._tag === "Image" ? preview.src : null}
+        onOpenFullScreen={props.onOpenFullScreen}
+        onUnavailable={(uri) => setFailedSrcs((previous) => new Set(previous).add(uri))}
+      />
     </View>
   );
 }

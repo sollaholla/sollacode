@@ -1097,6 +1097,14 @@ describe("ProviderCommandReactor", () => {
       wakeScheduler: () => Effect.runPromise(threadWorkScheduler.wake()),
       obligationByKey: (key: Parameters<typeof threadWorkObligations.getByKey>[0]) =>
         Effect.runPromise(threadWorkObligations.getByKey(key)).then(Option.getOrUndefined),
+      /** Claims an obligation the way the scheduler does before handing it to its handler. */
+      claimObligation: (input: Parameters<typeof threadWorkObligations.claim>[0]) =>
+        Effect.runPromise(threadWorkObligations.claim(input)).then(Option.getOrUndefined),
+      /** Moves an obligation as a scheduler step would, such as handing it back. */
+      transitionObligation: (input: Parameters<typeof threadWorkObligations.transition>[0]) =>
+        Effect.runPromise(threadWorkObligations.transition(input)),
+      /** Runs one attempt of a captured work handler. */
+      attemptWork: (attempt: ReturnType<ThreadWorkHandler>) => Effect.runPromise(attempt),
       policySettings,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       startSession,
@@ -2459,6 +2467,47 @@ describe("ProviderCommandReactor", () => {
     ).toHaveLength(2);
   });
 
+  it("settles the background tasks a previous process left running", async () => {
+    const harness = await createHarness({ startReactor: false });
+    const threadId = ThreadId.make("thread-1");
+    // The reactor was built above; anything reported before that belongs to
+    // the process a restart replaced.
+    const nowMs = DateTime.toEpochMillis(DateTime.nowUnsafe());
+    const beforeBoot = DateTime.formatIso(DateTime.makeUnsafe(nowMs - 10 * 60_000));
+    const afterBoot = DateTime.formatIso(DateTime.makeUnsafe(nowMs + 60_000));
+    const startTask = (taskId: string, createdAt: string) =>
+      harness.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make(`cmd-task-started-${taskId}`),
+        threadId,
+        activity: {
+          id: EventId.make(`activity-task-started-${taskId}`),
+          tone: "info",
+          kind: "task.started",
+          summary: "local_agent task started",
+          payload: { taskId, taskType: "local_agent" },
+          turnId: null,
+          createdAt,
+        },
+        createdAt,
+      });
+    await startTask("task-orphaned", beforeBoot);
+    await startTask("task-current", afterBoot);
+
+    await harness.startReactor();
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    const settled = thread?.activities.filter((activity) => activity.kind === "task.completed");
+    expect(settled?.map((activity) => activity.payload)).toEqual([
+      {
+        taskId: "task-orphaned",
+        status: "stopped",
+        summary: "Solla Code restarted before this task finished.",
+      },
+    ]);
+  });
+
   it("cancels persisted browser cleanup when its source turn signed off", async () => {
     const harness = await createHarness({ startReactor: false });
     const threadId = ThreadId.make("thread-1");
@@ -3450,22 +3499,20 @@ describe("ProviderCommandReactor", () => {
       liveSteering: "unsupported",
       sendTurnEffect: () => Effect.succeed({ threadId, turnId: hostTurnId }),
     });
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("held-no-steer"),
-        threadId,
-        message: {
-          messageId,
-          role: "user",
-          text: "Actually, change the approach",
-          attachments: [],
-        },
-        runtimeMode: "approval-required",
-        interactionMode: "default",
-        createdAt: now,
-      }),
-    );
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("held-no-steer"),
+      threadId,
+      message: {
+        messageId,
+        role: "user",
+        text: "Actually, change the approach",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: now,
+    });
     const handlers = new Map<string, ThreadWorkHandler>();
     vi.spyOn(harness.threadWorkScheduler, "registerHandler").mockImplementation((kind, handler) =>
       Effect.sync(() => {
@@ -3486,39 +3533,32 @@ describe("ProviderCommandReactor", () => {
       activeTurnId: hostTurnId,
       cwd: "/tmp",
     } as never);
-    const row = Option.getOrThrow(
-      await Effect.runPromise(
-        harness.threadWorkObligations.getByKey({
-          threadId,
-          sourceTurnId: activeTurnWorkSourceId(messageId),
-          kind: "active-turn-recovery",
-        }),
-      ),
-    );
-    const claimed = Option.getOrThrow(
-      await Effect.runPromise(
-        harness.threadWorkObligations.claim({
-          obligationId: row.obligationId,
-          now,
-          leaseExpiresAt: "2099-01-01T00:00:00.000Z",
-        }),
-      ),
-    );
-    await Effect.runPromise(
-      harness.threadWorkObligations.transition({
+    const row = await harness.obligationByKey({
+      threadId,
+      sourceTurnId: activeTurnWorkSourceId(messageId),
+      kind: "active-turn-recovery",
+    });
+    const claimed =
+      row &&
+      (await harness.claimObligation({
         obligationId: row.obligationId,
-        expectedState: "claimed",
-        expectedAttempt: claimed.attempt,
-        state: "executing",
-        nextAttemptAt: null,
-        claimedAt: now,
+        now,
         leaseExpiresAt: "2099-01-01T00:00:00.000Z",
-        blockedReason: null,
-        updatedAt: now,
-      }),
-    );
+      }));
+    if (!row || !claimed) throw new Error("the queued message's delivery could not be claimed");
+    await harness.transitionObligation({
+      obligationId: row.obligationId,
+      expectedState: "claimed",
+      expectedAttempt: claimed.attempt,
+      state: "executing",
+      nextAttemptAt: null,
+      claimedAt: now,
+      leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+      blockedReason: null,
+      updatedAt: now,
+    });
 
-    const handlerRun = Effect.runPromise(
+    const handlerRun = harness.attemptWork(
       handlers.get("active-turn-recovery")!({ ...claimed, state: "executing" }),
     );
 
@@ -3539,26 +3579,131 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession).not.toHaveBeenCalled();
 
     // End the interrupted turn so the supervisor hands the delivery back.
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("cmd-no-steer-interrupted"),
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-no-steer-interrupted"),
+      threadId,
+      session: {
         threadId,
-        session: {
-          threadId,
-          status: "stopped",
-          providerName: "deepcode",
-          providerInstanceId: ProviderInstanceId.make("deepcode"),
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: "2026-01-01T00:00:04.000Z",
-        },
-        createdAt: "2026-01-01T00:00:04.000Z",
-      }),
-    );
+        status: "stopped",
+        providerName: "deepcode",
+        providerInstanceId: ProviderInstanceId.make("deepcode"),
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-01-01T00:00:04.000Z",
+      },
+      createdAt: "2026-01-01T00:00:04.000Z",
+    });
     const outcome = await handlerRun;
     expect(outcome.state).toBe("sleeping");
+  });
+
+  it("backs off when a turn it waited behind is still listed after ending", async () => {
+    // Claude kept listing a synthetic turn as running after it was interrupted,
+    // and refused every steer aimed at it. Each attempt saw that turn end at
+    // once and came back a second later: 317 attempts in 12 minutes on
+    // 2026-10-11, while the person watched "Waiting to retry".
+    const threadId = ThreadId.make("thread-1");
+    const messageId = MessageId.make("held-user-message:behind-ended-turn");
+    const staleTurnId = TurnId.make("ended-but-listed-turn");
+    const now = "2026-10-11T15:40:48.124Z";
+    const harness = await createHarness({
+      startReactor: false,
+      sendTurnEffect: (rawInput) =>
+        (rawInput as ProviderSendTurnInput).liveSteerTarget === undefined
+          ? Effect.succeed({ threadId, turnId: staleTurnId })
+          : Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "claudeAgent",
+                method: "turn/steer",
+                detail: "no longer the active Claude turn",
+              }),
+            ),
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("held-behind-ended-turn"),
+      threadId,
+      message: { messageId, role: "user", text: "Queued while it worked", attachments: [] },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: now,
+    });
+    const handlers = new Map<string, ThreadWorkHandler>();
+    vi.spyOn(harness.threadWorkScheduler, "registerHandler").mockImplementation((kind, handler) =>
+      Effect.sync(() => {
+        handlers.set(kind, handler);
+      }),
+    );
+    vi.spyOn(harness.threadWorkScheduler, "start").mockReturnValue(Effect.void);
+    await harness.startReactor();
+    harness.runtimeSessions.push({
+      sessionId: "stale-listing-session",
+      threadId,
+      provider: "claudeAgent",
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      status: "running",
+      activeTurnId: staleTurnId,
+      cwd: "/tmp",
+    } as never);
+    // Orchestration has already seen that turn end.
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-behind-ended-turn-interrupted"),
+      threadId,
+      session: {
+        threadId,
+        status: "interrupted",
+        providerName: "claudeAgent",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-10-11T15:42:12.434Z",
+      },
+      createdAt: "2026-10-11T15:42:12.434Z",
+    });
+    const row = await harness.obligationByKey({
+      threadId,
+      sourceTurnId: activeTurnWorkSourceId(messageId),
+      kind: "active-turn-recovery",
+    });
+    if (!row) throw new Error("the queued message has no delivery obligation");
+    const attempt = async (blockedReason: string | null) => {
+      const claimed = await harness.claimObligation({
+        obligationId: row.obligationId,
+        now: "2026-10-11T15:42:13.000Z",
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      if (!claimed) throw new Error("the delivery obligation could not be claimed");
+      const startedAt = DateTime.toEpochMillis(DateTime.nowUnsafe());
+      const outcome = await harness.attemptWork(
+        handlers.get("active-turn-recovery")!({ ...claimed, state: "executing", blockedReason }),
+      );
+      if (outcome.state !== "sleeping") throw new Error(`expected sleeping, got ${outcome.state}`);
+      // Put the row back so the next attempt can claim it again.
+      await harness.transitionObligation({
+        obligationId: row.obligationId,
+        expectedState: "claimed",
+        expectedAttempt: claimed.attempt,
+        state: "pending",
+        nextAttemptAt: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        blockedReason: outcome.reason ?? null,
+        updatedAt: "2026-10-11T15:42:14.000Z",
+      });
+      return { reason: outcome.reason, waitMs: Date.parse(outcome.nextAttemptAt) - startedAt };
+    };
+
+    // The first time, the turn may really have just ended: retry at once.
+    const first = await attempt(null);
+    expect(first.reason).toMatch(/^the active turn ended \(/);
+    expect(first.waitMs).toBeLessThanOrEqual(2_000);
+    // The same turn again means the listing is stale: stop spinning.
+    const second = await attempt(first.reason ?? null);
+    expect(second.waitMs).toBeGreaterThan(10_000);
   });
 
   it("stops a live turn instead of steering when the provider has no mid-turn channel", async () => {
@@ -4281,6 +4426,100 @@ describe("ProviderCommandReactor", () => {
     expect(request.input).toContain("Latest message.");
     expect(request.input).toContain("Stranded burst message.");
     expect(request.input).not.toContain("Steered and already answered.");
+  });
+
+  it("records carried predecessors as delivered so later turns do not carry them again", async () => {
+    // Only the carrying turn's own message gets a native receipt. Its carried
+    // predecessors stayed receipt-less, so every later turn in the carry
+    // window folded them in again (thread b084bc7f, 2026-10-14: one "resume"
+    // reached Claude four times).
+    const harness = await createHarness({
+      startReactor: false,
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "test-model",
+      },
+    });
+    const threadId = ThreadId.make("thread-1");
+    const strandedMessageId = asMessageId("user-stranded-once");
+    const carryingMessageId = asMessageId("user-carrying");
+    const startTurn = (messageId: MessageId, text: string, createdAt: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-carry-once-${messageId}`),
+          threadId,
+          message: { messageId, role: "user", text, attachments: [] },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+    await startTurn(strandedMessageId, "Stopped before it was sent.", "2026-01-01T00:00:00.000Z");
+    const stranded = await Effect.runPromise(
+      harness.threadWorkObligations
+        .getByKey({
+          threadId,
+          sourceTurnId: activeTurnWorkSourceId(strandedMessageId),
+          kind: "active-turn-recovery",
+        })
+        .pipe(Effect.map(Option.getOrUndefined)),
+    );
+    if (stranded === undefined) throw new Error("no obligation for the stranded message");
+    await Effect.runPromise(
+      harness.threadWorkObligations.transition({
+        obligationId: stranded.obligationId,
+        expectedState: stranded.state,
+        expectedAttempt: stranded.attempt,
+        state: "cancelled",
+        nextAttemptAt: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        blockedReason: "queued message stopped before it was sent",
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await startTurn(carryingMessageId, "Sent after Stop.", "2026-01-01T00:00:02.000Z");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-carry-once-session-ready"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.startReactor();
+
+    await waitFor(() => harness.sendTurn.mock.calls.length >= 1);
+    const request = harness.sendTurn.mock.calls[0]?.[0] as { input: string };
+    expect(request.input).toContain("Stopped before it was sent.");
+    expect(request.input).toContain("Sent after Stop.");
+
+    const carriedReceipt = async () => {
+      const model = await harness.readModel();
+      return (
+        model.threads
+          .find((thread) => thread.id === threadId)
+          ?.activities.some(
+            (activity) =>
+              activity.kind === "provider.queue.promoted" &&
+              ((activity.payload as { messageIds?: string[] }).messageIds ?? []).includes(
+                strandedMessageId,
+              ),
+          ) ?? false
+      );
+    };
+    await waitFor(carriedReceipt);
   });
 
   it("recovers an already-projected Agent continuation after a server restart", async () => {

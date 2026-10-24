@@ -16,14 +16,10 @@ export function agentAvatarHue(agentId: string, avatarColor?: number | null): nu
   return (((hash ^ (hash >>> 16)) >>> 0) / 0x100000000) * 360;
 }
 
-/** A retained "running" snapshot must not claim that a disconnected host is online. */
-export function agentPresence(status: VmAgentStatus, environmentConnected: boolean) {
-  const online = status === "running" && environmentConnected;
-  const detail = !environmentConnected
-    ? "Environment disconnected"
-    : status === "running"
-      ? "Ready for events and notifications"
-      : `Agent ${status}`;
+/** Presence describes the last observed agent lifecycle, independent of client connectivity. */
+export function agentPresence(status: VmAgentStatus) {
+  const online = status === "running";
+  const detail = online ? "Ready for events and notifications" : `Agent ${status}`;
   return {
     online,
     label: online ? "Online" : "Offline",

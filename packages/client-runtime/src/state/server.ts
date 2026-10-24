@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type ServerConfig,
+  type ServerConfigProviderStatusesPatchPayload,
   type ServerConfigStreamEvent,
   type ServerLifecycleWelcomePayload,
   WS_METHODS,
@@ -33,6 +34,29 @@ export interface ServerConfigProjection {
   readonly source: "cache" | "live";
 }
 
+/**
+ * Rebuilds the provider list from a patch: `order` decides which providers
+ * exist and where, `upserted` replaces a provider whole, and `volatile` lays
+ * its few fields over the provider already held. A volatile patch for a
+ * provider this client does not have is dropped; the server only sends one for
+ * a provider it already delivered on this same subscription.
+ */
+export function applyProviderStatusesPatch(
+  current: ServerConfig["providers"],
+  patch: ServerConfigProviderStatusesPatchPayload,
+): ServerConfig["providers"] {
+  const byId = new Map(current.map((provider) => [provider.instanceId, provider]));
+  for (const provider of patch.upserted) byId.set(provider.instanceId, provider);
+  for (const { instanceId, ...fields } of patch.volatile) {
+    const base = byId.get(instanceId);
+    if (base !== undefined) byId.set(instanceId, { ...base, ...fields });
+  }
+  return patch.order.flatMap((instanceId) => {
+    const provider = byId.get(instanceId);
+    return provider === undefined ? [] : [provider];
+  });
+}
+
 export function applyServerConfigProjection(
   current: Option.Option<ServerConfigProjection>,
   event: ServerConfigStreamEvent,
@@ -59,6 +83,15 @@ export function applyServerConfigProjection(
         config: {
           ...projection.config,
           providers: event.payload.providers,
+        },
+        latestEvent: event,
+        source: "live",
+      }));
+    case "providerStatusesPatch":
+      return Option.map(current, (projection) => ({
+        config: {
+          ...projection.config,
+          providers: applyProviderStatusesPatch(projection.config.providers, event.payload),
         },
         latestEvent: event,
         source: "live",
@@ -155,7 +188,7 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
       Effect.forkScoped,
     );
 
-    yield* subscribe(WS_METHODS.subscribeServerConfig, {}).pipe(
+    yield* subscribe(WS_METHODS.subscribeServerConfig, { acceptsProviderPatches: true }).pipe(
       Stream.runForEach((event) =>
         Effect.gen(function* () {
           const next = applyServerConfigProjection(yield* SubscriptionRef.get(state), event);
@@ -304,6 +337,13 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.subscribeResourceTelemetry,
       idleTtlMs: 0,
     }),
+    // Battery and disk of the machine an environment runs on. Idle TTL 0 stops
+    // the server sampling the moment the last glance-able header unmounts.
+    hostVitals: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:host-vitals",
+      tag: WS_METHODS.subscribeHostVitals,
+      idleTtlMs: 0,
+    }),
     resourceTelemetryHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:resource-telemetry-history",
       tag: WS_METHODS.serverGetResourceTelemetryHistory,
@@ -428,6 +468,30 @@ export function createServerEnvironmentAtoms<R, E>(
     retryResourceTelemetry: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:retry-resource-telemetry",
       tag: WS_METHODS.serverRetryResourceTelemetry,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
+    webPushStatus: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:web-push-status",
+      tag: WS_METHODS.webPushStatus,
+    }),
+    webPushSubscribe: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:web-push-subscribe",
+      tag: WS_METHODS.webPushSubscribe,
+    }),
+    webPushUnsubscribe: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:web-push-unsubscribe",
+      tag: WS_METHODS.webPushUnsubscribe,
+    }),
+    webPushTest: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:web-push-test",
+      tag: WS_METHODS.webPushTest,
+    }),
+    startStorageCleanup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:start-storage-cleanup",
+      tag: WS_METHODS.serverStartStorageCleanup,
       concurrency: {
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,

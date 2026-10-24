@@ -23,6 +23,7 @@ import {
   CircleDashedIcon,
   ClockIcon,
   CopyIcon,
+  ChartColumnIcon,
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
@@ -537,8 +538,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   // Same semantics as v1 (never-visited counts as read): flipping the beta
   // flag must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  // A row on an unreachable host shows last-known state, so it must not claim
-  // to be working — the same rule the conversation timeline follows.
+  // Connection actions still use live reachability; activity uses the retained snapshot.
   const rowEnvironment = useEnvironment(thread.environmentId);
   const environmentUnreachable =
     rowEnvironment != null && rowEnvironment.connection.phase !== "connected";
@@ -566,13 +566,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       terminalActivity !== null)
       ? "working"
       : ownStatus;
-  // Applied *after* the promotion above, not before it. Suppressing only
-  // `ownStatus` was useless: queued server work promoted the row straight back
-  // to "working", which is exactly the state an unreachable host is most
-  // likely to be in — its last-known pendingWork never drains because nothing
-  // can report progress. The row kept counting seconds for a machine that was
-  // not answering.
-  const status = environmentUnreachable && promotedStatus === "working" ? "ready" : promotedStatus;
+  const status = promotedStatus;
   // Only a row promoted to working by queued server work may call itself
   // auto-resuming; a thread running its own turn is just working.
   const autoResumeStartedAt = resolveAutoResumeStartedAt({
@@ -3278,8 +3272,23 @@ export default function SidebarV2() {
                       </Select>
                     </label>
                   </div>
-                  {projectActionsTarget.memberProjects.length > 1 ? (
-                    <div className="flex justify-end">
+                  <div className="flex items-center justify-between gap-2">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="-ms-2"
+                      onClick={() => {
+                        setProjectActionsTarget(null);
+                        void router.navigate({
+                          to: "/settings/projects/$environmentId/$projectId",
+                          params: { environmentId: member.environmentId, projectId: member.id },
+                        });
+                      }}
+                    >
+                      <ChartColumnIcon />
+                      Usage and storage
+                    </Button>
+                    {projectActionsTarget.memberProjects.length > 1 ? (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -3293,8 +3302,8 @@ export default function SidebarV2() {
                         <Trash2Icon />
                         Remove project
                       </Button>
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
                 </section>
               ))}
             </div>

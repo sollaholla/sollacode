@@ -86,6 +86,7 @@ export function buildDesktopAppUpdaterInvocation(input: {
   readonly backendPid?: number;
   readonly healthUrl?: string;
   readonly logPath?: string;
+  readonly settingsPath?: string;
 }): DesktopAppUpdaterInvocation {
   if (input.platform === "darwin") {
     return {
@@ -108,6 +109,7 @@ export function buildDesktopAppUpdaterInvocation(input: {
               input.healthUrl ?? "",
               "--log-path",
               input.logPath ?? "",
+              ...(input.settingsPath ? ["--settings-path", input.settingsPath] : []),
             ]
           : []),
       ],
@@ -367,6 +369,7 @@ export const make = Effect.fn("DesktopAppUpdater.make")(function* (options?: {
       backendPid: inspection.backendPid,
       healthUrl: inspection.healthUrl,
       logPath: inspection.logPath,
+      settingsPath: config.settingsPath,
     });
     const resetInFlight = () => {
       runFork(Ref.set(inFlight, false));

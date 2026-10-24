@@ -135,6 +135,7 @@ const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const ANTIGRAVITY_DRIVER_KIND = ProviderDriverKind.make("antigravity");
 const DEEPCODE_DRIVER_KIND = ProviderDriverKind.make("deepcode");
 const MUSE_DRIVER_KIND = ProviderDriverKind.make("muse");
+const KIMI_DRIVER_KIND = ProviderDriverKind.make("kimi");
 
 export const DEFAULT_MODEL = "gpt-5.6-sol";
 
@@ -170,6 +171,9 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   // it comes back empty when signed out - so naming a slug here would either
   // duplicate a default we already get for free or pin one the account does
   // not serve.
+  // Kimi is absent for the same reason: its catalog and `default_model` live in
+  // the CLI's own config (`kimi provider list`), and an ACP session that is
+  // never sent a model keeps that default.
 };
 
 /** Per-provider text generation model defaults. */
@@ -252,4 +256,5 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [OPENCODE_DRIVER_KIND]: "OpenCode",
   [DEEPCODE_DRIVER_KIND]: "Deep Code",
   [MUSE_DRIVER_KIND]: "Muse Code",
+  [KIMI_DRIVER_KIND]: "Kimi Code",
 };

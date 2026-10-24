@@ -354,6 +354,15 @@ describe("isTerminalProviderRefusal", () => {
     ).toBe(false);
   });
 
+  // 2026-10-12: Muse relayed this on every attempt and was retried eight times.
+  it("retires the Meta API billing refusal Muse relays", () => {
+    expect(
+      isTerminalProviderRefusal(
+        "API error 402 [request_id=9d8b8afb-adb3-4a96-a253-4b80746b4cbb]: Billing verification failed. Please check your payment method. (billing_error)",
+      ),
+    ).toBe(true);
+  });
+
   // A busy provider is a wait, not a refusal — retrying is correct there.
   it("leaves waits and transient failures to the retry path", () => {
     expect(isTerminalProviderRefusal("A browser turn is already active")).toBe(false);

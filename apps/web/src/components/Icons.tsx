@@ -238,6 +238,20 @@ export const GrokIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+export const KimiIcon: Icon = ({ className, ...props }) => (
+  // Kimi's "K" with its dot. The letter follows the theme like Grok's mark;
+  // the dot keeps Kimi's blue so the mark still reads at picker size.
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="none"
+    className={cn("fill-[#0F0F0F] dark:fill-[#F5F5F5]", className)}
+  >
+    <path d="M4 3h3.6v7.4L12.9 3h4.4l-6.3 7.9L18.6 21h-4.5l-5-7.2-1.5 1.7V21H4z" />
+    <circle cx="20.2" cy="4.2" r="2.1" fill="#1783FF" />
+  </svg>
+);
+
 export const TraeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 24 24" fill="currentColor">
     {/* Back rectangle: left strip + bottom strip drawn separately — empty bottom-left corner is the gap between them */}

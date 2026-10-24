@@ -1,5 +1,6 @@
 export type SettingsSheetTarget =
   | "SettingsEnvironments"
+  | "SettingsProjects"
   | "SettingsCredentials"
   | "SettingsArchive"
   | "SettingsAppearance"
@@ -9,4 +10,8 @@ export type SettingsSheetTarget =
  * Root-stack screens a settings row can push to, escaping the settings sheet.
  * These present full screen rather than at a sheet detent.
  */
-export type SettingsFullScreenTarget = "SettingsLegal" | "Orchestrator" | "Agents";
+export type SettingsFullScreenTarget =
+  | "SettingsLegal"
+  | "Orchestrator"
+  | "LiveInspector"
+  | "Agents";

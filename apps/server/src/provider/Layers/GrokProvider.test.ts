@@ -11,7 +11,11 @@ import * as Schema from "effect/Schema";
 import { GrokSettings } from "@t3tools/contracts";
 import { shellQuote } from "../../terminal/agentCliResume.ts";
 
-import { grokReasoningEffortLevelsFromModelMeta } from "../acp/GrokAcpSupport.ts";
+import {
+  GROK_NOT_SIGNED_IN_MESSAGE,
+  GrokAuthFileStat,
+  grokReasoningEffortLevelsFromModelMeta,
+} from "../acp/GrokAcpSupport.ts";
 import {
   buildInitialGrokProviderSnapshot,
   checkGrokProviderStatus,
@@ -19,6 +23,8 @@ import {
 } from "./GrokProvider.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
+/** A Grok home holding a stored sign-in, so ACP discovery is allowed to start. */
+const signedInGrokHome: GrokAuthFileStat = () => ({ mtimeMs: 1, size: 1 });
 const mockAgentPath = NodePath.join(
   NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
   "../../../scripts/acp-mock-agent.ts",
@@ -151,7 +157,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
 
           return yield* checkGrokProviderStatus(
             decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
-          );
+          ).pipe(Effect.provideService(GrokAuthFileStat, signedInGrokHome));
         }),
       );
 
@@ -186,7 +192,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
 
           return yield* checkGrokProviderStatus(
             decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
-          );
+          ).pipe(Effect.provideService(GrokAuthFileStat, signedInGrokHome));
         }),
       );
 
@@ -198,7 +204,93 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
       expect(snapshot.accountUsageReportedAt).toEqual(expect.any(String));
     }),
   );
+
+  it.effect("never starts Grok without a stored sign-in", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-signed-out-" });
+      const binaryPath = path.join(dir, "grok");
+      const callsPath = path.join(dir, "calls");
+      yield* fs.writeFileString(
+        binaryPath,
+        [
+          "#!/bin/sh",
+          `printf '%s\\n' "$*" >> ${shellQuote(callsPath)}`,
+          'printf "grok 1.0.30\\n"',
+          "",
+        ].join("\n"),
+      );
+      yield* fs.chmod(binaryPath, 0o755);
+
+      const snapshot = yield* checkGrokProviderStatus(
+        decodeGrokSettings({ enabled: true, binaryPath }),
+        { ...process.env, XAI_API_KEY: "" },
+      ).pipe(Effect.provideService(GrokAuthFileStat, () => undefined));
+
+      expect(snapshot).toMatchObject({
+        status: "error",
+        auth: { status: "unauthenticated" },
+        message: GROK_NOT_SIGNED_IN_MESSAGE,
+      });
+      // `grok agent stdio` never ran, so Grok had no chance to open a sign-in page.
+      expect(yield* fs.readFileString(callsPath)).toBe("--version\n");
+    }).pipe(Effect.scoped),
+  );
 });
+
+it.live("stops starting Grok once its stored sign-in waits for a person", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-stale-sign-in-" });
+    const binaryPath = path.join(dir, "grok");
+    const callsPath = path.join(dir, "calls");
+    yield* fs.writeFileString(
+      binaryPath,
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$*" >> ${shellQuote(callsPath)}`,
+        'if [ "$1" = "--version" ]; then',
+        '  printf "grok 1.0.41\\n"',
+        "  exit 0",
+        "fi",
+        `exec ${shellQuote(process.execPath)} ${shellQuote(mockAgentPath)} "$@"`,
+        "",
+      ].join("\n"),
+    );
+    yield* fs.chmod(binaryPath, 0o755);
+    const authPath = path.join(dir, ".grok", "auth.json");
+    let authFile = { mtimeMs: 1, size: 64 };
+    const check = checkGrokProviderStatus(
+      decodeGrokSettings({ enabled: true, binaryPath }),
+      { ...process.env, XAI_API_KEY: "", HOME: dir, T3_ACP_HANG_AUTHENTICATE: "1" },
+      { authenticateTimeout: "200 millis" },
+    ).pipe(
+      Effect.provideService(GrokAuthFileStat, (filePath) =>
+        filePath === authPath ? authFile : undefined,
+      ),
+    );
+    const agentStarts = fs
+      .readFileString(callsPath)
+      .pipe(Effect.map((calls) => calls.split("\n").filter((call) => call.startsWith("agent"))));
+
+    expect(yield* check).toMatchObject({
+      auth: { status: "unauthenticated" },
+      message: GROK_NOT_SIGNED_IN_MESSAGE,
+    });
+    expect(yield* agentStarts).toHaveLength(1);
+
+    // Later checks leave Grok alone instead of re-running its sign-in.
+    expect(yield* check).toMatchObject({ auth: { status: "unauthenticated" } });
+    expect(yield* agentStarts).toHaveLength(1);
+
+    // `grok login` rewrote auth.json: that sign-in is worth one more try.
+    authFile = { mtimeMs: 2, size: 64 };
+    yield* check;
+    expect(yield* agentStarts).toHaveLength(2);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 describe("grokReasoningEffortLevelsFromModelMeta", () => {
   it("maps advertised reasoning efforts to effort levels", () => {

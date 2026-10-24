@@ -20,12 +20,21 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * runtime failure.
  */
 export const RPC_REQUIRED_SCOPES = {
+  [WS_METHODS.webPushStatus]: AuthVmOperateScope,
+  [WS_METHODS.webPushSubscribe]: AuthVmOperateScope,
+  [WS_METHODS.webPushUnsubscribe]: AuthVmOperateScope,
+  [WS_METHODS.webPushTest]: AuthVmOperateScope,
   [ORCHESTRATION_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.getTurnDiff]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getFullThreadDiff]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.searchThreads]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.getProjectStatistics]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.subscribeProjectFolders]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.measureProjectFolders]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.subscribeLiveFeed]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.subscribeShell]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.deleteArchivedThreads]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.subscribeThread]: AuthOrchestrationReadScope,
   [WS_METHODS.serverProbe]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetConfig]: AuthOrchestrationReadScope,
@@ -50,6 +59,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverGetProcessResourceHistory]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetResourceTelemetryHistory]: AuthOrchestrationReadScope,
   [WS_METHODS.serverRetryResourceTelemetry]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverStartStorageCleanup]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverStartHostRepair]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverSignalProcess]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverReportClientActivity]: AuthOrchestrationReadScope,
@@ -127,6 +137,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.remoteControlHostPublishVideoChunk]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlHostEnd]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlHostReportStatus]: AuthOrchestrationOperateScope,
+  [WS_METHODS.remoteControlHostAcknowledgeInput]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlRequestAccess]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlWatch]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlSendInput]: AuthOrchestrationOperateScope,
@@ -160,6 +171,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeServerLifecycle]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,
   [WS_METHODS.subscribeBackgroundPolicy]: AuthOrchestrationReadScope,
+  [WS_METHODS.subscribeHostVitals]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 export function requiredScopeForRpcMethod(method: string): AuthEnvironmentScope {

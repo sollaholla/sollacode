@@ -80,6 +80,89 @@ describe("server state projection", () => {
     expect(result.latestEvent.type).toBe("settingsUpdated");
   });
 
+  describe("provider status patches", () => {
+    const provider = (id: string, extra: Record<string, unknown> = {}) =>
+      ({
+        instanceId: id,
+        driver: "codex",
+        status: "ready",
+        checkedAt: "t0",
+        slashCommands: [{ name: "big-catalogue" }],
+        ...extra,
+      }) as unknown as ServerConfig["providers"][number];
+    const withProviders = (providers: ServerConfig["providers"]) =>
+      Option.some({
+        config: { ...CONFIG, providers },
+        latestEvent: snapshotEvent(CONFIG),
+        source: "live" as const,
+      });
+    const patchEvent = (payload: unknown): ServerConfigStreamEvent =>
+      ({
+        version: 1,
+        type: "providerStatusesPatch",
+        payload,
+      }) as unknown as ServerConfigStreamEvent;
+
+    it("lays volatile fields over the provider already held, leaving its catalogue alone", () => {
+      const held = provider("codex", { usageGuard: { state: "ok" } });
+      const next = applyServerConfigProjection(
+        withProviders([held]),
+        patchEvent({
+          order: ["codex"],
+          upserted: [],
+          volatile: [{ instanceId: "codex", checkedAt: "t1", accountUsage: { used: 2 } }],
+        }),
+      );
+      const [after] = Option.getOrThrow(next).config.providers as unknown as Array<
+        Record<string, unknown>
+      >;
+      expect(after).toMatchObject({
+        checkedAt: "t1",
+        accountUsage: { used: 2 },
+        usageGuard: { state: "ok" },
+        slashCommands: [{ name: "big-catalogue" }],
+      });
+    });
+
+    it("replaces an upserted provider whole and follows the display order", () => {
+      const next = applyServerConfigProjection(
+        withProviders([provider("codex"), provider("grok")]),
+        patchEvent({
+          order: ["grok", "opencode", "codex"],
+          upserted: [provider("opencode"), provider("grok", { status: "error" })],
+          volatile: [],
+        }),
+      );
+      const providers = Option.getOrThrow(next).config.providers;
+      expect(providers.map((entry) => entry.instanceId)).toEqual(["grok", "opencode", "codex"]);
+      expect(providers[0]?.status).toBe("error");
+    });
+
+    it("drops a provider that is missing from the order", () => {
+      const next = applyServerConfigProjection(
+        withProviders([provider("codex"), provider("grok")]),
+        patchEvent({ order: ["codex"], upserted: [], volatile: [] }),
+      );
+      expect(Option.getOrThrow(next).config.providers.map((entry) => entry.instanceId)).toEqual([
+        "codex",
+      ]);
+    });
+
+    it("ignores a volatile patch for a provider it never received", () => {
+      const next = applyServerConfigProjection(
+        withProviders([provider("codex")]),
+        patchEvent({
+          order: ["codex", "ghost"],
+          upserted: [],
+          volatile: [{ instanceId: "ghost", checkedAt: "t9" }],
+        }),
+      );
+      expect(Option.getOrThrow(next).config.providers.map((entry) => entry.instanceId)).toEqual([
+        "codex",
+      ]);
+    });
+  });
+
   it("applies asynchronously discovered editors", () => {
     const snapshot = applyServerConfigProjection(Option.none(), {
       version: 1,

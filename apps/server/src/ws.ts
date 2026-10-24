@@ -1,5 +1,16 @@
+import { WebPush } from "./notifications/WebPush.ts";
+import {
+  STORAGE_CLEANUP_PROJECT_TITLE,
+  STORAGE_CLEANUP_THREAD_TITLE,
+  STORAGE_CLEANUP_PROMPT,
+} from "./storageCleanup.ts";
 import * as NodeOS from "node:os";
 import { replayOrBootstrapTurn } from "./orchestration/bootstrapReplay.ts";
+import { toSafeThreadAttachmentSegment } from "./attachmentStore.ts";
+import {
+  assembleProjectStatistics,
+  attachmentBytesByThreadSegment,
+} from "./orchestration/projectStatistics.ts";
 import { OrchestrationCommandReceiptRepository } from "./persistence/Services/OrchestrationCommandReceipts.ts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -12,6 +23,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
@@ -33,10 +45,13 @@ import {
   type OrchestrationShellStreamItem,
   type OrchestrationThreadStreamItem,
   HostRepairStartError,
+  StorageCleanupStartError,
+  type StorageCleanupStartInput,
   MessageId,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationSearchThreadsError,
+  OrchestrationGetProjectStatisticsError,
   OrchestrationGetTurnDiffError,
   ProviderAccountSwitchError,
   ORCHESTRATION_WS_METHODS,
@@ -70,6 +85,8 @@ import {
   type VmAgentCollaborationWireStreamItem,
   WS_METHODS,
   WsRpcGroup,
+  type ServerConfigStreamProviderStatusesEvent,
+  type ServerConfigStreamProviderStatusesPatchEvent,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
@@ -105,6 +122,7 @@ import * as ServerSelfUpdate from "./service/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import { deleteArchivedThreads } from "./archivedThreadRetention.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
@@ -153,6 +171,14 @@ import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ByteBoundedResyncBuffer from "./stream/ByteBoundedResyncBuffer.ts";
 import * as ProjectionLiveBuffer from "./stream/ProjectionLiveBuffer.ts";
+import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
+import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
+import * as LiveFeed from "./orchestration/LiveFeed.ts";
+import {
+  diffProviderStatuses,
+  rememberProviderStatuses,
+  type ProviderStatusMemory,
+} from "./provider/providerStatusPatch.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { buildHostRepairPrompt, hostRepairWorkspaceName } from "./hostRepair.ts";
@@ -575,6 +601,7 @@ const makeWsRpcLayer = (
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const webPush = yield* WebPush;
       const crypto = yield* Crypto.Crypto;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -652,6 +679,9 @@ const makeWsRpcLayer = (
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
+      const hostVitals = yield* HostVitalsMonitor.HostVitalsMonitor;
+      const projectFolderUsage = yield* ProjectFolderUsage.ProjectFolderUsage;
+      const liveFeed = yield* LiveFeed.LiveFeed;
       const threadArtifacts = yield* ThreadArtifactService;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -1379,6 +1409,86 @@ const makeWsRpcLayer = (
           );
       };
 
+      const startStorageCleanup = Effect.fn("Ws.startStorageCleanup")(
+        function* (input: StorageCleanupStartInput) {
+          // Resolve the directory and provider on THIS host. Client project lists may
+          // contain moved folders or belong to entirely different machines.
+          const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
+          const workspaceRoot = yield* workspacePaths.normalizeWorkspaceRoot(
+            path.join(config.baseDir, "maintenance", "storage-cleanup"),
+            { createIfMissing: true },
+          );
+          const modelSelection = ServerSettings.resolveUtilityAiModelSelection(
+            yield* serverSettings.getSettings,
+          );
+          const createdAt = yield* nowIso;
+          const findProject =
+            projectionSnapshotQuery.getActiveProjectByWorkspaceRoot(workspaceRoot);
+          const project = yield* findProject;
+          let projectId = Option.isSome(project)
+            ? project.value.id
+            : ProjectId.make(yield* randomUUID);
+          if (Option.isNone(project)) {
+            const created = yield* dispatchNormalizedCommand({
+              type: "project.create",
+              commandId: yield* serverCommandId("storage-cleanup-project-create"),
+              projectId,
+              title: STORAGE_CLEANUP_PROJECT_TITLE,
+              workspaceRoot,
+              defaultModelSelection: modelSelection,
+              createdAt,
+            }).pipe(Effect.result);
+            if (Result.isFailure(created)) {
+              // Another device may have created the same workspace concurrently.
+              // Recover only if that project now exists; propagate every other error.
+              const concurrentProject = yield* findProject;
+              if (Option.isNone(concurrentProject)) return yield* created.failure;
+              projectId = concurrentProject.value.id;
+            }
+          }
+          const existingThread = yield* projectionSnapshotQuery.getThreadShellById(input.threadId);
+          if (Option.isSome(existingThread) && existingThread.value.projectId !== projectId) {
+            return yield* new StorageCleanupStartError({
+              detail: "The requested thread belongs to another project.",
+            });
+          }
+          yield* dispatchNormalizedCommand({
+            type: "thread.turn.start",
+            commandId: input.commandId,
+            threadId: input.threadId,
+            message: {
+              messageId: input.messageId,
+              role: "user",
+              text: STORAGE_CLEANUP_PROMPT,
+              attachments: [],
+            },
+            modelSelection,
+            runtimeMode: "auto",
+            interactionMode: "default",
+            createdAt,
+            bootstrap: {
+              createThread: {
+                projectId,
+                title: STORAGE_CLEANUP_THREAD_TITLE,
+                modelSelection,
+                runtimeMode: "auto",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                createdAt,
+              },
+            },
+          });
+          return { projectId, threadId: input.threadId };
+        },
+        Effect.mapError(
+          (error) =>
+            new StorageCleanupStartError({
+              detail: error.message,
+            }),
+        ),
+      );
+
       const startHostRepair = Effect.fn("Ws.startHostRepair")(
         function* (input: { readonly sourceThreadId: ThreadId }) {
           const sourceThread = yield* projectionSnapshotQuery
@@ -1534,6 +1644,7 @@ const makeWsRpcLayer = (
           shellResumeCompletionMarker: true,
           shellPendingWorkUpdates: true,
           threadResumeCompletionMarker: true,
+          storageCleanupThreads: true,
         };
       });
 
@@ -1651,6 +1762,68 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.getProjectStatistics]: () =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getProjectStatistics,
+            Effect.gen(function* () {
+              const readRows = projectionSnapshotQuery.getProjectStatisticsRows;
+              if (readRows === undefined) {
+                return yield* new OrchestrationGetProjectStatisticsError({
+                  message: "Project statistics are unavailable on this server.",
+                });
+              }
+              // The folder may not exist yet: nothing attached is nothing stored.
+              const names = yield* fileSystem
+                .readDirectory(config.attachmentsDir)
+                .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+              const files = yield* Effect.forEach(
+                names,
+                (name) =>
+                  fileSystem.stat(path.join(config.attachmentsDir, name)).pipe(
+                    Effect.map((info) => ({
+                      name,
+                      bytes: info.type === "File" ? Number(info.size) : 0,
+                    })),
+                    Effect.orElseSucceed(() => ({ name, bytes: 0 })),
+                  ),
+                { concurrency: 16 },
+              );
+              const attachmentBytes = attachmentBytesByThreadSegment(files);
+              const rows = yield* readRows().pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetProjectStatisticsError({
+                      message: "Failed to load project statistics",
+                      cause,
+                    }),
+                ),
+              );
+              const nowEpochMs = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
+              return assembleProjectStatistics({
+                rows,
+                attachmentBytes: (threadId) =>
+                  attachmentBytes.get(toSafeThreadAttachmentSegment(threadId) ?? "") ?? 0,
+                nowEpochMs,
+              });
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.subscribeProjectFolders]: (_input) =>
+          observeRpcStream(
+            ORCHESTRATION_WS_METHODS.subscribeProjectFolders,
+            projectFolderUsage.stream,
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.measureProjectFolders]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.measureProjectFolders,
+            projectFolderUsage.refresh(input.projectIds).pipe(Effect.as({})),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.subscribeLiveFeed]: (_input) =>
+          observeRpcStream(ORCHESTRATION_WS_METHODS.subscribeLiveFeed, liveFeed.stream, {
+            "rpc.aggregate": "orchestration",
+          }),
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
@@ -1792,6 +1965,39 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationGetSnapshotError({
                     message: "Failed to load archived orchestration shell snapshot",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.deleteArchivedThreads]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.deleteArchivedThreads,
+            projectionSnapshotQuery.getArchivedShellSnapshot().pipe(
+              Effect.flatMap((snapshot) =>
+                deleteArchivedThreads(
+                  snapshot.threads.flatMap((thread) =>
+                    thread.archivedAt !== null &&
+                    Date.parse(thread.archivedAt) <= Date.parse(input.archivedBefore)
+                      ? [thread.id]
+                      : [],
+                  ),
+                  input.archivedBefore,
+                ),
+              ),
+              Effect.provideService(
+                OrchestrationEngine.OrchestrationEngineService,
+                orchestrationEngine,
+              ),
+              Effect.provideService(Crypto.Crypto, crypto),
+              Effect.tapError((cause) =>
+                Effect.logError("archived thread cleanup failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationDispatchCommandError({
+                    message: "Failed to delete archived chats",
                     cause,
                   }),
               ),
@@ -2115,6 +2321,24 @@ const makeWsRpcLayer = (
           ),
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) =>
           observeRpcEffect(WS_METHODS.serverRetryResourceTelemetry, resourceTelemetry.retry, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.webPushStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.webPushStatus,
+            webPush.status(currentSessionId, input.endpoint),
+          ),
+        [WS_METHODS.webPushSubscribe]: (input) =>
+          observeRpcEffect(WS_METHODS.webPushSubscribe, webPush.subscribe(currentSessionId, input)),
+        [WS_METHODS.webPushUnsubscribe]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.webPushUnsubscribe,
+            webPush.unsubscribe(currentSessionId, input.endpoint),
+          ),
+        [WS_METHODS.webPushTest]: (input) =>
+          observeRpcEffect(WS_METHODS.webPushTest, webPush.test(currentSessionId, input.endpoint)),
+        [WS_METHODS.serverStartStorageCleanup]: (input) =>
+          observeRpcEffect(WS_METHODS.serverStartStorageCleanup, startStorageCleanup(input), {
             "rpc.aggregate": "server",
           }),
         [WS_METHODS.serverStartHostRepair]: (input) =>
@@ -2922,6 +3146,14 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "remote-control" },
           ),
+        [WS_METHODS.remoteControlHostAcknowledgeInput]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlHostAcknowledgeInput,
+            authorizeDesktopHostEffect(
+              remoteControlBroker.acknowledgeInput(input, currentSessionId),
+            ),
+            { "rpc.aggregate": "remote-control" },
+          ),
         [WS_METHODS.remoteControlHostReportStatus]: (input) =>
           observeRpcEffect(
             WS_METHODS.remoteControlHostReportStatus,
@@ -3361,7 +3593,7 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "preview" },
           ),
-        [WS_METHODS.subscribeServerConfig]: (_input) =>
+        [WS_METHODS.subscribeServerConfig]: (input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerConfig,
             Effect.gen(function* () {
@@ -3383,14 +3615,50 @@ const makeWsRpcLayer = (
                   },
                 })),
               );
-              const providerStatuses = subscribedProviderChanges.pipe(
-                Stream.map((providers) => ({
-                  version: 1 as const,
-                  type: "providerStatuses" as const,
-                  payload: { providers },
-                })),
-                Stream.debounce(Duration.millis(PROVIDER_STATUS_DEBOUNCE_MS)),
-              );
+              // What this subscriber was last told, so a patching client is sent
+              // only what changed. Seeded from the snapshot below; the stream
+              // does not run until that snapshot has been emitted.
+              const lastSentProviders = yield* Ref.make<ProviderStatusMemory>(new Map());
+              const providerStatuses: Stream.Stream<
+                | ServerConfigStreamProviderStatusesEvent
+                | ServerConfigStreamProviderStatusesPatchEvent
+              > =
+                input.acceptsProviderPatches === true
+                  ? subscribedProviderChanges.pipe(
+                      // Debounce first: only the settled list is worth diffing.
+                      Stream.debounce(Duration.millis(PROVIDER_STATUS_DEBOUNCE_MS)),
+                      Stream.filterMapEffect((providers) =>
+                        Ref.modify(
+                          lastSentProviders,
+                          (
+                            previous,
+                          ): readonly [
+                            Result.Result<ServerConfigStreamProviderStatusesPatchEvent, void>,
+                            ProviderStatusMemory,
+                          ] => {
+                            const payload = diffProviderStatuses(previous, providers);
+                            return payload === null
+                              ? [Result.failVoid, previous]
+                              : [
+                                  Result.succeed({
+                                    version: 1,
+                                    type: "providerStatusesPatch",
+                                    payload,
+                                  }),
+                                  rememberProviderStatuses(providers),
+                                ];
+                          },
+                        ),
+                      ),
+                    )
+                  : subscribedProviderChanges.pipe(
+                      Stream.map((providers) => ({
+                        version: 1 as const,
+                        type: "providerStatuses" as const,
+                        payload: { providers },
+                      })),
+                      Stream.debounce(Duration.millis(PROVIDER_STATUS_DEBOUNCE_MS)),
+                    );
               const settingsUpdates = subscribedSettingsChanges.pipe(
                 Stream.map((settings) => ServerSettings.redactServerSettingsForClient(settings)),
                 Stream.map((settings) => ({
@@ -3429,11 +3697,13 @@ const makeWsRpcLayer = (
                 Stream.merge(keybindingsUpdates, Stream.merge(providerStatuses, settingsUpdates)),
               );
 
+              const snapshotConfig = yield* loadServerConfig;
+              yield* Ref.set(lastSentProviders, rememberProviderStatuses(snapshotConfig.providers));
               return Stream.concat(
                 Stream.make({
                   version: 1 as const,
                   type: "snapshot" as const,
-                  config: yield* loadServerConfig,
+                  config: snapshotConfig,
                 }),
                 liveUpdates,
               );
@@ -3497,6 +3767,10 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.subscribeHostVitals]: (_input) =>
+          observeRpcStream(WS_METHODS.subscribeHostVitals, hostVitals.stream, {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.subscribeResourceTelemetry]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeResourceTelemetry,

@@ -51,6 +51,10 @@
       "types": "./src/agentMode.ts",
       "import": "./src/agentMode.ts"
     },
+    "./liveFeed": {
+      "types": "./src/liveFeed.ts",
+      "import": "./src/liveFeed.ts"
+    },
     "./actionApproval": {
       "types": "./src/actionApproval.ts",
       "import": "./src/actionApproval.ts"
@@ -280,6 +284,26 @@
       "import": "./src/usageGuardCurve.ts"
     },
     "./heldMessages": "./src/heldMessages.ts",
+    "./backgroundTasks": {
+      "types": "./src/backgroundTasks.ts",
+      "import": "./src/backgroundTasks.ts"
+    },
+    "./threadWorking": {
+      "types": "./src/threadWorking.ts",
+      "import": "./src/threadWorking.ts"
+    },
+    "./turnUsage": {
+      "types": "./src/turnUsage.ts",
+      "import": "./src/turnUsage.ts"
+    },
+    "./proposedPlans": {
+      "types": "./src/proposedPlans.ts",
+      "import": "./src/proposedPlans.ts"
+    },
+    "./taskLists": {
+      "types": "./src/taskLists.ts",
+      "import": "./src/taskLists.ts"
+    },
     "./providerDrivers": {
       "types": "./src/providerDrivers.ts",
       "import": "./src/providerDrivers.ts"
@@ -287,6 +311,10 @@
     "./deepcodeUsage": {
       "types": "./src/deepcodeUsage.ts",
       "import": "./src/deepcodeUsage.ts"
+    },
+    "./kimiUsage": {
+      "types": "./src/kimiUsage.ts",
+      "import": "./src/kimiUsage.ts"
     },
     "./base64": {
       "types": "./src/base64.ts",

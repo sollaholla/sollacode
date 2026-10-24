@@ -1,4 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
+
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
@@ -7,9 +11,13 @@ import {
   applyGrokAcpModelSelection,
   buildGrokAcpSpawnInput,
   filterGrokAcpMcpServers,
+  findGrokStoredSignIn,
+  type GrokAuthFileStat,
+  isGrokAuthenticateFailure,
   resolveGrokAcpBaseModelId,
   resolveGrokAcpSessionEffort,
   resolveGrokAcpSessionModelId,
+  selectGrokAuthMethodId,
 } from "./GrokAcpSupport.ts";
 
 const t3HttpMcpServer = {
@@ -48,6 +56,138 @@ describe("resolveGrokAcpBaseModelId", () => {
     expect(resolveGrokAcpBaseModelId(undefined)).toBe("grok-build");
     expect(resolveGrokAcpBaseModelId("   ")).toBe("grok-build");
     expect(resolveGrokAcpBaseModelId("  grok-test-custom-model  ")).toBe("grok-test-custom-model");
+  });
+});
+
+describe("selectGrokAuthMethodId", () => {
+  const advertising = (ids: ReadonlyArray<string>, defaultAuthMethodId: string | null = null) => ({
+    authMethods: ids.map((id) => ({ id, name: id })),
+    _meta: { defaultAuthMethodId },
+  });
+
+  it("sends the method this Grok advertises, not the retired cached_token id", () => {
+    // Grok 1.0.41 ran its browser login for the unknown id and ignored
+    // `headless`, opening an auth.x.ai tab from every background start.
+    expect(selectGrokAuthMethodId(advertising(["grok.com"]), {})).toBe("grok.com");
+  });
+
+  it("prefers the advertised default, and keeps an id the CLI still lists", () => {
+    expect(selectGrokAuthMethodId(advertising(["device", "grok.com"], "grok.com"), {})).toBe(
+      "grok.com",
+    );
+    expect(selectGrokAuthMethodId(advertising(["cached_token", "grok.com"]), {})).toBe(
+      "cached_token",
+    );
+  });
+
+  it("uses an advertised API-key method when XAI_API_KEY is set", () => {
+    expect(
+      selectGrokAuthMethodId(advertising(["grok.com", "xai.api-key"]), { XAI_API_KEY: "key" }),
+    ).toBe("xai.api-key");
+  });
+
+  it("falls back to the old ids when the CLI advertises nothing", () => {
+    expect(selectGrokAuthMethodId({ authMethods: [] }, {})).toBe("cached_token");
+    expect(selectGrokAuthMethodId({ authMethods: [] }, { XAI_API_KEY: "key" })).toBe("xai.api_key");
+  });
+});
+
+describe("isGrokAuthenticateFailure", () => {
+  it("recognises a refused or abandoned sign-in, and nothing else", () => {
+    expect(
+      isGrokAuthenticateFailure(
+        Cause.fail(
+          new EffectAcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "authenticate",
+            detail: "authenticate timed out waiting for RPC response",
+            cause: undefined,
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isGrokAuthenticateFailure(
+        Cause.fail(
+          new EffectAcpErrors.AcpRequestError({
+            code: -32000,
+            errorMessage: "Authentication required",
+            method: "authenticate",
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isGrokAuthenticateFailure(
+        Cause.fail(EffectAcpErrors.AcpRequestError.authRequired("Grok CLI is not signed in.")),
+      ),
+    ).toBe(true);
+    expect(
+      isGrokAuthenticateFailure(
+        Cause.fail(
+          new EffectAcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "initialize",
+            cause: undefined,
+          }),
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      isGrokAuthenticateFailure(
+        Cause.fail(EffectAcpErrors.AcpRequestError.internalError("boom", undefined, {})),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("findGrokStoredSignIn", () => {
+  const files =
+    (entries: Record<string, number>): GrokAuthFileStat =>
+    (filePath) =>
+      filePath in entries ? { mtimeMs: 7, size: entries[filePath]! } : undefined;
+  const homeAuth = NodePath.join("/home/dev", ".grok", "auth.json");
+
+  it("finds the auth.json grok login leaves in the home directory", () => {
+    expect(findGrokStoredSignIn({ HOME: "/home/dev" }, files({ [homeAuth]: 120 }))).toBe(
+      `${homeAuth}:7:120`,
+    );
+  });
+
+  it("has nothing to offer a home Grok never signed in from", () => {
+    expect(findGrokStoredSignIn({ HOME: "/home/dev" }, files({}))).toBeNull();
+    expect(findGrokStoredSignIn({ HOME: "/home/dev" }, files({ [homeAuth]: 0 }))).toBeNull();
+  });
+
+  it("reads the Windows profile when HOME is unset", () => {
+    const profileAuth = NodePath.join("C:/Users/dev", ".grok", "auth.json");
+    expect(findGrokStoredSignIn({ USERPROFILE: "C:/Users/dev" }, files({ [profileAuth]: 9 }))).toBe(
+      `${profileAuth}:7:9`,
+    );
+  });
+
+  it("honours GROK_AUTH_PATH and GROK_HOME", () => {
+    expect(
+      findGrokStoredSignIn(
+        { HOME: "/home/dev", GROK_AUTH_PATH: "/secrets/grok.json" },
+        files({ "/secrets/grok.json": 5 }),
+      ),
+    ).toBe("/secrets/grok.json:7:5");
+    const grokHomeAuth = NodePath.join("/opt/grok", "auth.json");
+    expect(
+      findGrokStoredSignIn(
+        { HOME: "/home/dev", GROK_HOME: "/opt/grok" },
+        files({ [grokHomeAuth]: 5 }),
+      ),
+    ).toBe(`${grokHomeAuth}:7:5`);
+  });
+
+  it("treats an API key or auth provider as a sign-in without touching disk", () => {
+    expect(findGrokStoredSignIn({ XAI_API_KEY: "key" }, files({}))).toBe("environment");
+    expect(findGrokStoredSignIn({ GROK_AUTH_PROVIDER_COMMAND: "mint" }, files({}))).toBe(
+      "environment",
+    );
+    expect(findGrokStoredSignIn({ HOME: "/home/dev", XAI_API_KEY: "  " }, files({}))).toBeNull();
   });
 });
 

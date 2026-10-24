@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { SETTINGS_MOBILE_TABS_QUERY, SettingsMobileTabs } from "./SettingsMobileTabs";
-import { visibleSettingsNavItems } from "./SettingsSidebarNav";
+import { isSettingsSectionActive, visibleSettingsNavItems } from "./SettingsSidebarNav";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_MD_CLASS } from "../../workspaceTitlebar";
 
 vi.mock("@tanstack/react-router", () => ({
@@ -44,6 +44,16 @@ describe("SettingsMobileTabs", () => {
     expect(markup).toContain('aria-current="page"');
     expect(markup).not.toContain('role="tab"');
     expect(markup).toContain('aria-label="Settings sections"');
+  });
+
+  it("keeps a section marked on the pages beneath it", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsMobileTabs pathname="/settings/projects/env-1/project-1" />,
+    );
+    expect(markup).toMatch(
+      /aria-current="page"[^>]*data-settings-mobile-tab="\/settings\/projects"/,
+    );
+    expect(isSettingsSectionActive("/settings/projectsx", "/settings/projects")).toBe(false);
   });
 
   it("scrolls horizontally without leaving a scrollbar across the strip", () => {

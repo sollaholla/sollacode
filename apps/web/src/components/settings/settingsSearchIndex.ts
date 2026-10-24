@@ -216,6 +216,36 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     { title: "Remote environments", keywords: ["ssh", "wsl", "windows", "servers", "hosts"] },
     { title: "WSL backend", keywords: ["windows", "linux", "distro"] },
   ]),
+  ...entries("/settings/projects", "Projects", "Projects", [
+    {
+      title: "Projects",
+      anchor: "setting-projects",
+      keywords: ["manage projects", "statistics", "stats", "overview"],
+    },
+    {
+      title: "Rename or remove a project",
+      anchor: "setting-project-list",
+      keywords: ["delete project", "project name", "title"],
+    },
+    {
+      title: "Project storage",
+      anchor: "setting-project-storage",
+      keywords: [
+        "disk space",
+        "size",
+        "folder size",
+        "attachments",
+        "artifacts",
+        "history",
+        "bytes",
+      ],
+    },
+    {
+      title: "Project token usage",
+      anchor: "setting-project-tokens",
+      keywords: ["spend", "cost", "dollars", "billing", "usage"],
+    },
+  ]),
   ...entries("/settings/archived", "Archive", "Archived threads", [
     {
       title: "Archived threads",

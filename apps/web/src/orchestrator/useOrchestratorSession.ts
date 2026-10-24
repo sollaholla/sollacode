@@ -356,6 +356,8 @@ async function fetchThreadContents(
           "implementedAt" in plan && typeof plan.implementedAt === "string"
             ? plan.implementedAt
             : null,
+        // Closed when the person implemented a different plan instead.
+        closedAt: "closedAt" in plan && typeof plan.closedAt === "string" ? plan.closedAt : null,
         createdAt: readString(plan, "createdAt"),
       });
     }
@@ -734,6 +736,8 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
       awaited?: boolean;
       /** What to say the user asked for, when the message itself is machine text. */
       requestLabel?: string;
+      /** The plan this turn implements, so the server marks that exact plan. */
+      sourceProposedPlanId?: string;
     }) => {
       // Read through the ref, not the closed-over render value: this callback
       // outlives the render it was created in, and a send is often the last
@@ -767,6 +771,14 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
                 ),
           runtimeMode: shell.runtimeMode,
           interactionMode: (input.interactionMode ?? shell.interactionMode) as never,
+          ...(input.sourceProposedPlanId === undefined
+            ? {}
+            : {
+                sourceProposedPlan: {
+                  threadId: ThreadId.make(input.threadId),
+                  planId: input.sourceProposedPlanId,
+                },
+              }),
           createdAt: new Date().toISOString(),
         },
       });
@@ -1591,6 +1603,20 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     [settleThreadCommand, unsettleThreadCommand],
   );
 
+  const closeProposedPlanCommand = useAtomCommand(threadEnvironment.closeProposedPlan, {
+    reportFailure: false,
+  });
+  const closeProposedPlan = useCallback(
+    async (input: { environmentId: string; threadId: string; planId: string }) => {
+      const result = await closeProposedPlanCommand({
+        environmentId: EnvironmentId.make(input.environmentId),
+        input: { threadId: ThreadId.make(input.threadId), planId: input.planId },
+      });
+      if (result._tag === "Failure") throw new Error("Could not close that plan.");
+    },
+    [closeProposedPlanCommand],
+  );
+
   const forkThreadCommand = useAtomCommand(threadEnvironment.fork, { reportFailure: false });
 
   /**
@@ -2027,6 +2053,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
                 describeRuntime,
                 describeUsage,
                 readProposedPlans,
+                closeProposedPlan,
                 openWebsite,
                 runCommand,
                 listTerminals,
@@ -2049,6 +2076,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     describeUsage,
     describeSelf,
     readProposedPlans,
+    closeProposedPlan,
     openWebsite,
     listTerminals,
     readTerminal,

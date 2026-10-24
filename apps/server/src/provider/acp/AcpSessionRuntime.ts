@@ -123,7 +123,18 @@ export interface AcpSessionRuntimeOptions {
     readonly version: string;
   };
   readonly authMethodId: string;
+  /**
+   * Picks the method to authenticate with from the agent's `initialize`
+   * answer, falling back to `authMethodId`. An agent that does not recognise
+   * the id it is sent may fall back to its own default, interactive one.
+   */
+  readonly resolveAuthMethodId?: (initializeResult: EffectAcpSchema.InitializeResponse) => string;
   readonly authenticateMeta?: Record<string, unknown>;
+  /**
+   * Caps `authenticate`. An agent with no usable sign-in can wait there for a
+   * person to finish a login, which nobody is watching from a background start.
+   */
+  readonly authenticateTimeout?: Duration.Input;
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly filterMcpServers?: (
     servers: ReadonlyArray<EffectAcpSchema.McpServer>,
@@ -773,14 +784,18 @@ export const make = (
       );
 
       const authenticatePayload = {
-        methodId: options.authMethodId,
+        methodId: options.resolveAuthMethodId?.(initializeResult) ?? options.authMethodId,
         ...(options.authenticateMeta ? { _meta: options.authenticateMeta } : {}),
       } satisfies EffectAcpSchema.AuthenticateRequest;
 
       const authenticateResult = yield* runLoggedRequest(
         "authenticate",
         authenticatePayload,
-        acp.agent.authenticate(authenticatePayload),
+        withOptionalRpcTimeout(
+          "authenticate",
+          options.authenticateTimeout,
+          acp.agent.authenticate(authenticatePayload),
+        ),
       );
 
       if (options.createSession === false) {

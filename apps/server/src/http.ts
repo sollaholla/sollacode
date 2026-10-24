@@ -35,7 +35,8 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import { OtlpTracer } from "effect/unstable/observability";
 
 import * as ServerConfig from "./config.ts";
-import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
+import { ASSET_ROUTE_PREFIX, resolveAsset, type ResolvedAsset } from "./assets/AssetAccess.ts";
+import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
 import { decodeFileViewPath, FILE_VIEW_ROUTE_PREFIX } from "@t3tools/shared/fileView";
 import {
   FILE_VIEW_PAGE_HEADERS,
@@ -140,6 +141,20 @@ function isSvgAsset(path: string | undefined, contentType: string | undefined): 
  * unversioned workspace paths must remain no-store, and only a revision-keyed
  * URL may be treated as immutable.
  */
+/**
+ * A tile asking for a small copy of an image file, which it would otherwise
+ * download whole: on a phone's data link that took over a minute per row of
+ * 44-point thumbnails. Artifacts are pages, never resized.
+ */
+export function wantsAssetThumbnail(
+  url: URL,
+  asset: ResolvedAsset,
+): asset is Extract<ResolvedAsset, { readonly kind: "file" }> {
+  return (
+    asset.kind === "file" && asset.artifact !== true && url.searchParams.get("thumbnail") === "1"
+  );
+}
+
 export function assetResponseHeaders(input: {
   readonly url: URL;
   readonly path?: string;
@@ -668,6 +683,17 @@ export const assetRouteLayer = HttpRouter.add(
     );
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+    if (wantsAssetThumbnail(url.value, asset)) {
+      const thumbnails = yield* ImageThumbnails.ImageThumbnails;
+      const thumbnail = yield* thumbnails.thumbnail(asset.path);
+      if (thumbnail !== null) {
+        return HttpServerResponse.uint8Array(thumbnail, {
+          status: 200,
+          headers: assetResponseHeaders({ url: url.value, contentType: "image/jpeg" }),
+          contentType: "image/jpeg",
+        });
+      }
     }
     const responseOptions = {
       status: 200,

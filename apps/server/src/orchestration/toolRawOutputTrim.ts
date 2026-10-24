@@ -1,5 +1,5 @@
 /**
- * Caps for text inside a tool activity's `rawOutput`, shared by the write
+ * Caps for raw tool result strings in activities, shared by the write
  * path (decider), the snapshot read path, and the stored-payload compactor.
  *
  * `rawOutput` is the raw provider tool result. No client renders it — the web
@@ -13,8 +13,8 @@
  * The walk is recursive rather than keyed on known fields because the shape
  * varies per tool: a ReadFile result carries the whole file under
  * `rawOutput.FileContent.content`, and capping only known keys once missed
- * 2.4 MB of exactly that. Only `rawOutput` subtrees are touched — `content`
- * and every other payload field are rendered by clients and stay whole.
+ * 2.4 MB of exactly that. Only raw result subtrees are touched; tool inputs
+ * and the surrounding display fields stay whole.
  */
 
 /**
@@ -67,9 +67,12 @@ const trimValue = (
  * leaving the rest untouched. Returns `changed: false` (and the original
  * reference) when nothing exceeded the cap, so callers can skip rewrites.
  *
- * Two subtrees qualify:
+ * These subtrees qualify:
  * - `data.rawOutput` — the raw provider result (object shapes are walked, a
  *   bare string is capped directly).
+ * - `data.result` — Claude SDK tool results, including text and inline image
+ *   data. These have no `rawOutput` or `item` wrapper, so they need the same
+ *   cap here. The provider's own tool result and context are unaffected.
  * - `data.item.result` — an MCP call's stored result. Measured 2026-08-30 on
  *   the live database, single Preview MCP results (page snapshots, element
  *   dumps) reached 5 MB per row and dominated the oversized-row population
@@ -95,6 +98,15 @@ export function trimToolRawOutputInPayload(
     const trimmed = trimValue(rawOutput, maxChars, 0);
     if (trimmed.changed) {
       nextData = { ...nextData, rawOutput: trimmed.value };
+      changed = true;
+    }
+  }
+
+  const result = (data as { readonly result?: unknown }).result;
+  if (result !== null && result !== undefined) {
+    const trimmed = trimValue(result, maxChars, 0);
+    if (trimmed.changed) {
+      nextData = { ...nextData, result: trimmed.value };
       changed = true;
     }
   }
@@ -142,7 +154,7 @@ export function toolCallIdOfToolActivityPayload(payload: unknown): string | null
 
 /**
  * Storage form of the cap for a whole activity: the identical activity when
- * nothing changed, otherwise a copy whose oversized `rawOutput` strings are
+ * nothing changed, otherwise a copy whose oversized raw result strings are
  * capped at {@link STORED_TOOL_RAW_OUTPUT_MAX_CHARS}.
  */
 export function trimActivityToolRawOutputForStorage<A extends { readonly payload: unknown }>(

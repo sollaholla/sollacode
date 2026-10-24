@@ -23,6 +23,25 @@ export const SOLLA_MCP_AGENT_CONTEXT = [
   "</solla_mcp_context>",
 ].join("\n");
 
+/**
+ * Sent with a chat's first turn after it is promoted out of a side chat. The
+ * provider session keeps every side-chat context it was sent, so without this
+ * the agent went on acting as a read-only sub-agent of a parent it no longer
+ * has.
+ */
+export const PROMOTED_CHAT_AGENT_CONTEXT = [
+  "<solla_promoted_chat_context>",
+  "This chat started as a side chat and has been promoted to a standalone main conversation.",
+  "The earlier <solla_side_chat_context> no longer applies: there is no parent chat to defer to or stay clear of, and its read-only default is lifted.",
+  "Work as you would in any main chat: edit files, run commands, and create your own side chats with `mcp__t3-code__thread_collaboration` when the user asks.",
+  "</solla_promoted_chat_context>",
+].join("\n");
+
+export function withPromotedChatContext(input: string | undefined): string {
+  const userInput = input?.trim();
+  return userInput ? `${PROMOTED_CHAT_AGENT_CONTEXT}\n\n${userInput}` : PROMOTED_CHAT_AGENT_CONTEXT;
+}
+
 export function withSideChatAgentContext(input: string | undefined): string {
   const userInput = input?.trim();
   return userInput
