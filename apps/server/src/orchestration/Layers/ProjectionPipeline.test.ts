@@ -2161,6 +2161,130 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("catches up a lagging projector without rewriting the other cursors", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const sentinel = "2025-01-01T00:00:00.000Z";
+
+      const messageEvent = (index: number, text: string, streaming: boolean) =>
+        eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make(`evt-lag-${index}`),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-lag"),
+          occurredAt: now,
+          commandId: CommandId.make(`cmd-lag-${index}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-lag-${index}`),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-lag"),
+            messageId: MessageId.make("message-lag"),
+            role: "assistant",
+            text,
+            turnId: null,
+            streaming,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+      yield* eventStore.append({
+        type: "project.created",
+        eventId: EventId.make("evt-lag-project"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-lag"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-lag-project"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-lag-project"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-lag"),
+          title: "Project Lag",
+          workspaceRoot: "/tmp/project-lag",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-lag-0"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-lag"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-lag-0"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-lag-0"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-lag"),
+          projectId: ProjectId.make("project-lag"),
+          title: "Thread Lag",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      const first = yield* messageEvent(1, "hello", false);
+      const last = yield* messageEvent(2, " world", true);
+      yield* projectionPipeline.bootstrap;
+
+      // The message projector falls behind the others (as a projector added later would)
+      // and has to replay both message events on its own.
+      yield* sql`DELETE FROM projection_thread_messages WHERE message_id = 'message-lag'`;
+      yield* sql`
+        UPDATE projection_state
+        SET last_applied_sequence = ${first.sequence - 1}
+        WHERE projector = 'projection.thread-messages'
+      `;
+      yield* sql`
+        UPDATE projection_state
+        SET updated_at = ${sentinel}
+        WHERE projector LIKE 'projection.%' AND projector <> 'projection.thread-messages'
+      `;
+
+      yield* projectionPipeline.bootstrap;
+
+      const messageRows = yield* sql<{ readonly text: string }>`
+        SELECT text FROM projection_thread_messages WHERE message_id = 'message-lag'
+      `;
+      assert.deepEqual(messageRows, [{ text: "hello world" }]);
+      const head = last.sequence;
+      const stateRows = yield* sql<{
+        readonly projector: string;
+        readonly lastAppliedSequence: number;
+        readonly updatedAt: string;
+      }>`
+        SELECT
+          projector,
+          last_applied_sequence AS "lastAppliedSequence",
+          updated_at AS "updatedAt"
+        FROM projection_state
+        WHERE projector LIKE 'projection.%'
+      `;
+      assert.isAbove(stateRows.length, 1);
+      for (const row of stateRows) {
+        assert.equal(row.lastAppliedSequence, head);
+        if (row.projector === "projection.thread-messages") {
+          assert.notEqual(row.updatedAt, sentinel);
+        } else {
+          assert.equal(row.updatedAt, sentinel);
+        }
+      }
+    }),
+  );
+
   it.effect("keeps the turn running across interim assistant messages until the session ends", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

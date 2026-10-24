@@ -287,6 +287,77 @@ describe("orchestration projector", () => {
     }),
   );
 
+  effectIt.effect("sorts an activity list it did not produce before inserting into it", () =>
+    Effect.gen(function* () {
+      const now = "2026-09-13T18:00:00.000Z";
+      const created = yield* projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: null,
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "Startup order",
+            modelSelection: { provider: ProviderDriverKind.make("codex"), model: "gpt" },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+      const activity = (id: string) => ({
+        id,
+        tone: "tool" as const,
+        kind: "tool.updated",
+        summary: "Tool",
+        payload: {},
+        turnId: null,
+        createdAt: now,
+      });
+      // Startup loads activities in SQLite's binary id order ("B" before "a"), which is not
+      // the projector's localeCompare order ("a" before "B").
+      const thread = created.threads[0]!;
+      const model = {
+        ...created,
+        threads: [
+          {
+            ...thread,
+            activities: [activity("B-1"), activity("a-1")] as unknown as typeof thread.activities,
+          },
+        ],
+      };
+      let next: typeof created = model;
+      for (const [sequence, id] of [
+        [2, "c-1"],
+        [3, "b-1"],
+      ] as const) {
+        next = yield* projectEvent(
+          next,
+          makeEvent({
+            sequence,
+            type: "thread.activity-appended",
+            aggregateKind: "thread",
+            aggregateId: "thread-1",
+            occurredAt: now,
+            commandId: null,
+            payload: { threadId: "thread-1", activity: activity(id) },
+          }),
+        );
+      }
+      const expected = ["B-1", "a-1", "c-1", "b-1"].toSorted((left, right) =>
+        left.localeCompare(right),
+      );
+      expect(next.threads[0]?.activities.map((entry) => entry.id)).toEqual(expected);
+    }),
+  );
+
   it("applies thread.created events", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);
