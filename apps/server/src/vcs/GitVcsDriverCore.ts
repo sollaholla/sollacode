@@ -1215,13 +1215,44 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return Cache.get(refresh ? repositoryPathsRefreshCache : repositoryPathsCache, cacheKey);
   };
 
+  // `refs/remotes/origin/HEAD` is a symbolic ref, and Git keeps those as loose files that
+  // it replaces on every write, so the default branch only changes when that file's stat
+  // does. A reftable repository rewrites `reftable/tables.list` instead. Null when a stat
+  // fails for another reason, which makes the caller read through Git.
+  const readOriginHeadSignature = (gitCommonDir: string): Effect.Effect<string | null> =>
+    Effect.forEach(
+      [
+        path.join(gitCommonDir, "refs", "remotes", "origin", "HEAD"),
+        path.join(gitCommonDir, "reftable", "tables.list"),
+      ],
+      (file) =>
+        fileSystem.stat(file).pipe(
+          Effect.map(
+            (info) =>
+              `${info.dev}:${Option.getOrElse(info.ino, () => 0)}:${info.size}:${Option.match(
+                info.mtime,
+                { onNone: () => 0, onSome: (mtime) => mtime.getTime() },
+              )}`,
+          ),
+          Effect.catchTags({
+            PlatformError: (error) =>
+              error.reason._tag === "NotFound" ? Effect.succeed("missing") : Effect.fail(error),
+          }),
+        ),
+    ).pipe(
+      Effect.map((parts) => parts.join("|")),
+      Effect.orElseSucceed(() => null),
+    );
+
   const defaultBranchCache = yield* Cache.makeWith(
     (gitCommonDir: string) =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
         const fetchCwd =
           path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
-        return yield* executeGit(
+        // Taken before the read, so a write that lands during it changes the next stat.
+        const signature = yield* readOriginHeadSignature(gitCommonDir);
+        const defaultBranch = yield* executeGit(
           "GitVcsDriver.statusDetails.defaultBranch",
           fetchCwd,
           ["--git-dir", gitCommonDir, "symbolic-ref", "refs/remotes/origin/HEAD"],
@@ -1232,15 +1263,27 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             return parseDefaultBranchFromRemoteHeadRef(result.stdout, "origin");
           }),
         );
+        return { signature, defaultBranch };
       }),
     {
       capacity: 2_048,
+      // Bounds what the stat check cannot see, such as a chain of symbolic refs.
       timeToLive: Exit.match({
         onSuccess: () => STATUS_DEFAULT_BRANCH_CACHE_TTL,
         onFailure: () => Duration.zero,
       }),
     },
   );
+  /** The origin default branch, re-read only when `refs/remotes/origin/HEAD` changed. */
+  const readOriginDefaultBranch = Effect.fnUntraced(function* (gitCommonDir: string) {
+    const signature = yield* readOriginHeadSignature(gitCommonDir);
+    const cached = yield* Cache.get(defaultBranchCache, gitCommonDir);
+    if (signature !== null && cached.signature === signature) {
+      return cached.defaultBranch;
+    }
+    yield* Cache.invalidate(defaultBranchCache, gitCommonDir);
+    return (yield* Cache.get(defaultBranchCache, gitCommonDir)).defaultBranch;
+  });
   const originExistsCache = yield* Cache.makeWith(
     (gitCommonDir: string) =>
       Effect.gen(function* () {
@@ -1380,6 +1423,16 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }),
     );
 
+  /** `resolveDefaultBranchName(cwd, "origin")`, read through `defaultBranchCache`. */
+  const resolveOriginDefaultBranchName = Effect.fnUntraced(function* (cwd: string) {
+    const repositoryPaths = yield* resolveRepositoryPaths(cwd).pipe(
+      Effect.catchTags({ GitCommandError: () => Effect.succeed(null) }),
+    );
+    return repositoryPaths === null
+      ? yield* resolveDefaultBranchName(cwd, "origin")
+      : yield* readOriginDefaultBranch(repositoryPaths.gitCommonDir);
+  });
+
   const remoteBranchExists = (
     cwd: string,
     remoteName: string,
@@ -1507,7 +1560,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Effect.orElseSucceed(() => null),
     );
     const defaultBranch =
-      primaryRemoteName === null ? null : yield* resolveDefaultBranchName(cwd, primaryRemoteName);
+      primaryRemoteName === null
+        ? null
+        : primaryRemoteName === "origin"
+          ? yield* resolveOriginDefaultBranchName(cwd)
+          : yield* resolveDefaultBranchName(cwd, primaryRemoteName);
     const candidates = [
       configuredBaseBranch.length > 0 ? configuredBaseBranch : null,
       defaultBranch,
@@ -1605,7 +1662,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         ? yield* computeAheadCountAgainstBase(cwd, branch).pipe(Effect.orElseSucceed(() => 0))
         : 0;
 
-    const defaultBranch = yield* resolveDefaultBranchName(cwd, "origin");
+    const defaultBranch = yield* resolveOriginDefaultBranchName(cwd);
     const isDefaultBranch =
       branch !== null &&
       (branch === defaultBranch ||
@@ -1847,7 +1904,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           }),
         ),
         statusCacheKey
-          ? Cache.get(defaultBranchCache, statusCacheKey).pipe(Effect.orElseSucceed(() => null))
+          ? readOriginDefaultBranch(statusCacheKey).pipe(Effect.orElseSucceed(() => null))
           : resolveDefaultBranchName(cwd, "origin").pipe(Effect.orElseSucceed(() => null)),
         statusCacheKey
           ? Cache.get(originExistsCache, statusCacheKey).pipe(Effect.orElseSucceed(() => false))
