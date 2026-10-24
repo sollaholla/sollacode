@@ -67,3 +67,14 @@ function getSnapshot(): string {
 export function useNowMinute(): string {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
+
+/**
+ * A value read off the same minute clock, re-rendering only when `select`
+ * returns something new (by Object.is) rather than on every minute. For a
+ * large view that only needs a threshold, such as whether its thread has
+ * auto-settled. `select` must return a primitive or a stable reference.
+ */
+export function useNowMinuteValue<T>(select: (nowMinute: string) => T): T {
+  const getSelected = () => select(getSnapshot());
+  return useSyncExternalStore(subscribe, getSelected, getSelected);
+}

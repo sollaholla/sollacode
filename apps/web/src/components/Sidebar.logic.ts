@@ -671,6 +671,17 @@ export function formatWorkingDurationLabel(elapsedMs: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+/**
+ * How long until {@link formatWorkingDurationLabel} reads differently: the
+ * next whole second for the first minute, the next whole minute after that.
+ */
+export function msUntilWorkingDurationLabelChanges(elapsedMs: number): number {
+  if (!Number.isFinite(elapsedMs)) return 1_000;
+  if (elapsedMs < 0) return 1_000 - elapsedMs;
+  if (elapsedMs < 60_000) return 1_000 - (elapsedMs % 1_000);
+  return 60_000 - (elapsedMs % 60_000);
+}
+
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
   nowMs?: number;

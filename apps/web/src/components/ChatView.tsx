@@ -304,7 +304,7 @@ import {
 } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
 import { getClientSettings, useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
-import { useNowMinute } from "../hooks/useNowMinute";
+import { useNowMinuteValue } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import {
   resolveAppModelSelectionForInstance,
@@ -3992,10 +3992,6 @@ function ChatViewContent(props: ChatViewProps) {
   // ticking clock a task whose runtime died would keep reporting "Running"
   // until some unrelated activity happened to arrive.
   const [providerTaskNowMs, setProviderTaskNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setProviderTaskNowMs(Date.now()), 60_000);
-    return () => clearInterval(timer);
-  }, []);
   // Filter before rendering so dismissing a task removes the row and updates
   // the dock count in one state transition.
   const providerTaskDismissals = useProviderTaskDismissalStore((state) => state.dismissals);
@@ -4026,6 +4022,22 @@ function ChatViewContent(props: ChatViewProps) {
       threadActivities,
     ],
   );
+  // Time only ages tasks out or downgrades them, so an empty task list stays
+  // empty until an activity, the session or a dismissal changes it; the clock
+  // runs only while there are rows. It used to tick on every open thread,
+  // re-rendering the whole chat view once a minute.
+  const providerTaskClockRunning = providerTasks.length > 0;
+  // A layout effect, so the catch-up lands before paint: this view is reused
+  // across thread switches, and rows derived from a clock stopped hours ago
+  // (a finished task past retention, "Running" for one gone stale) would
+  // otherwise flash for a frame.
+  useLayoutEffect(() => {
+    if (!providerTaskClockRunning) return;
+    // Catch up first: the clock may have been stopped for a while.
+    setProviderTaskNowMs((nowMs) => (Date.now() - nowMs < 1_000 ? nowMs : Date.now()));
+    const timer = setInterval(() => setProviderTaskNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, [providerTaskClockRunning]);
   const onStopProviderTask = useCallback(
     (taskId: string) => {
       if (!activeThreadId) return;
@@ -6865,7 +6877,6 @@ function ChatViewContent(props: ChatViewProps) {
   });
   const supportsSettlement = serverConfig?.environment.capabilities.threadSettlement === true;
   const supportsSnooze = serverConfig?.environment.capabilities.threadSnooze === true;
-  const nowMinute = useNowMinute();
   const activeThreadSnoozed =
     activeThreadShell !== null &&
     supportsSnooze &&
@@ -6882,20 +6893,17 @@ function ChatViewContent(props: ChatViewProps) {
     );
     return () => window.clearTimeout(id);
   }, [activeThreadShell?.snoozedUntil, activeThreadSnoozed, snoozeWakeTick]);
-  const activeThreadSettled = useMemo(() => {
-    if (activeThreadShell === null || !supportsSettlement) return false;
-    return effectiveSettled(activeThreadShell, {
-      now: `${nowMinute}:00.000Z`,
-      autoSettleAfterDays,
-      changeRequestState: activeThreadPr?.state ?? null,
-    });
-  }, [
-    activeThreadPr?.state,
-    activeThreadShell,
-    autoSettleAfterDays,
-    nowMinute,
-    supportsSettlement,
-  ]);
+  // Read off the minute clock without re-rendering the whole view each
+  // minute: only a change in the answer does.
+  const activeThreadSettled = useNowMinuteValue((nowMinute) =>
+    activeThreadShell === null || !supportsSettlement
+      ? false
+      : effectiveSettled(activeThreadShell, {
+          now: `${nowMinute}:00.000Z`,
+          autoSettleAfterDays,
+          changeRequestState: activeThreadPr?.state ?? null,
+        }),
+  );
   const unsettleThreadMutation = useAtomCommand(threadEnvironment.unsettle, {
     reportFailure: false,
   });

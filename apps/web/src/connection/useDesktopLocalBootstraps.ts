@@ -18,11 +18,36 @@ export function useDesktopLocalBootstraps(): ReadonlyArray<DesktopEnvironmentBoo
   );
 
   useEffect(() => {
-    const read = () => setBootstraps(readDesktopSecondaryBootstraps());
+    // Each read returns a fresh array; keeping the previous one while the
+    // topology is unchanged spares consumers a re-render on every poll.
+    const read = () => {
+      const next = readDesktopSecondaryBootstraps();
+      setBootstraps((previous) => (sameBootstraps(previous, next) ? previous : next));
+    };
     read();
     const interval = setInterval(read, DESKTOP_LOCAL_BOOTSTRAP_POLL_MS);
     return () => clearInterval(interval);
   }, []);
 
   return bootstraps;
+}
+
+function sameBootstraps(
+  previous: ReadonlyArray<DesktopEnvironmentBootstrap>,
+  next: ReadonlyArray<DesktopEnvironmentBootstrap>,
+): boolean {
+  return (
+    previous.length === next.length &&
+    previous.every((entry, index) => {
+      const other = next[index]!;
+      return (
+        entry.id === other.id &&
+        entry.label === other.label &&
+        entry.runningDistro === other.runningDistro &&
+        entry.httpBaseUrl === other.httpBaseUrl &&
+        entry.wsBaseUrl === other.wsBaseUrl &&
+        entry.bootstrapToken === other.bootstrapToken
+      );
+    })
+  );
 }

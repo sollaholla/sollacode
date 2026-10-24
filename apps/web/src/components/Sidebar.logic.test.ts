@@ -23,6 +23,7 @@ import {
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   formatWorkingDurationLabel,
+  msUntilWorkingDurationLabelChanges,
   shouldNavigateAfterProjectRemoval,
   shouldClearThreadSelectionOnMouseDown,
   sortLogicalProjectsForSidebar,
@@ -943,6 +944,23 @@ describe("formatWorkingDurationLabel", () => {
   it("clamps negative and non-finite elapsed values to zero", () => {
     expect(formatWorkingDurationLabel(-5_000)).toBe("0s");
     expect(formatWorkingDurationLabel(Number.NaN)).toBe("0s");
+  });
+});
+
+describe("msUntilWorkingDurationLabelChanges", () => {
+  it.each([-2_500, 0, 1, 999, 42_300, 59_999, 60_000, 61_234, 3_599_999, 5_400_500])(
+    "the label holds until exactly the returned delay from %i ms",
+    (elapsedMs) => {
+      const delayMs = msUntilWorkingDurationLabelChanges(elapsedMs);
+      const label = formatWorkingDurationLabel(elapsedMs);
+      expect(formatWorkingDurationLabel(elapsedMs + delayMs - 1)).toBe(label);
+      expect(formatWorkingDurationLabel(elapsedMs + delayMs)).not.toBe(label);
+    },
+  );
+
+  it("waits a minute at a time once past the first minute", () => {
+    expect(msUntilWorkingDurationLabelChanges(42_300)).toBe(700);
+    expect(msUntilWorkingDurationLabelChanges(61_234)).toBe(58_766);
   });
 });
 

@@ -112,6 +112,7 @@ import {
   hasUnseenCompletion,
   isSidebarListedThread,
   isTrailingDoubleClick,
+  msUntilWorkingDurationLabelChanges,
   orderItemsByPreferredIds,
   resolveAdjacentThreadId,
   resolveAutoResumeStartedAt,
@@ -273,14 +274,24 @@ function WorkingActivityCounts(props: { terminalCount: number; sideChatCount: nu
   );
 }
 
-// Self-ticking so only this span re-renders each second, not the whole row.
+// Self-ticking so only this span re-renders, not the whole row, and only when
+// its label changes: each second for the first minute, then each minute.
 function WorkingDuration(props: { startedAt: string | null }) {
   const startedMs = props.startedAt !== null ? Date.parse(props.startedAt) : Number.NaN;
   const [, setTick] = useState(0);
   useEffect(() => {
     if (Number.isNaN(startedMs)) return;
-    const id = window.setInterval(() => setTick((tick) => tick + 1), 1_000);
-    return () => window.clearInterval(id);
+    let id: number | undefined;
+    const schedule = () => {
+      // A few ms past the boundary, so the label has changed when it renders.
+      const delayMs = msUntilWorkingDurationLabelChanges(Date.now() - startedMs) + 5;
+      id = window.setTimeout(() => {
+        setTick((tick) => tick + 1);
+        schedule();
+      }, delayMs);
+    };
+    schedule();
+    return () => window.clearTimeout(id);
   }, [startedMs]);
   if (Number.isNaN(startedMs)) return null;
   return (
