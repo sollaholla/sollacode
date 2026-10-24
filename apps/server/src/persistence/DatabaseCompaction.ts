@@ -515,7 +515,11 @@ export const compactDatabaseFile = Effect.fn("DatabaseCompaction.compactDatabase
     // Hold the lock from here until the copy is checked: nothing can read or
     // write the original in between.
     yield* source.exec("PRAGMA locking_mode = EXCLUSIVE");
+    // The copy inherits these: its final sync reaches the disk itself, not
+    // just the drive's cache (macOS fsync stops at the cache), before the
+    // rename can make it the database.
     yield* source.exec("PRAGMA synchronous = FULL");
+    yield* source.exec("PRAGMA fullfsync = ON");
     yield* source.exec("BEGIN IMMEDIATE; COMMIT;");
 
     yield* source.exec(`VACUUM INTO ${quoteLiteral(tempPath)}`);
