@@ -77,13 +77,15 @@ At that start, before anything else opens the database, the server:
    `VACUUM INTO`, while holding an exclusive lock on the original.
 3. Requires the copy to pass `PRAGMA quick_check` and to match the original's schema, version
    numbers, and every table's row count and newest row.
-4. Flushes the copy to disk and renames it over `state.sqlite`.
+4. Flushes the copy to disk and, still holding the lock, renames it over `state.sqlite` (on
+   Windows, which cannot replace an open file, the lock is released just before the rename).
 
 It takes from a few seconds to about 30 seconds per GB of live data, depending on how much of the
 file the system has cached and how busy the disk is, followed by the ordinary start (which is
 usually faster afterwards). Settings shows an estimate at the slow end. The desktop
-splash says "Compacting the database…" and phones and browsers that reach the server meanwhile
-get a "compacting its database" page instead of a hung connection. The desktop gives such a start
+splash says "Compacting the database…" and browsers that load the server meanwhile get a
+"compacting its database" page instead of a hung connection; the mobile app shows its usual
+reconnecting state until the server answers. The desktop gives such a start
 up to 30 minutes before it logs a readiness warning.
 
 Compaction removes only free space: every chat, message, and setting is kept. It is safe to stop:

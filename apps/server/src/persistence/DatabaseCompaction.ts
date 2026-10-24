@@ -57,7 +57,10 @@ import {
  *  3. `VACUUM INTO` a new file beside it, then require `PRAGMA quick_check` to
  *     pass and the schema, version numbers, and every table's row count to
  *     match the original;
- *  4. close both, flush the copy to disk, and rename it over the original.
+ *  4. flush the copy to disk and rename it over the original while the
+ *     original is still open and locked, so no other process can write to it
+ *     in between (Windows cannot replace an open file, so there the original
+ *     is closed just before the rename).
  *
  * A crash at any point leaves the original or the complete, checked copy:
  * the rename is the only step that changes what `state.sqlite` names. The
@@ -232,14 +235,25 @@ export const freeDiskBytes = (directory: string): Effect.Effect<number | null> =
     Effect.orElseSucceed(() => null),
   );
 
+class FileSyncError extends Schema.TaggedErrorClass<FileSyncError>()("FileSyncError", {
+  detail: Schema.String,
+}) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 const syncFile = (path: string) =>
-  Effect.tryPromise(async () => {
-    const handle = await NodeFSP.open(path, "r+");
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+  Effect.tryPromise({
+    try: async () => {
+      const handle = await NodeFSP.open(path, "r+");
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    },
+    catch: (cause) => new FileSyncError({ detail: describe(cause) }),
   });
 
 /** Makes a rename durable. Directories cannot be opened for fsync on Windows. */
@@ -512,15 +526,17 @@ export const compactDatabaseFile = Effect.fn("DatabaseCompaction.compactDatabase
     if (stringField(journal[0], "journal_mode") !== "delete") {
       return yield* skip("Another process had the database open.");
     }
-    // Hold the lock from here until the copy is checked: nothing can read or
-    // write the original in between.
+    // Hold an exclusive lock from here until the copy has replaced the
+    // original: no other process can read or write the original in between.
+    // In exclusive locking mode the lock BEGIN EXCLUSIVE takes is kept after
+    // COMMIT; the empty transaction writes nothing.
     yield* source.exec("PRAGMA locking_mode = EXCLUSIVE");
     // The copy inherits these: its final sync reaches the disk itself, not
     // just the drive's cache (macOS fsync stops at the cache), before the
     // rename can make it the database.
     yield* source.exec("PRAGMA synchronous = FULL");
     yield* source.exec("PRAGMA fullfsync = ON");
-    yield* source.exec("BEGIN IMMEDIATE; COMMIT;");
+    yield* source.exec("BEGIN EXCLUSIVE; COMMIT;");
 
     yield* source.exec(`VACUUM INTO ${quoteLiteral(tempPath)}`);
     const sourceFacts = yield* readFacts(source);
@@ -537,13 +553,16 @@ export const compactDatabaseFile = Effect.fn("DatabaseCompaction.compactDatabase
       return yield* fail(`The compacted copy did not match the original: ${mismatch}.`);
     }
     yield* copy.close;
-    yield* source.close;
 
+    // The original stays open and locked through the rename. Released any
+    // earlier, another process could commit to it and the rename would
+    // silently discard that write: its -wal is deleted when it closes, and a
+    // rollback journal when it commits, so neither file would be left to see.
     yield* syncFile(tempPath).pipe(
       Effect.mapError((cause) => fail(`The compacted copy could not be saved: ${describe(cause)}`)),
     );
-    // With the original out of WAL mode and closed, these exist only if
-    // another process opened it since. A write-ahead log or rollback journal
+    // With the original out of WAL mode and locked, these exist only if
+    // something bypassed the lock. A write-ahead log or rollback journal
     // beside the replacement would be applied to it, so keep the original.
     if ((yield* pathExists(`${dbPath}-wal`)) || (yield* pathExists(`${dbPath}-journal`))) {
       return yield* skip("Another process opened the database during compaction.");
@@ -553,6 +572,11 @@ export const compactDatabaseFile = Effect.fn("DatabaseCompaction.compactDatabase
     yield* Effect.tryPromise(() => NodeFSP.rm(`${dbPath}-shm`, { force: true })).pipe(
       Effect.ignore,
     );
+    // Windows cannot replace a file that is open, so release the original
+    // just before the rename there. Elsewhere a process that opened the
+    // original before the rename keeps the old, now unnamed, file, and SQLite
+    // refuses its writes (SQLITE_READONLY_DBMOVED) rather than losing them.
+    if (input.platform === "win32") yield* source.close;
     // The rename and the record of it happen together or not at all.
     yield* Effect.uninterruptible(
       renameOver(tempPath, dbPath, input.platform).pipe(
@@ -567,6 +591,7 @@ export const compactDatabaseFile = Effect.fn("DatabaseCompaction.compactDatabase
       ),
     );
     yield* syncDirectory(directory, input.platform);
+    yield* source.close.pipe(Effect.ignore);
     return { outcome: "compacted", beforeBytes, afterBytes: yield* fileSize(dbPath) } as const;
   });
 

@@ -226,6 +226,54 @@ describe("runScheduledDatabaseCompaction", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("never loses a write another connection makes around the swap", () =>
+    Effect.gen(function* () {
+      const { dbPath } = yield* withScratchDatabase;
+      yield* requestDatabaseCompaction(dbPath);
+      // Another process (the CLI, a second server) opening the database the
+      // way the server's setup does: WAL, one write, close. Its last close
+      // checkpoints and deletes the -wal, so nothing beside the file shows it.
+      const writeElsewhere = () => {
+        const other = new NodeSqlite.DatabaseSync(dbPath, { timeout: 0 });
+        try {
+          other.exec("PRAGMA journal_mode = WAL");
+          other.exec("CREATE TABLE IF NOT EXISTS late_writes (note TEXT NOT NULL)");
+          other.exec("INSERT INTO late_writes (note) VALUES ('after the copy was checked')");
+          return "wrote";
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        } finally {
+          other.close();
+        }
+      };
+      const attempts: Array<string> = [];
+      // The copy closes after it is checked and before the swap; the original
+      // closes last. A write at either point must be refused or kept.
+      const sqlite = Effect.map(makeWorkerSqlite, (inner) => ({
+        open: (path: string) =>
+          Effect.map(inner.open(path), (connection) => ({
+            ...connection,
+            close: connection.close.pipe(
+              Effect.tap(() => Effect.sync(() => attempts.push(writeElsewhere()))),
+            ),
+          })),
+      }));
+
+      const report = yield* runCompaction(dbPath, { sqlite });
+
+      expect(report.kind === "ran" ? report.result.outcome : null).toBe("compacted");
+      // Before the swap the original is still locked; after it, the write
+      // lands in the compacted file.
+      expect(attempts).toEqual(["database is locked", "wrote"]);
+      const db = new NodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+      try {
+        expect(db.prepare("SELECT count(*) AS n FROM late_writes").get()).toEqual({ n: 1 });
+      } finally {
+        db.close();
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("leaves the request in place on an update launch", () =>
     Effect.gen(function* () {
       const { dbPath } = yield* withScratchDatabase;
