@@ -113,6 +113,7 @@ import {
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { ThreadListSettingsSection } from "./ThreadListSettings";
+import { DatabaseStorageSettingsSection } from "./DatabaseStorageSettings";
 import { ProviderUsageGuardControls, UsageGuardMasterRow } from "./UsageGuardSettings";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -1759,6 +1760,8 @@ export function GeneralSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      <DatabaseStorageSettingsSection />
 
       <SettingsSection title="Voice input">
         <p className="text-sm text-muted-foreground">

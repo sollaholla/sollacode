@@ -239,6 +239,10 @@
       "types": "./src/state/projectStatistics.ts",
       "default": "./src/state/projectStatistics.ts"
     },
+    "./state/databaseStorage": {
+      "types": "./src/state/databaseStorage.ts",
+      "default": "./src/state/databaseStorage.ts"
+    },
     "./state/vcs": {
       "types": "./src/state/vcs.ts",
       "default": "./src/state/vcs.ts"

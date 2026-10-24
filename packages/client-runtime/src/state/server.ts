@@ -322,6 +322,7 @@ export function createServerEnvironmentAtoms<R, E>(
   },
 ) {
   const configScheduler = createAtomCommandScheduler();
+  const databaseCompactionScheduler = createAtomCommandScheduler();
   const configConcurrency = {
     mode: "serial" as const,
     key: ({ environmentId }: { readonly environmentId: string }) => environmentId,
@@ -546,6 +547,25 @@ export function createServerEnvironmentAtoms<R, E>(
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,
       },
+    }),
+    // Settings → Storage: the environment's state.sqlite and its compaction.
+    databaseStorage: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:database-storage",
+      tag: WS_METHODS.serverGetDatabaseStorage,
+    }),
+    // Schedule and cancel share one queue per environment, so a quick
+    // schedule-then-cancel lands in the order it was asked.
+    scheduleDatabaseCompaction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:schedule-database-compaction",
+      tag: WS_METHODS.serverScheduleDatabaseCompaction,
+      scheduler: databaseCompactionScheduler,
+      concurrency: configConcurrency,
+    }),
+    cancelDatabaseCompaction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:cancel-database-compaction",
+      tag: WS_METHODS.serverCancelDatabaseCompaction,
+      scheduler: databaseCompactionScheduler,
+      concurrency: configConcurrency,
     }),
     startHostRepair: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:start-host-repair",

@@ -86,6 +86,13 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     },
     { title: "Attachment retention", keywords: ["images", "cleanup", "hours", "storage"] },
   ]),
+  ...entries("/settings/general", "General", "Storage", [
+    {
+      title: "Database",
+      anchor: "setting-database-compaction",
+      keywords: ["compact", "compaction", "vacuum", "sqlite", "disk space", "free space", "shrink"],
+    },
+  ]),
   ...entries("/settings/general", "General", "Voice input", [
     {
       title: "Voice notes",

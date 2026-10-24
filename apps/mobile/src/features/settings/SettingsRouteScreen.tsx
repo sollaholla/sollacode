@@ -31,6 +31,7 @@ import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { StorageCleanupRow } from "./StorageCleanupRow";
+import { DatabaseStorageRow } from "./DatabaseStorageRow";
 
 export function SettingsRouteScreen() {
   const navigation = useNavigation();
@@ -136,6 +137,13 @@ function LocalSettingsRouteScreen() {
           </Text>
         </SettingsSection>
 
+        <DatabaseStorageSection
+          configs={configs}
+          labelFor={(environmentId) =>
+            savedConnectionsById[environmentId]?.environmentLabel ?? "Connected computer"
+          }
+        />
+
         <OrchestratorSettingsSection />
 
         <SettingsSection title="Appearance">
@@ -168,6 +176,35 @@ function GeneralSettingsSection() {
         onValueChange={(value) => savePreferences({ projectGroupingEnabled: value })}
       />
     </SettingsSection>
+  );
+}
+
+/** Each connected computer's database, for environments whose server can compact it. */
+function DatabaseStorageSection(props: {
+  readonly configs: ReturnType<typeof useServerConfigs>;
+  readonly labelFor: (environmentId: EnvironmentId) => string;
+}) {
+  const environmentIds = [...props.configs.entries()]
+    .filter(([, config]) => config.environment.capabilities.databaseCompaction === true)
+    .map(([environmentId]) => environmentId);
+  if (environmentIds.length === 0) return null;
+  return (
+    <View className="gap-3">
+      <SettingsSection title="Storage" card>
+        {environmentIds.map((environmentId, index) => (
+          <DatabaseStorageRow
+            key={environmentId}
+            environmentId={environmentId}
+            label={props.labelFor(environmentId)}
+            first={index === 0}
+          />
+        ))}
+      </SettingsSection>
+      <Text className="px-2 text-sm text-foreground-muted">
+        Compaction rewrites a computer's database without its free space the next time Solla Code
+        starts there. Nothing is deleted.
+      </Text>
+    </View>
   );
 }
 

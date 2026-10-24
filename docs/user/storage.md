@@ -51,9 +51,56 @@ A long conversation's history is removed a batch at a time, so deleting one does
 other threads. If Solla Code quits or restarts before a deletion finishes, it finishes that
 deletion the next time it starts.
 
-Database pages freed by deletion are reused by SQLite. Solla Code does not run an automatic full
-`VACUUM` during startup because compacting a large database would block launch and temporarily
-require substantial additional disk space.
+Database pages freed by deletion are reused by SQLite, but the database file never shrinks on its
+own. Solla Code does not compact it automatically during startup, because compacting a large
+database blocks launch for minutes and temporarily needs a second copy's worth of free disk. You
+can ask for it instead; see [Compacting the database](#compacting-the-database).
+
+## Compacting the database
+
+**Settings → General → Storage → Database** shows how large the environment's `state.sqlite` is
+and how much of it is free space: pages left by deleted chats and history that SQLite reuses but
+never returns to the disk. On a long-used install that can be more than half the file.
+
+**Compact database…** asks for an in-app confirmation, then schedules a compaction for the next
+time that environment's server starts. The row then says it is scheduled and offers **Cancel**; on
+the desktop app it also offers **Restart now**, which restarts Solla Code so the compaction runs
+immediately. Phones and remote browsers act on the environment they are connected to (the
+mobile app lists each connected computer); they cannot restart it, so the compaction runs the next
+time Solla Code starts on that computer.
+
+At that start, before anything else opens the database, the server:
+
+1. Checks the database is not open anywhere else and that the disk has room for the copy. The
+   copy is about the size of the live data; the check asks for 1.1 times that plus 512 MB.
+2. Writes a compacted copy beside the database (`state.sqlite.compacting-<time>`) with SQLite's
+   `VACUUM INTO`, while holding an exclusive lock on the original.
+3. Requires the copy to pass `PRAGMA quick_check` and to match the original's schema, version
+   numbers, and every table's row count and newest row.
+4. Flushes the copy to disk and renames it over `state.sqlite`.
+
+It takes from a few seconds to about 30 seconds per GB of live data, depending on how much of the
+file the system has cached and how busy the disk is, followed by the ordinary start (which is
+usually faster afterwards). Settings shows an estimate at the slow end. The desktop
+splash says "Compacting the database…" and phones and browsers that reach the server meanwhile
+get a "compacting its database" page instead of a hung connection. The desktop gives such a start
+up to 30 minutes before it logs a readiness warning.
+
+Compaction removes only free space: every chat, message, and setting is kept. It is safe to stop:
+the rename is the only step that changes which file `state.sqlite` is, so a crash or a forced quit
+leaves either the original or the complete, checked copy. Anything left from an interrupted run is
+removed at the next start. If the disk is too full, another process has the database open, or any
+check fails, the original is kept untouched and the reason is shown.
+
+A scheduled compaction runs once. The request is consumed before the work starts, so a run that
+fails, is skipped, or is interrupted is never retried on its own; schedule it again after fixing the
+reason. **Last compaction** shows when the last run finished, the size before and after, and the
+reason when it did not compact.
+
+Starts made by the app updater never compact: the updater checks that the new version answers
+within about two minutes and restores the previous version if not, so a compaction scheduled before
+an update waits for the next ordinary start (Settings says so). **Restart now** counts as an
+ordinary start. Servers running under Bun cannot compact and report the request as skipped.
 
 ## Archived chat retention
 
