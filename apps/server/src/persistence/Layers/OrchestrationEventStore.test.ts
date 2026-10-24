@@ -195,4 +195,111 @@ layer("OrchestrationEventStore", (it) => {
       }
     }),
   );
+
+  it.effect("stores a correlation id equal to the command id once and reads it back", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-correlation");
+
+      const appendWith = (
+        suffix: string,
+        commandId: CommandId | null,
+        correlationId: CommandId | null,
+      ) =>
+        eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make(`evt-correlation-${suffix}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId,
+          causationEventId: null,
+          correlationId,
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make(`message-correlation-${suffix}`),
+            role: "user",
+            text: suffix,
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+      const same = CommandId.make("provider:command-same:thread-activity-append:1");
+      const appended = [
+        yield* appendWith("same", same, same),
+        yield* appendWith("other", CommandId.make("cmd-a"), CommandId.make("cmd-b")),
+        yield* appendWith("no-correlation", CommandId.make("cmd-c"), null),
+        yield* appendWith("no-command", null, null),
+      ];
+      // A row written before the change keeps its full correlation value.
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+        )
+        SELECT
+          'evt-correlation-legacy', aggregate_kind, stream_id, 99, event_type, occurred_at,
+          command_id, causation_event_id, command_id, actor_kind, payload_json, metadata_json
+        FROM orchestration_events
+        WHERE event_id = 'evt-correlation-same'
+      `;
+
+      const stored = yield* sql<{
+        readonly eventId: string;
+        readonly correlationId: string | null;
+      }>`
+        SELECT event_id AS "eventId", correlation_id AS "correlationId"
+        FROM orchestration_events
+        WHERE stream_id = ${threadId}
+        ORDER BY sequence
+      `;
+      assert.deepEqual(stored, [
+        { eventId: "evt-correlation-same", correlationId: null },
+        { eventId: "evt-correlation-other", correlationId: "cmd-b" },
+        { eventId: "evt-correlation-no-correlation", correlationId: "" },
+        { eventId: "evt-correlation-no-command", correlationId: null },
+        { eventId: "evt-correlation-legacy", correlationId: same },
+      ]);
+      // A build without the read mapping decodes the stored column directly. The rows the
+      // decider writes (correlation = command, or both null) must still decode there.
+      const decodeStoredColumn = Schema.decodeUnknownExit(Schema.NullOr(CommandId));
+      for (const row of [stored[0], stored[3], stored[4]]) {
+        assert.equal(decodeStoredColumn(row?.correlationId)._tag, "Success");
+      }
+
+      const expected = [same, "cmd-b", null, null, same];
+      assert.deepEqual(
+        appended.map((event) => event.correlationId),
+        expected.slice(0, 4),
+      );
+      const replayed = yield* Stream.runCollect(
+        eventStore.readThreadEventsFromSequence(threadId, 0, 100),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+      assert.deepEqual(
+        replayed.map((event) => event.correlationId),
+        expected,
+      );
+      const replayedAll = yield* Stream.runCollect(
+        eventStore.readFromSequence(appended[0]!.sequence - 1, 100),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+      assert.deepEqual(
+        replayedAll
+          .filter((event) => event.aggregateId === threadId)
+          .map((event) => [event.commandId, event.correlationId]),
+        [
+          [same, same],
+          ["cmd-a", "cmd-b"],
+          ["cmd-c", null],
+          [null, null],
+          [same, same],
+        ],
+      );
+    }),
+  );
 });

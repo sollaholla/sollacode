@@ -101,6 +101,17 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
       : toPersistenceSqlError(sqlOperation)(cause);
 }
 
+/**
+ * The decider gives every event its command id as its correlation id, a
+ * ~100-character string, so `correlation_id` stores it only when it differs.
+ * NULL means "same as command_id", and every read maps it back. '' marks the
+ * one case NULL used to mean: a command id with no correlation, which no
+ * producer writes today. Rows written before this keep their full value and
+ * read the same. Builds without this mapping decode NULL as no correlation
+ * (nothing reads that field when a command id is present), so older builds and
+ * worktrees seeded with a copy of this database still replay new rows; storing
+ * '' for the common case would fail their non-empty CommandId check.
+ */
 const makeEventStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
@@ -142,7 +153,11 @@ const makeEventStore = Effect.gen(function* () {
           ${request.occurredAt},
           ${request.commandId},
           ${request.causationEventId},
-          ${request.correlationId},
+          CASE
+            WHEN ${request.correlationId} = ${request.commandId} THEN NULL
+            WHEN ${request.correlationId} IS NULL AND ${request.commandId} IS NOT NULL THEN ''
+            ELSE ${request.correlationId}
+          END,
           ${request.actorKind},
           ${request.payloadJson},
           ${request.metadataJson}
@@ -156,7 +171,7 @@ const makeEventStore = Effect.gen(function* () {
           occurred_at AS "occurredAt",
           command_id AS "commandId",
           causation_event_id AS "causationEventId",
-          correlation_id AS "correlationId",
+          CASE correlation_id WHEN '' THEN NULL ELSE COALESCE(correlation_id, command_id) END AS "correlationId",
           payload_json AS "payload",
           metadata_json AS "metadata"
       `,
@@ -176,7 +191,7 @@ const makeEventStore = Effect.gen(function* () {
           occurred_at AS "occurredAt",
           command_id AS "commandId",
           causation_event_id AS "causationEventId",
-          correlation_id AS "correlationId",
+          CASE correlation_id WHEN '' THEN NULL ELSE COALESCE(correlation_id, command_id) END AS "correlationId",
           payload_json AS "payload",
           metadata_json AS "metadata"
         FROM orchestration_events
@@ -200,7 +215,7 @@ const makeEventStore = Effect.gen(function* () {
           occurred_at AS "occurredAt",
           command_id AS "commandId",
           causation_event_id AS "causationEventId",
-          correlation_id AS "correlationId",
+          CASE correlation_id WHEN '' THEN NULL ELSE COALESCE(correlation_id, command_id) END AS "correlationId",
           payload_json AS "payload",
           metadata_json AS "metadata"
         FROM orchestration_events
