@@ -599,6 +599,75 @@ export class StorageCleanupStartError extends Schema.TaggedErrorClass<StorageCle
   }
 }
 
+/** How the last database compaction ended. "interrupted" means the server
+    stopped part way; the original database was kept. */
+export const DatabaseCompactionOutcome = Schema.Literals([
+  "compacted",
+  "skipped",
+  "failed",
+  "interrupted",
+]);
+export type DatabaseCompactionOutcome = typeof DatabaseCompactionOutcome.Type;
+
+export const DatabaseCompactionResult = Schema.Struct({
+  outcome: DatabaseCompactionOutcome,
+  startedAt: IsoDateTime,
+  finishedAt: IsoDateTime,
+  /** Null when the run was cut short and its length is unknown. */
+  durationMs: Schema.NullOr(NonNegativeInt),
+  /** The database and its write-ahead log before the run. */
+  beforeBytes: NonNegativeInt,
+  /** The compacted file; null unless the outcome is "compacted". */
+  afterBytes: Schema.NullOr(NonNegativeInt),
+  /** Why it was skipped, failed, or stopped, written for a person. */
+  reason: Schema.NullOr(Schema.String),
+});
+export type DatabaseCompactionResult = typeof DatabaseCompactionResult.Type;
+
+/** Why a start left a scheduled compaction for the next one. */
+export const DatabaseCompactionDeferral = Schema.Literals(["update-launch"]);
+export type DatabaseCompactionDeferral = typeof DatabaseCompactionDeferral.Type;
+
+export const DatabaseCompactionSchedule = Schema.Struct({
+  requestedAt: IsoDateTime,
+  deferredAt: Schema.NullOr(IsoDateTime),
+  deferredReason: Schema.NullOr(DatabaseCompactionDeferral),
+});
+export type DatabaseCompactionSchedule = typeof DatabaseCompactionSchedule.Type;
+
+/**
+ * One environment's `state.sqlite`, read from SQLite's own page counters, plus
+ * whether a compaction is scheduled for its next start and how the last one
+ * went. Free pages are space SQLite reuses but never returns to the disk.
+ */
+export const DatabaseStorageStatus = Schema.Struct({
+  fileBytes: NonNegativeInt,
+  walBytes: NonNegativeInt,
+  pageSize: PositiveInt,
+  pageCount: NonNegativeInt,
+  freePageCount: NonNegativeInt,
+  /** Pages holding data: roughly the size after compaction. */
+  liveBytes: NonNegativeInt,
+  reclaimableBytes: NonNegativeInt,
+  /** Free disk a compaction needs on the database's volume. */
+  requiredFreeBytes: NonNegativeInt,
+  /** Free disk on that volume now; null when the host cannot say. */
+  availableDiskBytes: Schema.NullOr(NonNegativeInt),
+  estimatedSeconds: NonNegativeInt,
+  scheduled: Schema.NullOr(DatabaseCompactionSchedule),
+  lastResult: Schema.NullOr(DatabaseCompactionResult),
+});
+export type DatabaseStorageStatus = typeof DatabaseStorageStatus.Type;
+
+export class DatabaseStorageError extends Schema.TaggedErrorClass<DatabaseStorageError>()(
+  "DatabaseStorageError",
+  { detail: TrimmedNonEmptyString },
+) {
+  override get message(): string {
+    return `Could not read or change database compaction: ${this.detail}`;
+  }
+}
+
 export const HostRepairStartResult = Schema.Struct({
   projectId: ProjectId,
   threadId: ThreadId,

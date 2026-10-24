@@ -30,6 +30,7 @@ import { voiceNoteRuntimeStartupLayer } from "./voiceNoteRuntimeStartup.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -226,7 +227,13 @@ const ProviderCommandReactorWithActionApprovalLive = Layer.mergeAll(
   ProviderCommandReactorLive.pipe(Layer.provide(ActionApprovalBroker.layer)),
 );
 
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+// A compaction scheduled from Settings runs first: it needs the database file
+// to itself, before the SQLite client below opens it. The HTTP listener is
+// already up by then and labels its "starting" page while it runs.
+const PersistenceLayerLive = Layer.empty.pipe(
+  Layer.provideMerge(SqlitePersistenceLayerLive),
+  Layer.provideMerge(DatabaseCompaction.startupLayer),
+);
 
 const ThreadArtifactLayerLive = ThreadArtifactService.layer.pipe(
   Layer.provideMerge(PersistenceLayerLive),
@@ -473,6 +480,7 @@ const RuntimeDependenciesLive = WebPushRuntimeLive.pipe(
   Layer.provideMerge(HostVitalsMonitor.layer),
   Layer.provideMerge(ImageThumbnails.layer),
   Layer.provideMerge(ProjectFolderUsage.layer.pipe(Layer.provide(PersistenceLayerLive))),
+  Layer.provideMerge(DatabaseCompaction.layer.pipe(Layer.provide(PersistenceLayerLive))),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),

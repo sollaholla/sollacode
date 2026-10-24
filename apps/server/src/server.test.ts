@@ -12,6 +12,7 @@ import {
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
   CommandId,
+  type DatabaseStorageStatus,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
@@ -141,6 +142,7 @@ import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts
 import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
+import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
 import * as LiveFeed from "./orchestration/LiveFeed.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as Data from "effect/Data";
@@ -388,6 +390,7 @@ const buildAppUnderTest = (options?: {
     >;
     imageThumbnails?: Partial<ImageThumbnails.ImageThumbnails["Service"]>;
     projectFolderUsage?: Partial<ProjectFolderUsage.ProjectFolderUsage["Service"]>;
+    databaseStorage?: Partial<DatabaseCompaction.DatabaseStorage["Service"]>;
     liveFeed?: Partial<LiveFeed.LiveFeed["Service"]>;
   };
 }) =>
@@ -844,6 +847,11 @@ const buildAppUnderTest = (options?: {
           stream: Stream.empty,
           refresh: () => Effect.void,
           ...options?.layers?.projectFolderUsage,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(DatabaseCompaction.DatabaseStorage)({
+          ...options?.layers?.databaseStorage,
         }),
       ),
       Layer.provide(
@@ -4115,6 +4123,57 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
         yield* fs.readFileString(path.join(baseDir, "maintenance", "storage-cleanup")),
         "preserve this file",
       );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("reads, schedules, and cancels database compaction over websocket", () =>
+    Effect.gen(function* () {
+      const idle: DatabaseStorageStatus = {
+        fileBytes: 4096 * 10,
+        walBytes: 0,
+        pageSize: 4096,
+        pageCount: 10,
+        freePageCount: 6,
+        liveBytes: 4096 * 4,
+        reclaimableBytes: 4096 * 6,
+        requiredFreeBytes: 600_000_000,
+        availableDiskBytes: 1_000_000_000,
+        estimatedSeconds: 5,
+        scheduled: null,
+        lastResult: null,
+      };
+      const scheduledStatus: DatabaseStorageStatus = {
+        ...idle,
+        scheduled: {
+          requestedAt: "2026-10-24T10:00:00.000Z",
+          deferredAt: null,
+          deferredReason: null,
+        },
+      };
+      const calls: string[] = [];
+      yield* buildAppUnderTest({
+        layers: {
+          databaseStorage: {
+            status: Effect.sync(() => calls.push("status")).pipe(Effect.as(idle)),
+            schedule: Effect.sync(() => calls.push("schedule")).pipe(Effect.as(scheduledStatus)),
+            cancel: Effect.sync(() => calls.push("cancel")).pipe(Effect.as(idle)),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const [status, scheduled, cancelled] = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.all([
+            client[WS_METHODS.serverGetDatabaseStorage]({}),
+            client[WS_METHODS.serverScheduleDatabaseCompaction]({}),
+            client[WS_METHODS.serverCancelDatabaseCompaction]({}),
+          ]),
+        ),
+      );
+      assert.deepEqual(status, idle);
+      assert.deepEqual(scheduled, scheduledStatus);
+      assert.deepEqual(cancelled, idle);
+      assert.deepEqual(calls, ["status", "schedule", "cancel"]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

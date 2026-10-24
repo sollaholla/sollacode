@@ -32,6 +32,10 @@ A project folder's size on disk, for Settings → Projects. [ProjectFolderUsage.
 
 A small JPEG of an image asset, asked for with `thumbnail=1` on its signed URL and made by macOS's `sips` in [ImageThumbnails.ts](../../apps/server/src/assets/ImageThumbnails.ts), cached by the file's size and modification time. Thumbnail tiles use them; viewers fetch the original. Other hosts, and files of 96 KB or less, get the original. See [image-previews.md](../user/image-previews.md).
 
+#### Database compaction
+
+Rewriting an environment's `state.sqlite` without its free pages, which SQLite reuses but never returns to the disk. A person schedules it from Settings → General → Storage (`server.scheduleDatabaseCompaction`, `server.cancelDatabaseCompaction`, `server.getDatabaseStorage`); the request is a file beside the database, and the next server start runs it in [DatabaseCompaction.ts](../../apps/server/src/persistence/DatabaseCompaction.ts) before the SQLite client opens the file: exclusivity proof (leaving WAL mode), `VACUUM INTO` a copy in a worker thread ([DatabaseCompactionWorker.ts](../../apps/server/src/persistence/DatabaseCompactionWorker.ts)), `quick_check` plus schema and row-count comparison, then one rename. Launches made by the app updater carry `--solla-update-launch=` and defer it. See [storage.md](../user/storage.md#compacting-the-database).
+
 #### Thread storage counters
 
 `projection_thread_storage`: per-thread counts and byte sizes of stored messages and activities, kept exact by SQLite triggers on every insert, update, and delete so storage can be reported without reading gigabytes of history. Created and backfilled by [082_ProjectionThreadStorage.ts](../../apps/server/src/persistence/Migrations/082_ProjectionThreadStorage.ts); a thread's row goes with its `projection_threads` row ([083_ProjectionThreadStorageCleanup.ts](../../apps/server/src/persistence/Migrations/083_ProjectionThreadStorageCleanup.ts)).

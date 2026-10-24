@@ -3,11 +3,12 @@ import * as NodeHttp from "node:http";
 import type * as NodeNet from "node:net";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { answerRequestsWhileStarting } from "./httpStartupResponder.ts";
+import { answerRequestsWhileStarting, setStartupStage } from "./httpStartupResponder.ts";
 
 describe("answerRequestsWhileStarting", () => {
   let server: NodeHttp.Server | undefined;
   afterEach(async () => {
+    setStartupStage(null);
     await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
     server = undefined;
   });
@@ -28,6 +29,22 @@ describe("answerRequestsWhileStarting", () => {
     const page = await fetch(`${origin}/`, { headers: { accept: "text/html" } });
     expect(page.status).toBe(503);
     expect(await page.text()).toContain('http-equiv="refresh"');
+  });
+
+  it("says what slow startup work is running while it runs", async () => {
+    const origin = await listen();
+    setStartupStage("compacting-database");
+    const api = await fetch(`${origin}/.well-known/t3/environment`);
+    expect(api.status).toBe(503);
+    expect(api.headers.get("x-solla-startup-stage")).toBe("compacting-database");
+    expect(await api.text()).toContain("compacting its database");
+    const page = await fetch(`${origin}/`, { headers: { accept: "text/html" } });
+    expect(await page.text()).toContain("compacting its database");
+
+    setStartupStage(null);
+    const after = await fetch(`${origin}/`);
+    expect(after.headers.get("x-solla-startup-stage")).toBeNull();
+    expect(await after.text()).toBe("Solla Code is starting.");
   });
 
   it("steps aside once the app's own handler is attached", async () => {

@@ -217,6 +217,8 @@ import {
   RemoteControlWatchInput,
 } from "./remoteControl.ts";
 import {
+  DatabaseStorageError,
+  DatabaseStorageStatus,
   StorageCleanupStartError,
   StorageCleanupStartInput,
   StorageCleanupStartResult,
@@ -408,6 +410,9 @@ export const WS_METHODS = {
   serverGetResourceTelemetryHistory: "server.getResourceTelemetryHistory",
   serverRetryResourceTelemetry: "server.retryResourceTelemetry",
   serverStartStorageCleanup: "server.startStorageCleanup",
+  serverGetDatabaseStorage: "server.getDatabaseStorage",
+  serverScheduleDatabaseCompaction: "server.scheduleDatabaseCompaction",
+  serverCancelDatabaseCompaction: "server.cancelDatabaseCompaction",
   webPushStatus: "webPush.status",
   webPushSubscribe: "webPush.subscribe",
   webPushUnsubscribe: "webPush.unsubscribe",
@@ -659,6 +664,31 @@ export const WsServerStartStorageCleanupRpc = Rpc.make(WS_METHODS.serverStartSto
   success: StorageCleanupStartResult,
   error: Schema.Union([StorageCleanupStartError, EnvironmentAuthorizationError]),
 });
+
+export const WsServerGetDatabaseStorageRpc = Rpc.make(WS_METHODS.serverGetDatabaseStorage, {
+  payload: Schema.Struct({}),
+  success: DatabaseStorageStatus,
+  error: Schema.Union([DatabaseStorageError, EnvironmentAuthorizationError]),
+});
+
+/** Compacts the database at the server's next start; returns the updated status. */
+export const WsServerScheduleDatabaseCompactionRpc = Rpc.make(
+  WS_METHODS.serverScheduleDatabaseCompaction,
+  {
+    payload: Schema.Struct({}),
+    success: DatabaseStorageStatus,
+    error: Schema.Union([DatabaseStorageError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsServerCancelDatabaseCompactionRpc = Rpc.make(
+  WS_METHODS.serverCancelDatabaseCompaction,
+  {
+    payload: Schema.Struct({}),
+    success: DatabaseStorageStatus,
+    error: Schema.Union([DatabaseStorageError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsServerStartHostRepairRpc = Rpc.make(WS_METHODS.serverStartHostRepair, {
   payload: HostRepairStartInput,
@@ -1524,6 +1554,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,
   WsServerStartStorageCleanupRpc,
+  WsServerGetDatabaseStorageRpc,
+  WsServerScheduleDatabaseCompactionRpc,
+  WsServerCancelDatabaseCompactionRpc,
   WsServerStartHostRepairRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,

@@ -173,6 +173,7 @@ import * as ByteBoundedResyncBuffer from "./stream/ByteBoundedResyncBuffer.ts";
 import * as ProjectionLiveBuffer from "./stream/ProjectionLiveBuffer.ts";
 import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
+import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
 import * as LiveFeed from "./orchestration/LiveFeed.ts";
 import {
   diffProviderStatuses,
@@ -681,6 +682,7 @@ const makeWsRpcLayer = (
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const hostVitals = yield* HostVitalsMonitor.HostVitalsMonitor;
       const projectFolderUsage = yield* ProjectFolderUsage.ProjectFolderUsage;
+      const databaseStorage = yield* DatabaseCompaction.DatabaseStorage;
       const liveFeed = yield* LiveFeed.LiveFeed;
       const threadArtifacts = yield* ThreadArtifactService;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
@@ -2339,6 +2341,18 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.webPushTest, webPush.test(currentSessionId, input.endpoint)),
         [WS_METHODS.serverStartStorageCleanup]: (input) =>
           observeRpcEffect(WS_METHODS.serverStartStorageCleanup, startStorageCleanup(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverGetDatabaseStorage]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverGetDatabaseStorage, databaseStorage.status, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverScheduleDatabaseCompaction]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverScheduleDatabaseCompaction, databaseStorage.schedule, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverCancelDatabaseCompaction]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverCancelDatabaseCompaction, databaseStorage.cancel, {
             "rpc.aggregate": "server",
           }),
         [WS_METHODS.serverStartHostRepair]: (input) =>

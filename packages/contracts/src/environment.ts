@@ -52,6 +52,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server answers orchestration.deleteArchivedThreads. Older servers get the
       archive cleaned one chat at a time. */
   archivedThreadBulkDelete: Schema.optionalKey(Schema.Boolean),
+  /** Server answers server.getDatabaseStorage and can compact its database
+      at the next start. Clients hide the Storage section without it. */
+  databaseCompaction: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */
