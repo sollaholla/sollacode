@@ -21,6 +21,13 @@ export const ProjectionState = Schema.Struct({
 });
 export type ProjectionState = typeof ProjectionState.Type;
 
+export const UpsertProjectionStatesInput = Schema.Struct({
+  projectors: Schema.Array(Schema.String),
+  lastAppliedSequence: NonNegativeInt,
+  updatedAt: IsoDateTime,
+});
+export type UpsertProjectionStatesInput = typeof UpsertProjectionStatesInput.Type;
+
 export const GetProjectionStateInput = Schema.Struct({
   projector: Schema.String,
 });
@@ -31,11 +38,14 @@ export type GetProjectionStateInput = typeof GetProjectionStateInput.Type;
  */
 export interface ProjectionStateRepositoryShape {
   /**
-   * Insert or replace a projection cursor row.
+   * Insert or replace the cursor rows of several projectors that applied the
+   * same event, in one statement.
    *
    * Upserts by projector name.
    */
-  readonly upsert: (row: ProjectionState) => Effect.Effect<void, ProjectionRepositoryError>;
+  readonly upsertMany: (
+    input: UpsertProjectionStatesInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
    * Read projection cursor state for a projector key.

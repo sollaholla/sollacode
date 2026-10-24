@@ -2949,20 +2949,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         forkedAttachments: [],
       };
 
+      // No projector reads projection_state, and the cursors commit or roll
+      // back with the projections in this transaction, so advancing them all
+      // after the last projector stores the same rows as advancing each one
+      // after its own projection.
       yield* sql.withTransaction(
         Effect.forEach(
           selectedProjectors,
-          (projector) =>
-            projector.apply(event, attachmentSideEffects).pipe(
-              Effect.flatMap(() =>
-                projectionStateRepository.upsert({
-                  projector: projector.name,
-                  lastAppliedSequence: event.sequence,
-                  updatedAt: event.occurredAt,
-                }),
-              ),
-            ),
+          (projector) => projector.apply(event, attachmentSideEffects),
           { concurrency: 1, discard: true },
+        ).pipe(
+          Effect.andThen(
+            projectionStateRepository.upsertMany({
+              projectors: selectedProjectors.map((projector) => projector.name),
+              lastAppliedSequence: event.sequence,
+              updatedAt: event.occurredAt,
+            }),
+          ),
         ),
       );
 

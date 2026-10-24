@@ -12,6 +12,7 @@ import {
   type ProjectionStateRepositoryShape,
   GetProjectionStateInput,
   ProjectionState,
+  UpsertProjectionStatesInput,
 } from "../Services/ProjectionState.ts";
 
 const MinLastAppliedSequenceRowSchema = Schema.Struct({
@@ -21,20 +22,19 @@ const MinLastAppliedSequenceRowSchema = Schema.Struct({
 const makeProjectionStateRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  const upsertProjectionStateRow = SqlSchema.void({
-    Request: ProjectionState,
-    execute: (row) =>
+  // One multi-row statement per event: every projector advances to the same
+  // cursor, and the per-projector statements were most of an event's writes.
+  const upsertProjectionStateRows = SqlSchema.void({
+    Request: UpsertProjectionStatesInput,
+    execute: ({ projectors, lastAppliedSequence, updatedAt }) =>
       sql`
-        INSERT INTO projection_state (
-          projector,
-          last_applied_sequence,
-          updated_at
-        )
-        VALUES (
-          ${row.projector},
-          ${row.lastAppliedSequence},
-          ${row.updatedAt}
-        )
+        INSERT INTO projection_state ${sql.insert(
+          projectors.map((projector) => ({
+            projector,
+            last_applied_sequence: lastAppliedSequence,
+            updated_at: updatedAt,
+          })),
+        )}
         ON CONFLICT (projector)
         DO UPDATE SET
           last_applied_sequence = excluded.last_applied_sequence,
@@ -81,10 +81,12 @@ const makeProjectionStateRepository = Effect.gen(function* () {
       `,
   });
 
-  const upsert: ProjectionStateRepositoryShape["upsert"] = (row) =>
-    upsertProjectionStateRow(row).pipe(
-      Effect.mapError(toPersistenceSqlError("ProjectionStateRepository.upsert:query")),
-    );
+  const upsertMany: ProjectionStateRepositoryShape["upsertMany"] = (input) =>
+    input.projectors.length === 0
+      ? Effect.void
+      : upsertProjectionStateRows(input).pipe(
+          Effect.mapError(toPersistenceSqlError("ProjectionStateRepository.upsertMany:query")),
+        );
 
   const getByProjector: ProjectionStateRepositoryShape["getByProjector"] = (input) =>
     getProjectionStateRow(input).pipe(
@@ -105,7 +107,7 @@ const makeProjectionStateRepository = Effect.gen(function* () {
     );
 
   return {
-    upsert,
+    upsertMany,
     getByProjector,
     listAll,
     minLastAppliedSequence,
