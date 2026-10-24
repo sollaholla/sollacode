@@ -128,6 +128,8 @@ import {
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapTopPercent,
+  sameSetContents,
+  sameTurnFileReferences,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
   TIMELINE_MINIMAP_MIN_ITEMS,
@@ -1087,9 +1089,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       ),
     [activeThreadEnvironmentId, onImageExpand, threadRef],
   );
+  // ChatView rebuilds these collections on every streamed update. Every row
+  // reads the shared state, so a new identity with the same contents would
+  // re-render each mounted row for nothing.
+  const stableTurnFileReferences = useSameContents(turnFileReferences, sameTurnFileReferences);
+  const stableDeliveredMessageIds = useSameContents(deliveredMessageIds, sameSetContents);
+  const stablePendingMessageIds = useSameContents(pendingMessageIds, sameSetContents);
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
-      turnFileReferences,
+      turnFileReferences: stableTurnFileReferences,
       timestampFormat,
       routeThreadKey,
       threadRef,
@@ -1098,9 +1106,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       slashCommands,
-      deliveredMessageIds,
+      deliveredMessageIds: stableDeliveredMessageIds,
       newestUserMessageId,
-      pendingMessageIds,
+      pendingMessageIds: stablePendingMessageIds,
       deliveryProviderName,
       deliveryReceiptsExpected,
       unsentMessage,
@@ -1125,7 +1133,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onImplementProposedPlan: onImplementProposedPlan ?? null,
     }),
     [
-      turnFileReferences,
+      stableTurnFileReferences,
       timestampFormat,
       routeThreadKey,
       threadRef,
@@ -1134,9 +1142,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       slashCommands,
-      deliveredMessageIds,
+      stableDeliveredMessageIds,
       newestUserMessageId,
-      pendingMessageIds,
+      stablePendingMessageIds,
       deliveryProviderName,
       deliveryReceiptsExpected,
       unsentMessage,
@@ -2990,6 +2998,15 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
 // Structural sharing — reuse old row references when data hasn't changed
 // so LegendList (and React) can skip re-rendering unchanged items.
 // ---------------------------------------------------------------------------
+
+/** The previous value for as long as `next` has the same contents. */
+function useSameContents<T>(next: T, same: (previous: T, next: T) => boolean): T {
+  const previous = useRef(next);
+  if (previous.current !== next && !same(previous.current, next)) {
+    previous.current = next;
+  }
+  return previous.current;
+}
 
 /** Returns a structurally-shared copy of `rows`: for each row whose content
  *  hasn't changed since last call, the previous object reference is reused. */

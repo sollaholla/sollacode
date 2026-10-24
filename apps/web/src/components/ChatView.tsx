@@ -650,6 +650,7 @@ function VoiceTranscriptionStatusChip({
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const NO_PENDING_MESSAGE_IDS: ReadonlySet<string> = new Set();
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PROVIDER_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
@@ -4770,7 +4771,11 @@ function ChatViewContent(props: ChatViewProps) {
   );
   // Rows the server has not echoed back yet, so the delivery indicator can say
   // "sending" rather than claiming a message it has not stored was sent.
-  const pendingMessageIds = useMemo(() => {
+  const pendingMessageIds = useMemo((): ReadonlySet<string> => {
+    // The common case while a turn streams: nothing local is waiting.
+    if (recoveredSendMessages.length === 0 && optimisticUserMessages.length === 0) {
+      return NO_PENDING_MESSAGE_IDS;
+    }
     const serverIds = new Set(displayServerMessages.map((message) => message.id));
     return new Set(
       [...recoveredSendMessages, ...optimisticUserMessages]
@@ -9660,15 +9665,33 @@ function ChatViewContent(props: ChatViewProps) {
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
     setExpandedImage(preview);
   }, []);
-  const onOpenTurnDiff = useCallback(
-    (turnId: TurnId, filePath?: string) => {
-      if (!isServerThread || !activeThreadRef) return;
-      useDiffPanelStore.getState().selectTurn(activeThreadRef, turnId, filePath);
-      useRightPanelStore.getState().open(activeThreadRef, "diff");
-      onDiffPanelOpen?.();
-    },
-    [activeThreadRef, isServerThread, onDiffPanelOpen],
+  // The timeline's row context is memoized, and these handlers close over the
+  // thread, which is a new object on every streamed update. The rows get
+  // stable wrappers that call the current handler at call time. The refs are
+  // written at commit, not during render: navigation renders in a transition
+  // and this view is reused across threads, so a render React discards must
+  // not point the rows on screen at another thread's handlers.
+  const timelineThreadHandlersRef = useRef({ onCompactAndContinue, onResumeIncompleteTurn });
+  const openTurnDiffTargetRef = useRef({ activeThreadRef, isServerThread, onDiffPanelOpen });
+  useLayoutEffect(() => {
+    timelineThreadHandlersRef.current = { onCompactAndContinue, onResumeIncompleteTurn };
+    openTurnDiffTargetRef.current = { activeThreadRef, isServerThread, onDiffPanelOpen };
+  });
+  const onTimelineCompactAndContinue = useCallback(
+    () => timelineThreadHandlersRef.current.onCompactAndContinue(),
+    [],
   );
+  const onTimelineResumeIncompleteTurn = useCallback(
+    () => timelineThreadHandlersRef.current.onResumeIncompleteTurn(),
+    [],
+  );
+  const onOpenTurnDiff = useCallback((turnId: TurnId, filePath?: string) => {
+    const target = openTurnDiffTargetRef.current;
+    if (!target.isServerThread || !target.activeThreadRef) return;
+    useDiffPanelStore.getState().selectTurn(target.activeThreadRef, turnId, filePath);
+    useRightPanelStore.getState().open(target.activeThreadRef, "diff");
+    target.onDiffPanelOpen?.();
+  }, []);
   // Both the Map and the revert handler are read from refs at call-time so
   // the callback reference is fully stable and never busts context identity.
   const revertTurnCountRef = useRef(revertTurnCountByUserMessageId);
@@ -10141,11 +10164,11 @@ function ChatViewContent(props: ChatViewProps) {
                 onScrollStateChange={onTimelineScrollStateChange}
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
-                onCompactAndContinue={onCompactAndContinue}
+                onCompactAndContinue={onTimelineCompactAndContinue}
                 isCompactAndContinueBusy={isCompactAndContinueBusy}
                 resumableAssistantMessageId={resumableAssistantMessageId}
                 resumableRuntimeErrorActivityId={resumableRuntimeErrorActivityId}
-                onResumeIncompleteTurn={onResumeIncompleteTurn}
+                onResumeIncompleteTurn={onTimelineResumeIncompleteTurn}
                 isResumeIncompleteTurnBusy={isResumeIncompleteTurnBusy}
                 isResumeIncompleteTurnDisabled={activeEnvironmentUnavailable}
                 inlineNotice={inlineTimelineNotice}

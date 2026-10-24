@@ -8,6 +8,8 @@ import {
   deriveTimelineMinimapItems,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  sameSetContents,
+  sameTurnFileReferences,
   visibleAssistantMessageText,
 } from "./MessagesTimeline.logic";
 
@@ -1882,5 +1884,34 @@ describe("deriveTimelineMinimapItems", () => {
     const second = deriveTimelineMinimapItems([user, message("a1", "assistant", "Working on it")]);
     expect(first[0]?.assistantText).toBe("Work");
     expect(second[0]?.assistantText).toBe("Working on it");
+  });
+});
+
+describe("row context collection comparisons", () => {
+  it("compares sets by contents and order", () => {
+    expect(sameSetContents(new Set(["a", "b"]), new Set(["a", "b"]))).toBe(true);
+    expect(sameSetContents(new Set(), new Set())).toBe(true);
+    expect(sameSetContents(new Set(["a", "b"]), new Set(["b", "a"]))).toBe(false);
+    expect(sameSetContents(new Set(["a"]), new Set(["a", "b"]))).toBe(false);
+  });
+
+  it("compares turn file references by their fields", () => {
+    const reference = (path: string, sourceMessageId = "m1") => ({
+      path,
+      name: path,
+      kind: "file" as const,
+      sourceMessageId,
+    });
+    const a = new Map([["t1", [reference("x"), reference("y")]]]);
+    expect(sameTurnFileReferences(a, new Map([["t1", [reference("x"), reference("y")]]]))).toBe(
+      true,
+    );
+    expect(sameTurnFileReferences(a, new Map([["t1", [reference("x")]]]))).toBe(false);
+    expect(sameTurnFileReferences(a, new Map([["t2", [reference("x"), reference("y")]]]))).toBe(
+      false,
+    );
+    expect(
+      sameTurnFileReferences(a, new Map([["t1", [reference("x"), reference("y", "m2")]]])),
+    ).toBe(false);
   });
 });

@@ -3,6 +3,7 @@ import {
   type WorkLogImage,
 } from "@t3tools/client-runtime/state/work-log-images";
 import { resolveSettingsUpdates } from "@t3tools/client-runtime/state/settings-updates";
+import type { TurnFileReference } from "@t3tools/client-runtime/state/turn-file-references";
 import { extractTrailingInterruptedTasksNotice } from "@t3tools/shared/interruptedTasksNotice";
 import { withoutShownProposedPlanBlocks } from "@t3tools/shared/proposedPlans";
 import * as Equal from "effect/Equal";
@@ -926,6 +927,48 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return nextRows;
+}
+
+/** Whether two sets hold the same values in the same order. */
+export function sameSetContents<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): boolean {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  const others = b.values();
+  for (const value of a) {
+    if (others.next().value !== value) return false;
+  }
+  return true;
+}
+
+/** Whether two turn file reference maps list the same files, in the same order. */
+export function sameTurnFileReferences(
+  a: ReadonlyMap<string, ReadonlyArray<TurnFileReference>>,
+  b: ReadonlyMap<string, ReadonlyArray<TurnFileReference>>,
+): boolean {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  const others = b.entries();
+  for (const [turnId, references] of a) {
+    const other = others.next();
+    if (other.done === true) return false;
+    const [otherTurnId, otherReferences] = other.value;
+    if (otherTurnId !== turnId || otherReferences.length !== references.length) return false;
+    for (let index = 0; index < references.length; index += 1) {
+      const reference = references[index]!;
+      const otherReference = otherReferences[index]!;
+      if (
+        reference !== otherReference &&
+        (reference.path !== otherReference.path ||
+          reference.name !== otherReference.name ||
+          reference.kind !== otherReference.kind ||
+          reference.sourceMessageId !== otherReference.sourceMessageId ||
+          reference.sourceActivityId !== otherReference.sourceActivityId)
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 export interface TimelineMinimapItem {
