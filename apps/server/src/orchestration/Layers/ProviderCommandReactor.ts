@@ -155,6 +155,7 @@ import {
   isAgentAutoResumeMessageId,
   isAwaitingPersonDecision,
   isControlOnlyAgentTurn,
+  isSyntheticAgentLoopUserMessage,
   agentLoopSignedOffSinceUserIntent,
   isVmAgentTaskPromptMessageId,
   shouldAutoContinueCompletedAgentTurn,
@@ -423,6 +424,23 @@ const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
 /** Baseline (pre-server-loop) runaway budget: continuations without any real user input. */
 const AGENT_LOOP_MAX_CONSECUTIVE_CONTINUATIONS = 50;
+
+/** Newest messages `resolveThread` reads before falling back to the whole thread. */
+export const RESOLVE_THREAD_MESSAGE_LIMIT = 1_000;
+
+/** A window that came back full may have older messages behind it. */
+const threadMessageWindowMayBeTruncated = (thread: OrchestrationThread): boolean =>
+  thread.messages.length >= RESOLVE_THREAD_MESSAGE_LIMIT;
+
+/** Something the person typed, as opposed to the agent loop's own prompts. */
+const isPersonIntentMessage = (message: OrchestrationThread["messages"][number]): boolean =>
+  message.role === "user" &&
+  !isSyntheticAgentLoopUserMessage({
+    role: message.role,
+    id: message.id,
+    text: message.text,
+    inputOrigin: message.inputOrigin,
+  });
 
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -1168,7 +1186,35 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         .pipe(Effect.map(Option.getOrUndefined));
     });
 
+    /**
+     * The thread as the reactor needs it: the newest RESOLVE_THREAD_MESSAGE_LIMIT
+     * messages plus every held message still queued. Reading all of them cost
+     * ~570 ms per call on a 15k-message thread, several times per send, all on
+     * the main thread. The reactor's history reads are "since the person last
+     * spoke" walks, so a full window with no message of theirs in it (a long
+     * autonomous run) falls back to the whole thread rather than miscount.
+     */
     const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
+      const recent = yield* projectionSnapshotQuery
+        .getThreadDetailById(threadId, {
+          activityLimit: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+          messageLimit: RESOLVE_THREAD_MESSAGE_LIMIT,
+          includeQueuedHeldMessages: true,
+        })
+        .pipe(Effect.map(Option.getOrUndefined));
+      if (
+        recent === undefined ||
+        !threadMessageWindowMayBeTruncated(recent) ||
+        // A queued held message is added however old it is, so it says
+        // nothing about whether the window reaches back far enough.
+        recent.messages.some(
+          (message) =>
+            isPersonIntentMessage(message) &&
+            !(isHeldMessageId(message.id) && message.queueState === "queued"),
+        )
+      ) {
+        return recent;
+      }
       return yield* projectionSnapshotQuery
         .getThreadDetailById(threadId, {
           activityLimit: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
@@ -2628,7 +2674,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         return;
       }
 
+      // A thread with more history than the bounded window is past its first
+      // turn, whatever the window happens to hold.
       const isFirstUserMessageTurn =
+        !threadMessageWindowMayBeTruncated(thread) &&
         thread.messages.filter((entry) => entry.role === "user").length === 1;
       if (isFirstUserMessageTurn) {
         const project = yield* resolveProject(thread.projectId);

@@ -98,9 +98,11 @@ const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapsho
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
 
 // A thread snapshot is a transport/read-model surface, not provider context.
-// Keep only the newest transport window. Provider context continues to use the
-// unbounded ingestion query; older UI history is fetched through indexed pages.
+// Keep only the newest transport window; older UI history is fetched through
+// indexed pages. Provider-side reads keep their own, wider windows.
 export const THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT = 100;
+/** Newest messages provider-event ingestion reads; see getThreadIngestionContext. */
+export const THREAD_INGESTION_MESSAGE_LIMIT = 400;
 // Tool-heavy turns can put tens of megabytes into only a few hundred activity
 // rows. Keep the initial window small enough to cross a remote/mobile link
 // promptly; the history endpoint supplies older activities in indexed pages.
@@ -1438,6 +1440,40 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           AND created_at >= ${since}
       `,
   });
+
+  /**
+   * Adds every still-queued held message missing from a bounded message
+   * window, in send order. A queued message can sit behind any number of
+   * newer rows, and the reactor's release loop must still see it.
+   */
+  const withQueuedHeldMessageRows = (
+    threadId: ThreadId,
+    windowRows: ReadonlyArray<Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>>,
+    obligationRows: Parameters<typeof heldMessageQueueStates>[0],
+  ) =>
+    Effect.gen(function* () {
+      const present = new Set<string>(windowRows.map((row) => row.messageId));
+      const missing = [...heldMessageQueueStates(obligationRows)]
+        .filter(([messageId, state]) => state === "queued" && !present.has(messageId))
+        .map(([messageId]) => MessageId.make(messageId));
+      if (missing.length === 0) return windowRows;
+      const found = yield* Effect.forEach(missing, (messageId) =>
+        getThreadMessageRowById({ threadId, messageId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailById:getQueuedHeldMessage:query",
+              "ProjectionSnapshotQuery.getThreadDetailById:getQueuedHeldMessage:decodeRow",
+            ),
+          ),
+        ),
+      );
+      const extra = found.flatMap((row) => (Option.isSome(row) ? [row.value] : []));
+      return [...extra, ...windowRows].toSorted((left, right) =>
+        left.createdAt === right.createdAt
+          ? left.messageId.localeCompare(right.messageId)
+          : left.createdAt.localeCompare(right.createdAt),
+      );
+    });
 
   /**
    * Queue states for the held messages in a window of message rows: the work
@@ -3420,7 +3456,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
-        listThreadMessageRowsByThread({ threadId }).pipe(
+        // Ingestion only looks at the turn in flight (its assistant rows,
+        // a message by id, the newest few for a handoff digest). Reading the
+        // whole thread cost ~570 ms per event on a 15k-message thread, all of
+        // it on the main thread.
+        listRecentThreadMessageRowsByThread({
+          threadId,
+          limit: THREAD_INGESTION_MESSAGE_LIMIT,
+        }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadIngestionContext:listMessages:query",
@@ -3515,12 +3558,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
        * callers act only on "queued", which the obligation already answers.
        */
       readonly resolveHeldMessageReceipts?: boolean;
+      /** See ProjectionSnapshotQueryShape.getThreadDetailById. */
+      readonly includeQueuedHeldMessages?: boolean;
     },
   ) =>
     Effect.gen(function* () {
       const [
         threadRow,
-        messageRows,
+        windowMessageRows,
         proposedPlanRows,
         activityRows,
         checkpointRows,
@@ -3615,6 +3660,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       if (Option.isNone(threadRow)) {
         return Option.none<OrchestrationThread>();
       }
+      const messageRows =
+        options?.includeQueuedHeldMessages === true && options.messageLimit !== undefined
+          ? yield* withQueuedHeldMessageRows(threadId, windowMessageRows, activeHeldRows)
+          : windowMessageRows;
       const heldQueueStates =
         options?.resolveHeldMessageReceipts === true
           ? yield* resolveHeldMessageQueueStates(

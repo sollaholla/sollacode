@@ -2831,6 +2831,88 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("a bounded detail read still returns every held message that is queued", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-bounded-held");
+      const oldQueued = asMessageId("held-user-message:old-queued");
+      const oldDelivered = asMessageId("held-user-message:old-delivered");
+
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM thread_work_obligations`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json,
+          scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-bounded-held', 'Bounded', '/tmp/bounded-held', NULL, '[]',
+          '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, latest_turn_id, latest_user_message_at, pending_approval_count,
+          pending_user_input_count, has_actionable_proposed_plan, created_at, updated_at, deleted_at
+        ) VALUES (
+          ${threadId}, 'project-bounded-held', 'Bounded',
+          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+          NULL, NULL, NULL, NULL, 0, 0, 0,
+          '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z', NULL
+        )
+      `;
+      const ids = [oldQueued, oldDelivered, ...[1, 2, 3].map((n) => asMessageId(`message-${n}`))];
+      for (const [index, messageId] of ids.entries()) {
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+          ) VALUES (
+            ${messageId}, ${threadId}, NULL, 'user', ${`text ${index}`}, 0,
+            ${`2026-08-02T00:00:0${index}.000Z`}, ${`2026-08-02T00:00:0${index}.000Z`}
+          )
+        `;
+      }
+      for (const [messageId, state] of [
+        [oldQueued, "pending"],
+        [oldDelivered, "completed"],
+      ] as const) {
+        yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state, provider_instance_id,
+            attempt, next_attempt_at, claimed_at, lease_expires_at, blocked_reason,
+            created_at, updated_at
+          ) VALUES (
+            ${`obligation-${messageId}`}, ${threadId}, ${`turn-start:${messageId}`},
+            'active-turn-recovery', ${state}, 'codex', 0, NULL, NULL, NULL, NULL,
+            '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z'
+          )
+        `;
+      }
+
+      const windowOnly = yield* snapshotQuery.getThreadDetailById(threadId, { messageLimit: 2 });
+      assert.deepEqual(
+        Option.getOrThrow(windowOnly).messages.map((message) => message.id),
+        [asMessageId("message-2"), asMessageId("message-3")],
+      );
+
+      const withQueued = yield* snapshotQuery.getThreadDetailById(threadId, {
+        messageLimit: 2,
+        includeQueuedHeldMessages: true,
+      });
+      const messages = Option.getOrThrow(withQueued).messages;
+      // The old queued message rides along in send order; the delivered one,
+      // equally old, does not.
+      assert.deepEqual(
+        messages.map((message) => message.id),
+        [oldQueued, asMessageId("message-2"), asMessageId("message-3")],
+      );
+      assert.equal(messages[0]?.queueState, "queued");
+    }),
+  );
+
   it.effect("preserves source-turn identity and ignores only synthetic resume intent", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

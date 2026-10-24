@@ -347,7 +347,15 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getThreadDetailById: (
     threadId: ThreadId,
-    options?: { readonly activityLimit?: number; readonly messageLimit?: number },
+    options?: {
+      readonly activityLimit?: number;
+      readonly messageLimit?: number;
+      /**
+       * With `messageLimit`: also return every held message still queued,
+       * however old, so a bounded read cannot hide one from the release loop.
+       */
+      readonly includeQueuedHeldMessages?: boolean;
+    },
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
 
   /**
