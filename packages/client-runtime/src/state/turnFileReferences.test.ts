@@ -88,6 +88,39 @@ describe("turn file references", () => {
       "C:/work/src/main.ts",
     ]);
   });
+  it("re-collecting the same items gives the same result, and a new cwd re-resolves them", () => {
+    const messages = [message("[Report](report.pdf) `src/main.ts`")];
+    const activities = [
+      { id: "tool-1", turnId: "turn-1", payload: { itemType: "file_read", path: "notes.md" } },
+    ];
+    const first = collect({ cwd: "/workspace", messages, activities });
+    const again = collect({ cwd: "/workspace", messages, activities });
+    expect(again).toEqual(first);
+    expect(again.get("turn-1")?.map((r) => r.path)).toEqual([
+      "/workspace/report.pdf",
+      "/workspace/src/main.ts",
+      "/workspace/notes.md",
+    ]);
+    expect(
+      collect({ cwd: "/elsewhere", messages, activities })
+        .get("turn-1")
+        ?.map((r) => r.path),
+    ).toEqual(["/elsewhere/report.pdf", "/elsewhere/src/main.ts", "/elsewhere/notes.md"]);
+    // A path both a message and an activity name is listed once, first source wins.
+    const shared = collect({
+      cwd: "/workspace",
+      messages: [message("[Notes](notes.md)")],
+      activities,
+    }).get("turn-1");
+    expect(shared).toEqual([
+      {
+        path: "/workspace/notes.md",
+        name: "notes.md",
+        kind: "document",
+        sourceMessageId: "message-1",
+      },
+    ]);
+  });
   it("bounds references per turn", () => {
     expect(
       collect({

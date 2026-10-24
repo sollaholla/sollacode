@@ -1,8 +1,11 @@
+import { appendInterruptedTasksNotice } from "@t3tools/shared/interruptedTasksNotice";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  assistantMessageHasVisibleBody,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  deriveTimelineMinimapItems,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   visibleAssistantMessageText,
@@ -1817,5 +1820,67 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(reordered).not.toBe(initial);
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
+  });
+});
+
+describe("assistantMessageHasVisibleBody", () => {
+  const planText = "<proposed_plan>\n# Ship it\n</proposed_plan>\n";
+  it.each([
+    ["", undefined],
+    ["\n", undefined],
+    ["\n\n  \n", undefined],
+    ["  ﻿\t", undefined],
+    ["\n\nHello\n\n\n\nworld\n", undefined],
+    ["  x  ", undefined],
+    [planText, undefined],
+    [planText, new Set(["# Ship it"])],
+    [`Here is the plan.\n${planText}`, new Set(["# Ship it"])],
+    [planText, new Set(["# Another plan"])],
+  ])("agrees with the visible text for %j", (text, shownPlanMarkdowns) => {
+    expect(assistantMessageHasVisibleBody({ text }, shownPlanMarkdowns)).toBe(
+      visibleAssistantMessageText(text, shownPlanMarkdowns).length > 0,
+    );
+  });
+});
+
+describe("deriveTimelineMinimapItems", () => {
+  const message = (id: string, role: "user" | "assistant", text: string) => ({
+    kind: "message" as const,
+    id,
+    createdAt: "2026-01-01T00:00:00Z",
+    message: {
+      id: id as never,
+      role,
+      text,
+      turnId: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      streaming: false,
+    },
+    durationStart: "2026-01-01T00:00:00Z",
+    showAssistantMeta: false,
+    showAssistantCopyButton: false,
+    assistantCopyStreaming: false,
+  });
+
+  it("previews each user message with the turn's final reply", () => {
+    const rows = [
+      message("u1", "user", appendInterruptedTasksNotice("  Fix   the\nbuild ", ["Lint"])),
+      message("a1", "assistant", "Looking"),
+      message("a2", "assistant", "Done:\n  all   green"),
+      message("u2", "user", "Thanks"),
+    ];
+    expect(deriveTimelineMinimapItems(rows)).toEqual([
+      { id: "u1", rowIndex: 0, userText: "Fix the build", assistantText: "Done: all green" },
+      { id: "u2", rowIndex: 3, userText: "Thanks", assistantText: null },
+    ]);
+  });
+
+  it("follows a reply as it streams", () => {
+    const user = message("u1", "user", "Go");
+    const first = deriveTimelineMinimapItems([user, message("a1", "assistant", "Work")]);
+    const second = deriveTimelineMinimapItems([user, message("a1", "assistant", "Working on it")]);
+    expect(first[0]?.assistantText).toBe("Work");
+    expect(second[0]?.assistantText).toBe("Working on it");
   });
 });

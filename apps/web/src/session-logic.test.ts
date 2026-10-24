@@ -2441,4 +2441,57 @@ describe("deriveWorkLogEntries row reuse", () => {
     expect(appendedEntries[0]).toBe(initialEntries[0]);
     expect(appendedEntries[1]).toBe(initialEntries[1]);
   });
+
+  it("reuses a collapsed tool row while the activities it folds are unchanged", () => {
+    const toolPayload = (status: string) => ({
+      itemType: "command_execution",
+      status,
+      data: { toolCallId: "folded-call", item: { command: ["git", "status"] } },
+    });
+    const updated = makeActivity({
+      id: "folded-updated",
+      kind: "tool.updated",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      payload: toolPayload("inProgress"),
+    });
+    const completed = makeActivity({
+      id: "folded-completed",
+      kind: "tool.completed",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      payload: toolPayload("completed"),
+    });
+    const later = makeActivity({
+      id: "folded-later",
+      kind: "task.progress",
+      createdAt: "2026-02-23T00:00:03.000Z",
+      payload: { summary: "Still going" },
+    });
+
+    const first = deriveWorkLogEntries([updated, completed]);
+    const second = deriveWorkLogEntries([updated, completed, later]);
+    expect(first).toHaveLength(1);
+    expect(second[0]).toBe(first[0]);
+    expect(second[0]?.toolLifecycleStatus).toBe("completed");
+  });
+
+  it("orders the shown activities as the full list orders them", () => {
+    const at = (second: number) => `2026-02-23T00:00:0${second}.000Z`;
+    const activities = [
+      makeActivity({ id: "seq-late", kind: "task.progress", createdAt: at(0), sequence: 9 }),
+      makeActivity({ id: "hidden", kind: "context-window.updated", createdAt: at(1) }),
+      makeActivity({ id: "completed", kind: "task.completed", createdAt: at(2) }),
+      makeActivity({ id: "seq-early", kind: "task.progress", createdAt: at(5), sequence: 3 }),
+      makeActivity({ id: "progress", kind: "task.progress", createdAt: at(2) }),
+      makeActivity({ id: "first", kind: "task.progress", createdAt: at(1) }),
+    ];
+    // Unsequenced first by time (progress before completed at the same
+    // instant), then sequenced by sequence; hidden kinds take no place.
+    expect(deriveWorkLogEntries(activities).map((entry) => entry.id)).toEqual([
+      "first",
+      "progress",
+      "completed",
+      "seq-early",
+      "seq-late",
+    ]);
+  });
 });

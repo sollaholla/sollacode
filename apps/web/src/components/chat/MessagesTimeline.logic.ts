@@ -3,6 +3,7 @@ import {
   type WorkLogImage,
 } from "@t3tools/client-runtime/state/work-log-images";
 import { resolveSettingsUpdates } from "@t3tools/client-runtime/state/settings-updates";
+import { extractTrailingInterruptedTasksNotice } from "@t3tools/shared/interruptedTasksNotice";
 import { withoutShownProposedPlanBlocks } from "@t3tools/shared/proposedPlans";
 import * as Equal from "effect/Equal";
 import {
@@ -334,10 +335,12 @@ export function visibleAssistantMessageText(
 
 export function assistantMessageHasVisibleBody(
   message: Pick<ChatMessage, "text" | "attachments">,
-  shownPlanMarkdowns?: ReadonlySet<string>,
+  shownPlanMarkdowns: ReadonlySet<string> = NO_SHOWN_PLAN_MARKDOWNS,
 ): boolean {
   if ((message.attachments?.length ?? 0) > 0) return true;
-  return visibleAssistantMessageText(message.text, shownPlanMarkdowns).length > 0;
+  // Trimming leaves something exactly when a non-space character exists, so
+  // test for one instead of building the visible text of every reply.
+  return /\S/.test(withoutShownProposedPlanBlocks(message.text ?? "", shownPlanMarkdowns));
 }
 
 /**
@@ -925,6 +928,83 @@ export function deriveMessagesTimelineRows(input: {
   return nextRows;
 }
 
+export interface TimelineMinimapItem {
+  readonly id: string;
+  readonly rowIndex: number;
+  readonly userText: string | null;
+  readonly assistantText: string | null;
+}
+
+// Messages are immutable and the minimap is rebuilt on every streamed update;
+// each message's preview is computed once rather than once per update.
+const minimapUserPreviewByMessage = new WeakMap<ChatMessage, string | null>();
+const minimapAssistantPreviewByMessage = new WeakMap<ChatMessage, string | null>();
+
+/** One minimap item per user message, previewing it and the turn's final reply. */
+export function deriveTimelineMinimapItems(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): TimelineMinimapItem[] {
+  const items: TimelineMinimapItem[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row?.kind !== "message" || row.message.role !== "user") {
+      continue;
+    }
+    const finalAssistantMessage = resolveFinalAssistantMessageForTurn(rows, index);
+    items.push({
+      id: row.id,
+      rowIndex: index,
+      userText: minimapUserPreview(row.message),
+      assistantText:
+        finalAssistantMessage === null ? null : minimapAssistantPreview(finalAssistantMessage),
+    });
+  }
+  return items;
+}
+
+function minimapUserPreview(message: ChatMessage): string | null {
+  let preview = minimapUserPreviewByMessage.get(message);
+  if (preview === undefined) {
+    preview = compactMinimapPreview(extractTrailingInterruptedTasksNotice(message.text).promptText);
+    minimapUserPreviewByMessage.set(message, preview);
+  }
+  return preview;
+}
+
+function minimapAssistantPreview(message: ChatMessage): string | null {
+  let preview = minimapAssistantPreviewByMessage.get(message);
+  if (preview === undefined) {
+    preview = compactMinimapPreview(message.text ?? null);
+    minimapAssistantPreviewByMessage.set(message, preview);
+  }
+  return preview;
+}
+
+function resolveFinalAssistantMessageForTurn(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  userRowIndex: number,
+): ChatMessage | null {
+  let finalAssistantMessage: ChatMessage | null = null;
+  for (let index = userRowIndex + 1; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row?.kind !== "message") {
+      continue;
+    }
+    if (row.message.role === "user") {
+      break;
+    }
+    if (row.message.role === "assistant") {
+      finalAssistantMessage = row.message;
+    }
+  }
+  return finalAssistantMessage;
+}
+
+function compactMinimapPreview(text: string | null | undefined) {
+  const compact = text?.replace(/\s+/g, " ").trim() ?? "";
+  return compact.length > 0 ? compact : null;
+}
+
 export function computeStableMessagesTimelineRows(
   rows: MessagesTimelineRow[],
   previous: StableMessagesTimelineRowsState,
@@ -945,6 +1025,19 @@ export function computeStableMessagesTimelineRows(
   return anyChanged ? { byId: next, result } : previous;
 }
 
+/**
+ * Work entries keep their identity across derivations while their activities
+ * do, so the element-wise identity check settles almost every row before the
+ * structural comparison has to walk the entries.
+ */
+function sameEntriesOrEqual(
+  a: ReadonlyArray<WorkLogEntry>,
+  b: ReadonlyArray<WorkLogEntry>,
+): boolean {
+  if (a.length === b.length && a.every((entry, index) => entry === b[index])) return true;
+  return Equal.equals(a, b);
+}
+
 /** Shallow field comparison per row variant — avoids deep equality cost. */
 function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean {
   if (a.kind !== b.kind || a.id !== b.id) return false;
@@ -962,7 +1055,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       return a.proposedPlan === (b as typeof a).proposedPlan;
 
     case "work":
-      return Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries);
+      return sameEntriesOrEqual(a.groupedEntries, (b as typeof a).groupedEntries);
 
     case "provider-transition": {
       const bp = b as typeof a;

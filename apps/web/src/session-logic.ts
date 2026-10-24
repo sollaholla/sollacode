@@ -171,6 +171,16 @@ const derivedWorkLogEntryByActivity = new WeakMap<
   OrchestrationThreadActivity,
   DerivedWorkLogEntry
 >();
+// A collapsed tool row is a pure function of the two rows it folds, so the
+// same pair yields the same object on every derivation. Keeping its identity
+// lets per-entry caches and row comparisons skip unchanged tool calls.
+const mergedWorkLogEntryByPair = new WeakMap<
+  DerivedWorkLogEntry,
+  WeakMap<DerivedWorkLogEntry, DerivedWorkLogEntry>
+>();
+// Entries never change after derivation; the failure heuristic scans the
+// whole detail text, and the timeline asks it of every work row per render.
+const toolFailureByWorkLogEntry = new WeakMap<WorkLogEntry, boolean>();
 
 export interface PendingApproval {
   requestId: ApprovalRequestId;
@@ -315,6 +325,16 @@ function toolDetailTextLooksLikeFailure(text: string): boolean {
 
 /** True when the row should show a failure affordance (explicit status/tone or error-shaped tool output). */
 export function workEntryIndicatesToolFailure(entry: WorkLogEntry): boolean {
+  const cached = toolFailureByWorkLogEntry.get(entry);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const failed = deriveWorkEntryIndicatesToolFailure(entry);
+  toolFailureByWorkLogEntry.set(entry, failed);
+  return failed;
+}
+
+function deriveWorkEntryIndicatesToolFailure(entry: WorkLogEntry): boolean {
   if (entry.tone === "error") {
     return true;
   }
@@ -457,7 +477,14 @@ export function derivePendingApprovals(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingApproval[] {
   const openByRequestId = new Map<ApprovalRequestId, PendingApproval>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const ordered = activities
+    .filter(
+      (activity) =>
+        activity.kind === "approval.requested" ||
+        activity.kind === "approval.resolved" ||
+        activity.kind === "provider.approval.respond.failed",
+    )
+    .toSorted(compareActivitiesByOrder);
 
   for (const activity of ordered) {
     const payload =
@@ -574,7 +601,14 @@ export function derivePendingUserInputs(
   latestTurnId?: TurnId,
 ): PendingUserInput[] {
   const openByRequestId = new Map<ApprovalRequestId, PendingUserInput>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const ordered = activities
+    .filter(
+      (activity) =>
+        activity.kind === "user-input.requested" ||
+        activity.kind === "user-input.resolved" ||
+        activity.kind === "provider.user-input.respond.failed",
+    )
+    .toSorted(compareActivitiesByOrder);
 
   for (const activity of ordered) {
     const payload =
@@ -630,7 +664,11 @@ export function deriveTaskListState(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   proposedPlans: ReadonlyArray<Pick<ProposedPlan, "id" | "createdAt">> = [],
 ): TaskListState | null {
-  const latest = selectCurrentTaskList([...activities].toSorted(compareActivitiesByOrder), {
+  // Only task-list activities can be selected, so only they need ordering.
+  const taskListActivities = activities
+    .filter((activity) => activity.kind === TASK_LIST_ACTIVITY_KIND)
+    .toSorted(compareActivitiesByOrder);
+  const latest = selectCurrentTaskList(taskListActivities, {
     newestProposedPlanCreatedAt: newestProposedPlan(proposedPlans)?.createdAt ?? null,
   });
   if (!latest) {
@@ -722,41 +760,46 @@ export function findPanelProposedPlan(input: {
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const recoveredErrors = recoveredRuntimeErrorIds(activities);
-  const entries: DerivedWorkLogEntry[] = [];
-  for (const activity of ordered) {
-    if (activity.kind === "runtime.error" && recoveredErrors.has(activity.id)) continue;
-    if (isProviderInterruptionErrorActivity(activity)) continue;
-    if (activity.kind === "tool.started") continue;
-    if (activity.kind === "task.started") continue;
-    if (activity.kind === "context-window.updated") continue;
-    // Optimizer summaries are background-only telemetry now; skip persisted ones too.
-    if (activity.kind === "token-optimizer.applied") continue;
-    // A delivery receipt drives the message checkmarks, nothing else. Rendered
-    // here it would add a line per message — the same noise that got the
-    // optimizer summary pulled out of the log.
-    if (
-      activity.kind === MESSAGE_DELIVERED_ACTIVITY_KIND ||
-      activity.kind === QUEUED_MESSAGES_PROMOTED_ACTIVITY_KIND
-    ) {
-      continue;
-    }
-    if (activity.kind === "provider.usage.updated") continue;
-    // Token accounting for Settings → Projects, not something that happened.
-    if (activity.kind === TURN_USAGE_ACTIVITY_KIND) continue;
-    // The retry marker already drives the Working row's "provider slow" label;
-    // a second line in the log for the same fact was reported as noise.
-    if (activity.kind === "provider.overload.retrying") continue;
-    if (isRoutineMusePollingNotice(activity)) continue;
-    // Filter before grouping/folding: hiding only the inner content leaves
-    // a bordered, padded work card behind for persisted Thinking receipts.
-    if (isReasoningStatusPlaceholder(activity)) continue;
-    if (activity.summary === "Checkpoint captured") continue;
-    if (isPlanBoundaryToolActivity(activity)) continue;
-    entries.push(toDerivedWorkLogEntry(activity));
+  const shown = activities
+    .filter((activity) => isWorkLogActivity(activity, recoveredErrors))
+    .toSorted(compareActivitiesByOrder);
+  return collapseDerivedWorkLogEntries(shown.map((activity) => toDerivedWorkLogEntry(activity)));
+}
+
+function isWorkLogActivity(
+  activity: OrchestrationThreadActivity,
+  recoveredErrors: ReadonlySet<string>,
+): boolean {
+  if (activity.kind === "runtime.error" && recoveredErrors.has(activity.id)) return false;
+  if (isProviderInterruptionErrorActivity(activity)) return false;
+  if (activity.kind === "tool.started") return false;
+  if (activity.kind === "task.started") return false;
+  if (activity.kind === "context-window.updated") return false;
+  // Optimizer summaries are background-only telemetry now; skip persisted ones too.
+  if (activity.kind === "token-optimizer.applied") return false;
+  // A delivery receipt drives the message checkmarks, nothing else. Rendered
+  // here it would add a line per message — the same noise that got the
+  // optimizer summary pulled out of the log.
+  if (
+    activity.kind === MESSAGE_DELIVERED_ACTIVITY_KIND ||
+    activity.kind === QUEUED_MESSAGES_PROMOTED_ACTIVITY_KIND
+  ) {
+    return false;
   }
-  return collapseDerivedWorkLogEntries(entries);
+  if (activity.kind === "provider.usage.updated") return false;
+  // Token accounting for Settings → Projects, not something that happened.
+  if (activity.kind === TURN_USAGE_ACTIVITY_KIND) return false;
+  // The retry marker already drives the Working row's "provider slow" label;
+  // a second line in the log for the same fact was reported as noise.
+  if (activity.kind === "provider.overload.retrying") return false;
+  if (isRoutineMusePollingNotice(activity)) return false;
+  // Filter before grouping/folding: hiding only the inner content leaves
+  // a bordered, padded work card behind for persisted Thinking receipts.
+  if (isReasoningStatusPlaceholder(activity)) return false;
+  if (activity.summary === "Checkpoint captured") return false;
+  if (isPlanBoundaryToolActivity(activity)) return false;
+  return true;
 }
 
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {
@@ -946,12 +989,29 @@ function collapseDerivedWorkLogEntries(
   for (const entry of entries) {
     const previous = collapsed.at(-1);
     if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
-      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
+      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntriesOnce(previous, entry);
       continue;
     }
     collapsed.push(entry);
   }
   return collapsed;
+}
+
+function mergeDerivedWorkLogEntriesOnce(
+  previous: DerivedWorkLogEntry,
+  next: DerivedWorkLogEntry,
+): DerivedWorkLogEntry {
+  let mergedByNext = mergedWorkLogEntryByPair.get(previous);
+  if (mergedByNext === undefined) {
+    mergedByNext = new WeakMap();
+    mergedWorkLogEntryByPair.set(previous, mergedByNext);
+  }
+  let merged = mergedByNext.get(next);
+  if (merged === undefined) {
+    merged = mergeDerivedWorkLogEntries(previous, next);
+    mergedByNext.set(next, merged);
+  }
+  return merged;
 }
 
 function shouldCollapseToolLifecycleEntries(
@@ -1600,6 +1660,12 @@ function extractChangedFiles(payload: Record<string, unknown> | null): string[] 
   return changedFiles;
 }
 
+/**
+ * Display order for activities. Callers filter to the kinds they read before
+ * sorting: the sort is stable, so the kept activities land in the same order
+ * they would have inside the full list, and a long thread has far fewer of any
+ * one kind than activities overall.
+ */
 function compareActivitiesByOrder(
   left: OrchestrationThreadActivity,
   right: OrchestrationThreadActivity,
