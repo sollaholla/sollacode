@@ -1144,6 +1144,15 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         });
         yield* commit("local only");
         yield* expectSameStatus("default branch ahead", { aheadCount: 1, behindCount: 0 });
+        // Listed before the checked-out branch at the same commit, without an upstream, so
+        // only the %(HEAD) marker tells the two apart.
+        yield* git(cwd, ["branch", "0-sibling"]);
+        yield* expectSameStatus("another branch at HEAD's commit sorts first", {
+          branch: initialBranch,
+          upstreamRef: `origin/${initialBranch}`,
+          aheadCount: 1,
+        });
+        yield* git(cwd, ["branch", "-D", "0-sibling"]);
 
         yield* git(cwd, ["checkout", "-b", "feature/tracked"]);
         yield* commit("feature");
