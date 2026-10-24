@@ -32,6 +32,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
+  OrchestrationCommandIdConflictError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
@@ -48,6 +49,7 @@ import {
 const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
   OrchestrationCommandPreviouslyRejectedError,
 );
+const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdConflictError);
 const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvariantError);
 
 interface CommandEnvelope {
@@ -107,6 +109,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
     const dispatchStartSequence = commandReadModel.snapshotSequence;
+    // Events this dispatch appended. Reconcile republishes only these: a
+    // shared state directory can contain events another server already
+    // handled, and republishing them starts a second provider turn.
+    const appendedEventIds = new Set<OrchestrationEvent["eventId"]>();
     let processingStartedAtMs = 0;
     const aggregateRef = commandToAggregateRef(envelope.command);
     const baseMetricAttributes = {
@@ -124,7 +130,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       commandReadModel = yield* projectEventsOntoReadModel(commandReadModel, persistedEvents);
 
       for (const persistedEvent of persistedEvents) {
-        yield* PubSub.publish(eventPubSub, persistedEvent);
+        if (appendedEventIds.has(persistedEvent.eventId)) {
+          yield* PubSub.publish(eventPubSub, persistedEvent);
+        }
       }
     });
 
@@ -142,6 +150,21 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           commandId: envelope.command.commandId,
         });
         if (Option.isSome(existingReceipt)) {
+          // A receipt only proves this exact command was handled. Replaying it
+          // for a command aimed at another aggregate would report success for
+          // work that never happened.
+          if (
+            existingReceipt.value.aggregateKind !== aggregateRef.aggregateKind ||
+            existingReceipt.value.aggregateId !== aggregateRef.aggregateId
+          ) {
+            return yield* new OrchestrationCommandIdConflictError({
+              commandId: envelope.command.commandId,
+              receiptAggregateKind: existingReceipt.value.aggregateKind,
+              receiptAggregateId: existingReceipt.value.aggregateId,
+              commandAggregateKind: aggregateRef.aggregateKind,
+              commandAggregateId: aggregateRef.aggregateId,
+            });
+          }
           if (existingReceipt.value.status === "accepted") {
             return {
               sequence: existingReceipt.value.resultSequence,
@@ -177,6 +200,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
               for (const nextEvent of eventBases) {
                 const savedEvent = yield* eventStore.append(nextEvent);
+                appendedEventIds.add(savedEvent.eventId);
                 nextCommandReadModel = yield* projectEvent(nextCommandReadModel, savedEvent);
                 yield* projectionPipeline.projectEvent(savedEvent);
                 committedEvents.push(savedEvent);
@@ -286,7 +310,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
 
           const error = Cause.squash(exit.cause) as OrchestrationDispatchError;
-          if (!isOrchestrationCommandPreviouslyRejectedError(error)) {
+          if (
+            !isOrchestrationCommandPreviouslyRejectedError(error) &&
+            !isOrchestrationCommandIdConflictError(error)
+          ) {
             yield* reconcileReadModelAfterDispatchFailure.pipe(
               Effect.catch(() =>
                 Effect.logWarning(

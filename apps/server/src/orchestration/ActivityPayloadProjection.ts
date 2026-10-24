@@ -4,6 +4,7 @@ import type {
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadHistoryPage,
 } from "@t3tools/contracts";
+import { readImageToolOutputPath } from "@t3tools/shared/filePreview";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -153,6 +154,88 @@ function projectRawOutput(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
+ * Longest text a client is sent from inside an MCP tool result. The expanded
+ * row and Copy show the whole MCP item as JSON, and a person reads the start of
+ * a result, not 100 KB of an accessibility tree or a task list. A cut string
+ * says how much was left out; the full text stays in persistence.
+ */
+export const MCP_RESULT_STRING_MAX_CHARS = 8_192;
+
+function capString(value: string): string {
+  if (value.length <= MCP_RESULT_STRING_MAX_CHARS) {
+    return value;
+  }
+  let end = MCP_RESULT_STRING_MAX_CHARS;
+  // Never cut a surrogate pair in half.
+  const last = value.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) {
+    end -= 1;
+  }
+  return `${value.slice(0, end)}… [${value.length - end} more characters not shown]`;
+}
+
+/** Same reference back when nothing needed capping, so the common row costs no copy. */
+function capStrings(value: unknown): unknown {
+  if (typeof value === "string") {
+    return capString(value);
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next = value.map((entry) => {
+      const capped = capStrings(entry);
+      changed ||= capped !== entry;
+      return capped;
+    });
+    return changed ? next : value;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return value;
+  }
+  // An image block's `data` is base64 the client renders; cutting it would
+  // corrupt the picture rather than shorten a text.
+  const isImage = record.type === "image";
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    const capped = isImage && key === "data" ? entry : capStrings(entry);
+    changed ||= capped !== entry;
+    next[key] = capped;
+  }
+  return changed ? next : value;
+}
+
+/**
+ * MCP results arrive with the same payload twice: `content` (what a model and
+ * the client read) and `structuredContent` (a copy no client reads). Only the
+ * copy goes, and only when `content` is there to stand in for it. `arguments`,
+ * `server` and `tool` are left exactly as sent: the client inspects them to
+ * label computer-control calls.
+ */
+function projectMcpToolCallActivity(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown>,
+  data: Record<string, unknown>,
+): OrchestrationThreadActivity {
+  const item = asRecord(data.item);
+  const result = asRecord(item?.result);
+  if (!item || !result) {
+    return activity;
+  }
+  const hasDuplicate =
+    "structuredContent" in result && Array.isArray(result.content) && result.content.length > 0;
+  const { structuredContent: _duplicate, ...withoutDuplicate } = result;
+  const trimmed = capStrings(hasDuplicate ? withoutDuplicate : result);
+  if (!hasDuplicate && trimmed === result) {
+    return activity;
+  }
+  return {
+    ...activity,
+    payload: { ...payload, data: { ...data, item: { ...item, result: trimmed } } },
+  };
+}
+
+/**
  * Removes activity payload fields that no current client reads while retaining
  * the full payload in persistence and the event store.
  */
@@ -161,11 +244,18 @@ export function projectActivityPayload(
 ): OrchestrationThreadActivity {
   const payload = asRecord(activity.payload);
   const data = asRecord(payload?.data);
-  if (!payload || !data || payload.itemType === "mcp_tool_call") {
+  if (!payload || !data) {
     return activity;
+  }
+  if (payload.itemType === "mcp_tool_call") {
+    return projectMcpToolCallActivity(activity, payload, data);
   }
 
   const projectedData: Record<string, unknown> = {};
+  // Keep the full image path even when the display detail was shortened or the
+  // provider uses savedPath/params instead of the generic file-list keys.
+  const imagePath = readImageToolOutputPath(payload);
+  if (imagePath) projectedData.path = imagePath;
   const item = projectCommandData(data);
   if (item) {
     projectedData.item = item;

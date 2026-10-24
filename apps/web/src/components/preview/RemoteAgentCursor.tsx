@@ -6,6 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from
 
 import { AgentCursorArrow } from "./AgentBrowserCursor";
 import { agentBrowserCursorOpacity, type BrowserController } from "./agentBrowserCursorLogic";
+import { useAgentCursorGlide } from "./useAgentCursorGlide";
 
 const CURSOR_ACTIVE_MS = 700;
 
@@ -45,8 +46,8 @@ export function RemoteAgentCursor(props: {
       style={props.style}
     >
       {props.pointer && rect ? (
+        // Not keyed by the point: one cursor glides between them.
         <RemoteAgentCursorPoint
-          key={props.pointer.sequence}
           pointer={props.pointer}
           x={rect.left + props.pointer.x * rect.width}
           y={rect.top + props.pointer.y * rect.height}
@@ -64,19 +65,22 @@ function RemoteAgentCursorPoint(props: {
   readonly controller: BrowserController;
 }) {
   // Bright for a moment after each new point, as on the desktop.
-  const [active, setActive] = useState(true);
+  const sequence = props.pointer.sequence;
+  const [restingSequence, setRestingSequence] = useState<number | null>(null);
+  const active = restingSequence !== sequence;
   useEffect(() => {
-    const timeout = window.setTimeout(() => setActive(false), CURSOR_ACTIVE_MS);
+    const timeout = window.setTimeout(() => setRestingSequence(sequence), CURSOR_ACTIVE_MS);
     return () => window.clearTimeout(timeout);
-  }, []);
+  }, [sequence]);
+  const nodeRef = useRef<HTMLDivElement>(null);
+  useAgentCursorGlide(nodeRef, { x: props.x, y: props.y }, sequence);
   return (
     <div
+      ref={nodeRef}
       className="absolute left-0 top-0 transition-opacity duration-150 ease-out motion-reduce:transition-none"
       data-remote-agent-cursor
-      style={{
-        opacity: agentBrowserCursorOpacity(active, props.controller),
-        transform: `translate3d(${props.x}px, ${props.y}px, 0)`,
-      }}
+      // No transform here: the glide owns it, and a render must not reset it.
+      style={{ opacity: agentBrowserCursorOpacity(active, props.controller) }}
     >
       <AgentCursorArrow phase={props.pointer.phase} sequence={props.pointer.sequence} />
     </div>

@@ -43,6 +43,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
+import { makeCodexTurnUsageTracker } from "../codexTurnUsage.ts";
 import { stripSyntheticCodexRateLimitSnapshot } from "../codexRateLimitPlaceholders.ts";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -518,6 +519,43 @@ function mapItemLifecycle(
       ...(event.payload !== undefined ? { data: event.payload } : {}),
     },
   };
+}
+
+/**
+ * Adds a completed turn's token usage, measured by the session's tracker, to
+ * its `turn.completed`.
+ */
+function withCodexTurnUsage(
+  tracker: ReturnType<typeof makeCodexTurnUsageTracker>,
+  event: ProviderEvent,
+  runtimeEvents: ReadonlyArray<ProviderRuntimeEvent>,
+): ReadonlyArray<ProviderRuntimeEvent> {
+  if (event.method === "thread/tokenUsage/updated") {
+    const payload = readPayload(
+      EffectCodexSchema.V2ThreadTokenUsageUpdatedNotification,
+      event.payload,
+    );
+    if (payload) {
+      tracker.observe({
+        threadId: payload.threadId,
+        turnId: payload.turnId,
+        total: payload.tokenUsage.total,
+        last: payload.tokenUsage.last,
+      });
+    }
+    return runtimeEvents;
+  }
+  if (event.method !== "turn/completed") return runtimeEvents;
+  const payload = readPayload(EffectCodexSchema.V2TurnCompletedNotification, event.payload);
+  const usage = payload
+    ? tracker.complete({ threadId: payload.threadId, turnId: payload.turn.id })
+    : undefined;
+  if (usage === undefined) return runtimeEvents;
+  return runtimeEvents.map((runtimeEvent) =>
+    runtimeEvent.type === "turn.completed"
+      ? { ...runtimeEvent, payload: { ...runtimeEvent.payload, turnUsage: usage } }
+      : runtimeEvent,
+  );
 }
 
 function mapToRuntimeEvents(
@@ -1580,6 +1618,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         );
 
         let startAccepted = false;
+        const turnUsage = makeCodexTurnUsageTracker();
         const eventFiber = yield* Stream.runForEach(
           runtime.events,
           (event) =>
@@ -1592,7 +1631,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 (event.method === "session/closed" || event.method === "session/exited")
               )
                 return;
-              const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+              const runtimeEvents = withCodexTurnUsage(
+                turnUsage,
+                event,
+                mapToRuntimeEvents(event, event.threadId),
+              );
               if (runtimeEvents.length === 0) {
                 yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                   method: event.method,

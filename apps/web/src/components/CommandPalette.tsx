@@ -33,6 +33,8 @@ import {
   FileSearchIcon,
   FolderIcon,
   FolderPlusIcon,
+  FoldersIcon,
+  MonitorPlayIcon,
   KeyRoundIcon,
   LinkIcon,
   ServerIcon,
@@ -98,6 +100,7 @@ import {
 } from "../wslPaths";
 import {
   ADDON_ICON_CLASS,
+  browseInputEndPaddingClass,
   buildBrowseGroups,
   buildProjectActionItems,
   buildRootGroups,
@@ -1436,7 +1439,7 @@ function OpenCommandPaletteDialog(props: {
           </>
         ),
         icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
-        shortcutCommand: "chat.new",
+        shortcutCommand: "chat.newLocal",
         run: async () => {
           await startNewThreadFromContext({
             activeDraftThread,
@@ -1561,6 +1564,51 @@ function OpenCommandPaletteDialog(props: {
     },
   });
 
+  actionItems.push({
+    kind: "action",
+    value: "action:manage-projects",
+    searchTerms: [
+      "projects",
+      "manage projects",
+      "rename project",
+      "delete project",
+      "remove project",
+      "token usage",
+      "tokens",
+      "spend",
+      "cost",
+      "storage",
+      "disk space",
+    ],
+    title: "Manage projects",
+    icon: <FoldersIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings/projects" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:live-inspector",
+    searchTerms: [
+      "live inspector",
+      "live",
+      "watch",
+      "what are the agents doing",
+      "activity",
+      "realtime",
+      "orchestrator",
+      "monitor",
+    ],
+    title: "Open Live Inspector",
+    description: "Watch every thread work as it happens",
+    icon: <MonitorPlayIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "orchestrator.live.toggle",
+    run: async () => {
+      await navigate({ to: "/orchestrator/live" });
+    },
+  });
+
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   const sourceSelectionViewValue =
     addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
@@ -1639,7 +1687,7 @@ function OpenCommandPaletteDialog(props: {
           existing.id,
           clientSettings.sidebarThreadSortOrder,
         );
-        if (latestThread) {
+        if (latestThread && latestThread.settledOverride !== "settled") {
           await navigate({
             to: "/$environmentId/$threadId",
             params: buildThreadRouteParams(
@@ -2326,13 +2374,16 @@ function OpenCommandPaletteDialog(props: {
       footerTrailing={footerTrailing}
       inputAccessory={inputAccessory}
       inputProps={{
+        // The submit button is absolutely positioned over the field, so the
+        // inner input must reserve enough room for the full action label.
         className:
           addProjectCloneFlow?.step === "repository"
-            ? "pe-32"
+            ? "*:data-[slot=autocomplete-input]:pe-32!"
             : isBrowsing
-              ? willCreateProjectPath
-                ? "pe-36"
-                : "pe-16"
+              ? browseInputEndPaddingClass({
+                  willCreateProjectPath,
+                  hasHighlightedBrowseItem,
+                })
               : undefined,
         placeholder: inputPlaceholder,
         wrapperClassName: isSubmenu

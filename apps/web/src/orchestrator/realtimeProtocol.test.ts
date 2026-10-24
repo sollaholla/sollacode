@@ -69,6 +69,7 @@ describe("toolsForAuthority", () => {
       "run_command",
       "create_project",
       "approve_proposed_plan",
+      "close_proposed_plan",
       "get_usage",
       "list_project_files",
       "read_project_file",

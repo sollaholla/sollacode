@@ -11,6 +11,7 @@ import {
 
 vi.mock("~/previewStateStore", () => ({
   applyPreviewServerSnapshot: vi.fn(),
+  rememberPreviewUrl: vi.fn(),
   isPreviewSupportedInRuntime: () => true,
 }));
 
@@ -127,4 +128,43 @@ describe("openTerminalLinkInPreview", () => {
     expect(reportError).not.toHaveBeenCalled();
     expect(fallbackToBrowser).not.toHaveBeenCalled();
   });
+});
+
+it("opens a remote LAN terminal link immediately without showing a menu", async () => {
+  const show = vi.fn();
+  const openPreview = vi.fn(async () => AsyncResult.success(snapshot));
+  const fallbackToBrowser = vi.fn();
+  await openTerminalLinkInPreview({
+    url: "http://192.168.1.20:3000/path?x=1#part",
+    isRemoteClient: true,
+    position: { x: 0, y: 0 },
+    threadRef,
+    openPreview,
+    localApi: { contextMenu: { show } } as unknown as LocalApi,
+    fallbackToBrowser,
+  });
+  expect(show).not.toHaveBeenCalled();
+  expect(openPreview).toHaveBeenCalledExactlyOnceWith({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId, url: "http://192.168.1.20:3000/path?x=1#part" },
+  });
+  expect(fallbackToBrowser).not.toHaveBeenCalled();
+});
+
+it("reports a failed remote LAN preview without opening the device browser", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const fallbackToBrowser = vi.fn();
+  const reportPreviewFailure = vi.fn();
+  await openTerminalLinkInPreview({
+    url: "http://localhost:3000/",
+    isRemoteClient: true,
+    position: { x: 0, y: 0 },
+    threadRef,
+    openPreview: async () => AsyncResult.failure(Cause.fail(new Error("offline"))),
+    localApi: { contextMenu: { show: vi.fn() } } as unknown as LocalApi,
+    fallbackToBrowser,
+    reportPreviewFailure,
+  });
+  expect(reportPreviewFailure).toHaveBeenCalledOnce();
+  expect(fallbackToBrowser).not.toHaveBeenCalled();
 });

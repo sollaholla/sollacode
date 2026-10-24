@@ -7,6 +7,7 @@ import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
+import { toEventWindows } from "./eventWindow.ts";
 
 export function createRemoteControlEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -15,15 +16,22 @@ export function createRemoteControlEnvironmentAtoms<R, E>(
   const controllerScheduler = createAtomCommandScheduler();
 
   return {
+    // Both streams are windowed: a consumer reads an atom, and an atom shows
+    // only the newest element of a batch. The host would lose an access
+    // request that arrived with another event; the viewer lost the "approved"
+    // update that the broker sends together with the retained video chunk,
+    // and sat on "Approve on <host>" while the host streamed to it.
     hostEvents: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:remote-control:host-events",
       tag: WS_METHODS.remoteControlHostConnect,
       idleTtlMs: 0,
+      transform: toEventWindows(),
     }),
     watch: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:remote-control:watch",
       tag: WS_METHODS.remoteControlWatch,
       idleTtlMs: 0,
+      transform: toEventWindows(),
     }),
     requestAccess: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:remote-control:request-access",
@@ -85,6 +93,16 @@ export function createRemoteControlEnvironmentAtoms<R, E>(
       concurrency: {
         mode: "serial",
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input.chunk.sessionId]),
+      },
+    }),
+    acknowledgeInput: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:remote-control:host-acknowledge-input",
+      tag: WS_METHODS.remoteControlHostAcknowledgeInput,
+      scheduler: hostScheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.sessionId, "input-ack"]),
       },
     }),
     // "latest" because only the newest state matters: a status that was

@@ -16,6 +16,7 @@ import { GrokSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { makeGrokTextGeneration } from "./GrokTextGeneration.ts";
+import { GrokAuthFileStat } from "../provider/acp/GrokAcpSupport.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -27,7 +28,11 @@ function shellSingleQuote(value: string): string {
 
 const GrokTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-grok-text-generation-test-",
-}).pipe(Layer.provideMerge(NodeServices.layer));
+}).pipe(
+  Layer.provideMerge(NodeServices.layer),
+  // A stored Grok sign-in, so the mock agent is started at all.
+  Layer.provideMerge(Layer.succeed(GrokAuthFileStat, () => ({ mtimeMs: 1, size: 1 }))),
+);
 
 function makeAcpGrokWrapper(dir: string, env: Record<string, string>): string {
   const binDir = NodePath.join(dir, "bin");

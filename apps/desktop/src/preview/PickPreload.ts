@@ -23,6 +23,7 @@ import {
   START_PICK_CHANNEL,
 } from "./GuestProtocol.ts";
 const OVERLAY_ATTRIBUTE = "data-t3code-annotation-ui";
+const INPUT_LAYER_ATTRIBUTE = "data-t3code-annotation-input";
 const Z_INDEX_OVERLAY = 2147483646;
 const PRIMARY = "var(--t3-primary)";
 const PRIMARY_FILL = "color-mix(in srgb, var(--t3-primary) 10%, transparent)";
@@ -78,12 +79,23 @@ const applyAnnotationTheme = (
   }
 };
 
+/**
+ * The link an input landed on. The event path crosses open shadow roots, where
+ * component libraries render their links; `event.target` stops at the host.
+ */
+const linkForEvent = (event: Event): HTMLAnchorElement | null => {
+  for (const node of event.composedPath()) {
+    if (node instanceof HTMLAnchorElement && node.hasAttribute("href")) return node;
+  }
+  return null;
+};
+
 const reportHumanPointerInput = (event: PointerEvent): void => {
   if (!event.isTrusted) return;
-  const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+  const anchor = linkForEvent(event);
   const target = anchor?.getAttribute("target")?.trim().toLowerCase() ?? "";
   const opensNewTab =
-    anchor instanceof HTMLAnchorElement &&
+    anchor !== null &&
     (target === "_blank" || event.metaKey || event.ctrlKey || event.button === 1);
   ipcRenderer.send(HUMAN_INPUT_CHANNEL, {
     kind: "pointer",
@@ -96,7 +108,7 @@ const reportHumanPointerInput = (event: PointerEvent): void => {
 
 const reportHumanKeyInput = (event: KeyboardEvent): void => {
   if (!event.isTrusted) return;
-  const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+  const anchor = linkForEvent(event);
   const target = anchor?.getAttribute("target")?.trim().toLowerCase() ?? "";
   ipcRenderer.send(HUMAN_INPUT_CHANNEL, {
     kind: "key",
@@ -104,9 +116,7 @@ const reportHumanKeyInput = (event: KeyboardEvent): void => {
     code: event.code,
     repeat: event.repeat,
     directNewTabUrl:
-      event.key === "Enter" && anchor instanceof HTMLAnchorElement && target === "_blank"
-        ? anchor.href
-        : null,
+      event.key === "Enter" && anchor !== null && target === "_blank" ? anchor.href : null,
   });
 };
 
@@ -167,7 +177,7 @@ function isAnnotationNode(element: Element): boolean {
 function pickFromPoint(clientX: number, clientY: number): Element | null {
   for (const candidate of document.elementsFromPoint(clientX, clientY)) {
     if (!(candidate instanceof Element)) continue;
-    if (isAnnotationNode(candidate)) continue;
+    if (isAnnotationNode(candidate) || candidate.hasAttribute(INPUT_LAYER_ATTRIBUTE)) continue;
     if (candidate === document.documentElement || candidate === document.body) continue;
     return candidate;
   }
@@ -368,6 +378,7 @@ function startAnnotation(): void {
   let finished = false;
   const host = document.createElement("div");
   host.setAttribute(OVERLAY_ATTRIBUTE, "");
+  host.setAttribute("dir", "ltr");
   host.style.cssText = `position:fixed;inset:0;z-index:${Z_INDEX_OVERLAY};pointer-events:none`;
   applyAnnotationTheme(host, annotationTheme);
   const shadowRoot = host.attachShadow({ mode: "closed" });
@@ -377,6 +388,7 @@ function startAnnotation(): void {
 
   const root = document.createElement("div");
   root.setAttribute(OVERLAY_ATTRIBUTE, "");
+  root.setAttribute("dir", "ltr");
   root.className = "fixed inset-0 font-sans text-foreground";
   root.style.cssText = "pointer-events:none";
   const cursorStyle = document.createElement("style");
@@ -426,6 +438,7 @@ function startAnnotation(): void {
 
   const comment = document.createElement("textarea");
   comment.placeholder = "Describe the change…";
+  comment.setAttribute("dir", "auto");
   comment.rows = 1;
   comment.className =
     "min-h-8 max-h-24 min-w-0 flex-1 resize-none overflow-y-hidden border-0 border-b border-b-transparent bg-transparent px-0 py-1.5 font-sans text-sm leading-5 text-foreground outline-none ring-0 placeholder:text-muted-foreground focus:border-b-primary focus:outline-none focus:ring-0";
@@ -455,7 +468,18 @@ function startAnnotation(): void {
   const strokes: PreviewAnnotationStrokeTarget[] = [];
   const styleChanges = new Map<string, PreviewAnnotationStyleChange>();
   const toolButtons = new Map<AnnotationTool, HTMLButtonElement>();
-  let tool: AnnotationTool = "select";
+  // Chromium draws a PDF in its own viewer frame, so pointer and key input over it
+  // never reaches this document. A transparent layer above the viewer catches the
+  // pointer and takes focus for Escape and the tool keys. A PDF has no elements to
+  // select, so it starts on Region.
+  const isPdf = document.contentType === "application/pdf";
+  const inputLayer = isPdf ? document.createElement("div") : null;
+  if (inputLayer) {
+    inputLayer.setAttribute(INPUT_LAYER_ATTRIBUTE, "");
+    inputLayer.tabIndex = -1;
+    inputLayer.style.cssText = `position:fixed;inset:0;z-index:${Z_INDEX_OVERLAY - 1};cursor:crosshair;outline:none`;
+  }
+  let tool: AnnotationTool = isPdf ? "marquee" : "select";
   let dragStart: PreviewAnnotationPoint | null = null;
   let activeStroke: { target: PreviewAnnotationStrokeTarget; path: SVGPathElement } | null = null;
   let pendingCapture = false;
@@ -1172,6 +1196,7 @@ function startAnnotation(): void {
     ipcRenderer.off(ANNOTATION_CAPTURED_CHANNEL, onCaptured);
     document.documentElement.removeAttribute("data-t3code-annotation-tool");
     cursorStyle.remove();
+    inputLayer?.remove();
     host.remove();
     activeSession = null;
     if (notifyMain) ipcRenderer.send(ELEMENT_PICKED_CHANNEL, null);
@@ -1265,6 +1290,10 @@ function startAnnotation(): void {
   window.addEventListener("resize", repaint, { passive: true });
   ipcRenderer.on(CANCEL_PICK_CHANNEL, onCancel);
   ipcRenderer.on(ANNOTATION_CAPTURED_CHANNEL, onCaptured);
+  if (inputLayer) {
+    document.documentElement.appendChild(inputLayer);
+    inputLayer.focus({ preventScroll: true });
+  }
   document.documentElement.appendChild(host);
   refreshToolButtons();
   updateStatus();

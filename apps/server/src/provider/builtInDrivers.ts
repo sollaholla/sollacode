@@ -26,6 +26,7 @@ import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
 import { CursorDriver, type CursorDriverEnv } from "./Drivers/CursorDriver.ts";
 import { DeepCodeDriver, type DeepCodeDriverEnv } from "./Drivers/DeepCodeDriver.ts";
 import { GrokDriver, type GrokDriverEnv } from "./Drivers/GrokDriver.ts";
+import { KimiDriver, type KimiDriverEnv } from "./Drivers/KimiDriver.ts";
 import { McpBridgeDriver, type McpBridgeDriverEnv } from "./Drivers/McpBridgeDriver.ts";
 import { MuseDriver, type MuseDriverEnv } from "./Drivers/MuseDriver.ts";
 import { OpenCodeDriver, type OpenCodeDriverEnv } from "./Drivers/OpenCodeDriver.ts";
@@ -43,6 +44,7 @@ export type BuiltInDriversEnv =
   | CursorDriverEnv
   | DeepCodeDriverEnv
   | GrokDriverEnv
+  | KimiDriverEnv
   | McpBridgeDriverEnv
   | MuseDriverEnv
   | OpenCodeDriverEnv;
@@ -61,5 +63,6 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   AntigravityDriver,
   DeepCodeDriver,
   MuseDriver,
+  KimiDriver,
   McpBridgeDriver,
 ];

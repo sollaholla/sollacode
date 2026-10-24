@@ -1002,17 +1002,18 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt).toBe("keep me");
   });
 
-  it("finalizes a promoted draft after the canonical thread route is active", () => {
+  it("moves composer edits made during promotion to the canonical thread", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, { threadId });
-    store.setPrompt(draftId, "promote me");
     markPromotedDraftThread(threadId);
+    store.setPrompt(draftId, "typed during setup");
 
     finalizePromotedDraftThreadByRef(scopeThreadRef(TEST_ENVIRONMENT_ID, threadId));
 
     expect(useComposerDraftStore.getState().getDraftThreadByProjectRef(projectRef)).toBeNull();
     expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
     expect(draftByKey(draftId)).toBeUndefined();
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt).toBe("typed during setup");
   });
 
   it("finalizes a matching materialized draft even when promotion was not pre-marked", () => {
@@ -1025,6 +1026,7 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(useComposerDraftStore.getState().getDraftThreadByProjectRef(projectRef)).toBeNull();
     expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
     expect(draftByKey(draftId)).toBeUndefined();
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt).toBe("promote me");
   });
 
   it("updates branch context on an existing draft thread", () => {
@@ -1118,13 +1120,14 @@ describe("composerDraftStore project draft thread mapping", () => {
     });
   });
 
-  it("clears branch and worktree context when remapping a draft to another environment", () => {
+  it("clears branch and worktree but keeps env mode when remapping a draft to another environment", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, {
       threadId,
       branch: "feature/local-only",
       worktreePath: "/tmp/local-worktree",
       envMode: "worktree",
+      startFromOrigin: true,
     });
 
     store.setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), remoteProjectRef, draftId, {
@@ -1136,17 +1139,19 @@ describe("composerDraftStore project draft thread mapping", () => {
       projectId,
       branch: null,
       worktreePath: null,
-      envMode: "local",
+      envMode: "worktree",
+      startFromOrigin: true,
     });
   });
 
-  it("clears branch and worktree context when changing a draft thread project ref", () => {
+  it("clears branch and worktree but keeps env mode when changing a draft thread project ref", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, {
       threadId,
       branch: "feature/local-only",
       worktreePath: "/tmp/local-worktree",
       envMode: "worktree",
+      startFromOrigin: true,
     });
 
     store.setDraftThreadContext(draftId, {
@@ -1158,7 +1163,8 @@ describe("composerDraftStore project draft thread mapping", () => {
       projectId,
       branch: null,
       worktreePath: null,
-      envMode: "local",
+      envMode: "worktree",
+      startFromOrigin: true,
     });
   });
 });

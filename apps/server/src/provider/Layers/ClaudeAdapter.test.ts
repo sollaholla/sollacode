@@ -166,8 +166,14 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.setModelCalls.push(model);
   };
 
+  /** Holds setPermissionMode open, as a CLI busy with an interrupt can. */
+  public permissionModeGate: Promise<void> | undefined;
+  public permissionModeEntered: (() => void) | undefined;
+
   readonly setPermissionMode = async (mode: PermissionMode): Promise<void> => {
     this.setPermissionModeCalls.push(mode);
+    this.permissionModeEntered?.();
+    await this.permissionModeGate;
   };
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
@@ -1712,6 +1718,74 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("delivers a steer aimed at a synthetic turn as the person's own turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const promptIterator = harness.getLastCreateQueryInput()?.prompt[Symbol.asyncIterator]();
+      assert.isDefined(promptIterator);
+      if (promptIterator === undefined) return;
+
+      // Background work reports in between prompts, so the adapter opens a
+      // synthetic turn and the session reads as running.
+      const syntheticStartedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.started"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-synthetic-steer",
+        uuid: "assistant-background-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-background-1",
+          content: [{ type: "text", text: "The background check finished." }],
+        },
+      } as unknown as SDKMessage);
+      const [syntheticStarted] = yield* Fiber.join(syntheticStartedFiber);
+      const syntheticTurnId = syntheticStarted?.turnId;
+      assert.isDefined(syntheticTurnId);
+      if (syntheticTurnId === undefined) return;
+      const [running] = yield* adapter.listSessions();
+      assert.equal(running?.status, "running");
+      assert.equal(String(running?.activeTurnId), String(syntheticTurnId));
+
+      // Orchestration sees that turn as the running one and steers the queued
+      // message at it. It used to be refused every time, so the message never left.
+      const sendFiber = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "queued while it worked",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            activeTurnId: syntheticTurnId,
+          },
+        })
+        .pipe(Effect.forkChild);
+      const consumed = yield* Effect.promise(() => promptIterator.next());
+      assert.equal(consumed.done, false);
+      if (!consumed.done) {
+        assert.equal(promptMessageText(consumed.value), "queued while it worked");
+      }
+      const sent = yield* Fiber.join(sendFiber);
+      assert.notEqual(String(sent.turnId), String(syntheticTurnId));
+      const [after] = yield* adapter.listSessions();
+      assert.equal(String(after?.activeTurnId), String(sent.turnId));
+      yield* adapter.stopSession(session.threadId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("drops a queued live steer when a successor owns the turn before SDK pull", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1844,6 +1918,103 @@ describe("ClaudeAdapterLive", () => {
         ),
       );
       yield* Fiber.interrupt(runtimeEventsFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("fails a send whose session stops mid-dispatch instead of waiting forever", () => {
+    // A stopped session's prompt queue refuses offers without failing them.
+    // A send that was inside a control request when Stop landed went on to
+    // queue anyway and waited for an SDK pull that could never come; as a
+    // steer it held the thread's steer lane for hours (thread b084bc7f).
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      let releasePermissionMode = () => {};
+      harness.query.permissionModeGate = new Promise<void>((resolve) => {
+        releasePermissionMode = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        harness.query.permissionModeEntered = resolve;
+      });
+
+      const sendFiber = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          messageId: MessageId.make("claude-send-across-stop"),
+          input: "sent while Stop lands",
+          attachments: [],
+          interactionMode: "default",
+        })
+        .pipe(Effect.exit, Effect.forkChild);
+      yield* Effect.promise(() => entered);
+      yield* adapter.stopSession(session.threadId);
+      releasePermissionMode();
+
+      const exit = yield* Fiber.join(sendFiber);
+      assert.equal(exit._tag, "Failure");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("reports a steer's native dispatch once the SDK takes it", () => {
+    // The steer lane holds a thread's later messages until the steer ahead of
+    // them is dispatched. Claude never said so, which held them through the
+    // steer's whole delivery bookkeeping instead.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const promptIterator = harness.getLastCreateQueryInput()?.prompt[Symbol.asyncIterator]();
+      assert.isDefined(promptIterator);
+      if (promptIterator === undefined) return;
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "run the long task",
+        attachments: [],
+      });
+      yield* Effect.promise(() => promptIterator.next());
+
+      const dispatched = yield* Deferred.make<void>();
+      const steerFiber = yield* adapter
+        .sendTurn(
+          {
+            threadId: session.threadId,
+            messageId: MessageId.make("claude-steer-native-dispatch"),
+            input: "and then this",
+            attachments: [],
+            liveSteerTarget: {
+              providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+              activeTurnId: turn.turnId,
+            },
+          },
+          { onNativeDispatch: Deferred.succeed(dispatched, undefined).pipe(Effect.asVoid) },
+        )
+        .pipe(Effect.forkChild);
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      // Queued for the SDK but not yet taken.
+      assert.isFalse(yield* Deferred.isDone(dispatched));
+
+      const consumed = yield* Effect.promise(() => promptIterator.next());
+      assert.equal(consumed.done, false);
+      yield* Fiber.join(steerFiber);
+      assert.isTrue(yield* Deferred.isDone(dispatched));
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -4593,6 +4764,118 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("acceptForSession returns session-scoped permission updates", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "approve this for the session",
+        attachments: [],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const respondToNextRequest = Effect.gen(function* () {
+        const requested = yield* Stream.runHead(adapter.streamEvents);
+        assert.equal(requested._tag, "Some");
+        if (requested._tag !== "Some" || requested.value.type !== "request.opened") {
+          return;
+        }
+        const runtimeRequestId = requested.value.requestId;
+        assert.equal(typeof runtimeRequestId, "string");
+        if (runtimeRequestId === undefined) {
+          return;
+        }
+        yield* adapter.respondToRequest(
+          session.threadId,
+          ApprovalRequestId.make(runtimeRequestId),
+          "acceptForSession",
+        );
+        yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+      });
+
+      // MCP tools frequently arrive with no usable suggestion (Claude Code
+      // sends an empty array); the decision must still stick for the session.
+      const mcpPermissionPromise = canUseTool(
+        "mcp__linear__create_issue",
+        { title: "hello" },
+        {
+          signal: new AbortController().signal,
+          suggestions: [],
+          toolUseID: "tool-use-mcp-1",
+        },
+      );
+      yield* respondToNextRequest;
+      const mcpPermission = (yield* Effect.promise(() => mcpPermissionPromise)) as PermissionResult;
+      assert.equal(mcpPermission.behavior, "allow");
+      if (mcpPermission.behavior !== "allow") {
+        return;
+      }
+      assert.deepEqual(mcpPermission.updatedPermissions, [
+        {
+          type: "addRules",
+          rules: [{ toolName: "mcp__linear__create_issue" }],
+          behavior: "allow",
+          destination: "session",
+        },
+      ]);
+
+      // Received suggestions are reused but rescoped to the session —
+      // echoing "localSettings" would persist a session-only choice to disk.
+      const bashPermissionPromise = canUseTool(
+        "Bash",
+        { command: "git status" },
+        {
+          signal: new AbortController().signal,
+          suggestions: [
+            {
+              type: "addRules",
+              rules: [{ toolName: "Bash", ruleContent: "git status" }],
+              behavior: "allow",
+              destination: "localSettings",
+            },
+          ],
+          toolUseID: "tool-use-bash-1",
+        },
+      );
+      yield* respondToNextRequest;
+      const bashPermission = (yield* Effect.promise(
+        () => bashPermissionPromise,
+      )) as PermissionResult;
+      assert.equal(bashPermission.behavior, "allow");
+      if (bashPermission.behavior !== "allow") {
+        return;
+      }
+      assert.deepEqual(bashPermission.updatedPermissions, [
+        {
+          type: "addRules",
+          rules: [{ toolName: "Bash", ruleContent: "git status" }],
+          behavior: "allow",
+          destination: "session",
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("classifies Agent tools and read-only Claude tools correctly for approvals", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -5752,6 +6035,67 @@ describe("ClaudeAdapterLive", () => {
 
       const resolvedEvent = yield* Stream.runHead(adapter.streamEvents);
       assert.equal(resolvedEvent._tag, "Some");
+      if (resolvedEvent._tag !== "Some" || resolvedEvent.value.type !== "user-input.resolved") {
+        assert.fail("Expected user-input.resolved event");
+        return;
+      }
+      assert.deepEqual(resolvedEvent.value.payload.answers, {});
+
+      const permissionResult = yield* Effect.promise(() => permissionPromise);
+      assert.deepEqual(permissionResult, {
+        behavior: "deny",
+        message: "User cancelled tool execution.",
+      } satisfies PermissionResult);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("stopping a session settles pending user-input waits", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      const canUseTool = harness.getLastCreateQueryInput()?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const permissionPromise = canUseTool(
+        "AskUserQuestion",
+        {
+          questions: [
+            {
+              question: "Continue?",
+              header: "Continue",
+              options: [{ label: "Yes", description: "Proceed" }],
+              multiSelect: false,
+            },
+          ],
+        },
+        { signal: new AbortController().signal, toolUseID: "tool-ask-stop" },
+      );
+
+      const requestedEvent = yield* Stream.runHead(adapter.streamEvents);
+      if (requestedEvent._tag !== "Some" || requestedEvent.value.type !== "user-input.requested") {
+        assert.fail("Expected user-input.requested event");
+        return;
+      }
+
+      // The session dies while the question is still on screen.
+      yield* adapter.stopSession(THREAD_ID);
+
+      const resolvedEvent = yield* Stream.runHead(adapter.streamEvents);
       if (resolvedEvent._tag !== "Some" || resolvedEvent.value.type !== "user-input.resolved") {
         assert.fail("Expected user-input.resolved event");
         return;

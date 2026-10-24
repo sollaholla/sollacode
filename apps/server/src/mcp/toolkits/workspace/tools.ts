@@ -23,7 +23,7 @@ import {
  */
 export const WorkspaceOrchestrationTool = Tool.make("workspace_orchestration", {
   description:
-    "Inspect and act on every thread in this Solla Code workspace. Use action=list_threads to see all threads with their status, what each is blocked on, and which terminals they have open; describe_thread for one thread's detail; list_terminals to see every live terminal; read_terminal to read a terminal's current output; write_to_terminal to type into a live terminal; send_to_thread to write a message into any thread exactly as if the user typed it; interrupt_thread to stop an in-flight turn. Only the orchestrator thread may call this.",
+    "Inspect and act on every thread in this Solla Code workspace. Use action=list_threads to see all threads with their status, what each is blocked on, and which terminals they have open. Match a project a person names against projectTitle, not the thread title; side chats need includeSideChats. isWorking matches the sidebar's Working: a turn in flight, scheduled pendingWork, or backgroundTaskCount tasks still running after the turn. describe_thread for one thread's detail; list_terminals to see every live terminal; read_terminal to read a terminal's current output; write_to_terminal to type into a live terminal; send_to_thread to write a message into any thread exactly as if the user typed it; interrupt_thread to stop an in-flight turn. Only the orchestrator thread may call this.",
   parameters: WorkspaceOrchestrationInput,
   success: WorkspaceOrchestrationResult,
   failure: WorkspaceOrchestrationError,

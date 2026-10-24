@@ -1,4 +1,5 @@
 import { deepCodeUsageWindows } from "@t3tools/shared/deepcodeUsage";
+import { kimiUsageWindows } from "@t3tools/shared/kimiUsage";
 import { openCodeUsageWindows } from "@t3tools/client-runtime/state/opencode-usage";
 import type {
   EnvironmentId,
@@ -156,6 +157,13 @@ export function providerUsageExternalLink(
       href: "https://accountscenter.meta.com/muse_code/",
       label: "View Muse billing in Meta Account Center",
     };
+  // Kimi's quota lives behind the CLI's OAuth session, with no account page
+  // the CLI links to; its own docs page explains the plan limits it reports.
+  if (driver === "kimi")
+    return {
+      href: "https://www.kimi.com/code/docs/en/kimi-code/membership.html",
+      label: "View Kimi Code plans and limits",
+    };
   if (driver !== "grok") return null;
   return {
     href: "https://grok.com/automations?_s=usage",
@@ -171,6 +179,7 @@ const SUPPORTED_USAGE_DRIVERS = new Set([
   "deepcode",
   "muse",
   "opencode",
+  "kimi",
 ]);
 
 /**
@@ -821,6 +830,7 @@ function usageWindowsForDriver(
   if (driver === "antigravity") return antigravityWindows(raw);
   if (driver === "muse") return museUsageWindows(raw);
   if (driver === "opencode") return openCodeUsageWindows(raw);
+  if (driver === "kimi") return kimiUsageWindows(raw);
   return [];
 }
 
@@ -1107,7 +1117,8 @@ export function compactProviderUsageMetric(
     summary.provider.driver !== "claudeAgent" &&
     summary.provider.driver !== "codex" &&
     summary.provider.driver !== "grok" &&
-    summary.provider.driver !== "antigravity"
+    summary.provider.driver !== "antigravity" &&
+    summary.provider.driver !== "kimi"
   ) {
     return null;
   }
@@ -1361,7 +1372,7 @@ export function ProviderUsageDetails({
                   : "Account-level provider usage"}
             </p>
             {account ? (
-              <div className="flex w-full min-w-0 basis-full items-center gap-1.5 text-[11px] text-muted-foreground leading-snug">
+              <div className="flex w-full min-w-0 basis-full flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground leading-snug">
                 <UserRoundIcon className="size-3 shrink-0" aria-hidden />
                 {account.email || account.label ? (
                   <RedactedSensitiveText

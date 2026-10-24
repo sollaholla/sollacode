@@ -1,3 +1,4 @@
+import { WebPushSettings } from "./WebPushSettings";
 import { ModelPolicyEditor, useSaveModelPolicy } from "./ModelPolicyEditor";
 import {
   ArchiveIcon,
@@ -31,6 +32,7 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { planArchivedThreadCleanup } from "@t3tools/client-runtime/state/threads";
 import {
   DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE,
   DEFAULT_UNIFIED_SETTINGS,
@@ -86,7 +88,8 @@ import {
   serverEnvironment,
 } from "../../state/server";
 import { usePrimaryEnvironment } from "../../state/environments";
-import { useProjects } from "../../state/entities";
+import { useProjects, useServerConfigs } from "../../state/entities";
+import { orchestrationEnvironment } from "../../state/orchestration";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { formatRelativeTimeLabel, getRelativeTimeState } from "../../timestampFormat";
 import { Button } from "../ui/button";
@@ -123,6 +126,7 @@ import {
   isProviderUpdateActive,
 } from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { useProviderMaintenanceRequests } from "./useProviderMaintenanceRequests";
 import { ProviderApiKeyAccountsSettings } from "./ProviderApiKeyAccounts";
 import {
   IDLE_PROVIDER_USAGE_REFRESH_STATE,
@@ -361,7 +365,7 @@ function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }
 
 function AboutVersionTitle() {
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex items-baseline gap-2">
       <span>Version</span>
       <code className="text-[11px] font-medium text-muted-foreground">{APP_VERSION}</code>
     </span>
@@ -1681,6 +1685,20 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          title="Automatic storage cleanup"
+          description="Clear inactive desktop browser caches and obsolete update files on this computer. Keeps cookies, logins, site data, chats, and projects."
+          control={
+            <Switch
+              checked={settings.automaticStorageCleanupEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ automaticStorageCleanupEnabled: Boolean(checked) })
+              }
+              aria-label="Automatic storage cleanup"
+            />
+          }
+        />
+
+        <SettingsRow
           title="Auto-delete archived chats"
           description="Permanently delete chats 48 hours after archiving in this environment. Restore a chat before then to keep it."
           control={
@@ -1869,9 +1887,8 @@ export function ProviderSettingsPanel() {
   });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
-  const [updatingProviderDrivers, setUpdatingProviderDrivers] = useState<
-    ReadonlySet<ProviderDriverKind>
-  >(() => new Set());
+  const { pendingDrivers: updatingProviderDrivers, run: runMaintenanceRequest } =
+    useProviderMaintenanceRequests();
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const [providerUsageRefreshStates, setProviderUsageRefreshStates] = useState<
     Readonly<Record<string, ProviderUsageRefreshState>>
@@ -2082,51 +2099,31 @@ export function ProviderSettingsPanel() {
       action: "update" | "install" = "update",
     ) => {
       if (!primaryEnvironment) return;
-      let started = false;
-      setUpdatingProviderDrivers((previous) => {
-        if (previous.has(candidate.driver)) {
-          return previous;
+      await runMaintenanceRequest(candidate.driver, async () => {
+        const result = await updateProvider({
+          environmentId: primaryEnvironment.environmentId,
+          input: {
+            provider: candidate.driver,
+            instanceId: candidate.instanceId,
+            action,
+          },
+        });
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: `Could not ${action} ${PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver}`,
+              description:
+                error instanceof Error
+                  ? error.message
+                  : `The provider ${action} command could not be started.`,
+            }),
+          );
         }
-        started = true;
-        const next = new Set(previous);
-        next.add(candidate.driver);
-        return next;
-      });
-      if (!started) {
-        return;
-      }
-
-      const result = await updateProvider({
-        environmentId: primaryEnvironment.environmentId,
-        input: {
-          provider: candidate.driver,
-          instanceId: candidate.instanceId,
-          action,
-        },
-      });
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Could not ${action} ${PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver}`,
-            description:
-              error instanceof Error
-                ? error.message
-                : `The provider ${action} command could not be started.`,
-          }),
-        );
-      }
-      setUpdatingProviderDrivers((previous) => {
-        if (!previous.has(candidate.driver)) {
-          return previous;
-        }
-        const next = new Set(previous);
-        next.delete(candidate.driver);
-        return next;
       });
     },
-    [primaryEnvironment, updateProvider],
+    [primaryEnvironment, runMaintenanceRequest, updateProvider],
   );
 
   interface InstanceRow {
@@ -2662,11 +2659,24 @@ export function ProviderSettingsPanel() {
   );
 }
 
+/** What a person reads when one part of the archive cleanup fails. */
+function describeArchiveCleanupFailure(interrupted: boolean, error: unknown): string {
+  if (interrupted) return "The cleanup was interrupted. Try again for the rest.";
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : "An archived chat could not be deleted.";
+}
+
 export function ArchivedThreadsPanel() {
   const [isDeletingArchive, setIsDeletingArchive] = useState(false);
   const deleteArchivedThread = useAtomCommand(threadEnvironment.delete, {
     reportFailure: false,
   });
+  const deleteArchivedThreadsInBulk = useAtomCommand(
+    orchestrationEnvironment.deleteArchivedThreads,
+    { reportFailure: false },
+  );
+  const serverConfigs = useServerConfigs();
   const projects = useProjects();
   const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
   const environmentIds = useMemo(
@@ -2779,38 +2789,82 @@ export function ArchivedThreadsPanel() {
   );
 
   const deleteAllArchivedThreads = async () => {
-    const targets = archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
-      snapshot.threads
-        .filter((thread) => thread.archivedAt !== null)
-        .map((thread) => ({
-          environmentId,
-          input: { threadId: thread.id, archivedBefore: thread.archivedAt! },
-        })),
-    );
+    const plan = planArchivedThreadCleanup(archivedSnapshots);
+    const total = plan.reduce((sum, group) => sum + group.threads.length, 0);
     const api = readLocalApi();
-    if (!api || targets.length === 0 || isDeletingArchive) return;
+    if (!api || total === 0 || isDeletingArchive) return;
     setIsDeletingArchive(true);
     const outcome = await settlePromise(async () => {
       if (
         !(await api.dialogs.confirm(
-          `Permanently delete all ${targets.length} archived chats across connected environments? This clears their conversation history and cannot be undone.`,
+          `Permanently delete all ${total} archived chats across connected environments? This clears their conversation history and cannot be undone.`,
         ))
       )
-        return;
-      for (const target of targets) {
-        const result = await deleteArchivedThread(target);
-        if (result._tag !== "Success") {
-          throw squashAtomCommandFailure(result);
+        return null;
+      let deleted = 0;
+      const problems: string[] = [];
+      for (const group of plan) {
+        const capabilities = serverConfigs.get(group.environmentId)?.environment.capabilities;
+        if (capabilities?.archivedThreadBulkDelete === true) {
+          // One request; the server deletes what was shown without queuing
+          // a command per chat in this window first.
+          const result = await deleteArchivedThreadsInBulk({
+            environmentId: group.environmentId,
+            input: { archivedBefore: group.archivedBefore },
+          });
+          if (result._tag === "Success") {
+            deleted += result.value.deleted;
+            if (result.value.skipped > 0) {
+              problems.push(
+                `${result.value.skipped} changed during the cleanup and stayed in the archive.`,
+              );
+            }
+          } else {
+            problems.push(
+              describeArchiveCleanupFailure(
+                isAtomCommandInterrupted(result),
+                squashAtomCommandFailure(result),
+              ),
+            );
+          }
+          continue;
+        }
+        // An older server: one chat at a time, carrying on past any refusal.
+        for (const thread of group.threads) {
+          const result = await deleteArchivedThread({
+            environmentId: group.environmentId,
+            input: { threadId: thread.threadId, archivedBefore: thread.archivedAt },
+          });
+          if (result._tag === "Success") {
+            deleted += 1;
+          } else {
+            problems.push(
+              describeArchiveCleanupFailure(
+                isAtomCommandInterrupted(result),
+                squashAtomCommandFailure(result),
+              ),
+            );
+          }
         }
       }
+      return { deleted, problems };
     });
     setIsDeletingArchive(false);
     refreshArchivedThreads();
     if (outcome._tag === "Failure") {
       toastManager.add({
         type: "error",
-        title: "Could not delete all archived chats",
-        description: "Cleanup stopped. Refresh the archive and try again for the remaining chats.",
+        title: "Could not delete archived chats",
+        description: describeArchiveCleanupFailure(false, squashAtomCommandFailure(outcome)),
+      });
+      return;
+    }
+    const summary = outcome.value;
+    if (summary !== null && summary.problems.length > 0) {
+      toastManager.add({
+        type: "error",
+        title: `Deleted ${summary.deleted} of ${total} archived chats`,
+        description: summary.problems[0],
       });
     }
   };
@@ -2971,6 +3025,7 @@ export function AgentsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      {!window.desktopBridge && <WebPushSettings />}
       <SettingsSection title="Agent Stack">
         <SettingsRow
           title="Enable Agent Stack"

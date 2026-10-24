@@ -271,6 +271,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       const { prompt, outputSchema } = buildPlanRefreshPrompt({
         transcript: input.transcript,
         currentSteps: input.currentSteps,
+        proposedPlanMarkdown: input.proposedPlanMarkdown,
       });
 
       const generated = yield* runCursorJson({

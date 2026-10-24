@@ -1,4 +1,4 @@
-import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
+import { Outlet, createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useMemo } from "react";
 
@@ -32,6 +32,7 @@ function ChatRouteGlobalShortcuts() {
     useHandleNewThread();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const orchestratorVoice = useOrchestratorSessionContext();
+  const navigate = useNavigate();
   const sidebarV2Enabled = useSidebarV2Enabled();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const projects = useListedProjects();
@@ -140,6 +141,13 @@ function ChatRouteGlobalShortcuts() {
         return;
       }
 
+      if (command === "orchestrator.live.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({ to: "/orchestrator/live" });
+        return;
+      }
+
       if (command === "preview.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -195,6 +203,7 @@ function ChatRouteGlobalShortcuts() {
     handleNewThread,
     keybindings,
     defaultProjectRef,
+    navigate,
     orchestratorVoice,
     previewOpen,
     projectGroupCount,

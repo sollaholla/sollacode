@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import { replayOrBootstrapTurn } from "../bootstrapReplay.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
@@ -11,7 +12,12 @@ import {
   type OrchestrationEvent,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -25,7 +31,10 @@ import { describe, expect, it } from "vite-plus/test";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import {
+  makeSqlitePersistenceLive,
+  SqlitePersistenceMemory,
+} from "../../persistence/Layers/Sqlite.ts";
 import {
   OrchestrationEventStore,
   type OrchestrationEventStoreShape,
@@ -47,7 +56,7 @@ const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
 
-async function createOrchestrationSystem() {
+async function createOrchestrationSystem(databasePath?: string) {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-orchestration-engine-test-",
   });
@@ -61,7 +70,11 @@ async function createOrchestrationSystem() {
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(RepositoryIdentityResolver.layer),
-    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(
+      databasePath === undefined
+        ? SqlitePersistenceMemory
+        : makeSqlitePersistenceLive(databasePath).pipe(Layer.provide(NodeServices.layer)),
+    ),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
   );
@@ -1505,6 +1518,93 @@ describe("OrchestrationEngine", () => {
     await runtime.dispose();
   });
 
+  it("does not republish another server's turn when a local dispatch fails", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-shared-db-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const serverA = await createOrchestrationSystem(databasePath);
+    const serverB = await createOrchestrationSystem(databasePath);
+    const threadId = ThreadId.make("thread-shared");
+    const createdAt = now();
+    const sentinelCommandId = CommandId.make("cmd-shared-rename");
+    try {
+      await serverA.run(
+        serverA.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-shared-project-create"),
+          projectId: asProjectId("project-shared"),
+          title: "Shared Project",
+          workspaceRoot: "/tmp/project-shared",
+          createdAt,
+        }),
+      );
+      await serverA.run(
+        serverA.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-shared-thread-create"),
+          threadId,
+          projectId: asProjectId("project-shared"),
+          title: "shared",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      await serverA.run(
+        serverA.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-shared-turn-start"),
+          threadId,
+          message: {
+            messageId: asMessageId("msg-shared"),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+
+      const published = await serverB.run(
+        Effect.gen(function* () {
+          const collected = yield* Stream.runCollect(
+            Stream.takeUntil(
+              serverB.engine.streamDomainEvents,
+              (event) => event.commandId === sentinelCommandId,
+            ),
+          ).pipe(Effect.forkScoped);
+          yield* Effect.sleep("10 millis");
+          // B's command model is still empty, so this fails and reconciles.
+          yield* serverB.engine
+            .dispatch({
+              type: "thread.meta.update",
+              commandId: CommandId.make("cmd-shared-stale-rename"),
+              threadId,
+              title: "stale",
+            })
+            .pipe(Effect.flip);
+          yield* serverB.engine.dispatch({
+            type: "thread.meta.update",
+            commandId: sentinelCommandId,
+            threadId,
+            title: "renamed on B",
+          });
+          return yield* Fiber.join(collected);
+        }).pipe(Effect.scoped),
+      );
+
+      expect(Array.from(published).map((event) => event.type)).toEqual(["thread.meta-updated"]);
+    } finally {
+      await serverA.dispose();
+      await serverB.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("fails command dispatch when command invariants are violated", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;
@@ -1590,6 +1690,155 @@ describe("OrchestrationEngine", () => {
         }),
       ),
     ).rejects.toThrow("already exists");
+
+    await system.dispose();
+  });
+
+  it("replays the accepted receipt for a genuine retry of the same command", async () => {
+    const createdAt = now();
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-retry-project-create"),
+        projectId: asProjectId("project-retry"),
+        title: "Retry Project",
+        workspaceRoot: "/tmp/project-retry",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-retry-thread-create"),
+        threadId: ThreadId.make("thread-retry"),
+        projectId: asProjectId("project-retry"),
+        title: "retry",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    const turnStart = {
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-retry-turn-start"),
+      threadId: ThreadId.make("thread-retry"),
+      message: {
+        messageId: asMessageId("msg-retry"),
+        role: "user",
+        text: "hello",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt,
+    } as const;
+
+    const first = await system.run(engine.dispatch(turnStart));
+    const second = await system.run(engine.dispatch(turnStart));
+    expect(second.sequence).toBe(first.sequence);
+
+    const readModel = await system.readModel();
+    const thread = readModel.threads.find((candidate) => candidate.id === "thread-retry");
+    expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+
+    await system.dispose();
+  });
+
+  it("rejects reusing an accepted command id for a different aggregate", async () => {
+    const createdAt = now();
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-conflict-project-create"),
+        projectId: asProjectId("project-conflict"),
+        title: "Conflict Project",
+        workspaceRoot: "/tmp/project-conflict",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    for (const threadId of ["thread-conflict-a", "thread-conflict-b"]) {
+      await system.run(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`cmd-${threadId}-create`),
+          threadId: ThreadId.make(threadId),
+          projectId: asProjectId("project-conflict"),
+          title: threadId,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+    }
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-conflict-turn-start"),
+        threadId: ThreadId.make("thread-conflict-a"),
+        message: {
+          messageId: asMessageId("msg-conflict-a"),
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt,
+      }),
+    );
+
+    await expect(
+      system.run(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-conflict-turn-start"),
+          threadId: ThreadId.make("thread-conflict-b"),
+          message: {
+            messageId: asMessageId("msg-conflict-b"),
+            role: "user",
+            text: "hello again",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      ),
+    ).rejects.toThrow("already used for thread 'thread-conflict-a'");
+
+    const readModel = await system.readModel();
+    const targetThread = readModel.threads.find(
+      (candidate) => candidate.id === "thread-conflict-b",
+    );
+    expect(targetThread?.messages.filter((message) => message.role === "user")).toHaveLength(0);
 
     await system.dispose();
   });

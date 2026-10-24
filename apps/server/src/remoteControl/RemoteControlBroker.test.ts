@@ -882,3 +882,96 @@ it.effect("tells the host when a request expires so its dialog can never stick",
     }),
   ),
 );
+
+it.effect(
+  "relays native input receipts only from the owning host, after delivery, once per requested click",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* makeBroker;
+        const connected =
+          yield* Deferred.make<Extract<RemoteControlHostStreamEvent, { type: "connected" }>>();
+        const requested =
+          yield* Deferred.make<
+            Extract<RemoteControlHostStreamEvent, { type: "access-requested" }>
+          >();
+        const delivered =
+          yield* Deferred.make<Extract<RemoteControlHostStreamEvent, { type: "input" }>>();
+        const hostStream = yield* broker.connectHost(interactiveHost, hostSessionId);
+        yield* Stream.runForEach(hostStream, (event) => {
+          if (event.type === "connected") return Deferred.succeed(connected, event);
+          if (event.type === "access-requested") return Deferred.succeed(requested, event);
+          if (event.type === "input") return Deferred.succeed(delivered, event);
+          return Effect.void;
+        }).pipe(Effect.forkScoped);
+        const connection = yield* Deferred.await(connected);
+        const waiting = yield* broker.requestAccess(
+          { clientId: "controller", requestedCapabilities: ["screen", "pointer"] },
+          requester,
+        );
+        const request = yield* Deferred.await(requested);
+        yield* broker.respondToRequest(
+          {
+            clientId: interactiveHost.clientId,
+            connectionId: connection.connectionId,
+            requestId: request.requestId,
+            decision: "approve",
+            grantedCapabilities: ["screen", "pointer"],
+          },
+          hostSessionId,
+        );
+        const subscribed = yield* Deferred.make<void>();
+        const receivedFirst = yield* Deferred.make<void>();
+        const receivedSecond = yield* Deferred.make<void>();
+        const receipts: { sequence: number; applied: boolean }[] = [];
+        const stream = yield* broker.watch({ sessionId: waiting.sessionId }, controllerSessionId);
+        yield* Stream.runForEach(stream, (event) => {
+          if (event.type === "session-updated") return Deferred.succeed(subscribed, undefined);
+          if (event.type !== "input-acknowledged") return Effect.void;
+          receipts.push({ sequence: event.sequence, applied: event.applied });
+          return Deferred.succeed(event.sequence === 0 ? receivedFirst : receivedSecond, undefined);
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(subscribed);
+        const receipt = {
+          clientId: interactiveHost.clientId,
+          connectionId: connection.connectionId,
+          sessionId: waiting.sessionId,
+          sequence: 0,
+          applied: false,
+        };
+        yield* broker.sendInput(
+          {
+            sessionId: waiting.sessionId,
+            sequence: 0,
+            acknowledge: true,
+            input: { type: "pointer", action: "down", x: 0.25, y: 0.5, button: "left" },
+          },
+          controllerSessionId,
+        );
+        expect((yield* Deferred.await(delivered)).acknowledge).toBe(true);
+        expect(receipts).toEqual([]);
+        const denied = yield* broker.acknowledgeInput(receipt, foreignSessionId).pipe(Effect.flip);
+        expect(denied).toBeInstanceOf(RemoteControlSessionAccessDeniedError);
+        yield* broker.acknowledgeInput({ ...receipt, sequence: 99 }, hostSessionId);
+        expect(receipts).toEqual([]);
+        yield* broker.acknowledgeInput(receipt, hostSessionId);
+        yield* Deferred.await(receivedFirst);
+        yield* broker.acknowledgeInput({ ...receipt, applied: true }, hostSessionId);
+        yield* broker.sendInput(
+          {
+            sessionId: waiting.sessionId,
+            sequence: 1,
+            acknowledge: true,
+            input: { type: "pointer", action: "down", x: 0.75, y: 0.5, button: "left" },
+          },
+          controllerSessionId,
+        );
+        yield* broker.acknowledgeInput({ ...receipt, sequence: 1, applied: true }, hostSessionId);
+        yield* Deferred.await(receivedSecond);
+        expect(receipts).toEqual([
+          { sequence: 0, applied: false },
+          { sequence: 1, applied: true },
+        ]);
+      }),
+    ),
+);

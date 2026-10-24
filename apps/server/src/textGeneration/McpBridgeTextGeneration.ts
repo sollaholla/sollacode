@@ -199,6 +199,7 @@ export function makeMcpBridgeTextGeneration(
         const { prompt, outputSchema } = buildPlanRefreshPrompt({
           transcript: input.transcript,
           currentSteps: input.currentSteps,
+          proposedPlanMarkdown: input.proposedPlanMarkdown,
         });
         const generated = yield* runJson({
           operation: "generatePlanRefresh",

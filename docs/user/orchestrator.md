@@ -7,6 +7,9 @@ turns are recorded into that thread as ordinary messages.
 It manages threads; it does not do their work. It reports what each thread is doing, routes work to
 the right one, changes their settings, and stops them when asked. It never writes code itself.
 
+To watch every thread work as it happens, with the orchestrator a chat button away, open the
+[Live Inspector](./live-inspector.md).
+
 ## Tools
 
 The orchestrator calls tools the same way any thread does, as often as it needs and several within
@@ -43,6 +46,7 @@ orchestrator.
 | `update_thread_settings` | Full control | Changes a thread's model, effort, access permissions or mode |
 | `interrupt_thread` | Full control | Stops a thread's in-flight turn |
 | `approve_proposed_plan` | Full control | Approves the plan a thread is waiting on, so it starts building |
+| `close_proposed_plan` | Send messages | Closes the plan a thread is waiting on without building it; the plan card can reopen it |
 | `create_project` | Full control | Links a folder you already have as a project |
 
 Every tool takes a `reason` - a short phrase saying why it was called. That reason is what makes the
@@ -116,6 +120,18 @@ not recoverable. Deleting a build directory is not on it.
 Commands are stopped after twenty seconds and their output is truncated, so a command that prints
 everything gets cut off rather than read out at length.
 
+## Finding a thread and what it is doing
+
+`list_threads` names each thread's project (`projectTitle`) as the sidebar shows it. A thread's title
+describes its work, not where it runs, so when you ask about "Undead Open World" the orchestrator
+matches the project, not the title. Side chats are listed only with `includeSideChats`.
+
+`isWorking` follows the sidebar's **Working**: a turn in flight, work the server has scheduled for
+the thread (`pendingWork`, such as a parked agent continuation), or background tasks still running
+after the turn ended (`backgroundTaskCount`). A side chat building in the background reads as
+working, not idle. A terminal running a command is listed under that thread's terminals and does
+not make the thread working by itself. `thread_collaboration` uses the same rule for related chats.
+
 ## Terminals
 
 Every thread can have one or more terminals open - an agent CLI such as Claude, Grok or Codex, or
@@ -147,13 +163,18 @@ loud before adding anything.
 ## Approving a plan out loud
 
 `approve_proposed_plan` accepts the plan a thread is waiting on, so you can say yes rather than
-going to find the thread. It sends exactly what the approve button sends, and forces the turn out of
-plan mode - under the thread's own mode you would get a second plan, since the thread is in plan
-mode precisely because it just proposed one.
+going to find the thread. It sends exactly what the Implement button sends — including which plan
+it implements, so that plan is marked implemented and cannot be approved twice — and forces the
+turn out of plan mode, since a Plan-mode turn would only propose another plan. It only ever
+approves the thread's newest plan; an older plan is never picked up in its place.
 
 It asks you to confirm out loud first, and it is deliberately at full authority: the plan is yours
 to accept, and this exists so you can delegate saying yes, not so it can decide for you. Ask it to
 describe the plan first if you have not seen it.
+
+`close_proposed_plan` is the other answer: the thread stops waiting on its plan, nothing is built, and
+nothing is sent to it. Use it for a plan you will not take up, including one stuck in a thread that
+can no longer take messages. It does not ask for confirmation, because the plan's card can reopen it.
 
 ## Threads waiting on a plan
 
@@ -169,12 +190,13 @@ is and offers to read the steps rather than reciting them at you.
 The plan is only fetched for a thread that is actually stopped on one, and if it cannot be read the
 orchestrator says so instead of guessing at what it proposed.
 
-A thread only counts as waiting on a plan while it is actually stopped in Plan mode **and the
-latest turn itself is the one holding an unimplemented plan**. Having a plan in the thread's
-history is not a wait. A leftover plan after the user left Plan mode, started building, or
-continued on a later turn used to keep reporting "waiting on proposed plan". Those threads now
-read as working or idle. Approval prompts and input requests are different: those are raised by
-a turn that is still in flight, so they stay visible while the thread works.
+A thread counts as waiting on a plan once it has settled with its **newest plan still open** —
+neither implemented nor closed. Answering a plan in Build or Agent ("go ahead", or switching modes
+and continuing) implements it just as the Implement button does, so a plan you already built that
+way no longer reads as waiting, and older plans in the thread's history never do. The wait holds in any mode, because an agent can propose
+a plan on its own outside Plan mode, and a later Plan-mode question or a housekeeping turn does not
+hide it. Approval prompts and input requests are different: those are raised by a turn that is
+still in flight, so they stay visible while the thread works.
 
 ## Opening a website
 

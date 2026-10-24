@@ -5,10 +5,25 @@ import { Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
+  assetThumbnailUrl,
   createAssetEnvironmentAtoms,
   InvalidAssetCollectionKeyError,
   parseAssetCollectionKey,
 } from "./assets.ts";
+
+describe("asset thumbnail URLs", () => {
+  it("asks for the small copy alongside any revision, keeping the fragment", () => {
+    expect(assetThumbnailUrl("https://host/api/assets/t/a.png")).toBe(
+      "https://host/api/assets/t/a.png?thumbnail=1",
+    );
+    expect(assetThumbnailUrl("https://host/api/assets/t/a.png?solla_revision=r1#x")).toBe(
+      "https://host/api/assets/t/a.png?solla_revision=r1&thumbnail=1#x",
+    );
+    expect(assetThumbnailUrl("https://host/a.png?thumbnail=1")).toBe(
+      "https://host/a.png?thumbnail=1",
+    );
+  });
+});
 
 describe("asset collection keys", () => {
   it("preserves malformed JSON and its native cause", () => {

@@ -73,6 +73,10 @@ Two more, found once an account was signed in: the credential file is `auth.json
 
 One transport rule matters as much: the host's stdin is a sink consumed exactly once, so a single long-lived stream drains a queue of outbound frames. Opening a fresh write per frame passes a one-request smoke test and then blocks forever on the second frame, which stalls the handshake and every turn after it.
 
+Muse 1.4 added `session/statusChanged`, a broadcast sent one frame ahead of the `turn/started` or `turn/completed` that caused it, carrying that event's view cursor; `session/closed` likewise names the final head. Neither is a view event, so the adapter keeps both out of cursor deduplication and never resumes from their cursor. Counting the idle broadcast made each turn's own `turn/completed` look like a duplicate, so every Muse turn kept showing Working after it had answered. `turn/foregroundCompleted` (answer done, reminder checks still holding the turn open) is explicitly non-terminal and is ignored.
+
+If the host rejects a steer as `already_terminal` while the adapter still has that turn running, its terminal was lost on the way. The adapter reads the session's `lastTurn` through `session/read` and closes the turn the way Muse recorded it, so the message goes out as the next turn instead of waiting behind a turn that is over.
+
 ## Restoring saved replies
 
 At server startup, a bounded sweep repairs recent Muse threads whose latest completed turn has no assistant message. A stopped thread whose latest turn was interrupted is also eligible, so earlier replies lost before Stop can be restored while the thread stays stopped. Active work, pending input, archived threads, and changed provider ownership are excluded.
@@ -87,7 +91,7 @@ The adapter's tests run against a stand-in host that enforces the same four rule
 T3_LIVE_MUSE=1 vp test apps/server/src/provider/Layers/MuseLive.test.ts
 ```
 
-The test selects an `echo` provider configuration, but provider naming alone is not evidence of a free or model-free turn; treat real CLI turn probes as potentially quota-consuming. It skips when the CLI is absent.
+The test selects an `echo` provider configuration, but Muse 1.4.6 accepts that id and still answers with the account's real model (checked 2026-10-12), so every run uses account quota. It skips when the CLI is absent.
 
 To verify host MCP access with the real Meta model (uses account quota):
 

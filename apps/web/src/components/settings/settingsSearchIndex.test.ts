@@ -54,6 +54,12 @@ describe("settingsSearchIndex", () => {
     ).toBe(true);
   });
 
+  it("finds project management by what people call it", () => {
+    for (const query of ["delete project", "token spend", "storage", "rename project"]) {
+      expect(searchSettings(query)[0]?.tab).toBe("/settings/projects");
+    }
+  });
+
   it("finds saved passwords on every client, since any device can manage them", () => {
     expect(searchSettings("saved passwords")[0]?.tab).toBe("/settings/credentials");
   });

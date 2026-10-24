@@ -288,10 +288,12 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                         height: screenshot.height,
                       },
                     };
+              // No structuredContent: it would repeat the whole page a second
+              // time in every provider's stored history (the model only reads
+              // the text block), and a snapshot is taken every few actions.
               return Effect.succeed(
                 new McpSchema.CallToolResult({
                   isError: false,
-                  structuredContent: metadata,
                   content:
                     screenshot === undefined
                       ? [{ type: "text", text: JSON.stringify(metadata) }]

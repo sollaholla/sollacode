@@ -17,6 +17,7 @@ export const BUILT_IN_PROVIDER_DRIVER_KINDS = [
   "antigravity",
   "deepcode",
   "muse",
+  "kimi",
   "mcpBridge",
 ] as const;
 

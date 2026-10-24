@@ -1,4 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { MonitorPlayIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { GalacticOrb, resolveVoiceOrbTint } from "../components/orchestrator/GalacticOrb";
@@ -73,6 +74,14 @@ function OrchestratorFullScreenView() {
             <p className="text-muted-foreground text-xs">{session.activeModel}</p>
           ) : null}
         </div>
+        {/* Watching is the other half of talking: every thread's work as it happens. */}
+        <Link
+          to="/orchestrator/live"
+          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <MonitorPlayIcon className="size-4" aria-hidden />
+          Live
+        </Link>
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-6">

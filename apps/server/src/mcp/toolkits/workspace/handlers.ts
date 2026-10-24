@@ -7,6 +7,7 @@ import {
   type TerminalSummary,
 } from "@t3tools/contracts";
 import { encodeTerminalWrite, visibleTerminalText } from "@t3tools/shared/terminalText";
+import { isThreadWorking, liveBackgroundTasks } from "@t3tools/shared/threadWorking";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -27,8 +28,6 @@ import {
   type WorkspaceTerminalSummary,
   type WorkspaceThreadSummary,
 } from "./types.ts";
-
-const WORKING_TURN_STATES = new Set(["running", "queued", "starting"]);
 
 /**
  * Collapses a shell row into the small shape the orchestrator reasons about.
@@ -61,22 +60,34 @@ function compactTerminals(
 
 export function summarizeThread(
   shell: OrchestrationThreadShell,
-  /** All live threads, so a side chat can name the conversation it hangs off. */
-  threadsById?: ReadonlyMap<string, OrchestrationThreadShell>,
-  terminals: ReadonlyArray<TerminalSummary> = [],
+  context: {
+    /** All live threads, so a side chat can name the conversation it hangs off. */
+    readonly threadsById?: ReadonlyMap<string, OrchestrationThreadShell>;
+    /** Project titles by id, so a thread can be found by the project a person names. */
+    readonly projectTitles?: ReadonlyMap<string, string>;
+    readonly terminals?: ReadonlyArray<TerminalSummary>;
+    /** Background tasks that stopped reporting go stale against this clock. */
+    readonly nowMs: number;
+  },
 ): WorkspaceThreadSummary {
   const latestTurnState = shell.latestTurn?.state;
-  const isWorking = latestTurnState !== undefined && WORKING_TURN_STATES.has(latestTurnState);
+  // The sidebar's Working rule. Reading only the turn called a thread idle
+  // while its background tasks ran on after the turn, or while its next turn
+  // was scheduled (2026-10-12).
+  const isWorking = isThreadWorking(shell, context.nowMs);
+  const backgroundTasks = liveBackgroundTasks(shell, context.nowMs);
+  const projectTitle = context.projectTitles?.get(shell.projectId);
 
   // Approvals and input requests are raised by a turn that is still in flight,
-  // so they are real while the thread works. A proposed plan is not: having a
-  // plan in history is not a wait. Only a settled Plan-mode turn whose own
-  // plan is still unimplemented is waiting for approval — same gate as the
-  // sidebar's "Plan Ready" row. Mirrors resolveWaitingOn on the client.
+  // so they are real while the thread works. A proposed plan is not: the
+  // thread waits on it only once settled. `hasActionableProposedPlan` is the
+  // newest plan that is neither implemented nor closed (a Build or Agent
+  // message from the person implements it), in any mode - an agent can propose a
+  // plan on its own outside Plan mode. Same gate as the sidebar's "Plan Ready"
+  // row; mirrors resolveWaitingOn on the client.
   const latestTurn = shell.latestTurn;
   const stoppedForProposedPlan =
     !isWorking &&
-    shell.interactionMode === "plan" &&
     shell.hasActionableProposedPlan &&
     Boolean(latestTurn?.startedAt) &&
     Boolean(latestTurn?.completedAt) &&
@@ -92,12 +103,17 @@ export function summarizeThread(
   return {
     threadId: shell.id,
     projectId: shell.projectId,
+    ...(projectTitle === undefined ? {} : { projectTitle }),
     title: shell.title,
     status: shell.session?.status ?? "idle",
     waitingOn,
     isWorking,
+    ...(backgroundTasks === null ? {} : { backgroundTaskCount: backgroundTasks.count }),
+    ...(shell.pendingWork == null
+      ? {}
+      : { pendingWork: { kind: shell.pendingWork.kind, state: shell.pendingWork.state } }),
     isSideChat: shell.isSideChat === true,
-    ...sideChatParentTitle(shell, threadsById),
+    ...sideChatParentTitle(shell, context.threadsById),
     // `settledOverride` wins over the derived timestamp, matching the client's
     // effectiveSettled(): a user who explicitly reactivated a thread has not
     // settled it, however old settledAt is.
@@ -106,7 +122,7 @@ export function summarizeThread(
       (shell.settledOverride !== "active" && shell.settledAt !== null),
     ...(shell.updatedAt === undefined ? {} : { lastActivityAt: shell.updatedAt }),
     ...(latestTurnState === undefined ? {} : { latestTurnState }),
-    terminals: compactTerminals(terminals),
+    terminals: compactTerminals(context.terminals ?? []),
   };
 }
 
@@ -127,15 +143,17 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
   const crypto = yield* Crypto.Crypto;
   const terminalManager = yield* TerminalManager;
 
-  const readThreads = Effect.fn("WorkspaceOrchestration.readThreads")(function* () {
-    const snapshot = yield* projection
+  const readSnapshot = Effect.fn("WorkspaceOrchestration.readSnapshot")(function* () {
+    return yield* projection
       .getShellSnapshot()
       .pipe(
         Effect.mapError(
           () => new WorkspaceOrchestrationOperationFailedError({ operation: "reading threads" }),
         ),
       );
-    return snapshot.threads;
+  });
+  const readThreads = Effect.fn("WorkspaceOrchestration.readThreads")(function* () {
+    return (yield* readSnapshot()).threads;
   });
 
   const requireThread = Effect.fn("WorkspaceOrchestration.requireThread")(function* (
@@ -197,7 +215,11 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
 
   switch (input.action) {
     case "list_threads": {
-      const threads = yield* readThreads();
+      const { threads, projects } = yield* readSnapshot();
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+      const projectTitles = new Map(
+        projects.map((project) => [project.id, project.title] as const),
+      );
       const terminals = yield* listKnownTerminals();
       const terminalsByThread = new Map<string, TerminalSummary[]>();
       for (const terminal of terminals) {
@@ -212,7 +234,12 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
         // the model to send itself messages and loop.
         .filter((thread) => !isOrchestratorThreadId(thread.id))
         .map((thread) =>
-          summarizeThread(thread, threadsById, terminalsByThread.get(thread.id) ?? []),
+          summarizeThread(thread, {
+            threadsById,
+            projectTitles,
+            terminals: terminalsByThread.get(thread.id) ?? [],
+            nowMs,
+          }),
         )
         .filter((thread) => (input.includeSideChats === true ? true : !thread.isSideChat))
         .filter((thread) => (input.includeSettled === true ? true : !thread.settled));
@@ -229,16 +256,24 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
       // The whole snapshot rather than just this thread: describing a side chat
       // without naming its parent is the case this is most often called for,
       // and `requireThread` already reads every thread to find one.
-      const threads = yield* readThreads();
+      const { threads, projects } = yield* readSnapshot();
       const thread = threads.find((candidate) => candidate.id === threadId);
       if (!thread) {
         return yield* new WorkspaceOrchestrationThreadNotFoundError({ threadId });
       }
       const threadsById = new Map(threads.map((candidate) => [candidate.id, candidate] as const));
+      const projectTitles = new Map(
+        projects.map((project) => [project.id, project.title] as const),
+      );
       const terminals = yield* listKnownTerminals(threadId);
       return {
         action: "describe_thread" as const,
-        thread: summarizeThread(thread, threadsById, terminals),
+        thread: summarizeThread(thread, {
+          threadsById,
+          projectTitles,
+          terminals,
+          nowMs: DateTime.toEpochMillis(yield* DateTime.now),
+        }),
       };
     }
 

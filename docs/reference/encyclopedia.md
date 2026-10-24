@@ -20,6 +20,22 @@ This is a living glossary for Solla Code. It explains what common terms mean in 
 
 The top-level workspace record in the app. In [the orchestration contracts][1], a project has a `workspaceRoot`, a title, and one or more threads. See [workspace-layout.md][2].
 
+#### Project statistics
+
+What a project keeps and has used, for Settings → Projects: chat and turn counts, storage, and token usage per day and per provider. The server assembles it on request (`orchestration.getProjectStatistics`, [projectStatistics.ts](../../apps/server/src/orchestration/projectStatistics.ts)) from the thread storage counters, artifact sizes, the attachments directory, and turn usage activities. Clients join it onto the live project list with [projectStatistics.ts](../../packages/client-runtime/src/state/projectStatistics.ts). See [projects.md](../user/projects.md).
+
+#### Project folder usage
+
+A project folder's size on disk, for Settings → Projects. [ProjectFolderUsage.ts](../../apps/server/src/project/ProjectFolderUsage.ts) walks folders one at a time in a worker thread (same volume, symlinks not followed, hard links once), keeps each total for six hours, measures deepest folders first so a folder holding others reuses their totals, and on macOS without Full Disk Access leaves out the folders a walk would raise privacy prompts for. Clients subscribe with `orchestration.subscribeProjectFolders` and re-measure with `orchestration.measureProjectFolders`. See [projects.md](../user/projects.md).
+
+#### Image thumbnails
+
+A small JPEG of an image asset, asked for with `thumbnail=1` on its signed URL and made by macOS's `sips` in [ImageThumbnails.ts](../../apps/server/src/assets/ImageThumbnails.ts), cached by the file's size and modification time. Thumbnail tiles use them; viewers fetch the original. Other hosts, and files of 96 KB or less, get the original. See [image-previews.md](../user/image-previews.md).
+
+#### Thread storage counters
+
+`projection_thread_storage`: per-thread counts and byte sizes of stored messages and activities, kept exact by SQLite triggers on every insert, update, and delete so storage can be reported without reading gigabytes of history. Created and backfilled by [082_ProjectionThreadStorage.ts](../../apps/server/src/persistence/Migrations/082_ProjectionThreadStorage.ts); a thread's row goes with its `projection_threads` row ([083_ProjectionThreadStorageCleanup.ts](../../apps/server/src/persistence/Migrations/083_ProjectionThreadStorageCleanup.ts)).
+
 #### Workspace root
 
 The root filesystem path for a project. In [the orchestration model][1], it is the base directory for branches and optional worktrees. See [workspace-layout.md][2].
@@ -41,6 +57,10 @@ A single user-to-assistant work cycle inside a thread. It starts with user input
 #### Activity
 
 A user-visible log item attached to a thread. In [the contracts][1], activities cover important non-message events like approvals, tool actions, and failures. They are projected into thread state in [projector.ts][4].
+
+#### Thread image gallery
+
+Every image a conversation shows, oldest first and each once, which the enlarged image viewer pages through. Message attachments are named `message-attachment:<id>` and work-log images by `workLogImageId` (`file:`, `attachment:`, `stored:`), so any card can open the gallery on its own image. [threadImages.ts](../../packages/client-runtime/src/state/threadImages.ts) maps each image to bytes in hand or an asset to fetch; web walks timeline entries in [timelineImageGallery.ts](../../apps/web/src/components/chat/timelineImageGallery.ts) and mobile walks the feed in [threadImageGallery.ts](../../apps/mobile/src/features/threads/threadImageGallery.ts). Both collect the list only when an image is opened, and the viewers fetch assets as they come up. See [image-previews.md](../user/image-previews.md).
 
 ### Orchestration
 
@@ -89,6 +109,10 @@ Examples include `checkpoint.baseline.captured`, `checkpoint.diff.finalized`, an
 
 "Quiesced" means a turn has gone quiet and stable. In [the receipt schema][13], it means the follow-up work has settled, including work in [CheckpointReactor.ts][6].
 
+#### Live feed
+
+The stream behind the [Live Inspector](../user/live-inspector.md). [LiveFeed.ts](../../apps/server/src/orchestration/LiveFeed.ts) watches domain events and turns the ones a person would notice into **beats**: one plain line each (`kind`, `title`, `detail`), such as a command run, a file read or edited, the words an agent said, a question, or an error. A tool's output is never read. A running tool and its completion share one beat, as does a reply as it is written; a beat still under way is `live`. The server keeps the latest 160 in memory and sends them as one snapshot, then each new or changed beat (`orchestration.subscribeLiveFeed`). Clients fold the feed with [liveFeed.ts](../../packages/shared/src/liveFeed.ts).
+
 ### Provider runtime
 
 The live backend agent implementation and its event stream. The main service is [ProviderService.ts][14], the adapter contract is [ProviderAdapter.ts][15], and the overview is in [provider-architecture.md][16].
@@ -108,6 +132,22 @@ The safety/access mode for a thread or session. In [the contracts][1], the value
 #### Interaction mode
 
 The agent interaction style for a thread. In [the contracts][1], the values are `default`, `plan`, and `agent`. See [runtime-modes.md][18].
+
+#### Proposed plan
+
+A plan an agent asks the person to approve (Claude's ExitPlanMode, a Codex plan item, Cursor's `create_plan`, or a `<proposed_plan>` block in Grok, Muse, Deep Code, OpenCode or Antigravity text, read by [proposedPlanBlocks.ts](../../apps/server/src/provider/proposedPlanBlocks.ts)), stored per plan with `implementedAt` and `closedAt`. The thread waits on its newest plan while both are unset; older plans are implemented, closed, or superseded. The decider settles it when the person (or the orchestrator relaying them) answers in Build or Agent; housekeeping, resumes, delegated runs and other agents never do. The person can also close it without answering (`thread.proposed-plan.close`, undone by `thread.proposed-plan.reopen`). Reverting the answering turn reopens it. One rule for every surface: [proposedPlans.ts](../../packages/shared/src/proposedPlans.ts). Not a task list.
+
+#### Task list
+
+The agent's progress checklist (TodoWrite, Claude Tasks, Codex update_plan, Cursor todos, a refresh), carried by `turn.plan.updated` activities despite the name. Shown in the plan panel's Tasks section, never as a proposed plan's steps. See [taskLists.ts](../../packages/shared/src/taskLists.ts).
+
+#### Background task
+
+Work a provider runs outside the turn that started it: a sub-agent, workflow, monitor, or backgrounded command, announced through `task.started`/`task.progress`/`task.completed` activities. Each thread summary carries `backgroundTasks`, the open tasks that reported within 30 minutes of the newest report, projected by `BackgroundTaskProjection.ts`. Clients treat the thread as working while that summary is live (`liveBackgroundTasks` in client-runtime), and the server marks every task a previous process left open as stopped when it boots. See [provider-background-tasks.md](../user/provider-background-tasks.md).
+
+#### Turn usage
+
+The tokens one turn used, attached to the provider's `turn.completed` event as `turnUsage` and stored as a hidden `turn.usage` activity that project statistics sum. Claude measures it as the growth in the session's cumulative `modelUsage` and `total_cost_usd` ([claudeTurnUsage.ts](../../apps/server/src/provider/claudeTurnUsage.ts)); Codex as the growth in the thread's token total across the turn ([codexTurnUsage.ts](../../apps/server/src/provider/codexTurnUsage.ts)). Other providers report none yet. Never shown in the transcript.
 
 #### Assistant delivery mode
 

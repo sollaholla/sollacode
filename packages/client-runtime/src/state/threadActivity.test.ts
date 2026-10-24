@@ -6,6 +6,8 @@ import {
   isSideChatSessionPreparing,
   isThreadSessionWorking,
   canResumeFailedThreadSession,
+  describeRunningBackgroundTasks,
+  liveBackgroundTasks,
 } from "./threadActivity.ts";
 
 describe("reasoning status placeholders", () => {
@@ -78,6 +80,46 @@ describe("side chat session preparation", () => {
     for (const status of ["ready", "error", "stopped", "interrupted"]) {
       expect(isThreadSessionWorking({ ...blank, session: { status } })).toBe(false);
     }
+  });
+});
+
+describe("background tasks after the turn settled", () => {
+  const nowMs = Date.parse("2026-10-10T12:00:00.000Z");
+  const busy = {
+    session: { status: "ready" },
+    backgroundTasks: {
+      count: 4,
+      startedAt: "2026-10-10T11:40:00.000Z",
+      lastActivityAt: "2026-10-10T11:59:30.000Z",
+    },
+  };
+
+  it("counts work its provider is still reporting", () => {
+    expect(liveBackgroundTasks(busy, nowMs)).toEqual({
+      count: 4,
+      startedAt: "2026-10-10T11:40:00.000Z",
+    });
+  });
+
+  it("drops work whose process is gone or that has gone quiet", () => {
+    expect(liveBackgroundTasks({ ...busy, session: { status: "stopped" } }, nowMs)).toBeNull();
+    expect(
+      liveBackgroundTasks(
+        {
+          ...busy,
+          backgroundTasks: { ...busy.backgroundTasks, lastActivityAt: "2026-10-10T11:29:00.000Z" },
+        },
+        nowMs,
+      ),
+    ).toBeNull();
+    expect(liveBackgroundTasks({ session: busy.session, backgroundTasks: null }, nowMs)).toBeNull();
+    // Servers predating the summary send nothing at all.
+    expect(liveBackgroundTasks({ session: busy.session }, nowMs)).toBeNull();
+  });
+
+  it("names the work in the transcript", () => {
+    expect(describeRunningBackgroundTasks(1)).toBe("1 background task running");
+    expect(describeRunningBackgroundTasks(4)).toBe("4 background tasks running");
   });
 });
 

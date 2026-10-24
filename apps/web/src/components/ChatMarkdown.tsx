@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { useArtifactLinkOpener } from "../hooks/useArtifactLinkOpener";
 import {
   CheckIcon,
   ChevronRightIcon,
@@ -8,7 +9,7 @@ import {
   Minimize2Icon,
   WrapTextIcon,
 } from "lucide-react";
-import type { MessageId, ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
+import type { EditorId, MessageId, ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { fileViewHref } from "~/fileViewHref";
 import { findBareFilePaths, remarkBareFilePaths, uniqueBareFilePaths } from "~/barePathLinks";
@@ -107,6 +108,8 @@ import {
   BrowserPreviewUnavailableError,
 } from "../browser/openFileInPreview";
 import { useExpandedImagePreviewController } from "./chat/ExpandedImagePreview";
+import { useStableEditorList } from "./chat/useStableEditorList";
+import { useStableLowContextWarningAction } from "./chat/useStableLowContextWarningAction";
 import {
   isRemoteImageReferenceContext,
   resolveImageReferenceAssetPath,
@@ -237,6 +240,25 @@ function findTaskListMarkerOffset(markdown: string, listItemStart: number): numb
   if (!match?.[1]) return null;
   return listItemStart + firstLine.indexOf(match[1]);
 }
+
+/**
+ * The default `1.25rem` marker gutter (`.chat-markdown ol`) fits one-character
+ * markers. Wider markers can extend past it and get clipped by a collapsed
+ * message's overflow. Widen the gutter to fit the widest marker, including a
+ * negative marker's minus sign, the period, and the trailing space.
+ */
+export function orderedListGutterStyle(
+  itemCount: number,
+  start: unknown,
+): { "--list-gutter": string } | undefined {
+  const parsedStart = Number.parseInt(String(start ?? 1), 10);
+  const firstNumber = Number.isNaN(parsedStart) ? 1 : parsedStart;
+  const lastNumber = firstNumber + Math.max(itemCount - 1, 0);
+  const markerWidth = Math.max(String(firstNumber).length, String(lastNumber).length);
+  if (markerWidth <= 1) return undefined;
+  return { "--list-gutter": `${markerWidth + 2}ch` };
+}
+
 const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
   ...defaultSchema,
   attributes: {
@@ -572,12 +594,7 @@ function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
       className="chat-markdown-table-container"
       data-expanded={expanded ? "true" : "false"}
     >
-      <ScrollArea
-        chainVerticalScroll
-        scrollFade
-        hideScrollbars
-        className="w-full max-w-full rounded-none"
-      >
+      <ScrollArea chainVerticalScroll scrollFade className="w-full max-w-full rounded-none">
         <table ref={tableRef} {...props}>
           {children}
         </table>
@@ -776,7 +793,7 @@ function MarkdownCodeBlock({
 
   return (
     <div
-      className="chat-markdown-codeblock leading-snug"
+      className="chat-markdown-codeblock border border-border/70 bg-secondary leading-snug dark:border-transparent dark:bg-input/32"
       data-language={language}
       data-wrap={wrapped ? "true" : "false"}
     >
@@ -788,7 +805,7 @@ function MarkdownCodeBlock({
             theme={theme}
           />
         </span>
-        <span className="flex items-center gap-0.5">
+        <span className="flex items-center gap-0.5" role="toolbar" aria-label="Code block actions">
           <Tooltip>
             <TooltipTrigger
               render={
@@ -1030,9 +1047,17 @@ const MARKDOWN_LINK_FAVICON_CLASS_NAME = "block size-full shrink-0 select-none";
 
 /** Hosts whose favicon request already failed this session — skip straight to the globe. */
 const failedFaviconHosts = new Set<string>();
+/**
+ * Hosts whose favicon already loaded. A remounted <img> for one of these is
+ * served from the memory cache, but `loading="lazy"` and async decoding both
+ * defer the first paint by a frame, which reads as a flash. Known hosts skip
+ * both; only a host seen for the first time is lazy.
+ */
+const loadedFaviconHosts = new Set<string>();
 
 const MarkdownLinkFavicon = memo(function MarkdownLinkFavicon({ host }: { host: string }) {
   const [failedHost, setFailedHost] = useState<string | null>(null);
+  const known = loadedFaviconHosts.has(host);
   return (
     <span className="chat-markdown-link-favicon" aria-hidden>
       {failedHost === host || failedFaviconHosts.has(host) ? (
@@ -1041,9 +1066,13 @@ const MarkdownLinkFavicon = memo(function MarkdownLinkFavicon({ host }: { host: 
         <img
           src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`}
           alt=""
-          loading="lazy"
+          loading={known ? "eager" : "lazy"}
+          decoding={known ? "sync" : "async"}
           draggable={false}
           className={cn(MARKDOWN_LINK_FAVICON_CLASS_NAME, "rounded-sm")}
+          onLoad={() => {
+            loadedFaviconHosts.add(host);
+          }}
           onError={() => {
             failedFaviconHosts.add(host);
             setFailedHost(host);
@@ -1611,7 +1640,7 @@ function ChatMarkdown({
   leadingSlashCommand: leadingSlashCommandProp = null,
   className,
   lineBreaks = false,
-  lowContextWarningAction,
+  lowContextWarningAction: lowContextWarningActionProp,
 }: ChatMarkdownProps) {
   // Callers rebuild these two props on renders that have nothing to do with
   // this message: the timeline re-creates its shared row state whenever any
@@ -1623,6 +1652,7 @@ function ChatMarkdown({
   const threadRef = useStableScopedThreadRef(threadRefProp);
   const skills = useStableMarkdownSkills(skillsProp);
   const leadingSlashCommand = useStableLeadingSlashCommand(leadingSlashCommandProp);
+  const lowContextWarningAction = useStableLowContextWarningAction(lowContextWarningActionProp);
   const { resolvedTheme } = useTheme();
   const expandedImagePreviewController = useExpandedImagePreviewController();
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
@@ -1634,6 +1664,7 @@ function ChatMarkdown({
   const preparedConnection = usePreparedConnection(threadRef?.environmentId ?? null);
   const activeEnvironmentId = useActiveEnvironmentId();
   const environmentId = threadRef?.environmentId ?? activeEnvironmentId;
+  const { resolveArtifactLink, openArtifactLink } = useArtifactLinkOpener(environmentId);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const threadEnvironment = useEnvironment(threadRef?.environmentId ?? null);
   const fileEnvironment = useEnvironment(environmentId);
@@ -1661,10 +1692,8 @@ function ChatMarkdown({
     fileEnvironment?.entry.target._tag === "PrimaryConnectionTarget";
   const imageAssetRevision = assetRevision ?? String(fnv1a32(text));
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
-  const openInPreferredEditor = useOpenInPreferredEditor(
-    environmentId,
-    serverConfig?.availableEditors ?? [],
-  );
+  const availableEditors = useStableEditorList(serverConfig?.availableEditors);
+  const openInPreferredEditor = useOpenInPreferredEditor(environmentId, availableEditors);
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   // Bare absolute paths in prose (`/Users/me/x.png` with no link or code
   // span) become chips once the host confirms they exist. The scan is one
@@ -1761,26 +1790,9 @@ function ChatMarkdown({
     event.clipboardData.setData("text/plain", payload.text);
     event.clipboardData.setData("text/html", payload.html);
   }, []);
-  const openExternalMarkdownLink = useCallback((href: string) => {
-    const api = readLocalApi();
-    if (!api) return;
-    void openExternalLinkDirectly({
-      href,
-      openExternal: (target) => api.shell.openExternal(target),
-      reportFailure: (cause) => {
-        reportMarkdownActionFailure({ operation: "open-link-external", target: href }, cause);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to open link",
-            description: cause instanceof Error ? cause.message : "An error occurred.",
-          }),
-        );
-      },
-    });
-  }, []);
   const openExternalLinkInPreview = useCallback(
     (url: string) => {
+      if (openArtifactLink(url)) return Promise.resolve(AsyncResult.success(undefined));
       if (!threadRef) {
         return Promise.resolve(
           AsyncResult.failure<void, BrowserPreviewUnavailableError>(
@@ -1794,7 +1806,38 @@ function ChatMarkdown({
       }
       return openUrlInPreview({ threadRef, url, openPreview });
     },
-    [openPreview, threadRef],
+    [openArtifactLink, openPreview, threadRef],
+  );
+  const openExternalMarkdownLink = useCallback(
+    (href: string) => {
+      if (openArtifactLink(href)) return;
+      const api = readLocalApi();
+      if (!api) return;
+      void openExternalLinkDirectly({
+        href,
+        openExternal: (target) => api.shell.openExternal(target),
+        hostPreview: {
+          isRemoteClient: isRemoteThread,
+          open: async (target) => {
+            const result = await openExternalLinkInPreview(target);
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              throw squashAtomCommandFailure(result);
+            }
+          },
+        },
+        reportFailure: (cause) => {
+          reportMarkdownActionFailure({ operation: "open-link-external", target: href }, cause);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Unable to open link",
+              description: cause instanceof Error ? cause.message : "An error occurred.",
+            }),
+          );
+        },
+      });
+    },
+    [isRemoteThread, openArtifactLink, openExternalLinkInPreview],
   );
   const openMarkdownFileInPreview = useCallback(
     (path: string) => {
@@ -1970,6 +2013,15 @@ function ChatMarkdown({
             : children;
         return <p {...props}>{renderSkillInlineMarkdownChildren(withCommand, skills)}</p>;
       },
+      ol({ node, start, style, ...props }) {
+        const itemCount =
+          node?.children?.filter((child) => child.type === "element" && child.tagName === "li")
+            .length ?? 0;
+        const gutterStyle = orderedListGutterStyle(itemCount, start);
+        return (
+          <ol {...props} start={start} style={gutterStyle ? { ...style, ...gutterStyle } : style} />
+        );
+      },
       li({ node, children, ...props }) {
         const listItemStart = node?.position?.start.offset;
         const markerOffset =
@@ -2010,8 +2062,10 @@ function ChatMarkdown({
         );
       },
       a({ node, href, children, ...props }) {
+        const artifactLink = href ? resolveArtifactLink(href) : null;
         const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
-        const fileLinkMeta = normalizedHref ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
+        const fileLinkMeta =
+          normalizedHref && !artifactLink ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
         if (!fileLinkMeta) {
           const faviconHost = resolveExternalWebLinkHost(href);
           const isSameDocumentLink = href?.startsWith("#") ?? false;
@@ -2021,7 +2075,7 @@ function ChatMarkdown({
             <a
               {...props}
               href={href}
-              target={isSameDocumentLink ? undefined : "_blank"}
+              target={isSameDocumentLink || artifactLink ? undefined : "_blank"}
               rel={isSameDocumentLink ? undefined : "noopener noreferrer"}
               onClick={(event) => {
                 onClick?.(event);
@@ -2029,14 +2083,18 @@ function ChatMarkdown({
                   handleMarkdownFragmentClick(event, href);
                   return;
                 }
-                if (href && faviconHost && shouldOpenExternalLinkDirectly(event)) {
+                if (
+                  href &&
+                  (faviconHost || artifactLink) &&
+                  shouldOpenExternalLinkDirectly(event)
+                ) {
                   event.preventDefault();
                   event.stopPropagation();
                   openExternalMarkdownLink(href);
                 }
               }}
               onContextMenu={(event) => {
-                if (!canOpenInPreview || !href || !faviconHost) return;
+                if (!canOpenInPreview || !href || (!faviconHost && !artifactLink)) return;
                 event.preventDefault();
                 event.stopPropagation();
                 const api = readLocalApi();
@@ -2160,6 +2218,7 @@ function ChatMarkdown({
     openInPreferredEditor,
     openExternalMarkdownLink,
     openExternalLinkInPreview,
+    resolveArtifactLink,
     openMarkdownImageInFullScreen,
     openMarkdownFileInPreview,
     preparedConnection,

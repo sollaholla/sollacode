@@ -170,23 +170,25 @@ describe("buildWorld", () => {
     expect(world.get(`${environmentId}:stopped`)?.waitingOn).toBe("proposed-plan");
   });
 
-  it("does not call an idle default-mode thread blocked on a leftover plan", () => {
-    // Having a plan in history is not a wait.
+  it("waits on an open plan an agent proposed outside Plan mode", () => {
+    // The flag is the newest plan that is neither implemented nor closed, and a
+    // plan is implemented as soon as the person answers in Build or Agent - so an
+    // open one in those modes was proposed by the agent on its own (Claude can
+    // enter plan mode by itself) and is still waiting for an answer.
     const world = buildWorld([idle("free", { hasActionableProposedPlan: true })]);
-    expect(world.get(`${environmentId}:free`)?.waitingOn).toBe("nothing");
+    expect(world.get(`${environmentId}:free`)?.waitingOn).toBe("proposed-plan");
   });
 
-  it("does not call an idle agent-mode thread blocked on a leftover plan", () => {
+  it("waits on an open plan in an idle agent-mode thread", () => {
     const world = buildWorld([
       idle("agent", { hasActionableProposedPlan: true, interactionMode: "agent" }),
     ]);
-    expect(world.get(`${environmentId}:agent`)?.waitingOn).toBe("nothing");
+    expect(world.get(`${environmentId}:agent`)?.waitingOn).toBe("proposed-plan");
   });
 
-  it("does not treat an old unimplemented plan as a wait on a later turn", () => {
-    // The denormalized flag is latest-turn only. A leftover record from turn-1
-    // must not make turn-2 look blocked, even while the thread is still in
-    // Plan mode.
+  it("does not treat a closed or implemented plan as a wait on a later turn", () => {
+    // The flag drops once the newest plan is implemented or closed; an older
+    // plan record must not make a later turn look blocked, even in Plan mode.
     const world = buildWorld([
       idle("later", {
         hasActionableProposedPlan: false,

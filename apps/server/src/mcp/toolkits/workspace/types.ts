@@ -78,17 +78,38 @@ export type WorkspaceTerminalDetail = typeof WorkspaceTerminalDetail.Type;
 export const WorkspaceThreadSummary = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  /**
+   * The project's name as the sidebar shows it. Thread titles say what a chat
+   * is about, not where it runs, so a person asking about "Undead Open World"
+   * means this, not a title.
+   */
+  projectTitle: Schema.optional(Schema.String),
   title: Schema.String,
   status: OrchestrationSessionStatus,
   /**
    * What the thread is blocked on, if anything — the orchestrator's main signal.
-   * `proposed-plan` means a settled Plan-mode turn is waiting for the user to
-   * approve the plan on that turn. A leftover plan in history is `nothing`.
+   * `proposed-plan` means the thread has settled with its newest plan still
+   * open — not implemented (by Implement, or by the person answering in Build
+   * or Agent) and not closed. Older plans in history are `nothing`.
    */
   waitingOn: Schema.optional(
     Schema.Literals(["approval", "user-input", "proposed-plan", "nothing"]),
   ),
+  /**
+   * Doing work now, by the sidebar's Working rule: a session or turn in
+   * flight, scheduled work for it (`pendingWork`), or background tasks its
+   * finished turn left running (`backgroundTaskCount`). A terminal with a
+   * running subprocess is listed under `terminals` and does not count.
+   */
   isWorking: Schema.Boolean,
+  /** Sub-agents, workflows, and backgrounded commands still reporting after the turn ended. */
+  backgroundTaskCount: Schema.optional(Schema.Number),
+  /**
+   * Work the server holds for the thread: `kind` such as agent-continuation,
+   * startup-resume, or provider-retry, and `state` such as pending, sleeping,
+   * executing, or blocked-authentication.
+   */
+  pendingWork: Schema.optional(Schema.Struct({ kind: Schema.String, state: Schema.String })),
   isSideChat: Schema.Boolean,
   /**
    * The conversation a side chat was forked from. Present only for a side

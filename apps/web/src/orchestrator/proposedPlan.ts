@@ -1,3 +1,5 @@
+import { waitingProposedPlan } from "@t3tools/shared/proposedPlans";
+
 /**
  * Saying what a thread waiting on a plan is actually waiting for.
  *
@@ -20,6 +22,8 @@ export interface ProposedPlanInput {
   readonly planId: string;
   readonly planMarkdown: string;
   readonly implementedAt: string | null;
+  /** Set when the person implemented a different plan instead. */
+  readonly closedAt?: string | null;
   readonly createdAt: string;
 }
 
@@ -47,18 +51,17 @@ const MAX_TITLE_LENGTH = 120;
 /**
  * The plan the thread is stopped on, if any.
  *
- * A plan with an `implementedAt` has already been acted on and is history;
- * only an outstanding one is what a thread is waiting for. The newest wins
- * when several are outstanding — that is the one on screen.
+ * The same rule as the chat's Plan Ready banner and the server's waiting flag
+ * (`@t3tools/shared/proposedPlans`): the thread's newest plan, while it is
+ * neither implemented nor closed. An older plan never qualifies - picking "the
+ * newest outstanding" once approved a plan that had been built days earlier
+ * by switching modes, because it had never been marked.
  */
 export function findActionablePlan(
   plans: ReadonlyArray<ProposedPlanInput>,
 ): ProposedPlanInput | null {
-  const outstanding = plans.filter((plan) => plan.implementedAt === null);
-  if (outstanding.length === 0) return null;
-  return outstanding.reduce((latest, plan) =>
-    Date.parse(plan.createdAt) > Date.parse(latest.createdAt) ? plan : latest,
-  );
+  const waiting = waitingProposedPlan(plans.map((plan) => ({ ...plan, id: plan.planId })));
+  return waiting === null ? null : (plans.find((plan) => plan.planId === waiting.planId) ?? null);
 }
 
 /** Markdown list markers, ordered or not, including checkboxes. */

@@ -3,21 +3,30 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import { beforeEach, vi } from "vite-plus/test";
 
-const { handleMock, netFetchMock, unhandleMock } = vi.hoisted(() => ({
-  handleMock: vi.fn(),
-  netFetchMock: vi.fn(),
-  unhandleMock: vi.fn(),
-}));
+const { appOnMock, appOffMock, fromPartitionMock, handleMock, netFetchMock, unhandleMock } =
+  vi.hoisted(() => ({
+    appOnMock: vi.fn(),
+    appOffMock: vi.fn(),
+    fromPartitionMock: vi.fn(),
+    handleMock: vi.fn(),
+    netFetchMock: vi.fn(),
+    unhandleMock: vi.fn(),
+  }));
 
 vi.mock("electron", () => ({
+  app: { on: appOnMock, off: appOffMock },
   net: { fetch: netFetchMock },
   protocol: { handle: handleMock, unhandle: unhandleMock },
+  session: { fromPartition: fromPartitionMock },
 }));
 
 import * as ElectronProtocol from "./ElectronProtocol.ts";
 
 describe("ElectronProtocol", () => {
   beforeEach(() => {
+    appOnMock.mockReset();
+    appOffMock.mockReset();
+    fromPartitionMock.mockReset();
     handleMock.mockReset();
     netFetchMock.mockReset();
     unhandleMock.mockReset();
@@ -297,6 +306,67 @@ describe("ElectronProtocol", () => {
 
       assert.equal(yield* Effect.promise(() => response.text()), "ready");
       assert.equal(netFetchMock.mock.calls.length, 2);
+    }).pipe(Effect.provide(ElectronProtocol.layer)),
+  );
+
+  it.effect("moves proxied fetches to a fresh session once the network service restarts", () =>
+    Effect.gen(function* () {
+      let handler: ((request: Request) => Promise<Response>) | undefined;
+      handleMock.mockImplementation((_scheme, nextHandler) => {
+        handler = nextHandler;
+      });
+      let onChildProcessGone: ((event: unknown, details: unknown) => void) | undefined;
+      appOnMock.mockImplementation((_event, listener) => {
+        onChildProcessGone = listener;
+      });
+      netFetchMock.mockImplementation(async () => new Response("default session"));
+      const freshFetchMock = vi.fn(async () => new Response("fresh session"));
+      fromPartitionMock.mockReturnValue({ fetch: freshFetchMock });
+      const asset = encodeURIComponent("http://127.0.0.1:3773/api/assets/signed-token/image.png");
+      const assetRequest = () =>
+        new Request(
+          `sollacode://app${ElectronProtocol.DESKTOP_REMOTE_ASSET_PROXY_PATH}?url=${asset}`,
+        );
+
+      const bodies = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protocol = yield* ElectronProtocol.ElectronProtocol;
+          yield* protocol.registerDesktopProtocol({
+            scheme: "sollacode",
+            targetOrigin: new URL("http://127.0.0.1:3773/"),
+            backendOrigin: new URL("http://127.0.0.1:3773/"),
+          });
+          const read = () => Effect.promise(() => handler!(assetRequest()).then((r) => r.text()));
+          const before = yield* read();
+          // A GPU process exiting says nothing about the network loader.
+          onChildProcessGone!({}, { type: "GPU", reason: "crashed", exitCode: 1 });
+          const afterGpu = yield* read();
+          onChildProcessGone!(
+            {},
+            {
+              type: "Utility",
+              reason: "killed",
+              exitCode: 9,
+              serviceName: "network.mojom.NetworkService",
+              name: "Network Service",
+            },
+          );
+          const afterRestart = yield* read();
+          const again = yield* read();
+          return { before, afterGpu, afterRestart, again };
+        }),
+      );
+
+      assert.deepEqual(bodies, {
+        before: "default session",
+        afterGpu: "default session",
+        afterRestart: "fresh session",
+        again: "fresh session",
+      });
+      assert.equal(netFetchMock.mock.calls.length, 2);
+      assert.deepEqual(fromPartitionMock.mock.calls, [["solla-protocol-proxy-1"]]);
+      assert.equal(freshFetchMock.mock.calls.length, 2);
+      assert.equal(appOffMock.mock.calls[0]?.[1], onChildProcessGone);
     }).pipe(Effect.provide(ElectronProtocol.layer)),
   );
 

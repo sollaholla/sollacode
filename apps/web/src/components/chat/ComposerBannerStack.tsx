@@ -152,7 +152,9 @@ export function ComposerBannerStack({
               "group-hover/banner-stack:grid-rows-[1fr] group-focus-within/banner-stack:grid-rows-[1fr]",
             )}
           >
-            <div className="min-h-0 overflow-hidden">
+            {/* Clip only the collapsing axis: at fractional widths a horizontal clip
+                shaves the notice's right border. */}
+            <div className="min-h-0 overflow-y-clip">
               <div
                 className={cn(
                   "space-y-2 pb-2",

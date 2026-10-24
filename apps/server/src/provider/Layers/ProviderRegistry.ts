@@ -145,9 +145,14 @@ const mergeProviderModels = (
   nextModels: ReadonlyArray<ServerProvider["models"][number]>,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
   const shouldRetainMissingModels = shouldRetainMissingProviderModels(provider);
+  // Only discovered models ride out a partial probe. A custom model comes
+  // from settings, which every snapshot is built from, so one the next
+  // snapshot lacks was removed; carrying it kept a deleted id in the picker
+  // for good, across restarts through the status cache (2026-10-14).
+  const retainable = previousModels.filter((model) => !model.isCustom);
 
-  if (shouldRetainMissingModels && nextModels.length === 0 && previousModels.length > 0) {
-    return previousModels;
+  if (shouldRetainMissingModels && nextModels.length === 0 && retainable.length > 0) {
+    return retainable;
   }
 
   const previousBySlug = new Map(previousModels.map((model) => [model.slug, model] as const));
@@ -163,7 +168,7 @@ const mergeProviderModels = (
   });
   const nextSlugs = new Set(nextModels.map((model) => model.slug));
   return shouldRetainMissingModels
-    ? [...mergedModels, ...previousModels.filter((model) => !nextSlugs.has(model.slug))]
+    ? [...mergedModels, ...retainable.filter((model) => !nextSlugs.has(model.slug))]
     : mergedModels;
 };
 

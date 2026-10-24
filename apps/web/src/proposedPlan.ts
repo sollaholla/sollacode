@@ -1,7 +1,11 @@
-export function proposedPlanTitle(planMarkdown: string): string | null {
-  const heading = planMarkdown.match(/^\s{0,3}#{1,6}\s+(.+)$/m)?.[1]?.trim();
-  return heading && heading.length > 0 ? heading : null;
-}
+import {
+  buildPlanImplementationPrompt,
+  proposedPlanTitle,
+  type ProposedPlanStatus,
+} from "@t3tools/shared/proposedPlans";
+
+// Shared with mobile so both clients name and implement a plan identically.
+export { buildPlanImplementationPrompt, proposedPlanTitle };
 
 export function stripDisplayedPlanMarkdown(planMarkdown: string): string {
   const lines = planMarkdown.trimEnd().split(/\r?\n/);
@@ -70,28 +74,6 @@ function sanitizePlanFileSegment(input: string): string {
   return sanitized.length > 0 ? sanitized : "plan";
 }
 
-export function buildPlanImplementationPrompt(planMarkdown: string): string {
-  return `PLEASE IMPLEMENT THIS PLAN:\n${planMarkdown.trim()}`;
-}
-
-export function resolvePlanFollowUpSubmission(input: { draftText: string; planMarkdown: string }): {
-  text: string;
-  interactionMode: "default" | "plan";
-} {
-  const trimmedDraftText = input.draftText.trim();
-  if (trimmedDraftText.length > 0) {
-    return {
-      text: trimmedDraftText,
-      interactionMode: "plan",
-    };
-  }
-
-  return {
-    text: buildPlanImplementationPrompt(input.planMarkdown),
-    interactionMode: "default",
-  };
-}
-
 export function buildPlanImplementationThreadTitle(planMarkdown: string): string {
   const title = proposedPlanTitle(planMarkdown);
   if (!title) {
@@ -119,4 +101,30 @@ export function downloadPlanAsTextFile(filename: string, contents: string): void
   window.setTimeout(() => {
     URL.revokeObjectURL(url);
   }, 0);
+}
+
+/** What became of a plan, in the words the plan card and panel show. */
+export function describeProposedPlanStatus(status: ProposedPlanStatus): {
+  readonly label: string;
+  readonly detail: string;
+  readonly variant: "warning" | "success" | "outline";
+} {
+  switch (status) {
+    case "waiting":
+      return {
+        label: "Waiting for approval",
+        detail: "Implement it, or send feedback to refine it.",
+        variant: "warning",
+      };
+    case "implemented":
+      return { label: "Implemented", detail: "Implementation has started.", variant: "success" };
+    case "closed":
+      return {
+        label: "Closed",
+        detail: "Not waiting any more: it was closed, or a different plan was implemented.",
+        variant: "outline",
+      };
+    case "superseded":
+      return { label: "Superseded", detail: "A newer plan replaced this one.", variant: "outline" };
+  }
 }

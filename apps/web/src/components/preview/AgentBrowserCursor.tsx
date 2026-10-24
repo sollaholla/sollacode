@@ -12,6 +12,7 @@ import {
   agentBrowserCursorPoint,
   type BrowserController,
 } from "./agentBrowserCursorLogic";
+import { useAgentCursorGlide } from "./useAgentCursorGlide";
 
 const CURSOR_ACTIVE_MS = 700;
 /** The cursor is deliberately a fixed blue rather than the theme accent: it has
@@ -30,9 +31,11 @@ export function AgentBrowserCursor(props: {
 
   if (!event) return null;
 
+  // One cursor per tab for its whole life, so each new point glides from
+  // where the cursor is drawn instead of a fresh cursor appearing there.
   return (
     <AgentBrowserCursorEvent
-      key={event.sequence}
+      key={tabId}
       tabId={tabId}
       event={event}
       content={content}
@@ -56,14 +59,17 @@ function AgentBrowserCursorEvent(props: {
   readonly controller: BrowserController;
 }) {
   const { tabId, event, content, zoomFactor, controller } = props;
-  const [active, setActive] = useState(true);
+  // Bright for a moment after each new point, then dimmed while it rests.
+  const [restingSequence, setRestingSequence] = useState<number | null>(null);
+  const active = restingSequence !== event.sequence;
   const nodeRef = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState<{ readonly x: number; readonly y: number } | null>(null);
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => setActive(false), CURSOR_ACTIVE_MS);
+    const sequence = event.sequence;
+    const timeout = window.setTimeout(() => setRestingSequence(sequence), CURSOR_ACTIVE_MS);
     return () => window.clearTimeout(timeout);
-  }, []);
+  }, [event.sequence]);
 
   // Measure the drawn guest instead of recomputing where it ought to be.
   //
@@ -153,15 +159,14 @@ function AgentBrowserCursorEvent(props: {
       zoomFactor,
       surface: content,
     });
+  useAgentCursorGlide(nodeRef, offset, event.sequence);
 
   return (
     <div
       ref={nodeRef}
-      className="pointer-events-none absolute left-0 top-0 z-40 transition-[transform,opacity] duration-150 ease-out motion-reduce:transition-none"
-      style={{
-        opacity: agentBrowserCursorOpacity(active, controller),
-        transform: `translate3d(${offset.x}px, ${offset.y}px, 0)`,
-      }}
+      className="pointer-events-none absolute left-0 top-0 z-40 transition-opacity duration-150 ease-out motion-reduce:transition-none"
+      // No transform here: the glide owns it, and a render must not reset it.
+      style={{ opacity: agentBrowserCursorOpacity(active, controller) }}
       aria-hidden="true"
       data-agent-browser-cursor
     >

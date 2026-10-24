@@ -2,7 +2,7 @@
 
 Clients use the Effect RPC contracts in [`packages/contracts/src/rpc.ts`](../../packages/contracts/src/rpc.ts). User actions become orchestration commands through the shared client runtime. Clients do not call provider adapters directly. HTTP handles environment discovery, authentication, snapshots, and history; authenticated WebSocket RPC handles interactive operations and subscriptions. See [Connection runtime](./connection-runtime.md).
 
-Built-in drivers materialize scoped provider instances for Codex, Claude, Cursor, Grok, OpenCode, Antigravity, Deep Code, and the generic `mcpBridge` external-provider contract. The provider-instance registry owns each instance scope, so disabling, removing, or reconfiguring one instance releases only that instance’s processes and sessions.
+Built-in drivers materialize scoped provider instances for Codex, Claude, Cursor, Grok, OpenCode, Antigravity, Deep Code, Muse Code, Kimi Code, and the generic `mcpBridge` external-provider contract. The provider-instance registry owns each instance scope, so disabling, removing, or reconfiguring one instance releases only that instance’s processes and sessions.
 
 Mid-turn human input is dispatched on a per-thread priority lane and carries the exact provider
 instance and active turn it was meant to steer. The service does not resume or replace a session for
@@ -52,6 +52,13 @@ The driver validates the external descriptor before use, maps and validates orde
 
 ## Client transport
 
+Provider maintenance owns one request per provider instance and serializes commands
+by the driver's package-manager lock key. Interruption publishes a terminal action
+state before releasing the instance, including when the request is still queued or
+verifying the installed version. A rejected duplicate request cannot clear the active
+request's state. Settings keeps its local request guard in a ref and mirrors it into
+React state, so batched rendering cannot mark a request pending without starting it.
+
 The shared `EnvironmentSupervisor` owns retries and the active session. `RpcSessionFactory` establishes one connection attempt, while shell and thread services own their subscriptions and caches. Transport readiness and data synchronization are separate states. See [Connection runtime](./connection-runtime.md) for ownership and failure behavior.
 
 ## Server-side orchestration layers
@@ -99,6 +106,14 @@ concurrent handoff. Rejected exits do not clear the replacement's buffered turn 
 The Antigravity driver discovers models through `agy models` and starts one scoped `agy` subprocess for each turn. The native conversation ID is retained as the resume cursor for subsequent turns. A pure mapper translates stream-JSON frames into provider runtime events. Assistant deltas include text on both ACTIVE and DONE frames; the final result does not duplicate streamed text.
 
 Interrupt marks the turn canceled before interrupting its fiber and closing the child process scope. A child that ignores graceful termination is forcibly terminated after two seconds. Late frames cannot override an interrupted terminal result. See [Antigravity](../providers/antigravity.md) for unsupported operations.
+
+## Kimi Code over ACP
+
+Kimi (`kimi acp`) uses the shared ACP session runtime but is configured entirely through session config options: `model`, `thinking` (category `thought_level`), and `mode` (`default`, `plan`, `auto`, `yolo`). The adapter writes only values the session advertises. It declares `liveSteering: "unsupported"` because Kimi rejects `session/prompt` while its turn runs (`turn.agent_busy`).
+
+Kimi sends three different requests through `session/request_permission`, distinguishable only by option id. AskUserQuestion uses `q0_opt_<n>` and `q0_skip`. ExitPlanMode uses `plan_*` options and carries the plan as text content. Tool approvals use `approve_once`, `approve_always`, and `reject`. Question answers and plan choices are all tagged `allow_once`, so the adapter classifies before applying any access mode, and answers approvals by option _kind_: Kimi rejects any id it does not know, including the shared helper's `allow-once`.
+
+A JSON-RPC error from a real CLI decodes as a defect (Effect's JSON-RPC serializer keeps only its message), not as a typed `AcpRequestError`. Kimi's "Authentication required" is therefore recognised in both forms. See [Kimi Code](../providers/kimi.md).
 
 ## Host tools for every provider
 

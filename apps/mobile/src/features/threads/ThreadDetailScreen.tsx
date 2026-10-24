@@ -9,6 +9,7 @@ import type {
   EnvironmentId,
   MessageId,
   ModelSelection,
+  OrchestrationProposedPlan,
   OrchestrationThreadShell,
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -35,6 +36,7 @@ import type {
   ThreadFeedEntry,
 } from "../../lib/threadActivity";
 import { PendingApprovalCard } from "./PendingApprovalCard";
+import { ClosedPlanNotice, PendingPlanCard } from "./PendingPlanCard";
 import { PendingUserInputCard } from "./PendingUserInputCard";
 import {
   COMPOSER_COLLAPSED_CHROME,
@@ -56,6 +58,8 @@ export interface ThreadDetailScreenProps {
   readonly olderHistoryLoading: boolean;
   readonly onLoadOlderHistory: () => void;
   readonly activeWorkStartedAt: string | null;
+  /** Tasks still running after the turn settled; null while the turn itself runs. */
+  readonly backgroundWork: { readonly count: number; readonly startedAt: string } | null;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
   readonly activePendingUserInput: PendingUserInput | null;
@@ -87,6 +91,17 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  /** The plan this thread is waiting on; shown when nothing else is asked. */
+  readonly pendingProposedPlan: OrchestrationProposedPlan | null;
+  readonly isImplementingProposedPlan: boolean;
+  readonly onImplementProposedPlan: () => Promise<void>;
+  /** Stops waiting on the plan without sending anything. */
+  readonly onCloseProposedPlan: () => Promise<void>;
+  /** The plan just closed on this phone, offered back until something replaces it. */
+  readonly recentlyClosedProposedPlan: OrchestrationProposedPlan | null;
+  readonly onReopenProposedPlan: () => Promise<void>;
+  /** The composer's mode, which decides what a typed reply does to the plan. */
+  readonly composerInteractionMode: ProviderInteractionMode | null;
   readonly onResumeSession: () => Promise<void>;
   readonly isResumingSession: boolean;
   readonly onPromoteQueuedMessages: () => void;
@@ -392,6 +407,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             agentLabel={agentLabel}
             latestTurn={props.selectedThread.latestTurn}
             activeWorkStartedAt={props.activeWorkStartedAt}
+            backgroundWork={props.backgroundWork}
             listRef={listRef}
             freeze={freeze}
             anchorMessageId={anchorMessageId}
@@ -424,7 +440,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               pushes the resting content floor up by the same amount. */}
           <View ref={composerOverlayRef} onLayout={onComposerLayout} className="w-full">
             <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
-              {props.activePendingApproval || props.activePendingUserInput ? (
+              {props.activePendingApproval ||
+              props.activePendingUserInput ||
+              props.pendingProposedPlan ||
+              props.recentlyClosedProposedPlan ? (
                 <Animated.View
                   className="shrink-0 gap-3 px-4 pb-3"
                   entering={FadeInDown.duration(220)}
@@ -446,6 +465,31 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       onSelectOption={props.onSelectUserInputOption}
                       onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
                       onSubmit={props.onSubmitUserInput}
+                    />
+                  ) : null}
+                  {props.pendingProposedPlan &&
+                  !props.activePendingApproval &&
+                  !props.activePendingUserInput ? (
+                    <PendingPlanCard
+                      key={props.pendingProposedPlan.id}
+                      plan={props.pendingProposedPlan}
+                      isImplementing={props.isImplementingProposedPlan}
+                      implementDisabled={
+                        props.connectionStateLabel !== "connected" || props.activeThreadBusy
+                      }
+                      repliesRefine={props.composerInteractionMode === "plan"}
+                      onImplement={() => void props.onImplementProposedPlan()}
+                      onClose={() => void props.onCloseProposedPlan()}
+                    />
+                  ) : null}
+                  {props.recentlyClosedProposedPlan &&
+                  !props.pendingProposedPlan &&
+                  !props.activePendingApproval &&
+                  !props.activePendingUserInput ? (
+                    <ClosedPlanNotice
+                      key={props.recentlyClosedProposedPlan.id}
+                      plan={props.recentlyClosedProposedPlan}
+                      onReopen={() => void props.onReopenProposedPlan()}
                     />
                   ) : null}
                 </Animated.View>

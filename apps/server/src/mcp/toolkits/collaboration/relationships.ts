@@ -1,4 +1,5 @@
 import type { OrchestrationThreadShell, ThreadId } from "@t3tools/contracts";
+import { isThreadWorking } from "@t3tools/shared/threadWorking";
 
 import type { RelatedChatSummary, ThreadRelationship } from "./types.ts";
 
@@ -21,6 +22,8 @@ const directRelationship = (
 export const relatedChatSummary = (
   caller: OrchestrationThreadShell,
   target: OrchestrationThreadShell,
+  /** Background tasks that stopped reporting go stale against this clock. */
+  nowMs: number,
 ): RelatedChatSummary => ({
   threadId: target.id,
   title: target.title,
@@ -33,10 +36,9 @@ export const relatedChatSummary = (
   sessionStatus: target.session?.status ?? null,
   activeTurnId: target.session?.activeTurnId ?? null,
   latestTurnState: target.latestTurn?.state ?? null,
-  isWorking:
-    target.session?.status === "starting" ||
-    target.session?.status === "running" ||
-    target.latestTurn?.state === "running",
+  // The sidebar's Working rule, so a sibling running background tasks or a
+  // scheduled continuation does not read as idle.
+  isWorking: isThreadWorking(target, nowMs),
   updatedAt: target.updatedAt,
 });
 

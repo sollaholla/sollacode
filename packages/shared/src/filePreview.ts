@@ -126,7 +126,50 @@ export function isWorkspaceMediaPreviewPath(path: string): boolean {
   );
 }
 
-/** Recovers the explicit image-read receipt emitted by Muse, including saved historical rows. */
+function rasterFilePath(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const path = value.trim();
+  if (
+    ["\r", "\n", String.fromCharCode(0)].some((character) => path.includes(character)) ||
+    !/\.(?:avif|gif|ico|jpe?g|png|webp)$/iu.test(path)
+  )
+    return null;
+  // Browser URLs and file URLs are not workspace paths. Windows drive paths are.
+  if (/^[a-z][a-z\d+.-]*:/iu.test(path) && !/^[a-z]:[\\/]/iu.test(path)) return null;
+  return path;
+}
+
+/** Reads both provider image items and the compact file list sent to clients. */
+function structuredImageViewPath(value: unknown, depth = 0): string | null {
+  if (depth > 4 || value === null || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const entry of value.slice(0, 12)) {
+      const path = structuredImageViewPath(entry, depth + 1);
+      if (path) return path;
+    }
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of [
+    "path",
+    "filePath",
+    "file_path",
+    "absolutePath",
+    "absolute_path",
+    "savedPath",
+    "saved_path",
+  ]) {
+    const path = rasterFilePath(record[key]);
+    if (path) return path;
+  }
+  for (const key of ["item", "input", "rawInput", "arguments", "files", "data"]) {
+    const path = structuredImageViewPath(record[key], depth + 1);
+    if (path) return path;
+  }
+  return null;
+}
+
+/** Recovers image-view paths and explicit image-read receipts, including saved historical rows. */
 export function readImageToolOutputPath(payload: unknown): string | null {
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
   const record = payload as Record<string, unknown>;
@@ -141,6 +184,10 @@ export function readImageToolOutputPath(payload: unknown): string | null {
       ? (record.data as Record<string, unknown>)
       : null;
   const detail = typeof record.detail === "string" ? record.detail.trim() : "";
+  if (record.itemType === "image_view") {
+    const path = structuredImageViewPath(data);
+    if (path) return path;
+  }
   // Deep Code stores the full path in params; older started receipts only
   // retain the display detail. Neither includes the ReadImage label in the path.
   const deepCodePath =
@@ -151,11 +198,9 @@ export function readImageToolOutputPath(payload: unknown): string | null {
     /^Read image file `([^`\r\n]+)` as model-visible image output\.\r?\nmedia_type: image\/(?:png|jpeg|gif|webp|avif|x-icon|vnd\.microsoft\.icon)\r?\nsource_bytes: \d+\s*$/u.exec(
       detail,
     );
-  const path = deepCodePath ?? match?.[1];
-  if (!path || !/\.(?:avif|gif|ico|jpe?g|png|webp)$/iu.test(path)) return null;
-  // Browser URLs and file URLs are not workspace paths. Windows drive paths are.
-  if (/^[a-z][a-z\d+.-]*:/iu.test(path) && !/^[a-z]:[\\/]/iu.test(path)) return null;
-  return path;
+  return rasterFilePath(
+    deepCodePath ?? match?.[1] ?? (record.itemType === "image_view" ? detail : null),
+  );
 }
 
 /**
@@ -199,7 +244,49 @@ function inlineImageFromContentBlock(block: Record<string, unknown>): string | n
     return null;
   }
   if (!BASE64_PATTERN.test(normalizedData)) return null;
-  return `data:${normalizedMediaType};base64,${normalizedData.replace(/\s+/gu, "")}`;
+  const compactData = normalizedData.replace(/\s+/gu, "");
+  if (!inlineImageIsComplete(normalizedMediaType, compactData)) return null;
+  return `data:${normalizedMediaType};base64,${compactData}`;
+}
+
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/** The last bytes of a base64 string, without decoding the rest of it. */
+function base64TailBytes(base64: string, quads: number): number[] {
+  const tail = base64.slice(-4 * quads);
+  const bytes: number[] = [];
+  for (let index = 0; index < tail.length; index += 4) {
+    const values = Array.from(tail.slice(index, index + 4), (char) =>
+      char === "=" ? 0 : BASE64_ALPHABET.indexOf(char),
+    );
+    const padding = tail.slice(index, index + 4).split("=").length - 1;
+    const word =
+      ((values[0] ?? 0) << 18) |
+      ((values[1] ?? 0) << 12) |
+      ((values[2] ?? 0) << 6) |
+      (values[3] ?? 0);
+    bytes.push((word >> 16) & 0xff, (word >> 8) & 0xff, word & 0xff);
+    if (padding > 0) bytes.splice(bytes.length - padding, padding);
+  }
+  return bytes;
+}
+
+/**
+ * Whether a JPEG or PNG still has its end marker. A copy cut short by a
+ * payload cap decodes as the top of the picture over grey, which reads as a
+ * broken page rather than a missing preview, so it does not count as an image.
+ */
+function inlineImageIsComplete(mediaType: string, base64: string): boolean {
+  if (mediaType !== "image/jpeg" && mediaType !== "image/png") return true;
+  if (base64.length % 4 !== 0) return false;
+  const tail = base64TailBytes(base64, 3);
+  if (mediaType === "image/jpeg") {
+    return tail.at(-2) === 0xff && tail.at(-1) === 0xd9;
+  }
+  // IEND chunk type and its fixed CRC.
+  return [0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82].every(
+    (byte, index) => tail[tail.length - 8 + index] === byte,
+  );
 }
 
 /**
@@ -214,6 +301,20 @@ function inlineImageFromContentBlock(block: Record<string, unknown>): string | n
  * image the agent plainly saw.
  */
 export function inlineToolImageDataUrl(payload: unknown): string | null {
+  if (payload === null || typeof payload !== "object") return null;
+  // Activities are immutable and every timeline update re-derives every row,
+  // so remember each payload's answer instead of re-validating and copying
+  // tens of kilobytes of base64 per image row on each pass.
+  const cached = inlineToolImageCache.get(payload);
+  if (cached !== undefined) return cached;
+  const found = findInlineToolImage(payload);
+  inlineToolImageCache.set(payload, found);
+  return found;
+}
+
+const inlineToolImageCache = new WeakMap<object, string | null>();
+
+function findInlineToolImage(payload: object): string | null {
   const seen = new Set<unknown>();
   const walk = (value: unknown, depth: number): string | null => {
     if (depth > 6 || value === null || typeof value !== "object") return null;
@@ -238,4 +339,72 @@ export function inlineToolImageDataUrl(payload: unknown): string | null {
     return null;
   };
   return walk(payload, 0);
+}
+
+/** `t3-code · preview_snapshot`, `mcp__t3-code__preview_snapshot`, `preview_snapshot`. */
+const PREVIEW_SNAPSHOT_TOOL_NAME = /(?:^|[\s·:/_.-])preview_snapshot$/u;
+
+/**
+ * Whether a tool activity is a `preview_snapshot` call, however a provider
+ * spells it: the activity summary, Claude's tool name, or a Codex MCP item.
+ */
+export function isPreviewSnapshotToolCall(payload: unknown, summary?: string): boolean {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const record = payload as Record<string, unknown>;
+  const data =
+    record.data !== null && typeof record.data === "object" && !Array.isArray(record.data)
+      ? (record.data as Record<string, unknown>)
+      : null;
+  const item =
+    data?.item !== null && typeof data?.item === "object" && !Array.isArray(data?.item)
+      ? (data.item as Record<string, unknown>)
+      : null;
+  return [summary, record.title, data?.toolName, item?.tool].some(
+    (name) => typeof name === "string" && PREVIEW_SNAPSHOT_TOOL_NAME.test(name.trim()),
+  );
+}
+
+export type PreviewSnapshotImage =
+  | { readonly kind: "attachment"; readonly attachmentId: string }
+  | { readonly kind: "inline"; readonly src: string };
+
+function snapshotImageAttachmentId(payload: object): string | null {
+  const seen = new Set<unknown>();
+  const walk = (value: unknown, depth: number): string | null => {
+    if (depth > 6 || value === null || typeof value !== "object" || seen.has(value)) return null;
+    seen.add(value);
+    const entries = Array.isArray(value) ? value : Object.values(value as Record<string, unknown>);
+    const record = value as Record<string, unknown>;
+    if (
+      !Array.isArray(value) &&
+      record.type === "image" &&
+      typeof record.attachmentId === "string"
+    ) {
+      return record.attachmentId;
+    }
+    for (const entry of entries) {
+      const found = walk(entry, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  return walk(payload, 0);
+}
+
+/**
+ * The page a `preview_snapshot` call captured, or null for any other tool.
+ * A snapshot is the browser view the agent acted on, so its row shows the
+ * picture the way a read-image row does. The server stores the picture as an
+ * attachment and leaves its id in the result; rows saved before that carry
+ * the bytes inline, and only a complete copy counts.
+ */
+export function previewSnapshotImage(
+  payload: unknown,
+  summary?: string,
+): PreviewSnapshotImage | null {
+  if (!isPreviewSnapshotToolCall(payload, summary)) return null;
+  const attachmentId = snapshotImageAttachmentId(payload as object);
+  if (attachmentId) return { kind: "attachment", attachmentId };
+  const src = inlineToolImageDataUrl(payload);
+  return src ? { kind: "inline", src } : null;
 }

@@ -38,6 +38,7 @@ import type * as Option from "effect/Option";
 import type * as Effect from "effect/Effect";
 
 import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import type { ProjectStatisticsRows } from "../projectStatistics.ts";
 
 export interface ProjectionSnapshotCounts {
   readonly projectCount: number;
@@ -218,6 +219,29 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadShellById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
+
+  /**
+   * The rows Settings → Projects is built from: every live project and
+   * thread with its stored-history size, turn and artifact totals, and
+   * recorded turn usage per provider and day. Optional for compatibility with
+   * narrow test doubles.
+   */
+  readonly getProjectStatisticsRows?: () => Effect.Effect<
+    ProjectStatisticsRows,
+    ProjectionRepositoryError
+  >;
+
+  /**
+   * Background tasks still open on recently active threads whose last report
+   * came before `before`: at boot, the ones the previous process left
+   * behind. Optional for compatibility with narrow test doubles.
+   */
+  readonly listOpenBackgroundTasksBefore?: (input: {
+    readonly before: string;
+  }) => Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly taskId: string }>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Reads how the latest concrete turn was started without replaying the

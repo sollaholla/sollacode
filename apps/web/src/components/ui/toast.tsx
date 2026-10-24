@@ -3,7 +3,6 @@
 import { Toast } from "@base-ui/react/toast";
 import {
   useEffect,
-  useMemo,
   useState,
   type CSSProperties,
   type ComponentPropsWithoutRef,
@@ -32,6 +31,7 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { resolveThreadRouteTarget } from "~/threadRoutes";
 import {
   buildVisibleToastLayout,
+  hasVisibleToastAction,
   shouldHideCollapsedToastContent,
   shouldRenderThreadScopedToast,
 } from "./toast.logic";
@@ -287,7 +287,7 @@ function deriveToastBodyDescriptor(toast: {
 }): ToastBodyDescriptor {
   const Icon = toast.type ? TOAST_ICONS[toast.type as keyof typeof TOAST_ICONS] : null;
   const stackedActionLayout =
-    toast.actionProps !== undefined && toast.data?.actionLayout === "stacked-end";
+    hasVisibleToastAction(toast.actionProps) && toast.data?.actionLayout === "stacked-end";
   const actionVariant: NonNullable<ThreadToastData["actionVariant"]> =
     toast.data?.actionVariant ?? "default";
   const secondaryActionVariant: NonNullable<ThreadToastData["secondaryActionVariant"]> =
@@ -300,7 +300,7 @@ function deriveToastBodyDescriptor(toast: {
   const hasSecondaryAction = toast.data?.secondaryActionProps !== undefined;
   const hasTrailingControls =
     copyErrorText !== null ||
-    toast.actionProps !== undefined ||
+    hasVisibleToastAction(toast.actionProps) ||
     hasAdditionalActions ||
     hasSecondaryAction;
   const inlineContentEndPad = hasTrailingControls ? "pr-6" : "pr-10";
@@ -401,12 +401,12 @@ function ToastBodyContent({
               type="button"
             />
           ) : null}
-          {actionProps ? (
+          {hasVisibleToastAction(actionProps) ? (
             <Toast.Action
               className={cn(buttonVariants({ size: "xs", variant: actionVariant }), "shrink-0")}
               data-slot="toast-action"
             >
-              {actionProps.children}
+              {actionProps?.children}
             </Toast.Action>
           ) : null}
         </div>
@@ -436,18 +436,16 @@ function useActiveThreadRefFromRoute(): ScopedThreadRef | null {
     routeTarget?.kind === "draft" ? store.getDraftSession(routeTarget.draftId) : null,
   );
 
-  return useMemo(() => {
-    if (routeTarget?.kind === "server") {
-      return routeTarget.threadRef;
-    }
-    if (routeTarget?.kind === "draft" && activeDraftSession) {
-      return {
-        environmentId: activeDraftSession.environmentId,
-        threadId: activeDraftSession.threadId,
-      };
-    }
-    return null;
-  }, [activeDraftSession, routeTarget]);
+  if (routeTarget?.kind === "server") {
+    return routeTarget.threadRef;
+  }
+  if (routeTarget?.kind === "draft" && activeDraftSession) {
+    return {
+      environmentId: activeDraftSession.environmentId,
+      threadId: activeDraftSession.threadId,
+    };
+  }
+  return null;
 }
 
 function ThreadToastVisibleAutoDismiss({
@@ -799,7 +797,7 @@ function AnchoredToasts() {
   );
 }
 
-export { stackedThreadToast } from "./toastHelpers";
+export { hiddenToastActionProps, stackedThreadToast } from "./toastHelpers";
 export type { StackedThreadToastOptions } from "./toastHelpers";
 
 export {

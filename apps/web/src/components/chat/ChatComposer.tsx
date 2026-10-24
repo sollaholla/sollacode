@@ -13,7 +13,6 @@ import type {
   ScopedThreadRef,
   ServerProvider,
   ThreadId,
-  TurnId,
 } from "@t3tools/contracts";
 import {
   ProviderDriverKind,
@@ -507,6 +506,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   isRunning: boolean;
   sendWhileRunning: boolean;
   showPlanFollowUpPrompt: boolean;
+  planFollowUpRefines: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
   sendDisabledReason: string | null;
@@ -562,6 +562,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         isRunning={props.isRunning}
         sendWhileRunning={props.sendWhileRunning}
         showPlanFollowUpPrompt={props.showPlanFollowUpPrompt}
+        planFollowUpRefines={props.planFollowUpRefines}
         promptHasText={props.promptHasText}
         isSendBusy={props.isSendBusy}
         sendDisabledReason={props.sendDisabledReason}
@@ -702,8 +703,10 @@ export interface ChatComposerProps {
   // Plan
   showPlanFollowUpPrompt: boolean;
   activeProposedPlan: Thread["proposedPlans"][number] | null;
-  activePlan: { turnId?: TurnId } | null;
-  sidebarProposedPlan: { turnId?: TurnId } | null;
+  /** The task list, if any; only its presence matters here. */
+  activePlan: object | null;
+  /** The plan the plan panel would show, if any; only its presence matters here. */
+  sidebarProposedPlan: object | null;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
 
@@ -1456,7 +1459,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return `running:${hasQueuedSendNow}:${composerSendState.hasSendableContent}`;
     }
     if (showPlanFollowUpPrompt) {
-      return prompt.trim().length > 0 ? "plan:refine" : "plan:implement";
+      return composerSendState.hasSendableContent ? "plan:send" : "plan:implement";
     }
     return `idle:${composerSendState.hasSendableContent}:${isSendBusy}:${isConnecting}:${isPreparingWorktree}`;
   }, [
@@ -1468,7 +1471,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isSendBusy,
     isInterruptible,
     hasQueuedSendNow,
-    prompt,
     showPlanFollowUpPrompt,
   ]);
 
@@ -3392,6 +3394,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerPlanFollowUpBanner
                   key={activeProposedPlan.id}
                   planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
+                  onOpenPlan={planSidebarOpen ? undefined : togglePlanSidebar}
+                  closeTarget={
+                    routeKind === "server"
+                      ? { threadRef: routeThreadRef, planId: activeProposedPlan.id }
+                      : undefined
+                  }
                 />
               </div>
             ) : null)}
@@ -3764,7 +3772,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         ? "Type corrections, or choose Approve above"
                         : "Type your own answer, or leave this blank to use the selected option"
                       : showPlanFollowUpPrompt && activeProposedPlan
-                        ? "Add feedback to refine the plan, or leave this blank to implement it"
+                        ? interactionMode === "plan"
+                          ? "Add feedback to refine the plan, or leave this blank to implement it"
+                          : "Leave this blank to implement the plan, or add instructions for it"
                         : projectSelectionRequired
                           ? "Choose a project above to start a thread"
                           : noProviderAvailable
@@ -4016,6 +4026,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isRunning={isInterruptible}
                   sendWhileRunning={sendWhileRunning}
                   showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
+                  planFollowUpRefines={interactionMode === "plan"}
                   promptHasText={currentEditorHasText}
                   isSendBusy={isSendBusy}
                   sendDisabledReason={effectiveSendDisabledReason}

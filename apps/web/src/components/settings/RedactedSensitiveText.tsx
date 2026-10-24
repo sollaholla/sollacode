@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { confirmInApp } from "../ui/appConfirm";
+import { Button } from "../ui/button";
 
 const REDACTED_TEXT_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 const DEFAULT_REVEAL_CONFIRMATION =
@@ -45,73 +46,70 @@ export function RedactedSensitiveText(props: {
   const [revealed, setRevealed] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const value = props.value?.trim();
-  const redacted = useMemo(() => (value ? redactedPlaceholder(value) : ""), [value]);
+  const redacted = value ? redactedPlaceholder(value) : "";
 
   if (!value) return null;
 
-  if (confirming) {
-    return (
-      <span
-        className="flex min-w-0 flex-wrap items-center gap-2"
-        role="group"
-        aria-label="Confirm account reveal"
-      >
-        <span className="basis-full text-xs text-muted-foreground">
-          {props.confirmationMessage ?? DEFAULT_REVEAL_CONFIRMATION}
-        </span>
-        <button
-          type="button"
-          className="rounded-md border px-2 py-1 text-xs"
-          onClick={() => {
-            setConfirming(false);
-            setRevealed(true);
-          }}
-        >
-          Reveal
-        </button>
-        <button
-          type="button"
-          className="rounded-md border px-2 py-1 text-xs"
-          onClick={() => setConfirming(false)}
-        >
-          Cancel
-        </button>
-      </span>
-    );
-  }
-
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            className={cn(
-              "min-w-0 cursor-pointer rounded-sm font-mono text-[11px] leading-none transition hover:text-foreground",
-              revealed ? "text-muted-foreground" : "select-none text-muted-foreground blur-[2px]",
-              props.className,
-            )}
-            onClick={() => {
-              if (revealed) {
-                setRevealed(false);
-                return;
-              }
-              if (props.confirmationMode === "inline") {
-                setConfirming(true);
-                return;
-              }
-              void confirmSensitiveReveal(props.confirmationMessage).then((confirmed) => {
-                if (confirmed) setRevealed(true);
-              });
-            }}
-            aria-label={props.ariaLabel}
-            aria-pressed={revealed}
-          >
-            {revealed ? value : redacted}
-          </button>
-        }
-      />
-      <TooltipPopup side="top">{revealed ? props.hideTooltip : props.revealTooltip}</TooltipPopup>
-    </Tooltip>
+    <>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              className={cn(
+                "min-w-0 cursor-pointer rounded-sm font-mono text-[11px] leading-none transition hover:text-foreground",
+                revealed ? "text-muted-foreground" : "select-none text-muted-foreground blur-[2px]",
+                props.className,
+              )}
+              onClick={() => {
+                if (revealed) {
+                  setRevealed(false);
+                  return;
+                }
+                if (props.confirmationMode === "inline") {
+                  setConfirming(true);
+                  return;
+                }
+                void confirmSensitiveReveal(props.confirmationMessage).then((confirmed) => {
+                  if (confirmed) setRevealed(true);
+                });
+              }}
+              aria-label={props.ariaLabel}
+              aria-pressed={revealed}
+              aria-expanded={props.confirmationMode === "inline" ? confirming : undefined}
+            >
+              {revealed ? value : redacted}
+            </button>
+          }
+        />
+        <TooltipPopup side="top">{revealed ? props.hideTooltip : props.revealTooltip}</TooltipPopup>
+      </Tooltip>
+      {confirming ? (
+        <span
+          className="order-last flex min-w-0 basis-full flex-col gap-2 rounded-lg border border-border bg-muted/30 p-3 text-left"
+          role="group"
+          aria-label="Confirm account reveal"
+        >
+          <span className="text-xs leading-relaxed text-muted-foreground">
+            {props.confirmationMessage ?? DEFAULT_REVEAL_CONFIRMATION}
+          </span>
+          <span className="flex flex-wrap items-center gap-2">
+            <Button
+              size="xs"
+              onClick={() => {
+                setConfirming(false);
+                setRevealed(true);
+              }}
+            >
+              Reveal
+            </Button>
+            <Button size="xs" variant="outline" onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+          </span>
+        </span>
+      ) : null}
+    </>
   );
 }

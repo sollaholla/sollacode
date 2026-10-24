@@ -154,6 +154,72 @@ describe("buildThreadFeed", () => {
     expect(activities.map((activity) => activity.id)).toEqual(["real-error"]);
   });
 
+  it("previews projected image-view rows even when their display path is truncated", () => {
+    const path = "/workspace/agents/project/evidence/native-capture/eye-forward-00.png";
+    const entries = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-projected-image"),
+        projectId: ProjectId.make("project-1"),
+        title: "Image",
+        activities: [
+          makeActivity({
+            id: EventId.make("projected-image-view"),
+            kind: "tool.completed",
+            tone: "tool",
+            summary: "Image view",
+            createdAt: "2026-04-01T00:00:01.000Z",
+            payload: {
+              itemType: "image_view",
+              title: "Image view",
+              detail: path.slice(0, 40) + "...",
+              data: { files: [{ path }] },
+            },
+          }),
+        ],
+      }),
+    );
+    const group = entries.find((entry) => entry.type === "activity-group");
+    expect(group?.type === "activity-group" && group.activities[0]).toMatchObject({
+      readImagePath: path,
+      readImageSourceActivityId: "projected-image-view",
+    });
+  });
+
+  it("shows the page a browser snapshot captured in the native feed", () => {
+    const jpeg = "/9j/2Q==";
+    const entries = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-preview-snapshot"),
+        projectId: ProjectId.make("project-1"),
+        title: "Snapshot",
+        activities: [
+          makeActivity({
+            id: EventId.make("codex-preview-snapshot"),
+            kind: "tool.completed",
+            tone: "tool",
+            summary: "t3-code · preview_snapshot",
+            createdAt: "2026-04-01T00:00:01.000Z",
+            payload: {
+              itemType: "mcp_tool_call",
+              title: "t3-code · preview_snapshot",
+              data: {
+                item: {
+                  server: "t3-code",
+                  tool: "preview_snapshot",
+                  result: { content: [{ type: "image", data: jpeg, mimeType: "image/jpeg" }] },
+                },
+              },
+            },
+          }),
+        ],
+      }),
+    );
+    const group = entries.find((entry) => entry.type === "activity-group");
+    expect(group?.type === "activity-group" && group.activities[0]).toMatchObject({
+      snapshotImageSrc: `data:image/jpeg;base64,${jpeg}`,
+    });
+  });
+
   it("carries a saved Deep Code ReadImage path into the native feed", () => {
     const path = String.raw`D:\TerraGen\Assets\Temp\nf_probe_100.png`;
     const entries = buildThreadFeed(
@@ -337,6 +403,13 @@ describe("buildThreadFeed", () => {
           kind: "runtime.warning",
           summary:
             "Muse live streaming is unavailable for this saved session. Activity will refresh every five seconds.",
+        }),
+        makeActivity({
+          id: EventId.make("turn-usage"),
+          kind: "turn.usage",
+          summary: "Turn usage",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: { provider: "claudeAgent", inputTokens: 10, outputTokens: 5 },
         }),
         makeActivity({
           id: EventId.make("provider-usage"),
@@ -863,6 +936,27 @@ describe("buildThreadFeed", () => {
     expect(deriveThreadFeedPresentation(presented, null, new Set())).toEqual([]);
   });
 
+  it("names background tasks still running after the turn settled", () => {
+    const startedAt = "2026-04-01T00:00:01.000Z";
+    expect(
+      deriveThreadFeedPresentation([], null, new Set(), new Set(), null, { count: 3, startedAt }),
+    ).toEqual([
+      {
+        type: "working",
+        id: "working-indicator-row",
+        createdAt: startedAt,
+        label: "3 background tasks running",
+      },
+    ]);
+    // A running turn is the work on screen; it keeps its own elapsed row.
+    expect(
+      deriveThreadFeedPresentation([], null, new Set(), new Set(), startedAt, {
+        count: 3,
+        startedAt,
+      }),
+    ).toEqual([{ type: "working", id: "working-indicator-row", createdAt: startedAt }]);
+  });
+
   it("models work-log overflow as list rows", () => {
     const activity = (
       id: string,
@@ -888,7 +982,11 @@ describe("buildThreadFeed", () => {
         createdAt: "2026-04-01T00:00:01.000Z",
         turnId: null,
         activities: [
-          activity("activity-1", "2026-04-01T00:00:01.000Z"),
+          {
+            ...activity("activity-1", "2026-04-01T00:00:01.000Z"),
+            readImagePath: "/tmp/hidden.png",
+            readImageSourceActivityId: "image-receipt",
+          },
           activity("activity-neutral", "2026-04-01T00:00:02.000Z", "neutral"),
           activity("activity-2", "2026-04-01T00:00:03.000Z"),
           activity("activity-3", "2026-04-01T00:00:04.000Z"),
@@ -902,6 +1000,7 @@ describe("buildThreadFeed", () => {
       type: "work-toggle",
       groupId: "work-group-1",
       hiddenCount: 2,
+      images: [{ kind: "file", path: "/tmp/hidden.png", sourceActivityId: "image-receipt" }],
       expanded: false,
     });
 
@@ -916,5 +1015,42 @@ describe("buildThreadFeed", () => {
       type: "work-toggle",
       expanded: true,
     });
+  });
+});
+
+describe("settings transition separators", () => {
+  it("updates the settings message with completion and removes only its matching receipt", () => {
+    const createdAt = "2026-10-01T22:29:00.149Z";
+    const message = {
+      id: MessageId.make("settings-change"),
+      role: "user" as const,
+      text: "Settings updated: gpt-6-astra with high effort. Apply these settings immediately and continue the current task without waiting for another message.",
+      createdAt,
+      updatedAt: createdAt,
+      streaming: false,
+      turnId: null,
+    };
+    const thread = makeThread({
+      id: ThreadId.make("settings-thread"),
+      projectId: ProjectId.make("project"),
+      title: "Settings",
+      messages: [message],
+    });
+    const pending = buildThreadFeed(thread);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ id: message.id, settingsUpdate: { completed: false } });
+    const complete = buildThreadFeed({
+      ...thread,
+      activities: [
+        makeActivity({
+          id: EventId.make("receipt"),
+          kind: "provider.handoff.completed",
+          summary: "Switched from Claude to Codex",
+          createdAt,
+        }),
+      ],
+    });
+    expect(complete).toHaveLength(1);
+    expect(complete[0]).toMatchObject({ id: message.id, settingsUpdate: { completed: true } });
   });
 });

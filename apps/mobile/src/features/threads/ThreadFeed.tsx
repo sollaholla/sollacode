@@ -1,3 +1,5 @@
+import { WORK_LOG_IMAGE_ROW_HEIGHT } from "@t3tools/client-runtime/state/work-log-images";
+import { useThreadUrlOpener } from "../preview/useThreadUrlOpener";
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
@@ -9,6 +11,7 @@ import {
   extractTrailingInterruptedTasksNotice,
 } from "@t3tools/shared/interruptedTasksNotice";
 import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
+import { unwrapProposedPlanBlocks } from "@t3tools/shared/proposedPlans";
 import { SymbolView } from "../../components/AppSymbol";
 import { HeaderHeightContext } from "@react-navigation/elements";
 import { CommonActions, useNavigation } from "@react-navigation/native";
@@ -48,7 +51,6 @@ import {
   View,
 } from "react-native";
 import { TouchableOpacity } from "react-native-gesture-handler";
-import ImageViewing from "react-native-image-viewing";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
   FadeIn,
@@ -106,6 +108,15 @@ import {
   ThreadWorkLog,
   WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
+import { ThreadImageViewer } from "./ThreadImageViewer";
+import {
+  collectThreadFeedImages,
+  messageThreadImage,
+  pressedThreadImage,
+  threadImageGallery,
+  type ThreadImageGallery,
+  type ThreadImageGalleryOpener,
+} from "./threadImageGallery";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { useAssetUrl } from "../../state/assets";
 import { resolveWorkspaceRelativeFilePath } from "../files/filePath";
@@ -158,6 +169,7 @@ export interface ThreadFeedProps {
   readonly agentLabel: string;
   readonly latestTurn: ThreadFeedLatestTurn | null;
   readonly activeWorkStartedAt: string | null;
+  readonly backgroundWork: { readonly count: number; readonly startedAt: string } | null;
   readonly listRef: RefObject<LegendListRef | null>;
   readonly freeze: SharedValue<boolean>;
   readonly anchorMessageId: MessageId | null;
@@ -177,13 +189,13 @@ export interface ThreadFeedProps {
 
 function MessageAttachmentImage(props: {
   readonly environmentId: EnvironmentId;
-  readonly attachmentId: string;
+  readonly attachment: { readonly id: string; readonly name: string };
   readonly className: string;
-  readonly onPressImage: (uri: string, headers?: Record<string, string>) => void;
+  readonly imageGallery: ThreadImageGalleryOpener;
 }) {
   const uri = useAssetUrl(props.environmentId, {
     _tag: "attachment",
-    attachmentId: props.attachmentId,
+    attachmentId: props.attachment.id,
   });
 
   if (uri === null) {
@@ -195,7 +207,13 @@ function MessageAttachmentImage(props: {
   }
 
   return (
-    <TouchableOpacity activeOpacity={0.7} onPress={() => props.onPressImage(uri)}>
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={() => {
+        const { id, name } = messageThreadImage(props.attachment);
+        props.imageGallery.open(props.imageGallery.galleryFor(pressedThreadImage(id, name, uri)));
+      }}
+    >
       <Image source={{ uri }} className={props.className} resizeMode="cover" />
     </TouchableOpacity>
   );
@@ -316,6 +334,7 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
   readonly color: string;
   readonly host: string;
   readonly href: string;
+  readonly onLinkPress: (href: string) => void;
 }) {
   const [failed, setFailed] = useState(() => failedMarkdownFaviconHosts.has(props.host));
 
@@ -323,7 +342,7 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
     <NativeText
       className="font-sans"
       onPress={() => {
-        void Linking.openURL(props.href);
+        props.onLinkPress(props.href);
       }}
       style={{
         color: props.color,
@@ -639,6 +658,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           return (
             <MarkdownExternalLink
               href={presentation.href}
+              onLinkPress={onLinkPress}
               host={presentation.host}
               color={markdownLinkColor}
             >
@@ -653,7 +673,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
             onPress={
               linkHref
                 ? () => {
-                    void Linking.openURL(linkHref);
+                    onLinkPress(linkHref);
                   }
                 : undefined
             }
@@ -870,7 +890,7 @@ function renderFeedEntry(
     readonly onToggleWorkGroup: (groupId: string) => void;
     readonly onToggleWorkRow: (rowId: string) => void;
     readonly onToggleTurnFold: (turnId: TurnId) => void;
-    readonly onPressImage: (uri: string, headers?: Record<string, string>) => void;
+    readonly imageGallery: ThreadImageGalleryOpener;
     readonly onMarkdownLinkPress: (href: string) => void;
     readonly onOpenSenderThread: (threadId: string) => void;
     readonly iconSubtleColor: string | import("react-native").ColorValue;
@@ -885,7 +905,7 @@ function renderFeedEntry(
   const { markdownStyles, iconSubtleColor, userBubbleColor } = props;
 
   if (entry.type === "working") {
-    return <WorkingTimelineRow startedAt={entry.createdAt} />;
+    return <WorkingTimelineRow startedAt={entry.createdAt} label={entry.label ?? null} />;
   }
 
   if (entry.type === "thought") {
@@ -946,6 +966,10 @@ function renderFeedEntry(
   if (entry.type === "work-toggle") {
     return (
       <ThreadWorkGroupToggle
+        images={entry.images}
+        environmentId={props.environmentId}
+        threadId={props.threadId}
+        imageGallery={props.imageGallery}
         expanded={entry.expanded}
         hiddenCount={entry.hiddenCount}
         iconSubtleColor={iconSubtleColor}
@@ -956,6 +980,27 @@ function renderFeedEntry(
   }
 
   if (entry.type === "message") {
+    if (entry.settingsUpdate) {
+      const { description, completed } = entry.settingsUpdate;
+      return (
+        <View
+          className="flex-row items-center gap-3 py-2"
+          accessible
+          accessibilityLabel={`Settings updated: ${description}. ${completed ? "Switch complete" : "Applying settings"}`}
+        >
+          <View className="h-px flex-1 bg-neutral-300 dark:bg-neutral-700" />
+          <View className="max-w-[80%] flex-row items-center gap-1.5">
+            <Text className="shrink text-center text-xs text-neutral-600 dark:text-neutral-400">
+              {description}
+            </Text>
+            {completed ? (
+              <SymbolView name="checkmark" size={12} tintColor={iconSubtleColor} />
+            ) : null}
+          </View>
+          <View className="h-px flex-1 bg-neutral-300 dark:bg-neutral-700" />
+        </View>
+      );
+    }
     const { message } = entry;
     const isUser = message.role === "user";
     const styles =
@@ -1064,9 +1109,9 @@ function renderFeedEntry(
                 <MessageAttachmentImage
                   key={attachment.id}
                   environmentId={props.environmentId}
-                  attachmentId={attachment.id}
+                  attachment={attachment}
                   className="aspect-[1.3] w-full rounded-[14px] bg-white/15"
-                  onPressImage={props.onPressImage}
+                  imageGallery={props.imageGallery}
                 />
               );
             })}
@@ -1080,9 +1125,13 @@ function renderFeedEntry(
       );
     }
 
+    // A `<proposed_plan>` block is shown as its plan; the feed draws no plan
+    // card, so the plan stays but its raw tags go.
+    const assistantText = unwrapProposedPlanBlocks(message.text);
+
     // Skip empty assistant messages (no text, no attachments) — they would
     // render as an orphaned timestamp and break adjacent activity-group merging.
-    if (message.text.trim().length === 0 && attachments.length === 0) {
+    if (assistantText.trim().length === 0 && attachments.length === 0) {
       return null;
     }
 
@@ -1092,10 +1141,10 @@ function renderFeedEntry(
         className={cn(showAssistantMeta ? "mb-5 px-1" : "mb-2 px-1")}
         {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
       >
-        {message.text.trim().length > 0 ? (
+        {assistantText.trim().length > 0 ? (
           hasNativeSelectableMarkdownText() ? (
             <SelectableMarkdownText
-              markdown={message.text}
+              markdown={assistantText}
               skills={props.skills}
               textStyle={styles.nativeTextStyle}
               onLinkPress={props.onMarkdownLinkPress}
@@ -1107,7 +1156,7 @@ function renderFeedEntry(
               styles={styles.styles}
               theme={styles.theme}
             >
-              {message.text}
+              {assistantText}
             </Markdown>
           )
         ) : null}
@@ -1124,9 +1173,9 @@ function renderFeedEntry(
             <MessageAttachmentImage
               key={attachment.id}
               environmentId={props.environmentId}
-              attachmentId={attachment.id}
+              attachment={attachment}
               className="mt-1.5 aspect-[1.3] w-full rounded-[18px] bg-neutral-200 dark:bg-neutral-800"
-              onPressImage={props.onPressImage}
+              imageGallery={props.imageGallery}
             />
           );
         })}
@@ -1134,7 +1183,7 @@ function renderFeedEntry(
           <View className="mt-1 flex-row items-center gap-1">
             <CopyTextButton
               accessibilityLabel="Copy message"
-              text={message.text}
+              text={assistantText}
               tintColor={iconSubtleColor}
               buttonSize={28}
               iconSize={13}
@@ -1158,19 +1207,26 @@ function renderFeedEntry(
       iconSubtleColor={iconSubtleColor}
       onCopyRow={props.onCopyWorkRow}
       onToggleRow={props.onToggleWorkRow}
+      imageGallery={props.imageGallery}
     />
   );
 }
 
-const WorkingTimelineRow = memo(function WorkingTimelineRow(props: { readonly startedAt: string }) {
+const WorkingTimelineRow = memo(function WorkingTimelineRow(props: {
+  readonly startedAt: string;
+  /** Replaces the elapsed label, as on web. */
+  readonly label: string | null;
+}) {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
+    // A label has no elapsed time to keep current.
+    if (props.label !== null) return;
     const intervalId = setInterval(() => {
       setNowMs(Date.now());
     }, 1_000);
     return () => clearInterval(intervalId);
-  }, [props.startedAt]);
+  }, [props.label, props.startedAt]);
 
   const durationLabel = formatElapsed(props.startedAt, new Date(nowMs).toISOString()) ?? "0s";
 
@@ -1182,7 +1238,7 @@ const WorkingTimelineRow = memo(function WorkingTimelineRow(props: { readonly st
         <View className="h-1 w-1 rounded-full bg-neutral-400/60 dark:bg-neutral-500/60" />
       </View>
       <Text className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400">
-        Working for {durationLabel}
+        {props.label === null ? `Working for ${durationLabel}` : `${props.label}…`}
       </Text>
     </View>
   );
@@ -1497,10 +1553,17 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     expandedTurnIds: new Set(),
   });
   const { copiedRowId, expandedWorkGroups, expandedWorkRows, expandedTurnIds } = interactionState;
-  const [expandedImage, setExpandedImage] = useState<{
-    uri: string;
-    headers?: Record<string, string>;
-  } | null>(null);
+  const [openGallery, setOpenGallery] = useState<ThreadImageGallery | null>(null);
+  // Images found to be gone or undecodable: rows hide them and are sized
+  // without them, and the gallery leaves them out.
+  const [unavailableImages, setUnavailableImages] = useState<ReadonlySet<string>>(() => new Set());
+  const markImageUnavailable = useCallback(
+    (imageId: string) =>
+      setUnavailableImages((previous) =>
+        previous.has(imageId) ? previous : new Set(previous).add(imageId),
+      ),
+    [],
+  );
   const horizontalPadding = props.layoutVariant === "split" ? 20 : 16;
   const contentHorizontalPadding = deriveCenteredContentHorizontalPadding({
     viewportWidth,
@@ -1529,6 +1592,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
 
   const iconSubtleColor = useThemeColor("--color-icon-subtle");
   const userBubbleColor = useThemeColor("--color-user-bubble");
+  const openThreadUrl = useThreadUrlOpener(props.environmentId, props.threadId);
   const onMarkdownLinkPress = useCallback(
     (href: string) => {
       const presentation = resolveMarkdownLinkPresentation(href);
@@ -1550,10 +1614,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       }
 
       if (presentation.href) {
-        void Linking.openURL(presentation.href);
+        openThreadUrl(presentation.href);
       }
     },
-    [props.environmentId, props.threadId, props.workspaceRoot, navigation],
+    [props.environmentId, props.threadId, props.workspaceRoot, navigation, openThreadUrl],
   );
   const markdownStyles = useMarkdownStyles(onMarkdownLinkPress);
   const reviewCommentColors = useReviewCommentColors();
@@ -1567,6 +1631,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       iconSubtleColor,
       markdownStyles,
       reviewCommentColors,
+      unavailableImages,
       userBubbleColor,
       viewportWidth,
     }),
@@ -1576,6 +1641,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       iconSubtleColor,
       markdownStyles,
       reviewCommentColors,
+      unavailableImages,
       userBubbleColor,
       viewportWidth,
     ],
@@ -1678,11 +1744,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         expandedTurnIds,
         expandedWorkGroupIds,
         props.activeWorkStartedAt,
+        props.backgroundWork,
       ),
     [
       expandedTurnIds,
       expandedWorkGroupIds,
       props.activeWorkStartedAt,
+      props.backgroundWork,
       props.feed,
       props.latestTurn,
     ],
@@ -1862,9 +1930,26 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [suspendEndScrollMaintenanceForDisclosure],
   );
 
-  const onPressImage = useCallback((uri: string, headers?: Record<string, string>) => {
-    setExpandedImage({ uri, headers });
-  }, []);
+  // Read when an image is opened rather than on every streamed row, so the
+  // gallery costs nothing until someone taps an image.
+  const feedRef = useRef(props.feed);
+  useLayoutEffect(() => {
+    feedRef.current = props.feed;
+  }, [props.feed]);
+  const imageGallery = useMemo<ThreadImageGalleryOpener>(
+    () => ({
+      galleryFor: (pressed) =>
+        threadImageGallery(
+          collectThreadFeedImages(feedRef.current, props.threadId),
+          pressed,
+          unavailableImages,
+        ),
+      open: setOpenGallery,
+      unavailable: unavailableImages,
+      markUnavailable: markImageUnavailable,
+    }),
+    [markImageUnavailable, props.threadId, unavailableImages],
+  );
 
   // Rows whose height is known before they ever render. Without this, every
   // row above the viewport is assumed to be estimatedItemSize tall, and
@@ -1882,7 +1967,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         case "turn-fold":
           return TURN_FOLD_HEIGHT;
         case "work-toggle":
-          return WORK_GROUP_TOGGLE_HEIGHT;
+          return (
+            WORK_GROUP_TOGGLE_HEIGHT +
+            (!entry.expanded && entry.images.some((image) => !unavailableImages.has(image.id))
+              ? WORK_LOG_IMAGE_ROW_HEIGHT
+              : 0)
+          );
         case "working":
           return workingRowHeight;
         case "activity-group":
@@ -1890,12 +1980,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           // measurement for those groups.
           return entry.activities.some((activity) => expandedWorkRows[activity.id])
             ? undefined
-            : collapsedWorkLogHeight(entry.activities, appearance.baseFontSize);
+            : collapsedWorkLogHeight(entry.activities, appearance.baseFontSize, unavailableImages);
         default:
           return undefined;
       }
     },
-    [expandedWorkRows, workingRowHeight, appearance.baseFontSize],
+    [expandedWorkRows, workingRowHeight, appearance.baseFontSize, unavailableImages],
   );
 
   const renderItem = useCallback(
@@ -1911,7 +2001,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         onToggleWorkGroup,
         onToggleWorkRow,
         onToggleTurnFold,
-        onPressImage,
+        imageGallery,
         onMarkdownLinkPress,
         onOpenSenderThread: (threadId) =>
           navigation.dispatch(
@@ -1941,7 +2031,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       userBubbleMaxWidth,
       onCopyWorkRow,
       onMarkdownLinkPress,
-      onPressImage,
+      imageGallery,
       onToggleTurnFold,
       onToggleWorkGroup,
       onToggleWorkRow,
@@ -2119,22 +2209,11 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         ) : null}
       </View>
 
-      <ImageViewing
-        images={
-          expandedImage
-            ? [
-                {
-                  uri: expandedImage.uri,
-                  headers: expandedImage.headers,
-                },
-              ]
-            : []
-        }
-        imageIndex={0}
-        visible={expandedImage !== null}
-        onRequestClose={() => setExpandedImage(null)}
-        swipeToCloseEnabled
-        doubleTapToZoomEnabled
+      <ThreadImageViewer
+        environmentId={props.environmentId}
+        gallery={openGallery}
+        onClose={() => setOpenGallery(null)}
+        onUnavailable={markImageUnavailable}
       />
     </>
   );

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
-import { SOLLA_MCP_AGENT_CONTEXT, withSideChatAgentContext } from "./sideChatContext.ts";
+import {
+  SOLLA_MCP_AGENT_CONTEXT,
+  withPromotedChatContext,
+  withSideChatAgentContext,
+} from "./sideChatContext.ts";
 
 describe("withSideChatAgentContext", () => {
   it("makes the forked agent concurrency-aware without replacing the user's request", () => {
@@ -18,6 +22,16 @@ describe("withSideChatAgentContext", () => {
 
   it("still supplies the guard context for attachment-only turns", () => {
     expect(withSideChatAgentContext(undefined)).toContain("read-only investigation");
+  });
+
+  it("lifts the side-chat limits for a promoted chat without replacing the request", () => {
+    const prompt = withPromotedChatContext("Now fix it.");
+
+    expect(prompt).toContain("promoted to a standalone main conversation");
+    expect(prompt).toContain("no longer applies");
+    expect(prompt).toContain("create your own side chats");
+    expect(prompt.endsWith("Now fix it.")).toBe(true);
+    expect(withPromotedChatContext(undefined)).toContain("<solla_promoted_chat_context>");
   });
 
   it("explains that Solla's credential-bound MCP server is runtime-injected", () => {

@@ -47,6 +47,7 @@ let initialized = false;
 let gapPageValue = [];
 let ownsSession = false;
 let pendingApprovalTurnId = null;
+let lostTurnId = null;
 let ignoreInterrupt = false;
 let durableTurn = process.env.MUSE_TEST_DURABLE_TURN;
 let paginatedTurn = null;
@@ -273,6 +274,23 @@ process.stdin.on('data', (chunk) => {
         notify('turn/started', { sessionId: SESSION, turnId, viewCursor: 'v:1' });
         continue;
       }
+      if (prompt === 'lose the terminal') {
+        // The host finishes the turn, but its turn/completed never arrives.
+        lostTurnId = turnId;
+        notify('turn/started', { sessionId: SESSION, turnId, viewCursor: 'v:1' });
+        continue;
+      }
+      if (prompt === 'status broadcasts') {
+        // Muse 1.4.6's wire order: each status broadcast arrives one frame
+        // ahead of the turn event that caused it, carrying that event's cursor.
+        notify('session/statusChanged', { sessionId: SESSION, status: 'running', viewCursor: 'v:1' });
+        notify('turn/started', { sessionId: SESSION, turnId, commandId: turnId, viewCursor: 'v:1', sourceRange: {} });
+        notify('item/completed', { sessionId: SESSION, viewCursor: 'v:2', sourceRange: {}, item: { itemId: 'answer', turnId, kind: 'agentMessage', text: 'Answered', status: 'completed', revision: 2 } });
+        notify('turn/foregroundCompleted', { sessionId: SESSION, turnId, viewCursor: 'v:3', sourceRange: {}, blockingAgents: ['goal-reminder', 'verify-reminder'] });
+        notify('session/statusChanged', { sessionId: SESSION, status: 'idle', viewCursor: 'v:4' });
+        notify('turn/completed', { sessionId: SESSION, turnId, viewCursor: 'v:4', sourceRange: {}, terminal: 'completed', durationMs: 6889 });
+        continue;
+      }
       if (prompt === 'retry please') {
         notify('turn/started', { sessionId: SESSION, turnId, viewCursor: 'v:1' });
         notify('turn/retryScheduled', { sessionId: SESSION, turnId, attempt: 1, maxAttempts: 3, nextAttempt: 2, reason: 'upstream overloaded', retryDelayMs: 1500, sourceRange: {}, viewCursor: 'v:2' });
@@ -317,8 +335,16 @@ process.stdin.on('data', (chunk) => {
       send({ jsonrpc: '2.0', method: 'turn/completed', params: { sessionId: SESSION, viewCursor: 'v:13', sourceRange: {}, turnId: pendingApprovalTurnId, terminal: 'completed' } });
       continue;
     }
+    if (message.method === 'session/read') {
+      send({ jsonrpc: '2.0', id: message.id, result: { session: { sessionId: SESSION, status: 'idle', activeTurnId: null }, viewCursor: 'v:9', history: { mode: 'none' }, pendingRequests: [], ...(lostTurnId ? { lastTurn: { turnId: lostTurnId, terminal: 'completed' } } : {}) } });
+      continue;
+    }
     if (message.method === 'turn/steer') {
       const steerText = (message.params.input.find((part) => part.type === 'text') || {}).text || '';
+      if (lostTurnId && message.params.expectedTurnId === lostTurnId) {
+        send({ jsonrpc: '2.0', id: message.id, error: { code: -32030, message: 'turn/steer command ' + message.params.commandId + ' rejected: already_terminal', data: { kind: 'commandRejected' } } });
+        continue;
+      }
       send({ jsonrpc: '2.0', id: message.id, result: { commandId: message.params.commandId, status: 'accepted', turnId: message.params.expectedTurnId } });
       if (steerText === 'steer into the drain') {
         // What the real host did on 2026-09-12: admitted the steer while the
@@ -1422,6 +1448,61 @@ describe("MuseAdapter", () => {
             event.payload.state === "completed",
         ),
       ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("closes a turn whose idle broadcast carries the terminal's own cursor", () =>
+    Effect.gen(function* () {
+      const f = yield* setup();
+      const { events, completed } = yield* observe(f.adapter);
+      yield* f.adapter.startSession({ threadId, runtimeMode: "auto" });
+      const turn = yield* f.adapter.sendTurn({ threadId, input: "status broadcasts" });
+      yield* Deferred.await(completed).pipe(Effect.timeout("5 seconds"));
+      expect(
+        events.filter((event) => event.type === "turn.completed").map((event) => event.payload),
+      ).toEqual([{ state: "completed" }]);
+      expect(events.find((event) => event.type === "turn.completed")?.turnId).toBe(turn.turnId);
+      expect(events.some((event) => event.type === "item.completed")).toBe(true);
+      expect((yield* f.adapter.listSessions()).find((s) => s.threadId === threadId)?.status).toBe(
+        "ready",
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("settles a turn the host already finished when it rejects a steer into it", () =>
+    Effect.gen(function* () {
+      const f = yield* setup();
+      const { events, completed } = yield* observe(f.adapter);
+      yield* f.adapter.startSession({ threadId, runtimeMode: "auto" });
+      const turn = yield* f.adapter.sendTurn({ threadId, input: "lose the terminal" });
+      const messageId = MessageId.make("follow-up");
+      const outcome = yield* f.adapter
+        .sendTurn({
+          threadId,
+          messageId,
+          input: "one more thing",
+          liveSteerTarget: { providerInstanceId: instanceId, activeTurnId: turn.turnId },
+        })
+        .pipe(Effect.flip);
+      // The send still fails, which is what sends the message as the next
+      // turn; the turn it was aimed at closes the way the host recorded it.
+      expect(outcome.detail).toContain("already_terminal");
+      yield* Deferred.await(completed).pipe(Effect.timeout("5 seconds"));
+      expect(
+        events
+          .filter((event) => event.type === "turn.completed" && event.turnId === turn.turnId)
+          .map((event) => event.payload),
+      ).toEqual([{ state: "completed" }]);
+      expect(
+        events.some(
+          (event) => event.type === "message.delivered" && event.payload.messageId === messageId,
+        ),
+      ).toBe(false);
+      const session = (yield* f.adapter.listSessions()).find((s) => s.threadId === threadId);
+      expect(session?.status).toBe("ready");
+      expect(session?.activeTurnId).toBeUndefined();
+      const calls = yield* Effect.promise(() => readCalls(f.recordPath));
+      expect(calls.some((call) => call.method === "session/read")).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

@@ -4,9 +4,11 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import type { ProposedPlanStatus } from "@t3tools/shared/proposedPlans";
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
   buildProposedPlanMarkdownFilename,
+  describeProposedPlanStatus,
   downloadPlanAsTextFile,
   normalizePlanMarkdownForExport,
   proposedPlanTitle,
@@ -16,7 +18,7 @@ import ChatMarkdown from "../ChatMarkdown";
 import { EllipsisIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
 import {
@@ -30,21 +32,35 @@ import {
 } from "../ui/dialog";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { projectEnvironment } from "~/state/projects";
+import { threadEnvironment } from "~/state/threads";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+export type ProposedPlanImplementTarget = "this-thread" | "new-thread";
+
 export const ProposedPlanCard = memo(function ProposedPlanCard({
+  planId,
   planMarkdown,
   environmentId,
   threadRef,
   cwd,
   workspaceRoot,
+  status,
+  onImplement,
+  implementDisabled = false,
 }: {
+  /** With `threadRef`, lets the person close the plan or reopen it. */
+  planId?: string | undefined;
   planMarkdown: string;
   environmentId: EnvironmentId;
   threadRef?: ScopedThreadRef | undefined;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
+  /** What became of this plan; a thread can hold many. */
+  status?: ProposedPlanStatus | null | undefined;
+  /** Implement this exact plan, even one a newer plan superseded. */
+  onImplement?: ((target: ProposedPlanImplementTarget) => void) | undefined;
+  implementDisabled?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
@@ -53,6 +69,8 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   const writeProjectFile = useAtomCommand(projectEnvironment.writeFile, {
     reportFailure: false,
   });
+  const closePlan = useAtomCommand(threadEnvironment.closeProposedPlan, "plan close");
+  const reopenPlan = useAtomCommand(threadEnvironment.reopenProposedPlan, "plan reopen");
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     target: "plan",
     onError: (error) => {
@@ -67,6 +85,21 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   });
   const savePathInputId = useId();
   const title = proposedPlanTitle(planMarkdown) ?? "Proposed plan";
+  const statusPresentation = status ? describeProposedPlanStatus(status) : null;
+  const canImplement = onImplement !== undefined && status !== "implemented";
+  // Closing is for the plan the thread is waiting on: older ones already
+  // stopped waiting. Reopen undoes either kind of close.
+  const planTarget = planId !== undefined && threadRef !== undefined ? { planId, threadRef } : null;
+  const canClose = planTarget !== null && status === "waiting";
+  const canReopen = planTarget !== null && status === "closed";
+  const setPlanClosed = (closed: boolean) => {
+    if (planTarget === null) return;
+    const command = closed ? closePlan : reopenPlan;
+    void command({
+      environmentId: planTarget.threadRef.environmentId,
+      input: { threadId: planTarget.threadRef.threadId, planId: planTarget.planId },
+    });
+  };
   const lineCount = planMarkdown.split("\n").length;
   const canCollapse = planMarkdown.length > 900 || lineCount > 20;
   const displayedPlanMarkdown = stripDisplayedPlanMarkdown(planMarkdown);
@@ -151,6 +184,16 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
         <div className="flex min-w-0 items-center gap-2">
           <Badge variant="secondary">Plan</Badge>
           <p className="truncate text-sm font-medium text-foreground">{title}</p>
+          {statusPresentation ? (
+            <Badge
+              variant={statusPresentation.variant}
+              size="sm"
+              className="shrink-0"
+              title={statusPresentation.detail}
+            >
+              {statusPresentation.label}
+            </Badge>
+          ) : null}
         </div>
         <Menu>
           <MenuTrigger
@@ -166,6 +209,27 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
             <MenuItem onClick={openSaveDialog} disabled={!workspaceRoot || isSavingToWorkspace}>
               Save to workspace
             </MenuItem>
+            {canImplement ? (
+              <>
+                <MenuSeparator />
+                <MenuItem disabled={implementDisabled} onClick={() => onImplement?.("this-thread")}>
+                  Implement this plan
+                </MenuItem>
+                <MenuItem disabled={implementDisabled} onClick={() => onImplement?.("new-thread")}>
+                  Implement in a new thread
+                </MenuItem>
+              </>
+            ) : null}
+            {canClose || canReopen ? (
+              <>
+                <MenuSeparator />
+                {canClose ? (
+                  <MenuItem onClick={() => setPlanClosed(true)}>Close plan</MenuItem>
+                ) : (
+                  <MenuItem onClick={() => setPlanClosed(false)}>Reopen plan</MenuItem>
+                )}
+              </>
+            ) : null}
           </MenuPopup>
         </Menu>
       </div>

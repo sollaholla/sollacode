@@ -133,7 +133,11 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
             { value: "high", label: "High", isDefault: true },
             { value: "xhigh", label: "Extra High" },
             { value: "max", label: "Max" },
-            { value: "ultracode", label: "Ultracode" },
+            {
+              value: "ultracode",
+              label: "Ultracode",
+              description: "xhigh effort plus multi-agent workflow orchestration",
+            },
             { value: "ultrathink", label: "Ultrathink" },
           ],
           promptInjectedValues: ["ultrathink"],
@@ -191,7 +195,11 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
             { value: "high", label: "High", isDefault: true },
             { value: "xhigh", label: "Extra High" },
             { value: "max", label: "Max" },
-            { value: "ultracode", label: "Ultracode" },
+            {
+              value: "ultracode",
+              label: "Ultracode",
+              description: "xhigh effort plus multi-agent workflow orchestration",
+            },
             { value: "ultrathink", label: "Ultrathink" },
           ],
           promptInjectedValues: ["ultrathink"],
@@ -227,7 +235,11 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
             { value: "high", label: "High", isDefault: true },
             { value: "xhigh", label: "Extra High" },
             { value: "max", label: "Max" },
-            { value: "ultracode", label: "Ultracode" },
+            {
+              value: "ultracode",
+              label: "Ultracode",
+              description: "xhigh effort plus multi-agent workflow orchestration",
+            },
             { value: "ultrathink", label: "Ultrathink" },
           ],
           promptInjectedValues: ["ultrathink"],
@@ -779,6 +791,12 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
       // Connected claude.ai MCP servers are discovered outside filesystem
       // config; disable them independently for this health check.
       ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+      // This is a noninteractive health check, so IDE discovery cannot add any
+      // useful capability data. Skipping it also avoids Claude spawning a
+      // Windows `tasklist | findstr` process tree on every periodic refresh.
+      FORCE_CODE_TERMINAL: undefined,
+      CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+      CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1",
     },
     ...(input.cwd ? { cwd: input.cwd } : {}),
     stderr: () => {},
@@ -1058,7 +1076,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         status: "error",
         auth: { status: "unknown" },
         message: isCommandMissingCause(error)
-          ? "Claude Agent CLI (`claude`) is not installed or not on PATH."
+          ? "Claude Agent CLI (`claude`) was not found on PATH."
           : "Failed to execute Claude Agent CLI health check.",
       },
     });

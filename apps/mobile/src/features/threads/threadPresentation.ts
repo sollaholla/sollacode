@@ -1,4 +1,7 @@
-import { isSideChatSessionPreparing } from "@t3tools/client-runtime/state/thread-activity";
+import {
+  isSideChatSessionPreparing,
+  liveBackgroundTasks,
+} from "@t3tools/client-runtime/state/thread-activity";
 import type { StatusTone } from "../../components/StatusPill";
 import type { OrchestrationLatestTurn, OrchestrationSession } from "@t3tools/contracts";
 import { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -32,7 +35,7 @@ export const THREAD_STATUS_NEUTRAL_ICON = {
   iconBackground: "rgba(142,142,147,0.22)",
 } as const;
 
-function isLatestTurnSettled(
+export function isLatestTurnSettled(
   latestTurn: OrchestrationLatestTurn | null,
   session: OrchestrationSession | null,
 ): boolean {
@@ -49,6 +52,7 @@ function isLatestTurnSettled(
  */
 export function resolveThreadStatus(
   thread: EnvironmentThreadShell,
+  nowMs: number = Date.now(),
 ): ThreadStatusPresentation | null {
   if (thread.hasPendingApprovals) {
     return {
@@ -74,7 +78,7 @@ export function resolveThreadStatus(
     };
   }
 
-  if (thread.session?.status === "running") {
+  if (thread.session?.status === "running" || liveBackgroundTasks(thread, nowMs) !== null) {
     return {
       kind: "working",
       label: "Working",
@@ -110,10 +114,10 @@ export function resolveThreadStatus(
     };
   }
 
+  // The newest plan, still open, in any mode: a plan is implemented when the person
+  // continues in Build or Agent, and an agent can propose one outside Plan mode.
   const hasPlanReadyPrompt =
-    thread.interactionMode === "plan" &&
-    isLatestTurnSettled(thread.latestTurn, thread.session) &&
-    thread.hasActionableProposedPlan;
+    isLatestTurnSettled(thread.latestTurn, thread.session) && thread.hasActionableProposedPlan;
   if (hasPlanReadyPrompt) {
     return {
       kind: "plan-ready",

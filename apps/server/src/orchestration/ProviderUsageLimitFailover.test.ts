@@ -2032,6 +2032,18 @@ describe("detectProviderUnusableRefusal", () => {
     expect(isAccountWideUnusableRefusal("model stream idle timeout after 180000ms")).toBe(false);
   });
 
+  // 2026-10-12: Muse retried this eight times, restarting its host each time.
+  // Every Muse model bills the same Meta account, so the whole instance is out.
+  it("moves a thread off Muse when the Meta account's billing is refused", () => {
+    const refusal =
+      "API error 402 [request_id=9d8b8afb-adb3-4a96-a253-4b80746b4cbb]: Billing verification failed. Please check your payment method. (billing_error)";
+    expect(detectProviderUnusableRefusal(refusal)).toEqual({
+      reason: "provider_unusable",
+      resetsAt: null,
+    });
+    expect(isAccountWideUnusableRefusal(refusal)).toBe(true);
+  });
+
   // 2026-09-19: a Grok thread burned eight attempts on a bare "Invalid params"
   // and then parked, while Muse sat at 9% used. A rejected request shape is
   // deterministic, and it is the provider's, not the model's.

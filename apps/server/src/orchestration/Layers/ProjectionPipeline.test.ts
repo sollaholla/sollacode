@@ -3116,6 +3116,132 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("summarizes background tasks still running after the turn", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-background-tasks");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const appendTask = (input: {
+        readonly sequence: number;
+        readonly activityId: string;
+        readonly kind: "task.started" | "task.completed";
+        readonly createdAt: string;
+      }) =>
+        appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-background-tasks-${input.sequence}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: input.createdAt,
+          commandId: CommandId.make(`cmd-background-tasks-${input.sequence}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-background-tasks-${input.sequence}`),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(input.activityId),
+              tone: "info",
+              kind: input.kind,
+              summary: input.kind === "task.started" ? "Task started" : "Task completed",
+              payload:
+                input.kind === "task.started"
+                  ? { taskId: "task-build", taskType: "local_bash" }
+                  : { taskId: "task-build", status: "completed" },
+              turnId: null,
+              createdAt: input.createdAt,
+            },
+          },
+        });
+      const summary = sql<{
+        readonly count: number;
+        readonly startedAt: string | null;
+        readonly activityAt: string | null;
+      }>`
+        SELECT
+          background_task_count AS "count",
+          background_tasks_started_at AS "startedAt",
+          background_tasks_activity_at AS "activityAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-background-tasks-project"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-background-tasks"),
+        occurredAt: "2026-02-26T12:40:00.000Z",
+        commandId: CommandId.make("cmd-background-tasks-project"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-background-tasks-project"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-background-tasks"),
+          title: "Project Background Tasks",
+          workspaceRoot: "/tmp/project-background-tasks",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-02-26T12:40:00.000Z",
+          updatedAt: "2026-02-26T12:40:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-background-tasks-thread"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-02-26T12:40:01.000Z",
+        commandId: CommandId.make("cmd-background-tasks-thread"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-background-tasks-thread"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-background-tasks"),
+          title: "Thread Background Tasks",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-5-5",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-02-26T12:40:01.000Z",
+          updatedAt: "2026-02-26T12:40:01.000Z",
+        },
+      });
+
+      yield* appendTask({
+        sequence: 1,
+        activityId: "activity-background-task-started",
+        kind: "task.started",
+        createdAt: "2026-02-26T12:40:02.000Z",
+      });
+      assert.deepEqual(yield* summary, [
+        {
+          count: 1,
+          startedAt: "2026-02-26T12:40:02.000Z",
+          activityAt: "2026-02-26T12:40:02.000Z",
+        },
+      ]);
+
+      yield* appendTask({
+        sequence: 2,
+        activityId: "activity-background-task-lifecycle",
+        kind: "task.completed",
+        createdAt: "2026-02-26T12:45:00.000Z",
+      });
+      assert.deepEqual(yield* summary, [{ count: 0, startedAt: null, activityAt: null }]);
+    }),
+  );
+
   it.effect("ignores non-stale provider approval response failures", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -3497,6 +3623,130 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           messageId: "assistant-keep",
           turnId: "turn-1",
           role: "assistant",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("does not let a later missing placeholder clobber a ready checkpoint", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-checkpoint-guard-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-checkpoint-guard"),
+        occurredAt: "2026-02-26T14:00:00.000Z",
+        commandId: CommandId.make("cmd-checkpoint-guard-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-checkpoint-guard-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-checkpoint-guard"),
+          title: "Project Checkpoint Guard",
+          workspaceRoot: "/tmp/project-checkpoint-guard",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-02-26T14:00:00.000Z",
+          updatedAt: "2026-02-26T14:00:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-checkpoint-guard-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-checkpoint-guard"),
+        occurredAt: "2026-02-26T14:00:01.000Z",
+        commandId: CommandId.make("cmd-checkpoint-guard-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-checkpoint-guard-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-checkpoint-guard"),
+          projectId: ProjectId.make("project-checkpoint-guard"),
+          title: "Thread Checkpoint Guard",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-02-26T14:00:01.000Z",
+          updatedAt: "2026-02-26T14:00:01.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.turn-diff-completed",
+        eventId: EventId.make("evt-checkpoint-guard-3"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-checkpoint-guard"),
+        occurredAt: "2026-02-26T14:00:02.000Z",
+        commandId: CommandId.make("cmd-checkpoint-guard-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-checkpoint-guard-3"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-checkpoint-guard"),
+          turnId: TurnId.make("turn-ready"),
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-checkpoint-guard/turn/1"),
+          status: "ready",
+          files: [],
+          assistantMessageId: MessageId.make("assistant-ready"),
+          completedAt: "2026-02-26T14:00:02.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.turn-diff-completed",
+        eventId: EventId.make("evt-checkpoint-guard-4"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-checkpoint-guard"),
+        occurredAt: "2026-02-26T14:00:03.000Z",
+        commandId: CommandId.make("cmd-checkpoint-guard-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-checkpoint-guard-4"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-checkpoint-guard"),
+          turnId: TurnId.make("turn-ready"),
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-checkpoint-guard/turn/1"),
+          status: "missing",
+          files: [],
+          assistantMessageId: MessageId.make("assistant-ready"),
+          completedAt: "2026-02-26T14:00:03.000Z",
+        },
+      });
+
+      const turnRows = yield* sql<{
+        readonly turnId: string;
+        readonly checkpointStatus: string | null;
+        readonly checkpointRef: string | null;
+      }>`
+        SELECT
+          turn_id AS "turnId",
+          checkpoint_status AS "checkpointStatus",
+          checkpoint_ref AS "checkpointRef"
+        FROM projection_turns
+        WHERE thread_id = 'thread-checkpoint-guard'
+      `;
+      assert.deepEqual(turnRows, [
+        {
+          turnId: "turn-ready",
+          checkpointStatus: "ready",
+          checkpointRef: "refs/t3/checkpoints/thread-checkpoint-guard/turn/1",
         },
       ]);
     }),
@@ -4242,7 +4492,7 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
 it.layer(makeProjectionPipelinePrefixedTestLayer("t3-actionable-proposed-plan-summary-test-"))(
   "OrchestrationProjectionPipeline actionable proposed plan summary",
   (it) => {
-    it.effect("marks only the latest turn's unimplemented plan as actionable", () =>
+    it.effect("waits on the newest plan until it is closed or implemented", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
         const eventStore = yield* OrchestrationEventStore;
@@ -4355,6 +4605,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-actionable-proposed-plan-su
               planMarkdown: "# Ship the leftover plan",
               implementedAt: null,
               implementationThreadId: null,
+              closedAt: null,
               createdAt: "2026-03-01T12:00:03.000Z",
               updatedAt: "2026-03-01T12:00:03.000Z",
             },
@@ -4387,6 +4638,68 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-actionable-proposed-plan-su
           },
         });
 
+        // A later turn without a plan of its own (a Plan-mode question, a
+        // housekeeping reminder) does not hide the plan still on the table.
+        assert.deepEqual(yield* readFlag(), [{ hasActionableProposedPlan: 1 }]);
+
+        const upsertPlan = (
+          suffix: string,
+          occurredAt: string,
+          proposedPlan: {
+            readonly id: string;
+            readonly turnId: TurnId;
+            readonly implementedAt: string | null;
+            readonly closedAt: string | null;
+            readonly createdAt: string;
+          },
+        ) =>
+          appendAndProject({
+            type: "thread.proposed-plan-upserted",
+            eventId: EventId.make(`evt-actionable-plan-${suffix}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt,
+            commandId: CommandId.make(`cmd-actionable-plan-${suffix}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-actionable-plan-${suffix}`),
+            metadata: {},
+            payload: {
+              threadId,
+              proposedPlan: {
+                ...proposedPlan,
+                planMarkdown: `# Plan ${proposedPlan.id}`,
+                implementationThreadId: proposedPlan.implementedAt === null ? null : threadId,
+                updatedAt: occurredAt,
+              },
+            },
+          });
+
+        // The person implemented a different plan instead: this one is history.
+        yield* upsertPlan("6", "2026-03-01T12:00:05.000Z", {
+          id: planId,
+          turnId: firstTurnId,
+          implementedAt: null,
+          closedAt: "2026-03-01T12:00:05.000Z",
+          createdAt: "2026-03-01T12:00:03.000Z",
+        });
+        assert.deepEqual(yield* readFlag(), [{ hasActionableProposedPlan: 0 }]);
+
+        // A newer proposal waits; implementing it ends the wait.
+        yield* upsertPlan("7", "2026-03-01T12:00:06.000Z", {
+          id: "plan-actionable-2",
+          turnId: secondTurnId,
+          implementedAt: null,
+          closedAt: null,
+          createdAt: "2026-03-01T12:00:06.000Z",
+        });
+        assert.deepEqual(yield* readFlag(), [{ hasActionableProposedPlan: 1 }]);
+        yield* upsertPlan("8", "2026-03-01T12:00:07.000Z", {
+          id: "plan-actionable-2",
+          turnId: secondTurnId,
+          implementedAt: "2026-03-01T12:00:07.000Z",
+          closedAt: null,
+          createdAt: "2026-03-01T12:00:06.000Z",
+        });
         assert.deepEqual(yield* readFlag(), [{ hasActionableProposedPlan: 0 }]);
       }),
     );

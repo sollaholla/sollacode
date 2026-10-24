@@ -4,14 +4,11 @@ import {
   isProviderInterruptionErrorActivity,
   recoveredRuntimeErrorIds,
 } from "@t3tools/client-runtime/state/thread-activity";
-import * as Option from "effect/Option";
-import * as Arr from "effect/Array";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
-  type OrchestrationProposedPlanId,
   ProviderDriverKind,
   type ToolLifecycleItemType,
   type UserInputQuestion,
@@ -20,6 +17,7 @@ import {
 } from "@t3tools/contracts";
 import {
   inlineToolImageDataUrl,
+  previewSnapshotImage,
   isWorkspaceImagePreviewPath,
   readImageToolOutputPath,
 } from "@t3tools/shared/filePreview";
@@ -29,6 +27,14 @@ import {
 } from "./messageDelivery";
 import { normalizeEmbeddedWindowsAbsolutePath } from "@t3tools/shared/path";
 import { normalizeOpenCodeToolPayload } from "@t3tools/shared/toolActivity";
+import {
+  newestProposedPlan,
+  proposedPlanStatus,
+  waitingProposedPlan,
+  type ProposedPlanStatus,
+} from "@t3tools/shared/proposedPlans";
+import { selectCurrentTaskList, TASK_LIST_ACTIVITY_KIND } from "@t3tools/shared/taskLists";
+import { TURN_USAGE_ACTIVITY_KIND } from "@t3tools/shared/turnUsage";
 
 import type {
   ChatMessage,
@@ -81,6 +87,12 @@ export const PROVIDER_OPTIONS: Array<{
     pickerSidebarBadge: "new",
   },
   {
+    value: ProviderDriverKind.make("kimi"),
+    label: "Kimi Code",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
+  {
     value: ProviderDriverKind.make("mcpBridge"),
     label: "MCP Bridge",
     available: true,
@@ -122,6 +134,10 @@ export interface WorkLogEntry {
    * behind `readImagePath`, and this copy is then the only one left.
    */
   readImageInlineSrc?: string;
+  /** The page a `preview_snapshot` call captured, as a `data:` URL (rows saved before 0.1.708). */
+  snapshotImageSrc?: string;
+  /** The attachment the server stored a `preview_snapshot` call's page in. */
+  snapshotAttachmentId?: string;
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
@@ -162,7 +178,12 @@ export interface PendingUserInput {
   turnId: TurnId | null;
 }
 
-export interface ActivePlanState {
+/**
+ * The agent's progress checklist (TodoWrite, Claude Tasks, Codex update_plan,
+ * Cursor todos, a refresh) - carried by `turn.plan.updated` despite the name.
+ * Not a proposed plan; see {@link PanelProposedPlan}.
+ */
+export interface TaskListState {
   createdAt: string;
   turnId: TurnId | null;
   explanation?: string | null;
@@ -172,14 +193,10 @@ export interface ActivePlanState {
   }>;
 }
 
-export interface LatestProposedPlanState {
-  id: OrchestrationProposedPlanId;
-  createdAt: string;
-  updatedAt: string;
-  turnId: TurnId | null;
-  planMarkdown: string;
-  implementedAt: string | null;
-  implementationThreadId: ThreadId | null;
+/** A proposed plan with what became of it; see `@t3tools/shared/proposedPlans`. */
+export interface PanelProposedPlan {
+  plan: ProposedPlan;
+  status: ProposedPlanStatus;
 }
 
 export type TimelineEntry =
@@ -600,20 +617,13 @@ export function derivePendingUserInputs(
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
-export function deriveActivePlanState(
+export function deriveTaskListState(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-  latestTurnId: TurnId | undefined,
-): ActivePlanState | null {
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
-  const allPlanActivities = ordered.filter((activity) => activity.kind === "turn.plan.updated");
-  // Prefer plan from the current turn; fall back to the most recent plan from any turn
-  // so that TodoWrite tasks persist across follow-up messages.
-  const latest = Option.firstSomeOf([
-    ...(latestTurnId
-      ? Arr.findLast(allPlanActivities, (activity) => activity.turnId === latestTurnId)
-      : Option.none()),
-    Arr.last(allPlanActivities),
-  ]).pipe(Option.getOrNull);
+  proposedPlans: ReadonlyArray<Pick<ProposedPlan, "id" | "createdAt">> = [],
+): TaskListState | null {
+  const latest = selectCurrentTaskList([...activities].toSorted(compareActivitiesByOrder), {
+    newestProposedPlanCreatedAt: newestProposedPlan(proposedPlans)?.createdAt ?? null,
+  });
   if (!latest) {
     return null;
   }
@@ -657,64 +667,47 @@ export function deriveActivePlanState(
   };
 }
 
-export function findLatestProposedPlan(
+/** The plan the thread is waiting on: its newest plan while still open. */
+export function findWaitingProposedPlan(
   proposedPlans: ReadonlyArray<ProposedPlan>,
-  latestTurnId: TurnId | string | null | undefined,
-): LatestProposedPlanState | null {
-  if (latestTurnId) {
-    const matchingTurnPlan = [...proposedPlans]
-      .filter((proposedPlan) => proposedPlan.turnId === latestTurnId)
-      .toSorted(
-        (left, right) =>
-          left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id),
-      )
-      .at(-1);
-    if (matchingTurnPlan) {
-      return toLatestProposedPlanState(matchingTurnPlan);
-    }
-  }
-
-  const latestPlan = [...proposedPlans]
-    .toSorted(
-      (left, right) =>
-        left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id),
-    )
-    .at(-1);
-  if (!latestPlan) {
-    return null;
-  }
-
-  return toLatestProposedPlanState(latestPlan);
+): ProposedPlan | null {
+  return waitingProposedPlan(proposedPlans);
 }
 
-export function findSidebarProposedPlan(input: {
+/**
+ * The plan the plan panel shows: the one the thread is waiting on, else the one
+ * its work implements (possibly another thread's, kept after the turn that
+ * started the work), else its newest plan as history. Always with its status,
+ * so an implemented or superseded plan never reads as the one to approve.
+ */
+export function findPanelProposedPlan(input: {
   threads: ReadonlyArray<Pick<Thread, "id" | "proposedPlans">>;
-  latestTurn: Pick<OrchestrationLatestTurn, "turnId" | "sourceProposedPlan"> | null;
-  latestTurnSettled: boolean;
   threadId: ThreadId | string | null | undefined;
-}): LatestProposedPlanState | null {
-  const activeThreadPlans =
-    input.threads.find((thread) => thread.id === input.threadId)?.proposedPlans ?? [];
+  sourceProposedPlan: { readonly threadId: ThreadId; readonly planId: string } | undefined;
+}): PanelProposedPlan | null {
+  const plansOf = (threadId: ThreadId | string | null | undefined) =>
+    input.threads.find((thread) => thread.id === threadId)?.proposedPlans ?? [];
+  const ownPlans = plansOf(input.threadId);
+  const withStatus = (
+    plan: ProposedPlan | null | undefined,
+    siblings: ReadonlyArray<ProposedPlan>,
+  ): PanelProposedPlan | null =>
+    plan ? { plan, status: proposedPlanStatus(plan, siblings) } : null;
 
-  if (!input.latestTurnSettled) {
-    const sourceProposedPlan = input.latestTurn?.sourceProposedPlan;
-    if (sourceProposedPlan) {
-      const sourcePlan = input.threads
-        .find((thread) => thread.id === sourceProposedPlan.threadId)
-        ?.proposedPlans.find((plan) => plan.id === sourceProposedPlan.planId);
-      if (sourcePlan) {
-        return toLatestProposedPlanState(sourcePlan);
-      }
-    }
+  const waiting = waitingProposedPlan(ownPlans);
+  if (waiting) return { plan: waiting, status: "waiting" };
+
+  const source = input.sourceProposedPlan;
+  if (source) {
+    const sourcePlans = plansOf(source.threadId);
+    const sourcePlan = withStatus(
+      sourcePlans.find((plan) => plan.id === source.planId),
+      sourcePlans,
+    );
+    if (sourcePlan) return sourcePlan;
   }
 
-  return findLatestProposedPlan(activeThreadPlans, input.latestTurn?.turnId ?? null);
-}
-
-export function hasActionableProposedPlan(
-  proposedPlan: LatestProposedPlanState | Pick<ProposedPlan, "implementedAt"> | null,
-): boolean {
-  return proposedPlan !== null && proposedPlan.implementedAt === null;
+  return withStatus(newestProposedPlan(ownPlans), ownPlans);
 }
 
 export function deriveWorkLogEntries(
@@ -741,6 +734,8 @@ export function deriveWorkLogEntries(
       continue;
     }
     if (activity.kind === "provider.usage.updated") continue;
+    // Token accounting for Settings → Projects, not something that happened.
+    if (activity.kind === TURN_USAGE_ACTIVITY_KIND) continue;
     // The retry marker already drives the Working row's "provider slow" label;
     // a second line in the log for the same fact was reported as noise.
     if (activity.kind === "provider.overload.retrying") continue;
@@ -823,7 +818,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     id: activity.id,
     createdAt: activity.createdAt,
     turnId: activity.turnId,
-    label: taskLabel || activity.summary,
+    // A task checklist update, whatever older builds stored as its summary.
+    label:
+      taskLabel || (activity.kind === TASK_LIST_ACTIVITY_KIND ? "Tasks updated" : activity.summary),
     tone:
       activity.kind === "task.progress" || activity.kind === "reasoning.updated"
         ? "thinking"
@@ -906,6 +903,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     if (inlineSrc) {
       entry.readImageInlineSrc = inlineSrc;
     }
+  } else {
+    const snapshotImage = previewSnapshotImage(payload, activity.summary);
+    if (snapshotImage?.kind === "attachment") {
+      entry.snapshotAttachmentId = snapshotImage.attachmentId;
+    } else if (snapshotImage?.kind === "inline") {
+      entry.snapshotImageSrc = snapshotImage.src;
+    }
   }
   if (toolCallId) {
     entry.toolCallId = toolCallId;
@@ -973,6 +977,8 @@ function mergeDerivedWorkLogEntries(
     ? next.readImageSourceActivityId
     : previous.readImageSourceActivityId;
   const readImageInlineSrc = next.readImageInlineSrc ?? previous.readImageInlineSrc;
+  const snapshotImageSrc = next.snapshotImageSrc ?? previous.snapshotImageSrc;
+  const snapshotAttachmentId = next.snapshotAttachmentId ?? previous.snapshotAttachmentId;
   const changedFiles = readImagePath
     ? []
     : mergeChangedFiles(previous.changedFiles, next.changedFiles);
@@ -999,6 +1005,8 @@ function mergeDerivedWorkLogEntries(
     ...(readImagePath ? { readImagePath } : {}),
     ...(readImageSourceActivityId ? { readImageSourceActivityId } : {}),
     ...(readImageInlineSrc ? { readImageInlineSrc } : {}),
+    ...(snapshotImageSrc ? { snapshotImageSrc } : {}),
+    ...(snapshotAttachmentId ? { snapshotAttachmentId } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
@@ -1040,18 +1048,6 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
 
 function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
-}
-
-function toLatestProposedPlanState(proposedPlan: ProposedPlan): LatestProposedPlanState {
-  return {
-    id: proposedPlan.id,
-    createdAt: proposedPlan.createdAt,
-    updatedAt: proposedPlan.updatedAt,
-    turnId: proposedPlan.turnId,
-    planMarkdown: proposedPlan.planMarkdown,
-    implementedAt: proposedPlan.implementedAt,
-    implementationThreadId: proposedPlan.implementationThreadId,
-  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1367,7 +1363,7 @@ function extractReadImagePath(
     structuredReadPath(item) ??
     structuredReadPath(payloadInput) ??
     structuredReadPath(data) ??
-    outputImagePath ??
+    (outputImagePath ? normalizeEmbeddedWindowsAbsolutePath(outputImagePath) : null) ??
     titleImagePath ??
     detailImagePath ??
     detailReadPath

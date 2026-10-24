@@ -22,6 +22,8 @@ import {
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 
+const decodeJsonText = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
 const tabId = PreviewTabId.make("tab-mcp-test");
@@ -237,14 +239,11 @@ it.effect("returns pictureless preview snapshots without an image block", () =>
         );
 
       expect(snapshot.isError).toBe(false);
-      expect(snapshot.structuredContent).toEqual(metadata);
-      expect(snapshot.structuredContent).not.toHaveProperty("screenshot");
+      expect(snapshot.structuredContent).toBeUndefined();
       expect(snapshot.content).toHaveLength(1);
       expect(snapshot.content[0]?.type).toBe("text");
       if (snapshot.content[0]?.type === "text") {
-        const decodedSnapshot = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(
-          snapshot.content[0].text,
-        );
+        const decodedSnapshot = yield* decodeJsonText(snapshot.content[0].text);
         expect(decodedSnapshot).toEqual(metadata);
       }
       expect(snapshot.content.some((content) => content.type === "image")).toBe(false);
@@ -406,7 +405,12 @@ it.effect("registers annotated tools and preserves authenticated request context
         );
       expect(snapshot.isError).toBe(false);
       expect(snapshot.content.some((content) => content.type === "image")).toBe(true);
-      expect(snapshot.structuredContent).toMatchObject({
+      expect(snapshot.structuredContent).toBeUndefined();
+      const textBlock = snapshot.content.find((content) => content.type === "text");
+      const decodedSnapshot = yield* decodeJsonText(
+        textBlock?.type === "text" ? textBlock.text : "",
+      );
+      expect(decodedSnapshot).toMatchObject({
         screenshot: { mimeType: "image/jpeg", width: 10, height: 5 },
       });
       expect(routedRequests.find(({ operation }) => operation === "snapshot")?.tabId).toBe(

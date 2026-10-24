@@ -5,6 +5,9 @@ questions, native compaction, and resumed conversations. Select a coding model
 from the connected OpenCode catalog in the composer. Credentials and runtime
 configuration belong to the environment host, including for remote clients.
 
+Use **Settings > Providers > Update** for CLI updates. Interrupted requests become
+retryable instead of remaining in **Updating**; see [Provider updates](../user/provider-updates.md).
+
 ## Tracking
 
 Message and part events are scoped by their native session IDs. Text received

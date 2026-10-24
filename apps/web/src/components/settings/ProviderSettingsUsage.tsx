@@ -49,7 +49,8 @@ export function shouldShowProviderSettingsUsage(
     driverKind === "grok" ||
     driverKind === "antigravity" ||
     driverKind === "opencode" ||
-    driverKind === "deepcode";
+    driverKind === "deepcode" ||
+    driverKind === "kimi";
   return supportedDriver && (driverKind === "deepcode" || summary?.state !== "unsupported");
 }
 

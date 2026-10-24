@@ -41,7 +41,11 @@ import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shar
 import { providerDisplayLabel } from "@t3tools/shared/model";
 import { RESUME_PROMPT } from "@t3tools/shared/resumePrompt";
 import { SETTINGS_UPDATE_MESSAGE_PREFIX } from "@t3tools/shared/settingsPrompt";
-import { buildPlanRefreshTranscript, derivePlanRefreshCurrentSteps } from "../planRefresh.ts";
+import {
+  buildPlanRefreshTranscript,
+  derivePlanRefreshCurrentSteps,
+  derivePlanRefreshProposedPlan,
+} from "../planRefresh.ts";
 import { buildVoiceTranscriptTurnInput } from "../voiceTranscriptContext.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -149,6 +153,7 @@ import {
   agentAutoResumeIds,
   agentContinuationShouldAwaitBackgroundTask,
   isAgentAutoResumeMessageId,
+  isAwaitingPersonDecision,
   isControlOnlyAgentTurn,
   agentLoopSignedOffSinceUserIntent,
   isVmAgentTaskPromptMessageId,
@@ -408,6 +413,10 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 /** Why a side chat's first delivery is waiting: its fork is still copying the conversation. */
 export const PENDING_FORK_DELIVERY_REASON = "waiting for the conversation fork to finish copying";
+/** Opens the reason a queued delivery gives when the turn it waited behind ended first. */
+const BLOCKING_TURN_ENDED_REASON_PREFIX = "the active turn ended (";
+/** How long a delivery waits when the turn it waited behind is still listed after ending. */
+const BLOCKING_TURN_STILL_LISTED_RETRY_SECONDS = 15;
 /** How long a session start waits for its thread's fork to finish copying a conversation. */
 const PENDING_FORK_SETTLE_TIMEOUT = Duration.minutes(2);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
@@ -2175,6 +2184,32 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                 requestId: input.message.id,
                 createdAt: input.context.createdAt,
               }),
+        ),
+        // Carried text reached the provider inside this turn, but only this
+        // turn's own message gets a native receipt. Without one for each
+        // carried message the walk above found them undelivered again and
+        // folded the same text into every later turn of the carry window
+        // (thread b084bc7f, 2026-10-14: one "resume" sent four times).
+        Effect.tap((turn) =>
+          undeliveredPredecessors.length === 0
+            ? Effect.void
+            : appendQueuedTurnPromotionActivity({
+                threadId: input.thread.id,
+                turnId: turn.turnId,
+                messageIds: undeliveredPredecessors.map((message) => message.id),
+                requestId: input.message.id,
+                createdAt: input.context.createdAt,
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.failCause(cause)
+                    : Effect.logWarning("sendProjectedUserTurn.carried-receipt-failed", {
+                        threadId: input.thread.id,
+                        messageId: input.message.id,
+                        cause: Cause.pretty(cause),
+                      }),
+                ),
+              ),
         ),
         Effect.flatMap((turn) => {
           if (requestedModelSelection === undefined) {
@@ -4006,7 +4041,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       event: Extract<ProviderIntentEvent, { type: "thread.plan-refresh-requested" }>,
     ) {
       const threadId = event.payload.threadId;
-      const thread = yield* resolveThread(threadId);
+      // The client snapshot, not resolveThread: it pins the task list the panel
+      // shows, which a tool-heavy thread's recent-activity window can miss.
+      const thread = yield* projectionSnapshotQuery
+        .getThreadDetailSnapshot(threadId)
+        .pipe(Effect.map((snapshot) => Option.getOrUndefined(snapshot)?.thread));
       if (!thread) return;
 
       const taskId = RuntimeTaskId.make(`plan-refresh:${event.eventId}`);
@@ -4040,7 +4079,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       yield* appendActivity({
         kind: "task.started",
         tone: "info",
-        summary: "Refreshing plan",
+        summary: "Refreshing tasks",
         payload: {
           taskId,
           taskType: "plan-refresh",
@@ -4054,14 +4093,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           yield* serverSettingsService.getSettings,
         );
 
-        const currentSteps = derivePlanRefreshCurrentSteps(thread.activities);
+        const currentSteps = derivePlanRefreshCurrentSteps(thread.activities, thread.proposedPlans);
+        const proposedPlanMarkdown = derivePlanRefreshProposedPlan(thread.proposedPlans);
         const transcript = buildPlanRefreshTranscript(thread.messages);
         if (transcript.trim().length === 0) {
           // Nothing to read yet — refreshing would only invent work.
           yield* appendActivity({
             kind: "task.completed",
             tone: "info",
-            summary: "Plan refresh skipped",
+            summary: "Task refresh skipped",
             payload: { taskId, status: "completed", summary: "No conversation to read yet" },
             createdAt: yield* nowIso,
           });
@@ -4075,6 +4115,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             process.cwd(),
           transcript,
           currentSteps,
+          ...(proposedPlanMarkdown === undefined ? {} : { proposedPlanMarkdown }),
           modelSelection,
         });
 
@@ -4085,7 +4126,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           yield* appendActivity({
             kind: "turn.plan.updated",
             tone: "info",
-            summary: "Plan updated",
+            summary: "Tasks updated",
             payload: {
               plan: generated.steps.map((entry) => ({ step: entry.step, status: entry.status })),
               explanation: "Refreshed from the conversation.",
@@ -4097,7 +4138,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         yield* appendActivity({
           kind: "task.completed",
           tone: "info",
-          summary: "Plan refreshed",
+          summary: "Tasks refreshed",
           payload: {
             taskId,
             status: "completed",
@@ -4118,8 +4159,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             yield* appendActivity({
               kind: "task.completed",
               tone: "error",
-              summary: "Plan refresh failed",
-              payload: { taskId, status: "failed", summary: "Could not refresh the plan" },
+              summary: "Task refresh failed",
+              payload: { taskId, status: "failed", summary: "Could not refresh the task list" },
               createdAt: yield* nowIso,
             }).pipe(Effect.ignoreCause({ log: true }));
           }),
@@ -4375,7 +4416,20 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       const deliveryIsDurable = Effect.gen(function* () {
         const thread = yield* resolveThread(input.threadId);
         if (!thread) return true;
-        return messageDeliveryRecorded(thread, input.messageId);
+        if (messageDeliveryRecorded(thread, input.messageId)) return true;
+        // The snapshot holds only the newest 200 activities, so on a busy
+        // thread the receipt can scroll out before a wake re-reads it, and this
+        // wait never ended. Ask the activity projection itself.
+        const sentAt = thread.messages.find((message) => message.id === input.messageId)?.createdAt;
+        if (sentAt === undefined || !projectionSnapshotQuery.getThreadDeliveredMessageIds) {
+          return false;
+        }
+        return yield* projectionSnapshotQuery
+          .getThreadDeliveredMessageIds(input.threadId, sentAt)
+          .pipe(
+            Effect.map((delivered) => delivered.has(String(input.messageId))),
+            Effect.orElseSucceed(() => false),
+          );
       });
       while (true) {
         if (yield* deliveryIsDurable) return;
@@ -5824,11 +5878,30 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               // thread retires the delivery.
               const stillExists = yield* resolveThread(obligation.threadId);
               if (!stillExists || stillExists.settledOverride === "settled") return blocking;
+              // Ending again means the provider still lists the turn it already
+              // ended, so the next attempt meets the same turn. Retrying every
+              // second then only spins: 317 attempts in 12 minutes on
+              // 2026-10-11, each a failed steer, while the person watched
+              // "Waiting to retry".
+              const endedBefore =
+                obligation.blockedReason?.startsWith(BLOCKING_TURN_ENDED_REASON_PREFIX) === true;
+              if (endedBefore) {
+                yield* Effect.logWarning("thread-work.active-turn.ended-turn-still-listed", {
+                  threadId: obligation.threadId,
+                  messageId,
+                  turnId: runningBeforeSend.activeTurnId,
+                  attempt: obligation.attempt,
+                });
+              }
               const retryAt = yield* DateTime.now;
               return {
                 state: "sleeping" as const,
-                nextAttemptAt: DateTime.formatIso(DateTime.add(retryAt, { seconds: 1 })),
-                reason: `the active turn ended (${blocking.reason ?? "cancelled"}) before the queued message was delivered; redelivering`,
+                nextAttemptAt: DateTime.formatIso(
+                  DateTime.add(retryAt, {
+                    seconds: endedBefore ? BLOCKING_TURN_STILL_LISTED_RETRY_SECONDS : 1,
+                  }),
+                ),
+                reason: `${BLOCKING_TURN_ENDED_REASON_PREFIX}${blocking.reason ?? "cancelled"}) before the queued message was delivered; redelivering`,
               };
             }
             if (blocking.state !== "completed") return blocking;
@@ -6291,8 +6364,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             latestTurn.state !== "completed" ||
             latestTurn.assistantMessageId !== assistant.id ||
             threadShell.interactionMode !== "agent" ||
-            threadShell.hasPendingApprovals ||
-            threadShell.hasPendingUserInput ||
+            isAwaitingPersonDecision(threadShell) ||
             !shouldAutoContinueCompletedAgentTurn(threadShell, {
               turnId: obligation.sourceTurnId,
               assistantText: assistant.text,
@@ -6565,8 +6637,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               latestTurn.state !== "incomplete" &&
               latestTurn.state !== "error") ||
             latestTurn.assistantMessageId !== assistant.id ||
-            threadShell.hasPendingApprovals ||
-            threadShell.hasPendingUserInput
+            isAwaitingPersonDecision(threadShell)
           ) {
             return { state: "cancelled" as const, reason: "authentication pause was superseded" };
           }
@@ -6633,8 +6704,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           preDispatchSuperseded:
             refreshedShell.archivedAt !== null ||
             sourceContext.hasLaterRealUserTurn ||
-            refreshedShell.hasPendingApprovals ||
-            refreshedShell.hasPendingUserInput ||
+            isAwaitingPersonDecision(refreshedShell) ||
             (deliveryTurn === undefined &&
               refreshedShell.latestTurn?.turnId !== obligation.sourceTurnId),
         });
@@ -7394,6 +7464,36 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           }),
         );
 
+    /**
+     * Closes the background tasks the previous server process left open.
+     *
+     * Nothing a provider runs survives a restart, and a runtime that dies
+     * never reports its tasks finished. Left open they read as live work: the
+     * task panel lists them as running and the thread summary keeps the thread
+     * "working" until they go quiet past the staleness window, after every app
+     * update. Settling them at boot says what happened, once.
+     */
+    const settleBackgroundTasksFromPreviousProcess = Effect.fn(
+      "settleBackgroundTasksFromPreviousProcess",
+    )(function* () {
+      const listOpen = projectionSnapshotQuery.listOpenBackgroundTasksBefore;
+      if (listOpen === undefined) return;
+      const tasks = yield* listOpen({
+        before: DateTime.formatIso(DateTime.makeUnsafe(processStartedAtEpochMs)),
+      });
+      if (tasks.length === 0) return;
+      const createdAt = DateTime.formatIso(yield* DateTime.now);
+      for (const task of tasks) {
+        yield* appendTaskStoppedActivity({
+          threadId: task.threadId,
+          taskId: RuntimeTaskId.make(task.taskId),
+          createdAt,
+          detail: "Solla Code restarted before this task finished.",
+        });
+      }
+      yield* Effect.logInfo("provider.background-tasks.restart-settled", { count: tasks.length });
+    });
+
     const replayMissingMuseTranscripts = Effect.fn("replayMissingMuseTranscripts")(function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
       const candidates = snapshot.threads
@@ -7462,6 +7562,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     });
 
     let startupTranscriptReplay: Fiber.Fiber<void> | undefined;
+    let startupTaskSettle: Fiber.Fiber<void> | undefined;
 
     const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
       yield* threadWorkScheduler.registerHandler(
@@ -7639,6 +7740,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       yield* providerRegistry.getProviders.pipe(
         Effect.flatMap(reconcileProviderAuthenticationPausesSafely),
       );
+      startupTaskSettle = yield* settleBackgroundTasksFromPreviousProcess().pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+          return Effect.logWarning("provider.background-tasks.restart-settle-failed", {
+            cause: Cause.pretty(cause),
+          });
+        }),
+        Effect.forkScoped,
+      );
       startupTranscriptReplay = yield* replayMissingMuseTranscripts().pipe(
         Effect.catchCause((cause) => {
           if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
@@ -7667,6 +7777,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     return {
       start,
       drain: Effect.gen(function* () {
+        if (startupTaskSettle) yield* Fiber.join(startupTaskSettle);
         if (startupTranscriptReplay) yield* Fiber.join(startupTranscriptReplay);
         while (true) {
           const eventsBeforeDrain = yield* TxRef.get(domainEventsSeen).pipe(Effect.tx);

@@ -60,7 +60,7 @@ describe("agent appearance", () => {
     expect(outlines.size).toBe(256);
   });
 
-  it("uses gray/offline presence during all lifecycle transitions and disconnections", () => {
+  it("retains lifecycle presence through connection interruptions", () => {
     for (const status of [
       "provisioning",
       "starting",
@@ -69,16 +69,11 @@ describe("agent appearance", () => {
       "stopped",
       "failed",
     ] as const) {
-      expect(agentPresence(status, false)).toEqual({
-        online: false,
-        label: "Offline",
-        description: "Offline — Environment disconnected",
-      });
-      expect(agentPresence(status, true).online).toBe(status === "running");
+      expect(agentPresence(status).online).toBe(status === "running");
     }
-    expect(agentPresence("running", true).description).toBe(
+    expect(agentPresence("running").description).toBe(
       "Online — Ready for events and notifications",
     );
-    expect(agentPresence("failed", true).description).toBe("Offline — Agent failed");
+    expect(agentPresence("failed").description).toBe("Offline — Agent failed");
   });
 });

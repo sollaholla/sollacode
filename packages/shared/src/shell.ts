@@ -21,7 +21,12 @@ const WINDOWS_SHELL_CANDIDATES = ["pwsh.exe", "powershell.exe"] as const;
 type ExecFileSyncLike = (
   file: string,
   args: ReadonlyArray<string>,
-  options: { encoding: "utf8"; timeout: number },
+  options: {
+    encoding: "utf8";
+    timeout: number;
+    detached?: true;
+    stdio?: ["ignore", "pipe", "ignore"];
+  },
 ) => string;
 
 function canExecuteFile(filePath: string): boolean {
@@ -311,9 +316,13 @@ export const readEnvironmentFromLoginShell: ShellEnvironmentReader = (
     return {};
   }
 
+  // Interactive startup loads PATH entries; detaching prevents job control on an
+  // inherited controlling TTY from stopping the probe while the parent waits.
   const output = execFile(shell, ["-ilc", buildEnvironmentCaptureCommand(names)], {
     encoding: "utf8",
     timeout: 5000,
+    detached: true,
+    stdio: ["ignore", "pipe", "ignore"],
   });
 
   const environment: Partial<Record<string, string>> = {};
@@ -413,6 +422,10 @@ function normalizePathEntryForComparison(entry: string, platform: NodeJS.Platfor
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
+function sanitizePathEntry(entry: string, platform: NodeJS.Platform): string {
+  return platform === "win32" ? entry.replaceAll('"', "") : entry;
+}
+
 export function mergePathValues(
   preferredPath: string | undefined,
   inheritedPath: string | undefined,
@@ -426,14 +439,14 @@ export function mergePathValues(
     if (!rawValue) continue;
 
     for (const entry of rawValue.split(delimiter)) {
-      const trimmed = entry.trim();
-      if (trimmed.length === 0) continue;
+      const sanitized = sanitizePathEntry(entry.trim(), platform);
+      if (sanitized.length === 0) continue;
 
-      const normalized = normalizePathEntryForComparison(trimmed, platform);
+      const normalized = normalizePathEntryForComparison(sanitized, platform);
       if (normalized.length === 0 || seen.has(normalized)) continue;
 
       seen.add(normalized);
-      merged.push(trimmed);
+      merged.push(sanitized);
     }
   }
 
@@ -659,7 +672,9 @@ export const resolveWindowsEnvironment = Effect.fn("shell.resolveWindowsEnvironm
   }).PATH;
   const mergedPath = mergePathValues(shellPath, inheritedPath, "win32");
   const knownCliPath = resolveKnownWindowsCliDirs(env).join(WINDOWS_PATH_DELIMITER);
-  const baselinePath = mergePathValues(knownCliPath, mergedPath, "win32");
+  // Preserve the order a user's shell uses. These directories fill gaps when
+  // desktop apps launch without the full interactive-shell PATH.
+  const baselinePath = mergePathValues(mergedPath, knownCliPath, "win32");
   const baselinePatch: Partial<NodeJS.ProcessEnv> = baselinePath ? { PATH: baselinePath } : {};
   const baselineEnv = mergeWindowsEnv(env, baselinePatch);
 

@@ -102,7 +102,9 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
   const randomId = crypto.randomUUIDv4.pipe(
     Effect.mapError(() => toOperationError("generating command identifiers", invocation.threadId)),
   );
-  const now = DateTime.formatIso(yield* DateTime.now);
+  const nowDateTime = yield* DateTime.now;
+  const now = DateTime.formatIso(nowDateTime);
+  const nowMs = DateTime.toEpochMillis(nowDateTime);
 
   switch (input.action) {
     case "set_model": {
@@ -239,7 +241,7 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
         : undefined;
       const sideChat: RelatedChatSummary = projectedSideChat
         ? {
-            ...relatedChatSummary(source, projectedSideChat),
+            ...relatedChatSummary(source, projectedSideChat, nowMs),
             modelSelection,
             runtimeMode,
             interactionMode,
@@ -274,7 +276,9 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
       return {
         action: "list_related_chats" as const,
         callerThreadId: invocation.threadId,
-        relatedChats: family.related.map((thread) => relatedChatSummary(family.caller, thread)),
+        relatedChats: family.related.map((thread) =>
+          relatedChatSummary(family.caller, thread, nowMs),
+        ),
       };
     }
 
@@ -297,7 +301,7 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
       return {
         action: "query_related_chat" as const,
         callerThreadId: invocation.threadId,
-        target: relatedChatSummary(family.caller, target),
+        target: relatedChatSummary(family.caller, target, nowMs),
         history: queryResult,
       };
     }

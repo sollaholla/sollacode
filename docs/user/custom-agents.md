@@ -112,7 +112,10 @@ one is available. Adding a Terminal or Side Chat keeps the other tabs available 
 
 Links that explicitly target a new browser tab open as a sibling Solla Code browser tab in the same
 thread. The original page stays in place, and the new tab is persisted and selected like one opened
-with the Browser `+` control. OAuth-style popup windows remain real child windows so sign-in flows
+with the Browser `+` control. The same applies to pages that open another page of their own site
+from script, such as a list opening a record "in a new tab", and to any `noopener` window, which
+gives the page no handle to keep. OAuth-style popup windows (sized or named windows, form posts,
+another site's page, or a sign-in path on the same site) remain real child windows so sign-in flows
 can communicate with and return to their opener; popup permission is present when Electron creates
 the guest rather than being added after its first navigation. The child stays above its Solla Code
 window, and preview status, snapshots, and input follow the child until it closes. Remote viewers

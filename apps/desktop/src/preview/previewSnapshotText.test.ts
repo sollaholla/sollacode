@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  boundAccessibilityTree,
   collectFrameIdsFromTree,
   isPdfPreviewDocument,
   mergeAccessibilityTrees,
@@ -79,5 +80,20 @@ describe("preview snapshot text", () => {
         200,
       ),
     ).toBe("Abstract");
+  });
+
+  it("drops ignored accessibility nodes and keeps the rest untouched under budget", () => {
+    const live = { nodeId: "2", role: { value: "button" }, name: { value: "Save" } };
+    expect(
+      boundAccessibilityTree({ nodes: [{ nodeId: "1", ignored: true }, live] }, 10_000),
+    ).toEqual({ nodes: [live] });
+  });
+
+  it("stops at the byte budget in document order and reports what it left out", () => {
+    const nodes = Array.from({ length: 10 }, (_, index) => ({ nodeId: String(index) }));
+    const oneNodeBytes = JSON.stringify(nodes[0]).length;
+    const bounded = boundAccessibilityTree({ nodes }, oneNodeBytes * 4);
+    expect(bounded.nodes).toEqual(nodes.slice(0, 4));
+    expect(bounded.omittedNodeCount).toBe(6);
   });
 });

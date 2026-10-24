@@ -71,8 +71,8 @@ function StatusChip({ value }: { readonly value: string }) {
   );
 }
 
-function AgentPresenceChip(props: { readonly agent: VmAgent; readonly connected: boolean }) {
-  const presence = agentPresence(props.agent.status, props.connected);
+function AgentPresenceChip(props: { readonly agent: VmAgent }) {
+  const presence = agentPresence(props.agent.status);
   return (
     <View
       accessibilityLabel={presence.description}
@@ -82,7 +82,7 @@ function AgentPresenceChip(props: { readonly agent: VmAgent; readonly connected:
         className={`size-1.5 rounded-full ${presence.online ? "bg-emerald-500" : "bg-neutral-400"}`}
       />
       <Text className="text-2xs font-t3-bold text-foreground-muted">
-        {presence.online ? "Online" : props.connected ? props.agent.status : "Offline"}
+        {presence.online ? "Online" : props.agent.status}
       </Text>
     </View>
   );
@@ -119,10 +119,6 @@ function AgentEnvironmentSection(props: {
   readonly label: string;
 }) {
   const navigation = useNavigation();
-  const { environments } = useEnvironments();
-  const connected =
-    environments.find((entry) => entry.environmentId === props.environmentId)?.connection.phase ===
-    "connected";
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId: props.environmentId, input: {} }),
     [props.environmentId],
@@ -150,7 +146,7 @@ function AgentEnvironmentSection(props: {
       <Text className="px-1 text-xs font-t3-bold uppercase text-foreground-muted" numberOfLines={1}>
         {props.label}
       </Text>
-      {result._tag === "Failure" ? (
+      {result._tag === "Failure" && latest === null ? (
         <View className="rounded-2xl border border-red-500/25 bg-sheet p-4">
           <Text className="text-sm text-red-700 dark:text-red-300">
             Agents are unavailable while this host reconnects.
@@ -199,7 +195,7 @@ function AgentEnvironmentSection(props: {
                 <AgentAvatar
                   agentId={agent.vmAgentId}
                   avatarColor={agent.avatarColor}
-                  online={agentPresence(agent.status, connected).online}
+                  online={agentPresence(agent.status).online}
                   size={40}
                 />
                 <View className="min-w-0 flex-1">
@@ -212,7 +208,7 @@ function AgentEnvironmentSection(props: {
                 </View>
                 <AgentAttentionIndicators attention={agentAttention} />
                 {activeWork > 0 ? <StatusChip value={`${activeWork} active`} /> : null}
-                <AgentPresenceChip agent={agent} connected={connected} />
+                <AgentPresenceChip agent={agent} />
               </Pressable>
               <Pressable
                 accessibilityLabel={`Open ${agent.name} details`}
@@ -993,10 +989,6 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
   const navigation = useNavigation();
   const environmentId = EnvironmentId.make(route.params.environmentId);
   const vmAgentId = VmAgentId.make(route.params.agentId);
-  const { environments } = useEnvironments();
-  const connected =
-    environments.find((entry) => entry.environmentId === environmentId)?.connection.phase ===
-    "connected";
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId, input: {} }),
     [environmentId],
@@ -1072,7 +1064,7 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
     setBusyBlockerId(null);
   };
 
-  if (result._tag === "Failure") {
+  if (result._tag === "Failure" && !agent) {
     return (
       <View className="flex-1 items-center justify-center bg-screen px-6">
         <EmptyState title="Agent unavailable" detail="Reconnect to this host and try again." />
@@ -1099,7 +1091,7 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
           <AgentAvatar
             agentId={agent.vmAgentId}
             avatarColor={agent.avatarColor}
-            online={agentPresence(agent.status, connected).online}
+            online={agentPresence(agent.status).online}
             size={48}
           />
           <View className="min-w-0 flex-1">
@@ -1108,7 +1100,7 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
             </Text>
             <Text className="text-sm text-foreground-muted">@{agent.handle}</Text>
           </View>
-          <AgentPresenceChip agent={agent} connected={connected} />
+          <AgentPresenceChip agent={agent} />
         </View>
         <Text className="text-base leading-6 text-foreground">{agent.purpose}</Text>
         <View className="min-w-0 flex-row flex-wrap gap-2">

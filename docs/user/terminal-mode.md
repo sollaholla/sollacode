@@ -195,6 +195,15 @@ Batch launches persist their complete split layout before opening shells. Six pa
 
 Narrow screens show one terminal at full width with a horizontally scrollable tab bar. Switching back to a wider screen restores the saved split layout; opening a phone view does not rewrite it. The keyboard inset leaves room for the terminal controls and prompt in portrait and landscape. Terminal keys preserve keyboard focus.
 
+Phone keyboard typing, including spaces and the characters after them, is forwarded as ordinary
+terminal input. Dictation corrections apply only to text from the input method; they do not replace
+literal key presses with an older word still held in the keyboard's hidden text field.
+
+The sidebar terminal surface and main terminal view share the same session list. **New terminal**
+adds and selects a separate session in the sidebar without requiring a visit to the main terminal
+view. Sessions created or closed on another connected device update either view. If opening fails,
+the pending entry is removed instead of leaving a dead tab.
+
 When several devices view a terminal, typing or deliberately changing a pane or window size transfers control of its dimensions. Divider drags preview the new layout while held, then commit the terminal grid once after release; unchanged grids do not trigger a host repaint. Automatic cursor-position and capability replies do not transfer control, and passive viewers do not send duplicate replies. History is initially rendered at the server's terminal dimensions before the active client fits it to its pane. Restored output appears after a short parse-settle window, rather than a multi-second loading delay.
 
 ### Multiple viewers and terminal recovery

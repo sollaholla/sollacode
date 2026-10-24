@@ -538,6 +538,37 @@ export const DeepCodeSettings = makeProviderSettingsSchema(
 export type DeepCodeSettings = typeof DeepCodeSettings.Type;
 
 /**
+ * Kimi Code CLI (`kimi`) — Moonshot AI's terminal coding agent.
+ *
+ * Sessions run over ACP (`kimi acp`). The model catalog, the default model,
+ * and sign-in all belong to the CLI's own `~/.kimi-code` home; Solla only
+ * picks among what `kimi provider list` advertises.
+ */
+export const KimiSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("kimi").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Kimi Code CLI binary (kimi).",
+        providerSettingsForm: { placeholder: "kimi", clearWhenEmpty: "omit" },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath"],
+  },
+);
+export type KimiSettings = typeof KimiSettings.Type;
+
+/**
  * Meta Muse Code CLI (`muse`) — Meta's terminal coding agent.
  *
  * Turns run against a long-lived `muse serve` host speaking MSP, a JSON-RPC
@@ -977,6 +1008,9 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   archivedThreadAutoDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  automaticStorageCleanupEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   attachmentRetentionHours: AttachmentRetentionHours.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ATTACHMENT_RETENTION_HOURS)),
   ),
@@ -1041,6 +1075,7 @@ export const ServerSettings = Schema.Struct({
     antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     deepcode: DeepCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     muse: MuseSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    kimi: KimiSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -1172,6 +1207,12 @@ const MuseSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const KimiSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const OrchestratorSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   // Legacy write-only field. Older clients save it into whichever provider is
@@ -1218,6 +1259,7 @@ export const ServerSettingsPatch = Schema.Struct({
   threadModelPolicies: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, ModelAccessPolicy)),
   // Server settings
   archivedThreadAutoDelete: Schema.optionalKey(Schema.Boolean),
+  automaticStorageCleanupEnabled: Schema.optionalKey(Schema.Boolean),
   attachmentRetentionHours: Schema.optionalKey(AttachmentRetentionHours),
   autoCompactionThresholdPercentage: Schema.optionalKey(AutoCompactionThresholdPercentage),
   claudeTokenOptimizerEnabled: Schema.optionalKey(Schema.Boolean),
@@ -1262,6 +1304,7 @@ export const ServerSettingsPatch = Schema.Struct({
       antigravity: Schema.optionalKey(AntigravitySettingsPatch),
       deepcode: Schema.optionalKey(DeepCodeSettingsPatch),
       muse: Schema.optionalKey(MuseSettingsPatch),
+      kimi: Schema.optionalKey(KimiSettingsPatch),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual

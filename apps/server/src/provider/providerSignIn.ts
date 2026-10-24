@@ -16,6 +16,7 @@ const SIGN_IN_VERB_BY_DRIVER: Readonly<Record<string, string>> = {
   claudeAgent: "auth",
   codex: "login",
   grok: "login",
+  kimi: "login",
   muse: "login",
   // `opencode auth` is an alias of this; the canonical spelling is the one
   // its help prints.

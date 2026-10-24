@@ -160,6 +160,50 @@ describe("provider usage summaries", () => {
     expect(markup).not.toContain("Account-level provider usage");
   });
 
+  it("shows Kimi plan limits as a percent and the booster balance as money", () => {
+    const provider: ServerProvider = {
+      ...makeProvider("kimi"),
+      accountUsageReportedAt: "2026-07-29T15:00:00.000Z",
+      accountUsage: {
+        source: "kimi-usages",
+        windows: [
+          {
+            key: "weekly",
+            label: "Weekly",
+            usedPercent: 25,
+            resetsAt: "2026-08-03T00:00:00.000Z",
+            windowDurationMs: 7 * 24 * 60 * 60_000,
+          },
+          {
+            key: "300m",
+            label: "5h limit",
+            usedPercent: 75,
+            resetsAt: "2026-07-29T18:00:00.000Z",
+            windowDurationMs: 5 * 60 * 60_000,
+          },
+        ],
+        extraUsage: { balanceCents: 1250, totalCents: 2000, currency: "USD" },
+      },
+    };
+    const [summary] = deriveProviderUsageSummaries(
+      [provider],
+      [],
+      {},
+      Date.parse("2026-07-29T15:05:00.000Z"),
+    );
+    expect(summary?.state).toBe("available");
+    expect(compactProviderUsageMetric(summary!)).toMatchObject({
+      label: "5h limit",
+      window: { usedPercent: 75 },
+    });
+    const markup = renderToStaticMarkup(
+      <ProviderUsageBadgeDetails summary={summary!} onRefreshProvider={async () => undefined} />,
+    );
+    expect(markup).toContain("Weekly");
+    expect(markup).toContain("$12.50 left");
+    expect(providerUsageExternalLink(provider.driver)?.href).toContain("kimi.com");
+  });
+
   it.each([
     ["0.00", "$0"],
     ["-0.03", "$-0.03"],

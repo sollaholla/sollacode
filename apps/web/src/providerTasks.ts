@@ -1,4 +1,5 @@
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import { BACKGROUND_TASK_STALE_AFTER_MS } from "@t3tools/shared/backgroundTasks";
 
 /**
  * Sub-agents and background work a provider starts during a turn.
@@ -11,17 +12,10 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 
 /**
  * A "running" task that has not reported in this long is downgraded to
- * `stale`. A task only leaves `running` when a `task.completed` event arrives,
- * and a runtime that dies mid-turn never sends one — so without this, killed
- * work claims to be running forever.
- *
- * Thirty minutes because background commands emit no progress events at all:
- * for those, time since start is the only liveness signal there is, and a long
- * build or render legitimately says nothing for twenty. Erring long means a
- * dead task lingers a while; erring short would label real work as suspect,
- * and this panel is only worth having if its "running" means something.
+ * `stale`; see BACKGROUND_TASK_STALE_AFTER_MS. Shared with the thread summary
+ * so this panel and the sidebar agree on what is still running.
  */
-export const PROVIDER_TASK_STALE_AFTER_MS = 30 * 60 * 1000;
+export const PROVIDER_TASK_STALE_AFTER_MS = BACKGROUND_TASK_STALE_AFTER_MS;
 
 /**
  * Any task silent for this long is dropped, whatever its last known status.
@@ -396,45 +390,4 @@ export function describeSendOverRunningTasks(count: number): string {
   const subject = count === 1 ? "1 background task is" : `${count} background tasks are`;
   const object = count === 1 ? "it" : "them";
   return `${subject} still running. Sending now will cancel ${object}. Send anyway?`;
-}
-
-/**
- * The shortest time a real person could plausibly read a dialog and answer it.
- * Anything faster than this did not involve a person.
- */
-export const UNANSWERED_CONFIRM_MS = 250;
-
-/**
- * Ask before destroying visible background work, but never lose the message.
- *
- * `window.confirm` is not guaranteed to appear. A mobile browser that has been
- * told to block further dialogs from a page, an in-app webview, or a browser
- * refusing a dialog raised outside a user gesture all return `false`
- * immediately without showing anything. Read literally that is "the user said
- * no", so the send returned early and the typed message vanished with no
- * explanation and nothing in the transcript — reported live from a phone on
- * 2026-09-02, against a thread that had a background task running.
- *
- * A decision nobody was asked for is not a decision. If the answer comes back
- * faster than a person could have given it, no dialog happened and the send
- * proceeds; the background tasks are then cancelled explicitly and named in
- * the message, which is how the user finds out either way. Only an answer slow
- * enough to have been read and refused stops the send.
- */
-export function confirmDestructiveSend(
-  message: string,
-  clock: () => number = () => Date.now(),
-): boolean {
-  const ask = typeof window === "undefined" ? undefined : window.confirm;
-  if (typeof ask !== "function") return true;
-  const askedAt = clock();
-  let answer: boolean;
-  try {
-    answer = ask.call(window, message);
-  } catch {
-    // A webview that throws rather than prompting has still not asked anyone.
-    return true;
-  }
-  if (answer) return true;
-  return clock() - askedAt < UNANSWERED_CONFIRM_MS;
 }

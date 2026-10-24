@@ -20,6 +20,12 @@ const detachedChildPidLogPath = process.env.T3_ACP_DETACHED_CHILD_PID_LOG_PATH;
 const closeSessionLogPath = process.env.T3_ACP_CLOSE_SESSION_LOG_PATH;
 const closeSessionDelayMs = Number(process.env.T3_ACP_CLOSE_SESSION_DELAY_MS ?? "0");
 const disableCloseCapability = process.env.T3_ACP_DISABLE_CLOSE_CAPABILITY === "1";
+/** Comma-separated auth method ids for `initialize` to advertise. */
+const advertisedAuthMethods = (process.env.T3_ACP_AUTH_METHODS ?? "")
+  .split(",")
+  .map((id) => id.trim())
+  .filter((id) => id.length > 0);
+const hangAuthenticate = process.env.T3_ACP_HANG_AUTHENTICATE === "1";
 const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
@@ -428,11 +434,15 @@ const program = Effect.gen(function* () {
           loadSession: true,
           sessionCapabilities: { ...(disableCloseCapability ? {} : { close: {} }), fork: {} },
         },
+        ...(advertisedAuthMethods.length > 0
+          ? { authMethods: advertisedAuthMethods.map((id) => ({ id, name: id })) }
+          : {}),
       };
     }),
   );
 
-  yield* agent.handleAuthenticate(() => Effect.succeed({}));
+  // A CLI with no usable sign-in waits in `authenticate` for a person to log in.
+  yield* agent.handleAuthenticate(() => (hangAuthenticate ? Effect.never : Effect.succeed({})));
 
   yield* agent.handleCreateSession(() =>
     Effect.succeed({

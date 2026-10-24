@@ -93,6 +93,7 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "no such thread",
   "unknown thread",
   "does not exist",
+  "no rollout found",
 ];
 
 export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {

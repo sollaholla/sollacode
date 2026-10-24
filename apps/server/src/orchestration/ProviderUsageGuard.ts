@@ -2,6 +2,7 @@ import { creditBudgetDay } from "./usageGuardCredits.ts";
 import { antigravityUsageModelFamily } from "@t3tools/shared/model";
 import { usageGuardPaceAllowance } from "@t3tools/shared/usageGuardCurve";
 import { antigravityUsageWindowsFromAccountUsage } from "../provider/antigravityUsage.ts";
+import { kimiAccountUsageFrom } from "@t3tools/shared/kimiUsage";
 import {
   emptyCreditLedger,
   creditTurnCost,
@@ -472,6 +473,19 @@ function antigravityWindows(raw: unknown): UsageWindowSample[] {
   }));
 }
 
+/** Kimi meters the whole account: a weekly limit plus rolling windows (e.g. 5h). */
+function kimiWindows(raw: unknown): UsageWindowSample[] {
+  return (kimiAccountUsageFrom(raw)?.windows ?? []).map((window) => ({
+    key: window.key,
+    label: window.label,
+    usedPercent: window.usedPercent,
+    resetsAtMs: window.resetsAt === null ? null : Date.parse(window.resetsAt),
+    windowDurationMs: window.windowDurationMs,
+    scope: "account",
+    family: null,
+  }));
+}
+
 function grokWindows(raw: unknown): UsageWindowSample[] {
   const envelope = asRecord(raw);
   if (!envelope) return [];
@@ -514,6 +528,8 @@ export function extractUsageWindows(driver: string, rateLimits: unknown): UsageW
       return grokWindows(rateLimits);
     case "antigravity":
       return antigravityWindows(rateLimits);
+    case "kimi":
+      return kimiWindows(rateLimits);
     default:
       return [];
   }

@@ -36,6 +36,7 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { collaborationModePrompt } from "../collaborationMode.ts";
+import { makeProposedPlanCapture } from "../proposedPlanBlocks.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import { providerOverloadRetryReason } from "../providerOverloadRetry.ts";
 import { museTurnHealthAction, type MuseTurnHealthLimits } from "../museTurnHealth.ts";
@@ -159,6 +160,17 @@ interface PendingSteer {
 const MAX_GAP_FILL_PAGES = 20;
 const GAP_FILL_PAGE_LIMIT = 200;
 const DELIVERY_CURSOR_VERSION = 1;
+
+/**
+ * Host broadcasts that carry another record's view cursor instead of their
+ * own. Since Muse 1.4, `session/statusChanged` repeats the cursor of the
+ * `turn/started` or `turn/completed` that caused it, one frame ahead of that
+ * event, and `session/closed` names the final head. Neither is a view event,
+ * so neither may mark a cursor seen or move the resume point: counting the
+ * idle broadcast's cursor made the turn's own terminal read as a duplicate,
+ * and every Muse turn stayed "Working" after it had answered (2026-10-12).
+ */
+const BORROWED_CURSOR_METHODS = new Set(["session/statusChanged", "session/closed"]);
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
@@ -335,7 +347,10 @@ const makeMuseHostAdapter = Effect.fn("makeMuseHostAdapter")(function* (config: 
     historical: boolean;
     recordedAt?: string;
   } | null = null;
-  const emit = (event: ProviderRuntimeEvent) => {
+  // Plan mode asks Muse for a `<proposed_plan>` block (collaborationModePrompt);
+  // this is what turns it into a plan the person can implement.
+  const captureProposedPlans = makeProposedPlanCapture();
+  const emit = (event: ProviderRuntimeEvent): void => {
     if (viewDelivery?.replay && event.type === "content.delta") return;
     PubSub.publishUnsafe(events, {
       ...event,
@@ -353,6 +368,7 @@ const makeMuseHostAdapter = Effect.fn("makeMuseHostAdapter")(function* (config: 
           }
         : {}),
     });
+    for (const planEvent of captureProposedPlans(event)) emit(planEvent);
   };
   const error = (method: string, detail: string) =>
     new ProviderAdapterRequestError({ provider: MUSE_DRIVER_KIND, method, detail });
@@ -767,7 +783,7 @@ const makeMuseHostAdapter = Effect.fn("makeMuseHostAdapter")(function* (config: 
   };
 
   const handleNotificationInner = (method: string, params: Record<string, unknown>) => {
-    if (isIncompleteViewTail(method, params)) return;
+    if (isIncompleteViewTail(method, params) || BORROWED_CURSOR_METHODS.has(method)) return;
     const observedContext = contextForSession(stringField(params["sessionId"]) ?? "");
     if (observedContext) {
       const cursor = stringField(params["viewCursor"]);
@@ -1528,6 +1544,35 @@ const makeMuseHostAdapter = Effect.fn("makeMuseHostAdapter")(function* (config: 
     );
   });
 
+  /**
+   * Close a turn whose `turn/completed` never reached this adapter, from the
+   * host's own record of it. Called when the host rejects a steer as
+   * `already_terminal`: the reactor's stale-turn check trusts this adapter's
+   * session, so a turn left running here holds the follow-up queued behind a
+   * turn that is over. `session/read` restates the last terminal the host
+   * applied, so the turn ends the way it actually ended.
+   */
+  const settleLostTerminal = Effect.fn("MuseAdapter.settleLostTerminal")(function* (
+    context: SessionContext,
+    turnId: TurnId,
+  ) {
+    const read = asRecord(
+      yield* request("session/read", { sessionId: context.sessionId }).pipe(
+        Effect.timeout("5 seconds"),
+        Effect.orElseSucceed(() => ({})),
+      ),
+    );
+    const lastTurn = asRecord(read["lastTurn"]);
+    if (stringField(lastTurn["turnId"]) !== turnId || context.activeTurnId !== turnId) return;
+    handleNotification("turn/completed", {
+      sessionId: context.sessionId,
+      turnId,
+      terminal: stringField(lastTurn["terminal"]) ?? "completed",
+      ...(lastTurn["error"] === undefined ? {} : { error: lastTurn["error"] }),
+      ...(lastTurn["reason"] === undefined ? {} : { reason: lastTurn["reason"] }),
+    });
+  });
+
   const turnHealth = (context: SessionContext) =>
     context.pendingPageTerminal &&
     clock.currentTimeMillisUnsafe() - context.pendingPageTerminal.receivedAtMs >=
@@ -2084,7 +2129,17 @@ const makeMuseHostAdapter = Effect.fn("makeMuseHostAdapter")(function* (config: 
         input: parts,
         ...(reasoningEffort ? { reasoningEffort } : {}),
       }).pipe(
-        Effect.tapError(() => Effect.sync(() => context.pendingSteers.delete(steerCommandId))),
+        Effect.tapError((cause) =>
+          Effect.gen(function* () {
+            context.pendingSteers.delete(steerCommandId);
+            if (
+              cause.method === "muse:commandRejected" &&
+              cause.detail.includes("already_terminal") &&
+              context.activeTurnId === expectedTurnId
+            )
+              yield* settleLostTerminal(context, expectedTurnId);
+          }),
+        ),
       );
       yield* options?.onNativeDispatch ?? Effect.void;
       // An accepted steer is a promise, not a receipt. The message is delivered

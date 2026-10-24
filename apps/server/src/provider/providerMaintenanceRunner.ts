@@ -321,6 +321,19 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
         action,
         state,
       });
+    const startedAtRef = yield* Ref.make<string | null>(null);
+    const recordInterruptedUpdate = Effect.gen(function* () {
+      const startedAt = yield* Ref.get(startedAtRef);
+      yield* setUpdateState(
+        makeUpdateState({
+          status: "failed",
+          startedAt,
+          finishedAt: yield* nowIso,
+          message: isInstall ? "Install interrupted. Try again." : "Update interrupted. Try again.",
+          output: null,
+        }),
+      );
+    });
     const setQueuedState = setUpdateState(
       makeUpdateState({
         status: "queued",
@@ -336,7 +349,6 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       function* () {
         const finish = (state: ServerProviderUpdateState) =>
           setUpdateState(state).pipe(Effect.map((providers) => ({ providers })));
-        const startedAtRef = yield* Ref.make<string | null>(null);
 
         const runCommandAndVerify = Effect.fn("ProviderMaintenanceRunner.runCommandAndVerify")(
           function* () {
@@ -439,6 +451,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
         targetKey,
         lockKey: update.lockKey,
         onQueued: setQueuedState,
+        onInterrupted: recordInterruptedUpdate,
         run: runProviderUpdate(),
       })
       .pipe(

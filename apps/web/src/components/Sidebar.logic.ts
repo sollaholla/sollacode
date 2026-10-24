@@ -1,7 +1,7 @@
 import {
   isSideChatSessionPreparing,
-  isThreadSessionWorking,
-  hasPendingThreadWork,
+  isThreadWorking,
+  liveBackgroundTasks,
 } from "@t3tools/client-runtime/state/thread-activity";
 import * as React from "react";
 import {
@@ -145,9 +145,10 @@ type ThreadStatusInput = Pick<
   | "interactionMode"
   | "latestTurn"
   | "session"
-> & {
-  lastVisitedAt?: string | undefined;
-};
+> &
+  Partial<Pick<SidebarThreadSummary, "backgroundTasks">> & {
+    lastVisitedAt?: string | undefined;
+  };
 
 export interface ThreadJumpHintVisibilityController {
   sync: (shouldShow: boolean) => void;
@@ -453,7 +454,9 @@ type SidebarV2StatusInput = Pick<
   SidebarThreadSummary,
   "hasPendingApprovals" | "hasPendingUserInput" | "session"
 > &
-  Partial<Pick<SidebarThreadSummary, "latestTurn" | "isSideChat" | "pendingWork">> & {
+  Partial<
+    Pick<SidebarThreadSummary, "latestTurn" | "isSideChat" | "pendingWork" | "backgroundTasks">
+  > & {
     /**
      * The host is offline or reconnecting, so this row shows last-known state.
      */
@@ -476,54 +479,35 @@ type SidebarV2StatusInput = Pick<
 export function promoteAgentRowStatus<Status extends string>(input: {
   readonly ownStatus: Status | null;
   readonly hasWorkingSideChat: boolean;
-  /** Suppressed AFTER the promotion — see below. */
+  /** Connectivity does not change the last observed activity. */
   readonly environmentUnreachable: boolean;
 }): Status | "working" | "ready" | null {
   const promoted =
     input.ownStatus === "ready" && input.hasWorkingSideChat ? "working" : input.ownStatus;
-  // Order matters, and SidebarV2 learned this the hard way: suppressing only
-  // the row's own status is useless, because the side-chat signal promotes it
-  // straight back to "working" — and an unreachable host is exactly where a
-  // last-known side chat sits "running" forever, since nothing can ever drain
-  // it. That is a timer climbing on a row nobody is working.
-  return input.environmentUnreachable && promoted === "working" ? "ready" : promoted;
+  return promoted;
 }
 
-export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2Status {
-  // Last-known state is not live state. A row on a host we cannot reach cannot
-  // be observed working, and the user has no way to stop it from here, so the
-  // blue in-motion pill and its climbing timer assert something unverifiable.
-  // Only "working" is suppressed — a pending approval or input still needs the
-  // user, whether or not the host is answering right now.
-  if (thread.environmentUnreachable === true) {
-    const reachableStatus = resolveSidebarV2Status({ ...thread, environmentUnreachable: false });
-    return reachableStatus === "working" ? "ready" : reachableStatus;
-  }
+export function resolveSidebarV2Status(
+  thread: SidebarV2StatusInput,
+  nowMs: number = Date.now(),
+): SidebarV2Status {
+  // Retain the last observed state while reconnecting; connectivity has its own indicator.
   if (thread.hasPendingApprovals) {
     return "approval";
   }
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (isThreadSessionWorking(thread) || hasPendingThreadWork(thread)) {
+  // Shared with the mobile list and the server's agent-facing thread
+  // summaries. It includes a started turn whose session projection lags it
+  // (the resume window, reported 2026-08-15 as a blank row beside a chat
+  // reading "Working for 3m"), unless the session failed, stopped, or was
+  // interrupted, so a turn left incomplete cannot spin forever.
+  if (isThreadWorking(thread, nowMs)) {
     return "working";
   }
   if (thread.session?.status === "error") {
     return "failed";
-  }
-  // A stopped or interrupted session is the user/server saying the turn is
-  // over. An incomplete latestTurn left behind would otherwise keep the row
-  // on "Working" forever (observed as 8m+ spinners on idle threads).
-  if (thread.session?.status === "stopped" || thread.session?.status === "interrupted") {
-    return "ready";
-  }
-  // The conversation reads "working" from the turn, not the session, so a row
-  // whose session projection lags the turn — the resume window, a turn started
-  // before the session flipped to `running` — went blank in the sidebar while
-  // the chat plainly showed "Working for 3m". Reported 2026-08-15. Reading the
-  // turn here puts both surfaces on the same source of truth.
-  if (thread.latestTurn?.startedAt != null && thread.latestTurn.completedAt == null) {
-    return "working";
   }
   return "ready";
 }
@@ -663,13 +647,20 @@ export function sortSettledThreadsForSidebarV2<
     timestamps fall through to the next candidate, not just missing ones. */
 export function resolveWorkingStartedAt(
   thread: Pick<SidebarThreadSummary, "latestTurn" | "session"> &
-    Partial<Pick<SidebarThreadSummary, "pendingWork">>,
+    Partial<Pick<SidebarThreadSummary, "pendingWork" | "backgroundTasks">>,
+  nowMs: number = Date.now(),
 ): string | null {
   const turn = thread.latestTurn;
   if (turn && turn.completedAt === null) {
     return firstValidTimestamp(turn.startedAt, turn.requestedAt, thread.session?.updatedAt);
   }
-  return firstValidTimestamp(thread.pendingWork?.since, thread.session?.updatedAt);
+  // Background work began when its tasks did, before the turn that started
+  // them settled and before any continuation queued behind them.
+  return firstValidTimestamp(
+    liveBackgroundTasks(thread, nowMs)?.startedAt,
+    thread.pendingWork?.since,
+    thread.session?.updatedAt,
+  );
 }
 
 export function formatWorkingDurationLabel(elapsedMs: number): string {
@@ -682,8 +673,10 @@ export function formatWorkingDurationLabel(elapsedMs: number): string {
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
+  nowMs?: number;
 }): ThreadStatusPill | null {
   const { thread } = input;
+  const nowMs = input.nowMs ?? Date.now();
 
   if (thread.hasPendingApprovals) {
     return {
@@ -712,6 +705,15 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  if (liveBackgroundTasks(thread, nowMs) !== null) {
+    return {
+      label: "Working",
+      colorClass: "text-gold-600 dark:text-gold-300/80",
+      dotClass: "bg-gold-500 dark:bg-gold-300/80",
+      pulse: true,
+    };
+  }
+
   if (thread.session?.status === "starting" && !isSideChatSessionPreparing(thread)) {
     return {
       label: "Connecting",
@@ -721,9 +723,10 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // The newest plan, still open, in any mode: a plan is implemented when the person
+  // continues in Build or Agent, and an agent can propose one outside Plan mode.
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&
-    thread.interactionMode === "plan" &&
     isLatestTurnSettled(thread.latestTurn, thread.session) &&
     thread.hasActionableProposedPlan;
   if (hasPlanReadyPrompt) {

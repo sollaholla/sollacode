@@ -42,6 +42,8 @@ type RpcMethod<TTag extends EnvironmentRpcTag> = WsRpcProtocolClient[TTag];
 export type EnvironmentSubscriptionRpcTag =
   | typeof ORCHESTRATION_WS_METHODS.subscribeShell
   | typeof ORCHESTRATION_WS_METHODS.subscribeThread
+  | typeof ORCHESTRATION_WS_METHODS.subscribeProjectFolders
+  | typeof ORCHESTRATION_WS_METHODS.subscribeLiveFeed
   | typeof WS_METHODS.subscribeAuthAccess
   | typeof WS_METHODS.subscribeServerConfig
   | typeof WS_METHODS.subscribeServerLifecycle
@@ -51,6 +53,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribePreviewEvents
   | typeof WS_METHODS.subscribeDiscoveredLocalServers
   | typeof WS_METHODS.subscribeResourceTelemetry
+  | typeof WS_METHODS.subscribeHostVitals
   | typeof WS_METHODS.previewAutomationConnect
   | typeof WS_METHODS.remoteControlHostConnect
   | typeof WS_METHODS.remoteControlWatch

@@ -69,9 +69,13 @@ const resolveEnvironmentPortTarget = (
   const protocol = target.protocol ?? "http";
   const path = target.path?.startsWith("/") ? target.path : `/${target.path ?? ""}`;
   const normalizedEnvironmentHost = environmentUrl.hostname.replace(/^\[|\]$/g, "");
-  const resolvedHost = normalizedEnvironmentHost.includes(":")
-    ? `[${normalizedEnvironmentHost}]`
-    : normalizedEnvironmentHost;
+  // Local loopback environments should advertise `localhost` so Chromium
+  // dual-stack lookup can reach a Vite server bound only to ::1 or 127.0.0.1.
+  const resolvedHost = isLocalLoopbackHost(normalizedEnvironmentHost)
+    ? "localhost"
+    : normalizedEnvironmentHost.includes(":")
+      ? `[${normalizedEnvironmentHost}]`
+      : normalizedEnvironmentHost;
   const resolved = sourceUrl
     ? new URL(sourceUrl)
     : new URL(path, `${protocol}://${resolvedHost}:${target.port}`);
@@ -94,30 +98,6 @@ export function resolveBrowserNavigationTarget(
   target: BrowserNavigationTarget,
 ): PreviewUrlResolution {
   if (target.kind === "url") {
-    let parsed: URL | null = null;
-    try {
-      parsed = new URL(normalizePreviewUrl(target.url));
-    } catch {
-      // Preserve the existing direct-navigation behavior so the preview host
-      // reports malformed URL errors through its normal navigation path.
-    }
-    if (parsed && isLoopbackHost(parsed.hostname)) {
-      const environmentUrl = readEnvironmentUrl(environmentId);
-      if (parsed.hostname === "0.0.0.0" || !isLocalLoopbackHost(environmentUrl.hostname)) {
-        return resolveEnvironmentPortTarget(
-          environmentId,
-          {
-            kind: "environment-port",
-            port: Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80)),
-            protocol: parsed.protocol === "https:" ? "https" : "http",
-            path: `${parsed.pathname}${parsed.search}${parsed.hash}`,
-          },
-          environmentUrl,
-          target.url,
-          parsed,
-        );
-      }
-    }
     return {
       requestedUrl: target.url,
       resolvedUrl: target.url,
@@ -131,10 +111,20 @@ export function resolveBrowserNavigationTarget(
 export function resolveDiscoveredServerUrl(environmentId: EnvironmentId, rawUrl: string): string {
   try {
     const normalizedUrl = normalizePreviewUrl(rawUrl);
-    return resolveBrowserNavigationTarget(environmentId, {
-      kind: "url",
-      url: normalizedUrl,
-    }).resolvedUrl;
+    const parsed = new URL(normalizedUrl);
+    if (!isLoopbackHost(parsed.hostname)) return normalizedUrl;
+    return resolveEnvironmentPortTarget(
+      environmentId,
+      {
+        kind: "environment-port",
+        port: Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80)),
+        protocol: parsed.protocol === "https:" ? "https" : "http",
+        path: `${parsed.pathname}${parsed.search}${parsed.hash}`,
+      },
+      readEnvironmentUrl(environmentId),
+      rawUrl,
+      parsed,
+    ).resolvedUrl;
   } catch {
     return rawUrl;
   }

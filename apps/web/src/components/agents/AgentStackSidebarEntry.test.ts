@@ -116,7 +116,7 @@ describe("Agent Builder status dot", () => {
     expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.error.dotClass).toContain("bg-red-500");
   });
 
-  it("shows no dot without a builder result and suppresses stale remote working state", () => {
+  it("shows no dot without a builder result and retains remote working state", () => {
     expect(resolveAgentBuilderButtonStatus(null)).toBeNull();
     expect(
       resolveAgentBuilderButtonStatus(
@@ -134,7 +134,7 @@ describe("Agent Builder status dot", () => {
         }),
         true,
       ),
-    ).toBeNull();
+    ).toBe("working");
   });
 });
 

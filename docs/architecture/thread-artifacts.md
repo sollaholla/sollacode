@@ -15,6 +15,18 @@ The environment id is part of client selection and deep links, not the per-host 
 selected connection supplies the authority boundary, and every payload still names the owning
 thread and artifact.
 
+## Link navigation
+
+The shared `preview/link-routing` resolver recognizes artifact routes for registered environment
+IDs before ordinary website links are dispatched. Matching by environment ID allows LAN, loopback,
+and tunnel aliases; the registered connection supplies content and authentication, never the link's
+origin. Unknown environments retain ordinary link behavior.
+
+Web chat and terminal links navigate to the owning thread with the artifact search parameter in the
+current SPA. `ThreadArtifactDeepLinkOpener` waits for that thread's artifact snapshot before opening
+the preview. Existing preview tabs are refocused, and clearing the selection lets the same link open
+again. Native mobile links navigate directly to `ThreadArtifact`.
+
 ## Assets and isolation
 
 Clients pass the server-provided resource descriptor - including the artifact entry path - to the

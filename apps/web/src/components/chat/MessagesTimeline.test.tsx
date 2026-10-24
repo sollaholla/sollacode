@@ -861,29 +861,30 @@ describe("MessagesTimeline", () => {
     expect(resolveTimelineMinimapInteractiveWidth(40)).toBe(40);
   });
 
-  // A thread on an offline host reports last-known state. Pulsing dots and a
-  // counter that keeps climbing claim live progress the client cannot observe,
-  // and the user has no way to stop a turn on a machine they cannot reach.
-  it("stops claiming live progress while the host is unreachable", () => {
+  it("retains working and its local timer while the host is unreachable", () => {
     const timelineEntries = [buildUserTimelineEntry("Publish the release")];
     const reachable = renderToStaticMarkup(
-      <MessagesTimeline {...buildProps()} isWorking timelineEntries={timelineEntries} />,
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt="2026-01-01T00:00:00Z"
+        timelineEntries={timelineEntries}
+      />,
     );
     const unreachable = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         isWorking
+        activeTurnStartedAt="2026-01-01T00:00:00Z"
         environmentUnreachable
         timelineEntries={timelineEntries}
       />,
     );
 
-    // The animated equalizer is what claims live progress now; the offline
-    // row draws static dots instead.
     expect(reachable).toContain("working-pillars");
-    expect(unreachable).not.toContain("working-pillars");
-    expect(unreachable).toContain("reconnecting");
-    expect(unreachable).not.toContain("Working for");
+    expect(unreachable).toContain("working-pillars");
+    expect(unreachable).not.toContain("reconnecting");
+    expect(unreachable).toContain("Working for");
   });
 
   it("uses visible-row anchoring only after the user opts out during streaming", () => {
@@ -1214,7 +1215,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Copy link"');
+    expect(markup).toContain('aria-label="Copy message"');
     expect(markup).toContain('data-user-message-collapsed="true"');
     expect(markup).toContain('data-user-message-footer="true"');
   });
@@ -1501,9 +1502,7 @@ describe("MessagesTimeline", () => {
         workspaceRoot="/workspace/open-world"
       />,
     );
-    expect(markup).toContain(
-      'aria-label="Open image preview: open-world/screenshots/plateau_edge_to_bay.png"',
-    );
+    expect(markup).toContain('aria-label="Open image: plateau_edge_to_bay.png"');
     expect(markup).toContain('src="https://environment.example/api/assets/signed/reference.png');
     expect(markup).not.toContain('src="screenshots/');
     expect(assetUrlStateCalls.at(-1)).toMatchObject({
@@ -1537,15 +1536,16 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Open image preview: workspace/art/reference.png"');
+    expect(markup).toContain('aria-label="Open image: reference.png"');
     expect(markup).toContain("<button");
-    expect(markup).toContain('href="/workspace/art/reference.png"');
-    expect(markup).toContain("hover:underline");
+    expect(markup).toContain("data-work-log-images");
+    // The tile draws a small copy; opening it fetches the whole image.
     expect(markup).toContain(
-      'src="https://environment.example/api/assets/signed/reference.png?solla_revision=work-image-read"',
+      'src="https://environment.example/api/assets/signed/reference.png?solla_revision=work-image-read&amp;thumbnail=1"',
     );
-    expect(markup).toContain("workspace/art/reference.png");
-    expect(markup).toContain("block h-48 w-full cursor-zoom-in bg-black/10 sm:h-64");
+    expect(markup).toContain('title="/workspace/art/reference.png"');
+    expect(markup).toContain("size-11 shrink-0");
+    expect(markup).not.toContain("cursor-zoom-in");
     expect(markup).toContain("block size-full object-contain");
     expect(assetUrlStateCalls.at(-1)).toMatchObject({
       sourceActivityId: "activity-that-supplied-image-path",
@@ -1581,7 +1581,7 @@ describe("MessagesTimeline", () => {
       );
 
       expect(markup).toContain(`src="${storedSrc}"`);
-      expect(markup).toContain("Stored copy");
+      expect(markup).toContain("data-work-log-images");
       expect(markup).not.toContain("Image preview unavailable");
     } finally {
       assetUrlState.current = {
@@ -1591,7 +1591,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("says plainly when neither the file nor a stored copy can be shown", () => {
+  it("shows nothing when neither the file nor a stored copy can be shown", () => {
     assetUrlState.current = { _tag: "Failure" };
     try {
       const markup = renderToStaticMarkup(
@@ -1617,7 +1617,10 @@ describe("MessagesTimeline", () => {
         />,
       );
 
-      expect(markup).toContain("Nothing readable is at this path now");
+      // Reported 2026-10-11: blank tiles read as broken images. A gone image
+      // leaves the row instead.
+      expect(markup).not.toContain("jacket-right-thumb.png");
+      expect(markup).not.toContain("unavailable");
       expect(markup).not.toContain("Stored copy");
     } finally {
       assetUrlState.current = {
@@ -1653,7 +1656,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain(
-      'src="https://environment.example/api/assets/signed/reference.png?solla_revision=work-live-image"',
+      'src="https://environment.example/api/assets/signed/reference.png?solla_revision=work-live-image&amp;thumbnail=1"',
     );
     expect(markup).not.toContain("Stored copy");
   });

@@ -41,6 +41,13 @@ process.stdin.on('end', () => {
    process.stderr.write('ERROR: logging before google.Init: I0909 run.go:371] Run: attempt 1 failed (RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).), retrying in 4s\\n');
    setInterval(()=>{},1000); return;
  }
+ if(mode==='plan') {
+   const plan='Here is the plan.\\n<proposed_plan>\\n# Ship it\\n\\n- Step one\\n</proposed_plan>';
+   emit('step_update',{step_index:1,state:'ACTIVE',step_type:'agent_response',text_delta:plan});
+   emit('step_update',{step_index:1,state:'DONE',step_type:'agent_response',text_delta:'\\n'});
+   emit('result',{conversation_id:'native-conversation',status:'SUCCESS',response:plan+'\\n'});
+   return;
+ }
  emit('step_update',{step_index:1,state:'ACTIVE',step_type:'agent_response',text_delta:'OK'});
  const usage={input_tokens:13713,output_tokens:1,thinking_tokens:0,cache_read_tokens:0,total_tokens:13714};
  emit('step_update',{step_index:1,state:'DONE',step_type:'agent_response',text_delta:'\\n',usage});
@@ -184,6 +191,29 @@ describe("Antigravity adapter process lifecycle", () => {
         expect(args[args.indexOf("--model") + 1]).toBe(scenario.model);
         expect(args[args.indexOf("--effort") + 1]).toBe(scenario.expected);
       }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("hands a Plan-mode plan over as a plan the person can implement", () =>
+    Effect.gen(function* () {
+      const { adapter, dir } = yield* setup("plan");
+      const { events, first } = yield* observe(adapter);
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, input: "plan it", interactionMode: "plan" });
+      yield* Deferred.await(first);
+      // `--mode plan` keeps AGY read-only; only the prompt asks for the block.
+      const prompt = yield* Effect.promise(() =>
+        NodeFSP.readFile(NodePath.join(dir, "prompt.txt"), "utf8"),
+      );
+      expect(prompt).toContain("<proposed_plan>");
+      const plans = events.flatMap((e) =>
+        e.type === "turn.proposed.completed" ? [[e.itemId, e.payload.planMarkdown]] : [],
+      );
+      expect(plans).toEqual([["proposed-plan-0", "# Ship it\n\n- Step one"]]);
+      // Proposed before the turn ends, so the turn that wrote it owns it.
+      expect(events.findIndex((e) => e.type === "turn.proposed.completed")).toBeLessThan(
+        events.findIndex((e) => e.type === "turn.completed"),
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

@@ -16,6 +16,7 @@ import {
   type ProviderUserInputAnswers,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeItemId,
   RuntimeRequestId,
   type RuntimeMode,
   type ThreadId,
@@ -648,6 +649,11 @@ export function makeCursorAdapter(
                     provider: PROVIDER,
                     threadId: input.threadId,
                     turnId: ctx?.activeTurnId,
+                    // The plan's identity, so a second plan in the same turn
+                    // is kept beside the first instead of replacing it.
+                    ...(params.toolCallId.trim().length > 0
+                      ? { itemId: RuntimeItemId.make(params.toolCallId.trim()) }
+                      : {}),
                     payload: { planMarkdown: extractPlanMarkdown(params) },
                     raw: {
                       source: "acp.cursor.extension",

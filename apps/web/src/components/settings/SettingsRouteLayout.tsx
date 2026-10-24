@@ -1,5 +1,5 @@
-import { Outlet, useCanGoBack, useLocation, useNavigate } from "@tanstack/react-router";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Outlet, useLocation } from "@tanstack/react-router";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
@@ -10,6 +10,7 @@ import {
 import { SidebarInset } from "../ui/sidebar";
 import { SettingsMobileTabs, useSettingsMobileTabs } from "./SettingsMobileTabs";
 import { SettingsMobileSearch } from "./SettingsMobileSearch";
+import { useCloseSettings } from "./closeSettings";
 import { highlightSettingsSearchResult } from "./settingsSearchHighlight";
 
 // Preview webviews live outside the router so they survive navigation and are
@@ -37,20 +38,12 @@ export function SettingsRoutePending() {
 
 export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) {
   const location = useLocation();
-  const navigate = useNavigate();
-  const canGoBack = useCanGoBack();
   const [restoreSignal, setRestoreSignal] = useState(0);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const showMobileTabs = useSettingsMobileTabs();
   const showRestoreDefaults = location.pathname === "/settings/general";
   const handleRestored = () => setRestoreSignal((value) => value + 1);
-  const navigateBackWithinApp = useCallback(() => {
-    if (canGoBack) {
-      window.history.back();
-      return;
-    }
-    void navigate({ to: "/" });
-  }, [canGoBack, navigate]);
+  const closeSettings = useCloseSettings();
 
   // A search result navigates with the row id as the hash: once the lazy
   // panel has rendered that row, bring it into view and flash it gold.
@@ -71,7 +64,7 @@ export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) 
           activeElement.blur();
         }
 
-        navigateBackWithinApp();
+        closeSettings();
       }
     };
 
@@ -79,7 +72,7 @@ export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) 
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [navigateBackWithinApp]);
+  }, [closeSettings]);
 
   return (
     <SidebarInset

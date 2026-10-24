@@ -49,6 +49,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadSnooze: Schema.optionalKey(Schema.Boolean),
   /** Server persists disposable side-chat forks and promotion metadata. */
   threadSideChats: Schema.optionalKey(Schema.Boolean),
+  /** Server answers orchestration.deleteArchivedThreads. Older servers get the
+      archive cleaned one chat at a time. */
+  archivedThreadBulkDelete: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */

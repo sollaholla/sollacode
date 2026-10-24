@@ -31,9 +31,10 @@ export default defineConfig({
     {
       format: "cjs",
       outDir: "dist-electron",
+      dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
-      entry: ["src/main.ts"],
+      entry: ["src/main.ts", "src/storage-maintenance.ts"],
       clean: true,
       deps: {
         alwaysBundle: (id) => id.startsWith("@t3tools/"),
@@ -43,6 +44,7 @@ export default defineConfig({
     {
       format: "cjs",
       outDir: "dist-electron",
+      dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
       entry: ["src/preload.ts"],
@@ -50,6 +52,7 @@ export default defineConfig({
     {
       format: "cjs",
       outDir: "dist-electron",
+      dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
       entry: ["src/preview-pick-preload.ts"],
@@ -60,6 +63,7 @@ export default defineConfig({
     {
       format: "cjs",
       outDir: "dist-electron",
+      dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
       entry: ["src/preview-pip-preload.ts"],

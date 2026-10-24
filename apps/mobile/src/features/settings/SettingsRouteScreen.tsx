@@ -30,6 +30,7 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
+import { StorageCleanupRow } from "./StorageCleanupRow";
 
 export function SettingsRouteScreen() {
   const navigation = useNavigation();
@@ -92,6 +93,7 @@ function LocalSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
+          <SettingsRow icon="folder" label="Projects" target="SettingsProjects" />
           <SettingsRow icon="person.2" label="Agents" fullScreenTarget="Agents" />
           <SettingsRow icon="key" label="Credentials" target="SettingsCredentials" />
         </SettingsSection>
@@ -119,6 +121,20 @@ function LocalSettingsRouteScreen() {
           />
         )}
         <GeneralSettingsSection />
+
+        <SettingsSection title="Automatic storage cleanup">
+          {[...configs.keys()].map((environmentId) => (
+            <StorageCleanupRow
+              key={environmentId}
+              environmentId={environmentId}
+              label={savedConnectionsById[environmentId]?.environmentLabel ?? "Connected computer"}
+            />
+          ))}
+          <Text className="p-4 text-sm text-foreground-muted">
+            Clears inactive desktop browser caches and obsolete update files on each computer.
+            Cookies, logins, site data, chats, and projects are kept.
+          </Text>
+        </SettingsSection>
 
         <OrchestratorSettingsSection />
 
@@ -159,6 +175,7 @@ function OrchestratorSettingsSection() {
   return (
     <SettingsSection title="Orchestrator">
       <SettingsRow icon="waveform" label="Open Orchestrator" fullScreenTarget="Orchestrator" />
+      <SettingsRow icon="play.tv" label="Live Inspector" fullScreenTarget="LiveInspector" />
     </SettingsSection>
   );
 }

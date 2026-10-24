@@ -90,7 +90,12 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
       return;
     }
     setSelectedIndicatorTop(selectedItem.offsetTop + selectedItem.offsetHeight / 2 - 10);
-  }, [props.instanceEntries, props.selectedInstanceId, showFavorites]);
+  }, [
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Adding, removing or reordering providers moves the selected item, so the indicator re-measures.
+    props.instanceEntries,
+    props.selectedInstanceId,
+    showFavorites,
+  ]);
 
   return (
     <div className="w-11 shrink-0 overflow-hidden bg-muted/30" data-model-picker-sidebar="true">

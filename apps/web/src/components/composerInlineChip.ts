@@ -11,6 +11,10 @@ export const CHAT_INLINE_CHIP_LABEL_CLASS_NAME = "truncate leading-tight";
 
 export const COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME = `${CHAT_INLINE_CHIP_LABEL_CLASS_NAME} select-none`;
 
+// The skill label is smaller than the surrounding prompt text; offset its
+// glyphs without moving the pill box or changing the editor's line height.
+export const COMPOSER_INLINE_SKILL_CHIP_LABEL_CLASS_NAME = `${COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME} relative top-[0.15em]`;
+
 export const COMPOSER_INLINE_SKILL_CHIP_CLASS_NAME =
   "inline-flex max-w-full select-none items-center gap-1 rounded-md border border-fuchsia-500/25 bg-fuchsia-500/12 px-1.5 py-px font-medium text-[12px] leading-[1.1] text-fuchsia-700 align-middle dark:text-fuchsia-300";
 

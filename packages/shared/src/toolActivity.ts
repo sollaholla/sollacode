@@ -327,6 +327,24 @@ function classifyToolAction(input: {
   return "other";
 }
 
+export type ToolActivityAction = ReturnType<typeof classifyToolAction>;
+
+/**
+ * What a tool call did, by kind: ran a command, read or changed a file,
+ * searched, thought, or something else. Read the same way the work log names it.
+ */
+export function classifyToolActivity(input: ToolActivityPresentationInput): ToolActivityAction {
+  const title = isGenericToolTitle(input.title) ? undefined : asTrimmedString(input.title);
+  const data = asRecord(input.data);
+  return classifyToolAction({
+    itemType: input.itemType,
+    title,
+    detail: stripTrailingExitCode(asTrimmedString(input.detail)),
+    data,
+    command: extractToolCommand(data, title),
+  });
+}
+
 export interface ToolActivityPresentationInput {
   readonly itemType?: ToolLifecycleItemType | null | undefined;
   readonly title?: string | null | undefined;

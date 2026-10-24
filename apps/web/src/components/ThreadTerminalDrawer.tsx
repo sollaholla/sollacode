@@ -1,3 +1,6 @@
+import { useEnvironment } from "../state/environments";
+import { useArtifactLinkOpener } from "../hooks/useArtifactLinkOpener";
+import { isDesktopOwnedConnectionTarget } from "../connection/desktopLocal";
 import type { TerminalStreamCursor } from "@t3tools/client-runtime/state/terminal";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useAtomValue } from "@effect/atom-react";
@@ -91,11 +94,7 @@ import { readLocalApi } from "~/localApi";
 import { clientOwnsTerminalGeometry, terminalClientId } from "../terminalClientIdentity";
 import { useAttachedTerminalSession, useKnownTerminalSessions } from "../state/terminalSessions";
 import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
-import {
-  emptyTerminalDictationState,
-  resolveTerminalDictationInput,
-  type TerminalDictationState,
-} from "./terminal/dictationInput";
+import { subscribeTerminalKeyboardInput } from "./terminal/keyboardInput";
 import { TerminalMobileKeyBar } from "./terminal/TerminalMobileKeyBar";
 import { resolveTerminalKeyboardInset } from "./terminal/terminalKeyboardInset";
 import { TerminalLaunchPad, type TerminalLaunchProvider } from "./terminal/TerminalLaunchPad";
@@ -1139,6 +1138,16 @@ export function TerminalViewport({
    * answer to a question inside replayed history, not to a live one.
    */
   const replayParseInFlightRef = useRef(0);
+  const threadEnvironment = useEnvironment(threadRef.environmentId);
+  const { openArtifactLink } = useArtifactLinkOpener(threadRef.environmentId);
+  const openTerminalArtifactLink = useEffectEvent(openArtifactLink);
+  const isRemoteClient =
+    typeof window !== "undefined" &&
+    (window.desktopBridge === undefined ||
+      (threadEnvironment !== null &&
+        !isDesktopOwnedConnectionTarget(threadEnvironment.entry.target)));
+  const remoteClientRef = useRef(isRemoteClient);
+  remoteClientRef.current = isRemoteClient;
   const environmentId = threadRef.environmentId;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
@@ -1288,8 +1297,7 @@ export function TerminalViewport({
   });
   const terminalHasRunningSubprocessRef = useRef(terminalHasRunningSubprocess);
   terminalHasRunningSubprocessRef.current = terminalHasRunningSubprocess;
-  // What the live input-method buffer has already contributed to the PTY.
-  const terminalDictationStateRef = useRef<TerminalDictationState>(emptyTerminalDictationState);
+  const keyboardInputRef = useRef<ReturnType<typeof subscribeTerminalKeyboardInput> | null>(null);
   const serverCols = terminalSession.summary?.cols;
   const serverRows = terminalSession.summary?.rows;
   const serverWindowsPty = terminalSession.summary?.windowsPty;
@@ -1803,6 +1811,7 @@ export function TerminalViewport({
               if (!latestTerminal) return;
 
               if (match.kind === "url") {
+                if (openTerminalArtifactLink(match.text)) return;
                 if (!localApi) {
                   writeSystemMessage(
                     latestTerminal,
@@ -1820,6 +1829,9 @@ export function TerminalViewport({
                 };
                 void openTerminalLinkInPreview({
                   url: match.text,
+                  isRemoteClient: remoteClientRef.current,
+                  reportPreviewFailure: () =>
+                    writeSystemMessage(latestTerminal, "Unable to open link in the host preview."),
                   position: { x: event.clientX, y: event.clientY },
                   threadRef,
                   openPreview,
@@ -1864,34 +1876,14 @@ export function TerminalViewport({
       lastInputFailure = { message, at: now };
       writeSystemMessage(terminal, message);
     };
-    // The reconciliation below exists for ONE thing: iOS keyboard dictation
-    // rewriting words it already committed. That is a touch-keyboard
-    // behaviour, and a hardware keyboard must never be routed through it -
-    // guessing an input method's intent from the textarea misreads ordinary
-    // typing, which cost real keystrokes on macOS.
     const usesTouchKeyboard =
       typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
-    const inputDisposable = terminal.onData((data) => {
-      // While an input method holds text in the textarea, xterm's own diff is
-      // unreliable: iOS dictation rewrites words it already committed, and
-      // xterm answers by re-sending the entire buffer. Reconcile against the
-      // textarea, which holds exactly what has been dictated so far.
-      const dictation = usesTouchKeyboard
-        ? resolveTerminalDictationInput({
-            payload: data,
-            textareaValue: terminal.textarea?.value ?? "",
-            state: terminalDictationStateRef.current,
-          })
-        : { payload: data, state: emptyTerminalDictationState };
-      terminalDictationStateRef.current = dictation.state;
-      if (dictation.payload.length === 0) {
-        return;
-      }
+    const inputDisposable = subscribeTerminalKeyboardInput(terminal, usesTouchKeyboard, (data) => {
       // Preserve actionable TUI mouse input, but never forward no-button
       // pointer motion. Multiple attached clients can otherwise produce a
       // write/repaint loop quickly enough to make the whole terminal UI
       // unresponsive, including its split and stop controls.
-      const actionableData = stripTerminalUnbuttonedMouseMotionReports(dictation.payload);
+      const actionableData = stripTerminalUnbuttonedMouseMotionReports(data);
       // A bare shell never wants mouse/focus reports; dropping them here is
       // the backstop for tracking modes the local resets could not reach.
       const mouseFiltered = terminalHasRunningSubprocessRef.current
@@ -1931,6 +1923,8 @@ export function TerminalViewport({
         reportInputFailure(message);
       })();
     });
+
+    keyboardInputRef.current = inputDisposable;
 
     const selectionDisposable = terminal.onSelectionChange(() => {
       if (terminalRef.current?.hasSelection()) {
@@ -2017,6 +2011,7 @@ export function TerminalViewport({
       resizeObserver?.disconnect();
       layoutScheduler.dispose();
       inputDisposable.dispose();
+      if (keyboardInputRef.current === inputDisposable) keyboardInputRef.current = null;
       selectionDisposable.dispose();
       terminalLinksDisposable.dispose();
       if (selectionActionTimerRef.current !== null) {
@@ -2422,7 +2417,7 @@ export function TerminalViewport({
           // An interrupt, a history recall or a paste all change the line out
           // from under whatever the dictation buffer last contributed, so stop
           // reconciling against it.
-          terminalDictationStateRef.current = emptyTerminalDictationState;
+          keyboardInputRef.current?.reset();
           // Deliberately no focus() here. These bytes go straight to the PTY,
           // so the terminal does not need the caret - and focusing it on a
           // phone raises the software keyboard, which is the opposite of what
@@ -3767,7 +3762,7 @@ export default function ThreadTerminalDrawer({
                   {normalizedTerminalIds.length > 1 ? (
                     <button
                       type="button"
-                      className="rounded-md p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-surface-hover hover:text-foreground group-hover:opacity-100 pointer-coarse:opacity-100"
+                      className="rounded-md p-0.5 text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
                       aria-label={`Close ${label}`}
                       onClick={() => onCloseTerminal(terminalId)}
                     >
@@ -4269,7 +4264,7 @@ export default function ThreadTerminalDrawer({
                                       <button
                                         type="button"
                                         draggable={false}
-                                        className="inline-flex size-4 items-center justify-center rounded-md text-xs font-medium leading-none text-muted-foreground opacity-0 transition hover:bg-surface-hover hover:text-foreground group-hover:opacity-100 pointer-coarse:opacity-100"
+                                        className="inline-flex size-4 items-center justify-center rounded-md text-xs font-medium leading-none text-muted-foreground transition hover:bg-surface-hover hover:text-foreground"
                                         onClick={() => onCloseTerminal(terminalId)}
                                         onMouseDown={(event) => event.stopPropagation()}
                                         aria-label={closeTerminalLabel}

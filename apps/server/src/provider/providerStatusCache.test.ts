@@ -190,6 +190,39 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
     );
   });
 
+  // 2026-10-14: a custom id removed in Settings came back on every launch
+  // from the cache, because the fallback built from current settings no
+  // longer named it and every cached model it lacked was kept.
+  it("drops cached custom models that are no longer in settings", () => {
+    const discovered = {
+      slug: "claude-sonnet-5-5",
+      name: "Claude Sonnet 5.5",
+      isCustom: false,
+      capabilities: emptyCapabilities,
+    };
+    const stillConfigured = {
+      slug: "my-proxy-model",
+      name: "my-proxy-model",
+      isCustom: true,
+      capabilities: emptyCapabilities,
+    };
+    const cachedClaude = makeProvider(CLAUDE_AGENT_DRIVER, {
+      checkedAt: "2026-10-14T12:00:00.000Z",
+      models: [
+        discovered,
+        stillConfigured,
+        { slug: "opus-5", name: "opus-5", isCustom: true, capabilities: emptyCapabilities },
+      ],
+    });
+    const fallbackClaude = makeProvider(CLAUDE_AGENT_DRIVER, { models: [stillConfigured] });
+
+    assert.deepStrictEqual(
+      hydrateCachedProvider({ cachedProvider: cachedClaude, fallbackProvider: fallbackClaude })
+        .models,
+      [stillConfigured, discovered],
+    );
+  });
+
   it("ignores stale cached enabled state when the provider is now disabled", () => {
     const cachedCodex = makeProvider(CODEX_DRIVER, {
       checkedAt: "2026-04-10T12:00:00.000Z",

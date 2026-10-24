@@ -318,9 +318,18 @@ export function HostedBrowserWebview(props: {
         }
       }, recovery.delayMs);
     };
+    // A click inside the guest only reaches this document as a webview focus
+    // event, so open menus and popovers never see the outside press that
+    // would dismiss them. Replay it as a pointerdown on the webview itself.
+    const dismissHostPopups = () => {
+      webview.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }),
+      );
+    };
     webview.addEventListener("did-attach", register);
     webview.addEventListener("dom-ready", register);
     webview.addEventListener("render-process-gone", recoverGuest);
+    webview.addEventListener("focus", dismissHostPopups);
     register();
     return () => {
       disposed = true;
@@ -329,6 +338,7 @@ export function HostedBrowserWebview(props: {
       webview.removeEventListener("did-attach", register);
       webview.removeEventListener("dom-ready", register);
       webview.removeEventListener("render-process-gone", recoverGuest);
+      webview.removeEventListener("focus", dismissHostPopups);
     };
   }, [config, initialSrc, runtimeTabId, syncGeneration, webviewGeneration]);
 
@@ -543,7 +553,7 @@ export function HostedBrowserWebview(props: {
           data-preview-css-width={declaredViewportWidth}
           data-preview-css-height={declaredViewportHeight}
           className={cn(
-            "absolute flex overflow-hidden bg-background",
+            "absolute flex overflow-hidden bg-white",
             active && !layout.fillsPanel && "ring-1 ring-border/70 shadow-sm",
           )}
           style={{

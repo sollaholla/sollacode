@@ -20,11 +20,35 @@ describe("findActionablePlan", () => {
     expect(findActionablePlan([plan({ implementedAt: "2026-01-01T01:00:00Z" })])).toBeNull();
   });
 
-  it("takes the newest outstanding plan", () => {
+  it("takes the newest plan while it is open", () => {
     const older = plan({ planId: "old", createdAt: "2026-01-01T00:00:00Z" });
     const newer = plan({ planId: "new", createdAt: "2026-01-02T00:00:00Z" });
     expect(findActionablePlan([older, newer])?.planId).toBe("new");
     expect(findActionablePlan([newer, older])?.planId).toBe("new");
+  });
+
+  it("never falls back to an older plan when the newest is done with", () => {
+    const older = plan({ planId: "old", createdAt: "2026-01-01T00:00:00Z" });
+    expect(
+      findActionablePlan([
+        older,
+        plan({
+          planId: "new",
+          createdAt: "2026-01-02T00:00:00Z",
+          closedAt: "2026-01-03T00:00:00Z",
+        }),
+      ]),
+    ).toBeNull();
+    expect(
+      findActionablePlan([
+        older,
+        plan({
+          planId: "new",
+          createdAt: "2026-01-02T00:00:00Z",
+          implementedAt: "2026-01-03T00:00:00Z",
+        }),
+      ]),
+    ).toBeNull();
   });
 
   it("handles a thread with no plans", () => {

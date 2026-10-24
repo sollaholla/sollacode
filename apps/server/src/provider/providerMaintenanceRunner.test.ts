@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { ServerProviderUpdateError } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -178,12 +179,13 @@ function makeRegistry(
             return candidate;
           }
           if (!updateState) {
-            const { updateState: _updateState, ...providerWithoutUpdateState } = candidate;
+            const stateKey = input.action === "install" ? "installState" : "updateState";
+            const { [stateKey]: _updateState, ...providerWithoutUpdateState } = candidate;
             return providerWithoutUpdateState;
           }
           return {
             ...candidate,
-            updateState,
+            [input.action === "install" ? "installState" : "updateState"]: updateState,
           };
         }),
       );
@@ -225,6 +227,62 @@ const makeTestRunner = (registry: ProviderRegistryShape) =>
   );
 
 describe("providerMaintenanceRunner", () => {
+  it.effect.each(
+    (["update", "install"] as const).flatMap((action) =>
+      (["queued", "running", "verification"] as const).map((stage) => ({ action, stage })),
+    ),
+  )(
+    "clears OpenCode's $action state when interrupted during $stage and permits retry",
+    ({ action, stage }) =>
+      Effect.gen(function* () {
+        const reached = yield* Deferred.make<void>();
+        let block = true;
+        const pause = Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never));
+        const { registry } = yield* makeRegistry(baseOpenCodeProvider);
+        const updater = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () => {
+            const capabilities = lifecycleFor(OPENCODE_DRIVER);
+            return Effect.succeed({ ...capabilities, install: capabilities.update });
+          },
+          setProviderMaintenanceActionState: Effect.fn("test.publishMaintenanceState")(
+            function* (input) {
+              const providers = yield* registry.setProviderMaintenanceActionState(input);
+              if (block && stage === "queued" && input.state?.status === "queued")
+                return yield* pause;
+              return providers;
+            },
+          ),
+          refreshInstance: (instanceId) =>
+            block && stage === "verification" ? pause : registry.refreshInstance(instanceId),
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer(() => ({
+              stdout: "updated",
+              ...(block && stage === "running" ? { exitCode: pause } : {}),
+            })),
+          ),
+        );
+        const target = { provider: OPENCODE_DRIVER, action };
+        const updating = yield* updater.updateProvider(target).pipe(Effect.forkScoped);
+        yield* Deferred.await(reached);
+        yield* Fiber.interrupt(updating);
+        const stateKey = action === "install" ? "installState" : "updateState";
+        const otherStateKey = action === "install" ? "updateState" : "installState";
+        const snapshot = (yield* registry.getProviders)[0];
+        const interrupted = snapshot?.[stateKey];
+        assert.isUndefined(snapshot?.[otherStateKey]);
+        assert.equal(interrupted?.status, "failed");
+        assert.include(interrupted?.message ?? "", "interrupted");
+        assert.isString(interrupted?.finishedAt);
+        if (stage === "queued") assert.isNull(interrupted?.startedAt);
+        else assert.isString(interrupted?.startedAt);
+        block = false;
+        const retry = yield* updater.updateProvider(target);
+        assert.equal(retry.providers[0]?.[stateKey]?.status, "succeeded");
+      }).pipe(Effect.provide(Layer.mergeAll(NonWindowsPlatform, latestVersionHttpClient("0.0.0")))),
+  );
+
   it.effect("runs the allowlisted provider update command and records success", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
     return Effect.gen(function* () {
@@ -256,6 +314,59 @@ describe("providerMaintenanceRunner", () => {
       ),
     );
   });
+
+  it.effect(
+    "cancels a queued OpenCode update without changing the provider holding the shared lock",
+    () =>
+      Effect.gen(function* () {
+        const firstStarted = yield* Deferred.make<void>();
+        const releaseFirst = yield* Deferred.make<void>();
+        const secondQueued = yield* Deferred.make<void>();
+        const calls: string[] = [];
+        const { registry } = yield* makeRegistry([baseProvider, baseOpenCodeProvider]);
+        const updater = yield* makeTestRunner({
+          ...registry,
+          setProviderMaintenanceActionState: Effect.fn("test.observeQueuedUpdate")(
+            function* (input) {
+              const providers = yield* registry.setProviderMaintenanceActionState(input);
+              if (input.instanceId === OPENCODE_INSTANCE_ID && input.state?.status === "queued") {
+                yield* Deferred.succeed(secondQueued, undefined);
+              }
+              return providers;
+            },
+          ),
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((_command, args) => {
+              calls.push(args.join(" "));
+              return calls.length === 1
+                ? {
+                    exitCode: Deferred.succeed(firstStarted, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseFirst)),
+                      Effect.as(ChildProcessSpawner.ExitCode(0)),
+                    ),
+                  }
+                : { stdout: "updated" };
+            }),
+          ),
+        );
+        const first = yield* updater.updateProvider(CODEX_DRIVER).pipe(Effect.forkScoped);
+        yield* Deferred.await(firstStarted);
+        const second = yield* updater.updateProvider(OPENCODE_DRIVER).pipe(Effect.forkScoped);
+        yield* Deferred.await(secondQueued);
+        yield* Fiber.interrupt(second);
+        const providers = yield* registry.getProviders;
+        assert.equal(providers[0]?.updateState?.status, "running");
+        assert.equal(providers[1]?.updateState?.status, "failed");
+        assert.isNull(providers[1]?.updateState?.startedAt);
+        assert.deepStrictEqual(calls, ["install -g @openai/codex@latest"]);
+        yield* Deferred.succeed(releaseFirst, undefined);
+        yield* Fiber.join(first);
+        const retry = yield* updater.updateProvider(OPENCODE_DRIVER);
+        assert.equal(retry.providers[1]?.updateState?.status, "succeeded");
+        assert.equal(calls.length, 2);
+      }).pipe(Effect.provide(Layer.mergeAll(NonWindowsPlatform, latestVersionHttpClient("0.0.0")))),
+  );
 
   it.effect("uses the resolved provider capabilities when choosing the update executable", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
@@ -486,6 +597,8 @@ describe("providerMaintenanceRunner", () => {
           assert.include(error.reason, "already running");
         }
       }
+
+      assert.equal((yield* registry.getProviders)[0]?.updateState?.status, "running");
 
       releaseLatch.resolve();
       yield* Fiber.join(first);

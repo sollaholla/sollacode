@@ -1,3 +1,9 @@
+import {
+  collectWorkLogImages,
+  type WorkLogImage,
+} from "@t3tools/client-runtime/state/work-log-images";
+import { resolveSettingsUpdates } from "@t3tools/client-runtime/state/settings-updates";
+import { withoutShownProposedPlanBlocks } from "@t3tools/shared/proposedPlans";
 import * as Equal from "effect/Equal";
 import {
   formatDuration,
@@ -201,6 +207,7 @@ type MessagesTimelineRowContent =
       createdAt: string;
       groupId: string;
       hiddenCount: number;
+      images: readonly WorkLogImage[];
       expanded: boolean;
       onlyToolEntries: boolean;
     }
@@ -221,6 +228,7 @@ type MessagesTimelineRowContent =
       showAssistantMeta: boolean;
       showAssistantCopyButton: boolean;
       assistantCopyStreaming: boolean;
+      settingsUpdateCompleted?: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
     }
@@ -294,12 +302,14 @@ export function resolveAssistantMessageCopyState({
   text,
   showCopyButton,
   streaming,
+  shownPlanMarkdowns,
 }: {
   text: string | null;
   showCopyButton: boolean;
   streaming: boolean;
+  shownPlanMarkdowns?: ReadonlySet<string>;
 }) {
-  const visibleText = visibleAssistantMessageText(text);
+  const visibleText = visibleAssistantMessageText(text, shownPlanMarkdowns);
   const hasText = visibleText.length > 0;
   return {
     text: hasText ? visibleText : null,
@@ -307,16 +317,27 @@ export function resolveAssistantMessageCopyState({
   };
 }
 
-/** Grok often opens a turn with `"\\n"` chunks. Those must not draw a card. */
-export function visibleAssistantMessageText(text: string | null | undefined): string {
-  return (text ?? "").replace(/^\s+|\s+$/g, "").replace(/\n{3,}/g, "\n\n");
+const NO_SHOWN_PLAN_MARKDOWNS: ReadonlySet<string> = new Set();
+
+/**
+ * Grok often opens a turn with `"\\n"` chunks. Those must not draw a card. Nor
+ * may a `<proposed_plan>` block whose plan card already shows it.
+ */
+export function visibleAssistantMessageText(
+  text: string | null | undefined,
+  shownPlanMarkdowns: ReadonlySet<string> = NO_SHOWN_PLAN_MARKDOWNS,
+): string {
+  return withoutShownProposedPlanBlocks(text ?? "", shownPlanMarkdowns)
+    .replace(/^\s+|\s+$/g, "")
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 export function assistantMessageHasVisibleBody(
   message: Pick<ChatMessage, "text" | "attachments">,
+  shownPlanMarkdowns?: ReadonlySet<string>,
 ): boolean {
   if ((message.attachments?.length ?? 0) > 0) return true;
-  return visibleAssistantMessageText(message.text).length > 0;
+  return visibleAssistantMessageText(message.text, shownPlanMarkdowns).length > 0;
 }
 
 /**
@@ -658,6 +679,27 @@ export function deriveMessagesTimelineRows(input: {
   showConversationBoundaries?: boolean;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
+  // A message that only carried a plan the plan card now shows draws nothing.
+  const shownPlanMarkdowns = new Set(
+    input.timelineEntries.flatMap((entry) =>
+      entry.kind === "proposed-plan" ? [entry.proposedPlan.planMarkdown.trim()] : [],
+    ),
+  );
+  const settingsUpdates = resolveSettingsUpdates(
+    input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+    input.timelineEntries.flatMap((entry) =>
+      entry.kind === "work"
+        ? [
+            {
+              id: entry.entry.id,
+              kind: entry.entry.sourceActivityKind,
+              createdAt: entry.createdAt,
+              turnId: entry.entry.turnId,
+            },
+          ]
+        : [],
+    ),
+  );
   const durationStartByMessageId = computeMessageDurationStart(
     input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
@@ -729,6 +771,7 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
+      if (settingsUpdates.matchedActivityIds.has(timelineEntry.entry.id)) continue;
       if (isProviderTransitionWorkEntry(timelineEntry.entry)) {
         nextRows.push({
           kind: "provider-transition",
@@ -802,6 +845,7 @@ export function deriveMessagesTimelineRows(input: {
             createdAt: timelineEntry.createdAt,
             groupId,
             hiddenCount: hiddenEntries.length,
+            images: collectWorkLogImages(hiddenEntries),
             expanded,
             onlyToolEntries: visibleGroupedEntries.every((entry) => workLogEntryIsToolLike(entry)),
           });
@@ -823,7 +867,7 @@ export function deriveMessagesTimelineRows(input: {
 
     if (
       timelineEntry.message.role === "assistant" &&
-      !assistantMessageHasVisibleBody(timelineEntry.message)
+      !assistantMessageHasVisibleBody(timelineEntry.message, shownPlanMarkdowns)
     ) {
       continue;
     }
@@ -849,6 +893,12 @@ export function deriveMessagesTimelineRows(input: {
       id: timelineEntry.id,
       createdAt: timelineEntry.createdAt,
       message: timelineEntry.message,
+      ...(settingsUpdates.updates.has(timelineEntry.message.id)
+        ? {
+            settingsUpdateCompleted: settingsUpdates.updates.get(timelineEntry.message.id)!
+              .completed,
+          }
+        : {}),
       durationStart,
       showAssistantMeta,
       showAssistantCopyButton: showAssistantMeta,
@@ -934,7 +984,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.groupId === bw.groupId &&
         a.hiddenCount === bw.hiddenCount &&
         a.expanded === bw.expanded &&
-        a.onlyToolEntries === bw.onlyToolEntries
+        a.onlyToolEntries === bw.onlyToolEntries &&
+        Equal.equals(a.images, bw.images)
       );
     }
 
@@ -942,6 +993,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       const bm = b as typeof a;
       return (
         a.message === bm.message &&
+        a.settingsUpdateCompleted === bm.settingsUpdateCompleted &&
         a.durationStart === bm.durationStart &&
         a.showAssistantMeta === bm.showAssistantMeta &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&

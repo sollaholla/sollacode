@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -10,6 +11,7 @@ import * as Stream from "effect/Stream";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import {
+  cachedQueryAtom,
   environmentRpcKey,
   createAtomCommandScheduler,
   createRuntimeCommand,
@@ -269,6 +271,63 @@ describe("Atom.fn mutation semantics", () => {
         registry.dispose();
       }),
   );
+});
+
+describe("cachedQueryAtom", () => {
+  const MINUTE = 60_000;
+  const countingQuery = () => {
+    let executions = 0;
+    const runtime = Atom.runtime(Layer.empty);
+    const query = cachedQueryAtom(runtime.atom(Effect.sync(() => ++executions)), {
+      staleTimeMs: 5 * MINUTE,
+      idleTtlMs: 60 * MINUTE,
+      refreshIntervalMs: 30 * MINUTE,
+    });
+    return { query, executions: () => executions };
+  };
+  const successValue = (result: AsyncResult.AsyncResult<number, never>) =>
+    AsyncResult.isSuccess(result) ? result.value : undefined;
+
+  it("refreshes on its interval while a reader stays", async () => {
+    vi.useFakeTimers();
+    try {
+      const { query, executions } = countingQuery();
+      const registry = AtomRegistry.make();
+      const unmount = registry.mount(query);
+      await vi.advanceTimersByTimeAsync(65 * MINUTE);
+
+      expect(executions()).toBe(3);
+      expect(successValue(registry.get(query))).toBe(3);
+      unmount();
+      registry.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fetches again for a reader that returns long after a background refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const { query, executions } = countingQuery();
+      const registry = AtomRegistry.make();
+      const unmount = registry.mount(query);
+      await vi.advanceTimersByTimeAsync(10 * MINUTE);
+      unmount();
+      // The refresh still pending when the reader left fires during this stretch.
+      await vi.advanceTimersByTimeAsync(20 * 60 * MINUTE);
+      const beforeReturn = executions();
+
+      const remount = registry.mount(query);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(executions()).toBe(beforeReturn + 1);
+      expect(successValue(registry.get(query))).toBe(executions());
+      remount();
+      registry.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("executeAtomQuery", () => {

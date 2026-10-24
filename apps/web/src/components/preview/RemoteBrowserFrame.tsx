@@ -1,3 +1,4 @@
+import { RemoteClickMarkers, useRemoteClickFeedback } from "./RemoteClickMarkers";
 import {
   PreviewTabId,
   type PreviewAgentControl,
@@ -16,6 +17,10 @@ import {
   type FrameSize,
 } from "@t3tools/shared/remoteFrameGestures";
 import { RemotePreviewCommandCoordinator } from "@t3tools/client-runtime/preview/remote-command-coordinator";
+import {
+  mergeRemoteSnapshot,
+  remoteSnapshotRequest,
+} from "@t3tools/client-runtime/preview/remote-frame";
 import { isPublicWebPreviewUrl } from "@t3tools/shared/preview";
 import * as Cause from "effect/Cause";
 import { KeyboardIcon } from "lucide-react";
@@ -138,6 +143,9 @@ export function RemoteBrowserFrame(props: {
   readonly onOpenInNewTab?: (url: string) => void;
 }) {
   const { threadRef, tabId, visible, agentControl, onOpenInNewTab } = props;
+  const { feedback: clickFeedback, markers: clickMarkers } = useRemoteClickFeedback(
+    JSON.stringify([threadRef.environmentId, threadRef.threadId, tabId]),
+  );
   const pageVisible = usePreviewPageVisible();
   const frameIntervalRef = useRef(LIVE_FRAME_INTERVAL_MS);
   frameIntervalRef.current =
@@ -194,6 +202,7 @@ export function RemoteBrowserFrame(props: {
     });
     const actions = createTouchActionMenu({
       menu: (state) => {
+        if (state) clickFeedback.cancelPress();
         gestures.menu(state);
         setTouchMenu(state);
       },
@@ -216,7 +225,12 @@ export function RemoteBrowserFrame(props: {
       const coordinated = await coordinatorRef.current.latestCapture(() =>
         captureRemoteSnapshot({
           environmentId: threadRef.environmentId,
-          input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId) },
+          // Names the frame already on screen, so a page that has not moved is
+          // answered without downloading the same JPEG again.
+          input: remoteSnapshotRequest(
+            { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId) },
+            frameRef.current,
+          ),
         }),
       );
       if (coordinated.status === "stale") return false;
@@ -229,7 +243,7 @@ export function RemoteBrowserFrame(props: {
         }
         return false;
       }
-      if (!result.value.loading) setFrame(result.value);
+      if (!result.value.loading) setFrame((held) => mergeRemoteSnapshot(held, result.value));
       setFrameError(null);
       return true;
     },
@@ -238,6 +252,7 @@ export function RemoteBrowserFrame(props: {
 
   const dispatchInput = useCallback(
     async (action: PreviewRemoteInputAction): Promise<PreviewRemoteInputResult | null> => {
+      const clickId = action.kind === "click" ? clickFeedback.submit(action.position) : null;
       const coordinated = await coordinatorRef.current.queueInput(() =>
         sendRemoteInput({
           environmentId: threadRef.environmentId,
@@ -246,6 +261,7 @@ export function RemoteBrowserFrame(props: {
       );
       if (coordinated.status === "stale") return null;
       const result = coordinated.value;
+      if (clickId !== null) clickFeedback.settle(clickId, result._tag === "Success");
       if (result._tag === "Failure") {
         setFrameError(commandError(result.cause, "The desktop browser did not accept the input."));
         return null;
@@ -255,7 +271,7 @@ export function RemoteBrowserFrame(props: {
       await capture(false);
       return result.value;
     },
-    [capture, sendRemoteInput, threadRef.environmentId, threadRef.threadId, tabId],
+    [capture, clickFeedback, sendRemoteInput, threadRef.environmentId, threadRef.threadId, tabId],
   );
   const dispatchInputRef = useRef(dispatchInput);
   dispatchInputRef.current = dispatchInput;
@@ -435,6 +451,7 @@ export function RemoteBrowserFrame(props: {
   };
 
   const abandonTouch = () => {
+    clickFeedback.cancelPress();
     touchPointerRef.current = null;
     touch.gestures.abandon();
     touch.actions.cancel();
@@ -463,7 +480,9 @@ export function RemoteBrowserFrame(props: {
     if (zoomAdjustingRef.current) return;
     const client = { x: event.clientX, y: event.clientY };
     // Input landing in the letterbox bars belongs to the panel, not the page.
-    if (pagePoint(client, { clamp: false }) === null) return;
+    const point = pagePoint(client, { clamp: false });
+    if (point === null) return;
+    if (event.button === 0) clickFeedback.press(point, client);
     if (event.pointerType === "touch") {
       if (touchPointerRef.current !== null) return;
       // Keeps focus where it is, so an open keyboard stays up while the
@@ -496,6 +515,7 @@ export function RemoteBrowserFrame(props: {
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    clickFeedback.movePress({ x: event.clientX, y: event.clientY }, FRAME_TAP_SLOP_PX);
     if (zoomView.onPointerMove(event)) return;
     // A drag already in flight when the pinch began must not keep reporting;
     // the gesture was abandoned when the second finger landed.
@@ -521,6 +541,7 @@ export function RemoteBrowserFrame(props: {
   };
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    clickFeedback.cancelPress();
     // Browsers only let sound start from a tap, and a finger's tap only
     // counts once it lifts. Pressing play in the page is that tap.
     tabAudioRef.current.unlockFromGesture();
@@ -570,6 +591,7 @@ export function RemoteBrowserFrame(props: {
   };
 
   const handlePointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    clickFeedback.cancelPress();
     // The browser took the touch (a system gesture): drop it, never deliver it.
     if (touchPointerRef.current === event.pointerId) abandonTouch();
     if (zoomView.onPointerUp(event)) {
@@ -781,6 +803,13 @@ export function RemoteBrowserFrame(props: {
             frame={frame.screenshot}
             // Waiting for the user means no agent is driving: the cursor dims.
             controller={agentControl === "agent" ? "agent" : "none"}
+            style={zoomView.style}
+          />
+        ) : null}
+        {frame ? (
+          <RemoteClickMarkers
+            markers={clickMarkers}
+            frame={frame.screenshot}
             style={zoomView.style}
           />
         ) : null}

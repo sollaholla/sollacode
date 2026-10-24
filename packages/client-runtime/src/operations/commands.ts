@@ -53,6 +53,8 @@ export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.resp
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
 export type StopThreadSessionInput = CommandInput<"thread.session.stop">;
 export type RefreshThreadPlanInput = CommandInput<"thread.plan.refresh">;
+export type CloseProposedPlanInput = CommandInput<"thread.proposed-plan.close">;
+export type ReopenProposedPlanInput = CommandInput<"thread.proposed-plan.reopen">;
 export type RecordThreadVoiceTranscriptInput = CommandInput<"thread.voice-transcript.record">;
 
 type DispatchTag = typeof ORCHESTRATION_WS_METHODS.dispatchCommand;
@@ -389,6 +391,34 @@ export const refreshThreadPlan: (input: RefreshThreadPlanInput) => CommandEffect
   return yield* dispatch({
     ...input,
     type: "thread.plan.refresh",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+/**
+ * Close a plan without implementing it, so its thread stops waiting on it.
+ * Sends nothing to the agent; Reopen undoes it.
+ */
+export const closeProposedPlan: (input: CloseProposedPlanInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.closeProposedPlan",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.proposed-plan.close",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const reopenProposedPlan: (input: ReopenProposedPlanInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.reopenProposedPlan",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.proposed-plan.reopen",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

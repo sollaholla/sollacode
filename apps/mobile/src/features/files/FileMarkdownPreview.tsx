@@ -28,7 +28,7 @@ interface MarkdownPreviewStyles {
   readonly nativeTextStyle: NativeMarkdownTextStyle;
 }
 
-function useMarkdownPreviewStyles(): MarkdownPreviewStyles {
+function useMarkdownPreviewStyles(onLinkPress: (href: string) => void): MarkdownPreviewStyles {
   const { appearance } = useAppearancePreferences();
   const markdownFontSizes = useMemo(
     () => resolveMarkdownFontSizes(appearance.baseFontSize),
@@ -57,7 +57,7 @@ function useMarkdownPreviewStyles(): MarkdownPreviewStyles {
           className="font-t3-medium"
           onPress={() => {
             if (href) {
-              void tryOpenExternalUrl(href, "markdown-link");
+              onLinkPress(href);
             }
           }}
           style={{
@@ -167,11 +167,13 @@ function useMarkdownPreviewStyles(): MarkdownPreviewStyles {
     regularFontFamily,
     strong,
     boldFontFamily,
+    onLinkPress,
   ]);
 }
 
 export function FileMarkdownPreview(props: {
   readonly markdown: string;
+  readonly onLinkPress?: (href: string) => void;
   readonly onRefresh?: () => Promise<void> | void;
 }) {
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
@@ -200,17 +202,24 @@ export function FileMarkdownPreview(props: {
       }
     >
       <View className="mx-auto w-full max-w-[760px]">
-        <MarkdownDocument markdown={props.markdown} />
+        <MarkdownDocument markdown={props.markdown} onLinkPress={props.onLinkPress} />
       </View>
     </ScrollView>
   );
 }
 
-export function MarkdownDocument(props: { readonly markdown: string }) {
-  const styles = useMarkdownPreviewStyles();
-  const onLinkPress = useCallback((href: string) => {
-    void tryOpenExternalUrl(href, "markdown-link");
-  }, []);
+export function MarkdownDocument(props: {
+  readonly markdown: string;
+  readonly onLinkPress?: ((href: string) => void) | undefined;
+}) {
+  const onLinkPress = useCallback(
+    (href: string) => {
+      if (props.onLinkPress) props.onLinkPress(href);
+      else void tryOpenExternalUrl(href, "markdown-link");
+    },
+    [props.onLinkPress],
+  );
+  const styles = useMarkdownPreviewStyles(onLinkPress);
 
   return hasNativeSelectableMarkdownText() ? (
     <SelectableMarkdownText

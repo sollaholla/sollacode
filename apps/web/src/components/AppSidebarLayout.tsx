@@ -19,6 +19,7 @@ import { useOrchestratorSessionContext } from "../orchestrator/OrchestratorSessi
 import { getLocalStorageItem } from "../hooks/useLocalStorage";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { cn, isMacPlatform } from "../lib/utils";
+import { MACOS_TRAFFIC_LIGHTS_LEFT_INSET } from "../workspaceTitlebar";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { readDocumentSelection, useComposerQuoteStore } from "../composerQuote";
 import { useOrchestratorThread } from "../orchestrator/useOrchestratorThread";
@@ -46,8 +47,6 @@ import {
 } from "./ui/sidebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-
-const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "90px";
 
 function subscribeToViewportWidth(onChange: () => void): () => void {
   window.addEventListener("resize", onChange);

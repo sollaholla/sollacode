@@ -134,6 +134,12 @@ const OrchestratorRouteScreen = deferredScreen(
       require("./features/orchestrator/OrchestratorRouteScreen") as typeof import("./features/orchestrator/OrchestratorRouteScreen")
     ).OrchestratorRouteScreen,
 );
+const LiveInspectorRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/orchestrator/OrchestratorRouteScreen") as typeof import("./features/orchestrator/OrchestratorRouteScreen")
+    ).LiveInspectorRouteScreen,
+);
 const AgentsRouteScreen = deferredScreen(
   () =>
     (
@@ -223,6 +229,18 @@ const SettingsCredentialsRouteScreen = deferredScreen(
     (
       require("./features/settings/SettingsCredentialsRouteScreen") as typeof import("./features/settings/SettingsCredentialsRouteScreen")
     ).SettingsCredentialsRouteScreen,
+);
+const SettingsProjectsRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/settings/SettingsProjectsRouteScreen") as typeof import("./features/settings/SettingsProjectsRouteScreen")
+    ).SettingsProjectsRouteScreen,
+);
+const SettingsProjectDetailRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/settings/SettingsProjectDetailRouteScreen") as typeof import("./features/settings/SettingsProjectDetailRouteScreen")
+    ).SettingsProjectDetailRouteScreen,
 );
 const SettingsEnvironmentsRouteScreen = deferredScreen(
   () =>
@@ -369,6 +387,20 @@ const SettingsSheetStack = createNativeStackNavigator({
         title: "Credentials",
       },
     }),
+    SettingsProjects: createNativeStackScreen({
+      screen: SettingsProjectsRouteScreen,
+      linking: "projects",
+      options: {
+        title: "Projects",
+      },
+    }),
+    SettingsProjectDetail: createNativeStackScreen({
+      screen: SettingsProjectDetailRouteScreen,
+      linking: "projects/:environmentId/:projectId",
+      options: {
+        title: "Project",
+      },
+    }),
     SettingsArchive: createNativeStackScreen({
       screen: ArchivedThreadsRouteScreen,
       linking: "archive",
@@ -459,6 +491,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "GitOverview",
   "NewTaskSheet",
   "Orchestrator",
+  "LiveInspector",
   "SettingsLegal",
   "SettingsSheet",
   "ThreadReviewComment",
@@ -689,6 +722,16 @@ export const RootStack = createNativeStackNavigator({
         ...SOLID_HEADER_OPTIONS,
         presentation: "fullScreenModal",
         title: "Orchestrator",
+      },
+    }),
+    // Beside the orchestrator: watching every thread work, rather than talking.
+    LiveInspector: createNativeStackScreen({
+      screen: LiveInspectorRouteScreen,
+      linking: "live-inspector",
+      options: {
+        ...SOLID_HEADER_OPTIONS,
+        presentation: "fullScreenModal",
+        title: "Live Inspector",
       },
     }),
     Agents: createNativeStackScreen({

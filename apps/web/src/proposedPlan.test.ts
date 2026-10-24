@@ -6,7 +6,6 @@ import {
   buildPlanImplementationPrompt,
   buildProposedPlanMarkdownFilename,
   proposedPlanTitle,
-  resolvePlanFollowUpSubmission,
   stripDisplayedPlanMarkdown,
 } from "./proposedPlan";
 
@@ -60,32 +59,6 @@ describe("stripDisplayedPlanMarkdown", () => {
     expect(stripDisplayedPlanMarkdown("# Integrate RPC\n\n## Scope\n\n- step 1\n")).toBe(
       "## Scope\n\n- step 1",
     );
-  });
-});
-
-describe("resolvePlanFollowUpSubmission", () => {
-  it("switches to default mode when implementing the ready plan without extra text", () => {
-    expect(
-      resolvePlanFollowUpSubmission({
-        draftText: "   ",
-        planMarkdown: "## Ship it\n\n- step 1\n",
-      }),
-    ).toEqual({
-      text: "PLEASE IMPLEMENT THIS PLAN:\n## Ship it\n\n- step 1",
-      interactionMode: "default",
-    });
-  });
-
-  it("stays in plan mode when the user adds a follow-up prompt", () => {
-    expect(
-      resolvePlanFollowUpSubmission({
-        draftText: "Refine step 2 first",
-        planMarkdown: "## Ship it\n\n- step 1\n",
-      }),
-    ).toEqual({
-      text: "Refine step 2 first",
-      interactionMode: "plan",
-    });
   });
 });
 

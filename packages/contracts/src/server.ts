@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 import { ExecutionEnvironmentDescriptor, ServerSelfUpdateMethod } from "./environment.ts";
 import { ServerAuthDescriptor } from "./auth.ts";
 import {
+  CommandId,
+  MessageId,
   ForwardCompatibleArray,
   IsoDateTime,
   NonNegativeInt,
@@ -332,6 +334,33 @@ export const ServerProviders = Schema.Array(ServerProvider);
 export type ServerProviders = typeof ServerProviders.Type;
 
 /**
+ * The parts of a provider snapshot that move on every health check or usage
+ * tick while the rest (model catalogue, slash commands, skills: most of its
+ * bytes) stays put. A change confined to these can travel as a patch; a change
+ * to anything else, including one of these being removed, sends the provider
+ * in full, so a field added to `ServerProvider` later is never stale by default.
+ */
+export const SERVER_PROVIDER_VOLATILE_FIELDS = [
+  "checkedAt",
+  "accountUsage",
+  "accountUsageReportedAt",
+  "accountUsageStatus",
+  "usageGuard",
+  "versionAdvisory",
+] as const;
+
+export const ServerProviderVolatilePatch = Schema.Struct({
+  instanceId: ServerProvider.fields.instanceId,
+  checkedAt: ServerProvider.fields.checkedAt,
+  accountUsage: ServerProvider.fields.accountUsage,
+  accountUsageReportedAt: ServerProvider.fields.accountUsageReportedAt,
+  accountUsageStatus: ServerProvider.fields.accountUsageStatus,
+  usageGuard: ServerProvider.fields.usageGuard,
+  versionAdvisory: ServerProvider.fields.versionAdvisory,
+});
+export type ServerProviderVolatilePatch = typeof ServerProviderVolatilePatch.Type;
+
+/**
  * Treat the optional `availability` as "available" when absent. This is
  * the rule legacy producers (which omit the field) and new producers
  * (which set it explicitly) agree on so consumers never have to thread
@@ -549,6 +578,27 @@ export const HostRepairStartInput = Schema.Struct({
 });
 export type HostRepairStartInput = typeof HostRepairStartInput.Type;
 
+export const StorageCleanupStartInput = Schema.Struct({
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+});
+export type StorageCleanupStartInput = typeof StorageCleanupStartInput.Type;
+
+export const StorageCleanupStartResult = Schema.Struct({
+  projectId: ProjectId,
+  threadId: ThreadId,
+});
+
+export class StorageCleanupStartError extends Schema.TaggedErrorClass<StorageCleanupStartError>()(
+  "StorageCleanupStartError",
+  { detail: TrimmedNonEmptyString },
+) {
+  override get message(): string {
+    return `Could not start storage cleanup: ${this.detail}`;
+  }
+}
+
 export const HostRepairStartResult = Schema.Struct({
   projectId: ProjectId,
   threadId: ThreadId,
@@ -572,6 +622,8 @@ export class HostRepairStartError extends Schema.TaggedErrorClass<HostRepairStar
 }
 
 export const ServerConfig = Schema.Struct({
+  /** Host can create cleanup threads in its own maintenance workspace. */
+  storageCleanupThreads: Schema.optionalKey(Schema.Boolean),
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
   cwd: TrimmedNonEmptyString,
@@ -663,6 +715,30 @@ export const ServerConfigStreamKeybindingsUpdatedEvent = Schema.Struct({
 export type ServerConfigStreamKeybindingsUpdatedEvent =
   typeof ServerConfigStreamKeybindingsUpdatedEvent.Type;
 
+/**
+ * Sent instead of `providerStatuses` to a subscriber that asked for patches.
+ * A full list re-sends every provider's catalogue (about 15 KB on the wire)
+ * for a change of a few hundred bytes, several times a minute while agents run.
+ */
+export const ServerConfigProviderStatusesPatchPayload = Schema.Struct({
+  /** Every provider's instance id in display order; a provider missing here was removed. */
+  order: Schema.Array(ProviderInstanceId),
+  /** Providers that are new, or changed beyond the volatile fields, in full. */
+  upserted: ServerProviders,
+  /** Providers whose only change is in the volatile fields. */
+  volatile: Schema.Array(ServerProviderVolatilePatch),
+});
+export type ServerConfigProviderStatusesPatchPayload =
+  typeof ServerConfigProviderStatusesPatchPayload.Type;
+
+export const ServerConfigStreamProviderStatusesPatchEvent = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("providerStatusesPatch"),
+  payload: ServerConfigProviderStatusesPatchPayload,
+});
+export type ServerConfigStreamProviderStatusesPatchEvent =
+  typeof ServerConfigStreamProviderStatusesPatchEvent.Type;
+
 export const ServerConfigStreamProviderStatusesEvent = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("providerStatuses"),
@@ -691,6 +767,7 @@ export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSnapshotEvent,
   ServerConfigStreamKeybindingsUpdatedEvent,
   ServerConfigStreamProviderStatusesEvent,
+  ServerConfigStreamProviderStatusesPatchEvent,
   ServerConfigStreamSettingsUpdatedEvent,
   ServerConfigStreamEditorsUpdatedEvent,
 ]);

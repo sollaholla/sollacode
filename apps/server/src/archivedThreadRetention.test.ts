@@ -6,7 +6,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { purgeExpiredArchivedThreads } from "./archivedThreadRetention.ts";
+import { deleteArchivedThreads, purgeExpiredArchivedThreads } from "./archivedThreadRetention.ts";
+import { OrchestrationCommandInvariantError } from "./orchestration/Errors.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import * as NodeSqliteClient from "./persistence/NodeSqliteClient.ts";
 import { ServerSettingsService } from "./serverSettings.ts";
@@ -84,4 +85,38 @@ it.effect(
         ),
       );
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeSqliteClient.layerMemory()))),
+);
+
+it.effect("deletes the archived chats it is given, and carries on past a refused one", () =>
+  Effect.gen(function* () {
+    const commands: OrchestrationCommand[] = [];
+    const result = yield* deleteArchivedThreads(
+      ["a-old", "b-refused", "c-shown"],
+      "2026-10-12T19:39:23.880Z",
+    ).pipe(
+      Effect.provide(
+        Layer.mock(OrchestrationEngineService)({
+          dispatch: (command) =>
+            command.type === "thread.delete" && command.threadId === "b-refused"
+              ? Effect.fail(
+                  new OrchestrationCommandInvariantError({
+                    commandType: command.type,
+                    detail: "The thread is no longer eligible for archive retention cleanup.",
+                  }),
+                )
+              : Effect.sync(() => {
+                  commands.push(command);
+                  return { sequence: commands.length };
+                }),
+        }),
+      ),
+    );
+    assert.deepStrictEqual(result, { deleted: 2, skipped: 1 });
+    assert.deepStrictEqual(
+      commands.flatMap((command) =>
+        command.type === "thread.delete" ? [`${command.threadId}@${command.archivedBefore}`] : [],
+      ),
+      ["a-old@2026-10-12T19:39:23.880Z", "c-shown@2026-10-12T19:39:23.880Z"],
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

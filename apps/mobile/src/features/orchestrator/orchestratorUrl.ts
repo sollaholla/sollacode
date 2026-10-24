@@ -14,6 +14,9 @@
 /** Path the web client serves the full-screen voice view from. */
 export const ORCHESTRATOR_ROUTE_PATH = "/orchestrator";
 
+/** Path of the Live Inspector: every thread's work as it happens. */
+export const LIVE_INSPECTOR_ROUTE_PATH = "/orchestrator/live";
+
 /**
  * Builds the orchestrator URL for a connected environment.
  *
@@ -21,7 +24,13 @@ export const ORCHESTRATOR_ROUTE_PATH = "/orchestrator";
  * to: a WebView pointed at "undefined/orchestrator" shows a browser error page,
  * which reads as the feature being broken rather than the phone being offline.
  */
-export function buildOrchestratorUrl(httpBaseUrl: string | null | undefined): string | null {
+export function buildOrchestratorUrl(
+  httpBaseUrl: string | null | undefined,
+  /** The web route to load: the voice view, or the Live Inspector. */
+  routePath: string = ORCHESTRATOR_ROUTE_PATH,
+  /** Appended as written, e.g. "embedded=1"; never taken from the stored base. */
+  query = "",
+): string | null {
   if (typeof httpBaseUrl !== "string") return null;
   const trimmed = httpBaseUrl.trim();
   if (trimmed.length === 0) return null;
@@ -39,10 +48,11 @@ export function buildOrchestratorUrl(httpBaseUrl: string | null | undefined): st
   // Preserve any base path the environment is served under, but drop a trailing
   // slash so the join never produces "//orchestrator".
   const basePath = parsed.pathname.replace(/\/+$/, "");
-  parsed.pathname = `${basePath}${ORCHESTRATOR_ROUTE_PATH}`;
+  parsed.pathname = `${basePath}${routePath}`;
   parsed.search = "";
   parsed.hash = "";
-  return parsed.toString();
+  const url = parsed.toString();
+  return query.length > 0 ? `${url}?${query}` : url;
 }
 
 /**

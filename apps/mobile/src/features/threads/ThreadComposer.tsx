@@ -35,7 +35,6 @@ import {
   View,
   type ViewStyle,
 } from "react-native";
-import ImageViewing from "react-native-image-viewing";
 import Animated, {
   FadeIn,
   FadeInDown,
@@ -47,7 +46,10 @@ import { useThemeColor } from "../../lib/useThemeColor";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
 import { AppText as Text } from "../../components/AppText";
-import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
+import {
+  ComposerAttachmentStrip,
+  DraftImagesViewer,
+} from "../../components/ComposerAttachmentStrip";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -1035,13 +1037,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         ) : null}
       </Animated.View>
 
-      <ImageViewing
-        images={previewImageUri ? [{ uri: previewImageUri }] : []}
-        imageIndex={0}
-        visible={previewImageUri !== null}
-        onRequestClose={closePreview}
-        swipeToCloseEnabled
-        doubleTapToZoomEnabled
+      <DraftImagesViewer
+        attachments={props.draftAttachments}
+        openUri={previewImageUri}
+        onClose={closePreview}
       />
     </Animated.View>
   );

@@ -630,6 +630,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       const { prompt, outputSchema } = buildPlanRefreshPrompt({
         transcript: input.transcript,
         currentSteps: input.currentSteps,
+        proposedPlanMarkdown: input.proposedPlanMarkdown,
       });
 
       const generated = yield* runOpenCodeJson({

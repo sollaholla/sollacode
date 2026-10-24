@@ -80,7 +80,7 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
-import { withSideChatAgentContext } from "../sideChatContext.ts";
+import { withPromotedChatContext, withSideChatAgentContext } from "../sideChatContext.ts";
 import { withVmAgentContext } from "../vmAgentContext.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../../persistence/Services/VmAgents.ts";
@@ -274,6 +274,16 @@ function readPersistedCwd(
   if (typeof rawCwd !== "string") return undefined;
   const trimmed = rawCwd.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** Whether this thread's provider session has been sent side-chat context. */
+function readSideChatContextSent(
+  runtimePayload: ProviderSessionDirectory.ProviderRuntimeBinding["runtimePayload"],
+): boolean {
+  if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
+    return false;
+  }
+  return "sideChatContextSent" in runtimePayload && runtimePayload.sideChatContextSent === true;
 }
 
 function readPendingContextRecovery(
@@ -1401,14 +1411,29 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           Option.getOrUndefined(hostConfig)?.attachmentsDir,
         );
         const voiceInput = transcriptInput;
+        // A promoted side chat keeps its provider session, and with it every
+        // side-chat context that session was sent. Its first turn as a main
+        // chat says the side-chat limits are gone; the binding flag is cleared
+        // once that turn is accepted.
+        const promotedFromSideChat =
+          parsed.isSideChat !== true &&
+          (yield* directory.getBinding(parsed.threadId).pipe(
+            Effect.map(
+              (binding) =>
+                Option.isSome(binding) && readSideChatContextSent(binding.value.runtimePayload),
+            ),
+            Effect.orElseSucceed(() => false),
+          ));
         const input = {
           ...parsed,
           input: voiceInput,
           ...(parsed.isSideChat === true
             ? { input: withSideChatAgentContext(voiceInput) }
-            : vmAgentIdentity
-              ? { input: withVmAgentContext(voiceInput, vmAgentIdentity, rulesOverflow) }
-              : {}),
+            : promotedFromSideChat
+              ? { input: withPromotedChatContext(voiceInput) }
+              : vmAgentIdentity
+                ? { input: withVmAgentContext(voiceInput, vmAgentIdentity, rulesOverflow) }
+                : {}),
           attachments: (parsed.attachments ?? []).filter(
             (attachment) => attachment.type === "image",
           ),
@@ -1614,6 +1639,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                   ...(acceptedPendingContextRecovery !== undefined
                     ? { pendingContextRecovery: null }
                     : {}),
+                  ...(input.isSideChat === true
+                    ? { sideChatContextSent: true }
+                    : promotedFromSideChat
+                      ? { sideChatContextSent: null }
+                      : {}),
                   activeTurnId: turn.turnId,
                   lastRuntimeEvent: "provider.sendTurn",
                   lastRuntimeEventAt: yield* nowIso,

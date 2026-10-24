@@ -78,6 +78,13 @@ describe("ServerSettings Token Optimizer", () => {
 });
 
 describe("ServerSettings attachment retention", () => {
+  it("defaults disposable storage cleanup on and supports disabling it", () => {
+    expect(decodeServerSettings({}).automaticStorageCleanupEnabled).toBe(true);
+    expect(
+      decodeServerSettingsPatch({ automaticStorageCleanupEnabled: false })
+        .automaticStorageCleanupEnabled,
+    ).toBe(false);
+  });
   it("defaults to 48 hours and accepts a configured retention window", () => {
     expect(decodeServerSettings({}).attachmentRetentionHours).toBe(48);
     expect(

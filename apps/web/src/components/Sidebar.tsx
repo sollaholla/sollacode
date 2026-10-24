@@ -1604,7 +1604,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
         const actionHandlers = new Map<string, () => Promise<void> | void>();
         const makeLeaf = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "rename" | "grouping" | "copy-path" | "usage" | "delete",
           member: SidebarProjectGroupMember,
           options?: {
             destructive?: boolean;
@@ -1623,6 +1623,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               case "copy-path":
                 copyPathToClipboard(member.workspaceRoot, { path: member.workspaceRoot });
                 return;
+              case "usage":
+                void router.navigate({
+                  to: "/settings/projects/$environmentId/$projectId",
+                  params: { environmentId: member.environmentId, projectId: member.id },
+                });
+                return;
               case "delete":
                 return handleRemoveProject(member);
             }
@@ -1637,7 +1643,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         };
 
         const buildTargetedItem = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "rename" | "grouping" | "copy-path" | "usage" | "delete",
           label: string,
           options?: {
             destructive?: boolean;
@@ -1674,6 +1680,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             buildTargetedItem("rename", "Rename"),
             buildTargetedItem("grouping", "Group into..."),
             buildTargetedItem("copy-path", "Copy Path"),
+            buildTargetedItem("usage", "Usage and Storage"),
             buildTargetedItem("delete", "Remove", {
               destructive: true,
             }),
@@ -1698,6 +1705,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       openProjectRenameDialog,
       project.groupedProjectCount,
       project.memberProjects,
+      router,
       suppressProjectClickForContextMenuRef,
     ],
   );

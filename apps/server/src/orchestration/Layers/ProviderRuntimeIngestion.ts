@@ -40,6 +40,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { providerDisplayLabel } from "@t3tools/shared/model";
+import { TURN_USAGE_ACTIVITY_KIND } from "@t3tools/shared/turnUsage";
 import {
   consumeAgentStopStreamDelta,
   INITIAL_AGENT_STOP_STREAM_STATE,
@@ -60,6 +61,7 @@ import { isHistoryUnusableFailure } from "../../provider/historyUnusableFailure.
 import { sanitizeProviderFailureText } from "../../provider/providerFailureMessage.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { providerSessionWriteIsNews } from "../providerSessionWrites.ts";
+import { isAwaitingPersonDecision } from "../agentModeContinuation.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { BrowserTabCleanupStateStoreLive } from "../../persistence/Layers/BrowserTabCleanupState.ts";
@@ -77,6 +79,8 @@ import {
 import { ProviderUsageGuard } from "../Services/ProviderUsageGuard.ts";
 import { ThreadWorkScheduler } from "../Services/ThreadWorkScheduler.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { ServerConfig } from "../../config.ts";
+import { storeSnapshotImages } from "../snapshotImageAttachments.ts";
 import {
   buildProviderHandoffSummary,
   classifyDeferredRecoveryFailure,
@@ -209,14 +213,15 @@ function findMessageById(
   return undefined;
 }
 
+type ProposedPlanLifecycleFields = Pick<
+  OrchestrationProposedPlan,
+  "id" | "createdAt" | "implementedAt" | "implementationThreadId" | "closedAt"
+>;
+
 function findProposedPlanById(
-  proposedPlans: ReadonlyArray<
-    Pick<OrchestrationProposedPlan, "id" | "createdAt" | "implementedAt" | "implementationThreadId">
-  >,
+  proposedPlans: ReadonlyArray<ProposedPlanLifecycleFields>,
   planId: string,
-):
-  | Pick<OrchestrationProposedPlan, "id" | "createdAt" | "implementedAt" | "implementationThreadId">
-  | undefined {
+): ProposedPlanLifecycleFields | undefined {
   for (let index = 0; index < proposedPlans.length; index += 1) {
     const proposedPlan = proposedPlans[index];
     if (proposedPlan?.id === planId) {
@@ -294,13 +299,26 @@ function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
   return `plan:${threadId}:turn:${turnId}`;
 }
 
+/**
+ * One id per proposed plan, not per turn.
+ *
+ * A turn can propose more than one plan - Claude revising after a mid-turn
+ * message, several Grok `<proposed_plan>` blocks, a second Codex plan item -
+ * and a turn-keyed id made each one overwrite the last. The provider's own
+ * identity for the plan (Codex item, Claude tool use, the adapter's block or
+ * request id) keeps them apart, and streamed deltas share it with their
+ * completion. Events without one keep the legacy turn key.
+ */
 function proposedPlanIdFromEvent(event: ProviderRuntimeEvent, threadId: ThreadId): string {
   const turnId = toTurnId(event.turnId);
+  const itemId = event.itemId ?? event.providerRefs?.providerItemId;
   if (turnId) {
-    return proposedPlanIdForTurn(threadId, turnId);
+    return itemId
+      ? `${proposedPlanIdForTurn(threadId, turnId)}:item:${itemId}`
+      : proposedPlanIdForTurn(threadId, turnId);
   }
-  if (event.itemId) {
-    return `plan:${threadId}:item:${event.itemId}`;
+  if (itemId) {
+    return `plan:${threadId}:item:${itemId}`;
   }
   return `plan:${threadId}:event:${event.eventId}`;
 }
@@ -645,7 +663,8 @@ export function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "info",
           kind: "turn.plan.updated",
-          summary: "Plan updated",
+          // A task checklist, not a proposed plan, whatever the event is called.
+          summary: "Tasks updated",
           payload: {
             plan: event.payload.plan,
             ...(event.payload.explanation !== undefined
@@ -847,6 +866,30 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "turn.completed": {
+      const usage = event.payload.turnUsage;
+      if (usage === undefined) return [];
+      return [
+        {
+          // One row per turn: a repeated completion replaces it.
+          id: EventId.make(`turn-usage:${event.threadId}:${event.turnId ?? event.eventId}`),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: TURN_USAGE_ACTIVITY_KIND,
+          summary: "Turn usage",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            ...usage,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "thread.token-usage.updated": {
       const payload = buildContextWindowActivityPayload(event);
       if (!payload) {
@@ -1026,6 +1069,7 @@ const make = Effect.gen(function* () {
   const browserTabCleanupStateStore = yield* BrowserTabCleanupStateStore;
   const previewManager = yield* PreviewManager;
   const serverSettingsService = yield* ServerSettingsService;
+  const serverConfig = yield* ServerConfig;
   const sql = yield* SqlClient.SqlClient;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
@@ -1205,10 +1249,11 @@ const make = Effect.gen(function* () {
     }) {
       // Housekeeping must never supersede an unanswered human decision. A
       // cleanup reminder is implemented as a synthetic follow-up turn; starting
-      // it while an action approval or provider question is open changes the
-      // thread's latest turn and can make the still-live prompt disappear from
-      // clients. The next substantive turn will establish a fresh tab baseline.
-      if (input.thread.hasPendingUserInput || input.thread.hasPendingApprovals) {
+      // it while an action approval, provider question, or proposed plan is
+      // waiting puts an unrelated exchange between the person and the decision
+      // (a cleanup turn 13s after a plan once hid it from every client). The
+      // next substantive turn will establish a fresh tab baseline.
+      if (isAwaitingPersonDecision(input.thread)) {
         return { _tag: "None" } as const;
       }
 
@@ -1668,12 +1713,7 @@ const make = Effect.gen(function* () {
   const upsertProposedPlan = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
-    threadProposedPlans: ReadonlyArray<{
-      id: string;
-      createdAt: string;
-      implementedAt: string | null;
-      implementationThreadId: ThreadId | null;
-    }>;
+    threadProposedPlans: ReadonlyArray<ProposedPlanLifecycleFields>;
     planId: string;
     turnId?: TurnId;
     planMarkdown: string | undefined;
@@ -1697,6 +1737,7 @@ const make = Effect.gen(function* () {
           planMarkdown,
           implementedAt: existingPlan?.implementedAt ?? null,
           implementationThreadId: existingPlan?.implementationThreadId ?? null,
+          closedAt: existingPlan?.closedAt ?? null,
           createdAt: existingPlan?.createdAt ?? input.createdAt,
           updatedAt: input.updatedAt,
         },
@@ -1707,12 +1748,7 @@ const make = Effect.gen(function* () {
   const finalizeBufferedProposedPlan = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
-    threadProposedPlans: ReadonlyArray<{
-      id: string;
-      createdAt: string;
-      implementedAt: string | null;
-      implementationThreadId: ThreadId | null;
-    }>;
+    threadProposedPlans: ReadonlyArray<ProposedPlanLifecycleFields>;
     planId: string;
     turnId?: TurnId;
     fallbackMarkdown?: string;
@@ -3342,14 +3378,25 @@ const make = Effect.gen(function* () {
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
 
-          yield* finalizeBufferedProposedPlan({
-            event,
-            threadId: thread.id,
-            threadProposedPlans: proposedPlans,
-            planId: proposedPlanIdForTurn(thread.id, turnId),
-            turnId,
-            updatedAt: now,
-          });
+          // Flush every plan this turn streamed but never completed - one per
+          // plan id, so a turn's second plan is not folded into its first.
+          const turnPlanId = proposedPlanIdForTurn(thread.id, turnId);
+          const bufferedTurnPlanIds = Array.from(
+            yield* Cache.keys(bufferedProposedPlanById),
+          ).filter((planId) => planId === turnPlanId || planId.startsWith(`${turnPlanId}:`));
+          yield* Effect.forEach(
+            bufferedTurnPlanIds,
+            (planId) =>
+              finalizeBufferedProposedPlan({
+                event,
+                threadId: thread.id,
+                threadProposedPlans: proposedPlans,
+                planId,
+                turnId,
+                updatedAt: now,
+              }),
+            { concurrency: 1 },
+          ).pipe(Effect.asVoid);
         }
       }
 
@@ -3514,13 +3561,20 @@ const make = Effect.gen(function* () {
         ? []
         : runtimeEventToActivities(event, taskTitle);
       yield* Effect.forEach(activities, (activity) =>
-        providerCommandId(event, "thread-activity-append").pipe(
-          Effect.flatMap((commandId) =>
+        Effect.all([
+          providerCommandId(event, "thread-activity-append"),
+          storeSnapshotImages({
+            activity,
+            threadId: thread.id,
+            attachmentsDir: serverConfig.attachmentsDir,
+          }),
+        ]).pipe(
+          Effect.flatMap(([commandId, storedActivity]) =>
             orchestrationEngine.dispatch({
               type: "thread.activity.append",
               commandId,
               threadId: thread.id,
-              activity,
+              activity: storedActivity,
               ...(event.historicalReplay ? { historicalReplay: true as const } : {}),
               createdAt: activity.createdAt,
             }),

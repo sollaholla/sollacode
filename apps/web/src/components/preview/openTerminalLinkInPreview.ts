@@ -1,3 +1,5 @@
+import { shouldOpenUrlInHostPreview } from "@t3tools/client-runtime/preview/link-routing";
+import { openUrlInPreview } from "~/browser/openFileInPreview";
 import type { LocalApi, ScopedThreadRef } from "@t3tools/contracts";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import { isPreviewableUrl } from "@t3tools/shared/preview";
@@ -34,6 +36,8 @@ export class TerminalLinkPreviewOpenError extends Schema.TaggedErrorClass<Termin
 
 interface OpenTerminalLinkInPreviewInput<E> {
   readonly url: string;
+  readonly isRemoteClient?: boolean;
+  readonly reportPreviewFailure?: (cause: unknown) => void;
   readonly position: { x: number; y: number };
   readonly threadRef: ScopedThreadRef;
   readonly openPreview: OpenPreviewMutation<E>;
@@ -44,6 +48,21 @@ interface OpenTerminalLinkInPreviewInput<E> {
 export async function openTerminalLinkInPreview<E>(
   input: OpenTerminalLinkInPreviewInput<E>,
 ): Promise<void> {
+  if (shouldOpenUrlInHostPreview(input.url, input.isRemoteClient ?? false)) {
+    const result = await openUrlInPreview(input);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = new TerminalLinkPreviewOpenError({
+        environmentId: input.threadRef.environmentId,
+        threadId: input.threadRef.threadId,
+        targetOrigin: new URL(input.url).origin,
+        cause: result.cause,
+      });
+      console.error(error);
+      input.reportPreviewFailure?.(error);
+    }
+    return;
+  }
+
   const supportsPreview =
     isPreviewableUrl(input.url) &&
     isPreviewSupportedInRuntime() &&

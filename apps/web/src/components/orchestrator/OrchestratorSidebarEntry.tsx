@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { AudioLinesIcon, MicIcon, MicOffIcon } from "lucide-react";
+import { AudioLinesIcon, MicIcon, MicOffIcon, MonitorPlayIcon } from "lucide-react";
 
 import { SidebarMenuButton } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -47,6 +47,7 @@ export function OrchestratorSidebarEntry({
   // Surface the binding on the control itself; a shortcut nobody can find is a
   // shortcut nobody uses.
   const voiceShortcutLabel = shortcutLabelForCommand(keybindings, "orchestrator.voice.toggle");
+  const liveShortcutLabel = shortcutLabelForCommand(keybindings, "orchestrator.live.toggle");
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -60,6 +61,11 @@ export function OrchestratorSidebarEntry({
       params: buildThreadRouteParams(orchestrator.ref),
     });
   }, [onNavigate, orchestrator, router]);
+
+  const handleOpenLive = useCallback(() => {
+    onNavigate?.();
+    void router.navigate({ to: "/orchestrator/live" });
+  }, [onNavigate, router]);
 
   const handleSetUpVoice = useCallback(() => {
     onNavigate?.();
@@ -98,6 +104,29 @@ export function OrchestratorSidebarEntry({
             />
           ) : null}
         </SidebarMenuButton>
+      </div>
+      <div className="shrink-0">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <SidebarMenuButton
+                size="icon"
+                type="button"
+                onClick={handleOpenLive}
+                aria-label="Open the Live Inspector"
+                data-testid="orchestrator-live-inspector"
+                className="focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+              />
+            }
+          >
+            <MonitorPlayIcon />
+          </TooltipTrigger>
+          <TooltipPopup side="right">
+            {liveShortcutLabel
+              ? `Live Inspector: watch every thread work (${liveShortcutLabel})`
+              : "Live Inspector: watch every thread work"}
+          </TooltipPopup>
+        </Tooltip>
       </div>
       {voice !== null ? (
         <div className="shrink-0">

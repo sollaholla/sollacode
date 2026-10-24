@@ -23,10 +23,11 @@ import { makeMuseAdapter } from "./MuseAdapter.ts";
 /**
  * Drives the real `muse serve` host end to end.
  *
- * Opt-in through T3_LIVE_MUSE because it needs the CLI installed. It runs
- * against Muse's built-in `echo` provider, which completes a turn without
- * calling a model. T3_LIVE_MUSE_MODEL=1 additionally enables a real model
- * MCP connection probe, which uses account quota.
+ * Opt-in through T3_LIVE_MUSE because it needs the CLI installed. It asks for
+ * Muse's built-in `echo` provider, but Muse 1.4.6 accepts that id and still
+ * answers with the account's real model (checked 2026-10-12), so every run
+ * of this suite uses account quota. T3_LIVE_MUSE_MODEL=1 additionally enables
+ * a real model MCP connection probe.
  */
 const museBinary = NodePath.join(NodeOS.homedir(), ".local", "bin", "muse");
 const enabled = process.env["T3_LIVE_MUSE"] === "1" && NodeFS.existsSync(museBinary);

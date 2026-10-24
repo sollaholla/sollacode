@@ -267,6 +267,13 @@ describe("visibleAssistantMessageText", () => {
     expect(visibleAssistantMessageText("\n\n  \n")).toBe("");
     expect(visibleAssistantMessageText("\n\nHello\n\n\n\nworld\n")).toBe("Hello\n\nworld");
   });
+
+  it("leaves out a plan block its plan card already shows", () => {
+    const text = "Here is the plan.\n<proposed_plan>\n# Ship it\n</proposed_plan>\n";
+    expect(visibleAssistantMessageText(text, new Set(["# Ship it"]))).toBe("Here is the plan.");
+    // No card shows it, so it stays readable where it is.
+    expect(visibleAssistantMessageText(text)).toContain("# Ship it");
+  });
 });
 
 describe("deriveMessagesTimelineRows", () => {
@@ -332,6 +339,48 @@ describe("deriveMessagesTimelineRows", () => {
         message: expect.objectContaining({ text: "Loop is approved." }),
       }),
     ]);
+  });
+
+  it("draws a plan once, as its card, when the message only carried the plan", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "plan-message-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:01Z",
+          message: {
+            id: "assistant-plan" as never,
+            role: "assistant",
+            text: "<proposed_plan>\n# Ship it\n\n- Step one\n</proposed_plan>\n",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:01Z",
+            updatedAt: "2026-01-01T00:00:01Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "plan-entry",
+          kind: "proposed-plan",
+          createdAt: "2026-01-01T00:00:02Z",
+          proposedPlan: {
+            id: "plan:thread-1:turn:turn-1:item:proposed-plan-0",
+            turnId: "turn-1" as never,
+            planMarkdown: "# Ship it\n\n- Step one",
+            implementedAt: null,
+            implementationThreadId: null,
+            closedAt: null,
+            createdAt: "2026-01-01T00:00:02Z",
+            updatedAt: "2026-01-01T00:00:02Z",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual(["proposed-plan"]);
   });
 
   it("keeps provider handoffs visible as separators instead of folding them into work", () => {
@@ -1401,6 +1450,8 @@ describe("deriveMessagesTimelineRows", () => {
           createdAt: "2026-01-01T00:00:01Z",
           label: "read",
           detail: "Reading package.json",
+          readImagePath: "/tmp/hidden.png",
+          readImageSourceActivityId: "image-receipt",
           tone: "tool" as const,
         },
       },
@@ -1447,6 +1498,7 @@ describe("deriveMessagesTimelineRows", () => {
     expect(collapsedRows.find((row) => row.kind === "work-toggle")).toMatchObject({
       groupId: "work-group:work-entry-1",
       hiddenCount: 2,
+      images: [{ kind: "file", path: "/tmp/hidden.png", sourceActivityId: "image-receipt" }],
       expanded: false,
       onlyToolEntries: true,
     });

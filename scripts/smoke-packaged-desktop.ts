@@ -200,14 +200,27 @@ function stopTree(child: NodeChildProcess.ChildProcess, platform: SmokePlatform)
 }
 
 /**
+ * Only the system's own directories. A fresh home alone did not keep provider
+ * CLIs out: the developer's PATH still found them, and on 2026-10-11 the smoke
+ * server's Grok probe ran their `grok`, which had no sign-in in the fresh home
+ * and opened xAI's login page in their browser before every install.
+ */
+const ISOLATED_POSIX_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/**
  * A fresh home for everything the app starts: no provider CLIs, sessions, or
  * credentials from whatever machine runs the smoke test leak into it (and a
  * developer's large provider history cannot slow startup).
  */
-function isolatedEnv(workDir: string, name: string): NodeJS.ProcessEnv {
+function isolatedEnv(workDir: string, name: string, platform: SmokePlatform): NodeJS.ProcessEnv {
   const home = NodePath.join(workDir, `${name}-user-home`);
   NodeFS.mkdirSync(home, { recursive: true });
-  return { ...process.env, HOME: home, ELECTRON_RUN_AS_NODE: undefined };
+  return {
+    ...process.env,
+    HOME: home,
+    ...(platform === "win" ? {} : { PATH: ISOLATED_POSIX_PATH }),
+    ELECTRON_RUN_AS_NODE: undefined,
+  };
 }
 
 async function smokeServer(app: InstalledApp, platform: SmokePlatform, workDir: string) {
@@ -227,7 +240,7 @@ async function smokeServer(app: InstalledApp, platform: SmokePlatform, workDir: 
       "--no-browser",
     ],
     {
-      env: { ...isolatedEnv(workDir, "server"), ELECTRON_RUN_AS_NODE: "1" },
+      env: { ...isolatedEnv(workDir, "server", platform), ELECTRON_RUN_AS_NODE: "1" },
       stdio: ["ignore", "pipe", "pipe"],
       detached: platform !== "win",
     },
@@ -275,7 +288,7 @@ function smokePty(app: InstalledApp, platform: SmokePlatform, workDir: string) {
     ].join("\n"),
   );
   const result = NodeChildProcess.spawnSync(app.executable, [script], {
-    env: { ...isolatedEnv(workDir, "pty"), ELECTRON_RUN_AS_NODE: "1" },
+    env: { ...isolatedEnv(workDir, "pty", platform), ELECTRON_RUN_AS_NODE: "1" },
     encoding: "utf8",
     timeout: 60_000,
   });
@@ -302,7 +315,7 @@ async function smokeDesktop(app: InstalledApp, platform: SmokePlatform, workDir:
   const env =
     platform === "mac"
       ? { ...process.env, ELECTRON_RUN_AS_NODE: undefined, T3CODE_HOME: home }
-      : { ...isolatedEnv(workDir, "desktop"), T3CODE_HOME: home };
+      : { ...isolatedEnv(workDir, "desktop", platform), T3CODE_HOME: home };
   const child = NodeChildProcess.spawn(command, args, {
     env,
     stdio: ["ignore", "pipe", "pipe"],

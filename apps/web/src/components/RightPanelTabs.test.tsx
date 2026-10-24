@@ -1,5 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import {
+  FILL_PREVIEW_VIEWPORT,
+  ProviderDriverKind,
+  ThreadId,
+  type PreviewSessionSnapshot,
+} from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { reorderSurfaces, type RightPanelSurface } from "~/rightPanelStore";
@@ -211,6 +216,41 @@ describe("right-panel artifact access", () => {
 });
 
 describe("right-panel tab naming", () => {
+  it("repairs page-title punctuation while preserving explicit tab names", () => {
+    const previewSurface: RightPanelSurface = {
+      id: "browser:tab-1",
+      kind: "preview",
+      resourceId: "tab-1",
+    };
+    const snapshot: PreviewSessionSnapshot = {
+      threadId: ThreadId.make("thread-1"),
+      tabId: "tab-1",
+      navStatus: {
+        _tag: "Success",
+        url: "http://localhost:5931/.music-design.html",
+        title: "Patient music \u00c2\u00b7 layout preview",
+      },
+      canGoBack: false,
+      canGoForward: false,
+      viewport: FILL_PREVIEW_VIEWPORT,
+      updatedAt: "2026-10-03T12:00:00.000Z",
+    };
+    const sessions = { "tab-1": snapshot };
+    expect(resolveRightPanelSurfaceTitle(previewSurface, sessions, new Map())).toBe(
+      "Patient music · layout preview",
+    );
+    expect(
+      resolveRightPanelSurfaceTitle(
+        { ...previewSurface, customTitle: "Encoding example: \u00c2\u00b7" },
+        sessions,
+        new Map(),
+      ),
+    ).toBe("Encoding example: \u00c2\u00b7");
+    expect(snapshot.navStatus).toMatchObject({
+      title: "Patient music \u00c2\u00b7 layout preview",
+    });
+  });
+
   const terminalSurface: RightPanelSurface = {
     id: "terminal:term-1",
     kind: "terminal",

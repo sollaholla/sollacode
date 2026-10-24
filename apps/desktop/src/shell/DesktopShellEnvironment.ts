@@ -97,6 +97,9 @@ const pathComparisonKey = (entry: string, platform: NodeJS.Platform) => {
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 };
 
+const sanitizePathEntry = (entry: string, platform: NodeJS.Platform) =>
+  platform === "win32" ? entry.replaceAll('"', "") : entry;
+
 const mergePaths = (
   platform: NodeJS.Platform,
   values: ReadonlyArray<Option.Option<string>>,
@@ -109,14 +112,14 @@ const mergePaths = (
     if (Option.isNone(value)) continue;
 
     for (const entry of value.value.split(delimiter)) {
-      const trimmed = entry.trim();
-      if (trimmed.length === 0) continue;
+      const sanitized = sanitizePathEntry(entry.trim(), platform);
+      if (sanitized.length === 0) continue;
 
-      const key = pathComparisonKey(trimmed, platform);
+      const key = pathComparisonKey(sanitized, platform);
       if (key.length === 0 || seen.has(key)) continue;
 
       seen.add(key);
-      entries.push(trimmed);
+      entries.push(sanitized);
     }
   }
 
@@ -339,10 +342,18 @@ const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWin
   function* (
     config: ShellEnvironmentConfig,
   ): Effect.fn.Return<void, never, ChildProcessSpawner.ChildProcessSpawner> {
-    const noProfile = yield* readWindowsEnvironment(["PATH"], { loadProfile: false });
-    const profile = yield* readWindowsEnvironment(WINDOWS_PROFILE_ENV_NAMES, {
-      loadProfile: true,
-    });
+    // Concurrent, not sequential: these two probes are independent (only their
+    // results are combined below) and each spawns its own PowerShell. Run in
+    // series they sit at offset 0 of desktop.startup, before anything else, and
+    // launch traces measured them at 2718ms then 2066ms — the entire 4.8s
+    // startup span, of which desktop.bootstrap is ~30ms.
+    const [noProfile, profile] = yield* Effect.all(
+      [
+        readWindowsEnvironment(["PATH"], { loadProfile: false }),
+        readWindowsEnvironment(WINDOWS_PROFILE_ENV_NAMES, { loadProfile: true }),
+      ],
+      { concurrency: 2 },
+    );
     const mergedPath = mergePaths("win32", [
       trimNonEmpty(profile.PATH),
       trimNonEmpty(knownWindowsCliDirs(config.env).join(";")),

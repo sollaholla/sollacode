@@ -7,6 +7,7 @@ import {
   TurnId,
   ProviderInstanceId,
   VmAgentDelegationId,
+  type OrchestrationMessage,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -839,6 +840,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               planMarkdown: "# Ship it",
               implementedAt: "2026-02-24T00:00:05.500Z",
               implementationThreadId: ThreadId.make("thread-2"),
+              closedAt: null,
               createdAt: "2026-02-24T00:00:05.000Z",
               updatedAt: "2026-02-24T00:00:05.500Z",
             },
@@ -937,6 +939,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           snoozedUntil: null,
           snoozedAt: null,
           pendingWork: null,
+          backgroundTasks: null,
           session: {
             threadId: ThreadId.make("thread-1"),
             status: "running",
@@ -2029,7 +2032,34 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.equal(threadShell.value.latestTurn?.turnId, asTurnId("turn-running"));
         assert.equal(threadShell.value.latestTurn?.state, "running");
         assert.equal(threadShell.value.latestTurn?.startedAt, "2026-04-02T00:00:30.000Z");
+        assert.equal(threadShell.value.backgroundTasks, null);
       }
+
+      // The projected task summary is how every client learns of background work.
+      yield* sql`
+        UPDATE projection_threads
+        SET
+          background_task_count = 2,
+          background_tasks_started_at = '2026-04-02T00:00:10.000Z',
+          background_tasks_activity_at = '2026-04-02T00:00:40.000Z'
+        WHERE thread_id = 'thread-1'
+      `;
+      const expectedBackgroundTasks = {
+        count: 2,
+        startedAt: "2026-04-02T00:00:10.000Z",
+        lastActivityAt: "2026-04-02T00:00:40.000Z",
+      };
+      const shellWithTasks = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-1"));
+      assert.deepEqual(
+        Option.getOrUndefined(shellWithTasks)?.backgroundTasks,
+        expectedBackgroundTasks,
+      );
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      assert.deepEqual(
+        shellSnapshot.threads.find((thread) => thread.id === ThreadId.make("thread-1"))
+          ?.backgroundTasks,
+        expectedBackgroundTasks,
+      );
 
       const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
       assert.equal(threadDetail._tag, "Some");
@@ -2673,6 +2703,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const delivered = asMessageId("held-user-message:already-delivered");
       const cancelled = asMessageId("held-user-message:cancelled");
       const pruned = asMessageId("held-user-message:obligation-pruned");
+      const prunedDelivered = asMessageId("held-user-message:pruned-delivered");
+      const prunedPromoted = asMessageId("held-user-message:pruned-promoted");
+      const prunedRemoved = asMessageId("held-user-message:pruned-removed");
       const ordinary = asMessageId("message-ordinary");
 
       yield* sql`DELETE FROM projection_thread_activities`;
@@ -2706,6 +2739,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         delivered,
         cancelled,
         pruned,
+        prunedDelivered,
+        prunedPromoted,
+        prunedRemoved,
         ordinary,
       ].entries()) {
         yield* sql`
@@ -2740,19 +2776,58 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         `;
       }
 
+      // The last three lost their obligations to retention too, but their
+      // receipts are still on record — which the client cannot see once a
+      // "load older" page brings the messages without those activities.
+      for (const [index, kind, payload] of [
+        [1, "message.delivered", { messageId: prunedDelivered }],
+        [2, "provider.queue.promoted", { messageIds: [prunedPromoted] }],
+        [3, "queue.message-removed", { messageId: prunedRemoved }],
+      ] as const) {
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${`activity-held-receipt-${index}`}, ${threadId}, NULL, 'info', ${kind}, ${kind},
+            ${encodeUnknownJson(payload)}, ${index}, ${`2026-08-02T00:01:0${index}.000Z`}
+          )
+        `;
+      }
+
+      const assertQueueStates = (messages: ReadonlyArray<OrchestrationMessage>) => {
+        const byId = new Map(messages.map((message) => [message.id, message]));
+        assert.equal(byId.get(stillQueued)?.queueState, "queued");
+        assert.equal(byId.get(delivered)?.queueState, "delivered");
+        // Cancelled and delivered are both "done queueing" but belong in
+        // different places, so they cannot collapse into one flag.
+        assert.equal(byId.get(cancelled)?.queueState, "removed");
+        assert.equal(byId.get(prunedDelivered)?.queueState, "delivered");
+        assert.equal(byId.get(prunedPromoted)?.queueState, "delivered");
+        assert.equal(byId.get(prunedRemoved)?.queueState, "removed");
+        // Nothing known, so nothing claimed: the client keeps its receipt-based
+        // fallback rather than being told a guess.
+        assert.equal(byId.get(pruned)?.queueState, undefined);
+        assert.equal(byId.get(ordinary)?.queueState, undefined);
+      };
+
       const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(threadId);
       assert.isTrue(Option.isSome(snapshot));
       if (Option.isNone(snapshot)) return;
-      const byId = new Map(snapshot.value.thread.messages.map((message) => [message.id, message]));
-      assert.equal(byId.get(stillQueued)?.queueState, "queued");
-      assert.equal(byId.get(delivered)?.queueState, "delivered");
-      // Cancelled and delivered are both "done queueing" but belong in
-      // different places, so they cannot collapse into one flag.
-      assert.equal(byId.get(cancelled)?.queueState, "removed");
-      // Nothing known, so nothing claimed: the client keeps its receipt-based
-      // fallback rather than being told a guess.
-      assert.equal(byId.get(pruned)?.queueState, undefined);
-      assert.equal(byId.get(ordinary)?.queueState, undefined);
+      assertQueueStates(snapshot.value.thread.messages);
+
+      const getThreadHistoryPage = snapshotQuery.getThreadHistoryPage;
+      if (getThreadHistoryPage === undefined) {
+        return yield* Effect.die("Thread history paging is unavailable");
+      }
+      // Messages only, no activities: the page shape that resurrected them.
+      const page = yield* getThreadHistoryPage(threadId, {
+        beforeMessageCreatedAt: "2026-08-03T00:00:00.000Z",
+        beforeMessageId: asMessageId("message-zzz"),
+      });
+      assert.isTrue(Option.isSome(page));
+      if (Option.isNone(page)) return;
+      assert.equal(page.value.activities.length, 0);
+      assertQueueStates(page.value.messages);
     }),
   );
 
@@ -2984,6 +3059,136 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           sourceMessageId,
         },
       );
+    }),
+  );
+
+  it.effect("reads project statistics from counters, turns, artifacts, and turn usage", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-10-11T04:00:00.000Z";
+      yield* sql`INSERT INTO projection_projects (
+        project_id, title, workspace_root, scripts_json, created_at, updated_at
+      ) VALUES ('stats-project', 'Stats', '/tmp/stats', '[]', ${now}, ${now})`;
+      yield* sql`INSERT INTO projection_threads (
+        thread_id, project_id, title, worktree_path, created_at, updated_at, deleted_at
+      ) VALUES
+        ('stats-thread', 'stats-project', 'Measured', '/tmp/stats-worktree', ${now}, ${now}, NULL),
+        ('stats-deleted', 'stats-project', 'Deleted', NULL, ${now}, ${now}, ${now})`;
+      yield* sql`INSERT INTO projection_thread_messages (
+        message_id, thread_id, role, text, is_streaming, created_at, updated_at
+      ) VALUES ('stats-message', 'stats-thread', 'user', 'hello', 0, ${now}, ${now})`;
+      yield* sql`INSERT INTO projection_turns (
+        thread_id, turn_id, state, requested_at, checkpoint_files_json
+      ) VALUES
+        ('stats-thread', 'stats-turn-1', 'completed', ${now}, '[]'),
+        ('stats-thread', NULL, 'pending', ${now}, '[]')`;
+      yield* sql`INSERT INTO thread_artifacts (
+        artifact_id, thread_id, artifact_key, title, kind, current_revision, created_at, updated_at
+      ) VALUES ('stats-artifact', 'stats-thread', 'report', 'Report', 'markdown', 2, ${now}, ${now})`;
+      yield* sql`INSERT INTO thread_artifact_revisions (
+        artifact_id, revision, entry_path, content_type, byte_length, file_count, icon_source,
+        created_at
+      ) VALUES
+        ('stats-artifact', 1, 'index.md', 'text/markdown', 100, 1, 'generated', ${now}),
+        ('stats-artifact', 2, 'index.md', 'text/markdown', 250, 1, 'generated', ${now})`;
+      const usage = (id: string, threadId: string, createdAt: string, payload: string) => sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES (${id}, ${threadId}, 'stats-turn-1', 'info', 'turn.usage', 'Turn usage',
+          ${payload}, ${createdAt})
+      `;
+      yield* usage(
+        "stats-usage-1",
+        "stats-thread",
+        "2026-10-10T09:00:00.000Z",
+        '{"provider":"claudeAgent","providerInstanceId":"claude-work","inputTokens":10,"cachedInputTokens":90,"cacheWriteTokens":5,"outputTokens":20,"costUsd":0.5}',
+      );
+      yield* usage(
+        "stats-usage-2",
+        "stats-thread",
+        "2026-10-10T18:00:00.000Z",
+        '{"provider":"claudeAgent","providerInstanceId":"claude-work","inputTokens":1,"cachedInputTokens":0,"cacheWriteTokens":0,"outputTokens":2,"costUsd":0.25}',
+      );
+      // No instance id: grouped under the driver.
+      yield* usage(
+        "stats-usage-3",
+        "stats-thread",
+        "2026-10-11T01:00:00.000Z",
+        '{"provider":"codex","inputTokens":300,"cachedInputTokens":0,"cacheWriteTokens":0,"outputTokens":30,"reasoningTokens":7}',
+      );
+      // Unreadable or provider-less records, and a deleted thread's, are ignored.
+      yield* usage("stats-usage-bad", "stats-thread", now, "not json");
+      yield* usage("stats-usage-anon", "stats-thread", now, '{"inputTokens":5}');
+      yield* usage(
+        "stats-usage-deleted",
+        "stats-deleted",
+        now,
+        '{"provider":"codex","inputTokens":9999,"outputTokens":1}',
+      );
+
+      const rows = yield* query.getProjectStatisticsRows!();
+      assert.include(rows.projectIds, "stats-project");
+
+      const stored = yield* sql<{ readonly bytes: number }>`
+        SELECT
+          (SELECT SUM(octet_length(payload_json) + octet_length(summary))
+            FROM projection_thread_activities WHERE thread_id = 'stats-thread')
+          + (SELECT SUM(octet_length(text) + COALESCE(octet_length(attachments_json), 0))
+            FROM projection_thread_messages WHERE thread_id = 'stats-thread')
+          AS bytes
+      `;
+      assert.deepStrictEqual(
+        rows.threads.filter((thread) => thread.projectId === "stats-project"),
+        [
+          {
+            threadId: "stats-thread",
+            projectId: "stats-project",
+            title: "Measured",
+            archivedAt: null,
+            updatedAt: now,
+            worktreePath: "/tmp/stats-worktree",
+            historyBytes: stored[0]!.bytes,
+            messages: 1,
+            turns: 1,
+            artifactBytes: 350,
+          },
+        ],
+      );
+      assert.deepStrictEqual(
+        rows.usage
+          .filter((row) => row.threadId === "stats-thread")
+          .toSorted((left, right) => left.day.localeCompare(right.day)),
+        [
+          {
+            threadId: "stats-thread",
+            providerInstanceId: "claude-work",
+            provider: "claudeAgent",
+            day: "2026-10-10",
+            turns: 2,
+            inputTokens: 11,
+            cachedInputTokens: 90,
+            cacheWriteTokens: 5,
+            outputTokens: 22,
+            reasoningTokens: 0,
+            costUsd: 0.75,
+          },
+          {
+            threadId: "stats-thread",
+            providerInstanceId: "codex",
+            provider: "codex",
+            day: "2026-10-11",
+            turns: 1,
+            inputTokens: 300,
+            cachedInputTokens: 0,
+            cacheWriteTokens: 0,
+            outputTokens: 30,
+            reasoningTokens: 7,
+            costUsd: 0,
+          },
+        ],
+      );
+      assert.isFalse(rows.usage.some((row) => row.threadId === "stats-deleted"));
     }),
   );
 });

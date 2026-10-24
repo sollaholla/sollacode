@@ -8,6 +8,7 @@ target_app=""
 wait_pid=""
 wait_backend_pid=""
 health_url=""
+settings_path=""
 log_path=""
 
 while [[ $# -gt 0 ]]; do
@@ -34,6 +35,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --health-url)
       health_url="$2"
+      shift 2
+      ;;
+    --settings-path)
+      settings_path="$2"
       shift 2
       ;;
     --log-path)
@@ -257,8 +262,13 @@ fi
 # name, never a PID captured before replacement: macOS reuses PIDs and Launch
 # Services can keep a stale registration for com.sollacode.app after an in-place
 # swap. Targeting either one starts a second Solla Code and the installer fights
-# it in a restart loop. The only process this script may signal is $wait_pid,
-# verified above as the pre-update desktop executable.
+# it in a restart loop. The only processes this script may signal are $wait_pid,
+# verified above as the pre-update desktop executable, and on rollback the
+# launch carrying $launch_marker with the backends it started.
+#
+# The marker is minted per invocation, so no other process can carry it.
+launch_marker="--solla-update-launch=$(/usr/bin/uuidgen)"
+
 launch_solla_code_app() {
   local app="$1"
   local exe="$app/Contents/MacOS/Solla Code"
@@ -270,18 +280,77 @@ launch_solla_code_app() {
     "$lsregister" -f "$app" >/dev/null 2>&1 || true
   fi
   # Path as the thing to open, not `-a` / `-b`. Those look up a name or id.
-  if /usr/bin/env -u ELECTRON_RUN_AS_NODE /usr/bin/open -n "$app" --args --auto-resume; then
+  if /usr/bin/env -u ELECTRON_RUN_AS_NODE /usr/bin/open -n "$app" --args --auto-resume "$launch_marker"; then
     return 0
   fi
   print "open failed for $app; launching the installed executable directly"
   # Disown immediately: this installer exits after the health check, and a
   # child of the script would otherwise die with it.
-  /usr/bin/env -u ELECTRON_RUN_AS_NODE /usr/bin/nohup "$exe" --auto-resume >/dev/null 2>&1 &!
+  /usr/bin/env -u ELECTRON_RUN_AS_NODE /usr/bin/nohup "$exe" --auto-resume "$launch_marker" >/dev/null 2>&1 &!
   return 0
+}
+
+# Desktop processes this invocation launched, found by the marker on their command line.
+marked_desktop_pids() {
+  local pid command
+  /bin/ps -axo pid=,command= 2>/dev/null | while read -r pid command; do
+    if [[ "$command" == "$expected_executable "* && " $command " == *" $launch_marker "* ]]; then
+      print -r -- "$pid"
+    fi
+  done
+}
+
+# Backends started by any of the given desktop processes.
+backend_pids_of() {
+  local -a parents=("$@")
+  local pid ppid command
+  /bin/ps -axo pid=,ppid=,command= 2>/dev/null | while read -r pid ppid command; do
+    if (( ${parents[(Ie)$ppid]} )) && [[ "$command" == "$expected_executable "* && "$command" == *"apps/server/dist/bin.mjs"* ]]; then
+      print -r -- "$pid"
+    fi
+  done
+}
+
+# A launch that failed its health check can still be running and restarting its
+# backend. Left alone it fights the restored app for the listener forever, so
+# stop it, then any backend it left behind, before the previous app starts.
+stop_marked_launch() {
+  local -a desktops backends
+  local pid command attempt
+  desktops=(${(f)"$(marked_desktop_pids)"})
+  (( ${#desktops} )) || return 0
+  backends=(${(f)"$(backend_pids_of "${desktops[@]}")"})
+  for pid in "${desktops[@]}"; do
+    /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
+  done
+  for (( attempt = 0; attempt < shutdown_grace_seconds; attempt++ )); do
+    desktops=(${(f)"$(marked_desktop_pids)"})
+    (( ${#desktops} )) || break
+    /bin/sleep 1
+  done
+  if (( ${#desktops} )); then
+    print "The launch that failed its health check did not quit within ${shutdown_grace_seconds}s; stopping its marked desktop PIDs."
+    backends+=(${(f)"$(backend_pids_of "${desktops[@]}")"})
+    for pid in "${desktops[@]}"; do
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+    done
+  fi
+  for pid in "${backends[@]}"; do
+    for (( attempt = 0; attempt < shutdown_grace_seconds; attempt++ )); do
+      /bin/kill -0 "$pid" >/dev/null 2>&1 || break
+      /bin/sleep 1
+    done
+    command="$(/bin/ps -p "$pid" -o command= 2>/dev/null || true)"
+    if [[ "$command" == "$expected_executable "* && "$command" == *"apps/server/dist/bin.mjs"* ]]; then
+      print "A backend from the failed launch outlived its desktop; stopping that exact backend PID."
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+    fi
+  done
 }
 
 rollback() {
   print -u2 "The updated app did not become healthy; restoring the previous app."
+  stop_marked_launch
   /bin/rm -rf "$target_app"
   /bin/mv "$backup_app" "$target_app"
   launch_solla_code_app "$target_app" || true
@@ -307,3 +376,13 @@ fi
 
 /bin/rm -rf "$backup_app"
 print "$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ') Solla Code $version is healthy at $health_url"
+
+# Only retire older packages after the installed app passes its health check.
+maintenance="$target_app/Contents/Resources/app.asar/apps/desktop/dist-electron/storage-maintenance.cjs"
+if [[ -f "$target_app/Contents/Resources/app.asar" ]]; then
+  maintenance_args=(--artifact "$artifact")
+  if [[ -n "$settings_path" ]]; then
+    maintenance_args+=(--settings "$settings_path")
+  fi
+  ELECTRON_RUN_AS_NODE=1 "$target_app/Contents/MacOS/Solla Code" "$maintenance" "${maintenance_args[@]}" || true
+fi

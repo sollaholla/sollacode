@@ -12,6 +12,13 @@ import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
 
+import Migration0078 from "./Migrations/078_WebPush.ts";
+import Migration0079 from "./Migrations/079_ProposedPlanClosedAt.ts";
+import Migration0080 from "./Migrations/080_ProposedPlanBackfillEvents.ts";
+import Migration0081 from "./Migrations/081_ProjectionThreadBackgroundTasks.ts";
+import Migration0082 from "./Migrations/082_ProjectionThreadStorage.ts";
+import Migration0083 from "./Migrations/083_ProjectionThreadStorageCleanup.ts";
+
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
 import Migration0002 from "./Migrations/002_OrchestrationCommandReceipts.ts";
@@ -179,6 +186,12 @@ export const migrationEntries = [
   [76, "MessageSender", Migration0076],
   [75, "RepairRenewedNearbyAgentGrants", Migration0075],
   [77, "VmAgentAvatarColor", Migration0077],
+  [78, "WebPush", Migration0078],
+  [79, "ProposedPlanClosedAt", Migration0079],
+  [80, "ProposedPlanBackfillEvents", Migration0080],
+  [81, "ProjectionThreadBackgroundTasks", Migration0081],
+  [82, "ProjectionThreadStorage", Migration0082],
+  [83, "ProjectionThreadStorageCleanup", Migration0083],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

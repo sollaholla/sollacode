@@ -41,6 +41,11 @@ interface ComposerPrimaryActionsProps {
   isRunning: boolean;
   sendWhileRunning?: boolean;
   showPlanFollowUpPrompt: boolean;
+  /**
+   * With a plan waiting, whether a typed message refines it (Plan mode) or is
+   * goes with implementing it (Build or Agent).
+   */
+  planFollowUpRefines?: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
   sendDisabledReason: string | null;
@@ -144,6 +149,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isRunning,
   sendWhileRunning = false,
   showPlanFollowUpPrompt,
+  planFollowUpRefines = true,
   promptHasText,
   isSendBusy,
   sendDisabledReason,
@@ -506,7 +512,8 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   }
 
   if (showPlanFollowUpPrompt) {
-    if (promptHasText) {
+    // Anything to send (text, an image, a context) is a message, not "implement".
+    if (promptHasText || hasSendableContent) {
       return (
         <div className="flex items-center justify-end gap-1.5">
           {microphoneAction}
@@ -523,7 +530,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               pushToTalkStatus !== null
             }
           >
-            {isConnecting || isSendBusy ? "Sending..." : "Refine"}
+            {isConnecting || isSendBusy ? "Sending..." : planFollowUpRefines ? "Refine" : "Send"}
           </Button>
         </div>
       );

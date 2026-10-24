@@ -1,7 +1,12 @@
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildPlanRefreshTranscript, derivePlanRefreshCurrentSteps } from "./planRefresh.ts";
+import { buildPlanRefreshPrompt } from "../textGeneration/TextGenerationPrompts.ts";
+import {
+  buildPlanRefreshTranscript,
+  derivePlanRefreshCurrentSteps,
+  derivePlanRefreshProposedPlan,
+} from "./planRefresh.ts";
 
 let activitySeq = 0;
 
@@ -116,3 +121,69 @@ describe("buildPlanRefreshTranscript", () => {
 function len(value: string): number {
   return value.length;
 }
+
+describe("plan context for a task refresh", () => {
+  const plan = (overrides: {
+    readonly id: string;
+    readonly createdAt: string;
+    readonly implementedAt?: string | null;
+    readonly closedAt?: string | null;
+  }) => ({
+    planMarkdown: `# ${overrides.id}\n\n- step`,
+    implementedAt: null,
+    closedAt: null,
+    ...overrides,
+  });
+
+  it("ignores a task list made before the newest plan, as the panel does", () => {
+    // 2026-08-01 list, 2026-08-02 plan: the old checklist is not the plan's steps.
+    expect(
+      derivePlanRefreshCurrentSteps(
+        [activity("turn.plan.updated", { plan: [{ step: "Old work", status: "completed" }] })],
+        [{ id: "plan-new", createdAt: "2026-08-02T00:00:00.000Z" }],
+      ),
+    ).toEqual([]);
+  });
+
+  it("tracks the newest plan unless the person closed it", () => {
+    expect(
+      derivePlanRefreshProposedPlan([
+        plan({ id: "older", createdAt: "2026-08-01T00:00:00.000Z" }),
+        plan({
+          id: "building",
+          createdAt: "2026-08-02T00:00:00.000Z",
+          implementedAt: "2026-08-02T01:00:00.000Z",
+        }),
+      ]),
+    ).toContain("# building");
+    expect(
+      derivePlanRefreshProposedPlan([
+        plan({
+          id: "set-aside",
+          createdAt: "2026-08-02T00:00:00.000Z",
+          closedAt: "2026-08-02T01:00:00.000Z",
+        }),
+      ]),
+    ).toBeUndefined();
+  });
+
+  it("clips a long plan so it cannot crowd out the conversation", () => {
+    const long = plan({ id: "long", createdAt: "2026-08-02T00:00:00.000Z" });
+    const clipped = derivePlanRefreshProposedPlan([{ ...long, planMarkdown: "x".repeat(50) }], 20);
+    expect(clipped).toHaveLength(20);
+    expect(clipped?.endsWith("...")).toBe(true);
+  });
+
+  it("shows the model the plan as context only", () => {
+    const { prompt } = buildPlanRefreshPrompt({
+      transcript: "User: build it",
+      currentSteps: [],
+      proposedPlanMarkdown: "# Ship it\n\n- one",
+    });
+    expect(prompt).toContain("Proposed plan the work follows (context only; do not rewrite it):");
+    expect(prompt).toContain("# Ship it");
+    expect(buildPlanRefreshPrompt({ transcript: "x", currentSteps: [] }).prompt).not.toContain(
+      "Proposed plan",
+    );
+  });
+});

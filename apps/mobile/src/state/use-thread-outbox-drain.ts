@@ -256,6 +256,14 @@ export function useThreadOutboxDrain(): void {
           modelSelection: settings.modelSelection,
           runtimeMode: settings.runtimeMode,
           interactionMode: settings.interactionMode,
+          ...(queuedMessage.sourceProposedPlanId === undefined
+            ? {}
+            : {
+                sourceProposedPlan: {
+                  threadId: queuedMessage.threadId,
+                  planId: queuedMessage.sourceProposedPlanId,
+                },
+              }),
           createdAt: queuedMessage.createdAt,
         },
       });

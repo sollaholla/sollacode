@@ -9,6 +9,7 @@ import {
   ThreadId,
   type IsoDateTime,
   type OrchestrationCommand,
+  type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   type TerminalSessionSnapshot,
   type TerminalSummary,
@@ -65,6 +66,39 @@ const makeThread = (
   ...overrides,
 });
 
+const createdAtMs = Date.parse(createdAt);
+const summarize = (shell: OrchestrationThreadShell) =>
+  summarizeThread(shell, { nowMs: createdAtMs });
+
+const completedTurn = {
+  turnId: "turn-1" as never,
+  state: "completed" as const,
+  requestedAt: createdAt,
+  startedAt: createdAt,
+  completedAt: createdAt,
+  assistantMessageId: null,
+};
+
+const readySession = (threadId: ThreadId) => ({
+  threadId,
+  status: "ready" as const,
+  providerName: "claudeAgent",
+  runtimeMode: "full-access" as const,
+  activeTurnId: null,
+  lastError: null,
+  updatedAt: createdAt,
+});
+
+const makeProject = (title: string): OrchestrationProjectShell => ({
+  id: projectId,
+  title,
+  workspaceRoot: `/tmp/${title}`,
+  defaultModelSelection: null,
+  scripts: [],
+  createdAt,
+  updatedAt: createdAt,
+});
+
 const DEFAULT_THREADS: ReadonlyArray<OrchestrationThreadShell> = [
   makeThread(ORCHESTRATOR_THREAD_ID, "Orchestrator"),
   makeThread(workingThreadId, "Working", {
@@ -114,6 +148,7 @@ const makeHarness = (
   options: {
     readonly terminals?: ReadonlyArray<TerminalSummary>;
     readonly snapshots?: ReadonlyArray<TerminalSessionSnapshot>;
+    readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
   } = {},
 ) => {
   const commands: Array<OrchestrationCommand> = [];
@@ -130,7 +165,7 @@ const makeHarness = (
     getShellSnapshot: () =>
       Effect.sync(() => ({
         snapshotSequence: 0,
-        projects: [],
+        projects: [...(options.projects ?? [])],
         threads: [...threads],
         updatedAt: createdAt,
       })),
@@ -264,7 +299,7 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
   it("does not call a working thread blocked on the plan it is carrying out", () => {
     // The plan record stays actionable until the work it describes finishes, so
     // a thread that was approved and is now building still carries the flag.
-    const building = summarizeThread(
+    const building = summarize(
       makeThread(workingThreadId, "Working", {
         hasActionableProposedPlan: true,
         latestTurn: {
@@ -280,7 +315,7 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
     expect(building.isWorking).toBe(true);
     expect(building.waitingOn).toBe("nothing");
 
-    const stopped = summarizeThread(
+    const stopped = summarize(
       makeThread(workingThreadId, "Working", {
         hasActionableProposedPlan: true,
         interactionMode: "plan",
@@ -296,12 +331,12 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
     );
     expect(stopped.waitingOn).toBe("proposed-plan");
 
-    const leftover = summarizeThread(
+    const leftover = summarize(
       makeThread(workingThreadId, "Working", { hasActionableProposedPlan: true }),
     );
     expect(leftover.waitingOn).toBe("nothing");
 
-    const planModeWithoutSettledTurn = summarizeThread(
+    const planModeWithoutSettledTurn = summarize(
       makeThread(workingThreadId, "Working", {
         hasActionableProposedPlan: true,
         interactionMode: "plan",
@@ -310,8 +345,12 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
     expect(planModeWithoutSettledTurn.waitingOn).toBe("nothing");
   });
 
-  it("does not treat leftover unimplemented plans in default or agent mode as a wait", () => {
-    const leftoverDefault = summarizeThread(
+  it("waits on an open plan an agent proposed outside Plan mode", () => {
+    // The flag is the newest plan that is neither implemented nor closed, and a
+    // plan is implemented as soon as the person answers in Build or Agent - so an
+    // open plan in those modes is one the agent proposed on its own (Claude can
+    // enter plan mode by itself) and is still waiting for an answer.
+    const leftoverDefault = summarize(
       makeThread(workingThreadId, "Working", {
         hasActionableProposedPlan: true,
         interactionMode: "default",
@@ -325,9 +364,9 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
         },
       }),
     );
-    expect(leftoverDefault.waitingOn).toBe("nothing");
+    expect(leftoverDefault.waitingOn).toBe("proposed-plan");
 
-    const leftoverAgent = summarizeThread(
+    const leftoverAgent = summarize(
       makeThread(workingThreadId, "Working", {
         hasActionableProposedPlan: true,
         interactionMode: "agent",
@@ -341,11 +380,11 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
         },
       }),
     );
-    expect(leftoverAgent.waitingOn).toBe("nothing");
+    expect(leftoverAgent.waitingOn).toBe("proposed-plan");
   });
 
   it("reports proposed-plan only for a settled plan-mode turn with an unimplemented plan", () => {
-    const stopped = summarizeThread(
+    const stopped = summarize(
       makeThread(workingThreadId, "Working", {
         hasActionableProposedPlan: true,
         interactionMode: "plan",
@@ -363,7 +402,7 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
   });
 
   it("does not treat a working plan-mode thread as waiting on a plan", () => {
-    const building = summarizeThread(
+    const building = summarize(
       makeThread(workingThreadId, "Working", {
         hasActionableProposedPlan: true,
         interactionMode: "plan",
@@ -382,7 +421,7 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
   });
 
   it("does not treat an old unimplemented plan as a wait on a later turn", () => {
-    const laterTurn = summarizeThread(
+    const laterTurn = summarize(
       makeThread(workingThreadId, "Working", {
         hasActionableProposedPlan: false,
         interactionMode: "plan",
@@ -430,6 +469,111 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
 
       expect(result.thread.isSideChat).toBe(false);
       expect(result.thread.sideChatOf).toBeUndefined();
+    }),
+  );
+
+  it("counts background tasks a finished turn left running as working", () => {
+    const backgroundTasks = { count: 2, startedAt: createdAt, lastActivityAt: createdAt };
+    const running = summarize(
+      makeThread(sideChatThreadId, "Facial hair pass", {
+        latestTurn: completedTurn,
+        session: readySession(sideChatThreadId),
+        backgroundTasks,
+      }),
+    );
+    expect(running).toMatchObject({ status: "ready", isWorking: true, backgroundTaskCount: 2 });
+
+    // A task that stopped reporting half an hour ago is not still running.
+    const stale = summarizeThread(
+      makeThread(sideChatThreadId, "Facial hair pass", {
+        latestTurn: completedTurn,
+        session: readySession(sideChatThreadId),
+        backgroundTasks,
+      }),
+      { nowMs: createdAtMs + 31 * 60 * 1000 },
+    );
+    expect(stale.isWorking).toBe(false);
+    expect(stale.backgroundTaskCount).toBeUndefined();
+  });
+
+  it("counts a scheduled continuation as working and says what it waits on", () => {
+    const sleeping = summarize(
+      makeThread(workingThreadId, "Agent", {
+        latestTurn: completedTurn,
+        session: readySession(workingThreadId),
+        pendingWork: { kind: "agent-continuation", state: "sleeping", since: createdAt },
+      }),
+    );
+    expect(sleeping).toMatchObject({
+      isWorking: true,
+      pendingWork: { kind: "agent-continuation", state: "sleeping" },
+    });
+
+    // Held for a sign-in, nothing runs until a person acts.
+    const blocked = summarize(
+      makeThread(workingThreadId, "Agent", {
+        latestTurn: completedTurn,
+        session: readySession(workingThreadId),
+        pendingWork: { kind: "startup-resume", state: "blocked-authentication", since: createdAt },
+      }),
+    );
+    expect(blocked.isWorking).toBe(false);
+    expect(blocked.pendingWork).toEqual({
+      kind: "startup-resume",
+      state: "blocked-authentication",
+    });
+  });
+
+  it.effect("finds a side chat by its project and reports its background work", () =>
+    Effect.gen(function* () {
+      const parentId = ThreadId.make("thread-makehuman");
+      const harness = makeHarness(
+        [
+          makeThread(ORCHESTRATOR_THREAD_ID, "Orchestrator"),
+          makeThread(parentId, "AAA MakeHuman skin/hair + WebGPU demo", {
+            latestTurn: completedTurn,
+            session: readySession(parentId),
+          }),
+          makeThread(sideChatThreadId, "Facial Hair Quality Falls Short of MetaHuman", {
+            isSideChat: true,
+            sideChatParentThreadId: parentId,
+            latestTurn: completedTurn,
+            session: readySession(sideChatThreadId),
+            backgroundTasks: { count: 2, startedAt: createdAt, lastActivityAt: createdAt },
+          }),
+        ],
+        { projects: [makeProject("UndeadOpenWorld")] },
+      );
+      const result = (yield* runAs(
+        ORCHESTRATOR_THREAD_ID,
+        harness,
+        handleWorkspaceOrchestration({
+          action: "list_threads",
+          includeSettled: true,
+          includeSideChats: true,
+        }),
+      )) as unknown as {
+        readonly threads: ReadonlyArray<{
+          readonly threadId: string;
+          readonly projectTitle?: string;
+          readonly isWorking: boolean;
+          readonly backgroundTaskCount?: number;
+          readonly sideChatOf?: string;
+        }>;
+      };
+
+      // Neither title mentions the project; only projectTitle connects them
+      // to "Undead Open World" (2026-10-12).
+      expect(result.threads.find((thread) => thread.threadId === sideChatThreadId)).toMatchObject({
+        projectTitle: "UndeadOpenWorld",
+        isWorking: true,
+        backgroundTaskCount: 2,
+        sideChatOf: "AAA MakeHuman skin/hair + WebGPU demo",
+      });
+      expect(result.threads.find((thread) => thread.threadId === parentId)).toMatchObject({
+        projectTitle: "UndeadOpenWorld",
+        isWorking: false,
+      });
     }),
   );
 

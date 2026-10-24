@@ -384,6 +384,10 @@ const PROVIDER_TERMINAL_REFUSAL_SIGNATURES = [
   /\bHTTP 402 Payment Required\b/i,
   // Grok Build's own 402, reported verbatim by the CLI (2026-09-18).
   /\busage balance exhausted\b/i,
+  // Muse relays the Meta API's typed billing refusal, e.g. "API error 402
+  // […]: Billing verification failed. Please check your payment method.
+  // (billing_error)". Only the account owner can clear it (2026-10-12).
+  /\bbilling_error\b/i,
   // Antigravity 429s and Muse progress timeouts used to retire here. They no
   // longer do: a 429 fails over to the surviving pool or provider, and a
   // stalled turn restarts on a fresh host. Both stay silent while recovery is

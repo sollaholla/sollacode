@@ -1,10 +1,20 @@
 import {
+  collectWorkLogImages,
+  type WorkLogImage,
+} from "@t3tools/client-runtime/state/work-log-images";
+import { resolveSettingsUpdates } from "@t3tools/client-runtime/state/settings-updates";
+import {
+  describeRunningBackgroundTasks,
   isReasoningStatusPlaceholder,
   isRoutineMusePollingNotice,
   isProviderInterruptionErrorActivity,
   recoveredRuntimeErrorIds,
 } from "@t3tools/client-runtime/state/thread-activity";
-import { inlineToolImageDataUrl, readImageToolOutputPath } from "@t3tools/shared/filePreview";
+import {
+  inlineToolImageDataUrl,
+  previewSnapshotImage,
+  readImageToolOutputPath,
+} from "@t3tools/shared/filePreview";
 import { ApprovalRequestId, isToolLifecycleItemType } from "@t3tools/contracts";
 import type {
   OrchestrationLatestTurn,
@@ -16,6 +26,7 @@ import type {
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { normalizeOpenCodeToolPayload } from "@t3tools/shared/toolActivity";
+import { TURN_USAGE_ACTIVITY_KIND } from "@t3tools/shared/turnUsage";
 import {
   previewComputerControlAction,
   previewComputerControlHeading,
@@ -53,6 +64,10 @@ export interface ThreadFeedActivity {
   readonly readImageSourceActivityId?: string;
   /** The image the tool returned, kept for when the file behind the path is gone. */
   readonly readImageInlineSrc?: string;
+  /** The page a `preview_snapshot` call captured, as a `data:` URL (rows saved before 0.1.708). */
+  readonly snapshotImageSrc?: string;
+  /** The attachment the server stored a `preview_snapshot` call's page in. */
+  readonly snapshotAttachmentId?: string;
   readonly canExpand: boolean;
   readonly getFullDetail: () => string | null;
   readonly getCopyText: () => string;
@@ -88,6 +103,8 @@ interface WorkLogEntry {
   readImagePath?: string;
   readImageSourceActivityId?: string;
   readImageInlineSrc?: string;
+  snapshotImageSrc?: string;
+  snapshotAttachmentId?: string;
   rawCommand?: string;
   changedFiles?: ReadonlyArray<string>;
   tone: "thinking" | "tool" | "info" | "error";
@@ -122,6 +139,7 @@ type RawThreadFeedEntry =
       readonly id: string;
       readonly createdAt: string;
       readonly message: OrchestrationThread["messages"][number];
+      readonly settingsUpdate?: { readonly description: string; readonly completed: boolean };
     }
   | {
       readonly type: "activity";
@@ -137,6 +155,8 @@ export type ThreadFeedEntry =
       readonly type: "working";
       readonly id: string;
       readonly createdAt: string;
+      /** Names the work when it is not the turn itself, e.g. background tasks. */
+      readonly label?: string;
     }
   | {
       readonly type: "activity-group";
@@ -152,6 +172,7 @@ export type ThreadFeedEntry =
       readonly turnId: TurnId | null;
       readonly groupId: string;
       readonly hiddenCount: number;
+      readonly images: readonly WorkLogImage[];
       readonly expanded: boolean;
       readonly onlyToolActivities: boolean;
     }
@@ -282,6 +303,8 @@ function deriveWorkLogEntries(
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.kind === "provider.usage.updated") continue;
+    // Token accounting for Settings → Projects, not something that happened.
+    if (activity.kind === TURN_USAGE_ACTIVITY_KIND) continue;
     // Shown as the Working row's label, not as a log line.
     if (activity.kind === "provider.overload.retrying") continue;
     if (isRoutineMusePollingNotice(activity)) continue;
@@ -348,6 +371,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     const inlineSrc = inlineToolImageDataUrl(payload);
     if (inlineSrc) {
       entry.readImageInlineSrc = inlineSrc;
+    }
+  } else {
+    const snapshotImage = previewSnapshotImage(payload, activity.summary);
+    if (snapshotImage?.kind === "attachment") {
+      entry.snapshotAttachmentId = snapshotImage.attachmentId;
+    } else if (snapshotImage?.kind === "inline") {
+      entry.snapshotImageSrc = snapshotImage.src;
     }
   }
   if (
@@ -1231,6 +1261,7 @@ export function deriveThreadFeedPresentation(
   expandedTurnIds: ReadonlySet<TurnId>,
   expandedWorkGroupIds: ReadonlySet<string> = new Set(),
   activeWorkStartedAt: string | null = null,
+  backgroundWork: { readonly count: number; readonly startedAt: string } | null = null,
 ): ThreadFeedEntry[] {
   const sourceFeed = feed.filter(
     (entry) =>
@@ -1268,6 +1299,13 @@ export function deriveThreadFeedPresentation(
       type: "working",
       id: "working-indicator-row",
       createdAt: activeWorkStartedAt,
+    });
+  } else if (backgroundWork !== null) {
+    result.push({
+      type: "working",
+      id: "working-indicator-row",
+      createdAt: backgroundWork.startedAt,
+      label: describeRunningBackgroundTasks(backgroundWork.count),
     });
   }
   return result;
@@ -1318,6 +1356,7 @@ function appendPresentedFeedEntry(
     turnId: entry.turnId,
     groupId,
     hiddenCount,
+    images: collectWorkLogImages(activities.slice(0, hiddenCount)),
     expanded,
     onlyToolActivities: activities.every((activity) => activity.toolLike),
   });
@@ -1452,7 +1491,10 @@ export function buildThreadFeed(
   const loadedMessages = options?.loadedMessages ?? thread.messages;
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
-  const workLogEntries = deriveWorkLogEntries(thread.activities);
+  const settingsUpdates = resolveSettingsUpdates(loadedMessages, thread.activities);
+  const workLogEntries = deriveWorkLogEntries(thread.activities).filter(
+    (entry) => !settingsUpdates.matchedActivityIds.has(entry.id),
+  );
   const entries = Arr.sortWith(
     [
       ...loadedMessages.map<RawThreadFeedEntry>((message) => ({
@@ -1460,6 +1502,9 @@ export function buildThreadFeed(
         id: message.id,
         createdAt: message.createdAt,
         message,
+        ...(settingsUpdates.updates.has(message.id)
+          ? { settingsUpdate: settingsUpdates.updates.get(message.id)! }
+          : {}),
       })),
       ...workLogEntries
         .filter((entry) => {
@@ -1511,6 +1556,10 @@ export function buildThreadFeed(
                       ? { readImageInlineSrc: entry.readImageInlineSrc }
                       : {}),
                   }
+                : {}),
+              ...(entry.snapshotImageSrc ? { snapshotImageSrc: entry.snapshotImageSrc } : {}),
+              ...(entry.snapshotAttachmentId
+                ? { snapshotAttachmentId: entry.snapshotAttachmentId }
                 : {}),
               canExpand: workEntryHasExpandedBody(entry),
               getFullDetail,

@@ -16,3 +16,5 @@ The phone browser mirror of a desktop browser tab uses the same menu; there, a s
 The dedicated FPS controls and desktop mouse/keyboard retain their separate input paths. This menu is part of the web viewer, not a change to the React Native client.
 
 The app’s outer page suppresses pinch zoom while leaving single-finger scrolling and text selection available. Remote-viewer gestures still reach their own handlers. This does not disable operating-system accessibility magnification or browser-level zoom commands.
+
+On iPhone and iPad browsers, Solla also attempts to suppress back/forward navigation when a horizontal swipe starts within 20 pixels of either side of the page. It cancels the first inward movement, leaving taps and gestures that start vertically available. This applies across the app, including chat, terminals, settings, and remote viewers; normal browser Back/Forward buttons still work. Safari can reserve navigation gestures for itself, so this is a best-effort guard and needs verification on the device and Safari version in use. It cannot intercept gestures inside an embedded page or on Safari’s own toolbar.

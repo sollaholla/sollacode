@@ -105,6 +105,12 @@ export interface PlanRefreshGenerationInput {
   transcript: string;
   /** The list as it stands, so the model corrects rather than reinvents it. */
   currentSteps: ReadonlyArray<PlanRefreshStep>;
+  /**
+   * The proposed plan the thread is waiting on or carrying out, already
+   * bounded. Plan markdown lives outside the transcript, so without it the
+   * list could only be rebuilt from chat text.
+   */
+  proposedPlanMarkdown?: string | undefined;
   modelSelection: ModelSelection;
 }
 

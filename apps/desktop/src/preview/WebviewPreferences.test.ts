@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { PREVIEW_WEBVIEW_PREFERENCES } from "./WebviewPreferences.ts";
+import {
+  PREVIEW_POPUP_WEB_PREFERENCES,
+  PREVIEW_WEBVIEW_PREFERENCES,
+} from "./WebviewPreferences.ts";
 
 /**
  * Mirrors Electron's webview attribute parser closely enough to catch the
@@ -89,5 +92,15 @@ describe("PREVIEW_WEBVIEW_PREFERENCES", () => {
     // Electron splits on `,` without trimming, so any whitespace would turn
     // a key into an unknown one and silently drop the security flag.
     expect(PREVIEW_WEBVIEW_PREFERENCES).not.toMatch(/\s/);
+  });
+});
+
+describe("PREVIEW_POPUP_WEB_PREFERENCES", () => {
+  it("keeps a sign-in window as live and FedCM-free as the tab that opened it", () => {
+    const tab = parseWebPreferences(PREVIEW_WEBVIEW_PREFERENCES);
+    expect(String(PREVIEW_POPUP_WEB_PREFERENCES.backgroundThrottling)).toBe(
+      tab["backgroundThrottling"],
+    );
+    expect(PREVIEW_POPUP_WEB_PREFERENCES.disableBlinkFeatures).toBe(tab["disableBlinkFeatures"]);
   });
 });

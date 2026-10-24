@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Image, Pressable, View } from "react-native";
 import ImageViewing from "react-native-image-viewing";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -8,11 +8,25 @@ import { AppText as Text } from "../../components/AppText";
 import { EmptyState } from "../../components/EmptyState";
 import { workspaceFileImageAtom } from "./workspace-file-image-cache";
 
+/** Opens the full-screen view elsewhere, such as the conversation's image gallery. */
+type OpenFullScreen = ((uri: string) => void) | undefined;
+/** Hands an image that can't be shown back to its owner, which shows nothing instead. */
+type OnUnavailable = ((uri: string) => void) | undefined;
+
+function useReportUnavailable(failed: boolean, uri: string, onUnavailable: OnUnavailable) {
+  useEffect(() => {
+    if (failed) onUnavailable?.(uri);
+  }, [failed, onUnavailable, uri]);
+}
+
 function ResolvedWorkspaceFileImagePreview(props: {
   readonly accessibilityLabel: string;
   readonly uri: string;
+  readonly onOpenFullScreen?: OpenFullScreen;
+  readonly onUnavailable?: OnUnavailable;
 }) {
   const [loadError, setLoadError] = useState<string | null>(null);
+  useReportUnavailable(loadError !== null, props.uri, props.onUnavailable);
   const [fullScreenVisible, setFullScreenVisible] = useState(false);
   const imageSource = useMemo(
     () => ({ uri: props.uri, cache: "force-cache" as const }),
@@ -27,7 +41,9 @@ function ResolvedWorkspaceFileImagePreview(props: {
         accessibilityLabel={`Open full-screen preview of ${props.accessibilityLabel}`}
         disabled={loadError !== null}
         className="flex-1 p-4 active:bg-subtle-strong"
-        onPress={() => setFullScreenVisible(true)}
+        onPress={() =>
+          props.onOpenFullScreen ? props.onOpenFullScreen(props.uri) : setFullScreenVisible(true)
+        }
       >
         <Image
           accessible={false}
@@ -41,7 +57,7 @@ function ResolvedWorkspaceFileImagePreview(props: {
         />
       </Pressable>
 
-      {loadError !== null ? (
+      {loadError !== null && !props.onUnavailable ? (
         <View className="absolute inset-0 items-center justify-center bg-card px-6">
           <EmptyState title="Image unavailable" detail={loadError} />
         </View>
@@ -62,11 +78,16 @@ function ResolvedWorkspaceFileImagePreview(props: {
 function CachedWorkspaceFileImagePreview(props: {
   readonly accessibilityLabel: string;
   readonly uri: string;
+  readonly onOpenFullScreen?: OpenFullScreen;
+  readonly onUnavailable?: OnUnavailable;
 }) {
   const imageAtom = useMemo(() => workspaceFileImageAtom(props.uri), [props.uri]);
   const imageResult = useAtomValue(imageAtom);
+  const failed = AsyncResult.isFailure(imageResult);
+  useReportUnavailable(failed, props.uri, props.onUnavailable);
 
-  if (AsyncResult.isFailure(imageResult)) {
+  if (failed && props.onUnavailable) return null;
+  if (failed) {
     return (
       <View className="flex-1 items-center justify-center bg-card px-6">
         <EmptyState
@@ -90,6 +111,8 @@ function CachedWorkspaceFileImagePreview(props: {
     <ResolvedWorkspaceFileImagePreview
       accessibilityLabel={props.accessibilityLabel}
       uri={imageResult.value}
+      onOpenFullScreen={props.onOpenFullScreen}
+      onUnavailable={props.onUnavailable ? () => props.onUnavailable?.(props.uri) : undefined}
     />
   );
 }
@@ -97,6 +120,9 @@ function CachedWorkspaceFileImagePreview(props: {
 export function WorkspaceFileImagePreview(props: {
   readonly accessibilityLabel: string;
   readonly uri: string | null;
+  readonly onOpenFullScreen?: OpenFullScreen;
+  /** When given, an image that can't be shown renders nothing and is reported here. */
+  readonly onUnavailable?: OnUnavailable;
 }) {
   if (props.uri === null) {
     return (
@@ -113,6 +139,8 @@ export function WorkspaceFileImagePreview(props: {
     <CachedWorkspaceFileImagePreview
       accessibilityLabel={props.accessibilityLabel}
       uri={props.uri}
+      onOpenFullScreen={props.onOpenFullScreen}
+      onUnavailable={props.onUnavailable}
     />
   );
 }

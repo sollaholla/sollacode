@@ -234,10 +234,44 @@ function remoteAssetRequestHeaders(request: Request): Headers {
   return headers;
 }
 
+type ProxyFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+const NETWORK_SERVICE_NAME = "network.mojom.NetworkService";
+
+/**
+ * Fetches for the protocol proxy, kept working across network service
+ * restarts.
+ *
+ * Electron gives each session one main-process URL loader and never rebuilds
+ * it, so once the network service restarts (a crash, or the OS killing it)
+ * every `net.fetch` on the default session fails at once with net::ERR_FAILED
+ * and sends nothing. Every image, artifact and lazily loaded chunk behind this
+ * protocol stayed broken until the app was restarted. A session created after
+ * the restart gets a working loader, so each restart moves the proxy onto a
+ * fresh in-memory session.
+ */
+export function makeProxyFetch() {
+  let restarts = 0;
+  let restartedSession: Electron.Session | null = null;
+  return {
+    onChildProcessGone: (_event: Electron.Event, details: Electron.Details) => {
+      if (details.type !== "Utility" || details.serviceName !== NETWORK_SERVICE_NAME) return;
+      restarts += 1;
+      restartedSession = null;
+    },
+    fetch: ((url, init) => {
+      if (restarts === 0) return Electron.net.fetch(url, init);
+      restartedSession ??= Electron.session.fromPartition(`solla-protocol-proxy-${restarts}`);
+      return restartedSession.fetch(url, init);
+    }) satisfies ProxyFetch,
+  };
+}
+
 async function proxyRequest(
   request: Request,
   targetOrigin: URL,
   contentSecurityPolicy: string,
+  proxyFetch: ProxyFetch,
 ): Promise<Response> {
   const requestUrl = new URL(request.url);
   if (requestUrl.host !== DESKTOP_HOST) {
@@ -252,7 +286,7 @@ async function proxyRequest(
     if (remoteAssetUrl === null) {
       return new Response(null, { status: 400 });
     }
-    const response = await fetchWithTransientRetry(remoteAssetUrl.toString(), {
+    const response = await fetchWithTransientRetry(proxyFetch, remoteAssetUrl.toString(), {
       method: request.method,
       headers: remoteAssetRequestHeaders(request),
       redirect: "error",
@@ -271,7 +305,7 @@ async function proxyRequest(
     if (remoteArtifactUrl === null) {
       return new Response(null, { status: 400 });
     }
-    const response = await fetchWithTransientRetry(remoteArtifactUrl.toString(), {
+    const response = await fetchWithTransientRetry(proxyFetch, remoteArtifactUrl.toString(), {
       method: request.method,
       headers: remoteAssetRequestHeaders(request),
       redirect: "error",
@@ -312,14 +346,18 @@ async function proxyRequest(
   }
   const response =
     request.method === "GET" || request.method === "HEAD"
-      ? await fetchWithTransientRetry(targetUrl.toString(), init)
-      : await Electron.net.fetch(targetUrl.toString(), init);
+      ? await fetchWithTransientRetry(proxyFetch, targetUrl.toString(), init)
+      : await proxyFetch(targetUrl.toString(), init);
   return withContentSecurityPolicy(response, contentSecurityPolicy);
 }
 
 const TRANSIENT_FETCH_RETRY_DELAYS_MS = [0, 50, 150] as const;
 
-async function fetchWithTransientRetry(url: string, init: RequestInit): Promise<Response> {
+async function fetchWithTransientRetry(
+  proxyFetch: ProxyFetch,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
   let lastError: unknown;
 
   for (const delayMs of TRANSIENT_FETCH_RETRY_DELAYS_MS) {
@@ -328,7 +366,7 @@ async function fetchWithTransientRetry(url: string, init: RequestInit): Promise<
     }
 
     try {
-      return await Electron.net.fetch(url, init);
+      return await proxyFetch(url, init);
     } catch (error) {
       lastError = error;
     }
@@ -345,12 +383,18 @@ export const make = Effect.gen(function* () {
       if (yield* Ref.get(registered)) return;
 
       const contentSecurityPolicy = makeDesktopContentSecurityPolicy(input);
+      const proxyFetch = makeProxyFetch();
 
+      yield* Effect.acquireRelease(
+        Effect.sync(() => Electron.app.on("child-process-gone", proxyFetch.onChildProcessGone)),
+        () =>
+          Effect.sync(() => Electron.app.off("child-process-gone", proxyFetch.onChildProcessGone)),
+      );
       yield* Effect.acquireRelease(
         Effect.try({
           try: () => {
             Electron.protocol.handle(input.scheme, (request) =>
-              proxyRequest(request, input.targetOrigin, contentSecurityPolicy),
+              proxyRequest(request, input.targetOrigin, contentSecurityPolicy, proxyFetch.fetch),
             );
           },
           catch: (cause) => new ElectronProtocolRegistrationError({ scheme: input.scheme, cause }),

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   inlineToolImageDataUrl,
+  isPreviewSnapshotToolCall,
+  previewSnapshotImage,
   readImageToolOutputPath,
   isWorkspaceAudioPreviewPath,
   isWorkspaceBrowserPreviewPath,
@@ -65,6 +67,44 @@ describe("Deep Code image-read receipts", () => {
       }),
     ).toBeNull();
   });
+});
+
+describe("Image view paths", () => {
+  const path = "/workspace/agents/project/evidence/native-capture/eye-forward-00.png";
+
+  it.each([
+    { item: { type: "imageView", path } },
+    { files: [{ path }] },
+    { path },
+    { item: { type: "imageGeneration", savedPath: path } },
+  ])("recovers the full path when display detail was truncated: %j", (data) => {
+    expect(
+      readImageToolOutputPath({ itemType: "image_view", detail: path.slice(0, 40) + "...", data }),
+    ).toBe(path);
+  });
+
+  it("supports historical image-view rows that only retain their full detail", () => {
+    expect(readImageToolOutputPath({ itemType: "image_view", detail: path })).toBe(path);
+  });
+
+  it.each([
+    "https://example.com/image.png",
+    "file:///tmp/image.png",
+    "image.svg",
+    "image.png.ts",
+    "bad\npath.png",
+  ])("rejects a non-raster or non-file image-view path: %s", (path) => {
+    expect(
+      readImageToolOutputPath({ itemType: "image_view", data: { files: [{ path }] } }),
+    ).toBeNull();
+  });
+
+  it.each(["command_execution", "file_change", "dynamic_tool_call"])(
+    "does not turn an incidental file list into an image read for %s",
+    (itemType) => {
+      expect(readImageToolOutputPath({ itemType, data: { files: [{ path }] } })).toBeNull();
+    },
+  );
 });
 
 describe("workspace file previews", () => {
@@ -179,8 +219,14 @@ describe("readImageToolOutputPath", () => {
   });
 });
 
+// A whole 1x1 PNG and a minimal JPEG (start and end markers): the completeness
+// check reads each format's end marker, so fixtures must carry one.
+const png =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+const jpeg = "/9j/2Q==";
+
 describe("inline tool image data", () => {
-  const base64 = "iVBORw0KGgoAAAANSUhEUg";
+  const base64 = png;
 
   it("recovers the image an Anthropic read tool returned", () => {
     expect(
@@ -205,18 +251,39 @@ describe("inline tool image data", () => {
     expect(
       inlineToolImageDataUrl({
         data: {
-          item: { result: { content: [{ type: "image", mimeType: "image/jpeg", data: base64 }] } },
+          item: { result: { content: [{ type: "image", mimeType: "image/jpeg", data: jpeg }] } },
         },
       }),
-    ).toBe(`data:image/jpeg;base64,${base64}`);
+    ).toBe(`data:image/jpeg;base64,${jpeg}`);
   });
 
   it("strips the wrapping a line-broken payload carries", () => {
     expect(
       inlineToolImageDataUrl({
-        content: [{ type: "image", mimeType: "IMAGE/PNG", data: `${base64}\n${base64}` }],
+        content: [
+          {
+            type: "image",
+            mimeType: "IMAGE/PNG",
+            data: `${base64.slice(0, 40)}\n${base64.slice(40)}`,
+          },
+        ],
       }),
-    ).toBe(`data:image/png;base64,${base64}${base64}`);
+    ).toBe(`data:image/png;base64,${base64}`);
+  });
+
+  it("refuses a copy a payload cap cut short", () => {
+    // What the 16 KB cap left of a Codex snapshot: the top of the page, then
+    // nothing; drawn, it is the page over grey.
+    expect(
+      inlineToolImageDataUrl({
+        content: [{ type: "image", mimeType: "image/jpeg", data: "/9j/4AAQSkZJRgABAQAAAQABAAD" }],
+      }),
+    ).toBeNull();
+    expect(
+      inlineToolImageDataUrl({
+        content: [{ type: "image", mimeType: "image/png", data: png.slice(0, 40) }],
+      }),
+    ).toBeNull();
   });
 
   it.each([
@@ -241,5 +308,82 @@ describe("inline tool image data", () => {
     expect(
       inlineToolImageDataUrl({ data: { result: { content: [{ type: "text", text: base64 }] } } }),
     ).toBeNull();
+  });
+});
+
+describe("previewSnapshotImage", () => {
+  const claudeRow = {
+    itemType: "mcp_tool_call",
+    title: "MCP tool call",
+    data: {
+      toolName: "mcp__t3-code__preview_snapshot",
+      result: {
+        type: "tool_result",
+        content: [
+          { type: "text", text: '{"url":"https://example.com"}' },
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: jpeg } },
+        ],
+      },
+    },
+  };
+  const codexRow = {
+    itemType: "mcp_tool_call",
+    title: "t3-code · preview_snapshot",
+    data: {
+      item: {
+        server: "t3-code",
+        tool: "preview_snapshot",
+        result: { content: [{ type: "image", data: jpeg, mimeType: "image/jpeg" }] },
+      },
+    },
+  };
+
+  it("finds the page a snapshot captured, however the provider spells the call", () => {
+    const inline = { kind: "inline", src: `data:image/jpeg;base64,${jpeg}` };
+    expect(previewSnapshotImage(claudeRow)).toEqual(inline);
+    expect(previewSnapshotImage(codexRow)).toEqual(inline);
+    expect(
+      previewSnapshotImage(
+        { data: { result: { content: [{ type: "image", data: jpeg, mimeType: "image/jpeg" }] } } },
+        "t3-code · preview_snapshot",
+      ),
+    ).toEqual(inline);
+  });
+
+  it("prefers the attachment the server stored the picture in", () => {
+    expect(
+      previewSnapshotImage({
+        ...codexRow,
+        data: {
+          item: {
+            ...codexRow.data.item,
+            result: {
+              content: [{ type: "image", mimeType: "image/jpeg", attachmentId: "thread-1-abc" }],
+            },
+          },
+        },
+      }),
+    ).toEqual({ kind: "attachment", attachmentId: "thread-1-abc" });
+  });
+
+  it("leaves other tools' images to their own rows", () => {
+    expect(
+      previewSnapshotImage({
+        ...claudeRow,
+        data: { ...claudeRow.data, toolName: "mcp__t3-code__vm_computer" },
+      }),
+    ).toBeNull();
+    expect(
+      previewSnapshotImage({ ...codexRow, title: "t3-code · preview_click", data: {} }),
+    ).toBeNull();
+    expect(isPreviewSnapshotToolCall(codexRow)).toBe(true);
+  });
+
+  it("answers from the same payload without walking it again", () => {
+    const row = structuredClone(codexRow);
+    const first = inlineToolImageDataUrl(row);
+    row.data.item.result.content = [];
+    // Payloads are immutable state; the remembered answer is the right one.
+    expect(inlineToolImageDataUrl(row)).toBe(first);
   });
 });

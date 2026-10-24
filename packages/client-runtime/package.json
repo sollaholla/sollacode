@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./state/work-log-images": {
+      "types": "./src/state/workLogImages.ts",
+      "default": "./src/state/workLogImages.ts"
+    },
+    "./state/thread-images": {
+      "types": "./src/state/threadImages.ts",
+      "default": "./src/state/threadImages.ts"
+    },
     "./state/opencode-usage": {
       "types": "./src/state/openCodeUsage.ts",
       "default": "./src/state/openCodeUsage.ts"
@@ -54,6 +62,26 @@
     "./preview/remote-command-coordinator": {
       "types": "./src/preview/remoteCommandCoordinator.ts",
       "default": "./src/preview/remoteCommandCoordinator.ts"
+    },
+    "./state/event-window": {
+      "types": "./src/state/eventWindow.ts",
+      "default": "./src/state/eventWindow.ts"
+    },
+    "./preview/remote-frame": {
+      "types": "./src/preview/remoteFrame.ts",
+      "default": "./src/preview/remoteFrame.ts"
+    },
+    "./preview/title": {
+      "types": "./src/preview/title.ts",
+      "default": "./src/preview/title.ts"
+    },
+    "./preview/click-feedback": {
+      "types": "./src/preview/clickFeedback.ts",
+      "default": "./src/preview/clickFeedback.ts"
+    },
+    "./preview/agent-cursor-motion": {
+      "types": "./src/preview/agentCursorMotion.ts",
+      "default": "./src/preview/agentCursorMotion.ts"
     },
     "./preview/credential-form": {
       "types": "./src/preview/credentialForm.ts",
@@ -191,6 +219,10 @@
       "types": "./src/state/threadSettled.ts",
       "default": "./src/state/threadSettled.ts"
     },
+    "./state/settings-updates": {
+      "types": "./src/state/settingsUpdates.ts",
+      "default": "./src/state/settingsUpdates.ts"
+    },
     "./state/thread-activity": {
       "types": "./src/state/threadActivity.ts",
       "default": "./src/state/threadActivity.ts"
@@ -203,9 +235,21 @@
       "types": "./src/state/threadSearch.ts",
       "default": "./src/state/threadSearch.ts"
     },
+    "./state/project-statistics": {
+      "types": "./src/state/projectStatistics.ts",
+      "default": "./src/state/projectStatistics.ts"
+    },
     "./state/vcs": {
       "types": "./src/state/vcs.ts",
       "default": "./src/state/vcs.ts"
+    },
+    "./preview/link-routing": {
+      "types": "./src/preview/linkRouting.ts",
+      "default": "./src/preview/linkRouting.ts"
+    },
+    "./operations/storage-cleanup": {
+      "types": "./src/operations/storageCleanup.ts",
+      "default": "./src/operations/storageCleanup.ts"
     }
   },
   "scripts": {

@@ -1,4 +1,10 @@
-import type { OrchestrationMessage, OrchestrationThreadActivity } from "@t3tools/contracts";
+import type {
+  OrchestrationMessage,
+  OrchestrationProposedPlan,
+  OrchestrationThreadActivity,
+} from "@t3tools/contracts";
+import { newestProposedPlan } from "@t3tools/shared/proposedPlans";
+import { selectCurrentTaskList } from "@t3tools/shared/taskLists";
 
 /**
  * Pure inputs for the plan refresh.
@@ -14,6 +20,8 @@ export const PLAN_REFRESH_MAX_MESSAGES = 40;
 export const PLAN_REFRESH_MAX_MESSAGE_CHARS = 2_000;
 /** Overall ceiling, enforced oldest-first so the newest turns always survive. */
 export const PLAN_REFRESH_MAX_TRANSCRIPT_CHARS = 24_000;
+/** The proposed plan is context for the list, not the subject; keep it short. */
+export const PLAN_REFRESH_MAX_PROPOSED_PLAN_CHARS = 8_000;
 
 export type PlanRefreshStepStatus = "pending" | "inProgress" | "completed";
 
@@ -31,32 +39,54 @@ function isStepStatus(value: unknown): value is PlanRefreshStepStatus {
 }
 
 /**
- * The plan as it currently stands, read from the newest `turn.plan.updated`.
+ * The task list as it currently stands.
  *
- * The panel derives what it shows from the same activity, so reading the latest
- * one is what makes a refresh a *correction* of the visible list rather than a
- * competing list built from different information.
+ * Chosen by the same rule the panel uses (`@t3tools/shared/taskLists`), so a
+ * refresh is a *correction* of the visible list rather than a competing list
+ * built from different information.
  */
 export function derivePlanRefreshCurrentSteps(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  proposedPlans: ReadonlyArray<Pick<OrchestrationProposedPlan, "id" | "createdAt">> = [],
 ): ReadonlyArray<PlanRefreshStep> {
-  for (let index = activities.length - 1; index >= 0; index -= 1) {
-    const activity = activities[index];
-    if (activity === undefined || activity.kind !== "turn.plan.updated") continue;
+  const current = selectCurrentTaskList(activities, {
+    newestProposedPlanCreatedAt: newestProposedPlan(proposedPlans)?.createdAt ?? null,
+  });
+  if (current === null) return [];
 
-    const plan = asRecord(activity.payload).plan;
-    if (!Array.isArray(plan)) return [];
+  const plan = asRecord(current.payload).plan;
+  if (!Array.isArray(plan)) return [];
 
-    const steps: Array<PlanRefreshStep> = [];
-    for (const raw of plan) {
-      const entry = asRecord(raw);
-      const step = typeof entry.step === "string" ? entry.step.trim() : "";
-      if (step.length === 0) continue;
-      steps.push({ step, status: isStepStatus(entry.status) ? entry.status : "pending" });
-    }
-    return steps;
+  const steps: Array<PlanRefreshStep> = [];
+  for (const raw of plan) {
+    const entry = asRecord(raw);
+    const step = typeof entry.step === "string" ? entry.step.trim() : "";
+    if (step.length === 0) continue;
+    steps.push({ step, status: isStepStatus(entry.status) ? entry.status : "pending" });
   }
-  return [];
+  return steps;
+}
+
+/**
+ * The proposed plan a refresh should track: the thread's newest plan unless
+ * the person closed it by moving on, clipped so a long plan cannot crowd out
+ * the conversation. Implemented plans count - that is the work in progress.
+ */
+export function derivePlanRefreshProposedPlan(
+  proposedPlans: ReadonlyArray<
+    Pick<
+      OrchestrationProposedPlan,
+      "id" | "createdAt" | "planMarkdown" | "implementedAt" | "closedAt"
+    >
+  >,
+  maxChars = PLAN_REFRESH_MAX_PROPOSED_PLAN_CHARS,
+): string | undefined {
+  const newest = newestProposedPlan(proposedPlans);
+  if (newest === null || (newest.implementedAt === null && newest.closedAt !== null)) {
+    return undefined;
+  }
+  const markdown = newest.planMarkdown.trim();
+  return markdown.length <= maxChars ? markdown : `${markdown.slice(0, maxChars - 3).trimEnd()}...`;
 }
 
 /**
