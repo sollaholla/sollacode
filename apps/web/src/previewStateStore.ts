@@ -490,6 +490,23 @@ export function reconcilePreviewServerSessions(
         snapshots.some((snapshot) => snapshot.tabId === tabId),
       ),
     );
+    const desktopOverlay = activeTabId ? (desktopByTabId[activeTabId] ?? null) : null;
+    // The list is refetched whenever a thread is opened. Keeping the state
+    // object when nothing moved spares every subscriber a re-render.
+    if (
+      current.serverEpoch === result.serverEpoch &&
+      current.serverRevision === result.revision &&
+      current.activeTabId === activeTabId &&
+      current.snapshot === snapshot &&
+      current.desktopOverlay === desktopOverlay &&
+      haveSameItems(current.recentlySeenUrls, recentlySeenUrls) &&
+      haveSameValues(current.sessions, sessions) &&
+      haveSameValues(current.hostedSessions, hostedSessions) &&
+      haveSameValues(current.desktopByTabId, desktopByTabId) &&
+      current.suppressedTabIds.size === suppressedTabIds.size
+    ) {
+      return current;
+    }
     return {
       ...current,
       sessions,
@@ -498,12 +515,21 @@ export function reconcilePreviewServerSessions(
       activeTabId,
       snapshot,
       desktopByTabId,
-      desktopOverlay: activeTabId ? (desktopByTabId[activeTabId] ?? null) : null,
+      desktopOverlay,
       recentlySeenUrls,
       serverEpoch: result.serverEpoch,
       serverRevision: result.revision,
     };
   });
+}
+
+function haveSameValues<T>(left: Record<string, T>, right: Record<string, T>): boolean {
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);
+}
+
+function haveSameItems<T>(left: ReadonlyArray<T>, right: ReadonlyArray<T>): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
 /**

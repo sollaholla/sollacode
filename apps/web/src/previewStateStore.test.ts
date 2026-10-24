@@ -470,6 +470,19 @@ describe("previewStateStore (single-tab)", () => {
     expect(state.desktopByTabId[stale.tabId]?.hasWebContents).toBe(true);
   });
 
+  it("keeps the state object when a refetched list changes nothing", () => {
+    const snapshot = makeSnapshot();
+    reconcilePreviewServerSessions(ref, { sessions: [snapshot], serverEpoch, revision: 1 });
+    const loaded = readThreadPreviewState(ref);
+
+    reconcilePreviewServerSessions(ref, { sessions: [snapshot], serverEpoch, revision: 1 });
+    expect(readThreadPreviewState(ref)).toBe(loaded);
+
+    const moved = makeSnapshot({ updatedAt: "2099-01-01T00:00:00.000Z" });
+    reconcilePreviewServerSessions(ref, { sessions: [moved], serverEpoch, revision: 2 });
+    expect(readThreadPreviewState(ref).sessions).toEqual({ [moved.tabId]: moved });
+  });
+
   it("keeps a locally known guest mounted through a transient empty list", () => {
     const snapshot = makeSnapshot();
     applyPreviewServerSnapshot(ref, snapshot);
