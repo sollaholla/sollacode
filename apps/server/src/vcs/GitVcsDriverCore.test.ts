@@ -61,6 +61,40 @@ const makeSuccessfulHandle = (stdout: string) =>
     getOutputFd: () => Stream.empty,
   });
 
+const CURRENT_BRANCH_TRACKING_ARGS = [
+  "for-each-ref",
+  "--points-at=HEAD",
+  "--format=%(HEAD)%00%(refname:short)%00%(upstream:short)%00%(upstream:remotename)%00%(upstream:track,nobracket)",
+  "refs/heads",
+] as const;
+
+const isCurrentBranchTrackingRead = (args: ReadonlyArray<string>) =>
+  args[0] === "for-each-ref" && args.includes("--points-at=HEAD");
+
+/** Records each Git command, minus a leading `--git-dir <dir>`, and can fail the tracking read. */
+const makeRecordingDriver = (options?: { readonly failTrackingRead?: boolean }) =>
+  Effect.gen(function* () {
+    const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const commands: Array<ReadonlyArray<string>> = [];
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.gen(function* () {
+        if (ChildProcess.isStandardCommand(command)) {
+          commands.push(command.args[0] === "--git-dir" ? command.args.slice(2) : command.args);
+          // Older Git, or any other reason the one-process read fails.
+          if (options?.failTrackingRead && isCurrentBranchTrackingRead(command.args)) {
+            return makeNonRepositoryHandle();
+          }
+        }
+        return yield* delegate.spawn(command);
+      }),
+    );
+    const driver = yield* makeGitVcsDriverCore().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provide(ServerConfigLayer),
+    );
+    return { driver, commands };
+  });
+
 const makeTmpDir = (
   prefix = "git-vcs-driver-test-",
 ): Effect.Effect<string, PlatformError.PlatformError, FileSystem.FileSystem | Scope.Scope> =>
@@ -197,6 +231,7 @@ it.effect("uses stable diagnostics for every parsed non-repository command", () 
     assert.deepStrictEqual(commands, [
       { args: ["rev-parse", "--git-path", "index"], lcAll: "C" },
       { args: ["status", "--porcelain=2", "--branch"], lcAll: "C" },
+      { args: [...CURRENT_BRANCH_TRACKING_ARGS], lcAll: "C" },
       { args: ["rev-parse", "--abbrev-ref", "HEAD"], lcAll: "C" },
       { args: ["rev-parse", "--git-common-dir"], lcAll: "C" },
     ]);
@@ -1021,9 +1056,184 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
 
         assert.equal(status.upstreamRef, `origin/${initialBranch}`);
         assert.equal(
-          commands.filter((args) => args.at(-1) === "@{upstream}").length,
+          commands.filter(
+            (args) => args.at(-1) === "@{upstream}" || isCurrentBranchTrackingRead(args),
+          ).length,
           1,
           commands.map((args) => args.join(" ")).join("; "),
+        );
+      }),
+    );
+
+    it.effect("a steady refreshing remote status poll spawns four git processes", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(cwd, ["remote", "set-head", "origin", initialBranch]);
+        const { driver, commands } = yield* makeRecordingDriver();
+
+        // The first poll also resolves the repository paths and origin's default branch.
+        const first = yield* driver.statusDetailsRemote(cwd);
+        // Past the upstream refresh interval, so the next poll fetches again.
+        yield* TestClock.adjust("16 seconds");
+        commands.length = 0;
+        const steady = yield* driver.statusDetailsRemote(cwd);
+
+        assert.deepStrictEqual(steady, first);
+        assert.deepStrictEqual(commands, [
+          [...CURRENT_BRANCH_TRACKING_ARGS],
+          ["fetch", "--quiet", "--no-tags", "--no-auto-gc", "origin"],
+          ["rev-list", "--left-right", "--count", `HEAD...origin/${initialBranch}`],
+          ["symbolic-ref", "refs/remotes/origin/HEAD"],
+        ]);
+        assert.deepInclude(steady, {
+          branch: initialBranch,
+          defaultBranch: initialBranch,
+          isDefaultBranch: true,
+          upstreamRef: `origin/${initialBranch}`,
+          hasUpstream: true,
+        });
+      }),
+    );
+
+    it.effect("reads the same remote status in one process as step by step", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const worktreesRoot = yield* makeTmpDir("git-vcs-driver-worktrees-");
+        const pathService = yield* Path.Path;
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(cwd, ["remote", "set-head", "origin", initialBranch]);
+        const oneProcess = yield* makeRecordingDriver();
+        const stepwise = yield* makeRecordingDriver({ failTrackingRead: true });
+        const commit = (message: string) => git(cwd, ["commit", "--allow-empty", "-m", message]);
+
+        // Compares both reads, without and with the upstream refresh, and checks the
+        // scenario is the one named. Returns the one-process driver's commands.
+        const expectSameStatus = Effect.fnUntraced(function* (
+          label: string,
+          scenario: Partial<GitVcsDriver.GitRemoteStatusDetails>,
+          options: { readonly cwd?: string; readonly stepByStep?: boolean } = {},
+        ) {
+          oneProcess.commands.length = 0;
+          for (const readOptions of [{ refreshUpstream: false }, undefined]) {
+            const statusCwd = options.cwd ?? cwd;
+            const expected = yield* stepwise.driver.statusDetailsRemote(statusCwd, readOptions);
+            const actual = yield* oneProcess.driver.statusDetailsRemote(statusCwd, readOptions);
+            assert.deepStrictEqual(actual, expected, label);
+            assert.deepInclude(actual, scenario, label);
+          }
+          assert.equal(
+            oneProcess.commands.some((args) => args.join(" ") === "rev-parse --abbrev-ref HEAD"),
+            options.stepByStep ?? false,
+            `${label}: ${oneProcess.commands.map((args) => args.join(" ")).join("; ")}`,
+          );
+          return oneProcess.commands;
+        });
+
+        yield* expectSameStatus("default branch in sync", {
+          branch: initialBranch,
+          isDefaultBranch: true,
+          upstreamRef: `origin/${initialBranch}`,
+        });
+        yield* commit("local only");
+        yield* expectSameStatus("default branch ahead", { aheadCount: 1, behindCount: 0 });
+
+        yield* git(cwd, ["checkout", "-b", "feature/tracked"]);
+        yield* commit("feature");
+        yield* git(cwd, ["push", "-u", "origin", "feature/tracked"]);
+        yield* commit("feature ahead");
+        const elsewhere = yield* git(cwd, [
+          "commit-tree",
+          "-p",
+          "HEAD~1",
+          "-m",
+          "elsewhere",
+          "HEAD^{tree}",
+        ]);
+        yield* git(cwd, ["update-ref", "refs/remotes/origin/feature/tracked", elsewhere]);
+        yield* expectSameStatus("ahead of and behind its upstream", {
+          branch: "feature/tracked",
+          upstreamRef: "origin/feature/tracked",
+          aheadCount: 1,
+          behindCount: 1,
+          aheadOfDefaultCount: 3,
+        });
+        yield* git(cwd, ["update-ref", "-d", "refs/remotes/origin/feature/tracked"]);
+        yield* expectSameStatus("upstream gone", { hasUpstream: false, aheadCount: 3 });
+        yield* git(cwd, ["branch", "--unset-upstream"]);
+        yield* expectSameStatus("no upstream", { hasUpstream: false, aheadCount: 3 });
+
+        yield* git(cwd, ["branch", "--set-upstream-to", initialBranch]);
+        yield* expectSameStatus("tracks a local branch", { hasUpstream: false });
+        yield* git(cwd, ["branch", "base/local", initialBranch]);
+        yield* git(cwd, ["branch", "--set-upstream-to", "base/local"]);
+        const localCommands = yield* expectSameStatus("tracks a local branch with a slash", {
+          upstreamRef: "base/local",
+          aheadCount: 2,
+        });
+        assert.isFalse(
+          localCommands.some((args) => args[0] === "fetch"),
+          "a local upstream has nothing to fetch",
+        );
+
+        yield* git(cwd, ["remote", "add", "my/remote", remote]);
+        yield* git(cwd, ["fetch", "my/remote"]);
+        yield* git(cwd, ["branch", "--set-upstream-to", `my/remote/${initialBranch}`]);
+        const slashCommands = yield* expectSameStatus("remote name with a slash", {
+          upstreamRef: `my/remote/${initialBranch}`,
+        });
+        assert.deepInclude(slashCommands, [
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--no-auto-gc",
+          "my/remote",
+        ]);
+
+        yield* git(cwd, ["tag", "feature/tracked"]);
+        yield* expectSameStatus("branch name shared with a tag", {
+          branch: "heads/feature/tracked",
+        });
+        yield* git(cwd, ["tag", "-d", "feature/tracked"]);
+
+        yield* git(cwd, ["checkout", "--detach"]);
+        yield* expectSameStatus("detached HEAD", { branch: null, hasUpstream: false });
+        yield* git(cwd, ["checkout", "feature/tracked"]);
+
+        const worktreePath = pathService.join(worktreesRoot, "linked");
+        yield* git(cwd, ["worktree", "add", "-b", "feature/linked", worktreePath, initialBranch]);
+        yield* git(worktreePath, ["branch", "--set-upstream-to", `origin/${initialBranch}`]);
+        yield* expectSameStatus(
+          "linked worktree",
+          { branch: "feature/linked", upstreamRef: `origin/${initialBranch}`, aheadCount: 1 },
+          { cwd: worktreePath },
+        );
+
+        // The one-process read cannot answer these, so both drivers read step by step.
+        const unborn = yield* makeTmpDir();
+        yield* git(unborn, ["init"]);
+        yield* expectSameStatus(
+          "unborn HEAD",
+          { isRepo: true, hasUpstream: false },
+          { cwd: unborn, stepByStep: true },
+        );
+        yield* expectSameStatus(
+          "not a repository",
+          { isRepo: false },
+          { cwd: yield* makeTmpDir(), stepByStep: true },
+        );
+        yield* expectSameStatus(
+          "missing cwd",
+          { isRepo: false },
+          { cwd: pathService.join(unborn, "missing"), stepByStep: true },
         );
       }),
     );

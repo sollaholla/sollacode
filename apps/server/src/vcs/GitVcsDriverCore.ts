@@ -349,6 +349,70 @@ function parseUpstreamRefByFirstSeparator(
   };
 }
 
+// Lists the branches at HEAD's commit, so the checked-out branch is among them and %(HEAD)
+// marks it. NUL separates the fields because no ref or remote name can contain one.
+const CURRENT_BRANCH_TRACKING_ARGS = [
+  "for-each-ref",
+  "--points-at=HEAD",
+  "--format=%(HEAD)%00%(refname:short)%00%(upstream:short)%00%(upstream:remotename)%00%(upstream:track,nobracket)",
+  "refs/heads",
+] as const;
+
+interface UpstreamDivergence {
+  readonly upstreamRef: string;
+  readonly aheadCount: number;
+  readonly behindCount: number;
+}
+
+interface CurrentBranchTracking {
+  /** Null when HEAD is detached. */
+  readonly branch: string | null;
+  /** Null without an upstream, or when its remote-tracking ref is gone. */
+  readonly upstream:
+    | (UpstreamDivergence & {
+        /** The branch's configured remote: `.` when it tracks a local branch. */
+        readonly remoteName: string;
+      })
+    | null;
+}
+
+function parseTrackCounts(track: string): { aheadCount: number; behindCount: number } | null {
+  if (track.length === 0) return { aheadCount: 0, behindCount: 0 };
+  const match = /^(?:ahead (\d+)(?:, behind (\d+))?|behind (\d+))$/.exec(track);
+  if (!match) return null;
+  return {
+    aheadCount: Number(match[1] ?? "0"),
+    behindCount: Number(match[2] ?? match[3] ?? "0"),
+  };
+}
+
+/**
+ * Reads `CURRENT_BRANCH_TRACKING_ARGS` output the way the step-by-step reads see the same
+ * repository. Null when the output is not that shape, so the caller falls back to them.
+ */
+function parseCurrentBranchTracking(stdout: string): CurrentBranchTracking | null {
+  for (const line of stdout.split("\n")) {
+    if (!line.startsWith("*")) continue;
+    const fields = line.split("\0");
+    if (fields.length !== 5) return null;
+    const [, branch = "", upstreamRef = "", remoteName = "", track = ""] = fields;
+    if (branch.length === 0) return null;
+    // `@{upstream}` fails for a gone upstream, and the step-by-step read only keeps an
+    // upstream it can split into remote and branch, so either reads as none.
+    if (
+      upstreamRef.length === 0 ||
+      track === "gone" ||
+      parseUpstreamRefByFirstSeparator(upstreamRef) === null
+    ) {
+      return { branch, upstream: null };
+    }
+    const counts = parseTrackCounts(track);
+    if (counts === null || remoteName.length === 0) return null;
+    return { branch, upstream: { upstreamRef, remoteName, ...counts } };
+  }
+  return { branch: null, upstream: null };
+}
+
 function parseTrackingBranchByUpstreamRef(stdout: string, upstreamRef: string): string | null {
   for (const line of stdout.split("\n")) {
     const trimmedLine = line.trim();
@@ -1265,21 +1329,38 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           ),
   });
 
+  /** Fetches `remoteName` unless a status read fetched it within the refresh interval. */
+  const refreshStatusRemoteIfStale = Effect.fnUntraced(function* (cwd: string, remoteName: string) {
+    const gitCommonDir = yield* resolveGitCommonDir(cwd);
+    yield* Cache.get(
+      statusRemoteRefreshCache,
+      new StatusRemoteRefreshCacheKey({
+        gitCommonDir,
+        remoteName,
+      }),
+    );
+  });
+
   const refreshStatusUpstreamIfStale = Effect.fn("refreshStatusUpstreamIfStale")(function* (
     cwd: string,
     knownUpstreamRef?: string | null,
   ) {
     const upstream = yield* resolveCurrentUpstream(cwd, knownUpstreamRef);
     if (!upstream) return;
-    const gitCommonDir = yield* resolveGitCommonDir(cwd);
-    yield* Cache.get(
-      statusRemoteRefreshCache,
-      new StatusRemoteRefreshCacheKey({
-        gitCommonDir,
-        remoteName: upstream.remoteName,
-      }),
-    );
+    yield* refreshStatusRemoteIfStale(cwd, upstream.remoteName);
   });
+
+  // A status read keeps the last fetched refs when its background fetch fails.
+  const ignoreStatusRefreshFailure = (
+    refresh: Effect.Effect<void, GitCommandError>,
+  ): Effect.Effect<void> =>
+    refresh.pipe(
+      Effect.catchTags({
+        GitCommandError: (error) =>
+          isMissingGitCwdError(error) ? Effect.void : Effect.fail(error),
+      }),
+      Effect.ignoreCause({ log: true }),
+    );
 
   const resolveDefaultBranchName = (
     cwd: string,
@@ -1487,6 +1568,68 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
   });
 
+  const readUpstreamDivergence = (
+    cwd: string,
+    upstreamRef: string,
+  ): Effect.Effect<UpstreamDivergence, GitCommandError> =>
+    executeGit(
+      "GitVcsDriver.statusDetailsRemote.divergence",
+      cwd,
+      ["rev-list", "--left-right", "--count", `HEAD...${upstreamRef}`],
+      { allowNonZeroExit: true },
+    ).pipe(
+      Effect.map((divergence) => {
+        if (divergence.exitCode !== 0) return { upstreamRef, aheadCount: 0, behindCount: 0 };
+        const [aheadRaw, behindRaw] = divergence.stdout.trim().split(/\s+/);
+        const parsedAhead = Number.parseInt(aheadRaw ?? "0", 10);
+        const parsedBehind = Number.parseInt(behindRaw ?? "0", 10);
+        return {
+          upstreamRef,
+          aheadCount: Number.isFinite(parsedAhead) ? Math.max(0, parsedAhead) : 0,
+          behindCount: Number.isFinite(parsedBehind) ? Math.max(0, parsedBehind) : 0,
+        };
+      }),
+    );
+
+  /** The part of a remote status read that follows the branch and its upstream divergence. */
+  const completeStatusDetailsRemote = Effect.fnUntraced(function* (
+    cwd: string,
+    branch: string | null,
+    upstream: UpstreamDivergence | null,
+  ) {
+    const upstreamRef = upstream?.upstreamRef ?? null;
+    const behindCount = upstream?.behindCount ?? 0;
+    const aheadCount = upstream
+      ? upstream.aheadCount
+      : branch
+        ? yield* computeAheadCountAgainstBase(cwd, branch).pipe(Effect.orElseSucceed(() => 0))
+        : 0;
+
+    const defaultBranch = yield* resolveDefaultBranchName(cwd, "origin");
+    const isDefaultBranch =
+      branch !== null &&
+      (branch === defaultBranch ||
+        (defaultBranch === null && (branch === "main" || branch === "master")));
+    const aheadOfDefaultCount =
+      branch && !isDefaultBranch
+        ? upstreamRef === null
+          ? aheadCount
+          : yield* computeAheadCountAgainstBase(cwd, branch).pipe(Effect.orElseSucceed(() => 0))
+        : 0;
+
+    return {
+      isRepo: true,
+      defaultBranch,
+      isDefaultBranch,
+      branch,
+      upstreamRef,
+      hasUpstream: upstreamRef !== null,
+      aheadCount,
+      behindCount,
+      aheadOfDefaultCount,
+    } satisfies GitVcsDriver.GitRemoteStatusDetails;
+  });
+
   const readStatusDetailsRemote = Effect.fn("readStatusDetailsRemote")(function* (
     cwd: string,
     knownUpstreamRef?: string | null,
@@ -1547,53 +1690,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         : (parseUpstreamRefByFirstSeparator(currentUpstreamRef)?.upstreamRef ??
           (yield* resolveCurrentUpstream(cwd, currentUpstreamRef))?.upstreamRef ??
           null);
-    let aheadCount = 0;
-    let behindCount = 0;
-
-    if (upstreamRef) {
-      const divergence = yield* executeGit(
-        "GitVcsDriver.statusDetailsRemote.divergence",
-        cwd,
-        ["rev-list", "--left-right", "--count", `HEAD...${upstreamRef}`],
-        { allowNonZeroExit: true },
-      );
-      if (divergence.exitCode === 0) {
-        const [aheadRaw, behindRaw] = divergence.stdout.trim().split(/\s+/);
-        const parsedAhead = Number.parseInt(aheadRaw ?? "0", 10);
-        const parsedBehind = Number.parseInt(behindRaw ?? "0", 10);
-        aheadCount = Number.isFinite(parsedAhead) ? Math.max(0, parsedAhead) : 0;
-        behindCount = Number.isFinite(parsedBehind) ? Math.max(0, parsedBehind) : 0;
-      }
-    } else if (branch) {
-      aheadCount = yield* computeAheadCountAgainstBase(cwd, branch).pipe(
-        Effect.orElseSucceed(() => 0),
-      );
-    }
-
-    const defaultBranch = yield* resolveDefaultBranchName(cwd, "origin");
-    const isDefaultBranch =
-      branch !== null &&
-      (branch === defaultBranch ||
-        (defaultBranch === null && (branch === "main" || branch === "master")));
-    const aheadOfDefaultCount =
-      branch && !isDefaultBranch
-        ? upstreamRef === null
-          ? aheadCount
-          : yield* computeAheadCountAgainstBase(cwd, branch).pipe(Effect.orElseSucceed(() => 0))
-        : 0;
-
-    return {
-      isRepo: true,
-      defaultBranch,
-      isDefaultBranch,
+    return yield* completeStatusDetailsRemote(
+      cwd,
       branch,
-      upstreamRef,
-      hasUpstream: upstreamRef !== null,
-      aheadCount,
-      behindCount,
-      aheadOfDefaultCount,
-    };
+      upstreamRef === null ? null : yield* readUpstreamDivergence(cwd, upstreamRef),
+    );
   });
+
+  /** Null when the one-process read cannot answer: the step-by-step reads then handle it. */
+  const readCurrentBranchTracking = (cwd: string): Effect.Effect<CurrentBranchTracking | null> =>
+    executeGitWithStableDiagnostics(
+      "GitVcsDriver.statusDetailsRemote.tracking",
+      cwd,
+      CURRENT_BRANCH_TRACKING_ARGS,
+      { allowNonZeroExit: true },
+    ).pipe(
+      Effect.map((result) =>
+        result.exitCode === 0 ? parseCurrentBranchTracking(result.stdout) : null,
+      ),
+      Effect.orElseSucceed(() => null),
+    );
 
   const readStatusDetailsLocal = Effect.fn("readStatusDetailsLocal")(function* (cwd: string) {
     const indexResult = yield* executeGitWithStableDiagnostics(
@@ -1845,35 +1961,48 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const statusDetails: GitVcsDriver.GitVcsDriver["Service"]["statusDetails"] = Effect.fn(
     "statusDetails",
   )(function* (cwd) {
-    yield* refreshStatusUpstreamIfStale(cwd).pipe(
-      Effect.catchTags({
-        GitCommandError: (error) =>
-          isMissingGitCwdError(error) ? Effect.void : Effect.fail(error),
-      }),
-      Effect.ignoreCause({ log: true }),
-    );
+    yield* ignoreStatusRefreshFailure(refreshStatusUpstreamIfStale(cwd));
     return yield* readStatusDetailsLocal(cwd);
   });
 
+  const readStatusDetailsRemoteStepwise = Effect.fnUntraced(function* (
+    cwd: string,
+    options: GitVcsDriver.GitRemoteStatusOptions | undefined,
+  ) {
+    if (options?.refreshUpstream === false) {
+      return yield* readStatusDetailsRemote(cwd);
+    }
+    // The fetch and the read both need the upstream ref, and fetching does
+    // not change it, so it is read once. A failed read leaves each step to
+    // read (and report) it on its own.
+    const upstreamRef = yield* readCurrentUpstreamRef(cwd).pipe(
+      Effect.orElseSucceed(() => undefined),
+    );
+    yield* ignoreStatusRefreshFailure(refreshStatusUpstreamIfStale(cwd, upstreamRef));
+    return yield* readStatusDetailsRemote(cwd, upstreamRef);
+  });
+
+  // Status polls run this for every open project, so the branch, its upstream, the
+  // upstream's remote and the divergence come from one git process. An unborn HEAD,
+  // a folder outside a repository or a missing cwd takes the step-by-step reads, which
+  // report each of those.
   const statusDetailsRemote: GitVcsDriver.GitVcsDriver["Service"]["statusDetailsRemote"] =
     Effect.fn("statusDetailsRemote")(function* (cwd, options) {
-      if (options?.refreshUpstream === false) {
-        return yield* readStatusDetailsRemote(cwd);
+      const tracking = yield* readCurrentBranchTracking(cwd);
+      if (tracking === null) {
+        return yield* readStatusDetailsRemoteStepwise(cwd, options);
       }
-      // The fetch and the read both need the upstream ref, and fetching does
-      // not change it, so it is read once. A failed read leaves each step to
-      // read (and report) it on its own.
-      const upstreamRef = yield* readCurrentUpstreamRef(cwd).pipe(
-        Effect.orElseSucceed(() => undefined),
+      const upstream = tracking.upstream;
+      if (upstream === null || upstream.remoteName === "." || options?.refreshUpstream === false) {
+        return yield* completeStatusDetailsRemote(cwd, tracking.branch, upstream);
+      }
+      yield* ignoreStatusRefreshFailure(refreshStatusRemoteIfStale(cwd, upstream.remoteName));
+      // Counted again because the fetch may have moved the upstream.
+      return yield* completeStatusDetailsRemote(
+        cwd,
+        tracking.branch,
+        yield* readUpstreamDivergence(cwd, upstream.upstreamRef),
       );
-      yield* refreshStatusUpstreamIfStale(cwd, upstreamRef).pipe(
-        Effect.catchTags({
-          GitCommandError: (error) =>
-            isMissingGitCwdError(error) ? Effect.void : Effect.fail(error),
-        }),
-        Effect.ignoreCause({ log: true }),
-      );
-      return yield* readStatusDetailsRemote(cwd, upstreamRef);
     });
 
   const status: GitVcsDriver.GitVcsDriver["Service"]["status"] = (input) =>
