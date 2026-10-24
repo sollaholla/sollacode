@@ -417,6 +417,50 @@ describe("makeManagedServerProvider", () => {
     ).pipe(Effect.provide(Layer.mergeAll(NeverRunTestLayer, TestClock.layer()))),
   );
 
+  it.effect("skips periodic checks while disabled and resumes them once enabled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const settingsRef = yield* Ref.make<TestSettings>({ enabled: false });
+        const settingsChanges = yield* PubSub.unbounded<TestSettings>();
+        const checkCalls = yield* Ref.make(0);
+        const initialCheckDone = yield* Deferred.make<void>();
+        yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Ref.get(settingsRef),
+          streamSettings: Stream.fromPubSub(settingsChanges),
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed({ ...initialSnapshot, enabled: false }),
+          checkProvider: Ref.updateAndGet(checkCalls, (count) => count + 1).pipe(
+            Effect.tap((count) =>
+              count === 1
+                ? Deferred.succeed(initialCheckDone, undefined).pipe(Effect.ignore)
+                : Effect.void,
+            ),
+            Effect.andThen(Ref.get(settingsRef)),
+            Effect.map(({ enabled }) => ({ ...refreshedSnapshot, enabled })),
+          ),
+          refreshInterval: "5 minutes",
+        });
+        yield* Deferred.await(initialCheckDone);
+
+        // A disabled provider is never probed on the timer.
+        yield* TestClock.adjust("5 minutes");
+        yield* TestClock.adjust("5 minutes");
+        yield* Effect.yieldNow;
+        assert.strictEqual(yield* Ref.get(checkCalls), 1);
+
+        // Enabling it probes at once and puts it back on the timer.
+        yield* Ref.set(settingsRef, { enabled: true });
+        yield* PubSub.publish(settingsChanges, { enabled: true });
+        yield* Effect.yieldNow;
+        assert.strictEqual(yield* Ref.get(checkCalls), 2);
+        yield* TestClock.adjust("5 minutes");
+        yield* Effect.yieldNow;
+        assert.strictEqual(yield* Ref.get(checkCalls), 3);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(AlwaysRunTestLayer, TestClock.layer()))),
+  );
+
   it.effect("disables periodic provider refreshes when the explicit interval is zero", () =>
     Effect.scoped(
       Effect.gen(function* () {

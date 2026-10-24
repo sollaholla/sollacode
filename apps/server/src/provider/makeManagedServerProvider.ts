@@ -328,6 +328,12 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   const hasProviderStatusDemand = Effect.gen(function* () {
     const state = yield* Ref.get(snapshotStateRef);
+    // A disabled instance has nothing to probe: a periodic check spawned its
+    // CLI only to republish a snapshot that differed in checkedAt. Enabling it
+    // goes through applySnapshot, which probes straight away.
+    if (!state.snapshot.enabled) {
+      return false;
+    }
     const instanceId = state.snapshot.instanceId;
     const [genericDemand, instanceDemand] = yield* Effect.all([
       backgroundPolicy.shouldRunScopeWork({ type: "provider-status" }),
