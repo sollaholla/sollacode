@@ -993,11 +993,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return upstreamRef;
   });
 
+  /** `knownUpstreamRef` skips the lookup when the caller already read it; null means none. */
   const resolveCurrentUpstream = Effect.fn("resolveCurrentUpstream")(function* (
     cwd: string,
-    knownUpstreamRef?: string,
+    knownUpstreamRef?: string | null,
   ) {
-    const upstreamRef = knownUpstreamRef ?? (yield* readCurrentUpstreamRef(cwd));
+    const upstreamRef =
+      knownUpstreamRef === undefined ? yield* readCurrentUpstreamRef(cwd) : knownUpstreamRef;
     if (upstreamRef === null) {
       return null;
     }
@@ -1265,8 +1267,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const refreshStatusUpstreamIfStale = Effect.fn("refreshStatusUpstreamIfStale")(function* (
     cwd: string,
+    knownUpstreamRef?: string | null,
   ) {
-    const upstream = yield* resolveCurrentUpstream(cwd);
+    const upstream = yield* resolveCurrentUpstream(cwd, knownUpstreamRef);
     if (!upstream) return;
     const gitCommonDir = yield* resolveGitCommonDir(cwd);
     yield* Cache.get(
@@ -1484,7 +1487,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
   });
 
-  const readStatusDetailsRemote = Effect.fn("readStatusDetailsRemote")(function* (cwd: string) {
+  const readStatusDetailsRemote = Effect.fn("readStatusDetailsRemote")(function* (
+    cwd: string,
+    knownUpstreamRef?: string | null,
+  ) {
     const branchResult = yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.statusDetailsRemote.branch",
       cwd,
@@ -1533,7 +1539,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     // remote name containing "/" from its branch is skipped: one git process
     // fewer on every status poll. A leading "/" is the case the split cannot
     // read, so that one still asks.
-    const currentUpstreamRef = yield* readCurrentUpstreamRef(cwd);
+    const currentUpstreamRef =
+      knownUpstreamRef === undefined ? yield* readCurrentUpstreamRef(cwd) : knownUpstreamRef;
     const upstreamRef =
       currentUpstreamRef === null
         ? null
@@ -1850,16 +1857,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const statusDetailsRemote: GitVcsDriver.GitVcsDriver["Service"]["statusDetailsRemote"] =
     Effect.fn("statusDetailsRemote")(function* (cwd, options) {
-      if (options?.refreshUpstream !== false) {
-        yield* refreshStatusUpstreamIfStale(cwd).pipe(
-          Effect.catchTags({
-            GitCommandError: (error) =>
-              isMissingGitCwdError(error) ? Effect.void : Effect.fail(error),
-          }),
-          Effect.ignoreCause({ log: true }),
-        );
+      if (options?.refreshUpstream === false) {
+        return yield* readStatusDetailsRemote(cwd);
       }
-      return yield* readStatusDetailsRemote(cwd);
+      // The fetch and the read both need the upstream ref, and fetching does
+      // not change it, so it is read once. A failed read leaves each step to
+      // read (and report) it on its own.
+      const upstreamRef = yield* readCurrentUpstreamRef(cwd).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
+      yield* refreshStatusUpstreamIfStale(cwd, upstreamRef).pipe(
+        Effect.catchTags({
+          GitCommandError: (error) =>
+            isMissingGitCwdError(error) ? Effect.void : Effect.fail(error),
+        }),
+        Effect.ignoreCause({ log: true }),
+      );
+      return yield* readStatusDetailsRemote(cwd, upstreamRef);
     });
 
   const status: GitVcsDriver.GitVcsDriver["Service"]["status"] = (input) =>
