@@ -1065,7 +1065,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("a steady refreshing remote status poll spawns four git processes", () =>
+    it.effect("a steady refreshing remote status poll spawns three git processes", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const remote = yield* makeTmpDir("git-vcs-driver-remote-");
@@ -1088,7 +1088,6 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           [...CURRENT_BRANCH_TRACKING_ARGS],
           ["fetch", "--quiet", "--no-tags", "--no-auto-gc", "origin"],
           ["rev-list", "--left-right", "--count", `HEAD...origin/${initialBranch}`],
-          ["symbolic-ref", "refs/remotes/origin/HEAD"],
         ]);
         assert.deepInclude(steady, {
           branch: initialBranch,
@@ -1235,6 +1234,42 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           { isRepo: false },
           { cwd: pathService.join(unborn, "missing"), stepByStep: true },
         );
+      }),
+    );
+
+    it.effect("re-reads origin's default branch only when origin HEAD changes", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(cwd, ["push", "origin", `${initialBranch}:develop`]);
+        const { driver, commands } = yield* makeRecordingDriver();
+        const readsOriginHead = () =>
+          commands.filter((args) => args.join(" ") === "symbolic-ref refs/remotes/origin/HEAD")
+            .length;
+        const remoteStatus = driver.statusDetailsRemote(cwd, { refreshUpstream: false });
+
+        assert.equal((yield* remoteStatus).defaultBranch, null);
+        // Raw git, so the change bypasses the driver's own invalidation.
+        yield* git(cwd, ["remote", "set-head", "origin", initialBranch]);
+        commands.length = 0;
+        assert.equal((yield* remoteStatus).defaultBranch, initialBranch);
+        assert.equal(readsOriginHead(), 1);
+
+        commands.length = 0;
+        assert.equal((yield* remoteStatus).defaultBranch, initialBranch);
+        assert.isTrue((yield* driver.statusDetailsLocal(cwd)).isDefaultBranch);
+        assert.equal(readsOriginHead(), 0);
+
+        yield* git(cwd, ["remote", "set-head", "origin", "develop"]);
+        assert.equal((yield* remoteStatus).defaultBranch, "develop");
+        assert.isFalse((yield* driver.statusDetailsLocal(cwd)).isDefaultBranch);
+
+        yield* git(cwd, ["remote", "set-head", "origin", "--delete"]);
+        assert.equal((yield* remoteStatus).defaultBranch, null);
       }),
     );
 
