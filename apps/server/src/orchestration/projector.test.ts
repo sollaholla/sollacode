@@ -102,6 +102,191 @@ describe("orchestration projector", () => {
     }),
   );
 
+  effectIt.effect("orders appended activities exactly as a full stable sort", () =>
+    Effect.gen(function* () {
+      type Activity = {
+        readonly id: string;
+        readonly tone: "tool";
+        readonly kind: string;
+        readonly summary: string;
+        readonly payload: unknown;
+        readonly turnId: null;
+        readonly sequence?: number;
+        readonly createdAt: string;
+      };
+      // The ordering the projector has always used, applied with a full sort per append.
+      const compare = (left: Activity, right: Activity) => {
+        if (left.sequence !== undefined && right.sequence !== undefined) {
+          if (left.sequence !== right.sequence) return left.sequence - right.sequence;
+        } else if (left.sequence !== undefined) {
+          return 1;
+        } else if (right.sequence !== undefined) {
+          return -1;
+        }
+        return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+      };
+      let seed = 7;
+      const random = () => {
+        seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+        return seed / 2_147_483_648;
+      };
+      const now = "2026-09-13T18:00:00.000Z";
+      let model = yield* projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: null,
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "Ordering",
+            modelSelection: { provider: ProviderDriverKind.make("codex"), model: "gpt" },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+      let expected: Array<Activity> = [];
+      // Few timestamps, ids differing only in case or in Unicode normalization (which
+      // localeCompare ranks equal), optional sequences and replays: ties and replacements on
+      // every path through the comparator.
+      const prefixes = ["A", "a", "é", "é"];
+      for (let index = 0; index < 1_500; index++) {
+        const id = `${prefixes[Math.floor(random() * prefixes.length)]}-${Math.floor(random() * 700)}`;
+        const historicalReplay = random() < 0.1;
+        const activity: Activity = {
+          id,
+          tone: "tool",
+          kind: "tool.updated",
+          summary: "Tool",
+          payload: { index },
+          turnId: null,
+          ...(random() < 0.3 ? { sequence: Math.floor(random() * 50) } : {}),
+          createdAt: `2026-09-13T2${Math.floor(random() * 4)}:00:00.000Z`,
+        };
+        const existing = historicalReplay
+          ? expected.find((entry) => entry.id === activity.id)
+          : undefined;
+        const { sequence: _sequence, ...replayed } = activity;
+        const stored: Activity = existing
+          ? {
+              ...replayed,
+              createdAt: existing.createdAt,
+              ...(existing.sequence !== undefined ? { sequence: existing.sequence } : {}),
+            }
+          : activity;
+        expected = [...expected.filter((entry) => entry.id !== activity.id), stored]
+          .toSorted(compare)
+          .slice(-500);
+        model = yield* projectEvent(
+          model,
+          makeEvent({
+            sequence: index + 2,
+            type: "thread.activity-appended",
+            aggregateKind: "thread",
+            aggregateId: "thread-1",
+            occurredAt: now,
+            commandId: null,
+            payload: {
+              threadId: "thread-1",
+              ...(historicalReplay ? { historicalReplay: true } : {}),
+              activity,
+            },
+          }),
+        );
+        if (index % 100 === 99) expect(model.threads[0]?.activities).toEqual(expected);
+      }
+      expect(model.threads[0]?.activities).toEqual(expected);
+    }),
+  );
+
+  effectIt.effect("appends streamed text to every message entry with the id", () =>
+    Effect.gen(function* () {
+      const now = "2026-09-13T18:00:00.000Z";
+      const created = yield* projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: null,
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "Streaming",
+            modelSelection: { provider: ProviderDriverKind.make("codex"), model: "gpt" },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+      const message = (id: string, text: string) => ({
+        id,
+        role: "assistant" as const,
+        text,
+        turnId: null,
+        streaming: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      // The read model never holds two entries with one id, but the update must still treat
+      // every match the way the former map over all entries did.
+      const thread = created.threads[0]!;
+      const model = {
+        ...created,
+        threads: [
+          {
+            ...thread,
+            messages: [
+              message("m-1", "one"),
+              message("m-2", "two"),
+              message("m-1", "uno"),
+            ] as unknown as typeof thread.messages,
+          },
+        ],
+      };
+      const next = yield* projectEvent(
+        model,
+        makeEvent({
+          sequence: 2,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: "2026-09-13T18:00:01.000Z",
+          commandId: null,
+          payload: {
+            threadId: "thread-1",
+            messageId: "m-1",
+            role: "assistant",
+            text: " more",
+            turnId: null,
+            streaming: true,
+            createdAt: "2026-09-13T18:00:01.000Z",
+            updatedAt: "2026-09-13T18:00:01.000Z",
+          },
+        }),
+      );
+      expect(next.threads[0]?.messages.map((entry) => [entry.id, entry.text])).toEqual([
+        ["m-1", "one more"],
+        ["m-2", "two"],
+        ["m-1", "uno more"],
+      ]);
+      expect(model.threads[0]?.messages.map((entry) => entry.text)).toEqual(["one", "two", "uno"]);
+    }),
+  );
+
   it("applies thread.created events", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);

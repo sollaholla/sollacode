@@ -221,6 +221,46 @@ function compareThreadActivities(
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
+type ThreadActivity = OrchestrationThread["activities"][number];
+const MAX_THREAD_ACTIVITIES = 500;
+
+// Activity lists this projector produced, all already in compareThreadActivities order.
+// Lists from elsewhere (startup, fork, revert) carry no such guarantee and are sorted in full.
+const sortedActivityLists = new WeakSet<ReadonlyArray<ThreadActivity>>();
+
+/**
+ * Replaces any activity with the same id and keeps the newest 500 in
+ * compareThreadActivities order, exactly as a stable sort of the list with
+ * the activity appended would. On a list this function produced, which is
+ * already in order, the activity goes after the last entry that does not sort
+ * after it, so one append costs a binary search instead of a sort.
+ */
+function insertThreadActivity(
+  activities: ReadonlyArray<ThreadActivity>,
+  activity: ThreadActivity,
+): ReadonlyArray<ThreadActivity> {
+  const next = activities.filter((entry) => entry.id !== activity.id);
+  if (sortedActivityLists.has(activities)) {
+    let low = 0;
+    let high = next.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (compareThreadActivities(next[middle]!, activity) > 0) {
+        high = middle;
+      } else {
+        low = middle + 1;
+      }
+    }
+    next.splice(low, 0, activity);
+  } else {
+    next.push(activity);
+    next.sort(compareThreadActivities);
+  }
+  const capped = next.slice(-MAX_THREAD_ACTIVITIES);
+  sortedActivityLists.add(capped);
+  return capped;
+}
+
 export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
@@ -639,30 +679,35 @@ export function projectEvent(
           "message",
         );
 
-        const existingMessage = thread.messages.find((entry) => entry.id === message.id);
-        const messages = existingMessage
-          ? thread.messages.map((entry) =>
-              entry.id === message.id
-                ? {
-                    ...entry,
-                    text:
-                      payload.textMode === "replace"
-                        ? message.text
-                        : message.streaming
-                          ? appendAgentStreamText(entry.text, message.text)
-                          : message.text.length > 0
-                            ? message.text
-                            : entry.text,
-                    streaming: message.streaming,
-                    updatedAt: message.updatedAt,
-                    turnId: message.turnId,
-                    ...(message.attachments !== undefined
-                      ? { attachments: message.attachments }
-                      : {}),
-                  }
-                : entry,
-            )
-          : [...thread.messages, message];
+        // Streamed text arrives for a message that already exists. Copy the
+        // list once and update the matching entries in place, from the first
+        // match on, rather than scanning for it and then mapping every entry.
+        const firstMatch = thread.messages.findIndex((entry) => entry.id === message.id);
+        let messages: Array<OrchestrationMessage>;
+        if (firstMatch === -1) {
+          messages = [...thread.messages, message];
+        } else {
+          messages = thread.messages.slice();
+          for (let index = firstMatch; index < messages.length; index++) {
+            const entry = messages[index]!;
+            if (entry.id !== message.id) continue;
+            messages[index] = {
+              ...entry,
+              text:
+                payload.textMode === "replace"
+                  ? message.text
+                  : message.streaming
+                    ? appendAgentStreamText(entry.text, message.text)
+                    : message.text.length > 0
+                      ? message.text
+                      : entry.text,
+              streaming: message.streaming,
+              updatedAt: message.updatedAt,
+              turnId: message.turnId,
+              ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+            };
+          }
+        }
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
 
         return {
@@ -1011,12 +1056,7 @@ export function projectEvent(
                 ...(existing.sequence !== undefined ? { sequence: existing.sequence } : {}),
               }
             : payload.activity;
-          const activities = [
-            ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
-            activity,
-          ]
-            .toSorted(compareThreadActivities)
-            .slice(-500);
+          const activities = insertThreadActivity(thread.activities, activity);
 
           return {
             ...nextBase,
