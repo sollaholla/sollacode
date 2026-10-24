@@ -115,4 +115,10 @@ describe("shouldInterceptWindowCloseForQuit", () => {
     expect(withDesktopRelaunchArguments(["--inspect=0"])).toEqual(["--inspect=0", "--auto-resume"]);
     expect(withDesktopRelaunchArguments(["--auto-resume"])).toEqual(["--auto-resume"]);
   });
+
+  it("keeps the updater's launch marker unless the relaunch is an ordinary launch", () => {
+    const argv = ["--auto-resume", "--solla-update-launch=abc"];
+    expect(withDesktopRelaunchArguments(argv)).toEqual(argv);
+    expect(withDesktopRelaunchArguments(argv, { ordinaryLaunch: true })).toEqual(["--auto-resume"]);
+  });
 });

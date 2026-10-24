@@ -114,6 +114,9 @@ export interface DesktopBackendStartConfig extends BackendProcessContext {
   // Present for a WSL run after the configured/default distro has been
   // resolved to the concrete distro passed to wsl.exe.
   readonly runningDistro?: string;
+  // Overrides DEFAULT_BACKEND_READINESS_TIMEOUT for this start, e.g. when the
+  // backend compacts its database before it answers.
+  readonly readinessTimeout?: Duration.Duration;
 }
 
 // A preflight failure records whether it is fatal. Transient failures (WSL
@@ -235,7 +238,6 @@ interface RunBackendProcessOptions extends DesktopBackendStartConfig {
   readonly onDesktopTelemetryControl?: (
     message: DesktopTelemetryControlMessageValue,
   ) => Effect.Effect<void>;
-  readonly readinessTimeout?: Duration.Duration;
   readonly outputDrainTimeout?: Duration.Duration;
   readonly onStarted?: (pid: number) => Effect.Effect<void>;
   readonly onExitObserved?: () => Effect.Effect<void>;

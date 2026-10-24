@@ -1,8 +1,10 @@
 import * as NodeOS from "node:os";
 
+import { DEFER_DATABASE_COMPACTION_ENV, isUpdateLaunch } from "@t3tools/shared/databaseCompaction";
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
@@ -15,6 +17,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import serverPackageJson from "../../../server/package.json" with { type: "json" };
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
+import { resolveDatabaseCompactionLaunch } from "./databaseCompactionLaunch.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
@@ -362,6 +365,12 @@ const buildObservabilityFragment = (observabilitySettings: BackendObservabilityS
   }),
 });
 
+// A start that compacts the database first: about 30 s per GiB of live data
+// (copy, integrity check, comparison) on a loaded machine, then the ordinary
+// start. Readiness timeouts are only logged, never fatal, but a budget that
+// fits keeps the failure snapshot meaningful.
+const DATABASE_COMPACTION_READINESS_TIMEOUT = Duration.minutes(30);
+
 export function resolveDesktopApplicationPath(
   platform: NodeJS.Platform,
   executablePath: string,
@@ -385,6 +394,10 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
     const backendExposure = yield* serverExposure.backendConfig;
+    const databaseCompaction = resolveDatabaseCompactionLaunch({
+      stateDir: environment.stateDir,
+      argv: process.argv,
+    });
     const updaterDir = environment.isPackaged
       ? environment.path.join(environment.resourcesPath, "app-update")
       : environment.path.join(environment.rootDir, "apps/desktop/resources/app-update");
@@ -437,6 +450,8 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         ),
         T3CODE_DESKTOP_ROOT_PID: String(process.pid),
         T3CODE_DESKTOP_UPDATE_HEALTH_URL: backendExposure.httpBaseUrl.toString(),
+        [DEFER_DATABASE_COMPACTION_ENV]:
+          databaseCompaction === "defer" ? "update-launch" : undefined,
       },
       // Primary wants process.env (PATH, dev-runner's T3CODE_HOME, etc.).
       extendEnv: true,
@@ -445,6 +460,9 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       httpBaseUrl: backendExposure.httpBaseUrl,
       captureOutput: true,
       preflightFailure: Option.none(),
+      ...(databaseCompaction === "compact"
+        ? { readinessTimeout: DATABASE_COMPACTION_READINESS_TIMEOUT }
+        : {}),
     } satisfies DesktopBackendManager.DesktopBackendStartConfig;
   },
 );
@@ -553,6 +571,12 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
       forwardedEnv[name] = value;
       forwardedEnvNames.push(name);
     }
+  }
+  // In WSL-only mode the updater health-checks this backend, so it defers a
+  // scheduled database compaction on update launches just as the primary does.
+  if (isUpdateLaunch(process.argv)) {
+    forwardedEnv[DEFER_DATABASE_COMPACTION_ENV] = "update-launch";
+    forwardedEnvNames.push(DEFER_DATABASE_COMPACTION_ENV);
   }
 
   // Build an explicit copy of process.env minus T3CODE_HOME (dev-runner

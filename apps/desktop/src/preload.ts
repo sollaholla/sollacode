@@ -254,6 +254,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(IpcChannels.INTENTIONAL_SHUTDOWN_CHANNEL, wrappedListener);
     };
   },
+  relaunchForDatabaseCompaction: () =>
+    ipcRenderer.invoke(IpcChannels.RELAUNCH_FOR_DATABASE_COMPACTION_CHANNEL),
   permissions: {
     getSnapshot: () => ipcRenderer.invoke(IpcChannels.GET_DESKTOP_PERMISSIONS_CHANNEL),
     request: (input) => ipcRenderer.invoke(IpcChannels.REQUEST_DESKTOP_PERMISSION_CHANNEL, input),

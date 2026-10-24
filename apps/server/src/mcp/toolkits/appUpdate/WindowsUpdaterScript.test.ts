@@ -17,8 +17,9 @@ it("relaunches Windows independently of the updater console", async () => {
   expect(script).toContain("CREATE_NEW_PROCESS_GROUP");
   expect(script).toContain("CreateProcessW");
   expect(script).toContain('Write-Output "Windows updater process $PID started."');
+  expect(script).toContain('$launchMarker = "--solla-update-launch=$([guid]::NewGuid())"');
   expect(script).toContain(
-    '$launchedPid = Start-DetachedProcess -Path $Target -Arguments "--auto-resume"',
+    '$launchedPid = Start-DetachedProcess -Path $Target -Arguments "--auto-resume $launchMarker"',
   );
   expect(script).not.toContain('Start-Process -FilePath $Target -ArgumentList "--auto-resume"');
   expect(script.trimEnd().endsWith("exit 0")).toBe(true);

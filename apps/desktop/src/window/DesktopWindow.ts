@@ -9,6 +9,7 @@ import * as Electron from "electron";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import { withDesktopRelaunchArguments } from "../app/DesktopLifecycle.logic.ts";
+import { resolveDatabaseCompactionLaunch } from "../backend/databaseCompactionLaunch.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
@@ -161,12 +162,18 @@ function escapeHtml(value: string): string {
   );
 }
 
-function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean, displayName: string): string {
+export function buildConnectingSplashDataUrl(
+  shouldUseDarkColors: boolean,
+  displayName: string,
+  // Set when the backend has slow work to do before it answers, such as a
+  // database compaction scheduled from Settings, so a long start does not look hung.
+  notice?: { readonly label: string; readonly detail: string },
+): string {
   const background = getInitialWindowBackgroundColor(shouldUseDarkColors);
   const label = shouldUseDarkColors ? "#9ca3af" : "#6b7280";
   const accent = shouldUseDarkColors ? "#f8fafc" : "#1f2937";
   const track = shouldUseDarkColors ? "rgba(248,250,252,0.18)" : "rgba(31,41,55,0.18)";
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.logo{width:72px;height:72px;border-radius:18px;-webkit-user-drag:none}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><img class="logo" src="${SPLASH_LOGO_DATA_URL}" alt=""><div class="spinner"></div><div class="label">Starting ${escapeHtml(displayName)}…</div></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.logo{width:72px;height:72px;border-radius:18px;-webkit-user-drag:none}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}.detail{font-size:12px;opacity:.8;max-width:280px;text-align:center;line-height:1.4;margin-top:-10px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><img class="logo" src="${SPLASH_LOGO_DATA_URL}" alt=""><div class="spinner"></div><div class="label">${notice === undefined ? `Starting ${escapeHtml(displayName)}…` : escapeHtml(notice.label)}</div>${notice === undefined ? "" : `<div class="detail">${escapeHtml(notice.detail)}</div>`}</body></html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
@@ -1019,7 +1026,21 @@ export const make = Effect.gen(function* () {
         splash.show();
       }
     });
-    void splash.loadURL(buildConnectingSplashDataUrl(shouldUseDarkColors, environment.displayName));
+    const compacting =
+      resolveDatabaseCompactionLaunch({ stateDir: environment.stateDir, argv: process.argv }) ===
+      "compact";
+    void splash.loadURL(
+      buildConnectingSplashDataUrl(
+        shouldUseDarkColors,
+        environment.displayName,
+        compacting
+          ? {
+              label: "Compacting the database…",
+              detail: `${environment.displayName} opens when it finishes. This can take a few minutes.`,
+            }
+          : undefined,
+      ),
+    );
     yield* logWindowInfo("connecting splash shown");
   }).pipe(
     // The splash is best-effort UX — never let it fail startup.

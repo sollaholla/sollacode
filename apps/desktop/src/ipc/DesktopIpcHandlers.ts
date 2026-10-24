@@ -68,6 +68,7 @@ import {
   sendRemoteControlInput,
 } from "./methods/remoteControl.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
+import { relaunchForDatabaseCompaction } from "./methods/databaseCompaction.ts";
 import {
   completeDesktopPermissionsOnboarding,
   getDesktopPermissions,
@@ -120,6 +121,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(openDesktopPermissionSettings);
   yield* ipc.handle(completeDesktopPermissionsOnboarding);
   yield* ipc.handle(relaunchForDesktopPermissions);
+  yield* ipc.handle(relaunchForDatabaseCompaction);
 
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(confirm);

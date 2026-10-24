@@ -238,7 +238,11 @@ try {
   # The desktop backend intentionally runs Electron as Node. Never leak that
   # flag into the relaunched GUI process.
   Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-  $launchedPid = Start-DetachedProcess -Path $Target -Arguments "--auto-resume"
+  # The marker tells the relaunched app it is being health-checked, so it
+  # leaves a database compaction scheduled from Settings for the next start
+  # instead of spending minutes on it before answering.
+  $launchMarker = "--solla-update-launch=$([guid]::NewGuid())"
+  $launchedPid = Start-DetachedProcess -Path $Target -Arguments "--auto-resume $launchMarker"
   Write-Output "Started detached Solla Code process $launchedPid."
 
   $healthy = $false

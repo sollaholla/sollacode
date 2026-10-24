@@ -65,6 +65,7 @@ export class DesktopLifecycle extends Context.Service<
   {
     readonly relaunch: (
       reason: string,
+      options?: { readonly ordinaryLaunch?: boolean },
     ) => Effect.Effect<void, never, DesktopLifecycleRuntimeServices>;
     readonly register: Effect.Effect<
       void,
@@ -204,7 +205,7 @@ function quitFromSignal(
 }
 
 export const make = DesktopLifecycle.of({
-  relaunch: Effect.fn("desktop.lifecycle.relaunch")(function* (reason) {
+  relaunch: Effect.fn("desktop.lifecycle.relaunch")(function* (reason, options) {
     const electronApp = yield* ElectronApp.ElectronApp;
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const state = yield* DesktopState.DesktopState;
@@ -218,7 +219,7 @@ export const make = DesktopLifecycle.of({
         // a stuck provider from silently losing the restart request.
         yield* electronApp.relaunch({
           execPath: process.execPath,
-          args: [...withDesktopRelaunchArguments(process.argv.slice(1))],
+          args: [...withDesktopRelaunchArguments(process.argv.slice(1), options)],
         });
       }
       yield* notifyIntentionalShutdown;

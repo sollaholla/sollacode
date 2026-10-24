@@ -1,3 +1,5 @@
+import { withoutUpdateLaunchArgument } from "@t3tools/shared/databaseCompaction";
+
 export function shouldInterceptWindowCloseForQuit(input: {
   readonly platform: NodeJS.Platform;
   readonly quitAllowed: boolean;
@@ -69,7 +71,17 @@ const AUTO_RESUME_ARGUMENT = "--auto-resume";
  * A desktop relaunch can interrupt a provider while the backend drains. Carry
  * the recovery signal into the replacement process, but never duplicate it
  * when the current launch was itself an auto-resume.
+ *
+ * `ordinaryLaunch` drops the updater's launch marker, so the replacement is
+ * not treated as an update launch (which leaves a scheduled database
+ * compaction for later). Only a relaunch asked for after the updater's health
+ * check has passed may drop it: the marker is how a failed update finds the
+ * launch to stop.
  */
-export function withDesktopRelaunchArguments(argv: readonly string[]): readonly string[] {
-  return argv.includes(AUTO_RESUME_ARGUMENT) ? argv : [...argv, AUTO_RESUME_ARGUMENT];
+export function withDesktopRelaunchArguments(
+  argv: readonly string[],
+  options?: { readonly ordinaryLaunch?: boolean },
+): readonly string[] {
+  const kept = options?.ordinaryLaunch === true ? withoutUpdateLaunchArgument(argv) : argv;
+  return kept.includes(AUTO_RESUME_ARGUMENT) ? kept : [...kept, AUTO_RESUME_ARGUMENT];
 }

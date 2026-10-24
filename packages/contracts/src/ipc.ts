@@ -1404,6 +1404,11 @@ export interface DesktopBridge {
   getWindowFullscreenState: () => boolean;
   onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => () => void;
   onIntentionalShutdown: (listener: () => void) => () => void;
+  /**
+   * Quit and reopen the app as an ordinary launch, so a database compaction
+   * scheduled for the next start runs now. Undefined in older preloads.
+   */
+  relaunchForDatabaseCompaction?: () => Promise<void>;
   /** macOS permission status and first-run setup. Undefined in older preloads. */
   permissions?: DesktopPermissionsBridge;
   /**

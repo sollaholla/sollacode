@@ -57,6 +57,11 @@ server does not answer within about two minutes, the installer stops that launch
 it started, then restores and relaunches the previous app, so only one copy is left running.
 Installation diagnostics are written to `desktop-app-update.log` in the server logs directory.
 
+The relaunch carries a `--solla-update-launch=<id>` marker on macOS and Windows. A database
+compaction scheduled in Settings → Storage waits while that marker is present, so the health check
+is never spent compacting; it runs at the next ordinary start. See
+[Compacting the database](./storage.md#compacting-the-database).
+
 For source-hosted servers, build the matching Solla revision on the host and restart the same launch command with the same state directory and connection options. The inherited systemd installer currently fetches upstream packages; see [Background services](./background-service.md).
 
 ## After the Update

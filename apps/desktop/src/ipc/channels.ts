@@ -27,6 +27,7 @@ export const OPEN_DESKTOP_PERMISSION_SETTINGS_CHANNEL = "desktop:open-permission
 export const COMPLETE_DESKTOP_PERMISSIONS_ONBOARDING_CHANNEL =
   "desktop:complete-permissions-onboarding";
 export const RELAUNCH_FOR_DESKTOP_PERMISSIONS_CHANNEL = "desktop:relaunch-for-permissions";
+export const RELAUNCH_FOR_DATABASE_COMPACTION_CHANNEL = "desktop:relaunch-for-database-compaction";
 export const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
 export const GET_LOCAL_ENVIRONMENT_BOOTSTRAPS_CHANNEL = "desktop:get-local-environment-bootstraps";
 export const GET_LOCAL_ENVIRONMENT_BEARER_TOKEN_CHANNEL =

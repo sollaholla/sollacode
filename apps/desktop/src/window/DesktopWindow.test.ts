@@ -396,6 +396,24 @@ describe("DesktopWindow", () => {
     assert.include(html, "default-src 'none'");
   });
 
+  it("says the database is compacting on the starting splash when it is", () => {
+    const decode = (url: string) =>
+      decodeURIComponent(url.slice("data:text/html;charset=utf-8,".length));
+    assert.include(
+      decode(DesktopWindow.buildConnectingSplashDataUrl(false, "Solla Code")),
+      "Starting Solla Code…",
+    );
+    const compacting = decode(
+      DesktopWindow.buildConnectingSplashDataUrl(false, "Solla Code", {
+        label: "Compacting the database…",
+        detail: "Solla Code opens when it finishes.",
+      }),
+    );
+    assert.include(compacting, "Compacting the database…");
+    assert.include(compacting, "Solla Code opens when it finishes.");
+    assert.notInclude(compacting, "Starting Solla Code");
+  });
+
   it("forwards the explicit auto-resume argument to the renderer startup URL", () => {
     assert.equal(
       DesktopWindow.withStartupAutoResumeRequest("sollacode://app/", [
