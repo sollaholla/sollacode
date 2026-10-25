@@ -15,7 +15,11 @@ import {
   type RemoteControlHostPublishFrameInput,
   type RemoteControlHostReportStatusInput,
   type RemoteControlHostAcknowledgeInputInput,
+  type RemoteControlHostMediaTicketInput,
   type RemoteControlHostPublishVideoChunkInput,
+  type RemoteControlHostReportPointerInput,
+  type RemoteControlMediaTicketInput,
+  type MediaChannelTicket,
   type RemoteControlVideoChunk,
   type RemoteControlHostRespondInput,
   type RemoteControlHostStreamEvent,
@@ -36,6 +40,8 @@ import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+
+import * as MediaRelay from "../media/MediaRelay.ts";
 
 interface RemoteControlHostConnection {
   readonly host: RemoteControlHost;
@@ -183,8 +189,27 @@ export class RemoteControlBroker extends Context.Service<
       input: RemoteControlCancelInput,
       controllerSessionId: AuthSessionId,
     ) => Effect.Effect<RemoteControlSession, RemoteControlBrokerError>;
+    /** A controller's ticket to subscribe to its session's media topic. */
+    readonly issueMediaTicket: (
+      input: RemoteControlMediaTicketInput,
+      controllerSessionId: AuthSessionId,
+    ) => Effect.Effect<MediaChannelTicket, RemoteControlBrokerError>;
+    /** The host's ticket to publish a session's picture. */
+    readonly issueHostMediaTicket: (
+      input: RemoteControlHostMediaTicketInput,
+      hostSessionId: AuthSessionId,
+    ) => Effect.Effect<MediaChannelTicket, RemoteControlBrokerError>;
+    readonly reportPointer: (
+      input: RemoteControlHostReportPointerInput,
+      hostSessionId: AuthSessionId,
+    ) => Effect.Effect<void, RemoteControlBrokerError>;
   }
 >()("t3/remoteControl/RemoteControlBroker") {}
+
+/** The media-channel topic carrying one session's picture. */
+export function remoteControlMediaTopic(sessionId: string): string {
+  return `remote-control/${sessionId}`;
+}
 
 function isTerminalStatus(status: RemoteControlSession["status"]): boolean {
   return (
@@ -210,6 +235,7 @@ function intersectCapabilities(
 
 export const make = Effect.gen(function* RemoteControlBrokerMake() {
   const crypto = yield* Crypto.Crypto;
+  const mediaRelay = yield* MediaRelay.MediaRelay;
   const state = yield* SynchronizedRef.make<RemoteControlBrokerState>({
     host: null,
     sessions: new Map(),
@@ -234,6 +260,30 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
 
   /** Last cursor shape broadcast per session — same edge collapsing again. */
   const cursorShapeBySession = yield* Ref.make(new Map<string, string>());
+
+  /**
+   * Watchers per session that take the picture from the watch stream itself
+   * (MediaRecorder chunks or JPEG frames) rather than the media channel. The
+   * host runs its legacy encoder only while this is above zero, so a session
+   * watched over the media channel never pays for a second encode.
+   */
+  const legacyWatchersBySession = yield* Ref.make(new Map<string, number>());
+
+  const announceVideoDemand = Effect.fn("RemoteControlBroker.announceVideoDemand")(function* (
+    record: RemoteControlSessionRecord,
+  ) {
+    if (record.session.status !== "approved") return;
+    const legacyWatchers =
+      (yield* Ref.get(legacyWatchersBySession)).get(String(record.session.sessionId)) ?? 0;
+    // Best-effort like the restart request: a full host queue is a host
+    // that is already behind, and the next change re-announces the count.
+    yield* Queue.offer(record.hostQueue, {
+      type: "video-demand",
+      connectionId: record.hostConnectionId,
+      sessionId: record.session.sessionId,
+      legacyWatchers,
+    }).pipe(Effect.ignore);
+  });
 
   const publishCursorShapeIfChanged = Effect.fn("RemoteControlBroker.publishCursorShape")(
     function* (record: RemoteControlSessionRecord, shape: string | undefined) {
@@ -276,6 +326,20 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
       type: "session-updated",
       session: record.session,
     };
+    // Every ending passes through here, so this is the one place the media
+    // topic is closed: its sockets drop and its unredeemed tickets die.
+    if (isTerminalStatus(record.session.status)) {
+      yield* mediaRelay.closeTopic(
+        remoteControlMediaTopic(record.session.sessionId),
+        "The remote-control session ended.",
+      );
+      yield* Ref.update(legacyWatchersBySession, (current) => {
+        if (!current.has(String(record.session.sessionId))) return current;
+        const next = new Map(current);
+        next.delete(String(record.session.sessionId));
+        return next;
+      });
+    }
     yield* PubSub.publish(record.changes, event);
   });
 
@@ -655,6 +719,10 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
         if (isTerminalStatus(result.record.session.status)) {
           yield* expireStalePendingSessions();
           yield* pruneTerminalSessions();
+        } else {
+          // A watcher usually attaches while the request is still pending, so
+          // approval is the first moment the host can act on its demand.
+          yield* announceVideoDemand(result.record);
         }
         return result.record.session;
     }
@@ -1118,11 +1186,33 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
             sessionId: input.sessionId,
           });
         }
+        const sessionKey = String(initialRecord.session.sessionId);
+        const adjustLegacyWatchers = (delta: number) =>
+          Effect.gen(function* () {
+            yield* Ref.update(legacyWatchersBySession, (current) => {
+              const next = new Map(current);
+              const count = Math.max(0, (next.get(sessionKey) ?? 0) + delta);
+              if (count === 0) next.delete(sessionKey);
+              else next.set(sessionKey, count);
+              return next;
+            });
+            const latest = (yield* SynchronizedRef.get(state)).sessions.get(sessionKey);
+            if (latest) yield* announceVideoDemand(latest);
+          });
         return Stream.unwrap(
           Effect.gen(function* () {
             const changes = yield* PubSub.subscribe(initialRecord.changes);
+            if (input.mediaChannel === true) {
+              // The picture arrives over the media channel; this stream only
+              // carries session, pointer, status and input receipts.
+              return Stream.concat(
+                Stream.make({ type: "session-updated" as const, session: initialRecord.session }),
+                Stream.fromSubscription(changes),
+              );
+            }
             const frames = yield* PubSub.subscribe(initialRecord.frames);
             const videoChunks = yield* PubSub.subscribe(initialRecord.videoChunks);
+            yield* Effect.acquireRelease(adjustLegacyWatchers(1), () => adjustLegacyWatchers(-1));
             // A subscriber joining an ALREADY-approved session lands in the
             // middle of a WebM container, and Chromium's demuxer hard-fails
             // on the discontinuity (replaying just the retained init segment
@@ -1158,6 +1248,98 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
         );
       }),
   );
+
+  /** Checks shared by every host-side call that names a session. */
+  const authorizeHostSession = Effect.fn("RemoteControlBroker.authorizeHostSession")(function* (
+    input: {
+      readonly clientId: string;
+      readonly connectionId: string;
+      readonly sessionId: RemoteControlSessionId;
+    },
+    hostSessionId: AuthSessionId,
+  ) {
+    const current = yield* SynchronizedRef.get(state);
+    const host = current.host;
+    const record = current.sessions.get(input.sessionId);
+    if (!record) {
+      return yield* new RemoteControlSessionNotFoundError({ sessionId: input.sessionId });
+    }
+    if (
+      !host ||
+      host.sessionId !== hostSessionId ||
+      host.host.clientId !== input.clientId ||
+      host.connectionId !== input.connectionId ||
+      record.hostConnectionId !== input.connectionId
+    ) {
+      return yield* new RemoteControlSessionAccessDeniedError({ sessionId: input.sessionId });
+    }
+    return record;
+  });
+
+  /** Media flows only for an approved session that was granted the screen. */
+  const requireScreen = Effect.fn("RemoteControlBroker.requireScreen")(function* (
+    record: RemoteControlSessionRecord,
+  ) {
+    if (record.session.status !== "approved") {
+      return yield* new RemoteControlInvalidTransitionError({
+        sessionId: record.session.sessionId,
+        status: record.session.status,
+      });
+    }
+    if (!record.session.grantedCapabilities.includes("screen")) {
+      return yield* new RemoteControlCapabilityDeniedError({
+        sessionId: record.session.sessionId,
+        requiredCapability: "screen",
+      });
+    }
+  });
+
+  const issueMediaTicket: RemoteControlBroker["Service"]["issueMediaTicket"] = Effect.fn(
+    "RemoteControlBroker.issueMediaTicket",
+  )(function* (input, controllerSessionId) {
+    const record = (yield* SynchronizedRef.get(state)).sessions.get(input.sessionId);
+    if (!record) {
+      return yield* new RemoteControlSessionNotFoundError({ sessionId: input.sessionId });
+    }
+    if (record.controllerSessionId !== controllerSessionId) {
+      return yield* new RemoteControlSessionAccessDeniedError({ sessionId: input.sessionId });
+    }
+    yield* requireScreen(record);
+    return yield* mediaRelay.issueTicket({
+      topic: remoteControlMediaTopic(record.session.sessionId),
+      role: "subscribe",
+      isActive: () =>
+        SynchronizedRef.getUnsafe(state).sessions.get(input.sessionId)?.session.status ===
+        "approved",
+    });
+  });
+
+  const issueHostMediaTicket: RemoteControlBroker["Service"]["issueHostMediaTicket"] = Effect.fn(
+    "RemoteControlBroker.issueHostMediaTicket",
+  )(function* (input, hostSessionId) {
+    const record = yield* authorizeHostSession(input, hostSessionId);
+    yield* requireScreen(record);
+    return yield* mediaRelay.issueTicket({
+      topic: remoteControlMediaTopic(record.session.sessionId),
+      role: "publish",
+      isActive: () => {
+        const current = SynchronizedRef.getUnsafe(state);
+        return (
+          current.sessions.get(input.sessionId)?.session.status === "approved" &&
+          current.host?.connectionId === input.connectionId
+        );
+      },
+    });
+  });
+
+  const reportPointer: RemoteControlBroker["Service"]["reportPointer"] = Effect.fn(
+    "RemoteControlBroker.reportPointer",
+  )(function* (input, hostSessionId) {
+    const record = yield* authorizeHostSession(input, hostSessionId);
+    if (record.session.status !== "approved") return;
+    yield* publishPointerLockIfChanged(record, input.pointerLocked);
+    yield* publishCursorShapeIfChanged(record, input.cursorShape);
+  });
 
   const cancel: RemoteControlBroker["Service"]["cancel"] = Effect.fn("RemoteControlBroker.cancel")(
     function* (input, controllerSessionId) {
@@ -1251,6 +1433,9 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     watch,
     sendInput,
     cancel,
+    issueMediaTicket,
+    issueHostMediaTicket,
+    reportPointer,
   });
 }).pipe(Effect.withSpan("RemoteControlBroker.make"));
 

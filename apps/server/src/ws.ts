@@ -83,6 +83,7 @@ import {
   VmAgentWorkspaceOperationError,
   type VmAgentWorkspaceStreamItem,
   type VmAgentCollaborationWireStreamItem,
+  MEDIA_CHANNEL_PATH,
   WS_METHODS,
   WsRpcGroup,
   type ServerConfigStreamProviderStatusesEvent,
@@ -125,6 +126,8 @@ import * as ServerSettings from "./serverSettings.ts";
 import { deleteArchivedThreads } from "./archivedThreadRetention.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
+import * as MediaRelay from "./media/MediaRelay.ts";
+import { mediaChannelRouteHandler } from "./media/mediaChannelRoute.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
 import * as TabAudioRelay from "./preview/TabAudioRelay.ts";
 import * as VmManager from "./vm/VmManager.ts";
@@ -3213,6 +3216,26 @@ const makeWsRpcLayer = (
             remoteControlBroker.cancel(input, currentSessionId),
             { "rpc.aggregate": "remote-control" },
           ),
+        [WS_METHODS.remoteControlMediaTicket]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlMediaTicket,
+            remoteControlBroker.issueMediaTicket(input, currentSessionId),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlHostMediaTicket]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlHostMediaTicket,
+            authorizeDesktopHostEffect(
+              remoteControlBroker.issueHostMediaTicket(input, currentSessionId),
+            ),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlHostReportPointer]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlHostReportPointer,
+            authorizeDesktopHostEffect(remoteControlBroker.reportPointer(input, currentSessionId)),
+            { "rpc.aggregate": "remote-control" },
+          ),
         [WS_METHODS.vmAgentCreate]: (input) =>
           observeRpcEffect(
             WS_METHODS.vmAgentCreate,
@@ -3798,6 +3821,18 @@ const makeWsRpcLayer = (
       });
     }),
   );
+
+/**
+ * The binary media channel. Authenticated by the single-use ticket a
+ * session's owner issued over the RPC socket above, so it shares that
+ * socket's authorization without parsing cookies or bearers itself.
+ */
+export const mediaChannelRouteLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const relay = yield* MediaRelay.MediaRelay;
+    return HttpRouter.add("GET", MEDIA_CHANNEL_PATH, mediaChannelRouteHandler(relay));
+  }),
+);
 
 export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {

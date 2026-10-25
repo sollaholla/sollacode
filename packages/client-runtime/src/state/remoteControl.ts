@@ -33,6 +33,23 @@ export function createRemoteControlEnvironmentAtoms<R, E>(
       idleTtlMs: 0,
       transform: toEventWindows(),
     }),
+    mediaTicket: createEnvironmentRpcCommand(runtime, {
+      label: "remote-control:media-ticket",
+      tag: WS_METHODS.remoteControlMediaTicket,
+    }),
+    hostMediaTicket: createEnvironmentRpcCommand(runtime, {
+      label: "remote-control:host-media-ticket",
+      tag: WS_METHODS.remoteControlHostMediaTicket,
+    }),
+    reportPointer: createEnvironmentRpcCommand(runtime, {
+      label: "remote-control:report-pointer",
+      tag: WS_METHODS.remoteControlHostReportPointer,
+      scheduler: hostScheduler,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.sessionId]),
+      },
+    }),
     requestAccess: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:remote-control:request-access",
       tag: WS_METHODS.remoteControlRequestAccess,

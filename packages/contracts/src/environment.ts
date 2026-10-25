@@ -55,6 +55,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server answers server.getDatabaseStorage and can compact its database
       at the next start. Clients hide the Storage section without it. */
   databaseCompaction: Schema.optionalKey(Schema.Boolean),
+  /** Server relays remote-control video over the binary media channel
+      (`/ws/media`) and answers remoteControl.mediaTicket. Viewers stay on the
+      watch stream's MediaRecorder/JPEG picture without it. */
+  remoteControlMediaChannel: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */

@@ -13,12 +13,20 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as MediaRelay from "../media/MediaRelay.ts";
 import * as RemoteControlBroker from "./RemoteControlBroker.ts";
 
-const makeBroker = RemoteControlBroker.make.pipe(Effect.provide(NodeServices.layer));
+const TestServices = Layer.provideMerge(MediaRelay.layer, NodeServices.layer);
+const makeBroker = RemoteControlBroker.make.pipe(Effect.provide(TestServices));
+const makeBrokerWithRelay = Effect.gen(function* () {
+  const relay = yield* MediaRelay.MediaRelay;
+  const broker = yield* RemoteControlBroker.make;
+  return { broker, relay };
+}).pipe(Effect.provide(TestServices));
 
 const hostSessionId = AuthSessionId.make("host-session");
 const controllerSessionId = AuthSessionId.make("controller-session");
@@ -974,4 +982,228 @@ it.effect(
         ]);
       }),
     ),
+);
+
+/** Lets forked stream consumers and queue hand-offs run to quiescence. */
+const settle = Effect.repeat(Effect.yieldNow, { times: 8 });
+
+/**
+ * Connects the interactive host, files a request, and approves it, returning
+ * what the media-channel tests need. Host events are collected as they come.
+ */
+const approvedSession = Effect.fn("test.approvedSession")(function* (
+  broker: RemoteControlBroker.RemoteControlBroker["Service"],
+  grantedCapabilities: ReadonlyArray<"screen" | "pointer" | "keyboard"> = ["screen"],
+) {
+  const hostEvents: RemoteControlHostStreamEvent[] = [];
+  const hostStream = yield* broker.connectHost(interactiveHost, hostSessionId);
+  yield* Stream.runForEach(hostStream, (event) =>
+    Effect.sync(() => {
+      hostEvents.push(event);
+    }),
+  ).pipe(Effect.forkScoped);
+  yield* settle;
+  const waiting = yield* broker.requestAccess(
+    { clientId: "controller-client", requestedCapabilities: ["screen", "pointer", "keyboard"] },
+    requester,
+  );
+  yield* settle;
+  const connected = hostEvents.find((event) => event.type === "connected");
+  const requested = hostEvents.find((event) => event.type === "access-requested");
+  if (connected?.type !== "connected" || requested?.type !== "access-requested") {
+    return yield* Effect.die("host did not see the request");
+  }
+  yield* broker.respondToRequest(
+    {
+      clientId: interactiveHost.clientId,
+      connectionId: connected.connectionId,
+      requestId: requested.requestId,
+      decision: "approve",
+      grantedCapabilities: [...grantedCapabilities],
+    },
+    hostSessionId,
+  );
+  yield* settle;
+  return { hostEvents, connectionId: connected.connectionId, sessionId: waiting.sessionId };
+});
+
+const demandCounts = (events: ReadonlyArray<RemoteControlHostStreamEvent>) =>
+  events.flatMap((event) => (event.type === "video-demand" ? [event.legacyWatchers] : []));
+
+it.effect("tells the host how many watchers still need the legacy picture", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const { hostEvents, sessionId } = yield* approvedSession(broker);
+      // Approval announces the count, so a host never encodes on a guess.
+      expect(demandCounts(hostEvents)).toEqual([0]);
+
+      const media = yield* Stream.runDrain(
+        yield* broker.watch({ sessionId, mediaChannel: true }, controllerSessionId),
+      ).pipe(Effect.forkScoped);
+      yield* settle;
+      // A media-channel watcher changes nothing and needs no restart.
+      expect(demandCounts(hostEvents)).toEqual([0]);
+      expect(hostEvents.some((event) => event.type === "video-restart-requested")).toBe(false);
+
+      const legacy = yield* Stream.runDrain(
+        yield* broker.watch({ sessionId }, controllerSessionId),
+      ).pipe(Effect.forkScoped);
+      yield* settle;
+      expect(demandCounts(hostEvents)).toEqual([0, 1]);
+      expect(hostEvents.some((event) => event.type === "video-restart-requested")).toBe(true);
+
+      yield* Fiber.interrupt(legacy);
+      yield* settle;
+      expect(demandCounts(hostEvents)).toEqual([0, 1, 0]);
+      yield* Fiber.interrupt(media);
+    }),
+  ),
+);
+
+it.effect("keeps legacy video off a media-channel watcher's stream", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const { connectionId, sessionId } = yield* approvedSession(broker);
+      const mediaEvents: string[] = [];
+      const legacyEvents: string[] = [];
+      yield* Stream.runForEach(
+        yield* broker.watch({ sessionId, mediaChannel: true }, controllerSessionId),
+        (event) => Effect.sync(() => mediaEvents.push(event.type)),
+      ).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(yield* broker.watch({ sessionId }, controllerSessionId), (event) =>
+        Effect.sync(() => legacyEvents.push(event.type)),
+      ).pipe(Effect.forkScoped);
+      yield* settle;
+      yield* broker.publishVideoChunk(
+        {
+          clientId: interactiveHost.clientId,
+          connectionId,
+          cursorShape: "text",
+          chunk: {
+            sessionId,
+            sequence: 0,
+            capturedAt: "2026-01-01T00:00:00.000Z",
+            mimeType: "video/webm;codecs=vp8",
+            isInit: true,
+            data: "aW5pdA==",
+          },
+        },
+        hostSessionId,
+      );
+      yield* settle;
+      expect(legacyEvents).toContain("video-chunk");
+      expect(mediaEvents).not.toContain("video-chunk");
+      // Control events still reach both.
+      expect(mediaEvents).toContain("cursor-changed");
+      expect(legacyEvents).toContain("cursor-changed");
+    }),
+  ),
+);
+
+it.effect("issues media tickets only to the session's controller and host", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, relay } = yield* makeBrokerWithRelay;
+      const { connectionId, sessionId } = yield* approvedSession(broker);
+
+      const subscribe = yield* broker.issueMediaTicket({ sessionId }, controllerSessionId);
+      expect(yield* relay.redeemTicket(subscribe.ticket)).toMatchObject({
+        topic: RemoteControlBroker.remoteControlMediaTopic(sessionId),
+        role: "subscribe",
+      });
+      // Single use.
+      expect(yield* relay.redeemTicket(subscribe.ticket)).toBeNull();
+
+      const publish = yield* broker.issueHostMediaTicket(
+        { clientId: interactiveHost.clientId, connectionId, sessionId },
+        hostSessionId,
+      );
+      expect((yield* relay.redeemTicket(publish.ticket))?.role).toBe("publish");
+
+      const stranger = yield* broker
+        .issueMediaTicket({ sessionId }, foreignSessionId)
+        .pipe(Effect.flip);
+      expect(stranger).toBeInstanceOf(RemoteControlSessionAccessDeniedError);
+      const wrongHost = yield* broker
+        .issueHostMediaTicket(
+          { clientId: interactiveHost.clientId, connectionId: "another-connection", sessionId },
+          hostSessionId,
+        )
+        .pipe(Effect.flip);
+      expect(wrongHost).toBeInstanceOf(RemoteControlSessionAccessDeniedError);
+    }),
+  ),
+);
+
+it.effect("voids outstanding media tickets when the session ends", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, relay } = yield* makeBrokerWithRelay;
+      const { sessionId } = yield* approvedSession(broker);
+      const ticket = yield* broker.issueMediaTicket({ sessionId }, controllerSessionId);
+      yield* broker.cancel({ sessionId }, controllerSessionId);
+      expect(yield* relay.redeemTicket(ticket.ticket)).toBeNull();
+      const late = yield* broker
+        .issueMediaTicket({ sessionId }, controllerSessionId)
+        .pipe(Effect.flip);
+      expect(late._tag).toBe("RemoteControlInvalidTransitionError");
+    }),
+  ),
+);
+
+it.effect("refuses a media ticket for a pending request", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      yield* Stream.runDrain(yield* broker.connectHost(interactiveHost, hostSessionId)).pipe(
+        Effect.forkScoped,
+      );
+      yield* settle;
+      const waiting = yield* broker.requestAccess(
+        { clientId: "controller-client", requestedCapabilities: ["screen"] },
+        requester,
+      );
+      const refused = yield* broker
+        .issueMediaTicket({ sessionId: waiting.sessionId }, controllerSessionId)
+        .pipe(Effect.flip);
+      expect(refused._tag).toBe("RemoteControlInvalidTransitionError");
+    }),
+  ),
+);
+
+it.effect("relays pointer state reported for a media-channel session as edges", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const { connectionId, sessionId } = yield* approvedSession(broker, ["screen", "pointer"]);
+      const events: string[] = [];
+      yield* Stream.runForEach(
+        yield* broker.watch({ sessionId, mediaChannel: true }, controllerSessionId),
+        (event) =>
+          Effect.sync(() => {
+            if (event.type === "pointer-lock-changed") events.push(`lock:${event.locked}`);
+            if (event.type === "cursor-changed") events.push(`cursor:${event.shape}`);
+          }),
+      ).pipe(Effect.forkScoped);
+      yield* settle;
+      const report = { clientId: interactiveHost.clientId, connectionId, sessionId };
+      yield* broker.reportPointer(
+        { ...report, pointerLocked: true, cursorShape: "text" },
+        hostSessionId,
+      );
+      yield* broker.reportPointer(
+        { ...report, pointerLocked: true, cursorShape: "text" },
+        hostSessionId,
+      );
+      yield* broker.reportPointer({ ...report, pointerLocked: false }, hostSessionId);
+      yield* settle;
+      expect(events).toEqual(["lock:true", "cursor:text", "lock:false"]);
+      const denied = yield* broker
+        .reportPointer({ ...report, pointerLocked: true }, foreignSessionId)
+        .pipe(Effect.flip);
+      expect(denied).toBeInstanceOf(RemoteControlSessionAccessDeniedError);
+    }),
+  ),
 );

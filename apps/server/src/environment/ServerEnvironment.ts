@@ -145,6 +145,7 @@ export const make = Effect.gen(function* () {
       threadSideChats: true,
       archivedThreadBulkDelete: true,
       databaseCompaction: true,
+      remoteControlMediaChannel: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
     },
   };

@@ -323,6 +323,10 @@
     "./base64": {
       "types": "./src/base64.ts",
       "import": "./src/base64.ts"
+    },
+    "./mediaPacket": {
+      "types": "./src/mediaPacket.ts",
+      "import": "./src/mediaPacket.ts"
     }
   },
   "scripts": {

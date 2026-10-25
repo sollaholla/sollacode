@@ -215,7 +215,11 @@ import {
   RemoteControlSendInputInput,
   RemoteControlSession,
   RemoteControlWatchInput,
+  RemoteControlHostMediaTicketInput,
+  RemoteControlHostReportPointerInput,
+  RemoteControlMediaTicketInput,
 } from "./remoteControl.ts";
+import { MediaChannelTicket } from "./mediaChannel.ts";
 import {
   DatabaseStorageError,
   DatabaseStorageStatus,
@@ -359,6 +363,9 @@ export const WS_METHODS = {
   remoteControlWatch: "remoteControl.watch",
   remoteControlSendInput: "remoteControl.sendInput",
   remoteControlCancel: "remoteControl.cancel",
+  remoteControlMediaTicket: "remoteControl.mediaTicket",
+  remoteControlHostMediaTicket: "remoteControl.hostMediaTicket",
+  remoteControlHostReportPointer: "remoteControl.hostReportPointer",
 
   // Agent Stack (named VM agents)
   vmAgentCreate: "vmAgent.create",
@@ -1322,6 +1329,26 @@ export const WsRemoteControlSendInputRpc = Rpc.make(WS_METHODS.remoteControlSend
   error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
 });
 
+export const WsRemoteControlMediaTicketRpc = Rpc.make(WS_METHODS.remoteControlMediaTicket, {
+  payload: RemoteControlMediaTicketInput,
+  success: MediaChannelTicket,
+  error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsRemoteControlHostMediaTicketRpc = Rpc.make(WS_METHODS.remoteControlHostMediaTicket, {
+  payload: RemoteControlHostMediaTicketInput,
+  success: MediaChannelTicket,
+  error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsRemoteControlHostReportPointerRpc = Rpc.make(
+  WS_METHODS.remoteControlHostReportPointer,
+  {
+    payload: RemoteControlHostReportPointerInput,
+    error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsRemoteControlCancelRpc = Rpc.make(WS_METHODS.remoteControlCancel, {
   payload: RemoteControlCancelInput,
   success: RemoteControlSession,
@@ -1638,6 +1665,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsRemoteControlWatchRpc,
   WsRemoteControlSendInputRpc,
   WsRemoteControlCancelRpc,
+  WsRemoteControlMediaTicketRpc,
+  WsRemoteControlHostMediaTicketRpc,
+  WsRemoteControlHostReportPointerRpc,
   WsVmAgentCreateRpc,
   WsVmAgentBuilderOpenRpc,
   WsVmAgentDeleteRpc,

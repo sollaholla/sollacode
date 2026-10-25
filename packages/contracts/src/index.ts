@@ -7,6 +7,7 @@ export * from "./environmentHttp.ts";
 export * from "./desktopBootstrap.ts";
 export * from "./remoteAccess.ts";
 export * from "./remoteControl.ts";
+export * from "./mediaChannel.ts";
 export * from "./desktopPermissions.ts";
 export * from "./ipc.ts";
 export * from "./terminal.ts";

@@ -254,6 +254,34 @@
     "./operations/storage-cleanup": {
       "types": "./src/operations/storageCleanup.ts",
       "default": "./src/operations/storageCleanup.ts"
+    },
+    "./media/video-codecs": {
+      "types": "./src/media/videoCodecs.ts",
+      "default": "./src/media/videoCodecs.ts"
+    },
+    "./media/media-channel-socket": {
+      "types": "./src/media/mediaChannelSocket.ts",
+      "default": "./src/media/mediaChannelSocket.ts"
+    },
+    "./media/encode-size": {
+      "types": "./src/media/mediaEncodeSize.ts",
+      "default": "./src/media/mediaEncodeSize.ts"
+    },
+    "./media/bitrate-controller": {
+      "types": "./src/media/mediaBitrateController.ts",
+      "default": "./src/media/mediaBitrateController.ts"
+    },
+    "./media/video-canvas-renderer": {
+      "types": "./src/media/videoCanvasRenderer.ts",
+      "default": "./src/media/videoCanvasRenderer.ts"
+    },
+    "./media/video-stream-publisher": {
+      "types": "./src/media/videoStreamPublisher.ts",
+      "default": "./src/media/videoStreamPublisher.ts"
+    },
+    "./media/video-stream-subscriber": {
+      "types": "./src/media/videoStreamSubscriber.ts",
+      "default": "./src/media/videoStreamSubscriber.ts"
     }
   },
   "scripts": {

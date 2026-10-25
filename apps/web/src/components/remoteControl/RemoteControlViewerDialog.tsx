@@ -1,4 +1,15 @@
 "use client";
+import {
+  createVideoStreamSubscriber,
+  type VideoStreamSubscriber,
+} from "@t3tools/client-runtime/media/video-stream-subscriber";
+import { detectDecodableCodecs } from "@t3tools/client-runtime/media/video-codecs";
+import { mediaChannelUrl } from "@t3tools/client-runtime/media/media-channel-socket";
+import { RemoteControlMediaDisplays, REMOTE_CONTROL_MEDIA_DISPLAYS_KEY } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import { usePreviewPageVisible } from "../preview/previewPageVisibility";
+import { useEnvironment } from "~/state/environments";
+import { readPreparedConnection } from "~/state/session";
 
 import { RemoteClickMarkers, useRemoteClickFeedback } from "../preview/RemoteClickMarkers";
 
@@ -101,6 +112,8 @@ function failureMessage(result: Parameters<typeof squashAtomCommandFailure>[0]):
 }
 
 /** Magnification steps the two magnifier buttons walk between. */
+const isMediaDisplays = Schema.is(RemoteControlMediaDisplays);
+
 export function RemoteControlViewerDialog(props: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
@@ -108,6 +121,28 @@ export function RemoteControlViewerDialog(props: {
   readonly onOpenChange: (open: boolean) => void;
 }) {
   const { environmentId, environmentLabel, open, onOpenChange } = props;
+  const environment = useEnvironment(environmentId);
+  const pageVisible = usePreviewPageVisible();
+  const [mediaCodecs, setMediaCodecs] = useState<ReadonlyArray<string>>([]);
+  const [mediaDisabled, setMediaDisabled] = useState(false);
+  const frameCanvasRef = useRef<HTMLCanvasElement>(null);
+  const mediaSubscriberRef = useRef<VideoStreamSubscriber | null>(null);
+  const mediaEnabled =
+    !mediaDisabled &&
+    mediaCodecs.length > 0 &&
+    environment?.serverConfig?.environment.capabilities.remoteControlMediaChannel === true;
+  const mediaTicket = useAtomCommand(remoteControlEnvironment.mediaTicket, {
+    reportFailure: false,
+  });
+  useEffect(() => {
+    let cancelled = false;
+    void detectDecodableCodecs().then((codecs) => {
+      if (!cancelled) setMediaCodecs(codecs);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const generatedId = useId();
   const clientId = `controller-${generatedId}`;
   const [session, setSession] = useState<RemoteControlSession | null>(null);
@@ -236,7 +271,7 @@ export function RemoteControlViewerDialog(props: {
     open && session
       ? remoteControlEnvironment.watch({
           environmentId,
-          input: { sessionId: session.sessionId },
+          input: { sessionId: session.sessionId, mediaChannel: mediaEnabled },
         })
       : null,
   );
@@ -246,6 +281,7 @@ export function RemoteControlViewerDialog(props: {
     requestStartedRef.current = true;
     setError(null);
     setFrameData(null);
+    setMediaDisabled(false);
     setHasRenderedFrame(false);
     setFirstFrameSlow(false);
 
@@ -492,6 +528,12 @@ export function RemoteControlViewerDialog(props: {
   // fullscreen included) and object-contain letterboxes INSIDE the element —
   // so pointer math must use the picture's rectangle, not the element's.
   const remoteSurfaceRect = useCallback(() => {
+    const canvas = frameCanvasRef.current;
+    if (canvas)
+      return objectContainContentRect(canvas.getBoundingClientRect(), {
+        width: canvas.width,
+        height: canvas.height,
+      });
     const video = frameVideoRef.current;
     if (video) {
       return objectContainContentRect(video.getBoundingClientRect(), {
@@ -660,6 +702,70 @@ export function RemoteControlViewerDialog(props: {
   useEffect(() => {
     if (!canPointer) releasePressedInputs();
   }, [canPointer, releasePressedInputs]);
+  const zoomRef = useRef(zoomView.view.zoom);
+  zoomRef.current = zoomView.view.zoom;
+  useEffect(() => {
+    const canvas = frameCanvasRef.current;
+    if (!open || !pageVisible || !isApproved || !session || !mediaEnabled || !canvas) return;
+    const subscriber = createVideoStreamSubscriber({
+      canvas,
+      codecs: mediaCodecs,
+      resolveUrl: async () => {
+        const result = await mediaTicket({
+          environmentId,
+          input: { sessionId: session.sessionId },
+        });
+        if (result._tag === "Failure") throw new Error(failureMessage(result));
+        const connection = readPreparedConnection(environmentId);
+        if (!connection) throw new Error("The environment is disconnected.");
+        return mediaChannelUrl(connection.socketUrl, result.value.ticket);
+      },
+      viewport: () => {
+        const rect = canvas.parentElement?.getBoundingClientRect();
+        return {
+          width: Math.max(1, rect?.width ?? 640),
+          height: Math.max(1, rect?.height ?? 480),
+          devicePixelRatio: window.devicePixelRatio || 1,
+          zoom: zoomRef.current,
+        };
+      },
+      onFrame: (_frame, config) => {
+        setHasRenderedFrame(true);
+        setClickFrameSize((current) =>
+          current?.width === config.sourceWidth && current.height === config.sourceHeight
+            ? current
+            : { width: config.sourceWidth, height: config.sourceHeight },
+        );
+      },
+      onBroadcast: (key, body) => {
+        if (key !== REMOTE_CONTROL_MEDIA_DISPLAYS_KEY || !isMediaDisplays(body)) return;
+        setDisplays(body.displays);
+        if (body.activeDisplayId) setActiveDisplayId(body.activeDisplayId);
+      },
+      onFatal: () => setMediaDisabled(true),
+    });
+    mediaSubscriberRef.current = subscriber;
+    const resize = new ResizeObserver(() => subscriber.updateViewport());
+    resize.observe(canvas.parentElement ?? canvas);
+    return () => {
+      resize.disconnect();
+      subscriber.stop();
+      mediaSubscriberRef.current = null;
+    };
+  }, [
+    environmentId,
+    isApproved,
+    mediaCodecs,
+    mediaEnabled,
+    mediaTicket,
+    open,
+    pageVisible,
+    session?.sessionId,
+  ]);
+  useEffect(() => {
+    mediaSubscriberRef.current?.updateViewport();
+  }, [zoomView.view.zoom]);
+
   const surface = resolveRemoteControlSurface({
     isApproved,
     videoMimeType,
@@ -1454,7 +1560,14 @@ export function RemoteControlViewerDialog(props: {
                 ref={zoomView.paneRef}
                 className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden"
               >
-                {surface.media === "video" ? (
+                {mediaEnabled ? (
+                  <canvas
+                    ref={frameCanvasRef}
+                    aria-label={`Live desktop view from ${environmentLabel}`}
+                    style={zoomView.style}
+                    className="pointer-events-none absolute inset-0 size-full touch-none select-none object-contain"
+                  />
+                ) : surface.media === "video" ? (
                   <video
                     ref={frameVideoRef}
                     aria-label={`Live desktop view from ${environmentLabel}`}

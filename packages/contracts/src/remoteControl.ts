@@ -71,6 +71,13 @@ export type RemoteControlRequestAccessInput = typeof RemoteControlRequestAccessI
 
 export const RemoteControlWatchInput = Schema.Struct({
   sessionId: RemoteControlSessionId,
+  /**
+   * This watcher takes the picture from the media channel, so the stream
+   * carries only session, input, pointer and status events. Older servers
+   * ignore the key and keep sending video, which a viewer that set it still
+   * renders - that is the version-skew path, not an error.
+   */
+  mediaChannel: Schema.optionalKey(Schema.Boolean),
 });
 export type RemoteControlWatchInput = typeof RemoteControlWatchInput.Type;
 
@@ -274,6 +281,47 @@ export const RemoteControlHostAcknowledgeInputInput = Schema.Struct({
 export type RemoteControlHostAcknowledgeInputInput =
   typeof RemoteControlHostAcknowledgeInputInput.Type;
 
+/**
+ * Pointer state for sessions whose picture travels over the media channel.
+ * The legacy publish calls stamp this on every chunk; the media channel never
+ * calls them, so the host reports edges here instead. The broker turns them
+ * into the same `pointer-lock-changed` / `cursor-changed` watch events.
+ */
+export const RemoteControlHostReportPointerInput = Schema.Struct({
+  clientId: RemoteControlClientId,
+  connectionId: RemoteControlConnectionId,
+  sessionId: RemoteControlSessionId,
+  pointerLocked: Schema.optionalKey(Schema.Boolean),
+  cursorShape: Schema.optionalKey(RemoteControlCursorShape),
+});
+export type RemoteControlHostReportPointerInput = typeof RemoteControlHostReportPointerInput.Type;
+
+/** A controller asking to subscribe to its session's picture. */
+export const RemoteControlMediaTicketInput = Schema.Struct({
+  sessionId: RemoteControlSessionId,
+});
+export type RemoteControlMediaTicketInput = typeof RemoteControlMediaTicketInput.Type;
+
+/** The host asking to publish its session's picture. */
+export const RemoteControlHostMediaTicketInput = Schema.Struct({
+  clientId: RemoteControlClientId,
+  connectionId: RemoteControlConnectionId,
+  sessionId: RemoteControlSessionId,
+});
+export type RemoteControlHostMediaTicketInput = typeof RemoteControlHostMediaTicketInput.Type;
+
+/** Media-channel broadcast key for the host's monitor roster. */
+export const REMOTE_CONTROL_MEDIA_DISPLAYS_KEY = "displays";
+
+/** Body of the `displays` broadcast: what the legacy chunks carried per chunk. */
+export const RemoteControlMediaDisplays = Schema.Struct({
+  activeDisplayId: Schema.optional(RemoteControlOpaqueId),
+  displays: Schema.Array(RemoteControlDisplay).check(
+    Schema.isMaxLength(REMOTE_CONTROL_MAX_DISPLAYS),
+  ),
+});
+export type RemoteControlMediaDisplays = typeof RemoteControlMediaDisplays.Type;
+
 export const RemoteControlHostEndInput = Schema.Struct({
   clientId: RemoteControlClientId,
   connectionId: RemoteControlConnectionId,
@@ -412,6 +460,17 @@ export const RemoteControlHostStreamEvent = Schema.Union([
     type: Schema.Literal("video-restart-requested"),
     connectionId: RemoteControlConnectionId,
     sessionId: RemoteControlSessionId,
+  }),
+  // How many watchers of this session still want the picture on the watch
+  // stream itself (MediaRecorder chunks or JPEG frames) rather than over the
+  // media channel. The host runs that legacy encoder only while this is
+  // above zero. Sent on approval and on every change; host and server ship
+  // together, so this union can grow without skew.
+  Schema.Struct({
+    type: Schema.Literal("video-demand"),
+    connectionId: RemoteControlConnectionId,
+    sessionId: RemoteControlSessionId,
+    legacyWatchers: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   }),
 ]);
 export type RemoteControlHostStreamEvent = typeof RemoteControlHostStreamEvent.Type;

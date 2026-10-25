@@ -1,4 +1,12 @@
 "use client";
+import {
+  createVideoStreamPublisher,
+  supportsVideoStreamPublishing,
+  type VideoStreamPublisher,
+} from "@t3tools/client-runtime/media/video-stream-publisher";
+import { mediaChannelUrl } from "@t3tools/client-runtime/media/media-channel-socket";
+import { readPreparedConnection } from "~/state/session";
+import { REMOTE_CONTROL_MEDIA_DISPLAYS_KEY } from "@t3tools/contracts";
 
 import { acknowledgeRemoteClick } from "./acknowledgeRemoteClick";
 
@@ -158,6 +166,16 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
   const acknowledgeInput = useAtomCommand(remoteControlEnvironment.acknowledgeInput, {
     reportFailure: false,
   });
+  const hostMediaTicket = useAtomCommand(remoteControlEnvironment.hostMediaTicket, {
+    reportFailure: false,
+  });
+  const reportPointer = useAtomCommand(remoteControlEnvironment.reportPointer, {
+    reportFailure: false,
+  });
+  const [legacyDemand, setLegacyDemand] = useState<{ sessionId: string; count: number } | null>(
+    null,
+  );
+  const mediaPublisherRef = useRef<VideoStreamPublisher | null>(null);
   const [pending, setPending] = useState<PendingApproval | null>(null);
   const [active, setActive] = useState<ActiveShare | null>(null);
   const [isResponding, setIsResponding] = useState(false);
@@ -165,6 +183,8 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [imageFallback, setImageFallback] = useState(false);
   const autoApprovalRequestIdRef = useRef<string | null>(null);
+  const legacyWatchers =
+    legacyDemand?.sessionId === active?.session.sessionId ? legacyDemand?.count : null;
   const activeRef = useRef(active);
   activeRef.current = active;
   const selectedDisplayIdRef = useRef<string | undefined>(undefined);
@@ -303,6 +323,21 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       try {
         const result = await bridge.readRemoteControlPointerLock();
         if (cancelled) return;
+        if (
+          pointerLockedRef.current !== result.locked ||
+          cursorShapeRef.current !== result.cursor
+        ) {
+          void reportPointer({
+            environmentId,
+            input: {
+              clientId,
+              connectionId: active.connectionId,
+              sessionId: active.session.sessionId,
+              pointerLocked: result.locked,
+              ...(result.cursor ? { cursorShape: result.cursor } : {}),
+            },
+          });
+        }
         pointerLockedRef.current = result.locked;
         cursorShapeRef.current = result.cursor;
         // This poll is the only thing still reaching the host while its input
@@ -322,7 +357,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       stopPolling();
       pointerLockedRef.current = false;
     };
-  }, [active, bridge, hostInputScheduler, syncHostStatus]);
+  }, [active, bridge, clientId, environmentId, hostInputScheduler, reportPointer, syncHostStatus]);
 
   useEffect(() => () => hostInputScheduler.clear(), [hostInputScheduler]);
 
@@ -335,6 +370,10 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     const unseen = takeUnseenEvents(hostEvents.data, hostCursorRef.current);
     hostCursorRef.current = unseen.cursor;
     const applyHostEvent = (event: RemoteControlHostStreamEvent): void => {
+      if (event.type === "video-demand") {
+        setLegacyDemand({ sessionId: event.sessionId, count: event.legacyWatchers });
+        return;
+      }
       if (event.type === "input") {
         const current = activeRef.current;
         if (!current || current.session.sessionId !== event.sessionId) return;
@@ -343,6 +382,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         if (event.input.type === "select-display") {
           selectedDisplayIdRef.current = event.input.displayId;
           displaySelectionListenerRef.current?.();
+          mediaPublisherRef.current?.restartSource();
           return;
         }
         // The controller cannot decode our video; drop to JPEG for this session.
@@ -466,11 +506,70 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     for (const event of unseen.events) applyHostEvent(event);
   }, [clientId, environmentId, hostEvents.data, hostInputScheduler, respond]);
 
+  useEffect(() => {
+    if (!active || !supportsVideoStreamPublishing()) return;
+    const publisher = createVideoStreamPublisher({
+      resolveUrl: async () => {
+        const result = await hostMediaTicket({
+          environmentId,
+          input: {
+            clientId,
+            connectionId: active.connectionId,
+            sessionId: active.session.sessionId,
+          },
+        });
+        if (result._tag === "Failure") throw commandError(result);
+        const connection = readPreparedConnection(environmentId);
+        if (!connection) throw new Error("The environment is disconnected.");
+        return mediaChannelUrl(connection.socketUrl, result.value.ticket);
+      },
+      openSource: async () => {
+        const catalog = await bridge.listRemoteControlCaptureSources();
+        const match =
+          catalog.sources.find(
+            (candidate) => candidate.displayId === selectedDisplayIdRef.current,
+          ) ??
+          catalog.sources.find(
+            (candidate) =>
+              candidate.displayId === catalog.displays.find((display) => display.isPrimary)?.id,
+          ) ??
+          catalog.sources[0];
+        if (!match) throw new Error("No capturable display was found.");
+        const stream = await openDisplayStream(match.sourceId);
+        const track = stream.getVideoTracks()[0];
+        if (!track) {
+          stopStream(stream);
+          throw new Error("No video track was captured.");
+        }
+        activeDisplayIdRef.current = match.displayId;
+        displaysRef.current = catalog.displays;
+        publisher.broadcast(REMOTE_CONTROL_MEDIA_DISPLAYS_KEY, {
+          ...(match.displayId ? { activeDisplayId: match.displayId } : {}),
+          displays: [...catalog.displays],
+        });
+        return { track, close: () => stopStream(stream) };
+      },
+      onCaptureError: () => {
+        captureInterruptedRef.current = true;
+        syncHostStatus();
+      },
+      onCaptureFrame: () => {
+        captureInterruptedRef.current = false;
+        syncHostStatus();
+      },
+    });
+    mediaPublisherRef.current = publisher;
+    return () => {
+      publisher.stop();
+      mediaPublisherRef.current = null;
+    };
+  }, [active, bridge, clientId, environmentId, hostMediaTicket, syncHostStatus]);
+
   // Video path: a live MediaStream encoded by the platform codec. Falls back to
   // the JPEG loop below when this runtime cannot encode video, or when the
   // encoder fails to start.
   useEffect(() => {
-    if (!active || imageFallback || !supportsRemoteControlVideo()) return;
+    if (!active || legacyWatchers === 0 || imageFallback || !supportsRemoteControlVideo()) return;
     let cancelled = false;
     let sequence = 0;
     let stream: MediaStream | null = null;
@@ -741,13 +840,14 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     environmentId,
     imageFallback,
     publishVideoChunk,
+    legacyWatchers,
     syncHostStatus,
   ]);
 
   useEffect(() => {
     // Only the fallback path runs the JPEG loop; the video encoder owns capture
     // whenever this runtime supports it.
-    if (!active || (supportsRemoteControlVideo() && !imageFallback)) return;
+    if (!active || legacyWatchers === 0 || (supportsRemoteControlVideo() && !imageFallback)) return;
     let cancelled = false;
     let sequence = 0;
 
@@ -885,6 +985,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     environmentId,
     imageFallback,
     publishFrame,
+    legacyWatchers,
     syncHostStatus,
   ]);
 

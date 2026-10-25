@@ -27,7 +27,7 @@ import {
 } from "./http.ts";
 import { fixPath } from "./os-jank.ts";
 import { voiceNoteRuntimeStartupLayer } from "./voiceNoteRuntimeStartup.ts";
-import { websocketRpcRouteLayer } from "./ws.ts";
+import { mediaChannelRouteLayer, websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
@@ -55,6 +55,7 @@ import * as ActionApprovalBroker from "./mcp/toolkits/actionApproval/ActionAppro
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DesktopAppUpdater from "./mcp/toolkits/appUpdate/DesktopAppUpdater.ts";
+import * as MediaRelay from "./media/MediaRelay.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
 import * as TabAudioRelay from "./preview/TabAudioRelay.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -508,6 +509,7 @@ export const makeRoutesLayer = Layer.mergeAll(
     fileViewRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
+    mediaChannelRouteLayer,
   ),
   McpHttpServer.layer.pipe(
     Layer.provide(McpSessionRegistry.layer),
@@ -520,6 +522,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(DesktopAppUpdater.layer),
   Layer.provide(RemoteControlBroker.layer),
+  Layer.provide(MediaRelay.layer),
   Layer.provide(TabAudioRelay.layer),
   Layer.provide(ServerSelfUpdate.layer),
   Layer.provide(browserApiCorsLayer),
