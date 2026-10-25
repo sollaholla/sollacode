@@ -1,8 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - scratch databases are built and inspected directly with node:sqlite.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
-import * as NodeFSP from "node:fs/promises";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
@@ -15,6 +13,7 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
 import * as ServerConfig from "../config.ts";
@@ -29,9 +28,11 @@ import {
 import { makeWorkerSqlite } from "./DatabaseCompactionWorker.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 
-const makeScratchDirectory = Effect.promise(() =>
-  NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-db-compaction-")),
-);
+// Scoped, so each test's scratch databases are removed when it finishes.
+const makeScratchDirectory = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  return yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-db-compaction-" });
+});
 
 /**
  * A WAL database shaped like state.sqlite: a payload table with an index, an
