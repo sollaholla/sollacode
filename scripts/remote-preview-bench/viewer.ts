@@ -139,7 +139,7 @@ export async function startStreamingViewer(options: {
           boxHeight: options.size.height,
           devicePixelRatio: options.size.devicePixelRatio,
         }),
-        patches: true,
+        patches: options.patches !== false,
       }),
       (event) =>
         Effect.sync(() => {
