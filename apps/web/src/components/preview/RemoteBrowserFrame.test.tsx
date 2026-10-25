@@ -263,7 +263,7 @@ describe("remote browser frame availability", () => {
       ]);
     });
 
-  it("stops bootstrap polling once the advertised stream supplies a picture", async () => {
+  it("uses the advertised stream without a duplicate startup snapshot", async () => {
     mocks.streamSupported = true;
     await render();
     expect(mocks.remoteFrames).toHaveBeenCalledWith(
@@ -276,15 +276,14 @@ describe("remote browser frame availability", () => {
         }),
       }),
     );
-    // Before layout measurement opens the stream, one bootstrap snapshot is requested.
-    expect(mocks.capture).toHaveBeenCalledOnce();
+    expect(mocks.capture).not.toHaveBeenCalled();
     await pushPicture();
     expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("visible");
     expect(container.querySelector("img")).toBeNull();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
-    expect(mocks.capture).toHaveBeenCalledOnce();
+    expect(mocks.capture).not.toHaveBeenCalled();
     await render(false);
     expect(mocks.unsubscribe).toHaveBeenCalledOnce();
   });
@@ -293,12 +292,12 @@ describe("remote browser frame availability", () => {
     mocks.streamSupported = true;
     mocks.capture.mockResolvedValue(ready("old-host-fallback"));
     await render();
-    expect(mocks.capture).toHaveBeenCalledOnce();
+    expect(mocks.capture).not.toHaveBeenCalled();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_050);
     });
     expect(container.querySelector("img")?.getAttribute("src")).toContain("old-host-fallback");
-    expect(mocks.capture).toHaveBeenCalledTimes(2);
+    expect(mocks.capture).toHaveBeenCalledOnce();
   });
 
   it.each(["unavailable", "failure"] as const)(
@@ -322,4 +321,16 @@ describe("remote browser frame availability", () => {
       expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("visible");
     },
   );
+  it("uses snapshot polling if the client cannot measure the streaming pane", async () => {
+    mocks.streamSupported = true;
+    vi.stubGlobal("ResizeObserver", undefined);
+    mocks.capture.mockResolvedValue(ready("legacy-sizing-fallback"));
+    await render();
+    expect(mocks.remoteFrames).not.toHaveBeenCalled();
+    expect(container.querySelector("canvas")).toBeNull();
+    expect(container.querySelector("img")?.getAttribute("src")).toContain("legacy-sizing-fallback");
+    expect(mocks.capture).toHaveBeenCalledOnce();
+    await nextFrame();
+    expect(mocks.capture).toHaveBeenCalledTimes(2);
+  });
 });

@@ -216,9 +216,11 @@ export function RemoteBrowserFrame(props: {
   // The pushed feed. Painting happens straight on the canvas; React only
   // hears of a new picture size and new page state.
   const registry = useContext(RegistryContext);
+  const serverConfigs = useServerConfigs();
   const streamSupported =
-    useServerConfigs().get(threadRef.environmentId)?.environment.capabilities
-      .remotePreviewFrames === true;
+    typeof ResizeObserver !== "undefined" &&
+    serverConfigs.get(threadRef.environmentId)?.environment.capabilities.remotePreviewFrames ===
+      true;
   const [streamPicture, setStreamPicture] = useState<{
     readonly width: number;
     readonly height: number;
@@ -239,6 +241,12 @@ export function RemoteBrowserFrame(props: {
     unavailableAt: number | null;
   }>({ subscribedAt: null, lastPictureAt: null, unavailableAt: null });
   const reconsiderPolling = useCallback(() => {
+    // Wait for the measured pane to subscribe before starting its grace period.
+    // A bootstrap snapshot here would duplicate the stream's first picture.
+    if (streamSupported && streamTimesRef.current.subscribedAt === null) {
+      setPollNeeded(false);
+      return;
+    }
     setPollNeeded(
       remoteFrameShouldPoll({
         streamSupported,
