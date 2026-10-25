@@ -47,7 +47,7 @@ export interface VideoStreamSubscriber {
 
 const MAX_FAILED_CONNECTS = 4;
 const VIEW_UPDATE_DELAY_MS = 150;
-const FIRST_FRAME_TIMEOUT_MS = 5_000;
+const FRAME_RECOVERY_TIMEOUT_MS = 5_000;
 
 function sameViewport(left: MediaViewport | null, right: MediaViewport): boolean {
   if (!left) return false;
@@ -65,10 +65,11 @@ export function createVideoStreamSubscriber(
 ): VideoStreamSubscriber {
   let stopped = false;
   let socket: MediaSubscriberSocket | null = null;
+  let publisherOnline = true;
   let failedConnects = 0;
   let reconnects = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let firstFrameTimer: ReturnType<typeof setTimeout> | null = null;
+  let frameDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
   let viewTimer: ReturnType<typeof setTimeout> | null = null;
   let sentView: MediaViewport | null = null;
   const counters = { packets: 0, bytes: 0 };
@@ -79,12 +80,19 @@ export function createVideoStreamSubscriber(
     options.onFatal(reason);
   };
 
+  const awaitFrame = (reason: string) => {
+    if (stopped || frameDeadlineTimer !== null) return;
+    frameDeadlineTimer = setTimeout(() => fatal(reason), FRAME_RECOVERY_TIMEOUT_MS);
+  };
+
   const renderer: VideoCanvasRenderer = createVideoCanvasRenderer({
     canvas: options.canvas,
     onFrame: (frame, config) => {
       failedConnects = 0;
-      if (firstFrameTimer !== null) clearTimeout(firstFrameTimer);
-      firstFrameTimer = null;
+      if (publisherOnline) {
+        if (frameDeadlineTimer !== null) clearTimeout(frameDeadlineTimer);
+        frameDeadlineTimer = null;
+      }
       options.onFrame?.(frame, config);
     },
     onKeyframeNeeded: () => socket?.send({ type: "keyframe" }),
@@ -107,11 +115,7 @@ export function createVideoStreamSubscriber(
       current = openMediaSubscriber(url, {
         onOpen: () => {
           opened = true;
-          if (firstFrameTimer === null)
-            firstFrameTimer = setTimeout(
-              () => fatal("The host did not deliver a decodable video frame within 5 seconds."),
-              FIRST_FRAME_TIMEOUT_MS,
-            );
+          awaitFrame("The host did not deliver a decodable video frame within 5 seconds.");
           sentView = options.viewport();
           current.send({ type: "hello", codecs: [...options.codecs], view: sentView });
         },
@@ -123,6 +127,9 @@ export function createVideoStreamSubscriber(
         onNotice: (notice) => {
           switch (notice.type) {
             case "publisher":
+              publisherOnline = notice.online;
+              if (!notice.online)
+                awaitFrame("The host disconnected and did not resume video within 5 seconds.");
               options.onPublisher?.(notice.online);
               return;
             case "broadcast":
@@ -177,7 +184,7 @@ export function createVideoStreamSubscriber(
     stopped = true;
     if (reconnectTimer !== null) clearTimeout(reconnectTimer);
     if (viewTimer !== null) clearTimeout(viewTimer);
-    if (firstFrameTimer !== null) clearTimeout(firstFrameTimer);
+    if (frameDeadlineTimer !== null) clearTimeout(frameDeadlineTimer);
     socket?.close();
     socket = null;
     renderer.dispose();

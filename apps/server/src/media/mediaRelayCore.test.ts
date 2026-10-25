@@ -163,6 +163,33 @@ describe("media relay core", () => {
     ]);
   });
 
+  it("retries a decoder's rate-limited key frame request even when the screen stops changing", () => {
+    const { core, advance } = setup();
+    const publisher = fakeConnection("pub");
+    const pub = core.connectPublisher("topic", publisher);
+    const viewer = fakeConnection("viewer");
+    const endpoint = core.connectSubscriber("topic", viewer);
+    endpoint.onMessage(hello);
+    pub.onMessage(packet(1, true));
+    endpoint.onMessage(encodeMediaAck(1));
+
+    // The first picture arrived, but its decoder needs another key frame
+    // inside the relay's rate limit. No further capture updates arrive.
+    advance(50);
+    endpoint.onMessage(JSON.stringify({ type: "keyframe" }));
+    expect(ofType(publisher.notices, "keyframe")).toHaveLength(1);
+    advance(200);
+    core.tick();
+    expect(ofType(publisher.notices, "keyframe")).toHaveLength(2);
+
+    pub.onMessage(packet(2, true));
+    endpoint.onMessage(encodeMediaAck(2));
+    advance(250);
+    core.tick();
+    expect(ofType(publisher.notices, "keyframe")).toHaveLength(2);
+    expect(viewer.packets).toEqual([1, 2]);
+  });
+
   it("tells subscribers when the publisher comes and goes, and replaces a second publisher", () => {
     const { core } = setup();
     const viewer = fakeConnection("viewer");

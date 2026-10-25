@@ -41,6 +41,14 @@ describe("video subscriber recovery", () => {
     }),
   });
   const callbacks = () => vi.mocked(openMediaSubscriber).mock.calls.at(-1)![1];
+  const frame = () =>
+    vi.mocked(createVideoCanvasRenderer).mock.calls[0]![0].onFrame?.({} as VideoFrame, {
+      codec: "vp8",
+      codedWidth: 640,
+      codedHeight: 480,
+      sourceWidth: 640,
+      sourceHeight: 480,
+    });
 
   it("falls back when a connected publisher never produces a usable frame", async () => {
     const { onFatal } = start();
@@ -88,15 +96,55 @@ describe("video subscriber recovery", () => {
     const { subscriber, onFatal } = start();
     await vi.advanceTimersByTimeAsync(0);
     callbacks().onOpen?.();
-    vi.mocked(createVideoCanvasRenderer).mock.calls[0]![0].onFrame?.({} as VideoFrame, {
-      codec: "vp8",
-      codedWidth: 640,
-      codedHeight: 480,
-      sourceWidth: 640,
-      sourceHeight: 480,
-    });
+    frame();
     await vi.advanceTimersByTimeAsync(20_000);
     expect(onFatal).not.toHaveBeenCalled();
     subscriber.stop();
+  });
+
+  it.each([false, true])(
+    "falls back after the publisher disappears without a replacement picture (online again: %s)",
+    async (onlineAgain) => {
+      const { onFatal } = start();
+      await vi.advanceTimersByTimeAsync(0);
+      callbacks().onOpen?.();
+      frame();
+      callbacks().onNotice({ type: "publisher", online: false });
+      // A frame queued before the disconnect may finish decoding afterward.
+      frame();
+      await vi.advanceTimersByTimeAsync(1_000);
+      if (onlineAgain) callbacks().onNotice({ type: "publisher", online: true });
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(onFatal).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("cancels the publisher recovery deadline when a new picture decodes", async () => {
+    const { subscriber, onFatal } = start();
+    await vi.advanceTimersByTimeAsync(0);
+    callbacks().onOpen?.();
+    frame();
+    callbacks().onNotice({ type: "publisher", online: false });
+    await vi.advanceTimersByTimeAsync(1_000);
+    callbacks().onNotice({ type: "publisher", online: true });
+    frame();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(onFatal).not.toHaveBeenCalled();
+    subscriber.stop();
+  });
+
+  it("cancels the publisher recovery deadline when stopped", async () => {
+    const { subscriber, onFatal } = start();
+    await vi.advanceTimersByTimeAsync(0);
+    callbacks().onOpen?.();
+    frame();
+    callbacks().onNotice({ type: "publisher", online: false });
+    subscriber.stop();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(onFatal).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
   });
 });

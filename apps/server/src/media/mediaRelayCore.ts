@@ -265,6 +265,7 @@ export function createMediaRelayCore(options: MediaRelayCoreOptions) {
             return;
           case "keyframe":
             subscriber.flow.waitingForKeyframe = true;
+            subscriber.flow.keyframeWanted = true;
             requestKeyframe(topic, false);
             return;
         }

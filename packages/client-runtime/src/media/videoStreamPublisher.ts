@@ -111,6 +111,7 @@ const REFINE_DELAY_MS = 220;
 const REFINE_MAX_BACKLOG_SECONDS = 0.12;
 const MIN_FRAME_INTERVAL_MS = 1_000 / 60;
 const MAX_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024;
+const SOCKET_DRAIN_RETRY_MS = 50;
 const BITRATE_RECONFIGURE_SPACING_MS = 500;
 const MAX_ENCODE_QUEUE = 1;
 
@@ -520,6 +521,12 @@ export function createVideoStreamPublisher(
   const maybeEncode = () => {
     if (!encoderReady() || !encoder) return;
     if (latestEncoded && !forceKey) return;
+    if (socket && socket.bufferedAmount() > MAX_SOCKET_BUFFER_BYTES) {
+      // Keep the newest picture and recovery key-frame request, but do not
+      // spend encoder work on frames the congested socket cannot accept.
+      scheduleEncode(SOCKET_DRAIN_RETRY_MS);
+      return;
+    }
     if (encoder.encodeQueueSize > MAX_ENCODE_QUEUE) return; // the next output resumes us
     const at = performance.now();
     if (!forceKey && at - lastEncodeAt < MIN_FRAME_INTERVAL_MS) {

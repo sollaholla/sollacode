@@ -93,4 +93,99 @@ describe("publisher capture lifecycle", () => {
     expect(publisher.stats().capturing).toBe(false);
     expect(closeSocket).toHaveBeenCalledOnce();
   });
+
+  it("waits for socket congestion to drain before re-encoding a dropped still frame", async () => {
+    let bufferedBytes = 0;
+    let frames!: ReadableStreamDefaultController<VideoFrame>;
+    let output!: VideoEncoderInit["output"];
+    const encode = vi.fn<(frame: VideoFrame, options: VideoEncoderEncodeOptions) => void>();
+    const sendPacket = vi.fn();
+    vi.mocked(openMediaPublisher).mockReturnValue({
+      close: closeSocket,
+      send: vi.fn(),
+      sendPacket,
+      bufferedAmount: () => bufferedBytes,
+      isOpen: () => true,
+    });
+    vi.stubGlobal(
+      "MediaStreamTrackProcessor",
+      class {
+        readable = new ReadableStream<VideoFrame>({
+          start: (controller) => {
+            frames = controller;
+          },
+        });
+      },
+    );
+    vi.stubGlobal(
+      "VideoFrame",
+      class {
+        readonly timestamp: number;
+        constructor(_source: VideoFrame, options: VideoFrameInit) {
+          this.timestamp = options.timestamp!;
+        }
+        close() {}
+      },
+    );
+    vi.stubGlobal(
+      "VideoEncoder",
+      class {
+        static async isConfigSupported(config: VideoEncoderConfig) {
+          return { supported: true, config };
+        }
+        state = "configured";
+        encodeQueueSize = 0;
+        encode = encode;
+        constructor(callbacks: VideoEncoderInit) {
+          output = callbacks.output;
+        }
+        configure() {}
+        close() {
+          this.state = "closed";
+        }
+      },
+    );
+    const publisher = createVideoStreamPublisher({
+      resolveUrl: async () => "wss://example.test/ws/media",
+      openSource: async () => source(),
+      codecs: ["vp8"],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    notice(true);
+    await vi.advanceTimersByTimeAsync(0);
+    frames.enqueue({
+      displayWidth: 640,
+      displayHeight: 480,
+      close: vi.fn(),
+    } as unknown as VideoFrame);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(encode).toHaveBeenCalledOnce();
+
+    const deliverOutput = () =>
+      output(
+        {
+          type: "key",
+          timestamp: encode.mock.calls.at(-1)![0].timestamp,
+          byteLength: 100,
+          copyTo: () => {},
+        } as unknown as EncodedVideoChunk,
+        {
+          decoderConfig: { codec: "vp8", codedWidth: 640, codedHeight: 480 },
+        },
+      );
+    bufferedBytes = 9 * 1024 * 1024;
+    deliverOutput();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(encode).toHaveBeenCalledOnce();
+    expect(sendPacket).not.toHaveBeenCalled();
+
+    bufferedBytes = 0;
+    await vi.advanceTimersByTimeAsync(50);
+    expect(encode).toHaveBeenCalledTimes(2);
+    expect(encode.mock.calls[1]![1].keyFrame).toBe(true);
+    deliverOutput();
+    expect(sendPacket).toHaveBeenCalledOnce();
+    expect(publisher.stats().framesIn).toBe(1);
+    publisher.stop();
+  });
 });

@@ -1,3 +1,4 @@
+// @effect-diagnostics globalTimers:off - browser decoder recovery uses WebCodecs callbacks
 /**
  * Decodes media-channel video with WebCodecs and paints each frame onto a
  * canvas the moment it is decoded.
@@ -74,12 +75,30 @@ export function createVideoCanvasRenderer(options: {
   let disposed = false;
   let failed = false;
   let lastKeyframeRequest = Number.NEGATIVE_INFINITY;
+  let keyframeTimer: ReturnType<typeof setTimeout> | null = null;
   const errorTimes: number[] = [];
   const counters = { decoded: 0, dropped: 0, errors: 0, keyframesRequested: 0 };
 
+  const cancelKeyframeRetry = () => {
+    if (keyframeTimer !== null) clearTimeout(keyframeTimer);
+    keyframeTimer = null;
+  };
+
   const requestKeyframe = () => {
+    if (disposed || failed) return;
     const now = performance.now();
-    if (now - lastKeyframeRequest < KEYFRAME_REQUEST_SPACING_MS) return;
+    const remaining = KEYFRAME_REQUEST_SPACING_MS - (now - lastKeyframeRequest);
+    if (remaining > 0) {
+      // A still screen may produce nothing else after a decoder error.
+      // Keep the rate limit without losing its last recovery request.
+      if (keyframeTimer === null)
+        keyframeTimer = setTimeout(() => {
+          keyframeTimer = null;
+          requestKeyframe();
+        }, remaining);
+      return;
+    }
+    cancelKeyframeRetry();
     lastKeyframeRequest = now;
     counters.keyframesRequested += 1;
     options.onKeyframeNeeded();
@@ -91,6 +110,7 @@ export function createVideoCanvasRenderer(options: {
       return;
     }
     counters.decoded += 1;
+    cancelKeyframeRetry();
     const width = frame.displayWidth;
     const height = frame.displayHeight;
     if (options.canvas.width !== width || options.canvas.height !== height) {
@@ -121,6 +141,7 @@ export function createVideoCanvasRenderer(options: {
     waitingForKey = true;
     if (errorTimes.length >= MAX_ERRORS) {
       failed = true;
+      cancelKeyframeRetry();
       options.onFatal(cause instanceof Error ? cause.message : String(cause));
       return;
     }
@@ -200,6 +221,7 @@ export function createVideoCanvasRenderer(options: {
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      cancelKeyframeRetry();
       try {
         if (decoder && decoder.state !== "closed") decoder.close();
       } catch {

@@ -26,7 +26,9 @@ function setup() {
   const configure = vi.fn();
   const decode = vi.fn();
   const decoder = { state: "configured", close, reset, configure, decode, decodeQueueSize: 0 };
-  vi.stubGlobal("VideoDecoder", function () {
+  let callbacks: VideoDecoderInit;
+  vi.stubGlobal("VideoDecoder", function (init: VideoDecoderInit) {
+    callbacks = init;
     return decoder;
   });
   vi.stubGlobal("EncodedVideoChunk", function (init: unknown) {
@@ -40,10 +42,58 @@ function setup() {
     getContext: () => ({ drawImage: vi.fn() }),
   } as unknown as HTMLCanvasElement;
   const renderer = createVideoCanvasRenderer({ canvas, onKeyframeNeeded, onFatal });
-  return { renderer, decoder, onKeyframeNeeded, onFatal };
+  const output = () =>
+    callbacks.output({
+      displayWidth: 640,
+      displayHeight: 480,
+      close: vi.fn(),
+    } as unknown as VideoFrame);
+  return { renderer, decoder, onKeyframeNeeded, onFatal, output };
 }
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 describe("video decoder lifecycle", () => {
+  it("retries a rate-limited recovery request when no more frames arrive", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const { renderer, decoder, onKeyframeNeeded, output } = setup();
+    renderer.push(packet());
+    output();
+    decoder.decode.mockImplementation(() => {
+      throw new Error("decode failed");
+    });
+    renderer.push(packet({ sequence: 2 }));
+    expect(onKeyframeNeeded).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(50);
+    renderer.push(packet({ sequence: 3 }));
+    expect(onKeyframeNeeded).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(250);
+    expect(onKeyframeNeeded).toHaveBeenCalledTimes(2);
+    renderer.dispose();
+  });
+  it.each(["recovery", "dispose", "fatal"] as const)(
+    "cancels a pending recovery request after %s",
+    (ending) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+      const { renderer, decoder, onKeyframeNeeded, output } = setup();
+      decoder.decode.mockImplementation(() => {
+        throw new Error("decode failed");
+      });
+      renderer.push(packet());
+      vi.advanceTimersByTime(50);
+      renderer.push(packet({ sequence: 2 }));
+      if (ending === "dispose") renderer.dispose();
+      else {
+        if (ending === "recovery") decoder.decode.mockImplementation(() => undefined);
+        renderer.push(packet({ sequence: 3 }));
+        if (ending === "recovery") output();
+      }
+      vi.advanceTimersByTime(1_000);
+      expect(onKeyframeNeeded).toHaveBeenCalledTimes(1);
+      renderer.dispose();
+    },
+  );
   it("closes a decoder that throws synchronously and falls back after repeated failures", () => {
     const { renderer, decoder, onFatal } = setup();
     decoder.configure.mockImplementation(() => {
