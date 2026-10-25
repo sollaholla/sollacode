@@ -244,23 +244,23 @@ export function RemoteBrowserFrame(props: {
     // Wait for the measured pane to subscribe before starting its grace period.
     // A bootstrap snapshot here would duplicate the stream's first picture.
     if (streamSupported && streamTimesRef.current.subscribedAt === null) {
+      pollNeededRef.current = false;
       setPollNeeded(false);
       return;
     }
-    setPollNeeded(
-      remoteFrameShouldPoll({
-        streamSupported,
-        ...streamTimesRef.current,
-        now: Date.now(),
-      }),
-    );
+    const needed = remoteFrameShouldPoll({
+      streamSupported,
+      ...streamTimesRef.current,
+      now: Date.now(),
+    });
+    pollNeededRef.current = needed;
+    setPollNeeded(needed);
   }, [streamSupported]);
   const [painter] = useState(() =>
     createRemoteFramePainter({
       onError: () => {
         heldStreamFrameRef.current = null;
         streamTimesRef.current.unavailableAt = Date.now();
-        setStreamPicture(null);
         reconsiderPollingRef.current();
         setStreamGeneration((value) => value + 1);
       },
@@ -370,8 +370,13 @@ export function RemoteBrowserFrame(props: {
         }
         return false;
       }
-      if (!result.value.loading && pollNeededRef.current)
-        setFrame((held) => mergeRemoteSnapshot(held, result.value));
+      if (!result.value.loading && pollNeededRef.current) {
+        const next = mergeRemoteSnapshot(frameRef.current, result.value);
+        setFrame(next);
+        // Keep the last canvas visible through capture loss until polling has
+        // a valid replacement. A recovered stream claims it again on paint.
+        if (next !== null) setStreamPicture(null);
+      }
       setFrameError(null);
       return true;
     },
@@ -502,7 +507,6 @@ export function RemoteBrowserFrame(props: {
     reconsiderPolling();
     // No picture within the grace period: poll until one arrives.
     const graceTimer = setTimeout(() => {
-      if (streamTimesRef.current.lastPictureAt === null) setStreamPicture(null);
       reconsiderPolling();
     }, REMOTE_FRAME_STREAM_GRACE_MS + 50);
     let resyncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -513,7 +517,6 @@ export function RemoteBrowserFrame(props: {
         if (batch.state !== null) setStreamState(batch.state);
         if (batch.unavailable !== null) {
           painter.reset();
-          setStreamPicture(null);
           streamTimesRef.current.unavailableAt = Date.now();
           reconsiderPolling();
         }
@@ -527,7 +530,6 @@ export function RemoteBrowserFrame(props: {
       },
       onFailure: () => {
         painter.reset();
-        setStreamPicture(null);
         streamTimesRef.current.unavailableAt = Date.now();
         reconsiderPolling();
       },
@@ -1031,7 +1033,7 @@ export function RemoteBrowserFrame(props: {
         onPointerUp={handlePointerUp}
       >
         <TouchActionRadialMenu state={touchMenu} />
-        {streamSupported ? (
+        {streamSupported || streamPicture !== null ? (
           // Pushed pictures are painted here. The wrapper fills the pane like
           // the polled image does, so zoom and touch geometry are the same.
           <div

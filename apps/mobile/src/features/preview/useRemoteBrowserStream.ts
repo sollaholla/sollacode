@@ -25,6 +25,8 @@ export function useRemoteBrowserStream(options: {
   readonly onFrame: (
     update: (held: PreviewRemoteSnapshotResult | null) => PreviewRemoteSnapshotResult | null,
   ) => void;
+  /** A complete stream picture recovered the preview from snapshot fallback. */
+  readonly onPicture: () => void;
 }) {
   const { environmentId, threadId, tabId } = options;
   const registry = useContext(RegistryContext);
@@ -39,6 +41,8 @@ export function useRemoteBrowserStream(options: {
   });
   const onFrame = useRef(options.onFrame);
   onFrame.current = options.onFrame;
+  const onPicture = useRef(options.onPicture);
+  onPicture.current = options.onPicture;
   const [pollNeeded, setPollNeeded] = useState(true);
   const pollNeededRef = useRef(true);
   const setPolling = useCallback((value: boolean) => {
@@ -112,6 +116,7 @@ export function useRemoteBrowserStream(options: {
                     height: event.height,
                   },
                 }));
+                onPicture.current();
               }
             }
           },

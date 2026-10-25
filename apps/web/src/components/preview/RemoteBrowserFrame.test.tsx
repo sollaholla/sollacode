@@ -132,7 +132,7 @@ describe("remote browser frame availability", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
-  const render = (visible = true) =>
+  const render = (visible = true, tabId = "tab-one") =>
     act(async () =>
       root.render(
         <RemoteBrowserFrame
@@ -140,7 +140,7 @@ describe("remote browser frame availability", () => {
             environmentId: EnvironmentId.make("env"),
             threadId: ThreadId.make("thread"),
           }}
-          tabId="tab-one"
+          tabId={tabId}
           visible={visible}
           agentControl="none"
         />,
@@ -321,6 +321,70 @@ describe("remote browser frame availability", () => {
       expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("visible");
     },
   );
+  it.each(["unavailable", "failure"] as const)(
+    "holds the last pushed picture through %s and failed or loading fallback captures",
+    async (kind) => {
+      mocks.streamSupported = true;
+      mocks.capture
+        .mockResolvedValueOnce({ _tag: "Failure", cause: Cause.fail(new Error("No page surface")) })
+        .mockResolvedValueOnce(ready("loading-page", true))
+        .mockResolvedValue(ready("valid-fallback"));
+      await render();
+      await pushPicture();
+      await act(async () => {
+        if (kind === "unavailable")
+          mocks.listeners?.onEvents([{ type: "unavailable", reason: "Host disconnected" }]);
+        else mocks.listeners?.onFailure();
+      });
+      expect(mocks.capture).toHaveBeenCalledOnce();
+      expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("visible");
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.textContent).not.toContain("Waiting for the browser page");
+      await nextFrame();
+      expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("visible");
+      expect(container.querySelector("img")).toBeNull();
+      await nextFrame();
+      expect(container.querySelector("img")?.getAttribute("src")).toContain("valid-fallback");
+      expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("hidden");
+      await pushPicture();
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("visible");
+    },
+  );
+  it("clears a retained streamed picture when the viewer changes tabs", async () => {
+    mocks.streamSupported = true;
+    await render();
+    await pushPicture();
+    await render(true, "tab-two");
+    expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("hidden");
+    expect(container.textContent).toContain("Waiting for the browser page");
+  });
+  it("keeps a recovered stream when an older fallback capture finishes in the same turn", async () => {
+    mocks.streamSupported = true;
+    const fallback = deferred<ReturnType<typeof ready>>();
+    mocks.capture.mockReturnValue(fallback.promise);
+    await render();
+    await pushPicture();
+    await act(async () => {
+      mocks.listeners?.onEvents([{ type: "unavailable", reason: "Host disconnected" }]);
+    });
+    expect(mocks.capture).toHaveBeenCalledOnce();
+    await act(async () => {
+      mocks.listeners?.onEvents([
+        {
+          type: "keyframe",
+          sequence: 2,
+          width: 800,
+          height: 600,
+          mimeType: "image/jpeg",
+          data: "recovered-stream",
+        },
+      ]);
+      fallback.resolve(ready("older-fallback"));
+    });
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("visible");
+  });
   it("uses snapshot polling if the client cannot measure the streaming pane", async () => {
     mocks.streamSupported = true;
     vi.stubGlobal("ResizeObserver", undefined);

@@ -113,18 +113,19 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
   );
   const [selectedTabId, setSelectedTabId] = useState<string | null>(requestedTabId ?? null);
   const [frame, setFrame] = useState<PreviewRemoteSnapshotResult | null>(null);
+  const [frameError, setFrameError] = useState<string | null>(null);
   const { pollNeeded, pollNeededRef, onDecodeError } = useRemoteBrowserStream({
     environmentId,
     threadId,
     tabId: selectedTabId,
     onFrame: setFrame,
+    onPicture: () => setFrameError(null),
   });
   const frameRef = useRef(frame);
   frameRef.current = frame;
   const frameIntervalRef = useRef(LIVE_FRAME_INTERVAL_MS);
   frameIntervalRef.current =
     frame?.agentControl === "agent" ? AGENT_FRAME_INTERVAL_MS : LIVE_FRAME_INTERVAL_MS;
-  const [frameError, setFrameError] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
   const [typing, setTyping] = useState(false);
   const typingSequenceRef = useRef(0);
