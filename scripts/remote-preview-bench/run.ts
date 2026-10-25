@@ -8,6 +8,7 @@ import * as NodeURL from "node:url";
 import * as Effect from "effect/Effect";
 
 import { BENCH_ENVIRONMENT_ID, startRelayServer } from "./relayServer.ts";
+import { sceneSampleLabel } from "./artifacts.ts";
 import { INPUT_TARGET } from "./scenes.mjs";
 import { markLatencies, summarize, type LatencySummary } from "./stats.ts";
 import { startThrottleProxy } from "./throttleProxy.ts";
@@ -258,6 +259,7 @@ interface SceneResult {
   readonly scene: string;
   readonly mode: Mode;
   readonly viewer: string;
+  readonly condition: "loopback" | "slow";
   readonly seconds: number;
   readonly changeToReceived: LatencySummary;
   readonly missed: number;
@@ -277,6 +279,7 @@ async function measureScene(
   scene: string,
   mode: Mode,
   viewer: ViewerSize,
+  condition: "loopback" | "slow" = "loopback",
 ): Promise<SceneResult> {
   await host.call("scene", { name: scene });
   const handle = await startViewer(mode, url, viewer);
@@ -295,7 +298,7 @@ async function measureScene(
   const bytesAtEnd = handle.bytes();
   await handle.stop();
   const marks = await host.call<Array<[number, number]>>("marks");
-  const label = `${scene}-${mode}-${viewer.name}`;
+  const label = sceneSampleLabel({ scene, mode, viewer: viewer.name, condition });
   const received = await decodeMarkers(host, options.out, label, handle.events);
   const { latencies, missed } = markLatencies({
     marks,
@@ -311,6 +314,7 @@ async function measureScene(
     scene,
     mode,
     viewer: viewer.name,
+    condition,
     seconds,
     changeToReceived: summarize(latencies),
     missed,
@@ -557,7 +561,15 @@ async function main() {
         const slowUrl = `ws://127.0.0.1:${proxy.port}/ws`;
         for (const scene of ["ticks", "scroll"]) {
           for (const mode of options.modes) {
-            const result = await measureScene(host, options, slowUrl, scene, mode, VIEWERS[0]!);
+            const result = await measureScene(
+              host,
+              options,
+              slowUrl,
+              scene,
+              mode,
+              VIEWERS[0]!,
+              "slow",
+            );
             console.log(
               `slow ${scene} ${mode}: p50 ${fmt(result.changeToReceived.p50)} ms p95 ${fmt(result.changeToReceived.p95)} ms max ${fmt(result.changeToReceived.max)} ms`,
             );

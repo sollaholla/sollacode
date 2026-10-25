@@ -7,7 +7,7 @@
  * which is what "bytes on the wire" means in the report: WebSocket framing and
  * permessage-deflate included.
  */
-import * as net from "node:net";
+import * as NodeNet from "node:net";
 
 export interface LinkConditions {
   readonly name: string;
@@ -26,7 +26,7 @@ export const LOOPBACK: LinkConditions = {
 };
 
 export interface ConnectionBytes {
-  readonly path: string;
+  path: string;
   downstream: number;
   upstream: number;
 }
@@ -47,9 +47,9 @@ interface Pipe {
   destroy(): void;
 }
 
-function createPipe(
-  source: net.Socket,
-  target: net.Socket,
+export function createPipe(
+  source: Pick<NodeNet.Socket, "pause" | "resume">,
+  target: Pick<NodeNet.Socket, "write" | "on" | "off" | "destroyed">,
   conditions: () => LinkConditions,
   onBytes: (bytes: number) => void,
 ): Pipe {
@@ -57,33 +57,56 @@ function createPipe(
   let serializedUntil = 0;
   let timer: NodeJS.Timeout | null = null;
   let paused = false;
+  let blocked = false;
+  let disposed = false;
+
+  const pause = () => {
+    paused = true;
+    source.pause();
+  };
+
+  const write = (data: Buffer) => {
+    if (target.destroyed) return;
+    onBytes(data.length);
+    if (!target.write(data)) {
+      blocked = true;
+      pause();
+    }
+  };
 
   const flush = () => {
     timer = null;
+    if (disposed || blocked) return;
     const now = performance.now();
     while (queue.length > 0 && queue[0]!.at <= now + 0.5) {
       const piece = queue.shift()!;
-      onBytes(piece.data.length);
-      if (!target.destroyed) target.write(piece.data);
+      write(piece.data);
+      if (blocked) break;
     }
     const current = conditions();
-    if (paused && serializedUntil - now < current.bufferMs) {
+    if (!blocked && paused && (queue.length === 0 || serializedUntil - now < current.bufferMs)) {
       paused = false;
       source.resume();
     }
-    if (queue.length > 0) timer = setTimeout(flush, Math.max(0, queue[0]!.at - now));
+    if (!blocked && queue.length > 0) timer = setTimeout(flush, Math.max(0, queue[0]!.at - now));
   };
+  const onDrain = () => {
+    blocked = false;
+    flush();
+  };
+  target.on("drain", onDrain);
 
   return {
     push(chunk) {
+      if (disposed) return;
       const current = conditions();
       if (
+        !blocked &&
         !Number.isFinite(current.rateBitsPerSecond) &&
         current.rttMs === 0 &&
         queue.length === 0
       ) {
-        onBytes(chunk.length);
-        if (!target.destroyed) target.write(chunk);
+        write(chunk);
         return;
       }
       const now = performance.now();
@@ -96,12 +119,13 @@ function createPipe(
         queue.push({ at: serializedUntil + current.rttMs / 2, data });
       }
       if (Number.isFinite(current.rateBitsPerSecond) && serializedUntil - now >= current.bufferMs) {
-        paused = true;
-        source.pause();
+        pause();
       }
-      if (timer === null) timer = setTimeout(flush, Math.max(0, queue[0]!.at - now));
+      if (!blocked && timer === null) timer = setTimeout(flush, Math.max(0, queue[0]!.at - now));
     },
     destroy() {
+      disposed = true;
+      target.off("drain", onDrain);
       if (timer !== null) clearTimeout(timer);
       queue.length = 0;
     },
@@ -111,11 +135,11 @@ function createPipe(
 export function startLinkEmulator(targetPort: number): Promise<LinkEmulator> {
   let conditions: LinkConditions = LOOPBACK;
   let connections: ConnectionBytes[] = [];
-  const sockets = new Set<net.Socket>();
+  const sockets = new Set<NodeNet.Socket>();
 
-  const server = net.createServer((client) => {
+  const server = NodeNet.createServer((client) => {
     client.setNoDelay(true);
-    const upstream = net.connect({ host: "127.0.0.1", port: targetPort });
+    const upstream = NodeNet.connect({ host: "127.0.0.1", port: targetPort });
     upstream.setNoDelay(true);
     sockets.add(client);
     sockets.add(upstream);
@@ -163,7 +187,7 @@ export function startLinkEmulator(targetPort: number): Promise<LinkEmulator> {
 
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
-      const address = server.address() as net.AddressInfo;
+      const address = server.address() as NodeNet.AddressInfo;
       resolve({
         port: address.port,
         setConditions(next) {

@@ -453,7 +453,7 @@ async function runOne(input: {
       NodeFS.writeFileSync(
         NodePath.join(
           rawDir,
-          `${input.condition}-${input.viewer}-${input.scene}-${input.pipeline}-${name}.png`,
+          `${input.condition}-${input.viewer}-${input.scene}-${input.pipeline}-${input.repeat}-${name}.png`,
         ),
         Buffer.from(url.split(",")[1] ?? "", "base64"),
       );
