@@ -20,7 +20,7 @@ flowchart TD
 
 The shared [connection runtime](./connection-runtime.md) owns environment registrations, authentication, retries, RPC sessions, and cached data. HTTP routes provide environment discovery, pairing, and history. Effect RPC provides typed operations and subscriptions over WebSocket. The contracts live in [`environmentHttp.ts`](../../packages/contracts/src/environmentHttp.ts) and [`rpc.ts`](../../packages/contracts/src/rpc.ts).
 
-Each environment has its own connection and data scope. A connected socket does not imply that the shell or an individual thread has finished synchronizing. Clients keep those states separate and retain cached data while reconnecting. Desktop supplies platform integration and can host a bundled server; it can also connect to remote environments. See [remote architecture](./remote.md).
+Each environment has its own connection and data scope. A connected socket does not imply that the shell or an individual thread has finished synchronizing. Clients keep those states separate and retain cached data while reconnecting. Desktop supplies platform integration and can host a bundled server; it can also connect to remote environments. See [remote architecture](./remote.md) and [remote streaming](./streaming.md).
 
 ## Commands, events, and projections
 

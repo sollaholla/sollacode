@@ -192,6 +192,20 @@ the preview automation broker to the environment's own desktop host, which regis
 [RemoteCredentialVault.ts](../../apps/server/src/preview/RemoteCredentialVault.ts), and
 [remote-browser-control.md](../user/remote-browser-control.md#saved-passwords-and-pins-for-agents).
 
+#### Media channel
+
+The authenticated binary WebSocket at `/ws/media` used for remote-control video. An approved
+session issues a single-use ticket for a publisher or subscriber; video packets travel separately
+from control RPC. Viewer acknowledgements drive pacing and adaptive encoding. See
+[streaming architecture](../architecture/streaming.md).
+
+#### Remote frame stream
+
+The browser preview's change-driven picture subscription. Viewers announce size and patch support;
+the desktop sends a keyframe and changed rectangles through `preview.remoteFrames`. Native viewers
+request whole pictures. The last viewer leaving releases capture demand. See
+[streaming architecture](../architecture/streaming.md#browser-preview).
+
 #### Tab audio relay
 
 How a browser tab's sound reaches a remote viewer. Viewers open `preview.tabAudioWatch` for the tab

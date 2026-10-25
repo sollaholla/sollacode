@@ -25,6 +25,19 @@ Open Link and the page menu's **Open link on this device** appear only for publi
 localhost, LAN, private IPv6, and tailnet addresses stay inside the host browser. You can still
 copy those addresses or open them in another host tab.
 
+## Streaming and compatibility
+
+Updated hosts send pictures when the page changes and stop capture when nobody is watching.
+Web viewers receive changed image regions where possible; native mobile receives whole changed
+pictures. The requested image size follows the visible panel, screen density, and zoom, within a
+maximum size. When several devices watch the same tab, the host uses the largest requested size;
+a native viewer also makes that tab use whole pictures for all viewers.
+
+Slow viewers receive the latest available state rather than replaying every intermediate image.
+A busy video or scrolling page can therefore skip frames. Opening another tab, hiding the panel,
+or putting the native app in the background releases its subscription. Old hosts and capture
+failures retain the snapshot fallback. Streaming does not change input approval or download rules.
+
 ## Phone Browser (Safari over Tailscale) — no install needed
 
 Open the web app from your phone's browser the way you already do for remote access (see
@@ -43,8 +56,9 @@ Open the web app from your phone's browser the way you already do for remote acc
   spaces in page titles. This applies on web, desktop, and native mobile; custom tab names stay as entered.
 - While an agent drives a tab, its blue cursor is drawn on the frame where it last pointed or
   clicked, and the tab's icon in the panel strip turns into the agent cursor (bright while the
-  agent works, dimmed while it waits for you). Frames refresh every second while an agent is
-  working in the tab, instead of every 2.5 seconds.
+  agent works, dimmed while it waits for you). Updated hosts push changed pictures while the
+  panel is visible. Older hosts fall back to refreshing every second while an agent works in
+  the tab, or every 2.5 seconds otherwise.
 - The agent's cursor glides to each new point instead of jumping there: it sets off quickly,
   slows as it settles on the target, and bows slightly on the way, like a hand moving a mouse. It
   always starts from where it is drawn, so it no longer snaps back to an old spot partway through.
@@ -90,8 +104,8 @@ Predicted words and pastes go as typed. Keyboards that build a word before commi
 Android's Gboard or a Japanese input method, send the word when it is finished; until then ⌫ edits
 that word on your phone rather than the page.
 
-Because the frame is a picture refreshed on request, not a live stream, Drag and Hold are sent
-whole when your finger lifts: you see the result in the next frame, not while you move.
+Drag and Hold are sent whole when your finger lifts. Updated hosts push the resulting picture;
+older hosts show it in the next requested frame. The gesture itself is still sent when it ends.
 
 Scrolling turns a mouse wheel on the desktop tab at the spot where your finger first touched, so
 whatever sits under it scrolls: a chat list, a sidebar, or a document pane scrolls on its own, the

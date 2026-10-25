@@ -60,9 +60,10 @@ Solla Code keeps a phone's data use low without changing what you see.
   `structuredContent` copy of a result is not sent. This roughly halves what a busy thread sends.
   The expanded row and Copy show the shortened text; the full result stays in the saved history.
   Images and the tool's arguments are never cut.
-- **Remote browser.** While a browser tab is open on your phone, a page that has not changed since
-  the last picture is answered with its address, title, agent cursor, and pending approvals, without
-  the picture again. Only a changed page downloads a new frame.
+- **Remote browser.** Updated hosts push changed pictures while the panel is visible, using changed
+  regions for web viewers where possible. A still page sends no repeated picture. Older hosts keep
+  the snapshot fallback, which also omits an unchanged picture. See
+  [remote browser streaming](./remote-browser-control.md#streaming-and-compatibility).
 
 ## Long thread names
 
@@ -91,6 +92,14 @@ refreshes every 30 seconds only while the chip is on screen.
 Only remote-hosted threads show **Remote control** beside the project action controls. Selecting it
 connects directly to that thread's saved host when necessary, then opens that computer's live
 remote-control window. Local threads do not show the control.
+
+Updated web and desktop viewers use a separate binary video connection when both ends support it.
+Frames are decoded directly onto a canvas, with image size following the viewer and encoding
+adapting to the connection. Slow connections can skip intermediate frames to stay current. If the
+browser lacks the required video APIs, the host is older, or decoding fails, the existing video or
+image fallback remains available. These APIs may be unavailable on plain HTTP LAN pages; HTTPS
+can enable them in supporting browsers. Native mobile does not currently offer full-screen remote
+control; its browser preview is a separate feature.
 
 Remote control always starts with approval on the host computer. The host can decline, grant
 view-only access, or allow screen, pointer, and keyboard control. Primary shortcuts translate
