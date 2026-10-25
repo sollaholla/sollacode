@@ -3,7 +3,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type PreviewRemoteFrameEvent } from "@t3tools/contracts";
+import type { RemoteFrameDraw } from "@t3tools/client-runtime/preview/remote-frame-feed";
 import * as Cause from "effect/Cause";
 import { RemoteBrowserFrame } from "./RemoteBrowserFrame";
 
@@ -15,9 +16,51 @@ function deferred<A>() {
   return { promise, resolve };
 }
 
-const mocks = vi.hoisted(() => ({ capture: vi.fn(), input: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  capture: vi.fn(),
+  input: vi.fn(),
+  remoteFrames: vi.fn(),
+  unsubscribe: vi.fn(),
+  streamSupported: false,
+  listeners: null as {
+    onEvents: (events: ReadonlyArray<PreviewRemoteFrameEvent>) => void;
+    onFailure: () => void;
+  } | null,
+}));
+vi.mock("~/state/entities", () => ({
+  useServerConfigs: () =>
+    new Map([
+      ["env", { environment: { capabilities: { remotePreviewFrames: mocks.streamSupported } } }],
+    ]),
+}));
+vi.mock("./remoteFrames/remoteFrameCanvas", () => ({
+  listenToRemoteFrames: (
+    _registry: unknown,
+    _atom: unknown,
+    handlers: NonNullable<typeof mocks.listeners>,
+  ) => {
+    mocks.listeners = handlers;
+    return mocks.unsubscribe;
+  },
+  // Stub image decoding so fallback and subscription lifecycle can be
+  // exercised deterministically without launching a browser.
+  createRemoteFramePainter: (options: {
+    onPicture: (size: { width: number; height: number }) => void;
+  }) => ({
+    attach: () => {},
+    reset: () => {},
+    paint: (draws: ReadonlyArray<RemoteFrameDraw>) => {
+      const newest = draws.at(-1);
+      if (newest) options.onPicture({ width: newest.event.width, height: newest.event.height });
+    },
+  }),
+}));
 vi.mock("~/state/preview", () => ({
-  previewEnvironment: { remoteSnapshot: "snapshot", remoteInput: "input" },
+  previewEnvironment: {
+    remoteSnapshot: "snapshot",
+    remoteInput: "input",
+    remoteFrames: mocks.remoteFrames,
+  },
 }));
 vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: (command: string) => (command === "snapshot" ? mocks.capture : mocks.input),
@@ -31,6 +74,7 @@ vi.mock("./RemoteTabAudio", () => ({
 vi.mock("../remoteView/RemoteViewZoom", () => ({
   useRemoteViewZoom: () => ({
     style: {},
+    view: { zoom: 1 },
     pinching: false,
     pinchingRef: { current: false },
     reset: vi.fn(),
@@ -61,8 +105,22 @@ describe("remote browser frame availability", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    mocks.capture.mockReset();
+    mocks.capture.mockReset().mockResolvedValue(ready());
     mocks.input.mockReset();
+    mocks.remoteFrames.mockReset();
+    mocks.unsubscribe.mockReset();
+    mocks.listeners = null;
+    mocks.streamSupported = false;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 800, 600),
+    );
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -74,7 +132,7 @@ describe("remote browser frame availability", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
-  const render = () =>
+  const render = (visible = true) =>
     act(async () =>
       root.render(
         <RemoteBrowserFrame
@@ -83,7 +141,7 @@ describe("remote browser frame availability", () => {
             threadId: ThreadId.make("thread"),
           }}
           tabId="tab-one"
-          visible
+          visible={visible}
           agentControl="none"
         />,
       ),
@@ -187,4 +245,81 @@ describe("remote browser frame availability", () => {
     await nextFrame();
     expect(container.querySelector("img")?.getAttribute("src")).toContain("new-page");
   });
+  const pushPicture = () =>
+    act(async () => {
+      mocks.listeners?.onEvents([
+        {
+          type: "state",
+          state: { url: "https://example.com/", title: "Streamed", loading: false },
+        },
+        {
+          type: "keyframe",
+          sequence: 1,
+          width: 800,
+          height: 600,
+          mimeType: "image/jpeg",
+          data: "stream-frame",
+        },
+      ]);
+    });
+
+  it("stops bootstrap polling once the advertised stream supplies a picture", async () => {
+    mocks.streamSupported = true;
+    await render();
+    expect(mocks.remoteFrames).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          tabId: "tab-one",
+          patches: true,
+          maxWidth: 896,
+          maxHeight: 640,
+        }),
+      }),
+    );
+    // Before layout measurement opens the stream, one bootstrap snapshot is requested.
+    expect(mocks.capture).toHaveBeenCalledOnce();
+    await pushPicture();
+    expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("visible");
+    expect(container.querySelector("img")).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(mocks.capture).toHaveBeenCalledOnce();
+    await render(false);
+    expect(mocks.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to snapshots when an advertised stream never supplies its first picture", async () => {
+    mocks.streamSupported = true;
+    mocks.capture.mockResolvedValue(ready("old-host-fallback"));
+    await render();
+    expect(mocks.capture).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_050);
+    });
+    expect(container.querySelector("img")?.getAttribute("src")).toContain("old-host-fallback");
+    expect(mocks.capture).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["unavailable", "failure"] as const)(
+    "replaces a pushed picture with polling after %s",
+    async (kind) => {
+      mocks.streamSupported = true;
+      mocks.capture.mockResolvedValue(ready("fallback-after-stream"));
+      await render();
+      await pushPicture();
+      await act(async () => {
+        if (kind === "unavailable")
+          mocks.listeners?.onEvents([{ type: "unavailable", reason: "Host disconnected" }]);
+        else mocks.listeners?.onFailure();
+      });
+      expect(container.querySelector("img")?.getAttribute("src")).toContain(
+        "fallback-after-stream",
+      );
+      expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("hidden");
+      await pushPicture();
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.querySelector("canvas")?.parentElement?.style.visibility).toBe("visible");
+    },
+  );
 });
