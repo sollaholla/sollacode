@@ -174,6 +174,9 @@ import {
   PreviewNavigateInput,
   PreviewOpenInput,
   PreviewRefreshInput,
+  PreviewRemoteFrameEvent,
+  PreviewRemoteFramePublishInput,
+  PreviewRemoteFrameWatchInput,
   PreviewRemoteInputInput,
   PreviewRemoteInputResult,
   PreviewRemoteSnapshotInput,
@@ -341,6 +344,8 @@ export const WS_METHODS = {
   previewList: "preview.list",
   previewRemoteSnapshot: "preview.remoteSnapshot",
   previewRemoteInput: "preview.remoteInput",
+  previewRemoteFrames: "preview.remoteFrames",
+  previewRemoteFramePublish: "preview.remoteFramePublish",
   previewTabAudioWatch: "preview.tabAudioWatch",
   previewTabAudioPublish: "preview.tabAudioPublish",
   previewTabAudioReport: "preview.tabAudioReport",
@@ -1029,6 +1034,20 @@ export const WsPreviewRemoteInputRpc = Rpc.make(WS_METHODS.previewRemoteInput, {
   error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
 });
 
+/** A remote viewer watching a tab; pictures arrive as the page changes. */
+export const WsPreviewRemoteFramesRpc = Rpc.make(WS_METHODS.previewRemoteFrames, {
+  payload: PreviewRemoteFrameWatchInput,
+  success: PreviewRemoteFrameEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+/** The rendering desktop handing over what changed in a watched tab. */
+export const WsPreviewRemoteFramePublishRpc = Rpc.make(WS_METHODS.previewRemoteFramePublish, {
+  payload: PreviewRemoteFramePublishInput,
+  error: EnvironmentAuthorizationError,
+});
+
 export const WsPreviewTabAudioWatchRpc = Rpc.make(WS_METHODS.previewTabAudioWatch, {
   payload: PreviewTabAudioWatchInput,
   success: PreviewTabAudioEvent,
@@ -1646,6 +1665,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewTabAudioWatchRpc,
   WsPreviewTabAudioPublishRpc,
   WsPreviewTabAudioReportRpc,
+  WsPreviewRemoteFramesRpc,
+  WsPreviewRemoteFramePublishRpc,
   WsPreviewReportStatusRpc,
   WsPreviewReportActivityRpc,
   WsPreviewAutomationConnectRpc,

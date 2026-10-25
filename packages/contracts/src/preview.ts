@@ -311,6 +311,133 @@ export const PreviewRemoteSnapshotUnchangedResult = Schema.Struct({
 export type PreviewRemoteSnapshotUnchangedResult = typeof PreviewRemoteSnapshotUnchangedResult.Type;
 
 /**
+ * Remote frame stream. Instead of asking for a picture every few seconds, a
+ * remote viewer subscribes to a tab and the desktop that renders it pushes a
+ * picture whenever the page changes: one whole picture (a keyframe), then only
+ * the rectangles that changed (patches), sized to the largest viewer watching.
+ * A page that is not moving costs nothing; a blinking caret costs a few
+ * hundred bytes a blink. Viewers that cannot draw patches get keyframes only.
+ * Clients that predate the stream keep polling `previewRemoteSnapshot`.
+ */
+export const PREVIEW_REMOTE_FRAME_MIN_DIMENSION = 64;
+export const PREVIEW_REMOTE_FRAME_MAX_DIMENSION = 4096;
+/** Rectangles in one patch event; a change that needs more is sent as a keyframe. */
+export const PREVIEW_REMOTE_FRAME_MAX_PATCHES = 64;
+
+const PreviewRemoteFrameRequestDimension = Schema.Int.check(
+  Schema.isBetween({
+    minimum: PREVIEW_REMOTE_FRAME_MIN_DIMENSION,
+    maximum: PREVIEW_REMOTE_FRAME_MAX_DIMENSION,
+  }),
+);
+const PreviewRemoteFramePixelSize = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 2 * PREVIEW_REMOTE_FRAME_MAX_DIMENSION }),
+);
+
+/** A viewer watching one tab, and the largest picture it can show. */
+export const PreviewRemoteFrameWatchInput = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  /** The viewer's picture box in device pixels; the desktop never sends larger. */
+  maxWidth: PreviewRemoteFrameRequestDimension,
+  maxHeight: PreviewRemoteFrameRequestDimension,
+  /** Changes after a decode failure to force a fresh subscription and base picture. */
+  resync: Schema.optional(NonNegativeInt),
+  /** Whether the viewer can draw patches over its picture. Absent means keyframes only. */
+  patches: Schema.optional(Schema.Boolean),
+});
+export type PreviewRemoteFrameWatchInput = typeof PreviewRemoteFrameWatchInput.Type;
+
+/** Everything about the page a viewer shows besides its pixels. */
+export const PreviewRemoteFramePageState = Schema.Struct({
+  url: Schema.String,
+  title: Schema.String,
+  loading: Schema.Boolean,
+  pendingDownloadApprovals: previewRemoteSnapshotFields.pendingDownloadApprovals,
+  agentPointer: Schema.optional(PreviewAgentPointer),
+});
+export type PreviewRemoteFramePageState = typeof PreviewRemoteFramePageState.Type;
+
+/** One changed rectangle, in the pixels of the picture it is drawn over. */
+export const PreviewRemoteFramePatch = Schema.Struct({
+  x: NonNegativeInt,
+  y: NonNegativeInt,
+  width: PreviewRemoteFramePixelSize,
+  height: PreviewRemoteFramePixelSize,
+  /** Base64 JPEG of exactly this rectangle. */
+  data: Schema.String,
+});
+export type PreviewRemoteFramePatch = typeof PreviewRemoteFramePatch.Type;
+
+export const PreviewRemoteFrameKeyframe = Schema.Struct({
+  type: Schema.Literal("keyframe"),
+  /** Counts every picture the desktop published for this tab; patches name the one they follow. */
+  sequence: NonNegativeInt,
+  width: PreviewRemoteFramePixelSize,
+  height: PreviewRemoteFramePixelSize,
+  mimeType: Schema.Literal("image/jpeg"),
+  /** Base64 JPEG of the whole picture. */
+  data: Schema.String,
+});
+export type PreviewRemoteFrameKeyframe = typeof PreviewRemoteFrameKeyframe.Type;
+
+export const PreviewRemoteFramePatchSet = Schema.Struct({
+  type: Schema.Literal("patch"),
+  sequence: NonNegativeInt,
+  /** The picture these rectangles are drawn over; a viewer holding another one resubscribes. */
+  after: NonNegativeInt,
+  width: PreviewRemoteFramePixelSize,
+  height: PreviewRemoteFramePixelSize,
+  mimeType: Schema.Literal("image/jpeg"),
+  /** Drawn in order; a later rectangle may cover an earlier one. */
+  patches: Schema.Array(PreviewRemoteFramePatch).check(
+    Schema.isMaxLength(PREVIEW_REMOTE_FRAME_MAX_PATCHES),
+  ),
+});
+export type PreviewRemoteFramePatchSet = typeof PreviewRemoteFramePatchSet.Type;
+
+export const PreviewRemoteFrameEvent = Schema.Union([
+  PreviewRemoteFrameKeyframe,
+  PreviewRemoteFramePatchSet,
+  /** The page's address, title, cursor, or held downloads changed. */
+  Schema.Struct({ type: Schema.Literal("state"), state: PreviewRemoteFramePageState }),
+  /**
+   * No desktop can stream this tab right now (none connected that can, or the
+   * one rendering it could not capture). The viewer falls back to polling
+   * `previewRemoteSnapshot` until pictures arrive.
+   */
+  Schema.Struct({
+    type: Schema.Literal("unavailable"),
+    reason: Schema.String.check(Schema.isMaxLength(500)),
+  }),
+]);
+export type PreviewRemoteFrameEvent = typeof PreviewRemoteFrameEvent.Type;
+
+/** A tab some remote viewer is watching, and what the desktop should send for it. */
+export const PreviewRemoteFrameDemand = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  /** The largest picture any viewer of the tab can show, in device pixels. */
+  maxWidth: PreviewRemoteFrameRequestDimension,
+  maxHeight: PreviewRemoteFrameRequestDimension,
+  /** False while any viewer can only draw keyframes. */
+  patches: Schema.Boolean,
+  /** Raised when the server needs a fresh keyframe (a broken patch chain). */
+  keyframeRequest: NonNegativeInt,
+});
+export type PreviewRemoteFrameDemand = typeof PreviewRemoteFrameDemand.Type;
+
+/** The rendering desktop handing the server what changed in a watched tab. */
+export const PreviewRemoteFramePublishInput = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  /** The publishing host's automation connection; one desktop streams a tab at a time. */
+  connectionId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  events: Schema.Array(PreviewRemoteFrameEvent).check(Schema.isMinLength(1), Schema.isMaxLength(4)),
+});
+export type PreviewRemoteFramePublishInput = typeof PreviewRemoteFramePublishInput.Type;
+
+/**
  * Tab audio for remote viewers. The desktop that renders a tab captures its
  * sound only while a viewer is listening AND the page is actually making
  * sound, encodes it as Opus, and relays it through the server in batches of

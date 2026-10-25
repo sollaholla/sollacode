@@ -4,6 +4,7 @@ import type {
   PreviewAutomationResponse,
   PreviewAutomationStreamEvent,
   PreviewCredentialVaultCommand,
+  PreviewRemoteFrameDemand,
   PreviewTabAudioTarget,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -68,6 +69,11 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
    * registered with `streamsTabAudio` are sent one.
    */
   readonly handleAudioDemand?: (tabs: ReadonlyArray<PreviewTabAudioTarget>) => void;
+  /**
+   * Takes the set of tabs remote viewers are watching. Only hosts that
+   * registered with `streamsRemoteFrames` are sent one.
+   */
+  readonly handleFrameDemand?: (tabs: ReadonlyArray<PreviewRemoteFrameDemand>) => void;
   readonly renewAutomationForeground: () => Promise<unknown>;
   readonly respond: (response: PreviewAutomationResponse) => Promise<unknown>;
   readonly label: string;
@@ -143,9 +149,14 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
     };
 
     const consume = (result: AutomationStreamResult<E>) => {
+      if (AsyncResult.isFailure(result)) {
+        options.handleFrameDemand?.([]);
+        return;
+      }
       if (!AsyncResult.isSuccess(result)) return;
       const event = result.value;
       if (event.type === "connected") {
+        if (activeConnectionId !== event.connectionId) options.handleFrameDemand?.([]);
         activeConnectionId = event.connectionId;
         connectionExplicitlyAnnounced = true;
       } else if (activeConnectionId === null) {
@@ -169,6 +180,10 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
       }
       if (event.type === "audioDemand") {
         options.handleAudioDemand?.(event.tabs);
+        return;
+      }
+      if (event.type === "frameDemand") {
+        options.handleFrameDemand?.(event.tabs);
         return;
       }
       if (event.type === "credentialVault") {
@@ -241,6 +256,7 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
 
     get.addFinalizer(() => {
       disposed = true;
+      options.handleFrameDemand?.([]);
       clearForegroundKeepalive();
     });
     const initialRequest = get.once(options.requestsAtom);

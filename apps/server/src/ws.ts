@@ -130,6 +130,7 @@ import * as MediaRelay from "./media/MediaRelay.ts";
 import { mediaChannelRouteHandler } from "./media/mediaChannelRoute.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
 import * as TabAudioRelay from "./preview/TabAudioRelay.ts";
+import * as RemoteFrameRelay from "./preview/RemoteFrameRelay.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
 import {
@@ -601,6 +602,7 @@ const makeWsRpcLayer = (
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   remoteControlBroker: RemoteControlBroker.RemoteControlBroker["Service"],
   tabAudioRelay: TabAudioRelay.TabAudioRelay["Service"],
+  remoteFrameRelay: RemoteFrameRelay.RemoteFrameRelay["Service"],
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -3035,6 +3037,14 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "preview" },
           ),
+        [WS_METHODS.previewRemoteFrames]: (input) =>
+          observeRpcStream(WS_METHODS.previewRemoteFrames, remoteFrameRelay.watch(input), {
+            "rpc.aggregate": "preview",
+          }),
+        [WS_METHODS.previewRemoteFramePublish]: (input) =>
+          observeRpcEffect(WS_METHODS.previewRemoteFramePublish, remoteFrameRelay.publish(input), {
+            "rpc.aggregate": "preview",
+          }),
         [WS_METHODS.previewTabAudioWatch]: (input) =>
           observeRpcStream(WS_METHODS.previewTabAudioWatch, tabAudioRelay.listen(input), {
             "rpc.aggregate": "preview",
@@ -3086,6 +3096,11 @@ const makeWsRpcLayer = (
                 Effect.map((events) =>
                   input.streamsTabAudio
                     ? TabAudioRelay.withTabAudioDemand(events, tabAudioRelay.demand)
+                    : events,
+                ),
+                Effect.map((events) =>
+                  input.streamsRemoteFrames
+                    ? RemoteFrameRelay.withRemoteFrameDemand(events, remoteFrameRelay)
                     : events,
                 ),
               ),
@@ -3839,6 +3854,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const remoteControlBroker = yield* RemoteControlBroker.RemoteControlBroker;
     const tabAudioRelay = yield* TabAudioRelay.TabAudioRelay;
+    const remoteFrameRelay = yield* RemoteFrameRelay.RemoteFrameRelay;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     return HttpRouter.add(
       "GET",
@@ -3864,6 +3880,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               previewAutomationBroker,
               remoteControlBroker,
               tabAudioRelay,
+              remoteFrameRelay,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(ProviderMaintenanceRunner.layer),

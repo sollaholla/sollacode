@@ -98,6 +98,27 @@ export function createPreviewEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.threadId, input.tabId]),
       },
     }),
+    // One element per arrival batch: a keyframe and the patches drawn over it
+    // must all be applied, in order, and a stream atom keeps only its newest
+    // value. The server sends the next batch only after this one arrived, so
+    // a slow link gets fewer, newer pictures instead of a backlog.
+    remoteFrames: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:preview:remote-frames",
+      tag: WS_METHODS.previewRemoteFrames,
+      idleTtlMs: 0,
+      transform: (stream) => Stream.chunks(stream),
+    }),
+    // In capture order: a patch drawn before the picture it changes is garbage.
+    remoteFramePublish: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:remote-frame-publish",
+      tag: WS_METHODS.previewRemoteFramePublish,
+      scheduler: automationScheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, input.tabId]),
+      },
+    }),
     // One element per arrival batch, never just the batch's last: a stream
     // atom keeps only the newest value, and audio needs every packet.
     tabAudio: createEnvironmentRpcSubscriptionAtomFamily(runtime, {

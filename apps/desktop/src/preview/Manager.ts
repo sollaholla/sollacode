@@ -14,6 +14,7 @@ import type {
   PreviewAnnotationRect,
   DesktopPreviewRecordingArtifact,
   DesktopPreviewRecordingFrame,
+  DesktopPreviewRemoteFrame,
   DesktopPreviewScreenshotArtifact,
   DesktopPreviewAutomationStatus,
   PreviewDownload,
@@ -67,6 +68,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -88,6 +90,13 @@ import {
   PREVIEW_USER_INPUT_CHANNEL,
 } from "../ipc/channels.ts";
 import { PreviewActivityConsumer, PreviewActivityLeases } from "./ActivityLeases.ts";
+import {
+  createScreencastPacer,
+  REMOTE_FRAME_MIN_INTERVAL_MS,
+  REMOTE_FRAME_SCREENCAST_QUALITY,
+  REMOTE_FRAME_SETTLE_MS,
+  type ScreencastPacer,
+} from "./remoteFrameScreencast.ts";
 import {
   armUserInputHold,
   isUserInputStorm,
@@ -1090,7 +1099,27 @@ const nextZoomLevel = (current: number, direction: "in" | "out"): number => {
 
 type Listener = (tabId: string, state: PreviewTabState) => Effect.Effect<void>;
 type RecordingFrameListener = (frame: DesktopPreviewRecordingFrame) => Effect.Effect<void>;
+type RemoteFrameListener = (frame: DesktopPreviewRemoteFrame) => Effect.Effect<void>;
 type NewTabRequestListener = (request: DesktopPreviewNewTabRequest) => Effect.Effect<void>;
+
+/**
+ * A tab a remote viewer is watching. Its screencast runs on the tab's control
+ * session for as long as the session lives; `webContentsId` is the guest it
+ * was started on, so a replaced guest is noticed and the screencast restarted.
+ */
+interface RemoteFrameSession {
+  readonly maxWidth: number;
+  readonly maxHeight: number;
+  webContentsId: number | null;
+  pacer: ScreencastPacer | null;
+}
+
+/**
+ * The stage a watched background tab rests on: it keeps the guest drawing at
+ * the compositor alpha (see `snapshotStageId`) so its screencast has frames.
+ */
+const REMOTE_VIEW_STAGE_ID = "remote-view";
+const REMOTE_VIEW_LEASE_ID = "remote-view";
 
 type PreviewInputSignal =
   | {
@@ -1277,6 +1306,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const recordingFrameListenersRef = yield* Ref.make<ReadonlySet<RecordingFrameListener>>(
     new Set(),
   );
+  const remoteFrameListenersRef = yield* Ref.make<ReadonlySet<RemoteFrameListener>>(new Set());
+  /** Tabs remote viewers are watching, by tab id. */
+  const remoteFrameSessions = new Map<string, RemoteFrameSession>();
   const pickSessionsRef = yield* Ref.make<ReadonlyMap<string, PickSession>>(new Map());
   const controlSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<number, BrowserControlSession>
@@ -1607,7 +1639,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   });
 
   const deliverEvent = (
-    eventKind: "state-change" | "recording-frame" | "pointer-event" | "new-tab-request",
+    eventKind:
+      | "state-change"
+      | "recording-frame"
+      | "remote-frame"
+      | "pointer-event"
+      | "new-tab-request",
     tabId: string,
     delivery: () => Effect.Effect<void>,
   ) =>
@@ -2055,7 +2092,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const hasControlActivity = (tabId: string): boolean =>
     activityLeases.has(tabId, PreviewActivityConsumer.Automation) ||
-    activityLeases.has(tabId, PreviewActivityConsumer.Diagnostics);
+    activityLeases.has(tabId, PreviewActivityConsumer.Diagnostics) ||
+    // The remote frame stream is a screencast on this debugger session.
+    activityLeases.has(tabId, PreviewActivityConsumer.RemoteView);
 
   const detachControlSessionIfIdle = Effect.fn("PreviewManager.detachControlSessionIfIdle")(
     function* (tabId: string, webContentsId: number) {
@@ -2116,7 +2155,31 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             method: string,
             params: Record<string, unknown>,
           ) {
-            if (method === "Page.screencastFrame") {
+            const remoteTabId =
+              method === "Page.screencastFrame" ? yield* tabIdForWebContents(wc.id) : null;
+            const remote = remoteTabId === null ? undefined : remoteFrameSessions.get(remoteTabId);
+            if (
+              remoteTabId !== null &&
+              remote?.webContentsId === wc.id &&
+              remote.pacer !== null &&
+              typeof params["sessionId"] === "number" &&
+              typeof params["data"] === "string"
+            ) {
+              // A remote viewer's picture: hand it on at once, and let the
+              // pacer decide when Chromium may draw the next one.
+              const frame: DesktopPreviewRemoteFrame = {
+                tabId: remoteTabId,
+                data: params["data"],
+                receivedAt: yield* currentMillis,
+              };
+              const listeners = yield* Ref.get(remoteFrameListenersRef);
+              yield* Effect.forEach(
+                listeners,
+                (listener) => deliverEvent("remote-frame", remoteTabId, () => listener(frame)),
+                { discard: true },
+              );
+              remote.pacer.onFrame(params["sessionId"]);
+            } else if (method === "Page.screencastFrame") {
               const sessionId = params["sessionId"];
               if (typeof sessionId === "number") {
                 yield* attemptPromise(
@@ -2174,6 +2237,27 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           const onDetach: BrowserControlSession["onDetach"] = (_event, reason) => {
             control.debuggerAttachedByManager = false;
             if (control.detachRequested) return;
+            const remote = remoteFrameSessions.get(tabId);
+            if (remote?.webContentsId === wc.id) {
+              remote.pacer?.dispose();
+              remote.pacer = null;
+              remote.webContentsId = null;
+              runFork(
+                Effect.gen(function* () {
+                  const frame: DesktopPreviewRemoteFrame = {
+                    tabId,
+                    receivedAt: yield* currentMillis,
+                    unavailable: "The browser capture connection was interrupted.",
+                  };
+                  const listeners = yield* Ref.get(remoteFrameListenersRef);
+                  yield* Effect.forEach(
+                    listeners,
+                    (listener) => deliverEvent("remote-frame", tabId, () => listener(frame)),
+                    { discard: true },
+                  );
+                }),
+              );
+            }
             // Close the availability gap synchronously. Until a replacement
             // control session is attached and focus emulation succeeds, MCP
             // status must treat this guest as not foreground-ready.
@@ -2205,6 +2289,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   }),
                 )
                 .pipe(
+                  // Restart outside the foreground mutation permit: remote
+                  // capture owns its own per-tab lifecycle lock.
+                  Effect.andThen(
+                    Effect.suspend(() =>
+                      remoteFrameSessions.has(tabId) && !wc.isDestroyed()
+                        ? refreshRemoteFrame(tabId)
+                        : Effect.void,
+                    ),
+                  ),
                   Effect.catch((cause) =>
                     Effect.logWarning(
                       "Preview debugger detached and foreground reactivation failed closed.",
@@ -4176,6 +4269,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
     activityLeases.clearTab(tabId);
     filledSecretsByTab.delete(tabId);
+    remoteFrameSessions.get(tabId)?.pacer?.dispose();
+    remoteFrameSessions.delete(tabId);
     yield* recordActivityLeaseMetrics();
     const updatedAt = yield* currentIso;
     const closed: PreviewTabState = {
@@ -4395,6 +4490,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const { state: registered, pendingUrl } = registration.value;
     runFork(restoreControlSession(tabId, wc));
     yield* emit(tabId, registered);
+    // A replaced guest takes over a remote viewer's screencast and stage.
+    if (remoteFrameSessions.has(tabId)) runFork(refreshRemoteFrame(tabId).pipe(Effect.ignore));
     yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
       wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
     );
@@ -5462,6 +5559,174 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  /**
+   * Puts a watched tab on (or takes it off) its resting stage, so a background
+   * guest keeps drawing while a remote viewer watches it. A snapshot that
+   * stages the tab meanwhile hands the stage back when it finishes.
+   */
+  const setRemoteViewStage = Effect.fn("PreviewManager.setRemoteViewStage")(function* (
+    tabId: string,
+    active: boolean,
+  ) {
+    const updatedAt = yield* currentIso;
+    const staged = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
+      const current = tabs.get(tabId);
+      if (!current) return [Option.none<PreviewTabState>(), tabs] as const;
+      const snapshotStageId = active
+        ? (current.snapshotStageId ?? REMOTE_VIEW_STAGE_ID)
+        : current.snapshotStageId === REMOTE_VIEW_STAGE_ID
+          ? null
+          : current.snapshotStageId;
+      if (snapshotStageId === current.snapshotStageId) {
+        return [Option.none<PreviewTabState>(), tabs] as const;
+      }
+      const state: PreviewTabState = { ...current, snapshotStageId, updatedAt };
+      return [
+        Option.some(state),
+        replaceMap(tabs, (copy) => {
+          copy.set(tabId, state);
+        }),
+      ] as const;
+    });
+    if (Option.isSome(staged)) yield* emit(tabId, staged.value);
+  });
+
+  /**
+   * (Re)starts the screencast of a watched tab on its current guest. The
+   * pacer acknowledges frames; `invalidate` makes a still page draw once, so
+   * the first picture arrives now rather than at the page's next change.
+   */
+  const startRemoteScreencast = Effect.fn("PreviewManager.startRemoteScreencast")(function* (
+    tabId: string,
+    wc: Electron.WebContents,
+  ) {
+    const session = remoteFrameSessions.get(tabId);
+    if (!session) return;
+    yield* ensureControlSession(tabId, wc);
+    if (remoteFrameSessions.get(tabId) !== session || wc.isDestroyed()) return;
+    session.pacer?.dispose();
+    session.webContentsId = wc.id;
+    session.pacer = createScreencastPacer({
+      minIntervalMs: REMOTE_FRAME_MIN_INTERVAL_MS,
+      settleMs: REMOTE_FRAME_SETTLE_MS,
+      now: () => performance.now(),
+      setTimer: (run, ms) => {
+        const timer = runFork(
+          Effect.sleep(Duration.millis(ms)).pipe(Effect.andThen(Effect.sync(run))),
+        );
+        return () => {
+          runFork(Fiber.interrupt(timer));
+        };
+      },
+      ack: (sessionId) => {
+        if (wc.isDestroyed()) return;
+        wc.debugger.sendCommand("Page.screencastFrameAck", { sessionId }).catch(() => undefined);
+      },
+      refresh: () => {
+        if (!wc.isDestroyed()) wc.invalidate();
+      },
+    });
+    yield* attemptPromise(
+      { operation: "remoteFrames.startScreencast", tabId, webContentsId: wc.id },
+      () =>
+        wc.debugger.sendCommand("Page.startScreencast", {
+          format: "jpeg",
+          quality: REMOTE_FRAME_SCREENCAST_QUALITY,
+          maxWidth: session.maxWidth,
+          maxHeight: session.maxHeight,
+          everyNthFrame: 1,
+        }),
+    );
+    yield* attempt({ operation: "remoteFrames.invalidate", tabId, webContentsId: wc.id }, () =>
+      wc.invalidate(),
+    );
+  });
+
+  const stopRemoteFramesUnlocked = Effect.fn("PreviewManager.stopRemoteFrames")(function* (
+    tabId: string,
+  ) {
+    const session = remoteFrameSessions.get(tabId);
+    if (!session) return;
+    remoteFrameSessions.delete(tabId);
+    session.pacer?.dispose();
+    activityLeases.release(tabId, REMOTE_VIEW_LEASE_ID);
+    yield* recordActivityLeaseMetrics();
+    yield* setRemoteViewStage(tabId, false);
+    const webContentsId = session.webContentsId;
+    if (webContentsId === null) return;
+    const wc = webContents.fromId(webContentsId);
+    if (wc && !wc.isDestroyed() && wc.debugger.isAttached()) {
+      yield* attemptPromise(
+        { operation: "remoteFrames.stopScreencast", tabId, webContentsId },
+        () => wc.debugger.sendCommand("Page.stopScreencast"),
+      ).pipe(Effect.ignore);
+    }
+    yield* detachControlSessionIfIdle(tabId, webContentsId);
+  });
+
+  /**
+   * Streams a tab to remote viewers at up to `size` device pixels. Starting
+   * again at the same size only asks the page to draw, so a viewer that joins
+   * gets a current picture at once.
+   */
+  const startRemoteFramesUnlocked = Effect.fn("PreviewManager.startRemoteFrames")(function* (
+    tabId: string,
+    size: { readonly maxWidth: number; readonly maxHeight: number },
+  ) {
+    const wc = yield* requireWebContents(tabId);
+    const existing = remoteFrameSessions.get(tabId);
+    if (
+      existing?.maxWidth === size.maxWidth &&
+      existing.maxHeight === size.maxHeight &&
+      existing.webContentsId === wc.id &&
+      existing.pacer !== null
+    ) {
+      yield* attempt({ operation: "remoteFrames.invalidate", tabId, webContentsId: wc.id }, () =>
+        wc.invalidate(),
+      );
+      return;
+    }
+    existing?.pacer?.dispose();
+    remoteFrameSessions.set(tabId, {
+      maxWidth: size.maxWidth,
+      maxHeight: size.maxHeight,
+      webContentsId: null,
+      pacer: null,
+    });
+    activityLeases.acquire(tabId, REMOTE_VIEW_LEASE_ID, PreviewActivityConsumer.RemoteView);
+    yield* recordActivityLeaseMetrics();
+    yield* setRemoteViewStage(tabId, true);
+    yield* startRemoteScreencast(tabId, wc).pipe(
+      Effect.tapError(() => stopRemoteFramesUnlocked(tabId).pipe(Effect.ignore)),
+    );
+  });
+
+  /** Asks a watched tab for one fresh picture; restarts its screencast on a replaced guest. */
+  const refreshRemoteFrameUnlocked = Effect.fn("PreviewManager.refreshRemoteFrame")(function* (
+    tabId: string,
+  ) {
+    const session = remoteFrameSessions.get(tabId);
+    if (!session) return;
+    const wc = yield* requireWebContents(tabId);
+    if (session.webContentsId !== wc.id || session.pacer === null) {
+      yield* setRemoteViewStage(tabId, true);
+      yield* startRemoteScreencast(tabId, wc);
+      return;
+    }
+    yield* attempt({ operation: "remoteFrames.invalidate", tabId, webContentsId: wc.id }, () =>
+      wc.invalidate(),
+    );
+  });
+
+  const stopRemoteFrames = (tabId: string) =>
+    withTabLifecycleLock(tabId, stopRemoteFramesUnlocked(tabId));
+  const startRemoteFrames = (
+    tabId: string,
+    size: { readonly maxWidth: number; readonly maxHeight: number },
+  ) => withTabLifecycleLock(tabId, startRemoteFramesUnlocked(tabId, size));
+  const refreshRemoteFrame = (tabId: string) =>
+    withTabLifecycleLock(tabId, refreshRemoteFrameUnlocked(tabId));
+
   const releasePictureInPicture = Effect.fn("PreviewManager.releasePictureInPicture")(function* (
     tabId: string,
     expectedSession: PictureInPictureSession,
@@ -6252,7 +6517,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 },
                 () => wc.debugger.sendCommand("Page.stopScreencast"),
                 AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
-              ).pipe(Effect.ignore),
+              ).pipe(
+                Effect.ignore,
+                // A tab has one screencast; a remote viewer's takes it back.
+                Effect.andThen(
+                  Effect.suspend(() =>
+                    remoteFrameSessions.has(tabId)
+                      ? startRemoteScreencast(tabId, wc).pipe(Effect.ignore)
+                      : Effect.void,
+                  ),
+                ),
+              ),
             ],
             { concurrency: 2, discard: true },
           );
@@ -6542,7 +6817,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             if (latest?.webContentsId !== wc.id || latest.snapshotStageId !== stageId) {
               return [Option.none<PreviewTabState>(), tabs] as const;
             }
-            const state: PreviewTabState = { ...latest, snapshotStageId: null, updatedAt };
+            // A tab a remote viewer watches goes back to its resting stage.
+            const state: PreviewTabState = {
+              ...latest,
+              snapshotStageId: remoteFrameSessions.has(tabId) ? REMOTE_VIEW_STAGE_ID : null,
+              updatedAt,
+            };
             return [
               Option.some(state),
               replaceMap(tabs, (copy) => {
@@ -8174,6 +8454,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         Ref.set(pointerEventListenersRef, new Set()),
         Ref.set(newTabRequestListenersRef, new Set()),
         Ref.set(recordingFrameListenersRef, new Set()),
+        Ref.set(remoteFrameListenersRef, new Set()),
       ],
       { discard: true },
     );
@@ -8224,9 +8505,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     setColorScheme,
     setMainWindow,
     getTabAudioSource,
+    startRemoteFrames,
+    stopRemoteFrames,
+    refreshRemoteFrame,
     startRecording,
     closePictureInPicture,
     stopRecording,
+    subscribeRemoteFrames: (listener: RemoteFrameListener) =>
+      subscribe(remoteFrameListenersRef, listener),
     subscribePointerEvents: (listener: PointerEventListener) =>
       subscribe(pointerEventListenersRef, listener),
     subscribeNewTabRequests: (listener: NewTabRequestListener) =>
@@ -8650,6 +8936,13 @@ export class PreviewManager extends Context.Service<
     readonly closePictureInPicture: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly startRecording: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly getTabAudioSource: (tabId: string) => Effect.Effect<string | null>;
+    /** Streams a tab to remote viewers; see `subscribeRemoteFrames`. */
+    readonly startRemoteFrames: (
+      tabId: string,
+      size: { readonly maxWidth: number; readonly maxHeight: number },
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly stopRemoteFrames: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly refreshRemoteFrame: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly stopRecording: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly saveRecording: (
       tabId: string,
@@ -8726,6 +9019,9 @@ export class PreviewManager extends Context.Service<
     ) => Effect.Effect<void, never, Scope.Scope>;
     readonly subscribeRecordingFrames: (
       listener: RecordingFrameListener,
+    ) => Effect.Effect<void, never, Scope.Scope>;
+    readonly subscribeRemoteFrames: (
+      listener: RemoteFrameListener,
     ) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("@t3tools/desktop/preview/Manager/PreviewManager") {}
@@ -8828,6 +9124,9 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     closePictureInPicture: operations.closePictureInPicture,
     startRecording: operations.startRecording,
     getTabAudioSource: operations.getTabAudioSource,
+    startRemoteFrames: operations.startRemoteFrames,
+    stopRemoteFrames: operations.stopRemoteFrames,
+    refreshRemoteFrame: operations.refreshRemoteFrame,
     stopRecording: operations.stopRecording,
     saveRecording: operations.saveRecording,
     automationStatus: operations.automationStatus,
@@ -8848,6 +9147,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     subscribePointerEvents: operations.subscribePointerEvents,
     subscribeNewTabRequests: operations.subscribeNewTabRequests,
     subscribeRecordingFrames: operations.subscribeRecordingFrames,
+    subscribeRemoteFrames: operations.subscribeRemoteFrames,
   });
 }).pipe(Effect.withSpan("PreviewManager.make"));
 

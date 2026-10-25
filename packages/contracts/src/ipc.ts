@@ -799,6 +799,31 @@ export const DesktopPreviewRecordingFrameSchema: Schema.Codec<DesktopPreviewReco
     receivedAt: Schema.String,
   });
 
+/**
+ * One picture of a tab a remote viewer is watching, straight from Chromium's
+ * screencast: sent when the page draws, sized to fit what the viewer asked for.
+ */
+export type DesktopPreviewRemoteFrame = {
+  tabId: string;
+  /** Wall-clock milliseconds when the main process received it. */
+  receivedAt: number;
+} & (
+  | { /** Base64 JPEG. */ data: string; unavailable?: never }
+  | {
+      /** Capture lost its debugger or guest; viewers must fall back. */ unavailable: string;
+      data?: never;
+    }
+);
+
+export const DesktopPreviewRemoteFrameStartInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  /** The largest picture worth sending, in device pixels. */
+  maxWidth: Schema.Int.check(Schema.isBetween({ minimum: 64, maximum: 8192 })),
+  maxHeight: Schema.Int.check(Schema.isBetween({ minimum: 64, maximum: 8192 })),
+});
+export type DesktopPreviewRemoteFrameStartInput =
+  typeof DesktopPreviewRemoteFrameStartInputSchema.Type;
+
 export interface DesktopPreviewRecordingArtifact {
   id: string;
   tabId: string;
@@ -1602,6 +1627,18 @@ export interface DesktopPreviewBridge {
       data: Uint8Array,
     ) => Promise<DesktopPreviewRecordingArtifact>;
     onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
+  };
+  /**
+   * Pictures of tabs remote viewers are watching, pushed as the page draws.
+   * Absent on desktops that predate the frame stream; their viewers poll.
+   */
+  remoteFrames?: {
+    /** Starts (or resizes) the stream; keeps the guest drawing while watched. */
+    start: (tabId: string, size: { maxWidth: number; maxHeight: number }) => Promise<void>;
+    stop: (tabId: string) => Promise<void>;
+    /** Asks the guest to draw once, so the next picture is of the page as it is now. */
+    refresh: (tabId: string) => Promise<void>;
+    onFrame: (listener: (frame: DesktopPreviewRemoteFrame) => void) => () => void;
   };
   automation: {
     /** Keep every preview guest running as foreground while an agent is actively using it. */

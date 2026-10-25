@@ -6,6 +6,7 @@ import {
   PreviewAgentPointer,
   PreviewContextMenuCommand,
   PreviewContextMenuTarget,
+  PreviewRemoteFrameDemand,
   PreviewRenderedViewportSize,
   PreviewTabAudioTarget,
   PreviewTabId,
@@ -1327,6 +1328,12 @@ export const PreviewAutomationHost = Schema.Struct({
    */
   streamsTabAudio: Schema.optional(Schema.Boolean),
   /**
+   * Whether this host pushes frames of the tabs remote viewers watch
+   * (`previewRemoteFramePublish`). Only such hosts are sent `frameDemand`;
+   * viewers of a desktop without it keep polling for snapshots.
+   */
+  streamsRemoteFrames: Schema.optional(Schema.Boolean),
+  /**
    * Whether this host answers `credentialVault` requests, so a settings screen
    * on another device can manage the passwords this desktop keeps. A flag
    * rather than an operation name because older servers reject an unknown
@@ -1396,6 +1403,16 @@ export const PreviewAutomationStreamEvent = Schema.Union([
     type: Schema.Literal("audioDemand"),
     connectionId: PreviewAutomationConnectionId,
     tabs: Schema.Array(PreviewTabAudioTarget),
+  }),
+  /**
+   * Every tab some remote viewer is watching right now, with the picture size
+   * to send; the whole set each time. Sent only to hosts that registered with
+   * `streamsRemoteFrames`.
+   */
+  Schema.Struct({
+    type: Schema.Literal("frameDemand"),
+    connectionId: PreviewAutomationConnectionId,
+    tabs: Schema.Array(PreviewRemoteFrameDemand),
   }),
 ]);
 export type PreviewAutomationStreamEvent = typeof PreviewAutomationStreamEvent.Type;

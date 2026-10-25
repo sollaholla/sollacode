@@ -5,6 +5,7 @@ import type {
   DesktopPreviewPointerEvent,
   DesktopPreviewNewTabRequest,
   DesktopPreviewRecordingFrame,
+  DesktopPreviewRemoteFrame,
   DesktopPreviewTabState,
 } from "@t3tools/contracts";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
@@ -361,6 +362,23 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         ipcRenderer.on(IpcChannels.PREVIEW_RECORDING_FRAME_CHANNEL, wrappedListener);
         return () =>
           ipcRenderer.removeListener(IpcChannels.PREVIEW_RECORDING_FRAME_CHANNEL, wrappedListener);
+      },
+    },
+    remoteFrames: {
+      start: (tabId, size) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_REMOTE_FRAMES_START_CHANNEL, { tabId, ...size }),
+      stop: (tabId) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_REMOTE_FRAMES_STOP_CHANNEL, { tabId }),
+      refresh: (tabId) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_REMOTE_FRAMES_REFRESH_CHANNEL, { tabId }),
+      onFrame: (listener) => {
+        const wrappedListener = (_event: Electron.IpcRendererEvent, frame: unknown) => {
+          if (typeof frame !== "object" || frame === null) return;
+          listener(frame as DesktopPreviewRemoteFrame);
+        };
+        ipcRenderer.on(IpcChannels.PREVIEW_REMOTE_FRAME_CHANNEL, wrappedListener);
+        return () =>
+          ipcRenderer.removeListener(IpcChannels.PREVIEW_REMOTE_FRAME_CHANNEL, wrappedListener);
       },
     },
     automation: {

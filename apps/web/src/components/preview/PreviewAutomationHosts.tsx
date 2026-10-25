@@ -17,6 +17,8 @@ import {
   type PreviewAutomationSnapshot,
   type PreviewAutomationHost as PreviewAutomationHostState,
   type PreviewAutomationRequest,
+  type DesktopPreviewTabState,
+  type PreviewRemoteFrameDemand,
   type PreviewTabAudioTarget,
   type PreviewAutomationStatus,
   type PreviewCredentialVaultCommand,
@@ -63,6 +65,13 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { agentPointerFraction } from "./agentBrowserCursorLogic";
 import { previewBridge } from "./previewBridge";
 import { canCaptureTabAudio, captureTabAudio, createTabAudioStreamer } from "./tabAudioStreamer";
+import { canEncodeRemoteFrames } from "./remoteFrames/remoteFrameEncoder";
+import { createRemoteFrameEncoderPool } from "./remoteFrames/remoteFrameEncoderClient";
+import { remoteFramePageState } from "./remoteFrames/remoteFramePageState";
+import {
+  createRemoteFrameStreamer,
+  type RemoteFrameStreamer,
+} from "./remoteFrames/remoteFrameStreamer";
 import { closePreviewSession, reconcileLegacyPreviewClose } from "./closePreviewSession";
 import {
   PreviewAutomationOperationError,
@@ -410,6 +419,9 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
   // This window renders tabs, so it can capture their sound for listeners on
   // other devices.
   const streamsTabAudio = previewBridge?.getTabAudioSource !== undefined && canCaptureTabAudio();
+  // It can also push pictures of the tabs remote viewers watch, instead of
+  // being polled for snapshots.
+  const streamsRemoteFrames = previewBridge?.remoteFrames !== undefined && canEncodeRemoteFrames();
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
     () => ({
       clientId: automationClientId,
@@ -418,8 +430,16 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
       environmentLocal,
       ...(manageCredentials ? { manageCredentials } : {}),
       ...(streamsTabAudio ? { streamsTabAudio } : {}),
+      ...(streamsRemoteFrames ? { streamsRemoteFrames } : {}),
     }),
-    [automationClientId, environmentId, environmentLocal, manageCredentials, streamsTabAudio],
+    [
+      automationClientId,
+      environmentId,
+      environmentLocal,
+      manageCredentials,
+      streamsTabAudio,
+      streamsRemoteFrames,
+    ],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
@@ -461,30 +481,39 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
     tabAudioDemandRef.current = tabs;
     tabAudioStreamerRef.current?.setDemand(tabs);
   });
+  // A tab a remote device listens to or watches, as this desktop knows it.
+  // Side chats share their parent's browser; resolve the tab the same way an
+  // agent's request for it would be.
+  const resolveRemoteTab = useCallback(
+    (remote: PreviewTabAudioTarget) => {
+      const target = resolvePreviewAutomationThreadTarget({
+        environmentId,
+        requestThreadRef: { environmentId, threadId: remote.threadId },
+        requestedTabId: remote.tabId,
+        previewByThreadKey: readActivePreviewSessions(),
+        presentationsByRuntimeTabId: useBrowserSurfaceStore.getState().byTabId,
+        profiles: browserProfilesRef.current,
+      });
+      const tabId = target.tabId ?? remote.tabId;
+      return {
+        threadRef: target.threadRef,
+        tabId,
+        runtimeTabId: previewRuntimeTabId(
+          target.threadRef,
+          readThreadPreviewState(target.threadRef).serverEpoch,
+          tabId,
+        ),
+      };
+    },
+    [environmentId],
+  );
   useEffect(() => {
     const bridge = previewBridge;
     const getTabAudioSource = bridge?.getTabAudioSource;
     if (!streamsTabAudio || !bridge || !getTabAudioSource) return;
     const audible = new Map<string, boolean>();
     const streamer = createTabAudioStreamer({
-      runtimeTabId: (listened) => {
-        // Side chats share their parent's browser; resolve the tab the same
-        // way an agent's request for it would be.
-        const target = resolvePreviewAutomationThreadTarget({
-          environmentId,
-          requestThreadRef: { environmentId, threadId: listened.threadId },
-          requestedTabId: listened.tabId,
-          previewByThreadKey: readActivePreviewSessions(),
-          presentationsByRuntimeTabId: useBrowserSurfaceStore.getState().byTabId,
-          profiles: browserProfilesRef.current,
-        });
-        const tabId = target.tabId ?? listened.tabId;
-        return previewRuntimeTabId(
-          target.threadRef,
-          readThreadPreviewState(target.threadRef).serverEpoch,
-          tabId,
-        );
-      },
+      runtimeTabId: (listened) => resolveRemoteTab(listened).runtimeTabId,
       isAudible: (runtimeTabId) => audible.get(runtimeTabId) ?? false,
       startCapture: async (runtimeTabId, onPackets, onEnded) => {
         const sourceId = await getTabAudioSource(runtimeTabId);
@@ -510,7 +539,104 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
       streamer.dispose();
       if (tabAudioStreamerRef.current === streamer) tabAudioStreamerRef.current = null;
     };
-  }, [environmentId, streamsTabAudio]);
+  }, [environmentId, resolveRemoteTab, streamsTabAudio]);
+
+  const publishRemoteFrames = useAtomCommand(previewEnvironment.remoteFramePublish, {
+    reportFailure: false,
+  });
+  const publishRemoteFramesRef = useRef(publishRemoteFrames);
+  publishRemoteFramesRef.current = publishRemoteFrames;
+  const automationConnectionIdRef = useRef(automationConnectionId);
+  automationConnectionIdRef.current = automationConnectionId;
+  const remoteFrameStreamerRef = useRef<RemoteFrameStreamer | null>(null);
+  const remoteFrameDemandRef = useRef<ReadonlyArray<PreviewRemoteFrameDemand>>([]);
+  const [handleFrameDemand] = useState(() => (tabs: ReadonlyArray<PreviewRemoteFrameDemand>) => {
+    remoteFrameDemandRef.current = tabs;
+    remoteFrameStreamerRef.current?.setDemand(tabs);
+  });
+  useEffect(() => {
+    const bridge = previewBridge;
+    const remoteFrames = bridge?.remoteFrames;
+    if (!streamsRemoteFrames || !bridge || !remoteFrames) return;
+    // The desktop's latest word on each tab, and which thread tab each
+    // watched runtime tab is, for the state that rides along the pictures.
+    const desktopStates = new Map<string, DesktopPreviewTabState>();
+    const watchedTabs = new Map<string, { threadRef: ScopedThreadRef; tabId: string }>();
+    const encoder = createRemoteFrameEncoderPool();
+    const streamer = createRemoteFrameStreamer({
+      runtimeTabId: (watched) => {
+        const resolved = resolveRemoteTab(watched);
+        watchedTabs.set(resolved.runtimeTabId, resolved);
+        return resolved.runtimeTabId;
+      },
+      capture: {
+        start: (runtimeTabId, size) => remoteFrames.start(runtimeTabId, size),
+        stop: (runtimeTabId) => remoteFrames.stop(runtimeTabId),
+        refresh: (runtimeTabId) => remoteFrames.refresh(runtimeTabId),
+      },
+      encoder,
+      publish: async (target, events) => {
+        const connectionId = automationConnectionIdRef.current;
+        if (connectionId === null) {
+          throw new Error("This desktop is not connected to the environment yet.");
+        }
+        const result = await publishRemoteFramesRef.current({
+          environmentId,
+          input: {
+            threadId: target.threadId,
+            tabId: target.tabId,
+            connectionId,
+            events: [...events],
+          },
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      },
+      readState: (runtimeTabId) => {
+        const watched = watchedTabs.get(runtimeTabId);
+        const thread = watched ? readThreadPreviewState(watched.threadRef) : null;
+        return remoteFramePageState({
+          desktop: desktopStates.get(runtimeTabId),
+          session:
+            watched && thread
+              ? (thread.sessions[watched.tabId] ?? thread.hostedSessions[watched.tabId])
+              : undefined,
+          pendingDownloadApprovals:
+            watched && thread
+              ? thread.desktopByTabId[watched.tabId]?.pendingDownloadApprovals
+              : undefined,
+          agentPointer: agentPointerFraction(
+            useBrowserPointerStore.getState().byTabId[runtimeTabId],
+          ),
+        });
+      },
+      scheduler: {
+        now: () => performance.now(),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      },
+    });
+    const stopFrames = remoteFrames.onFrame((frame) => streamer.frameArrived(frame));
+    const stopStates = bridge.onStateChange((runtimeTabId, state) => {
+      desktopStates.set(runtimeTabId, state);
+      streamer.stateChanged(runtimeTabId);
+    });
+    const stopPointers = useBrowserPointerStore.subscribe((state, previous) => {
+      for (const runtimeTabId of Object.keys(state.byTabId)) {
+        if (state.byTabId[runtimeTabId] !== previous.byTabId[runtimeTabId]) {
+          streamer.stateChanged(runtimeTabId);
+        }
+      }
+    });
+    remoteFrameStreamerRef.current = streamer;
+    streamer.setDemand(remoteFrameDemandRef.current);
+    return () => {
+      stopFrames();
+      stopStates();
+      stopPointers();
+      streamer.dispose();
+      encoder.dispose();
+      if (remoteFrameStreamerRef.current === streamer) remoteFrameStreamerRef.current = null;
+    };
+  }, [environmentId, resolveRemoteTab, streamsRemoteFrames]);
 
   const handleRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<unknown> => {
@@ -1291,6 +1417,7 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
         requestHandlerAtom,
         ...(manageCredentials ? { handleCredentialVault: applyCredentialVaultCommand } : {}),
         handleAudioDemand,
+        handleFrameDemand,
         renewAutomationForeground: renewPreviewAutomationForeground,
         respond: (response) =>
           respondToAutomation({
@@ -1308,6 +1435,7 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
       environmentId,
       manageCredentials,
       handleAudioDemand,
+      handleFrameDemand,
     ],
   );
   useAtomValue(automationRequestConsumerAtom);

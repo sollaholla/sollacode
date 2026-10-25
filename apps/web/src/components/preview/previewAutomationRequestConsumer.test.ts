@@ -1021,4 +1021,42 @@ describe("previewAutomationRequestConsumer", () => {
     expect(respond).not.toHaveBeenCalled();
     registry.dispose();
   });
+  it("releases remote capture demand when its consumer is disposed", async () => {
+    const demand = [
+      { threadId, tabId, maxWidth: 640, maxHeight: 480, patches: true, keyframeRequest: 0 },
+    ];
+    const requestsAtom = Atom.make(
+      AsyncResult.success<PreviewAutomationStreamEvent, Error>({
+        type: "frameDemand",
+        connectionId,
+        tabs: demand,
+      }),
+    );
+    let delivered!: () => void;
+    const received = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
+    const handleFrameDemand = vi.fn((tabs: ReadonlyArray<unknown>) => {
+      if (tabs.length > 0) delivered();
+    });
+    const state = consumerState(async () => undefined);
+    const registry = AtomRegistry.make();
+    registry.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        connectionAtom: state.connectionAtom,
+        environmentId,
+        requestHandlerAtom: state.requestHandlerAtom,
+        renewAutomationForeground,
+        respond: async () => undefined,
+        handleFrameDemand,
+        label: "test:preview-frame-demand-cleanup",
+      }),
+    );
+    await received;
+    expect(handleFrameDemand).toHaveBeenLastCalledWith(demand);
+    registry.dispose();
+    expect(handleFrameDemand).toHaveBeenLastCalledWith([]);
+  });
 });

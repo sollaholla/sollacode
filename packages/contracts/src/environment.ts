@@ -59,6 +59,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       (`/ws/media`) and answers remoteControl.mediaTicket. Viewers stay on the
       watch stream's MediaRecorder/JPEG picture without it. */
   remoteControlMediaChannel: Schema.optionalKey(Schema.Boolean),
+  /** Server relays pushed browser-tab frames (preview.remoteFrames). Older
+      servers only answer preview.remoteSnapshot, so clients keep polling. */
+  remotePreviewFrames: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */

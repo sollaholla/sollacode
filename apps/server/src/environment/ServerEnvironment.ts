@@ -146,6 +146,7 @@ export const make = Effect.gen(function* () {
       archivedThreadBulkDelete: true,
       databaseCompaction: true,
       remoteControlMediaChannel: true,
+      remotePreviewFrames: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
     },
   };

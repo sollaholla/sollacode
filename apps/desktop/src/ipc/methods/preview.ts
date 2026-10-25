@@ -22,6 +22,7 @@ import {
   DesktopPreviewRecordingArtifactSchema,
   DesktopPreviewRecordingSaveInputSchema,
   DesktopPreviewRegisterWebviewInputSchema,
+  DesktopPreviewRemoteFrameStartInputSchema,
   DesktopPreviewScreenshotArtifactSchema,
   DesktopPreviewSetColorSchemeInputSchema,
   DesktopPreviewSetDownloadDirectoryInputSchema,
@@ -58,6 +59,20 @@ export const installPreviewEventForwarding = Effect.fn(
   );
   yield* manager.subscribeRecordingFrames((frame) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_RECORDING_FRAME_CHANNEL, frame),
+  );
+  // Remote viewers' pictures go only to the main window: it hosts the guests
+  // and the automation host that relays them, and a picture is large.
+  yield* manager.subscribeRemoteFrames((frame) =>
+    electronWindow.main.pipe(
+      Effect.flatMap((main) =>
+        Option.isSome(main)
+          ? Effect.sync(() =>
+              main.value.webContents.send(IpcChannels.PREVIEW_REMOTE_FRAME_CHANNEL, frame),
+            )
+          : electronWindow.sendAll(IpcChannels.PREVIEW_REMOTE_FRAME_CHANNEL, frame),
+      ),
+      Effect.ignore,
+    ),
   );
   yield* manager.subscribePointerEvents((event) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, event),
@@ -360,6 +375,30 @@ export const getTabAudioSource = DesktopIpc.makeIpcMethod({
     return yield* manager.getTabAudioSource(tabId);
   }),
 });
+
+export const startRemoteFrames = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_REMOTE_FRAMES_START_CHANNEL,
+  payload: DesktopPreviewRemoteFrameStartInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.startRemoteFrames")(function* ({
+    tabId,
+    maxWidth,
+    maxHeight,
+  }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.startRemoteFrames(tabId, { maxWidth, maxHeight });
+  }),
+});
+export const stopRemoteFrames = tabMethod(
+  IpcChannels.PREVIEW_REMOTE_FRAMES_STOP_CHANNEL,
+  "desktop.ipc.preview.stopRemoteFrames",
+  (manager, tabId) => manager.stopRemoteFrames(tabId),
+);
+export const refreshRemoteFrame = tabMethod(
+  IpcChannels.PREVIEW_REMOTE_FRAMES_REFRESH_CHANNEL,
+  "desktop.ipc.preview.refreshRemoteFrame",
+  (manager, tabId) => manager.refreshRemoteFrame(tabId),
+);
 
 export const revealArtifact = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_REVEAL_ARTIFACT_CHANNEL,
@@ -732,6 +771,9 @@ export const methods = [
   cancelPickElement,
   captureScreenshot,
   getTabAudioSource,
+  startRemoteFrames,
+  stopRemoteFrames,
+  refreshRemoteFrame,
   revealArtifact,
   copyArtifactToClipboard,
   openPictureInPicture,

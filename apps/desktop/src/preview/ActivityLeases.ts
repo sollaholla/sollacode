@@ -4,6 +4,8 @@ export const PreviewActivityConsumer = {
   PictureInPicture: "picture-in-picture",
   Recording: "recording",
   RemoteControl: "remote-control",
+  // A remote viewer is watching the tab through the frame stream.
+  RemoteView: "remote-view",
   Ui: "ui",
 } as const;
 

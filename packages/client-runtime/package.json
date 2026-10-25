@@ -71,6 +71,18 @@
       "types": "./src/preview/remoteFrame.ts",
       "default": "./src/preview/remoteFrame.ts"
     },
+    "./preview/remote-frame-feed": {
+      "types": "./src/preview/remoteFrameFeed.ts",
+      "default": "./src/preview/remoteFrameFeed.ts"
+    },
+    "./preview/remote-frame-pipeline": {
+      "types": "./src/preview/remoteFramePipeline.ts",
+      "default": "./src/preview/remoteFramePipeline.ts"
+    },
+    "./preview/remote-frame-tiles": {
+      "types": "./src/preview/remoteFrameTiles.ts",
+      "default": "./src/preview/remoteFrameTiles.ts"
+    },
     "./preview/title": {
       "types": "./src/preview/title.ts",
       "default": "./src/preview/title.ts"

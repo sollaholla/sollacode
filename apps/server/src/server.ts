@@ -58,6 +58,7 @@ import * as DesktopAppUpdater from "./mcp/toolkits/appUpdate/DesktopAppUpdater.t
 import * as MediaRelay from "./media/MediaRelay.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
 import * as TabAudioRelay from "./preview/TabAudioRelay.ts";
+import * as RemoteFrameRelay from "./preview/RemoteFrameRelay.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
@@ -524,6 +525,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(RemoteControlBroker.layer),
   Layer.provide(MediaRelay.layer),
   Layer.provide(TabAudioRelay.layer),
+  Layer.provide(RemoteFrameRelay.layer),
   Layer.provide(ServerSelfUpdate.layer),
   Layer.provide(browserApiCorsLayer),
   Layer.provide(httpCompressionLayer),

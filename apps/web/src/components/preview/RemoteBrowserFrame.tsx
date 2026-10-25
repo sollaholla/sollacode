@@ -3,6 +3,7 @@ import {
   PreviewTabId,
   type PreviewAgentControl,
   type PreviewContextMenuTarget,
+  type PreviewRemoteFramePageState,
   type PreviewRemoteInputAction,
   type PreviewRemoteInputResult,
   type PreviewRemoteSnapshotResult,
@@ -16,16 +17,25 @@ import {
   type FramePoint,
   type FrameSize,
 } from "@t3tools/shared/remoteFrameGestures";
+import { RegistryContext } from "@effect/atom-react";
 import { RemotePreviewCommandCoordinator } from "@t3tools/client-runtime/preview/remote-command-coordinator";
 import {
   mergeRemoteSnapshot,
   remoteSnapshotRequest,
 } from "@t3tools/client-runtime/preview/remote-frame";
+import {
+  REMOTE_FRAME_STREAM_GRACE_MS,
+  planRemoteFrameEvents,
+  remoteFrameRequestSize,
+  remoteFrameShouldPoll,
+  type HeldRemoteFrame,
+} from "@t3tools/client-runtime/preview/remote-frame-feed";
 import { isPublicWebPreviewUrl } from "@t3tools/shared/preview";
 import * as Cause from "effect/Cause";
 import { KeyboardIcon } from "lucide-react";
 import {
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -34,6 +44,7 @@ import {
 
 import { toastManager } from "~/components/ui/toast";
 import { useOnScreenKeyboard } from "~/hooks/useOnScreenKeyboard";
+import { useServerConfigs } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
@@ -49,6 +60,7 @@ import { RemoteBrowserContextMenu } from "./RemoteBrowserContextMenu";
 import { RemoteBrowserErrorChip } from "./RemoteBrowserErrorChip";
 import { RemoteTabAudioButton, useRemoteTabAudio } from "./RemoteTabAudio";
 import { usePreviewPageVisible } from "./previewPageVisibility";
+import { createRemoteFramePainter, listenToRemoteFrames } from "./remoteFrames/remoteFrameCanvas";
 import {
   createRemoteBrowserTouchGestures,
   attachRemoteKeyboardInput,
@@ -58,6 +70,7 @@ import {
   type RemoteContextMenuItemId,
 } from "./remoteBrowserInput";
 
+/** How often the viewer polls for a snapshot when it cannot stream (older servers and desktops). */
 const LIVE_FRAME_INTERVAL_MS = 2_500;
 /** Faster while an agent drives the tab, so its cursor visibly moves with it. */
 const AGENT_FRAME_INTERVAL_MS = 1_000;
@@ -125,12 +138,33 @@ function commandError(cause: Cause.Cause<unknown>, fallback: string): string {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
 }
 
+/** What the viewer shows around the picture, from whichever feed drew it. */
+interface RemoteFrameView {
+  readonly width: number;
+  readonly height: number;
+  readonly title: string;
+  readonly url: string;
+  readonly agentPointer: PreviewRemoteSnapshotResult["agentPointer"];
+  readonly pendingDownloadApprovals: PreviewRemoteSnapshotResult["pendingDownloadApprovals"];
+}
+
+/** Letterbox the canvas exactly like the fallback image, preserving input geometry. */
+function canvasBox(pane: FrameSize | null, picture: FrameSize | null) {
+  if (pane === null || picture === null) return undefined;
+  return containedFrameRect(pane, picture) ?? undefined;
+}
+
 /**
- * The web stand-in for the desktop's embedded browser surface: a near-live
- * frame of the desktop host's real tab, with touches, wheel, and keys
- * forwarded through the same automation operations agents use. Rendering
- * never changes hands — the desktop keeps its own guest; this view only
- * exists where no local guest can (phone Safari, plain browsers).
+ * The web stand-in for the desktop's embedded browser surface: a live view of
+ * the desktop host's real tab, with touches, wheel, and keys forwarded
+ * through the same automation operations agents use. Rendering never changes
+ * hands — the desktop keeps its own guest; this view only exists where no
+ * local guest can (phone Safari, plain browsers).
+ *
+ * Pictures are pushed: the viewer subscribes to the tab's frame stream with
+ * the size it can show, and draws each keyframe and patch onto a canvas as
+ * the page changes. Against a server or desktop that cannot stream, it polls
+ * for snapshots as before.
  */
 export function RemoteBrowserFrame(props: {
   readonly threadRef: ScopedThreadRef;
@@ -168,13 +202,98 @@ export function RemoteBrowserFrame(props: {
   // A phone renders the whole desktop page a few inches wide, where a link is
   // smaller than a fingertip. Magnifying it is what makes the mirror clickable
   // at all, so the frame carries the same zoom control as the remote desktop.
-  const imageRef = useRef<HTMLImageElement | null>(null);
+  const imageRef = useRef<HTMLElement | null>(null);
   const zoomView = useRemoteViewZoom();
+  const setImageElement = useCallback((element: HTMLElement | null) => {
+    imageRef.current = element;
+  }, []);
   // Two fingers own the picture (pinch to zoom, drag both to move); one finger
   // owns the page. Flipped synchronously in the pointer handlers so the gate
   // closes on the sample that starts the pinch, not one render later.
   const zoomAdjustingRef = useRef(zoomView.pinching);
   zoomAdjustingRef.current = zoomView.pinching;
+
+  // The pushed feed. Painting happens straight on the canvas; React only
+  // hears of a new picture size and new page state.
+  const registry = useContext(RegistryContext);
+  const streamSupported =
+    useServerConfigs().get(threadRef.environmentId)?.environment.capabilities
+      .remotePreviewFrames === true;
+  const [streamPicture, setStreamPicture] = useState<{
+    readonly width: number;
+    readonly height: number;
+  } | null>(null);
+  const [streamState, setStreamState] = useState<PreviewRemoteFramePageState | null>(null);
+  const [paneSize, setPaneSize] = useState<{
+    readonly width: number;
+    readonly height: number;
+  } | null>(null);
+  const [streamGeneration, setStreamGeneration] = useState(0);
+  const [pollNeeded, setPollNeeded] = useState(!streamSupported);
+  const pollNeededRef = useRef(pollNeeded);
+  pollNeededRef.current = pollNeeded;
+  const heldStreamFrameRef = useRef<HeldRemoteFrame | null>(null);
+  const streamTimesRef = useRef<{
+    subscribedAt: number | null;
+    lastPictureAt: number | null;
+    unavailableAt: number | null;
+  }>({ subscribedAt: null, lastPictureAt: null, unavailableAt: null });
+  const reconsiderPolling = useCallback(() => {
+    setPollNeeded(
+      remoteFrameShouldPoll({
+        streamSupported,
+        ...streamTimesRef.current,
+        now: Date.now(),
+      }),
+    );
+  }, [streamSupported]);
+  const [painter] = useState(() =>
+    createRemoteFramePainter({
+      onError: () => {
+        heldStreamFrameRef.current = null;
+        streamTimesRef.current.unavailableAt = Date.now();
+        setStreamPicture(null);
+        reconsiderPollingRef.current();
+        setStreamGeneration((value) => value + 1);
+      },
+      onPicture: (picture) => {
+        const first = streamTimesRef.current.lastPictureAt === null;
+        streamTimesRef.current.lastPictureAt = Date.now();
+        streamTimesRef.current.unavailableAt = null;
+        setFrameError(null);
+        setStreamPicture((held) =>
+          held?.width === picture.width && held.height === picture.height ? held : picture,
+        );
+        if (first || pollNeededRef.current) reconsiderPollingRef.current();
+      },
+    }),
+  );
+  const reconsiderPollingRef = useRef(reconsiderPolling);
+  reconsiderPollingRef.current = reconsiderPolling;
+
+  // A pushed picture, once there is one, wins over a polled one.
+  const view: RemoteFrameView | null =
+    streamPicture !== null
+      ? {
+          width: streamPicture.width,
+          height: streamPicture.height,
+          title: streamState?.title ?? frame?.title ?? "",
+          url: streamState?.url ?? frame?.url ?? "",
+          agentPointer: streamState?.agentPointer,
+          pendingDownloadApprovals: streamState?.pendingDownloadApprovals,
+        }
+      : frame !== null
+        ? {
+            width: frame.screenshot.width,
+            height: frame.screenshot.height,
+            title: frame.title,
+            url: frame.url,
+            agentPointer: frame.agentPointer,
+            pendingDownloadApprovals: frame.pendingDownloadApprovals,
+          }
+        : null;
+  const viewRef = useRef<RemoteFrameView | null>(view);
+  viewRef.current = view;
   const frameRef = useRef<PreviewRemoteSnapshotResult | null>(null);
   frameRef.current = frame;
   const gestureRef = useRef<ActiveGesture | null>(null);
@@ -243,7 +362,8 @@ export function RemoteBrowserFrame(props: {
         }
         return false;
       }
-      if (!result.value.loading) setFrame((held) => mergeRemoteSnapshot(held, result.value));
+      if (!result.value.loading && pollNeededRef.current)
+        setFrame((held) => mergeRemoteSnapshot(held, result.value));
       setFrameError(null);
       return true;
     },
@@ -268,7 +388,8 @@ export function RemoteBrowserFrame(props: {
       }
       setFrameError(null);
       // Show the gesture's effect right away instead of waiting for the poll.
-      await capture(false);
+      // A streaming viewer needs nothing: the desktop pushes the change.
+      if (pollNeededRef.current) await capture(false);
       return result.value;
     },
     [capture, clickFeedback, sendRemoteInput, threadRef.environmentId, threadRef.threadId, tabId],
@@ -302,13 +423,132 @@ export function RemoteBrowserFrame(props: {
     setFrame(null);
     setFrameError(null);
     setContextMenu(null);
+    painter.reset();
+    heldStreamFrameRef.current = null;
+    streamTimesRef.current = { subscribedAt: null, lastPictureAt: null, unavailableAt: null };
+    setStreamPicture(null);
+    setStreamState(null);
     keyboardQueue.clear();
     touch.gestures.abandon();
     touch.actions.cancel();
     touchPointerRef.current = null;
     gestureRef.current = null;
     wheelAccumulatorRef.current = { x: 0, y: 0, at: null };
-  }, [keyboardQueue, touch, tabId, threadRef.environmentId, threadRef.threadId]);
+  }, [keyboardQueue, painter, touch, tabId, threadRef.environmentId, threadRef.threadId]);
+
+  // The picture box, so the desktop sends pictures no larger than this screen shows.
+  useEffect(() => {
+    const element = containerRef.current;
+    if (element === null || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const { width, height } = element.getBoundingClientRect();
+      setPaneSize((held) =>
+        held?.width === width && held.height === height ? held : { width, height },
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  // Zooming in past 1.5x asks for twice the pixels, once the pinch settles.
+  const requestZoom = !zoomView.pinching && zoomView.view.zoom >= 1.5 ? 2 : 1;
+  const request =
+    paneSize === null || paneSize.width === 0 || paneSize.height === 0
+      ? null
+      : remoteFrameRequestSize({
+          boxWidth: paneSize.width,
+          boxHeight: paneSize.height,
+          devicePixelRatio: typeof window === "undefined" ? 1 : window.devicePixelRatio,
+          zoom: requestZoom,
+        });
+  const requestWidth = request?.maxWidth ?? null;
+  const requestHeight = request?.maxHeight ?? null;
+
+  useEffect(() => {
+    if (
+      !streamSupported ||
+      !visible ||
+      !pageVisible ||
+      requestWidth === null ||
+      requestHeight === null
+    ) {
+      return;
+    }
+    const tabIdValue = PreviewTabId.make(tabId);
+    const atom = previewEnvironment.remoteFrames({
+      environmentId: threadRef.environmentId,
+      input: {
+        threadId: threadRef.threadId,
+        tabId: tabIdValue,
+        maxWidth: requestWidth,
+        maxHeight: requestHeight,
+        patches: true,
+        resync: streamGeneration,
+      },
+    });
+    streamTimesRef.current = { subscribedAt: Date.now(), lastPictureAt: null, unavailableAt: null };
+    heldStreamFrameRef.current = null;
+    painter.reset();
+    reconsiderPolling();
+    // No picture within the grace period: poll until one arrives.
+    const graceTimer = setTimeout(() => {
+      if (streamTimesRef.current.lastPictureAt === null) setStreamPicture(null);
+      reconsiderPolling();
+    }, REMOTE_FRAME_STREAM_GRACE_MS + 50);
+    let resyncTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = listenToRemoteFrames(registry, atom, {
+      onEvents: (events) => {
+        const batch = planRemoteFrameEvents(heldStreamFrameRef.current, events);
+        heldStreamFrameRef.current = batch.held;
+        if (batch.state !== null) setStreamState(batch.state);
+        if (batch.unavailable !== null) {
+          painter.reset();
+          setStreamPicture(null);
+          streamTimesRef.current.unavailableAt = Date.now();
+          reconsiderPolling();
+        }
+        painter.paint(batch.draws);
+        if (batch.resync && resyncTimer === null) {
+          // A patch for a picture this viewer does not hold. Subscribe again,
+          // once the old subscription is gone, for a fresh keyframe.
+          heldStreamFrameRef.current = null;
+          resyncTimer = setTimeout(() => setStreamGeneration((value) => value + 1), 100);
+        }
+      },
+      onFailure: () => {
+        painter.reset();
+        setStreamPicture(null);
+        streamTimesRef.current.unavailableAt = Date.now();
+        reconsiderPolling();
+      },
+    });
+    return () => {
+      clearTimeout(graceTimer);
+      if (resyncTimer !== null) clearTimeout(resyncTimer);
+      unsubscribe();
+      painter.reset();
+      streamTimesRef.current.subscribedAt = null;
+    };
+  }, [
+    painter,
+    pageVisible,
+    reconsiderPolling,
+    registry,
+    requestHeight,
+    requestWidth,
+    streamGeneration,
+    streamSupported,
+    tabId,
+    threadRef.environmentId,
+    threadRef.threadId,
+    visible,
+  ]);
+
+  useEffect(() => {
+    reconsiderPolling();
+  }, [reconsiderPolling]);
 
   useEffect(
     () => () => {
@@ -320,7 +560,7 @@ export function RemoteBrowserFrame(props: {
   );
 
   useEffect(() => {
-    if (!visible || !pageVisible) return;
+    if (!visible || !pageVisible || !pollNeeded) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
@@ -332,7 +572,7 @@ export function RemoteBrowserFrame(props: {
       active = false;
       if (timer !== null) clearTimeout(timer);
     };
-  }, [capture, pageVisible, visible]);
+  }, [capture, pageVisible, pollNeeded, visible]);
 
   const contentGeometry = useCallback((): {
     readonly origin: FramePoint;
@@ -342,12 +582,12 @@ export function RemoteBrowserFrame(props: {
     // zoom transform, so reading it keeps a tap landing on whatever the viewer
     // is actually looking at. The two are identical at 1x.
     const element = imageRef.current ?? containerRef.current;
-    const current = frameRef.current;
+    const current = viewRef.current;
     if (element === null || current === null) return null;
     const bounds = element.getBoundingClientRect();
     const rect = containedFrameRect(
       { width: bounds.width, height: bounds.height },
-      { width: current.screenshot.width, height: current.screenshot.height },
+      { width: current.width, height: current.height },
     );
     if (rect === null) return null;
     return {
@@ -620,7 +860,7 @@ export function RemoteBrowserFrame(props: {
     // React's synthetic wheel handlers are passive; preventing the panel from
     // scrolling underneath the frame needs a non-passive native listener.
     const onWheel = (event: WheelEvent) => {
-      if (frameRef.current === null) return;
+      if (viewRef.current === null) return;
       // Still swallow the event so the panel behind does not scroll, but send
       // nothing: a trackpad scroll while the view is being adjusted belongs to
       // the viewer, not to the page they are looking at.
@@ -750,8 +990,8 @@ export function RemoteBrowserFrame(props: {
       <div
         ref={containerRefCallback}
         aria-label={
-          frame
-            ? `Rendered browser tab ${frame.title || frame.url}. Touches are sent to the desktop tab.`
+          view
+            ? `Rendered browser tab ${view.title || view.url}. Touches are sent to the desktop tab.`
             : "Waiting for the browser page"
         }
         className="relative min-h-0 flex-1 select-none overflow-hidden bg-black outline-none"
@@ -783,39 +1023,51 @@ export function RemoteBrowserFrame(props: {
         onPointerUp={handlePointerUp}
       >
         <TouchActionRadialMenu state={touchMenu} />
-        {frame ? (
+        {streamSupported ? (
+          // Pushed pictures are painted here. The wrapper fills the pane like
+          // the polled image does, so zoom and touch geometry are the same.
+          <div
+            className="absolute inset-0"
+            ref={streamPicture !== null ? setImageElement : undefined}
+            style={{ ...zoomView.style, visibility: streamPicture === null ? "hidden" : "visible" }}
+          >
+            <canvas
+              className="absolute"
+              ref={painter.attach}
+              style={canvasBox(paneSize, streamPicture)}
+            />
+          </div>
+        ) : null}
+        {streamPicture === null && frame ? (
           <img
             alt=""
             className="absolute inset-0 h-full w-full object-contain"
             draggable={false}
-            ref={imageRef}
+            ref={setImageElement}
             src={`data:${frame.screenshot.mimeType};base64,${frame.screenshot.data}`}
             style={zoomView.style}
           />
-        ) : (
+        ) : null}
+        {view === null ? (
           <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-white/70">
             Waiting for the browser page…
           </div>
-        )}
-        {frame ? (
+        ) : null}
+        {view ? (
           <RemoteAgentCursor
-            pointer={frame.agentPointer}
-            frame={frame.screenshot}
+            pointer={view.agentPointer}
+            frame={view}
             // Waiting for the user means no agent is driving: the cursor dims.
             controller={agentControl === "agent" ? "agent" : "none"}
             style={zoomView.style}
           />
         ) : null}
-        {frame ? (
-          <RemoteClickMarkers
-            markers={clickMarkers}
-            frame={frame.screenshot}
-            style={zoomView.style}
-          />
+        {view ? (
+          <RemoteClickMarkers markers={clickMarkers} frame={view} style={zoomView.style} />
         ) : null}
-        {frame?.pendingDownloadApprovals?.length ? (
+        {view?.pendingDownloadApprovals?.length ? (
           <div className="absolute inset-x-3 top-3 space-y-2">
-            {frame.pendingDownloadApprovals.map((approval) => (
+            {view.pendingDownloadApprovals.map((approval) => (
               <div
                 key={approval.id}
                 className="rounded-lg border border-amber-500/40 bg-amber-950/90 px-3 py-2 text-xs text-amber-100"

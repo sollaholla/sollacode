@@ -36,6 +36,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { previewEnvironment } from "../../state/preview";
 import { closeRemoteBrowserTab, openRemoteBrowserTab } from "./threadBrowserRouteActions";
 import { AgentCursorGlyph, RemoteAgentCursor } from "./RemoteAgentCursor";
+import { useRemoteBrowserStream } from "./useRemoteBrowserStream";
 import { watchBrowserFrames } from "./watchBrowserFrames";
 import {
   FRAME_TAP_SLOP_PX,
@@ -112,6 +113,12 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
   );
   const [selectedTabId, setSelectedTabId] = useState<string | null>(requestedTabId ?? null);
   const [frame, setFrame] = useState<PreviewRemoteSnapshotResult | null>(null);
+  const { pollNeeded, pollNeededRef, onDecodeError } = useRemoteBrowserStream({
+    environmentId,
+    threadId,
+    tabId: selectedTabId,
+    onFrame: setFrame,
+  });
   const frameRef = useRef(frame);
   frameRef.current = frame;
   const frameIntervalRef = useRef(LIVE_FRAME_INTERVAL_MS);
@@ -209,24 +216,25 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
       );
       return false;
     }
-    if (!result.value.loading) setFrame((held) => mergeRemoteSnapshot(held, result.value));
+    if (!result.value.loading && pollNeededRef.current)
+      setFrame((held) => mergeRemoteSnapshot(held, result.value));
     setFrameError(null);
     return true;
   }, [captureRemoteSnapshot, environmentId, threadId]);
 
   useFocusEffect(
     useCallback(() => {
-      if (selectedTabId === null) return;
+      if (selectedTabId === null || !pollNeeded) return;
       return watchBrowserFrames({
         capture,
         intervalMs: () => frameIntervalRef.current,
         onPause: () => {
           coordinatorRef.current.reset();
           clickFeedback.reset();
-          setFrame(null);
+          if (pollNeededRef.current) setFrame(null);
         },
       });
-    }, [capture, clickFeedback, selectedTabId]),
+    }, [capture, clickFeedback, pollNeeded, selectedTabId]),
   );
 
   const dispatchInput = useCallback(
@@ -249,7 +257,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
       }
       setFrameError(null);
       // Show the gesture's effect right away instead of waiting for the poll.
-      await capture();
+      if (pollNeededRef.current) await capture();
       return true;
     },
     [capture, clickFeedback, environmentId, sendRemoteInput, threadId],
@@ -482,6 +490,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
                 {...framePanResponder.panHandlers}
               >
                 <Image
+                  onError={onDecodeError}
                   resizeMode="contain"
                   source={{
                     uri: `data:${frame.screenshot.mimeType};base64,${frame.screenshot.data}`,
