@@ -2,6 +2,8 @@
 
 import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { mediaChannelUrl } from "@t3tools/client-runtime/media/media-channel-socket";
 import {
   FILL_PREVIEW_VIEWPORT,
   PREVIEW_AUTOMATION_OPERATIONS,
@@ -19,6 +21,7 @@ import {
   type PreviewAutomationRequest,
   type DesktopPreviewTabState,
   type PreviewRemoteFrameDemand,
+  type PreviewMediaDemand,
   type PreviewTabAudioTarget,
   type PreviewAutomationStatus,
   type PreviewCredentialVaultCommand,
@@ -36,6 +39,7 @@ import {
   beginPreviewSessionClose,
   readActivePreviewSessions,
   readThreadPreviewState,
+  previewStateAtom,
   reconcilePreviewServerSessions,
   updatePreviewServerSnapshot,
 } from "~/previewStateStore";
@@ -61,6 +65,7 @@ import { useThreadShells } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { readPreparedConnection } from "~/state/session";
 
 import { agentPointerFraction } from "./agentBrowserCursorLogic";
 import { previewBridge } from "./previewBridge";
@@ -68,6 +73,12 @@ import { canCaptureTabAudio, captureTabAudio, createTabAudioStreamer } from "./t
 import { canEncodeRemoteFrames } from "./remoteFrames/remoteFrameEncoder";
 import { createRemoteFrameEncoderPool } from "./remoteFrames/remoteFrameEncoderClient";
 import { remoteFramePageState } from "./remoteFrames/remoteFramePageState";
+import {
+  canPublishPreviewMedia,
+  capturePreviewTab,
+  createPreviewMediaHost,
+  type PreviewMediaHost,
+} from "./remoteMedia/previewMediaHost";
 import {
   createRemoteFrameStreamer,
   type RemoteFrameStreamer,
@@ -422,6 +433,10 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
   // It can also push pictures of the tabs remote viewers watch, instead of
   // being polled for snapshots.
   const streamsRemoteFrames = previewBridge?.remoteFrames !== undefined && canEncodeRemoteFrames();
+  const streamsPreviewMedia =
+    previewBridge?.getTabVideoSource !== undefined &&
+    previewBridge?.onTabVideoSourceChanged !== undefined &&
+    canPublishPreviewMedia();
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
     () => ({
       clientId: automationClientId,
@@ -431,6 +446,7 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
       ...(manageCredentials ? { manageCredentials } : {}),
       ...(streamsTabAudio ? { streamsTabAudio } : {}),
       ...(streamsRemoteFrames ? { streamsRemoteFrames } : {}),
+      ...(streamsPreviewMedia ? { streamsPreviewMedia } : {}),
     }),
     [
       automationClientId,
@@ -439,6 +455,7 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
       manageCredentials,
       streamsTabAudio,
       streamsRemoteFrames,
+      streamsPreviewMedia,
     ],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
@@ -461,6 +478,8 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
     previewEnvironment.respondToAutomation,
     "preview automation response",
   );
+  const respondToAutomationRef = useRef(respondToAutomation);
+  respondToAutomationRef.current = respondToAutomation;
   const focusAutomationHost = useAtomCommand(
     previewEnvironment.focusAutomationHost,
     "preview automation host focus",
@@ -637,6 +656,112 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
       if (remoteFrameStreamerRef.current === streamer) remoteFrameStreamerRef.current = null;
     };
   }, [environmentId, resolveRemoteTab, streamsRemoteFrames]);
+
+  const hostMediaTicket = useAtomCommand(previewEnvironment.hostMediaTicket, {
+    reportFailure: false,
+  });
+  const hostMediaTicketRef = useRef(hostMediaTicket);
+  hostMediaTicketRef.current = hostMediaTicket;
+  const mediaHostRef = useRef<PreviewMediaHost | null>(null);
+  const mediaDemandRef = useRef<ReadonlyArray<PreviewMediaDemand>>([]);
+  const [handleMediaDemand] = useState(() => (tabs: ReadonlyArray<PreviewMediaDemand>) => {
+    mediaDemandRef.current = tabs;
+    mediaHostRef.current?.setDemand(tabs);
+  });
+  useEffect(() => {
+    const bridge = previewBridge;
+    const getVideoSource = bridge?.getTabVideoSource;
+    const onSourceChanged = bridge?.onTabVideoSourceChanged;
+    if (
+      !streamsPreviewMedia ||
+      !bridge ||
+      !getVideoSource ||
+      !onSourceChanged ||
+      !automationConnectionId
+    )
+      return;
+    const desktopStates = new Map<string, DesktopPreviewTabState>();
+    const host = createPreviewMediaHost({
+      runtime: (target) => {
+        const resolved = resolveRemoteTab(target);
+        const state = readThreadPreviewState(resolved.threadRef);
+        return {
+          runtimeTabId: resolved.runtimeTabId,
+          generation: `${state.serverEpoch}:${state.hostSyncGeneration}`,
+        };
+      },
+      resolveUrl: async (target) => {
+        const result = await hostMediaTicketRef.current({
+          environmentId,
+          input: { ...target, clientId: automationClientId, connectionId: automationConnectionId },
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+        const connection = readPreparedConnection(environmentId);
+        if (!connection) throw new Error("The preview environment is disconnected.");
+        return mediaChannelUrl(connection.socketUrl, result.value.ticket);
+      },
+      openSource: async (runtimeTabId) => {
+        const source = await getVideoSource(runtimeTabId);
+        if (!source) throw new Error("The desktop found no live preview tab to capture.");
+        return capturePreviewTab(source);
+      },
+      readState: (target, runtimeTabId) => {
+        const resolved = resolveRemoteTab(target);
+        const thread = readThreadPreviewState(resolved.threadRef);
+        return remoteFramePageState({
+          desktop: desktopStates.get(runtimeTabId),
+          session: thread.sessions[resolved.tabId] ?? thread.hostedSessions[resolved.tabId],
+          pendingDownloadApprovals: thread.desktopByTabId[resolved.tabId]?.pendingDownloadApprovals,
+          agentPointer: agentPointerFraction(
+            useBrowserPointerStore.getState().byTabId[runtimeTabId],
+          ),
+        });
+      },
+      subscribeTarget: (target, changed) => {
+        const resolved = resolveRemoteTab(target);
+        return registry.subscribe(previewStateAtom(scopedThreadKey(resolved.threadRef)), changed);
+      },
+    });
+    const stopStates = bridge.onStateChange((runtimeTabId, state) => {
+      host.refresh();
+      if (!host.hasRuntime(runtimeTabId)) return;
+      desktopStates.set(runtimeTabId, state);
+      host.stateChanged(runtimeTabId);
+    });
+    const stopSources = onSourceChanged((runtimeTabId) => {
+      host.refresh();
+      host.sourceChanged(runtimeTabId);
+    });
+    const stopPointers = useBrowserPointerStore.subscribe((state, previous) => {
+      for (const runtimeTabId of Object.keys(previous.byTabId)) {
+        if (state.byTabId[runtimeTabId] !== previous.byTabId[runtimeTabId]) {
+          host.stateChanged(runtimeTabId);
+        }
+      }
+      for (const runtimeTabId of Object.keys(state.byTabId)) {
+        if (!(runtimeTabId in previous.byTabId)) host.stateChanged(runtimeTabId);
+      }
+    });
+    mediaHostRef.current = host;
+    host.setDemand(mediaDemandRef.current);
+    return () => {
+      stopStates();
+      stopSources();
+      stopPointers();
+      host.dispose();
+      if (mediaHostRef.current === host) mediaHostRef.current = null;
+    };
+  }, [
+    automationClientId,
+    automationConnectionId,
+    environmentId,
+    registry,
+    resolveRemoteTab,
+    streamsPreviewMedia,
+  ]);
+  useEffect(() => {
+    mediaHostRef.current?.refresh();
+  }, [browserProfiles]);
 
   const handleRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<unknown> => {
@@ -1418,9 +1543,10 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
         ...(manageCredentials ? { handleCredentialVault: applyCredentialVaultCommand } : {}),
         handleAudioDemand,
         handleFrameDemand,
+        handleMediaDemand,
         renewAutomationForeground: renewPreviewAutomationForeground,
         respond: (response) =>
-          respondToAutomation({
+          respondToAutomationRef.current({
             environmentId,
             input: response,
           }),
@@ -1431,11 +1557,11 @@ function ConnectedPreviewAutomationHost(props: { readonly environmentId: Environ
       automationConnectionAtom,
       automationRequestsAtom,
       requestHandlerAtom,
-      respondToAutomation,
       environmentId,
       manageCredentials,
       handleAudioDemand,
       handleFrameDemand,
+      handleMediaDemand,
     ],
   );
   useAtomValue(automationRequestConsumerAtom);

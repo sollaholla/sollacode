@@ -2,6 +2,8 @@
 
 The Background tasks drawer shows work the provider has started and still owns. Shell commands show their status without agent token or tool-use counters. Agent tasks retain provider-reported usage.
 
+A subagent's tokens count only on its own row. They never move the chat's context meter, which measures the main conversation that the provider compacts. Before version 0.1.740, Claude wrote each subagent's running total into the meter, which often pinned it at 100% while the chat had plenty of room. The meter now skips those old readings and shows the chat's last real one.
+
 A thread whose tasks are still running reads as **Working** everywhere, even after the turn that started them has ended. This covers the sidebar, the phone thread list, the status pill, and the thread lists agents read: the orchestrator's `list_threads` and `thread_collaboration`'s related chats. The conversation keeps a working row such as **3 background tasks running…** in place of the finished turn's silence. A task stops counting once its provider session ends or once it has gone 30 minutes without reporting, the same window after which the drawer marks a row as having had no updates. Background shell commands report nothing until they finish, so one that runs longer than 30 minutes stops counting before it ends. A thread that leaves a dev server or another long-lived command running in the background reads as working for up to 30 minutes after it starts.
 
 Nothing a provider runs survives a Solla Code restart. When the server starts, every task the previous run left open is marked **Stopped** with "Solla Code restarted before this task finished", so an app update never leaves a thread claiming work it lost.

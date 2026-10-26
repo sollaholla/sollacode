@@ -22,7 +22,9 @@ Tickets and media URLs are ephemeral and must not be persisted or logged.
 
 The publisher captures only while subscribed, with a three-second grace period
 after the last viewer leaves. It sizes the encoded picture to viewers' visible
-pixel dimensions and zoom, bounded by the capture resolution. Codec selection
+pixel dimensions and zoom, with a 1.5× sampling margin for fine text, bounded by
+the capture resolution and pixel budget. Widths align to four pixels to avoid
+observed horizontal distortion in the Mac HEVC to WebKit path. Codec selection
 prefers hardware HEVC/H.264 where available, with VP8 as a compatibility option.
 A bounded encoder queue and byte budget replace old pending frames with the newest
 capture. Relay acknowledgments adapt the bitrate to queueing, and each viewer has

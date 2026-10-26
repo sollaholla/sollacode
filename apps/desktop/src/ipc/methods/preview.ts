@@ -29,6 +29,7 @@ import {
   DesktopPreviewTabInputSchema,
   DesktopPreviewUiActivityInputSchema,
   DesktopPreviewWebviewConfigSchema,
+  DesktopPreviewVideoSourceSchema,
   PreviewAnnotationPayloadSchema,
   PreviewAutomationContextMenuResult,
   PreviewAutomationWaitForDownloadResult,
@@ -56,6 +57,9 @@ export const installPreviewEventForwarding = Effect.fn(
   const manager = yield* PreviewManager.PreviewManager;
   yield* manager.subscribeStateChanges((tabId, state) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_STATE_CHANGE_CHANNEL, tabId, state),
+  );
+  yield* manager.subscribeVideoSourceChanges((tabId) =>
+    electronWindow.sendAll(IpcChannels.PREVIEW_TAB_VIDEO_SOURCE_CHANGED_CHANNEL, tabId),
   );
   yield* manager.subscribeRecordingFrames((frame) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_RECORDING_FRAME_CHANNEL, frame),
@@ -363,6 +367,17 @@ export const captureScreenshot = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.captureScreenshot")(function* ({ tabId }) {
     const manager = yield* PreviewManager.PreviewManager;
     return yield* manager.captureScreenshot(tabId);
+  }),
+});
+
+export const getTabVideoSource = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_GET_TAB_VIDEO_SOURCE_CHANNEL,
+  payload: DesktopPreviewTabInputSchema,
+  result: Schema.NullOr(DesktopPreviewVideoSourceSchema),
+  handler: Effect.fn("desktop.ipc.preview.getTabVideoSource")(function* ({ tabId }, event) {
+    if (event.sender === undefined) return null;
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.getTabVideoSource(tabId, event.sender.id);
   }),
 });
 
@@ -771,6 +786,7 @@ export const methods = [
   cancelPickElement,
   captureScreenshot,
   getTabAudioSource,
+  getTabVideoSource,
   startRemoteFrames,
   stopRemoteFrames,
   refreshRemoteFrame,

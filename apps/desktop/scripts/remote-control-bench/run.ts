@@ -28,6 +28,8 @@ import * as NodeUtil from "node:util";
 import { measureStaleness, measureUpdates, stats, type Stats } from "./stats.ts";
 
 import { LOOPBACK, startLinkEmulator, type LinkConditions } from "./linkEmulator.ts";
+import type { QualityCapture } from "./viewer.ts";
+import type { NativeQualityCapture } from "./nativeQuality.ts";
 
 const here = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const desktopRoot = NodePath.resolve(here, "../..");
@@ -47,6 +49,8 @@ const { values: args } = NodeUtil.parseArgs({
     pipelines: { type: "string", default: "legacy,media" },
     scenes: { type: "string", default: "idle,typing,scroll,video,input" },
     viewers: { type: "string", default: "phone,laptop" },
+    "phone-width": { type: "string", default: "390" },
+    "encode-scale": { type: "string", default: "1" },
     conditions: { type: "string", default: "loopback,wifi,cellular" },
     seconds: { type: "string", default: "12" },
     warmup: { type: "string", default: "3" },
@@ -54,6 +58,7 @@ const { values: args } = NodeUtil.parseArgs({
     out: { type: "string", default: "/tmp/rc-bench" },
     tag: { type: "string", default: "" },
     images: { type: "boolean", default: false },
+    "native-quality": { type: "boolean", default: false },
     "build-only": { type: "boolean", default: false },
   },
 });
@@ -70,6 +75,8 @@ interface RunResult {
   readonly pipeline: Pipeline;
   readonly scene: Scene;
   readonly viewer: Viewer;
+  readonly phoneViewportWidth: number | null;
+  readonly requestedEncodeScale: number;
   readonly condition: string;
   readonly repeat: number;
   readonly seconds: number;
@@ -95,9 +102,11 @@ interface RunResult {
   readonly framesShown: number;
   readonly downstreamBytesPerSecond: number;
   readonly upstreamBytesPerSecond: number;
-  readonly legibility: { psnr: number; width: number; height: number } | null;
+  readonly legibility: QualityCapture["score"] | null;
+  readonly nativeQuality: Omit<NativeQualityCapture, "png"> | null;
   readonly host: Record<string, unknown>;
   readonly viewerCounters: Record<string, unknown>;
+  readonly viewerEnvironment: Record<string, unknown>;
 }
 
 const round = (value: number) => Math.round(value * 10) / 10;
@@ -212,6 +221,14 @@ async function main(): Promise<void> {
   const seconds = Number(args.seconds);
   const warmup = Number(args.warmup);
   const repeats = Number(args.repeats);
+  const phoneWidth = Number(args["phone-width"]);
+  const encodeScale = Number(args["encode-scale"]);
+  if (!Number.isFinite(encodeScale) || encodeScale < 1 || encodeScale > 2) {
+    throw new Error("--encode-scale must be between 1 and 2");
+  }
+  if (!Number.isInteger(phoneWidth) || phoneWidth < 240 || phoneWidth > 1_024) {
+    throw new Error("--phone-width must be an integer from 240 to 1024 CSS pixels");
+  }
   for (const pipeline of pipelines)
     if (!["legacy", "media"].includes(pipeline)) throw new Error(`Unknown pipeline: ${pipeline}`);
   for (const scene of scenes)
@@ -220,6 +237,12 @@ async function main(): Promise<void> {
   for (const viewer of viewers)
     if (!["phone", "phone-mse", "laptop"].includes(viewer))
       throw new Error(`Unknown viewer: ${viewer}`);
+  if (
+    args["native-quality"] &&
+    (pipelines.some((pipeline) => pipeline !== "media") || scenes.some((scene) => scene !== "idle"))
+  ) {
+    throw new Error("--native-quality requires --pipelines media --scenes idle");
+  }
   if (
     !Number.isFinite(seconds) ||
     seconds <= 1 ||
@@ -305,7 +328,7 @@ async function main(): Promise<void> {
     const phonePage = async (keepMediaSource: boolean) => {
       if (!browser) throw new Error("WebKit was not started for this viewer");
       const context = await browser.newContext({
-        viewport: { width: 390, height: 844 },
+        viewport: { width: phoneWidth, height: 844 },
         deviceScaleFactor: 3,
         hasTouch: true,
       });
@@ -419,12 +442,18 @@ async function runOne(input: {
 }): Promise<RunResult> {
   const { host, viewerPage, link } = input;
   await host.evaluate(
-    `window.bench.start(${JSON.stringify({ pipeline: input.pipeline, scene: input.scene })})`,
+    `window.bench.start(${JSON.stringify({
+      pipeline: input.pipeline,
+      scene: input.scene,
+      nativeQuality: args["native-quality"],
+    })})`,
   );
   await viewerPage.evaluate(
     `window.bench.start(${JSON.stringify({
       pipeline: input.pipeline,
       ...(input.scene === "input" ? { typeEveryMs: 150 } : {}),
+      encodeScale: Number(args["encode-scale"]),
+      nativeQuality: args["native-quality"],
     })})`,
   );
   await sleep(input.warmup * 1_000);
@@ -435,21 +464,68 @@ async function runOne(input: {
   await sleep(input.seconds * 1_000);
   const t1 = performance.timeOrigin + performance.now();
   const bytes = link.snapshot().filter((entry) => entry.path.startsWith("/ws"));
-  const legibility =
+  const quality =
     input.scene === "idle" || input.scene === "typing"
       ? await viewerPage
-          .evaluate<{ psnr: number; width: number; height: number } | null>(
-            `window.bench.score(${JSON.stringify(input.scene)})`,
+          .evaluate<QualityCapture | null>(
+            `window.bench.quality(${JSON.stringify(input.scene)}, ${args.images}, ${args["native-quality"]})`,
           )
           .catch(() => null)
       : null;
-  if (args.images && legibility) {
-    const images = await viewerPage
-      .evaluate<{ received: string; truth: string } | null>(
-        `window.bench.images(${JSON.stringify(input.scene)})`,
-      )
-      .catch(() => null);
-    for (const [name, url] of Object.entries(images ?? {})) {
+  const legibility = quality?.score ?? null;
+  let nativeQuality: RunResult["nativeQuality"] = null;
+  if (args["native-quality"]) {
+    const captured = await host.evaluate<NativeQualityCapture | null>(
+      "window.bench.takeNativeQuality()",
+    );
+    if (
+      !captured ||
+      !legibility ||
+      !quality?.images?.nativeDecoded ||
+      captured.frame !== legibility.frame ||
+      captured.width !== legibility.decodedWidth ||
+      captured.height !== legibility.decodedHeight
+    ) {
+      const publisher = await host.evaluate<Record<string, unknown>>("window.bench.counters()");
+      const details = {
+        preEncode: captured
+          ? { frame: captured.frame, width: captured.width, height: captured.height }
+          : null,
+        decoded: legibility
+          ? {
+              frame: legibility.frame,
+              width: legibility.decodedWidth,
+              height: legibility.decodedHeight,
+              hasPixels: Boolean(quality?.images?.nativeDecoded),
+            }
+          : null,
+        capture: {
+          framesIn: publisher.framesIn,
+          framesEncoded: publisher.framesEncoded,
+          packetsSent: publisher.packetsSent,
+          codec: publisher.codec,
+          width: publisher.width,
+          height: publisher.height,
+        },
+      };
+      NodeFS.writeFileSync(
+        NodePath.join(rawDir, "native-quality-failure.json"),
+        JSON.stringify(details, null, 2),
+      );
+      throw new Error(`Native quality capture needs matching frames: ${JSON.stringify(details)}`);
+    }
+    const { png, ...metadata } = captured;
+    nativeQuality = metadata;
+    NodeFS.writeFileSync(
+      NodePath.join(
+        rawDir,
+        `${input.condition}-${input.viewer}-${input.scene}-${input.pipeline}-${input.repeat}-nativeEncoded.png`,
+      ),
+      Buffer.from(png.split(",")[1] ?? "", "base64"),
+    );
+  }
+  if (quality?.images) {
+    for (const [name, url] of Object.entries(quality.images)) {
       NodeFS.writeFileSync(
         NodePath.join(
           rawDir,
@@ -486,6 +562,8 @@ async function runOne(input: {
     pipeline: input.pipeline,
     scene: input.scene,
     viewer: input.viewer,
+    phoneViewportWidth: input.viewer === "laptop" ? null : Number(args["phone-width"]),
+    requestedEncodeScale: Number(args["encode-scale"]),
     condition: input.condition,
     repeat: input.repeat,
     seconds: round(elapsed),
@@ -513,13 +591,16 @@ async function runOne(input: {
     ),
     legibility: legibility
       ? {
+          ...legibility,
           psnr: round(legibility.psnr * 10) / 10,
-          width: legibility.width,
-          height: legibility.height,
         }
       : null,
     host: hostCounters,
+    nativeQuality,
     viewerCounters,
+    viewerEnvironment: await viewerPage.evaluate<Record<string, unknown>>(
+      "window.bench.environment()",
+    ),
   };
 }
 

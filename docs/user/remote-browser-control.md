@@ -27,16 +27,21 @@ copy those addresses or open them in another host tab.
 
 ## Streaming and compatibility
 
-Updated hosts send pictures when the page changes and stop capture when nobody is watching.
-Web viewers receive changed image regions where possible; native mobile receives whole changed
-pictures. The requested image size follows the visible panel, screen density, and zoom, within a
-maximum size. When several devices watch the same tab, the host uses the largest requested size;
-a native viewer also makes that tab use whole pictures for all viewers.
+Compatible desktop hosts and web viewers use video for the visible tab, including phone browsers.
+The viewer keeps its current picture until the first decoded video frame arrives. Image size
+follows the panel, screen density, and zoom, with a sampling margin for readable text and a
+maximum pixel budget. When several video viewers watch a tab, the largest requested size wins.
+
+Browsers without the required video APIs and older hosts use changed JPEG regions where possible.
+Native mobile uses whole changed JPEG pictures. A native viewer makes the shared JPEG capture use
+whole pictures; it does not change the separate video stream used by compatible web viewers.
 
 Slow viewers receive the latest available state rather than replaying every intermediate image.
 A busy video or scrolling page can therefore skip frames. Opening another tab, hiding the panel,
-or putting the native app in the background releases its subscription. Old hosts and capture
-failures retain the snapshot fallback. Streaming does not change input approval or download rules.
+or putting the native app in the background releases its subscription. Capture stops when nobody
+needs that feed. A video failure restores the JPEG feed while retaining the last valid picture;
+older hosts and image capture failures retain the snapshot fallback. Streaming does not change
+input approval or download rules.
 
 ## Phone Browser (Safari over Tailscale) — no install needed
 
@@ -129,7 +134,7 @@ the clipboard; where it refuses (common over plain HTTP), open the keyboard and 
 Only web links are opened; a script link can be copied but not run. If the page draws its own
 right-click menu, that menu appears in the next frame and you tap it like anything else.
 
-The frame refreshes about every 2.5 seconds, plus immediately after each input you send. Taps in
+The snapshot fallback refreshes about every 2.5 seconds, plus immediately after each input you send. Taps in
 the black letterbox bars around the frame are ignored rather than mapped to a page edge.
 Inputs are delivered in gesture order, even over a slow relay, and changing tabs immediately starts
 a fresh input lane and drops keyboard text not yet sent. Older captures are discarded when a newer
@@ -194,9 +199,9 @@ a pure JavaScript change, so an over-the-air update or Metro reload is enough.
 
 ## How It Works (and What It Never Touches)
 
-- Frames come from the existing `preview.remoteSnapshot` path: the desktop captures its own
-  rendered tab and returns a JPEG over the environment WebSocket, so Tailscale connections keep
-  the desktop's cookies and signed-in state.
+- Video comes from the desktop's rendered tab through an authenticated media channel. JPEG
+  streaming uses `preview.remoteFrames`, with `preview.remoteSnapshot` as its fallback. Each path
+  captures the host tab, so Tailscale connections keep the desktop's cookies and signed-in state.
 - While a page is loading or its frame is unavailable, the viewer freezes the last valid
   page picture and resumes automatically when a new frame arrives, without flickering to black.
   Before the first valid frame, it shows a waiting state. Capture stays on the tab's own surface;
@@ -274,8 +279,8 @@ as the vault.
 
 ## Limitations
 
-- **It's frames, not video.** ~2.5s cadence is fine for tapping through flows and filling forms,
-  not for scroll-reading. Each input snaps a fresh frame so you see its effect quickly.
+- **Fallback feeds can skip motion.** Native mobile and browsers without video support use images;
+  the oldest snapshot fallback refreshes about every 2.5 seconds and after input.
 - **The desktop app must be running** with the environment reachable; there is no host without it.
 - Remote input is treated as automation on the desktop side, so it does not pause an agent
   driving the same tab the way physical input at the desktop does.

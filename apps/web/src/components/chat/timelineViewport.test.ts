@@ -5,6 +5,7 @@ import {
   captureTimelineDisclosure,
   followTimelineEnd,
   restoreTimelineDisclosure,
+  timelineMeasurementsMatch,
 } from "./timelineViewport";
 
 function setup() {
@@ -28,6 +29,23 @@ function setup() {
 }
 
 describe("timeline measured viewport", () => {
+  it("waits for every mounted row to be measured before trusting the end", () => {
+    const element = document.createElement("div");
+    element.getBoundingClientRect = () => ({ height: 120.4 }) as DOMRect;
+    let measured = 120;
+    const state = {
+      startBuffered: 0,
+      endBuffered: 2,
+      elementAtIndex: (index: number) => (index === 2 ? element : null),
+      sizeAtIndex: () => measured,
+    };
+    expect(timelineMeasurementsMatch(state)).toBe(true);
+    measured = 90;
+    expect(timelineMeasurementsMatch(state)).toBe(false);
+    measured = Number.NaN;
+    expect(timelineMeasurementsMatch(state)).toBe(false);
+  });
+
   it("keeps the clicked control in place when tools are inserted above it and then measured", () => {
     const { scroller, button, setContentTop } = setup();
     const anchor = captureTimelineDisclosure(scroller, button.firstChild);

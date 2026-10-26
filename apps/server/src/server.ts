@@ -59,6 +59,7 @@ import * as MediaRelay from "./media/MediaRelay.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
 import * as TabAudioRelay from "./preview/TabAudioRelay.ts";
 import * as RemoteFrameRelay from "./preview/RemoteFrameRelay.ts";
+import * as PreviewMediaBroker from "./preview/PreviewMediaBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
@@ -520,6 +521,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   HttpRouter.provideRequest(ThreadArtifactLayerLive),
   HttpRouter.provideRequest(OrchestratorLiveLayer),
   Layer.provide(ActionApprovalBroker.layer),
+  Layer.provide(PreviewMediaBroker.layer),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(DesktopAppUpdater.layer),
   Layer.provide(RemoteControlBroker.layer),

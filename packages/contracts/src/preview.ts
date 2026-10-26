@@ -17,6 +17,29 @@ const Title = Schema.String.check(Schema.isMaxLength(512));
 export const PreviewTabId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type PreviewTabId = typeof PreviewTabId.Type;
 
+/** Video watches have their own lifetime; legacy JPEG subscribers stay unchanged. */
+export const PreviewMediaDemand = Schema.Struct({ threadId: ThreadId, tabId: PreviewTabId });
+export type PreviewMediaDemand = typeof PreviewMediaDemand.Type;
+export const PreviewMediaWatchInput = PreviewMediaDemand;
+export type PreviewMediaWatchInput = typeof PreviewMediaWatchInput.Type;
+const PreviewMediaWatchId = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
+export const PreviewMediaWatchEvent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("ready"), watchId: PreviewMediaWatchId }),
+  Schema.Struct({ type: Schema.Literal("unavailable"), reason: Schema.String }),
+]);
+export type PreviewMediaWatchEvent = typeof PreviewMediaWatchEvent.Type;
+export const PreviewMediaTicketInput = Schema.Struct({ watchId: PreviewMediaWatchId });
+export type PreviewMediaTicketInput = typeof PreviewMediaTicketInput.Type;
+export const PREVIEW_MEDIA_PAGE_STATE_KEY = "preview-page";
+export const PREVIEW_MEDIA_CAPTURE_STATE_KEY = "preview-capture";
+/** Explicit capture interruption lets JPEG cover retries without ending the media watch. */
+export const PreviewMediaCaptureState = Schema.Struct({ capturing: Schema.Boolean });
+export type PreviewMediaCaptureState = typeof PreviewMediaCaptureState.Type;
+export class PreviewMediaAccessDeniedError extends Schema.TaggedErrorClass<PreviewMediaAccessDeniedError>()(
+  "PreviewMediaAccessDeniedError",
+  { message: Schema.String },
+) {}
+
 export const PREVIEW_VIEWPORT_MIN_DIMENSION = 240;
 export const PREVIEW_VIEWPORT_MAX_DIMENSION = 3840;
 export const PREVIEW_VIEWPORT_MAX_AREA = 3840 * 2160;

@@ -326,6 +326,7 @@ export const makeOrchestrationIntegrationHarness = (
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
     const previewManagerLayer = Layer.mock(PreviewManager.PreviewManager)({
+      hasSession: () => false,
       list: () => Effect.succeed({ sessions: [], serverEpoch: "integration-test", revision: 0 }),
     });
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(

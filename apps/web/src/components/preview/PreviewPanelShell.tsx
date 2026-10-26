@@ -52,6 +52,8 @@ export function getPreviewPanelMaxWidth(viewportWidth: number, containerWidth?: 
 export function PreviewPanelShell(props: {
   mode: PreviewPanelMode;
   maximized?: boolean;
+  open?: boolean;
+  onExitComplete?: () => void;
   children: ReactNode;
 }) {
   const useDragRegion = isElectron && props.mode !== "sheet" && props.mode !== "embedded";
@@ -68,6 +70,48 @@ export function PreviewPanelShell(props: {
     edge: "left",
   });
 
+  const motionRef = useRef<Animation | null>(null);
+  useLayoutEffect(() => {
+    const element = hostRef.current;
+    if (!element || props.open === undefined) return;
+    // Read an interrupted transition before cancelling it, so a rapid reversal
+    // continues from the visible position. Resize drags never enter this effect.
+    const interrupted = motionRef.current ? getComputedStyle(element) : null;
+    const from = interrupted
+      ? { translate: interrupted.translate, opacity: interrupted.opacity }
+      : props.open
+        ? { translate: "100% 0", opacity: "0" }
+        : { translate: "0% 0", opacity: "1" };
+    motionRef.current?.cancel();
+    motionRef.current = null;
+    if (
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
+      typeof element.animate !== "function"
+    ) {
+      if (!props.open) props.onExitComplete?.();
+      return;
+    }
+    const animation = element.animate(
+      [from, { translate: props.open ? "0% 0" : "100% 0", opacity: props.open ? "1" : "0" }],
+      { duration: 200, easing: "cubic-bezier(0, 0, 0.2, 1)", fill: "both" },
+    );
+    motionRef.current = animation;
+    animation.onfinish = () => {
+      if (motionRef.current !== animation) return;
+      if (props.open) {
+        motionRef.current = null;
+        animation.cancel();
+      } else props.onExitComplete?.();
+    };
+  }, [props.open, props.onExitComplete]);
+  useLayoutEffect(
+    () => () => {
+      motionRef.current?.cancel();
+      motionRef.current = null;
+    },
+    [],
+  );
+
   return (
     <div
       ref={hostRef}
@@ -80,6 +124,7 @@ export function PreviewPanelShell(props: {
           : "w-full",
       )}
       style={isInline && !props.maximized ? { width: `${width}px` } : undefined}
+      inert={props.open === false}
       data-preview-panel-mode={props.mode}
       data-preview-panel-maximized={props.maximized ? "true" : "false"}
     >

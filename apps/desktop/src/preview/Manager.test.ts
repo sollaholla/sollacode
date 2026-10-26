@@ -21,6 +21,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import { HUMAN_INPUT_CHANNEL } from "./GuestProtocol.ts";
+import { VIDEO_SOURCE_CHANGED_CHANNEL } from "./GuestProtocol.ts";
 import * as PreviewManager from "./Manager.ts";
 import { PREVIEW_POPUP_WEB_PREFERENCES } from "./WebviewPreferences.ts";
 
@@ -1076,6 +1077,118 @@ describe("PreviewManager", () => {
           expect(yield* manager.getTabAudioSource("tab_audio")).toBe("tab-audio-source");
           expect(getMediaSourceId).toHaveBeenCalledWith(embedder);
           expect(yield* manager.getTabAudioSource("tab_missing")).toBeNull();
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "binds video capture to its requester and follows viewport, zoom, and teardown changes",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const requester = { id: 41, isDestroyed: () => false };
+          const foreign = { id: 44, isDestroyed: () => false };
+          const mainFrame = {};
+          let geometry: unknown = { width: 900, height: 1000, devicePixelRatio: 2 };
+          const measure = vi.fn(async () => geometry);
+          const getMediaSourceId = vi.fn(() => "video-source");
+          const ipcListeners = new Map<string, (event: unknown) => void>();
+          const ipcOff = vi.fn();
+          const wc = {
+            id: 42,
+            hostWebContents: requester,
+            mainFrame,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com/",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            executeJavaScript: vi.fn(() => new Promise(() => {})),
+            executeJavaScriptInIsolatedWorld: measure,
+            getMediaSourceId,
+            on: vi.fn(),
+            off: vi.fn(),
+            send: webviewSend,
+            ipc: {
+              on: vi.fn((channel: string, listener: (event: unknown) => void) =>
+                ipcListeners.set(channel, listener),
+              ),
+              off: ipcOff,
+            },
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand: vi.fn(async () => undefined),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never;
+          fromId.mockImplementation((id) =>
+            id === 42
+              ? wc
+              : id === 41
+                ? (requester as never)
+                : id === 44
+                  ? (foreign as never)
+                  : null,
+          );
+          const changed: string[] = [];
+          let resizeReceipt: Deferred.Deferred<void> | undefined;
+          yield* manager.subscribeVideoSourceChanges((tabId) =>
+            Effect.gen(function* () {
+              changed.push(tabId);
+              if (resizeReceipt) yield* Deferred.succeed(resizeReceipt, undefined);
+            }),
+          );
+          yield* manager.createTab("video-tab");
+          yield* manager.registerWebview("video-tab", 42);
+          expect(yield* manager.getTabVideoSource("video-tab", 41)).toEqual({
+            sourceId: "video-source",
+            webContentsId: 42,
+            width: 900,
+            height: 1000,
+            devicePixelRatio: 2,
+          });
+          expect(getMediaSourceId).toHaveBeenCalledWith(requester);
+          expect(yield* manager.getTabVideoSource("video-tab", 44)).toBeNull();
+          expect(yield* manager.getTabVideoSource("missing", 41)).toBeNull();
+          expect(getMediaSourceId).toHaveBeenCalledTimes(1);
+          geometry = { width: 900, height: 0, devicePixelRatio: 2 };
+          expect(yield* manager.getTabVideoSource("video-tab", 41)).toBeNull();
+          geometry = { width: 900, height: 1000, devicePixelRatio: Infinity };
+          expect(yield* manager.getTabVideoSource("video-tab", 41)).toBeNull();
+          expect(getMediaSourceId).toHaveBeenCalledTimes(1);
+          resizeReceipt = yield* Deferred.make<void>();
+          const prior = changed.length;
+          ipcListeners.get(VIDEO_SOURCE_CHANGED_CHANNEL)?.({ senderFrame: mainFrame });
+          yield* Deferred.await(resizeReceipt);
+          resizeReceipt = undefined;
+          expect(changed.length).toBe(prior + 1);
+          yield* manager.zoomIn("video-tab");
+          expect(changed.length).toBe(prior + 2);
+
+          let finishMeasurement: (value: unknown) => void = () => {};
+          let measurementStarted: () => void = () => {};
+          const started = new Promise<void>((resolve) => {
+            measurementStarted = resolve;
+          });
+          measure.mockImplementationOnce(() => {
+            measurementStarted();
+            return new Promise((resolve) => {
+              finishMeasurement = resolve;
+            });
+          });
+          const pending = yield* manager.getTabVideoSource("video-tab", 41).pipe(Effect.forkScoped);
+          yield* Effect.promise(() => started);
+          yield* manager.closeTab("video-tab");
+          finishMeasurement({ width: 900, height: 1000, devicePixelRatio: 2 });
+          expect(yield* Fiber.join(pending)).toBeNull();
+          expect(getMediaSourceId).toHaveBeenCalledTimes(1);
+          expect(ipcOff).toHaveBeenCalledWith(VIDEO_SOURCE_CHANGED_CHANNEL, expect.any(Function));
         }),
       ),
   );
@@ -3457,6 +3570,16 @@ describe("PreviewManager", () => {
     withManager((manager) =>
       Effect.gen(function* () {
         const states: PreviewManager.PreviewTabState[] = [];
+        const requester = { id: 41, isDestroyed: () => false };
+        const sourceCapture = vi.fn(() => "parent-video");
+        const popupCapture = vi.fn(() => "popup-video");
+        let popupResized: (() => void) | undefined;
+        let resizeReceipt: Deferred.Deferred<void> | undefined;
+        yield* manager.subscribeVideoSourceChanges(() =>
+          resizeReceipt
+            ? Deferred.succeed(resizeReceipt, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        );
         let didCreateWindow: ((window: Electron.BrowserWindow) => void) | undefined;
         let popupClosed: (() => void) | undefined;
         let popupDestroyed = false;
@@ -3488,6 +3611,13 @@ describe("PreviewManager", () => {
         );
         const source = {
           id: 42,
+          hostWebContents: requester,
+          getMediaSourceId: sourceCapture,
+          executeJavaScriptInIsolatedWorld: vi.fn(async () => ({
+            width: 1280,
+            height: 800,
+            devicePixelRatio: 2,
+          })),
           isDestroyed: () => false,
           getType: () => "webview",
           getURL: () => "https://www.pinterest.com/login/",
@@ -3525,6 +3655,12 @@ describe("PreviewManager", () => {
         });
         const popupWebContents = {
           id: 43,
+          getMediaSourceId: popupCapture,
+          executeJavaScriptInIsolatedWorld: vi.fn(async () => ({
+            width: 500,
+            height: 600,
+            devicePixelRatio: 2,
+          })),
           isDestroyed: () => popupDestroyed,
           getType: () => "window",
           getURL: () => "https://accounts.google.com/gsi/select",
@@ -3559,12 +3695,19 @@ describe("PreviewManager", () => {
           isDestroyed: () => popupDestroyed,
           on: vi.fn((event: string, listener: () => void) => {
             if (event === "closed") popupClosed = listener;
+            if (event === "resize") popupResized = listener;
           }),
           off: vi.fn(),
           close: vi.fn(),
         } as never;
         fromId.mockImplementation((id) =>
-          id === 42 ? source : id === 43 ? popupWebContents : null,
+          id === 42
+            ? source
+            : id === 43
+              ? popupWebContents
+              : id === 41
+                ? (requester as never)
+                : null,
         );
 
         yield* manager.subscribeStateChanges((_tabId, state) =>
@@ -3587,6 +3730,21 @@ describe("PreviewManager", () => {
           title: "Sign in with Google",
           viewport: { width: 500, height: 600 },
         });
+        expect(yield* manager.getTabVideoSource("runtime-oauth", 41)).toEqual({
+          sourceId: "popup-video",
+          webContentsId: 43,
+          width: 500,
+          height: 600,
+          devicePixelRatio: 2,
+        });
+        expect(popupCapture).toHaveBeenCalledWith(requester);
+        expect(sourceCapture).not.toHaveBeenCalled();
+        // Audio retains the original guest while video follows the input target.
+        expect(yield* manager.getTabAudioSource("runtime-oauth")).toBe("parent-video");
+        resizeReceipt = yield* Deferred.make<void>();
+        popupResized?.();
+        yield* Deferred.await(resizeReceipt);
+        resizeReceipt = undefined;
         yield* manager.automationPress("runtime-oauth", { key: "Enter" });
         expect(popupSendCommand).toHaveBeenCalledWith(
           "Input.dispatchKeyEvent",
@@ -3619,6 +3777,13 @@ describe("PreviewManager", () => {
           url: "https://www.pinterest.com/login/",
           title: "Pinterest",
           viewport: { width: 1280, height: 800 },
+        });
+        expect(yield* manager.getTabVideoSource("runtime-oauth", 41)).toEqual({
+          sourceId: "parent-video",
+          webContentsId: 42,
+          width: 1280,
+          height: 800,
+          devicePixelRatio: 2,
         });
       }),
     ),

@@ -19,6 +19,7 @@ import {
 } from "@t3tools/shared/remoteFrameGestures";
 import { RegistryContext } from "@effect/atom-react";
 import { RemotePreviewCommandCoordinator } from "@t3tools/client-runtime/preview/remote-command-coordinator";
+import { mediaChannelUrl } from "@t3tools/client-runtime/media/media-channel-socket";
 import {
   mergeRemoteSnapshot,
   remoteSnapshotRequest,
@@ -37,6 +38,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useEffectEvent,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -46,6 +48,7 @@ import { toastManager } from "~/components/ui/toast";
 import { useOnScreenKeyboard } from "~/hooks/useOnScreenKeyboard";
 import { useServerConfigs } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
+import { readPreparedConnection } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
 import { TouchActionRadialMenu } from "../remoteControl/TouchActionRadialMenu";
@@ -61,6 +64,7 @@ import { RemoteBrowserErrorChip } from "./RemoteBrowserErrorChip";
 import { RemoteTabAudioButton, useRemoteTabAudio } from "./RemoteTabAudio";
 import { usePreviewPageVisible } from "./previewPageVisibility";
 import { createRemoteFramePainter, listenToRemoteFrames } from "./remoteFrames/remoteFrameCanvas";
+import { createRemotePreviewMedia, listenToPreviewMedia } from "./remoteMedia/remotePreviewMedia";
 import {
   createRemoteBrowserTouchGestures,
   attachRemoteKeyboardInput,
@@ -161,10 +165,8 @@ function canvasBox(pane: FrameSize | null, picture: FrameSize | null) {
  * hands — the desktop keeps its own guest; this view only exists where no
  * local guest can (phone Safari, plain browsers).
  *
- * Pictures are pushed: the viewer subscribes to the tab's frame stream with
- * the size it can show, and draws each keyframe and patch onto a canvas as
- * the page changes. Against a server or desktop that cannot stream, it polls
- * for snapshots as before.
+ * Compatible hosts send video sized for this viewer. JPEG keyframes and
+ * patches cover startup and video failures; older hosts fall back to snapshots.
  */
 export function RemoteBrowserFrame(props: {
   readonly threadRef: ScopedThreadRef;
@@ -221,6 +223,17 @@ export function RemoteBrowserFrame(props: {
     typeof ResizeObserver !== "undefined" &&
     serverConfigs.get(threadRef.environmentId)?.environment.capabilities.remotePreviewFrames ===
       true;
+  const mediaSupported =
+    typeof ResizeObserver !== "undefined" &&
+    serverConfigs.get(threadRef.environmentId)?.environment.capabilities
+      .remotePreviewMediaChannel === true;
+  const mediaCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mediaViewerRef = useRef<ReturnType<typeof createRemotePreviewMedia> | null>(null);
+  const mediaZoomRef = useRef(zoomView.view.zoom);
+  mediaZoomRef.current = zoomView.view.zoom;
+  const [mediaPicture, setMediaPicture] = useState<FrameSize | null>(null);
+  const [mediaActive, setMediaActive] = useState(false);
+  const mediaActiveRef = useRef(false);
   const [streamPicture, setStreamPicture] = useState<{
     readonly width: number;
     readonly height: number;
@@ -241,6 +254,11 @@ export function RemoteBrowserFrame(props: {
     unavailableAt: number | null;
   }>({ subscribedAt: null, lastPictureAt: null, unavailableAt: null });
   const reconsiderPolling = useCallback(() => {
+    if (mediaActiveRef.current) {
+      pollNeededRef.current = false;
+      setPollNeeded(false);
+      return;
+    }
     // Wait for the measured pane to subscribe before starting its grace period.
     // A bootstrap snapshot here would duplicate the stream's first picture.
     if (streamSupported && streamTimesRef.current.subscribedAt === null) {
@@ -265,6 +283,8 @@ export function RemoteBrowserFrame(props: {
         setStreamGeneration((value) => value + 1);
       },
       onPicture: (picture) => {
+        if (mediaActiveRef.current) return;
+        setMediaPicture(null);
         const first = streamTimesRef.current.lastPictureAt === null;
         streamTimesRef.current.lastPictureAt = Date.now();
         streamTimesRef.current.unavailableAt = null;
@@ -281,25 +301,34 @@ export function RemoteBrowserFrame(props: {
 
   // A pushed picture, once there is one, wins over a polled one.
   const view: RemoteFrameView | null =
-    streamPicture !== null
+    mediaPicture !== null
       ? {
-          width: streamPicture.width,
-          height: streamPicture.height,
+          width: mediaPicture.width,
+          height: mediaPicture.height,
           title: streamState?.title ?? frame?.title ?? "",
           url: streamState?.url ?? frame?.url ?? "",
           agentPointer: streamState?.agentPointer,
           pendingDownloadApprovals: streamState?.pendingDownloadApprovals,
         }
-      : frame !== null
+      : streamPicture !== null
         ? {
-            width: frame.screenshot.width,
-            height: frame.screenshot.height,
-            title: frame.title,
-            url: frame.url,
-            agentPointer: frame.agentPointer,
-            pendingDownloadApprovals: frame.pendingDownloadApprovals,
+            width: streamPicture.width,
+            height: streamPicture.height,
+            title: streamState?.title ?? frame?.title ?? "",
+            url: streamState?.url ?? frame?.url ?? "",
+            agentPointer: streamState?.agentPointer,
+            pendingDownloadApprovals: streamState?.pendingDownloadApprovals,
           }
-        : null;
+        : frame !== null
+          ? {
+              width: frame.screenshot.width,
+              height: frame.screenshot.height,
+              title: frame.title,
+              url: frame.url,
+              agentPointer: frame.agentPointer,
+              pendingDownloadApprovals: frame.pendingDownloadApprovals,
+            }
+          : null;
   const viewRef = useRef<RemoteFrameView | null>(view);
   viewRef.current = view;
   const frameRef = useRef<PreviewRemoteSnapshotResult | null>(null);
@@ -346,6 +375,19 @@ export function RemoteBrowserFrame(props: {
   const sendRemoteInput = useAtomCommand(previewEnvironment.remoteInput, {
     reportFailure: false,
   });
+  const getMediaTicket = useAtomCommand(previewEnvironment.mediaTicket, { reportFailure: false });
+  const resolveMediaUrl = useEffectEvent(async (watchId: string) => {
+    const result = await getMediaTicket({
+      environmentId: threadRef.environmentId,
+      input: { watchId },
+    });
+    if (result._tag === "Failure") {
+      throw new Error(commandError(result.cause, "The browser media ticket was unavailable."));
+    }
+    const connection = readPreparedConnection(threadRef.environmentId);
+    if (!connection) throw new Error("The environment is disconnected.");
+    return mediaChannelUrl(connection.socketUrl, result.value.ticket);
+  });
 
   const capture = useCallback(
     async (reportError = true): Promise<boolean> => {
@@ -375,7 +417,10 @@ export function RemoteBrowserFrame(props: {
         setFrame(next);
         // Keep the last canvas visible through capture loss until polling has
         // a valid replacement. A recovered stream claims it again on paint.
-        if (next !== null) setStreamPicture(null);
+        if (next !== null) {
+          setStreamPicture(null);
+          setMediaPicture(null);
+        }
       }
       setFrameError(null);
       return true;
@@ -440,6 +485,9 @@ export function RemoteBrowserFrame(props: {
     heldStreamFrameRef.current = null;
     streamTimesRef.current = { subscribedAt: null, lastPictureAt: null, unavailableAt: null };
     setStreamPicture(null);
+    setMediaPicture(null);
+    mediaActiveRef.current = false;
+    setMediaActive(false);
     setStreamState(null);
     keyboardQueue.clear();
     touch.gestures.abandon();
@@ -480,8 +528,74 @@ export function RemoteBrowserFrame(props: {
   const requestHeight = request?.maxHeight ?? null;
 
   useEffect(() => {
+    const canvas = mediaCanvasRef.current;
+    if (!mediaSupported || !visible || !pageVisible || canvas === null) return;
+    const viewer = createRemotePreviewMedia({
+      canvas,
+      watch: (handlers) =>
+        listenToPreviewMedia(
+          registry,
+          previewEnvironment.mediaWatch({
+            environmentId: threadRef.environmentId,
+            input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId) },
+          }),
+          handlers,
+        ),
+      resolveUrl: resolveMediaUrl,
+      viewport: () => {
+        const rect = containerRef.current?.getBoundingClientRect();
+        return {
+          width: Math.max(1, rect?.width ?? 640),
+          height: Math.max(1, rect?.height ?? 480),
+          devicePixelRatio: window.devicePixelRatio || 1,
+          zoom: mediaZoomRef.current,
+        };
+      },
+      onPicture: (picture) => {
+        mediaActiveRef.current = true;
+        setMediaActive(true);
+        setMediaPicture((held) =>
+          held?.width === picture.width && held.height === picture.height ? held : picture,
+        );
+        painter.reset();
+        reconsiderPolling();
+        setFrameError(null);
+      },
+      onState: setStreamState,
+      onFallback: () => {
+        // Retain the last video picture until the image feed has a replacement.
+        mediaActiveRef.current = false;
+        setMediaActive(false);
+        reconsiderPolling();
+      },
+    });
+    mediaViewerRef.current = viewer;
+    return () => {
+      viewer.stop();
+      mediaViewerRef.current = null;
+      mediaActiveRef.current = false;
+      setMediaActive(false);
+    };
+  }, [
+    mediaSupported,
+    pageVisible,
+    painter,
+    reconsiderPolling,
+    registry,
+    tabId,
+    threadRef.environmentId,
+    threadRef.threadId,
+    visible,
+  ]);
+
+  useEffect(() => {
+    mediaViewerRef.current?.updateViewport();
+  }, [paneSize?.width, paneSize?.height, zoomView.view.zoom]);
+
+  useEffect(() => {
     if (
       !streamSupported ||
+      mediaActive ||
       !visible ||
       !pageVisible ||
       requestWidth === null ||
@@ -512,6 +626,7 @@ export function RemoteBrowserFrame(props: {
     let resyncTimer: ReturnType<typeof setTimeout> | null = null;
     const unsubscribe = listenToRemoteFrames(registry, atom, {
       onEvents: (events) => {
+        if (mediaActiveRef.current) return;
         const batch = planRemoteFrameEvents(heldStreamFrameRef.current, events);
         heldStreamFrameRef.current = batch.held;
         if (batch.state !== null) setStreamState(batch.state);
@@ -529,6 +644,7 @@ export function RemoteBrowserFrame(props: {
         }
       },
       onFailure: () => {
+        if (mediaActiveRef.current) return;
         painter.reset();
         streamTimesRef.current.unavailableAt = Date.now();
         reconsiderPolling();
@@ -543,6 +659,7 @@ export function RemoteBrowserFrame(props: {
     };
   }, [
     painter,
+    mediaActive,
     pageVisible,
     reconsiderPolling,
     registry,
@@ -1005,6 +1122,8 @@ export function RemoteBrowserFrame(props: {
             : "Waiting for the browser page"
         }
         className="relative min-h-0 flex-1 select-none overflow-hidden bg-black outline-none"
+        data-preview-viewport
+        data-remote-preview-feed={mediaPicture ? "video" : streamPicture ? "frames" : "snapshot"}
         role="application"
         // No callout either: iOS would otherwise offer to save the picture
         // under a long press the radial menu is meant to own.
@@ -1033,13 +1152,29 @@ export function RemoteBrowserFrame(props: {
         onPointerUp={handlePointerUp}
       >
         <TouchActionRadialMenu state={touchMenu} />
+        {mediaSupported || mediaPicture !== null ? (
+          <div
+            className="absolute inset-0"
+            ref={mediaPicture !== null ? setImageElement : undefined}
+            style={{ ...zoomView.style, visibility: mediaPicture === null ? "hidden" : "visible" }}
+          >
+            <canvas
+              className="absolute"
+              ref={mediaCanvasRef}
+              style={canvasBox(paneSize, mediaPicture)}
+            />
+          </div>
+        ) : null}
         {streamSupported || streamPicture !== null ? (
           // Pushed pictures are painted here. The wrapper fills the pane like
           // the polled image does, so zoom and touch geometry are the same.
           <div
             className="absolute inset-0"
-            ref={streamPicture !== null ? setImageElement : undefined}
-            style={{ ...zoomView.style, visibility: streamPicture === null ? "hidden" : "visible" }}
+            ref={mediaPicture === null && streamPicture !== null ? setImageElement : undefined}
+            style={{
+              ...zoomView.style,
+              visibility: mediaPicture === null && streamPicture !== null ? "visible" : "hidden",
+            }}
           >
             <canvas
               className="absolute"
@@ -1048,7 +1183,7 @@ export function RemoteBrowserFrame(props: {
             />
           </div>
         ) : null}
-        {streamPicture === null && frame ? (
+        {mediaPicture === null && streamPicture === null && frame ? (
           <img
             alt=""
             className="absolute inset-0 h-full w-full object-contain"

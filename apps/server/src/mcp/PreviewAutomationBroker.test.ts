@@ -477,9 +477,7 @@ it.effect("announces a live replacement stream before delivering requests", () =
         Stream.take(2),
         Stream.runForEach((event) => {
           receivedTypes.push(event.type);
-          return event.type === "connected" ||
-            event.type === "audioDemand" ||
-            event.type === "frameDemand"
+          return event.type !== "request"
             ? Effect.void
             : broker.respond({
                 clientId: "client-1",

@@ -141,6 +141,31 @@ export function resolveTimelineManualScrollDirection(
   return "stationary";
 }
 
+/**
+ * How close to the bottom a scroll toward newer content has to stop to count
+ * as a return to the live edge. Stopping a few pixels short reads as "at the
+ * bottom" to a person, and while a turn streams the true end keeps moving, so
+ * requiring an exact match made people chase it.
+ */
+export const TIMELINE_END_REJOIN_PX = 48;
+
+/**
+ * Whether the person's own scrolling has brought them back to the live edge.
+ * Only motion toward newer content can rejoin from inside the zone: someone
+ * scrolling up a few pixels is leaving on purpose and must not be pulled back.
+ */
+export function shouldRejoinTimelineEnd(input: {
+  readonly direction: TimelineManualScrollDirection | null;
+  readonly isAtEnd: boolean | undefined;
+  readonly distanceFromEnd: number | null;
+}): boolean {
+  if (input.direction !== "newer") return false;
+  return (
+    input.isAtEnd === true ||
+    (input.distanceFromEnd !== null && input.distanceFromEnd <= TIMELINE_END_REJOIN_PX)
+  );
+}
+
 export function resolveTimelineKeyboardScrollDirection(input: {
   readonly key: string;
   readonly shiftKey: boolean;

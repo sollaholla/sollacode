@@ -327,6 +327,16 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke(IpcChannels.PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL, { tabId }),
     captureScreenshot: (tabId) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_CAPTURE_SCREENSHOT_CHANNEL, { tabId }),
+    getTabVideoSource: (tabId) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_GET_TAB_VIDEO_SOURCE_CHANNEL, { tabId }),
+    onTabVideoSourceChanged: (listener) => {
+      const changed = (_event: Electron.IpcRendererEvent, tabId: unknown) => {
+        if (typeof tabId === "string") listener(tabId);
+      };
+      ipcRenderer.on(IpcChannels.PREVIEW_TAB_VIDEO_SOURCE_CHANGED_CHANNEL, changed);
+      return () =>
+        ipcRenderer.removeListener(IpcChannels.PREVIEW_TAB_VIDEO_SOURCE_CHANGED_CHANNEL, changed);
+    },
     getTabAudioSource: (tabId) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_GET_TAB_AUDIO_SOURCE_CHANNEL, { tabId }),
     revealArtifact: (path) =>

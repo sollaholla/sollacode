@@ -5,7 +5,13 @@
     "types": ["node"],
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "allowJs": true,
-    "checkJs": false
+    "checkJs": false,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnosticSeverity": { "globalTimers": "off" }
+      }
+    ]
   },
   "include": ["*.ts", "scenes.mjs"]
 }

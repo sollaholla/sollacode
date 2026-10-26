@@ -147,6 +147,7 @@ export const make = Effect.gen(function* () {
       databaseCompaction: true,
       remoteControlMediaChannel: true,
       remotePreviewFrames: true,
+      remotePreviewMediaChannel: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
     },
   };

@@ -160,7 +160,7 @@ it.effect("returns bounded structural preview snapshot failures", () =>
         environmentId,
       });
       yield* Stream.runForEach(events, (event) =>
-        event.type === "connected" || event.type === "audioDemand" || event.type === "frameDemand"
+        event.type !== "request"
           ? Effect.void
           : broker.respond({
               clientId: "mcp-failure-client",
@@ -219,7 +219,7 @@ it.effect("returns pictureless preview snapshots without an image block", () =>
         environmentId,
       });
       yield* Stream.runForEach(events, (event) =>
-        event.type === "connected" || event.type === "audioDemand" || event.type === "frameDemand"
+        event.type !== "request"
           ? Effect.void
           : broker.respond({
               clientId: "mcp-pictureless-client",

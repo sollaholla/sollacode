@@ -5,6 +5,10 @@ import {
   WsPreviewRemoteFramePublishRpc,
   WsPreviewRemoteInputRpc,
   WsPreviewRemoteSnapshotRpc,
+  WsPreviewMediaWatchRpc,
+  WsPreviewMediaTicketRpc,
+  WsPreviewHostMediaTicketRpc,
+  WsPreviewReportStatusRpc,
 } from "@t3tools/contracts";
 import { RpcGroup } from "effect/unstable/rpc";
 
@@ -20,4 +24,8 @@ export const BenchRpcGroup = RpcGroup.make(
   WsPreviewRemoteFramesRpc,
   WsPreviewRemoteFramePublishRpc,
   WsPreviewRemoteInputRpc,
+  WsPreviewMediaWatchRpc,
+  WsPreviewMediaTicketRpc,
+  WsPreviewHostMediaTicketRpc,
+  WsPreviewReportStatusRpc,
 );

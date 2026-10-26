@@ -168,8 +168,6 @@ describe("ProviderRuntimeEvent", () => {
         usage: {
           usedTokens: 31251,
           maxTokens: 200000,
-          toolUses: 25,
-          durationMs: 43567,
         },
       },
     });

@@ -28,6 +28,18 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("allows read-only viewers while requiring operation scope for video publishers", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.previewMediaWatch)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.previewMediaTicket)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.previewHostMediaTicket)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("rejects unknown RPC method names", () => {
     for (const method of ["server.notRegistered", "toString", "constructor"]) {
       expect(() => requiredScopeForRpcMethod(method)).toThrow(

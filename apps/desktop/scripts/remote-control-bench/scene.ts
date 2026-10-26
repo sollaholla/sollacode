@@ -9,7 +9,7 @@
  *
  * Each frame carries its number in a strip of black and white blocks in the
  * top-left corner. A viewer reads the strip back from whatever it displayed
- * and joins it to the host's draw log to get glass-to-glass latency.
+ * and joins it to the host's draw log to get source-draw-to-viewer-callback latency.
  */
 
 export const SOURCE_WIDTH = 2560;
@@ -251,6 +251,9 @@ export function readFrameNumber(
   const scaleX = sourceWidth / SOURCE_WIDTH;
   const scaleY = sourceHeight / SOURCE_HEIGHT;
   ctx.imageSmoothingEnabled = true;
+  // A video readback can be transparent during a seek. Clear the previous
+  // marker so that an unavailable picture cannot inherit its frame number.
+  ctx.clearRect(0, 0, sampler.width, sampler.height);
   ctx.drawImage(
     source,
     0,

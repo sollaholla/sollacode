@@ -32,6 +32,9 @@ export async function startMediaViewer(options: {
   readonly pane: HTMLElement;
   /** Called on the frame after a picture was painted, with its frame number. */
   readonly onPainted: (frame: number | null, canvas: HTMLCanvasElement) => void;
+  readonly captureFrameMetadata?: boolean;
+  /** Diagnostic only: request extra encoded pixels without changing displayed size. */
+  readonly encodeScale?: number;
 }): Promise<MediaViewerHandle> {
   const socketUrl = `${location.origin.replace(/^http/, "ws")}/ws?as=viewer`;
   const connection = await connectBenchRpc(socketUrl);
@@ -68,13 +71,14 @@ export async function startMediaViewer(options: {
       width: Math.max(1, rect.width),
       height: Math.max(1, rect.height),
       devicePixelRatio,
-      zoom: 1,
+      zoom: options.encodeScale ?? 1,
     };
   };
 
   let subscriber: VideoStreamSubscriber | null = null;
   let fatal: string | null = null;
   let paintPending = false;
+  let nativeFrame: Record<string, unknown> | null = null;
   const startSubscriber = () => {
     if (subscriber) return;
     subscriber = createVideoStreamSubscriber({
@@ -88,7 +92,28 @@ export async function startMediaViewer(options: {
       // Read back from the canvas on the next animation frame, i.e. when the
       // picture is actually composited (WebKit also cannot sub-rect draw a
       // VideoFrame, which is what reading it directly would need).
-      onFrame: () => {
+      onFrame: (frame, config) => {
+        if (options.captureFrameMetadata) {
+          const rect = frame.visibleRect;
+          nativeFrame = {
+            format: frame.format,
+            displayWidth: frame.displayWidth,
+            displayHeight: frame.displayHeight,
+            codedWidth: frame.codedWidth,
+            codedHeight: frame.codedHeight,
+            visibleRect: rect
+              ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+              : null,
+            colorSpace: {
+              primaries: frame.colorSpace.primaries,
+              transfer: frame.colorSpace.transfer,
+              matrix: frame.colorSpace.matrix,
+              fullRange: frame.colorSpace.fullRange,
+            },
+            configWidth: config.codedWidth,
+            configHeight: config.codedHeight,
+          };
+        }
         if (paintPending) return;
         paintPending = true;
         requestAnimationFrame(() => {
@@ -114,7 +139,12 @@ export async function startMediaViewer(options: {
 
   return {
     send: (input) => scheduler.enqueue(input),
-    stats: () => ({ codecs, fatal, ...(subscriber?.stats() ?? {}) }),
+    stats: () => ({
+      codecs,
+      fatal,
+      ...(subscriber?.stats() ?? {}),
+      ...(nativeFrame ? { nativeFrame } : {}),
+    }),
     stop: async () => {
       scheduler.clear();
       subscriber?.stop();

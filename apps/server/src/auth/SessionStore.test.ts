@@ -2,6 +2,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -13,6 +16,7 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import * as SessionStore from "./SessionStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
+import { withSessionLifetime } from "./sessionLifetime.ts";
 
 const makeServerConfigLayer = (
   overrides?: Partial<Pick<ServerConfig.ServerConfig["Service"], "desktopBootstrapToken">>,
@@ -63,6 +67,80 @@ const failingSessionLookupCredentialLayer = Layer.effect(
 );
 
 it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
+  it.effect("revocation interrupts an active connection and drains its finalizers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const issued = yield* sessions.issue();
+        const changes = yield* sessions.subscribeChanges;
+        const started = yield* Deferred.make<void>();
+        const stopped = yield* Deferred.make<void>();
+        const operation = Effect.acquireUseRelease(
+          Deferred.succeed(started, undefined),
+          () => Effect.never,
+          () => Deferred.succeed(stopped, undefined),
+        );
+        const connection = yield* withSessionLifetime(issued.sessionId, changes, operation).pipe(
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(started);
+        expect(yield* sessions.revoke(issued.sessionId)).toBe(true);
+        expect(Exit.isFailure(yield* Fiber.await(connection))).toBe(true);
+        expect(yield* Deferred.isDone(stopped)).toBe(true);
+        expect((yield* Effect.flip(sessions.verify(issued.token)))._tag).toBe(
+          "SessionTokenRevokedError",
+        );
+      }),
+    ).pipe(Effect.provide(makeSessionStoreLayer())),
+  );
+
+  it.effect("retains a revocation queued between handshake subscription and connection start", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const issued = yield* sessions.issue();
+        const changes = yield* sessions.subscribeChanges;
+        yield* sessions.revoke(issued.sessionId);
+        const result = yield* Effect.exit(
+          withSessionLifetime(issued.sessionId, changes, Effect.never),
+        );
+        expect(Exit.isFailure(result)).toBe(true);
+      }),
+    ).pipe(Effect.provide(makeSessionStoreLayer())),
+  );
+
+  it.effect(
+    "revoke-all closes removed connections and leaves the retained administrator active",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const sessions = yield* SessionStore.SessionStore;
+          const owner = yield* sessions.issue();
+          const client = yield* sessions.issue();
+          const ownerChanges = yield* sessions.subscribeChanges;
+          const clientChanges = yield* sessions.subscribeChanges;
+          const ownerStopped = yield* Deferred.make<void>();
+          const clientStarted = yield* Deferred.make<void>();
+          const ownerConnection = yield* withSessionLifetime(
+            owner.sessionId,
+            ownerChanges,
+            Effect.never.pipe(Effect.ensuring(Deferred.succeed(ownerStopped, undefined))),
+          ).pipe(Effect.forkScoped);
+          const clientConnection = yield* withSessionLifetime(
+            client.sessionId,
+            clientChanges,
+            Deferred.succeed(clientStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          ).pipe(Effect.forkScoped);
+          yield* Deferred.await(clientStarted);
+          expect(yield* sessions.revokeAllExcept(owner.sessionId)).toBe(1);
+          expect(Exit.isFailure(yield* Fiber.await(clientConnection))).toBe(true);
+          expect(yield* Deferred.isDone(ownerStopped)).toBe(false);
+          expect((yield* sessions.verify(owner.token)).sessionId).toBe(owner.sessionId);
+          yield* Fiber.interrupt(ownerConnection);
+        }),
+      ).pipe(Effect.provide(makeSessionStoreLayer())),
+  );
+
   it.effect("issues and verifies signed browser session tokens", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;

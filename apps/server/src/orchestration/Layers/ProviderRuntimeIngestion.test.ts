@@ -805,6 +805,7 @@ describe("ProviderRuntimeIngestion", () => {
       return snapshot;
     };
     const previewLayer = Layer.mock(PreviewManager.PreviewManager)({
+      hasSession: () => false,
       list: ({ threadId }) =>
         Effect.succeed({
           sessions: previewSessions.filter((session) => session.threadId === threadId),
@@ -7229,8 +7230,6 @@ describe("ProviderRuntimeIngestion", () => {
           usedTokens: 31_251,
           lastUsedTokens: 31_251,
           maxTokens: 200_000,
-          toolUses: 25,
-          durationMs: 43_567,
         },
       },
       raw: {
@@ -7253,8 +7252,6 @@ describe("ProviderRuntimeIngestion", () => {
       usedTokens: 31_251,
       lastUsedTokens: 31_251,
       maxTokens: 200_000,
-      toolUses: 25,
-      durationMs: 43_567,
     });
   });
 

@@ -41,6 +41,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -94,6 +95,8 @@ export interface TerminalTabStatus {
 }
 
 interface RightPanelTabsProps {
+  /** Retain the inline panel only while its closing animation finishes. */
+  open?: boolean;
   mode: PreviewPanelMode;
   maximized?: boolean;
   layoutControls?: ReactNode;
@@ -878,6 +881,17 @@ function SortableTab(props: {
 }
 
 export function RightPanelTabs(props: RightPanelTabsProps) {
+  const open = props.open !== false;
+  const [present, setPresent] = useState(open);
+  const onExitComplete = useCallback(() => setPresent(false), []);
+  useLayoutEffect(() => {
+    if (open) setPresent(true);
+  }, [open]);
+  if (!open && !present) return null;
+  return <RightPanelTabsContent {...props} onExitComplete={onExitComplete} />;
+}
+
+function RightPanelTabsContent(props: RightPanelTabsProps & { onExitComplete: () => void }) {
   const ownsDesktopTitleBar = isElectron && props.mode === "inline";
   // Swiping the strip on a phone or tablet must only scroll it. MouseSensor
   // also leaves touch alone on desktops that have both touch and mouse input.
@@ -1000,6 +1014,9 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
   return (
     <PreviewPanelShell
       mode={props.mode}
+      {...(props.open !== undefined
+        ? { open: props.open, onExitComplete: props.onExitComplete }
+        : {})}
       {...(props.maximized !== undefined ? { maximized: props.maximized } : {})}
     >
       <div

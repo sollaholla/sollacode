@@ -98,6 +98,19 @@ export function createPreviewEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.threadId, input.tabId]),
       },
     }),
+    mediaWatch: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:preview:media-watch",
+      tag: WS_METHODS.previewMediaWatch,
+      idleTtlMs: 0,
+    }),
+    mediaTicket: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:media-ticket",
+      tag: WS_METHODS.previewMediaTicket,
+    }),
+    hostMediaTicket: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:host-media-ticket",
+      tag: WS_METHODS.previewHostMediaTicket,
+    }),
     // One element per arrival batch: a keyframe and the patches drawn over it
     // must all be applied, in order, and a stream atom keeps only its newest
     // value. The server sends the next batch only after this one arrived, so

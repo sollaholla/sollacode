@@ -94,6 +94,71 @@ describe("publisher capture lifecycle", () => {
     expect(closeSocket).toHaveBeenCalledOnce();
   });
 
+  it("reports the first healthy frame of every explicitly replaced capture", async () => {
+    const frames: ReadableStreamDefaultController<VideoFrame>[] = [];
+    vi.stubGlobal(
+      "MediaStreamTrackProcessor",
+      class {
+        readable = new ReadableStream<VideoFrame>({
+          start: (controller) => {
+            frames.push(controller);
+          },
+        });
+      },
+    );
+    vi.stubGlobal(
+      "VideoFrame",
+      class {
+        readonly timestamp: number;
+        constructor(_source: VideoFrame, options: VideoFrameInit) {
+          this.timestamp = options.timestamp!;
+        }
+        close() {}
+      },
+    );
+    vi.stubGlobal(
+      "VideoEncoder",
+      class {
+        static async isConfigSupported(config: VideoEncoderConfig) {
+          return { supported: true, config };
+        }
+        state = "configured";
+        encodeQueueSize = 0;
+        configure() {}
+        encode() {}
+        close() {
+          this.state = "closed";
+        }
+      },
+    );
+    const onCaptureFrame = vi.fn();
+    const publisher = createVideoStreamPublisher({
+      resolveUrl: async () => "wss://example.test/ws/media",
+      openSource: async () => source(),
+      codecs: ["vp8"],
+      onCaptureFrame,
+    });
+    const frame = () =>
+      ({ displayWidth: 640, displayHeight: 480, close: vi.fn() }) as unknown as VideoFrame;
+    await vi.advanceTimersByTimeAsync(0);
+    notice(true);
+    await vi.advanceTimersByTimeAsync(0);
+    frames[0]!.enqueue(frame());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onCaptureFrame).toHaveBeenCalledOnce();
+    publisher.restartSource();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onCaptureFrame).toHaveBeenCalledOnce();
+    frames[1]!.enqueue(frame());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onCaptureFrame).toHaveBeenCalledTimes(2);
+    frames[1]!.enqueue(frame());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onCaptureFrame).toHaveBeenCalledTimes(2);
+    publisher.stop();
+    for (const controller of frames) controller.close();
+  });
+
   it("waits for socket congestion to drain before re-encoding a dropped still frame", async () => {
     let bufferedBytes = 0;
     let frames!: ReadableStreamDefaultController<VideoFrame>;

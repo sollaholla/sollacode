@@ -7,6 +7,8 @@ import { EnvironmentId, ThreadId, type PreviewRemoteFrameEvent } from "@t3tools/
 import type { RemoteFrameDraw } from "@t3tools/client-runtime/preview/remote-frame-feed";
 import * as Cause from "effect/Cause";
 import { RemoteBrowserFrame } from "./RemoteBrowserFrame";
+import type { createRemotePreviewMedia } from "./remoteMedia/remotePreviewMedia";
+import { isPreviewFocused } from "~/lib/previewFocus";
 
 function deferred<A>() {
   let resolve!: (value: A) => void;
@@ -22,6 +24,12 @@ const mocks = vi.hoisted(() => ({
   remoteFrames: vi.fn(),
   unsubscribe: vi.fn(),
   streamSupported: false,
+  mediaSupported: false,
+  mediaOptions: null as Parameters<typeof createRemotePreviewMedia>[0] | null,
+  mediaCreate: vi.fn(),
+  mediaTicket: vi.fn(),
+  mediaStop: vi.fn(),
+  mediaUpdate: vi.fn(),
   listeners: null as {
     onEvents: (events: ReadonlyArray<PreviewRemoteFrameEvent>) => void;
     onFailure: () => void;
@@ -30,8 +38,29 @@ const mocks = vi.hoisted(() => ({
 vi.mock("~/state/entities", () => ({
   useServerConfigs: () =>
     new Map([
-      ["env", { environment: { capabilities: { remotePreviewFrames: mocks.streamSupported } } }],
+      [
+        "env",
+        {
+          environment: {
+            capabilities: {
+              remotePreviewFrames: mocks.streamSupported,
+              remotePreviewMediaChannel: mocks.mediaSupported,
+            },
+          },
+        },
+      ],
     ]),
+}));
+vi.mock("~/state/session", () => ({
+  readPreparedConnection: () => ({ socketUrl: "ws://preview.test/ws" }),
+}));
+vi.mock("./remoteMedia/remotePreviewMedia", () => ({
+  createRemotePreviewMedia: (options: Parameters<typeof createRemotePreviewMedia>[0]) => {
+    mocks.mediaCreate();
+    mocks.mediaOptions = options;
+    return { stop: mocks.mediaStop, updateViewport: mocks.mediaUpdate };
+  },
+  listenToPreviewMedia: vi.fn(),
 }));
 vi.mock("./remoteFrames/remoteFrameCanvas", () => ({
   listenToRemoteFrames: (
@@ -60,10 +89,18 @@ vi.mock("~/state/preview", () => ({
     remoteSnapshot: "snapshot",
     remoteInput: "input",
     remoteFrames: mocks.remoteFrames,
+    mediaTicket: "media-ticket",
   },
 }));
 vi.mock("~/state/use-atom-command", () => ({
-  useAtomCommand: (command: string) => (command === "snapshot" ? mocks.capture : mocks.input),
+  useAtomCommand: (command: string) => {
+    if (command === "media-ticket") {
+      // The real hook returns a new command closure on every render.
+      const current = mocks.mediaTicket;
+      return (...args: unknown[]) => current(...args);
+    }
+    return command === "snapshot" ? mocks.capture : mocks.input;
+  },
 }));
 vi.mock("~/hooks/useOnScreenKeyboard", () => ({ useOnScreenKeyboard: () => false }));
 vi.mock("./previewPageVisibility", () => ({ usePreviewPageVisible: () => true }));
@@ -111,6 +148,15 @@ describe("remote browser frame availability", () => {
     mocks.unsubscribe.mockReset();
     mocks.listeners = null;
     mocks.streamSupported = false;
+    mocks.mediaSupported = false;
+    mocks.mediaOptions = null;
+    mocks.mediaCreate.mockReset();
+    mocks.mediaTicket = vi.fn().mockResolvedValue({
+      _tag: "Success",
+      value: { ticket: "first-ticket", expiresInMs: 30_000 },
+    });
+    mocks.mediaStop.mockReset();
+    mocks.mediaUpdate.mockReset();
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
       new DOMRect(0, 0, 800, 600),
     );
@@ -150,6 +196,47 @@ describe("remote browser frame availability", () => {
     act(async () => {
       await vi.advanceTimersByTimeAsync(2_500);
     });
+
+  it("keeps typing on the focused remote preview surface instead of the composer", async () => {
+    mocks.mediaSupported = true;
+    mocks.input.mockResolvedValue({ _tag: "Success", value: { deliveredAt: "now" } });
+    container.dataset.previewPanelMode = "browser";
+    await render();
+    await act(async () => mocks.mediaOptions?.onPicture({ width: 1_600, height: 900 }));
+    const surface = container.querySelector('[role="application"]') as HTMLDivElement;
+    const composer = document.createElement("textarea");
+    container.append(composer);
+    // ChatView's capture listener exempts this browser-surface contract before
+    // its type-to-focus behavior can move focus into the composer.
+    const redirect = (event: KeyboardEvent) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest("webview,[data-preview-viewport]")
+      )
+        return;
+      composer.focus();
+    };
+    document.addEventListener("keydown", redirect, true);
+    try {
+      surface.focus();
+      expect(isPreviewFocused()).toBe(true);
+      await act(async () => {
+        surface.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "X", bubbles: true, cancelable: true }),
+        );
+      });
+      expect(document.activeElement).toBe(surface);
+      expect(mocks.input).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({ action: { kind: "press", key: "X" } }),
+        }),
+      );
+      expect(composer.value).toBe("");
+    } finally {
+      document.removeEventListener("keydown", redirect, true);
+      composer.remove();
+    }
+  });
 
   it("shows the tap immediately and removes only its dot when input is acknowledged, before recapture", async () => {
     const input = deferred<{ _tag: "Success"; value: { deliveredAt: string } }>();
@@ -396,5 +483,118 @@ describe("remote browser frame availability", () => {
     expect(mocks.capture).toHaveBeenCalledOnce();
     await nextFrame();
     expect(mocks.capture).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps one decoder across renders and refreshes tickets with the current command", async () => {
+    mocks.mediaSupported = true;
+    mocks.streamSupported = true;
+    await render();
+    const viewer = mocks.mediaOptions!;
+    expect(mocks.mediaCreate).toHaveBeenCalledOnce();
+    await act(async () => {
+      viewer.onPicture({ width: 1_800, height: 2_000 });
+      viewer.onState({ url: "https://example.com", title: "Video", loading: false });
+    });
+    mocks.mediaTicket = vi.fn().mockResolvedValue({
+      _tag: "Success",
+      value: { ticket: "fresh-ticket", expiresInMs: 30_000 },
+    });
+    await render();
+    expect(mocks.mediaCreate).toHaveBeenCalledOnce();
+    expect(mocks.mediaStop).not.toHaveBeenCalled();
+    await expect(viewer.resolveUrl("current-watch")).resolves.toContain("ticket=fresh-ticket");
+    expect(mocks.mediaTicket).toHaveBeenCalledWith({
+      environmentId: "env",
+      input: { watchId: "current-watch" },
+    });
+    await render(false);
+    expect(mocks.mediaStop).toHaveBeenCalledOnce();
+    await render();
+    expect(mocks.mediaCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the image until video paints, then stops JPEG bandwidth and ignores late images", async () => {
+    mocks.mediaSupported = true;
+    mocks.streamSupported = true;
+    await render();
+    await pushPicture();
+    const surface = container.querySelector('[role="application"]')!;
+    expect(surface.getAttribute("data-remote-preview-feed")).toBe("frames");
+    expect(mocks.unsubscribe).not.toHaveBeenCalled();
+    await act(async () => {
+      mocks.mediaOptions?.onPicture({ width: 1_600, height: 900 });
+      mocks.mediaOptions?.onState({ url: "https://example.com", title: "Video", loading: false });
+    });
+    expect(surface.getAttribute("data-remote-preview-feed")).toBe("video");
+    expect(mocks.unsubscribe).toHaveBeenCalledOnce();
+    await pushPicture();
+    expect(surface.getAttribute("aria-label")).toContain("Video");
+    expect(surface.getAttribute("data-remote-preview-feed")).toBe("video");
+    await nextFrame();
+    expect(mocks.capture).not.toHaveBeenCalled();
+    await render(false);
+    expect(mocks.mediaStop).toHaveBeenCalledOnce();
+  });
+
+  it("retains video through fallback until the JPEG stream supplies a replacement", async () => {
+    mocks.mediaSupported = true;
+    mocks.streamSupported = true;
+    await render();
+    await act(async () => mocks.mediaOptions?.onPicture({ width: 1_600, height: 900 }));
+    await act(async () => mocks.mediaOptions?.onFallback("Host left"));
+    const surface = container.querySelector('[role="application"]')!;
+    expect(surface.getAttribute("data-remote-preview-feed")).toBe("video");
+    expect(mocks.remoteFrames).toHaveBeenCalledTimes(2);
+    await pushPicture();
+    expect(surface.getAttribute("data-remote-preview-feed")).toBe("frames");
+  });
+
+  it("does not let an older snapshot replace newly decoded video", async () => {
+    mocks.mediaSupported = true;
+    const snapshot = deferred<ReturnType<typeof ready>>();
+    mocks.capture.mockReturnValue(snapshot.promise);
+    await render();
+    await act(async () => {
+      mocks.mediaOptions?.onPicture({ width: 1_600, height: 900 });
+      snapshot.resolve(ready("older-image"));
+    });
+    expect(
+      container.querySelector('[role="application"]')?.getAttribute("data-remote-preview-feed"),
+    ).toBe("video");
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("maps video input using the source aspect ratio and clears it on tab change", async () => {
+    mocks.mediaSupported = true;
+    mocks.input.mockResolvedValue({ _tag: "Success", value: { deliveredAt: "now" } });
+    await render();
+    await act(async () => mocks.mediaOptions?.onPicture({ width: 1_600, height: 900 }));
+    const surface = container.querySelector('[role="application"]') as HTMLDivElement;
+    surface.setPointerCapture = vi.fn();
+    surface.hasPointerCapture = () => false;
+    for (const type of ["pointerdown", "pointerup"]) {
+      await act(async () => {
+        surface.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            pointerId: 1,
+            pointerType: "mouse",
+            button: 0,
+            clientX: 200,
+            clientY: 187.5,
+          }),
+        );
+      });
+    }
+    expect(mocks.input).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          action: { kind: "click", position: { x: 0.25, y: 0.25 } },
+        }),
+      }),
+    );
+    await render(true, "tab-two");
+    expect(mocks.mediaStop).toHaveBeenCalledOnce();
+    expect(surface.getAttribute("data-remote-preview-feed")).toBe("snapshot");
   });
 });

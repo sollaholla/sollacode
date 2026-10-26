@@ -800,45 +800,6 @@ function compactBoundaryTokenUsageSnapshot(
   });
 }
 
-function normalizeClaudeTaskProgressTokenUsage(
-  value: unknown,
-  context: ClaudeSessionContext,
-): ThreadTokenUsageSnapshot | undefined {
-  const totalTokens = claudeTotalProcessedTokens(value);
-  if (totalTokens === undefined || totalTokens <= 0) {
-    return undefined;
-  }
-
-  const lastUsedTokens = context.lastKnownTokenUsage?.usedTokens;
-  const activeTokens =
-    lastUsedTokens !== undefined ? Math.max(totalTokens, lastUsedTokens) : totalTokens;
-  if (lastUsedTokens !== undefined && activeTokens === lastUsedTokens) {
-    return undefined;
-  }
-
-  const usage = value as Record<string, unknown>;
-  const displayContextWindow = context.autoCompactionBaseWindow ?? context.lastKnownContextWindow;
-  const snapshot = makeClaudeTokenUsageSnapshot({
-    activeTokens,
-    ...(displayContextWindow !== undefined ? { contextWindow: displayContextWindow } : {}),
-    totalProcessedTokens: Math.max(
-      totalTokens,
-      context.lastKnownTotalProcessedTokens ?? totalTokens,
-    ),
-  });
-  if (!snapshot) {
-    return undefined;
-  }
-
-  const toolUses = finiteNonNegativeInteger(usage.tool_uses);
-  const durationMs = finiteNonNegativeInteger(usage.duration_ms);
-  return {
-    ...snapshot,
-    ...(toolUses !== undefined ? { toolUses } : {}),
-    ...(durationMs !== undefined ? { durationMs } : {}),
-  };
-}
-
 function asCanonicalTurnId(value: TurnId): TurnId {
   return value;
 }
@@ -3124,15 +3085,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      // A task's usage is the subagent's own work, not this thread's context,
+      // so it rides on the task row and never moves the context meter.
       case "task_progress":
-        yield* emitThreadTokenUsage(
-          context,
-          normalizeClaudeTaskProgressTokenUsage(message.usage, context),
-          {
-            rawMethod: "claude/system/task_progress",
-            rawPayload: message,
-          },
-        );
         yield* offerRuntimeEvent({
           ...base,
           type: "task.progress",
@@ -3165,14 +3120,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
       case "task_notification":
         context.activeBackgroundTaskIds.delete(message.task_id);
-        yield* emitThreadTokenUsage(
-          context,
-          normalizeClaudeTaskProgressTokenUsage(message.usage, context),
-          {
-            rawMethod: "claude/system/task_notification",
-            rawPayload: message,
-          },
-        );
         yield* offerRuntimeEvent({
           ...base,
           type: "task.completed",

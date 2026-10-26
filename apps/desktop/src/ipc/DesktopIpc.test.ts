@@ -28,6 +28,29 @@ function makeIpcMain(
 }
 
 describe("DesktopIpc", () => {
+  it.effect("preserves the native sender when invoking a registered method", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let invoke: DesktopIpc.DesktopIpcHandleListener | undefined;
+        const ipc = DesktopIpc.make(
+          makeIpcMain({
+            handle: (_channel, listener) => {
+              invoke = listener;
+            },
+          }),
+        );
+        yield* ipc.handle({
+          channel: "desktop.test.sender",
+          handler: (_raw, event) => Effect.succeed(event?.sender?.id),
+        });
+        const result = yield* Effect.promise(
+          async () => await invoke?.({ sender: { id: 41 } }, { senderId: 999 }),
+        );
+        assert.equal(result, 41);
+      }),
+    ),
+  );
+
   it.effect("preserves invoke registration context and cause", () =>
     Effect.gen(function* () {
       const cause = new Error("invoke registration failed");

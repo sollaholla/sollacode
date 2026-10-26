@@ -17,6 +17,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import type * as Scope from "effect/Scope";
 import * as Option from "effect/Option";
 
 import * as ServerConfig from "../config.ts";
@@ -394,6 +395,12 @@ export class SessionStore extends Context.Service<
       SessionCredentialInternalError
     >;
     readonly streamChanges: Stream.Stream<SessionCredentialChange>;
+    /** Acquire before authenticating a socket to retain handshake-time revocations. */
+    readonly subscribeChanges: Effect.Effect<
+      PubSub.Subscription<SessionCredentialChange>,
+      never,
+      Scope.Scope
+    >;
     readonly revoke: (
       sessionId: AuthSessionId,
     ) => Effect.Effect<boolean, SessionCredentialInternalError>;
@@ -1102,6 +1109,7 @@ export const make = Effect.gen(function* () {
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,
+    subscribeChanges: PubSub.subscribe(changesPubSub),
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },

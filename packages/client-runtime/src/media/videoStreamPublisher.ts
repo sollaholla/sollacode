@@ -96,7 +96,7 @@ export interface VideoStreamPublisherOptions {
   readonly codecs?: ReadonlyArray<string>;
   /** The capture failed or ended. The publisher retries while subscribed. */
   readonly onCaptureError?: (cause: unknown) => void;
-  /** The capture produced a frame after opening: it is healthy again. */
+  /** The first frame of each newly opened capture, including explicit source replacements. */
   readonly onCaptureFrame?: () => void;
   /** The topic was closed by the server; nothing more will be published. */
   readonly onEnded?: () => void;
@@ -128,6 +128,7 @@ export function createVideoStreamPublisher(
 
   let source: VideoSource | null = null;
   let sourceGeneration = 0;
+  let reportedSourceGeneration = -1;
   let opening = false;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let captureRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -357,7 +358,10 @@ export function createVideoStreamPublisher(
 
   const acceptFrame = (frame: VideoFrame) => {
     counters.framesIn += 1;
-    if (captureRetryAttempt > 0 || counters.framesIn === 1) options.onCaptureFrame?.();
+    if (reportedSourceGeneration !== sourceGeneration) {
+      reportedSourceGeneration = sourceGeneration;
+      options.onCaptureFrame?.();
+    }
     captureRetryAttempt = 0;
     latestFrame?.close();
     latestFrame = frame;

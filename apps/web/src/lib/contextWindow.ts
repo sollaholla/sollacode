@@ -53,6 +53,15 @@ export function formatProviderDisplayName(provider: string | null | undefined): 
   }
 }
 
+/**
+ * Servers before 0.1.740 wrote a Claude subagent's own token total into the
+ * thread's context meter, pinning it at 100%. Only those rows carry the task
+ * counters, so the meter skips them and falls back to the last real reading.
+ */
+function isSubagentUsageRow(payload: Record<string, unknown> | null): boolean {
+  return payload !== null && ("toolUses" in payload || "durationMs" in payload);
+}
+
 export function deriveLatestContextWindowSnapshot(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ContextWindowSnapshot | null {
@@ -63,6 +72,9 @@ export function deriveLatestContextWindowSnapshot(
     }
 
     const payload = asRecord(activity.payload);
+    if (isSubagentUsageRow(payload)) {
+      continue;
+    }
     const usedTokens = asFiniteNumber(payload?.usedTokens);
     if (usedTokens === null || usedTokens < 0) {
       continue;
@@ -91,8 +103,6 @@ export function deriveLatestContextWindowSnapshot(
       lastCachedInputTokens: asFiniteNumber(payload?.lastCachedInputTokens),
       lastOutputTokens: asFiniteNumber(payload?.lastOutputTokens),
       lastReasoningOutputTokens: asFiniteNumber(payload?.lastReasoningOutputTokens),
-      toolUses: asFiniteNumber(payload?.toolUses),
-      durationMs: asFiniteNumber(payload?.durationMs),
       compactsAutomatically: asBoolean(payload?.compactsAutomatically) ?? false,
       updatedAt: activity.createdAt,
     };

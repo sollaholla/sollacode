@@ -1510,6 +1510,16 @@ export interface DesktopOrchestratorBubbleBridge {
   onVoiceToggleRequested: (listener: () => void) => () => void;
 }
 
+/** The selected input surface and its CSS viewport, before encoder downscaling. */
+export const DesktopPreviewVideoSourceSchema = Schema.Struct({
+  sourceId: Schema.String.check(Schema.isNonEmpty()),
+  webContentsId: Schema.Int.check(Schema.isGreaterThan(0)),
+  width: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThan(0)),
+  height: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThan(0)),
+  devicePixelRatio: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThan(0)),
+});
+export type DesktopPreviewVideoSource = typeof DesktopPreviewVideoSourceSchema.Type;
+
 export interface DesktopPreviewBridge {
   createTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -1599,6 +1609,10 @@ export interface DesktopPreviewBridge {
    * seconds; null when the tab has no live page.
    */
   getTabAudioSource?: (tabId: string) => Promise<string | null>;
+  /** Captures the same page or OAuth child used by preview input and status. */
+  getTabVideoSource?: (tabId: string) => Promise<DesktopPreviewVideoSource | null>;
+  /** Re-fetch the one-shot video descriptor after source or viewport changes. */
+  onTabVideoSourceChanged?: (listener: (tabId: string) => void) => () => void;
   revealArtifact: (path: string) => Promise<void>;
   /** Show a finished download in Finder / File Explorer. */
   revealPreviewDownload: (path: string) => Promise<void>;

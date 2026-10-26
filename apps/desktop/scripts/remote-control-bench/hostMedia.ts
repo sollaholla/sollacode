@@ -22,6 +22,8 @@ export interface MediaHostHandle {
 export async function startMediaHost(options: {
   readonly canvas: HTMLCanvasElement;
   readonly onInput: (input: RemoteControlInput) => void;
+  /** Repaint the current marker once after a capture track is attached. */
+  readonly redrawSource: () => void;
 }): Promise<MediaHostHandle> {
   const socketUrl = `${location.origin.replace(/^http/, "ws")}/ws?as=host`;
   const connection = await connectBenchRpc(socketUrl);
@@ -63,8 +65,20 @@ export async function startMediaHost(options: {
               },
               openSource: async () => {
                 const stream = options.canvas.captureStream();
-                const track = stream.getVideoTracks()[0]!;
-                return { track, close: () => track.stop() };
+                const track = stream.getVideoTracks()[0]! as CanvasCaptureMediaStreamTrack;
+                // Static scenes were painted before captureStream existed.
+                // The next frame runs after the publisher attaches its reader.
+                const initialPaint = requestAnimationFrame(() => {
+                  options.redrawSource();
+                  track.requestFrame();
+                });
+                return {
+                  track,
+                  close: () => {
+                    cancelAnimationFrame(initialPaint);
+                    track.stop();
+                  },
+                };
               },
             });
           });

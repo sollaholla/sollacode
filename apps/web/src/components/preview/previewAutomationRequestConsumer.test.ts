@@ -9,6 +9,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { Cause } from "effect";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -1058,5 +1059,57 @@ describe("previewAutomationRequestConsumer", () => {
     expect(handleFrameDemand).toHaveBeenLastCalledWith(demand);
     registry.dispose();
     expect(handleFrameDemand).toHaveBeenLastCalledWith([]);
+  });
+
+  it("releases video demand on stream replacement, failure, and disposal", async () => {
+    const demand = [{ threadId, tabId }];
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.success<PreviewAutomationStreamEvent, Error>({
+        type: "mediaDemand",
+        connectionId,
+        tabs: demand,
+      }),
+    );
+    const handleMediaDemand = vi.fn();
+    const state = consumerState(async () => undefined);
+    const registry = AtomRegistry.make();
+    registry.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        connectionAtom: state.connectionAtom,
+        environmentId,
+        requestHandlerAtom: state.requestHandlerAtom,
+        renewAutomationForeground,
+        respond: async () => undefined,
+        handleMediaDemand,
+        label: "test:preview-media-demand-cleanup",
+      }),
+    );
+    await Promise.resolve();
+    expect(handleMediaDemand).toHaveBeenLastCalledWith(demand);
+    registry.set(
+      requestsAtom,
+      AsyncResult.success({ type: "connected", connectionId: "replacement" }),
+    );
+    expect(handleMediaDemand).toHaveBeenLastCalledWith([]);
+    registry.set(
+      requestsAtom,
+      AsyncResult.success({ type: "mediaDemand", connectionId, tabs: demand }),
+    );
+    expect(handleMediaDemand).toHaveBeenLastCalledWith([]);
+    registry.set(
+      requestsAtom,
+      AsyncResult.success({ type: "mediaDemand", connectionId: "replacement", tabs: demand }),
+    );
+    expect(handleMediaDemand).toHaveBeenLastCalledWith(demand);
+    registry.set(requestsAtom, AsyncResult.failure(Cause.fail(new Error("disconnected"))));
+    expect(handleMediaDemand).toHaveBeenLastCalledWith([]);
+    registry.set(
+      requestsAtom,
+      AsyncResult.success({ type: "mediaDemand", connectionId: "replacement", tabs: demand }),
+    );
+    registry.dispose();
+    expect(handleMediaDemand).toHaveBeenLastCalledWith([]);
   });
 });

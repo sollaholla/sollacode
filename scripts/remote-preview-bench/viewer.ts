@@ -20,9 +20,11 @@ import {
   remoteSnapshotRequest,
 } from "../../packages/client-runtime/src/preview/remoteFrame.ts";
 import { connectBenchClient } from "./benchClient.ts";
+import type { VideoReceivedFrame } from "./media-renderer.ts";
 
 /** One picture-carrying (or picture-confirming) arrival at the viewer. */
 export type ReceivedEvent =
+  | VideoReceivedFrame
   | { readonly at: number; readonly kind: "full"; readonly data: string }
   | { readonly at: number; readonly kind: "same" }
   | {
@@ -45,6 +47,8 @@ export interface ViewerHandle {
   readonly bytes: () => { readonly read: number; readonly written: number };
   readonly input: (action: PreviewRemoteInputAction) => Promise<void>;
   readonly stop: () => Promise<void>;
+  readonly viewerStats?: () => unknown;
+  readonly image?: () => string | undefined;
 }
 
 export const now = () => performance.timeOrigin + performance.now();

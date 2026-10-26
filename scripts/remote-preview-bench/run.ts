@@ -9,9 +9,12 @@ import * as Effect from "effect/Effect";
 
 import { BENCH_ENVIRONMENT_ID, startRelayServer } from "./relayServer.ts";
 import { sceneSampleLabel } from "./artifacts.ts";
+import { waitWithTimeout } from "./deadline.ts";
+import type { CompressionDiagnostic } from "./compressionDiagnostic.ts";
 import { INPUT_TARGET } from "./scenes.mjs";
 import { markLatencies, summarize, type LatencySummary } from "./stats.ts";
 import { startThrottleProxy } from "./throttleProxy.ts";
+import { createVideoViewerDriver, type VideoViewerDriver } from "./videoViewer.ts";
 import {
   now,
   startPollingViewer,
@@ -39,7 +42,9 @@ import {
 const here = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const repoRoot = NodePath.resolve(here, "../..");
 
-type Mode = "old" | "old-agent" | "new" | "new-native";
+type Mode = "old" | "old-agent" | "new" | "new-native" | "new-video";
+let videoViewerDriver: VideoViewerDriver | null = null;
+const activeViewers = new Set<ViewerHandle>();
 
 const VIEWERS: ReadonlyArray<ViewerSize> = [
   // A phone in portrait: the frame box under Safari's chrome and the strip.
@@ -47,6 +52,8 @@ const VIEWERS: ReadonlyArray<ViewerSize> = [
   // A browser window on a laptop.
   { name: "desktop", width: 1200, height: 720, devicePixelRatio: 2 },
 ];
+// Polling requests one fixed image size and has no browser viewport to measure separately.
+const SHARED_NODE_VIEWER: ViewerSize = { ...VIEWERS[0]!, name: "shared-node" };
 
 const ALL_SCENES = ["idle", "ticks", "caret", "spinner", "typing", "scroll", "video"] as const;
 
@@ -59,6 +66,7 @@ interface Options {
   readonly firstFrameRuns: number;
   readonly slowLink: boolean;
   readonly buildOnly: boolean;
+  readonly images: boolean;
 }
 
 function parseOptions(): Options {
@@ -78,12 +86,15 @@ function parseOptions(): Options {
     firstFrameRuns: Number(value("first-frames") ?? (quick ? 3 : 8)),
     slowLink: !args.includes("--no-slow-link"),
     buildOnly: args.includes("--build-only"),
+    images: args.includes("--images"),
   };
   if (
     !result.modes.length ||
-    result.modes.some((mode) => !["old", "old-agent", "new", "new-native"].includes(mode))
+    result.modes.some(
+      (mode) => !["old", "old-agent", "new", "new-native", "new-video"].includes(mode),
+    )
   ) {
-    throw new Error("--modes must contain old, old-agent, new, or new-native");
+    throw new Error("--modes must contain old, old-agent, new, new-native, or new-video");
   }
   if (
     !result.scenes.length ||
@@ -109,12 +120,12 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 // ---------------------------------------------------------------------------
 // The Electron host process
 
-interface HostProcess {
+export interface HostProcess {
   readonly call: <A = unknown>(op: string, args?: unknown) => Promise<A>;
   readonly close: () => Promise<void>;
 }
 
-async function startHost(out: string): Promise<HostProcess> {
+export async function startHost(out: string): Promise<HostProcess> {
   const electron = NodePath.join(
     repoRoot,
     "apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
@@ -210,8 +221,7 @@ async function startHost(out: string): Promise<HostProcess> {
     close: async () => {
       if (closed) return;
       child.stdin.write(`${JSON.stringify({ id: 0, op: "quit" })}\n`);
-      const timeout = sleep(5_000).then(() => "timeout" as const);
-      if ((await Promise.race([exited, timeout])) === "timeout") {
+      if ((await waitWithTimeout(exited, 5_000, "timeout")) === "timeout") {
         // Only the PID this harness spawned, never a name match.
         child.kill("SIGKILL");
         await exited;
@@ -224,24 +234,59 @@ async function startHost(out: string): Promise<HostProcess> {
 // Viewers
 
 async function startViewer(mode: Mode, url: string, size: ViewerSize): Promise<ViewerHandle> {
+  let handle: ViewerHandle;
   switch (mode) {
+    case "new-video":
+      if (!videoViewerDriver) throw new Error("The video viewer driver was not initialized.");
+      handle = await videoViewerDriver.start(url, size);
+      break;
     case "old":
-      return startPollingViewer({ url, intervalMs: 2_500 });
+      handle = await startPollingViewer({ url, intervalMs: 2_500 });
+      break;
     case "old-agent":
-      return startPollingViewer({ url, intervalMs: 1_000 });
+      handle = await startPollingViewer({ url, intervalMs: 1_000 });
+      break;
     case "new":
     case "new-native":
-      return startStreamingViewer({ url, size, patches: mode !== "new-native" });
+      handle = await startStreamingViewer({ url, size, patches: mode !== "new-native" });
+      break;
   }
+  let stopped = false;
+  const owned: ViewerHandle = {
+    ...handle,
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      try {
+        await handle.stop();
+      } finally {
+        activeViewers.delete(owned);
+      }
+    },
+  };
+  activeViewers.add(owned);
+  return owned;
 }
 
 /** Reads the marker out of every picture a viewer received, via the host's decoder. */
+interface DecodedMarker {
+  readonly at: number;
+  readonly marker: number | null;
+  readonly width: number | null;
+  readonly height: number | null;
+  readonly decodedAt?: number;
+}
+
 async function decodeMarkers(
   host: HostProcess,
   out: string,
   label: string,
   events: ReadonlyArray<ReceivedEvent>,
-) {
+  images = false,
+): Promise<DecodedMarker[]> {
+  if (events.some((event) => event.kind === "video")) {
+    return events.filter((event) => event.kind === "video");
+  }
   const input = NodePath.join(out, "frames", `${label}.ndjson`);
   const output = NodePath.join(out, "frames", `${label}.markers.ndjson`);
   NodeFS.writeFileSync(input, events.map((event) => JSON.stringify(event)).join("\n"));
@@ -249,9 +294,50 @@ async function decodeMarkers(
   const markers = NodeFS.readFileSync(output, "utf8")
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as { at: number; marker: number | null });
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          at: number;
+          marker: number | null;
+          width: number | null;
+          height: number | null;
+        },
+    );
   // Raw pictures are large; keep the decoded markers, drop the pixels.
   NodeFS.rmSync(input);
+  if (images) {
+    const sourceIndex = events.findLastIndex((event) => event.kind === "full");
+    const source = events[sourceIndex];
+    if (source?.kind !== "full") throw new Error("No full frame for compression diagnostic");
+    const diagnostic = await host.call<CompressionDiagnostic>("compression", { data: source.data });
+    const imageDir = NodePath.join(out, "images");
+    NodeFS.mkdirSync(imageDir, { recursive: true });
+    const writeImage = (suffix: string, data: string) =>
+      NodeFS.writeFileSync(
+        NodePath.join(imageDir, `${label}-${suffix}`),
+        Buffer.from(data, "base64"),
+      );
+    writeImage("source.jpg", source.data);
+    writeImage("source.png", diagnostic.sourcePng);
+    const variants = diagnostic.variants.map(({ data, decodedPng, ...variant }) => {
+      writeImage(`${variant.name}.${variant.mimeType === "image/webp" ? "webp" : "jpg"}`, data);
+      writeImage(`${variant.name}.png`, decodedPng);
+      return variant;
+    });
+    NodeFS.writeFileSync(
+      NodePath.join(imageDir, `${label}.json`),
+      JSON.stringify(
+        {
+          source: { ...markers[sourceIndex], jpegBytes: Buffer.byteLength(source.data, "base64") },
+          width: diagnostic.width,
+          height: diagnostic.height,
+          variants,
+        },
+        null,
+        2,
+      ),
+    );
+  }
   return markers;
 }
 
@@ -268,8 +354,11 @@ interface SceneResult {
   readonly megabytesPerHour: number;
   readonly firstPictureBytes: number;
   readonly pictures: number;
+  readonly pictureSizes: ReadonlyArray<string>;
   readonly undecodable: number;
   readonly hostCounters: unknown;
+  readonly changeToDecoded?: LatencySummary;
+  readonly viewerStats?: unknown;
 }
 
 async function measureScene(
@@ -284,7 +373,7 @@ async function measureScene(
   await host.call("scene", { name: scene });
   const handle = await startViewer(mode, url, viewer);
   const startedAt = now();
-  if ((await Promise.race([handle.firstPictureAt, sleep(10_000).then(() => null)])) === null) {
+  if ((await waitWithTimeout(handle.firstPictureAt, 10_000, null)) === null) {
     await handle.stop();
     throw new Error("Viewer produced no first picture within 10 seconds");
   }
@@ -296,10 +385,19 @@ async function measureScene(
   await sleep(options.seconds * 1_000);
   const steadyUntil = now();
   const bytesAtEnd = handle.bytes();
+  const hostCounters = await host.call("counters");
   await handle.stop();
   const marks = await host.call<Array<[number, number]>>("marks");
   const label = sceneSampleLabel({ scene, mode, viewer: viewer.name, condition });
-  const received = await decodeMarkers(host, options.out, label, handle.events);
+  const received = await decodeMarkers(host, options.out, label, handle.events, options.images);
+  const image = handle.image?.();
+  if (options.images && image) {
+    NodeFS.mkdirSync(NodePath.join(options.out, "images"), { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(options.out, "images", `${label}-received.png`),
+      Buffer.from(image, "base64"),
+    );
+  }
   const { latencies, missed } = markLatencies({
     marks,
     received,
@@ -324,8 +422,28 @@ async function measureScene(
       ((readPerSecond + (bytesAtEnd.written - bytesAtSteady.written) / seconds) * 3_600) / 1e6,
     firstPictureBytes,
     pictures: handle.events.filter((event) => event.kind !== "same").length,
+    pictureSizes: Array.from(
+      new Set(
+        received
+          .filter((frame) => frame.width !== null && frame.height !== null)
+          .map((frame) => `${frame.width}x${frame.height}`),
+      ),
+    ),
     undecodable: received.filter((frame) => frame.marker === null).length,
-    hostCounters: await host.call("counters"),
+    hostCounters,
+    ...(mode === "new-video"
+      ? {
+          viewerStats: handle.viewerStats?.(),
+          changeToDecoded: summarize(
+            markLatencies({
+              marks,
+              received: received.map((frame) => ({ ...frame, at: frame.decodedAt ?? frame.at })),
+              from: steadyFrom,
+              until: steadyUntil - 3_000,
+            }).latencies,
+          ),
+        }
+      : {}),
   };
   NodeFS.writeFileSync(
     NodePath.join(options.out, "samples", `${label}.json`),
@@ -343,7 +461,7 @@ async function measureInput(
 ) {
   await host.call("scene", { name: "input" });
   const handle = await startViewer(mode, url, viewer);
-  if ((await Promise.race([handle.firstPictureAt, sleep(10_000).then(() => null)])) === null) {
+  if ((await waitWithTimeout(handle.firstPictureAt, 10_000, null)) === null) {
     await handle.stop();
     throw new Error("Viewer produced no first picture within 10 seconds");
   }
@@ -388,7 +506,7 @@ async function measureFirstFrame(
   for (let run = 0; run < options.firstFrameRuns; run++) {
     const openedAt = now();
     const handle = await startViewer(mode, url, viewer);
-    const firstAt = await Promise.race([handle.firstPictureAt, sleep(10_000).then(() => null)]);
+    const firstAt = await waitWithTimeout(handle.firstPictureAt, 10_000, null);
     await handle.stop();
     if (firstAt === null) throw new Error("Viewer produced no first picture within 10 seconds");
     samples.push(firstAt - openedAt);
@@ -420,8 +538,14 @@ function writeReport(options: Options, results: Record<string, unknown>) {
     "Superseded changes count when a newer marker arrives; missing changes are reported, not discarded.",
     "Bytes are read off the viewer's TCP socket (after",
     "permessage-deflate, with WebSocket framing). TLS, TCP/IP headers and retransmissions are excluded.",
-    "The source is a real Electron webview. The viewer is a Node RPC receiver with offline pixel decoding,",
-    "not a physical phone or Safari. New mode imports the production encoder, streamer, pacer and relay.",
+    "The source is a real Electron webview. Image modes use a Node RPC receiver with offline pixel decoding.",
+    "Old polling modes have one shared-node baseline per condition, used for both viewport comparisons.",
+    "They are measured once and never duplicated as an independent desktop measurement.",
+    "new-video uses the production preview media broker, tab capture, publisher and subscriber, with a",
+    "WebKit phone viewport and an Electron desktop viewer. These are host browsers, not a physical phone.",
+    "Video receipt timestamps are joined to decoded markers by the original packet timestamp; changeToDecoded",
+    "is reported separately and excludes physical display scanout. Media and RPC bytes pass through a TCP meter;",
+    "benchmark page assets use a separate unshaped port. New image mode imports the production encoder, streamer, pacer and relay.",
     "The encoder runs in a separate renderer through an IPC adapter instead of the app worker.",
     "",
     "## Change-to-received and bandwidth per scene",
@@ -468,7 +592,7 @@ function writeReport(options: Options, results: Record<string, unknown>) {
   const slow = results.slowLink as ReadonlyArray<SceneResult> | undefined;
   if (slow && slow.length > 0) {
     lines.push(
-      "## Slow link (1.5 Mbit/s, 40 ms each way, 256 KB queue), phone viewer",
+      "## Slow link (1.5 Mbit/s, 40 ms each way, 256 KB queue), phone request and shared Node baseline",
       "",
       "| scene | mode | change→received p50 ms | p95 ms | max ms | n | missed | down B/s |",
       "|---|---|---:|---:|---:|---:|---:|---:|",
@@ -488,18 +612,14 @@ function writeReport(options: Options, results: Record<string, unknown>) {
   return lines.join("\n");
 }
 
-async function main() {
-  const options = parseOptions();
-  NodeFS.mkdirSync(NodePath.join(options.out, "frames"), { recursive: true });
-  NodeFS.mkdirSync(NodePath.join(options.out, "samples"), { recursive: true });
-  console.log(`remote preview bench -> ${options.out}`);
+export async function buildRenderer(out: string) {
   const { build } = await import("vite-plus");
   await build({
     configFile: false,
     logLevel: "warn",
     root: here,
     build: {
-      outDir: NodePath.join(options.out, "renderer"),
+      outDir: NodePath.join(out, "renderer"),
       emptyOutDir: true,
       minify: false,
       lib: {
@@ -510,6 +630,14 @@ async function main() {
       },
     },
   });
+}
+
+async function main() {
+  const options = parseOptions();
+  NodeFS.mkdirSync(NodePath.join(options.out, "frames"), { recursive: true });
+  NodeFS.mkdirSync(NodePath.join(options.out, "samples"), { recursive: true });
+  console.log(`remote preview bench -> ${options.out}`);
+  await buildRenderer(options.out);
   if (options.buildOnly) {
     console.log("Preview benchmark renderer built; no processes launched.");
     return;
@@ -520,26 +648,29 @@ async function main() {
   try {
     host = await startHost(options.out);
     await host.call("connect", { url, environmentId: BENCH_ENVIRONMENT_ID });
+    if (options.modes.includes("new-video"))
+      videoViewerDriver = await createVideoViewerDriver({
+        host,
+        out: options.out,
+        images: options.images,
+      });
     const scenes: Array<SceneResult> = [];
     for (const scene of options.scenes) {
       for (const mode of options.modes) {
-        // The polling viewer asks for the same 1024-wide picture whatever its
-        // screen, so it is measured once and reported for every viewer.
-        const viewers = mode.startsWith("new") ? VIEWERS : VIEWERS.slice(0, 1);
+        const viewers = mode.startsWith("new") ? VIEWERS : [SHARED_NODE_VIEWER];
         for (const viewer of viewers) {
           const result = await measureScene(host, options, url, scene, mode, viewer);
           console.log(
             `${scene} ${mode} ${viewer.name}: p50 ${fmt(result.changeToReceived.p50)} ms p95 ${fmt(result.changeToReceived.p95)} ms, ${fmt(result.bytesReadPerSecond)} B/s down`,
           );
           scenes.push(result);
-          if (!mode.startsWith("new")) scenes.push({ ...result, viewer: VIEWERS[1]!.name });
         }
       }
     }
     const input = [];
     const firstFrame = [];
     for (const mode of options.modes) {
-      for (const viewer of mode.startsWith("new") ? VIEWERS : VIEWERS.slice(0, 1)) {
+      for (const viewer of mode.startsWith("new") ? VIEWERS : [SHARED_NODE_VIEWER]) {
         const inputResult = await measureInput(host, options, url, mode, viewer);
         console.log(`input ${mode} ${viewer.name}: p50 ${fmt(inputResult.inputToReceived.p50)} ms`);
         input.push(inputResult);
@@ -567,7 +698,7 @@ async function main() {
               slowUrl,
               scene,
               mode,
-              VIEWERS[0]!,
+              mode.startsWith("new") ? VIEWERS[0]! : SHARED_NODE_VIEWER,
               "slow",
             );
             console.log(
@@ -584,11 +715,22 @@ async function main() {
     console.log(report);
   } finally {
     try {
-      await host?.close();
+      try {
+        const cleanup = await Promise.allSettled([...activeViewers].map((viewer) => viewer.stop()));
+        for (const result of cleanup)
+          if (result.status === "rejected") console.error("Viewer cleanup failed", result.reason);
+      } finally {
+        try {
+          await videoViewerDriver?.close();
+        } finally {
+          await host?.close();
+        }
+      }
     } finally {
       await Effect.runPromise(server.close);
     }
   }
 }
 
-await main();
+if (process.argv[1] && NodePath.resolve(process.argv[1]) === NodeURL.fileURLToPath(import.meta.url))
+  await main();

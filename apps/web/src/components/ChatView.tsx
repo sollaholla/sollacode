@@ -144,6 +144,7 @@ import {
   type TimelineThreadScrollMemory,
   type TimelineScrollMode,
 } from "./chat/timelineScrollAnchoring";
+import { useTimelineInitialScroll } from "./chat/useTimelineInitialScroll";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
@@ -415,6 +416,7 @@ import { ChatHeader } from "./chat/ChatHeader";
 import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
 import { SideChatSessionIcon } from "./chat/SideChatSessionIcon";
 import { deriveWorkingTerminalActivity } from "../terminalActivity";
+import { requestTerminalGeometryActivation } from "../terminalGeometryActivation";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import {
   ExpandedImagePreviewProvider,
@@ -1213,6 +1215,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
 
   const openTerminalWithRollback = useCallback(
     async (terminalId: string, input: TerminalOpenInput) => {
+      requestTerminalGeometryActivation(threadRef, terminalId);
       const result = await openTerminal({ environmentId: threadRef.environmentId, input });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         storeRejectPendingTerminalOpen(threadRef, terminalId);
@@ -1501,6 +1504,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
 
   const activateTerminal = useCallback(
     (terminalId: string) => {
+      requestTerminalGeometryActivation(threadRef, terminalId);
       storeSetActiveTerminal(threadRef, terminalId);
       bumpFocusRequestId();
     },
@@ -3292,6 +3296,10 @@ function ChatViewContent(props: ChatViewProps) {
       }
       // A thread with no terminals shows the launch pad instead of an
       // auto-opened shell, so the first switch never spawns anything.
+      if (surface === "terminal") {
+        requestTerminalGeometryActivation(routeThreadRef);
+        setTerminalFocusRequestId((value) => value + 1);
+      }
       storeSetMainSurface(routeThreadRef, surface);
       if (surface === "terminal") {
         void persistLocalDraftThreadRef.current();
@@ -5479,6 +5487,7 @@ function ChatViewContent(props: ChatViewProps) {
         storeSetActiveTerminal(activeThreadRef, sourceTerminalId);
       }
       const terminalId = nextTerminalId([...activeKnownTerminalIds, ...panelTerminalIds]);
+      requestTerminalGeometryActivation(activeThreadRef, terminalId);
       if (direction === "vertical") {
         storeSplitTerminalVertical(activeThreadRef, terminalId);
       } else {
@@ -5524,6 +5533,7 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     const terminalId = nextTerminalId([...activeKnownTerminalIds, ...panelTerminalIds]);
+    requestTerminalGeometryActivation(activeThreadRef, terminalId);
     if (terminalUiState.terminalIds.length === 0) {
       storeNewTerminal(activeThreadRef, terminalId);
     } else {
@@ -5659,6 +5669,11 @@ function ChatViewContent(props: ChatViewProps) {
             env: runtimeEnv,
           };
 
+      requestTerminalGeometryActivation(
+        activeThreadRef,
+        targetTerminalId,
+        agentSurfaces ? "right-panel" : "drawer",
+      );
       if (agentSurfaces) {
         useRightPanelStore.getState().openTerminal(activeThreadRef, targetTerminalId);
       } else if (shouldCreateNewTerminal) {
@@ -6050,6 +6065,7 @@ function ChatViewContent(props: ChatViewProps) {
     // Building `terminal:${terminalId}` here matched nothing, which left a dead
     // tab behind whenever opening the terminal failed.
     const surfaceId = THREAD_TERMINAL_SURFACE_ID;
+    requestTerminalGeometryActivation(activeThreadRef, terminalId, "right-panel");
     useTerminalUiStateStore.getState().ensureTerminal(activeThreadRef, terminalId);
     useRightPanelStore.getState().openTerminal(activeThreadRef, terminalId);
     void persistLocalDraftThread();
@@ -6083,6 +6099,7 @@ function ChatViewContent(props: ChatViewProps) {
   const activatePanelTerminal = useCallback(
     (terminalId: string) => {
       if (!activeThreadRef || activeRightPanelSurface?.kind !== "terminal") return;
+      requestTerminalGeometryActivation(activeThreadRef, terminalId, "right-panel");
       useRightPanelStore
         .getState()
         .activateTerminal(activeThreadRef, activeRightPanelSurface.id, terminalId);
@@ -6118,6 +6135,7 @@ function ChatViewContent(props: ChatViewProps) {
         setActivePreviewTab(activeThreadRef, surface.resourceId);
       }
       if (surface.kind === "terminal") {
+        requestTerminalGeometryActivation(activeThreadRef, surface.activeTerminalId, "right-panel");
         setTerminalFocusRequestId((value) => value + 1);
       }
       if (surface.kind === "diff" && !diffOpen) {
@@ -6147,6 +6165,12 @@ function ChatViewContent(props: ChatViewProps) {
   const openWorkingTerminal = useCallback(() => {
     if (!routeThreadRef) return;
     const terminalId = activeTerminalActivity?.terminalIds[0];
+    requestTerminalGeometryActivation(
+      routeThreadRef,
+      terminalId,
+      agentSurfaces ? "right-panel" : "drawer",
+    );
+    setTerminalFocusRequestId((value) => value + 1);
     if (agentSurfaces) {
       if (terminalId) {
         const panel = useRightPanelStore.getState();
@@ -6159,7 +6183,6 @@ function ChatViewContent(props: ChatViewProps) {
         } else {
           panel.openTerminal(routeThreadRef, terminalId);
         }
-        setTerminalFocusRequestId((value) => value + 1);
       }
       return;
     }
@@ -6553,7 +6576,10 @@ function ChatViewContent(props: ChatViewProps) {
   const showScrollDebouncer = useRef(
     new Debouncer(() => setShowScrollToBottom(true), { wait: 150 }),
   );
-  const restoredTimelineScroll = timelineThreadScrollMemory.get(routeThreadKey) ?? null;
+  const restoredTimelineScroll = useTimelineInitialScroll(
+    timelineThreadScrollMemory,
+    routeThreadKey,
+  );
   const [timelineLiveFollowByThreadKey, setTimelineLiveFollowByThreadKey] = useState<
     Record<string, boolean>
   >({});
@@ -9918,7 +9944,7 @@ function ChatViewContent(props: ChatViewProps) {
           <header
             data-chat-header
             className={cn(
-              "bg-background transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
+              "bg-background transition-[padding-left] duration-200 ease-out motion-reduce:transition-none",
               isElectron
                 ? cn(
                     "workspace-topbar drag-region relative px-3 sm:px-5",
@@ -10716,9 +10742,11 @@ function ChatViewContent(props: ChatViewProps) {
         {/* end horizontal flex container */}
       </div>
 
-      {!shouldUsePlanSidebarSheet && visibleRightPanelOpen && activeThreadRef ? (
+      {!shouldUsePlanSidebarSheet && activeThreadRef ? (
         <RightPanelTabs
+          key={routeThreadKey}
           mode="inline"
+          open={visibleRightPanelOpen}
           maximized={rightPanelMaximized}
           layoutControls={panelLayoutControls}
           surfaces={rightPanelState.surfaces}
@@ -10754,8 +10782,12 @@ function ChatViewContent(props: ChatViewProps) {
           {rightPanelContent}
         </RightPanelTabs>
       ) : null}
-      {shouldUsePlanSidebarSheet && visibleRightPanelOpen && activeThreadRef ? (
-        <RightPanelSheet open onClose={planSidebarOpen ? closePlanSidebar : closePreviewPanel}>
+      {shouldUsePlanSidebarSheet && activeThreadRef ? (
+        <RightPanelSheet
+          key={routeThreadKey}
+          open={visibleRightPanelOpen}
+          onClose={planSidebarOpen ? closePlanSidebar : closePreviewPanel}
+        >
           <RightPanelTabs
             mode="sheet"
             layoutControls={panelToggleControls}

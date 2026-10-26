@@ -28,6 +28,8 @@ export interface VideoStreamSubscriberOptions {
   readonly onFrame?: (frame: VideoFrame, config: MediaVideoConfig) => void;
   readonly onBroadcast?: (key: string, body: unknown) => void;
   readonly onPublisher?: (online: boolean) => void;
+  /** Optional recoverable fallback for a quiet source; keeps its socket and decoder alive. */
+  readonly onFrameTimeout?: (reason: string) => void;
   /** This path cannot work here; switch to the legacy picture. */
   readonly onFatal: (reason: string) => void;
   /** The server ended the topic (the session is over). */
@@ -37,6 +39,8 @@ export interface VideoStreamSubscriberOptions {
 export interface VideoStreamSubscriber {
   /** Re-reads `viewport()` and tells the publisher if it changed. */
   readonly updateViewport: () => void;
+  /** An explicitly unavailable capture keeps the socket alive for source recovery. */
+  readonly setFrameExpected: (expected: boolean) => void;
   readonly stop: () => void;
   readonly stats: () => VideoCanvasRendererStats & {
     readonly packets: number;
@@ -66,6 +70,7 @@ export function createVideoStreamSubscriber(
   let stopped = false;
   let socket: MediaSubscriberSocket | null = null;
   let publisherOnline = true;
+  let frameExpected = true;
   let failedConnects = 0;
   let reconnects = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -73,6 +78,10 @@ export function createVideoStreamSubscriber(
   let viewTimer: ReturnType<typeof setTimeout> | null = null;
   let sentView: MediaViewport | null = null;
   const counters = { packets: 0, bytes: 0 };
+  const clearFrameDeadline = () => {
+    if (frameDeadlineTimer !== null) clearTimeout(frameDeadlineTimer);
+    frameDeadlineTimer = null;
+  };
 
   const fatal = (reason: string) => {
     if (stopped) return;
@@ -81,18 +90,20 @@ export function createVideoStreamSubscriber(
   };
 
   const awaitFrame = (reason: string) => {
-    if (stopped || frameDeadlineTimer !== null) return;
-    frameDeadlineTimer = setTimeout(() => fatal(reason), FRAME_RECOVERY_TIMEOUT_MS);
+    if (stopped || (!frameExpected && publisherOnline) || frameDeadlineTimer !== null) return;
+    frameDeadlineTimer = setTimeout(() => {
+      frameDeadlineTimer = null;
+      if (stopped) return;
+      if (options.onFrameTimeout) options.onFrameTimeout(reason);
+      else fatal(reason);
+    }, FRAME_RECOVERY_TIMEOUT_MS);
   };
 
   const renderer: VideoCanvasRenderer = createVideoCanvasRenderer({
     canvas: options.canvas,
     onFrame: (frame, config) => {
       failedConnects = 0;
-      if (publisherOnline) {
-        if (frameDeadlineTimer !== null) clearTimeout(frameDeadlineTimer);
-        frameDeadlineTimer = null;
-      }
+      if (publisherOnline && frameExpected) clearFrameDeadline();
       options.onFrame?.(frame, config);
     },
     onKeyframeNeeded: () => socket?.send({ type: "keyframe" }),
@@ -130,6 +141,7 @@ export function createVideoStreamSubscriber(
               publisherOnline = notice.online;
               if (!notice.online)
                 awaitFrame("The host disconnected and did not resume video within 5 seconds.");
+              else if (!frameExpected) clearFrameDeadline();
               options.onPublisher?.(notice.online);
               return;
             case "broadcast":
@@ -184,7 +196,7 @@ export function createVideoStreamSubscriber(
     stopped = true;
     if (reconnectTimer !== null) clearTimeout(reconnectTimer);
     if (viewTimer !== null) clearTimeout(viewTimer);
-    if (frameDeadlineTimer !== null) clearTimeout(frameDeadlineTimer);
+    clearFrameDeadline();
     socket?.close();
     socket = null;
     renderer.dispose();
@@ -193,6 +205,13 @@ export function createVideoStreamSubscriber(
   void connect();
 
   return {
+    setFrameExpected: (expected) => {
+      if (stopped || frameExpected === expected) return;
+      frameExpected = expected;
+      if (expected)
+        awaitFrame("The host resumed capture but did not deliver video within 5 seconds.");
+      else if (publisherOnline) clearFrameDeadline();
+    },
     updateViewport: () => {
       if (stopped || viewTimer !== null) return;
       viewTimer = setTimeout(() => {

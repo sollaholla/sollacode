@@ -265,6 +265,65 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect(
+    "bounds delivery receipts by orchestration order rather than provider activity cursors",
+    () =>
+      Effect.gen(function* () {
+        const query = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+        const getDelivered = query.getThreadDeliveredMessageIds;
+        if (!getDelivered) return yield* Effect.die("missing delivery query");
+        const threadId = ThreadId.make("delivery-sequence-window");
+        const sequences: number[] = [];
+        for (const [index, activity] of [
+          { kind: "message.delivered", payload: { messageId: "before-burst" }, sequence: 9000 },
+          { kind: "message.delivered", payload: { messageId: "burst-delivery" }, sequence: 8000 },
+          {
+            kind: "provider.queue.promoted",
+            payload: { messageIds: ["promoted"] },
+            sequence: 7000,
+          },
+          { kind: "message.delivered", payload: { messageId: "after-press" }, sequence: 6000 },
+        ].entries()) {
+          const rows = yield* sql<{ sequence: number }>`
+          INSERT INTO orchestration_events (
+            event_id, aggregate_kind, stream_id, stream_version, event_type,
+            occurred_at, command_id, causation_event_id, correlation_id,
+            actor_kind, payload_json, metadata_json
+          ) VALUES (
+            ${`delivery-sequence-${index}`}, 'thread', ${threadId}, ${index + 1},
+            'thread.activity-appended', '2026-09-13T14:54:03.129Z', NULL, NULL, NULL,
+            'provider', ${encodeUnknownJson({ threadId, activity })}, '{}'
+          ) RETURNING sequence
+        `;
+          sequences.push(rows[0]!.sequence);
+        }
+        const delivered = yield* getDelivered(threadId, "1970-01-01T00:00:00.000Z", {
+          after: sequences[0]!,
+          before: sequences[3]!,
+        });
+        assert.deepEqual([...delivered].sort(), ["burst-delivery", "promoted"]);
+        assert.deepEqual(
+          [
+            ...(yield* getDelivered(threadId, "1970-01-01T00:00:00.000Z", {
+              after: sequences[0]!,
+              before: sequences[1]!,
+            })),
+          ],
+          [],
+        );
+        assert.deepEqual(
+          [
+            ...(yield* getDelivered(ThreadId.make("another-thread"), "1970-01-01T00:00:00.000Z", {
+              after: sequences[0]!,
+              before: sequences[3]!,
+            })),
+          ],
+          [],
+        );
+      }),
+  );
+
   it.effect("bounds activity hydration for transport thread snapshots", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

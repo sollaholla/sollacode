@@ -62,6 +62,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server relays pushed browser-tab frames (preview.remoteFrames). Older
       servers only answer preview.remoteSnapshot, so clients keep polling. */
   remotePreviewFrames: Schema.optionalKey(Schema.Boolean),
+  /** Server supports scoped preview video watches and binary media tickets.
+      Clients retain JPEG streaming or snapshots when this flag is absent. */
+  remotePreviewMediaChannel: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */

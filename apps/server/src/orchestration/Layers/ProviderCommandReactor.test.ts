@@ -4218,6 +4218,214 @@ describe("ProviderCommandReactor", () => {
     }
   });
 
+  it("starts a new force-send burst after delivery while the first owner and a sibling stay active", async () => {
+    const threadId = ThreadId.make("thread-1");
+    const first = MessageId.make("held-user-message:delivered-force-owner");
+    const sibling = MessageId.make("held-user-message:pending-force-sibling");
+    const later = MessageId.make("held-user-message:later-force");
+    const now = "2026-09-06T17:00:00.000Z";
+    const harness = await createHarness({ startReactor: false });
+    vi.spyOn(harness.threadWorkScheduler, "start").mockReturnValue(Effect.void);
+    harness.runtimeSessions.push({
+      threadId,
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      status: "running",
+      activeTurnId: TurnId.make("old-force-turn"),
+      runtimeMode: "approval-required",
+      createdAt: now,
+      updatedAt: now,
+    });
+    for (const messageId of [first, sibling, later]) {
+      await harness.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`queue-${messageId}`),
+        threadId,
+        message: { messageId, role: "user", text: "Queued correction", attachments: [] },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: now,
+      });
+    }
+    await harness.startReactor();
+    await harness.drain();
+    for (const messageId of [first, sibling]) {
+      await harness.dispatch({
+        type: "thread.queued-message.send-now",
+        commandId: CommandId.make(`force-${messageId}`),
+        threadId,
+        messageId,
+        createdAt: "2026-09-06T17:00:01.000Z",
+      });
+      await harness.drain();
+    }
+    expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
+    const firstRow = (await harness.obligationByKey({
+      threadId,
+      sourceTurnId: activeTurnWorkSourceId(first),
+      kind: "active-turn-recovery",
+    }))!;
+    await harness.transitionObligation({
+      obligationId: firstRow.obligationId,
+      expectedState: firstRow.state,
+      expectedAttempt: firstRow.attempt,
+      state: "executing",
+      nextAttemptAt: null,
+      claimedAt: now,
+      leaseExpiresAt: "2026-09-06T17:10:00.000Z",
+      blockedReason: null,
+      updatedAt: now,
+    });
+    const deliveredTurnId = TurnId.make("delivered-force-turn-still-running");
+    harness.runtimeSessions[0] = {
+      ...harness.runtimeSessions[0]!,
+      activeTurnId: deliveredTurnId,
+    };
+    await harness.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make("force-delivery-receipt"),
+      threadId,
+      activity: {
+        id: EventId.make("force-delivery-receipt"),
+        kind: "message.delivered",
+        tone: "info",
+        summary: "Delivered",
+        payload: { messageId: first },
+        turnId: deliveredTurnId,
+        createdAt: "2026-09-06T17:00:02.000Z",
+      },
+      createdAt: "2026-09-06T17:00:02.000Z",
+    });
+    await harness.drain();
+    expect(
+      (
+        await harness.obligationByKey({
+          threadId,
+          sourceTurnId: activeTurnWorkSourceId(sibling),
+          kind: "active-turn-recovery",
+        })
+      )?.state,
+    ).toBe("pending");
+    await harness.dispatch({
+      type: "thread.queued-message.send-now",
+      commandId: CommandId.make("force-later-after-acceptance"),
+      threadId,
+      messageId: later,
+      createdAt: "2026-09-06T17:03:00.000Z",
+    });
+    await harness.drain();
+    expect(harness.interruptTurn).toHaveBeenCalledTimes(2);
+    expect(harness.interruptTurn.mock.calls[1]?.[0]).toMatchObject({ turnId: deliveredTurnId });
+  });
+
+  effectIt.live.each(["pending", "completed"] as const)(
+    "keeps pre-delivery force-send requests together when the first owner is %s during handling",
+    (ownerState) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread-1");
+        const first = MessageId.make("held-user-message:slow-control-first");
+        const second = MessageId.make("held-user-message:slow-control-second");
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let interruptCount = 0;
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            startReactor: false,
+            interruptTurnEffect: () =>
+              Effect.gen(function* () {
+                interruptCount += 1;
+                if (interruptCount !== 1) return;
+                yield* Deferred.succeed(entered, undefined);
+                yield* Deferred.await(release);
+              }),
+          }),
+        );
+        vi.spyOn(harness.threadWorkScheduler, "start").mockReturnValue(Effect.void);
+        const now = "2026-09-06T17:00:00.000Z";
+        harness.runtimeSessions.push({
+          threadId,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          status: "running",
+          activeTurnId: TurnId.make("slow-control-old-turn"),
+          runtimeMode: "approval-required",
+          createdAt: now,
+          updatedAt: now,
+        });
+        for (const messageId of [first, second]) {
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`queue-${messageId}`),
+            threadId,
+            message: { messageId, role: "user", text: "Queued correction", attachments: [] },
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            createdAt: now,
+          });
+        }
+        yield* Effect.promise(() => harness.startReactor());
+        yield* harness.drainEffect;
+        yield* harness.engine.dispatch({
+          type: "thread.queued-message.send-now",
+          commandId: CommandId.make("slow-control-force-first"),
+          threadId,
+          messageId: first,
+          createdAt: "2026-09-06T17:00:01.000Z",
+        });
+        yield* Deferred.await(entered);
+        yield* harness.engine.dispatch({
+          type: "thread.queued-message.send-now",
+          commandId: CommandId.make("slow-control-force-second"),
+          threadId,
+          messageId: second,
+          createdAt: "2026-09-06T17:00:01.100Z",
+        });
+        if (ownerState === "completed") {
+          const row = Option.getOrThrow(
+            yield* harness.threadWorkObligations.getByKey({
+              threadId,
+              sourceTurnId: activeTurnWorkSourceId(first),
+              kind: "active-turn-recovery",
+            }),
+          );
+          yield* harness.threadWorkObligations.transition({
+            obligationId: row.obligationId,
+            expectedState: row.state,
+            expectedAttempt: row.attempt,
+            state: "completed",
+            nextAttemptAt: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            blockedReason: null,
+            updatedAt: now,
+          });
+        }
+        const deliveredTurnId = TurnId.make("slow-control-new-turn");
+        harness.runtimeSessions[0] = {
+          ...harness.runtimeSessions[0]!,
+          activeTurnId: deliveredTurnId,
+        };
+        yield* harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("slow-control-delivery"),
+          threadId,
+          activity: {
+            id: EventId.make("slow-control-delivery"),
+            kind: "message.delivered",
+            tone: "info",
+            summary: "Delivered",
+            payload: { messageId: first },
+            turnId: deliveredTurnId,
+            createdAt: "2026-09-06T17:00:02.000Z",
+          },
+          createdAt: "2026-09-06T17:00:02.000Z",
+        });
+        yield* Deferred.succeed(release, undefined);
+        yield* harness.drainEffect;
+        expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
+      }),
+  );
+
   it("cancels a queued message the command read model has forgotten", async () => {
     const threadId = ThreadId.make("thread-1");
     const messageId = MessageId.make("held-user-message:forgotten");
@@ -13856,16 +14064,14 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.user-input.respond",
-        commandId: CommandId.make("cmd-user-input-respond-double"),
-        threadId: ThreadId.make("thread-1"),
-        requestId: asApprovalRequestId("user-input-request-2"),
-        answers: { sandbox_mode: "workspace-write" },
-        createdAt: now,
-      }),
-    );
+    await harness.dispatch({
+      type: "thread.user-input.respond",
+      commandId: CommandId.make("cmd-user-input-respond-double"),
+      threadId: ThreadId.make("thread-1"),
+      requestId: asApprovalRequestId("user-input-request-2"),
+      answers: { sandbox_mode: "workspace-write" },
+      createdAt: now,
+    });
 
     await harness.drain();
 

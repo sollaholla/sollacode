@@ -1399,20 +1399,40 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
    * into every later turn, so the same text arrived two, three, N times.
    *
    * Indexed by (thread_id, kind, created_at, activity_id) - migration 036.
+   * Control actions instead use the indexed event-log range: activity sequence
+   * is a provider-session cursor and cannot be compared with command order.
    */
   const getDeliveredMessageRows = SqlSchema.findAll({
-    Request: ThreadDeliveredMessagesInput,
+    Request: Schema.Struct({
+      ...ThreadDeliveredMessagesInput.fields,
+      sequenceWindow: Schema.optionalKey(
+        Schema.Struct({
+          after: NonNegativeInt,
+          before: NonNegativeInt,
+        }),
+      ),
+    }),
     Result: ProjectionDeliveredMessageRowSchema,
-    execute: ({ threadId, since }) =>
-      sql`
-        SELECT
-          kind,
-          payload_json AS "payload"
-        FROM projection_thread_activities
-        WHERE thread_id = ${threadId}
-          AND kind IN ('message.delivered', 'provider.queue.promoted')
-          AND created_at >= ${since}
-      `,
+    execute: ({ threadId, since, sequenceWindow }) =>
+      sequenceWindow === undefined
+        ? sql`
+            SELECT kind, payload_json AS "payload"
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+              AND kind IN ('message.delivered', 'provider.queue.promoted')
+              AND created_at >= ${since}
+          `
+        : sql`
+            SELECT json_extract(payload_json, '$.activity.kind') AS kind,
+              json_extract(payload_json, '$.activity.payload') AS "payload"
+            FROM orchestration_events
+            WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+              AND sequence > ${sequenceWindow.after}
+              AND sequence < ${sequenceWindow.before}
+              AND event_type = 'thread.activity-appended'
+              AND json_extract(payload_json, '$.activity.kind')
+                IN ('message.delivered', 'provider.queue.promoted')
+          `,
   });
 
   /**
@@ -3357,8 +3377,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
   const getThreadDeliveredMessageIds: NonNullable<
     ProjectionSnapshotQueryShape["getThreadDeliveredMessageIds"]
-  > = (threadId, since) =>
-    getDeliveredMessageRows({ threadId, since }).pipe(
+  > = (threadId, since, sequenceWindow) =>
+    getDeliveredMessageRows({
+      threadId,
+      since,
+      ...(sequenceWindow ? { sequenceWindow } : {}),
+    }).pipe(
       Effect.map((rows) => {
         const delivered = new Set<string>();
         for (const row of rows) {

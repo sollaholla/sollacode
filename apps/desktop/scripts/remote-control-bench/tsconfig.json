@@ -1,0 +1,17 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "types": ["node"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "checkJs": false,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnosticSeverity": { "globalTimers": "off", "globalConsole": "off", "globalDate": "off" }
+      }
+    ]
+  },
+  "include": ["*.ts"]
+}

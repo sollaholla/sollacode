@@ -105,6 +105,11 @@ the host's grid dimensions. Older diagnostic output can be truncated without
 cutting escape sequences out of the screen replay. This requires an updated
 host as well as an updated viewer, including when a Mac views Windows terminals.
 
+On web and desktop, deliberately opening a terminal, selecting its tab, or tapping
+inside it gives that client control of the terminal's size. This also works on
+the first open, before the terminal renderer has loaded. Passive restoration on
+another client keeps mirroring the existing grid and does not take size control.
+
 Live output appends without resetting the viewport. When a hidden pane's
 cached replay has exceeded its limit, it obtains a fresh screen from the host
 before remounting. Attaching or revealing a pane does not nudge the shared PTY

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { measureStaleness, measureUpdates, stats } from "./stats.ts";
 
 describe("streaming benchmark statistics", () => {

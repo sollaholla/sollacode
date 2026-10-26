@@ -58,6 +58,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.remoteControlHostConnect
   | typeof WS_METHODS.remoteControlWatch
   | typeof WS_METHODS.previewTabAudioWatch
+  | typeof WS_METHODS.previewMediaWatch
   | typeof WS_METHODS.previewRemoteFrames
   | typeof WS_METHODS.subscribeVcsStatus
   | typeof WS_METHODS.terminalAttach

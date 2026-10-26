@@ -174,6 +174,10 @@ import {
   PreviewNavigateInput,
   PreviewOpenInput,
   PreviewRefreshInput,
+  PreviewMediaWatchInput,
+  PreviewMediaWatchEvent,
+  PreviewMediaTicketInput,
+  PreviewMediaAccessDeniedError,
   PreviewRemoteFrameEvent,
   PreviewRemoteFramePublishInput,
   PreviewRemoteFrameWatchInput,
@@ -192,6 +196,7 @@ import {
   PreviewTabAudioWatchInput,
 } from "./preview.ts";
 import {
+  PreviewHostMediaTicketInput,
   PreviewAutomationError,
   PreviewAutomationHost,
   PreviewAutomationHostFocus,
@@ -344,6 +349,9 @@ export const WS_METHODS = {
   previewList: "preview.list",
   previewRemoteSnapshot: "preview.remoteSnapshot",
   previewRemoteInput: "preview.remoteInput",
+  previewMediaWatch: "preview.mediaWatch",
+  previewMediaTicket: "preview.mediaTicket",
+  previewHostMediaTicket: "preview.hostMediaTicket",
   previewRemoteFrames: "preview.remoteFrames",
   previewRemoteFramePublish: "preview.remoteFramePublish",
   previewTabAudioWatch: "preview.tabAudioWatch",
@@ -1034,6 +1042,23 @@ export const WsPreviewRemoteInputRpc = Rpc.make(WS_METHODS.previewRemoteInput, {
   error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
 });
 
+export const WsPreviewMediaWatchRpc = Rpc.make(WS_METHODS.previewMediaWatch, {
+  payload: PreviewMediaWatchInput,
+  success: PreviewMediaWatchEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+export const WsPreviewMediaTicketRpc = Rpc.make(WS_METHODS.previewMediaTicket, {
+  payload: PreviewMediaTicketInput,
+  success: MediaChannelTicket,
+  error: Schema.Union([PreviewMediaAccessDeniedError, EnvironmentAuthorizationError]),
+});
+export const WsPreviewHostMediaTicketRpc = Rpc.make(WS_METHODS.previewHostMediaTicket, {
+  payload: PreviewHostMediaTicketInput,
+  success: MediaChannelTicket,
+  error: Schema.Union([PreviewMediaAccessDeniedError, EnvironmentAuthorizationError]),
+});
+
 /** A remote viewer watching a tab; pictures arrive as the page changes. */
 export const WsPreviewRemoteFramesRpc = Rpc.make(WS_METHODS.previewRemoteFrames, {
   payload: PreviewRemoteFrameWatchInput,
@@ -1665,6 +1690,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewTabAudioWatchRpc,
   WsPreviewTabAudioPublishRpc,
   WsPreviewTabAudioReportRpc,
+  WsPreviewMediaWatchRpc,
+  WsPreviewMediaTicketRpc,
+  WsPreviewHostMediaTicketRpc,
   WsPreviewRemoteFramesRpc,
   WsPreviewRemoteFramePublishRpc,
   WsPreviewReportStatusRpc,

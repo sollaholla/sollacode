@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  shouldRejoinTimelineEnd,
   getAnchoredTurnMetrics,
   getRowBottom,
   rememberTimelineThreadScroll,
@@ -451,5 +452,24 @@ describe("momentum settle window", () => {
     // comfortably longer than that, and short enough to release promptly.
     expect(TIMELINE_MOMENTUM_SETTLE_MS).toBeGreaterThan(16);
     expect(TIMELINE_MOMENTUM_SETTLE_MS).toBeLessThanOrEqual(300);
+  });
+});
+
+describe("return to the live edge", () => {
+  it("accepts the last few pixels only when scrolling toward newer content", () => {
+    for (const distanceFromEnd of [0, 3, 48]) {
+      expect(shouldRejoinTimelineEnd({ direction: "newer", isAtEnd: false, distanceFromEnd })).toBe(
+        true,
+      );
+      for (const direction of ["older", "stationary", null] as const) {
+        expect(shouldRejoinTimelineEnd({ direction, isAtEnd: false, distanceFromEnd })).toBe(false);
+      }
+    }
+    expect(
+      shouldRejoinTimelineEnd({ direction: "newer", isAtEnd: false, distanceFromEnd: 49 }),
+    ).toBe(false);
+    expect(
+      shouldRejoinTimelineEnd({ direction: "newer", isAtEnd: undefined, distanceFromEnd: null }),
+    ).toBe(false);
   });
 });

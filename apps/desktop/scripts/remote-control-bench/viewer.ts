@@ -195,22 +195,41 @@ async function startLegacy(): Promise<{
 let sendInput: ((input: RemoteControlInput) => void) | null = null;
 let typingTimer: number | null = null;
 
-declare global {
-  interface Window {
-    bench: {
-      start(config: { pipeline: BenchPipeline; typeEveryMs?: number }): Promise<void>;
-      stop(): Promise<void>;
-      shownLog(): Array<[number, number]>;
-      sentLog(): Array<[number, number]>;
-      counters(): Record<string, unknown>;
-      score(
-        scene: BenchScene,
-      ): { frame: number; psnr: number; width: number; height: number } | null;
-      images(scene: BenchScene): Promise<{ received: string; truth: string } | null>;
-      now(): number;
-      environment(): Record<string, unknown>;
-    };
-  }
+export interface QualityCapture {
+  readonly score: {
+    readonly frame: number;
+    readonly psnr: number;
+    readonly width: number;
+    readonly height: number;
+    readonly decodedWidth: number;
+    readonly decodedHeight: number;
+    readonly skipTopRows: number;
+  };
+  readonly images: {
+    readonly received: string;
+    readonly truth: string;
+    readonly nativeDecoded?: string;
+  } | null;
+}
+
+interface ViewerBenchApi {
+  start(config: {
+    pipeline: BenchPipeline;
+    typeEveryMs?: number;
+    encodeScale?: number;
+    nativeQuality?: boolean;
+  }): Promise<void>;
+  stop(): Promise<void>;
+  shownLog(): Array<[number, number]>;
+  sentLog(): Array<[number, number]>;
+  counters(): Record<string, unknown>;
+  quality(
+    scene: BenchScene,
+    includeImages: boolean,
+    includeNative?: boolean,
+  ): Promise<QualityCapture | null>;
+  now(): number;
+  environment(): Record<string, unknown>;
 }
 
 /** The picture's on-screen rectangle in device pixels (object-fit: contain). */
@@ -223,9 +242,9 @@ function pictureDeviceSize(): { width: number; height: number } {
   };
 }
 
-window.bench = {
+const bench: ViewerBenchApi = {
   async start(config) {
-    await window.bench.stop();
+    await bench.stop();
     shownLog = [];
     sentLog = [];
     lastShownFrame = -1;
@@ -238,6 +257,8 @@ window.bench = {
     } else {
       mediaViewer = await startMediaViewer({
         pane,
+        captureFrameMetadata: config.nativeQuality ?? false,
+        encodeScale: config.encodeScale ?? 1,
         onPainted: (value, canvas) => {
           displayed = { source: canvas, width: canvas.width, height: canvas.height };
           if (value === null) {
@@ -275,14 +296,15 @@ window.bench = {
   sentLog: () => sentLog,
   counters: () => ({ ...counters, ...mediaViewer?.stats() }),
   /**
-   * Legibility: the displayed picture, resampled to its on-screen device
-   * pixel size, against the same frame rendered locally and resampled the same
-   * way. Both sides pass through this engine's scaler, so the score isolates
-   * what encoding and transport did to the picture.
+   * Freeze one displayed frame before reading its marker. Score and optional
+   * PNGs share the same resampled ImageData, so neither a later frame nor a
+   * different canvas readback/scaling path can change the saved evidence.
    */
-  score(scene) {
+  async quality(scene, includeImages, includeNative = false) {
     if (!displayed) return null;
-    const frame = readFrameNumber(displayed.source, displayed.width, displayed.height);
+    const frozen = new OffscreenCanvas(displayed.width, displayed.height);
+    frozen.getContext("2d")!.drawImage(displayed.source, 0, 0);
+    const frame = readFrameNumber(frozen, frozen.width, frozen.height);
     if (frame === null) return null;
     const size = pictureDeviceSize();
     const draw = (source: CanvasImageSource) => {
@@ -291,31 +313,25 @@ window.bench = {
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
       ctx.drawImage(source, 0, 0, size.width, size.height);
-      return ctx.getImageData(0, 0, size.width, size.height).data;
+      return ctx.getImageData(0, 0, size.width, size.height);
     };
     const truthCanvas = new OffscreenCanvas(SOURCE_WIDTH, SOURCE_HEIGHT);
     renderFrame(truthCanvas.getContext("2d")!, scene, frame);
-    const received = draw(displayed.source);
+    const received = draw(frozen);
     const truth = draw(truthCanvas);
-    const skip = Math.ceil(((STRIP_HEIGHT + 4) * size.height) / SOURCE_HEIGHT);
-    return {
+    const skipTopRows = Math.ceil(((STRIP_HEIGHT + 4) * size.height) / SOURCE_HEIGHT);
+    const score = {
       frame,
-      psnr: lumaPsnr(received, truth, size.width, size.height, skip),
+      psnr: lumaPsnr(received.data, truth.data, size.width, size.height, skipTopRows),
       ...size,
+      decodedWidth: frozen.width,
+      decodedHeight: frozen.height,
+      skipTopRows,
     };
-  },
-  /** PNG data URLs of the received picture and the ground truth, as scored. */
-  async images(scene) {
-    if (!displayed) return null;
-    const frame = readFrameNumber(displayed.source, displayed.width, displayed.height);
-    if (frame === null) return null;
-    const size = pictureDeviceSize();
-    const toUrl = async (source: CanvasImageSource) => {
-      const target = new OffscreenCanvas(size.width, size.height);
-      const ctx = target.getContext("2d")!;
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(source, 0, 0, size.width, size.height);
+    if (!includeImages && !includeNative) return { score, images: null };
+    const toUrl = async (pixels: ImageData) => {
+      const target = new OffscreenCanvas(pixels.width, pixels.height);
+      target.getContext("2d")!.putImageData(pixels, 0, 0);
       const blob = await target.convertToBlob({ type: "image/png" });
       const bytes = new Uint8Array(await blob.arrayBuffer());
       let binary = "";
@@ -324,9 +340,18 @@ window.bench = {
       }
       return `data:image/png;base64,${btoa(binary)}`;
     };
-    const truthCanvas = new OffscreenCanvas(SOURCE_WIDTH, SOURCE_HEIGHT);
-    renderFrame(truthCanvas.getContext("2d")!, scene, frame);
-    return { received: await toUrl(displayed.source), truth: await toUrl(truthCanvas) };
+    const [receivedUrl, truthUrl] = await Promise.all([toUrl(received), toUrl(truth)]);
+    const nativeDecoded = includeNative
+      ? await toUrl(frozen.getContext("2d")!.getImageData(0, 0, frozen.width, frozen.height))
+      : undefined;
+    return {
+      score,
+      images: {
+        received: receivedUrl,
+        truth: truthUrl,
+        ...(nativeDecoded === undefined ? {} : { nativeDecoded }),
+      },
+    };
   },
   now,
   environment: () => ({
@@ -335,7 +360,11 @@ window.bench = {
     viewport: [innerWidth, innerHeight],
     secureContext: isSecureContext,
     mediaSource: typeof MediaSource !== "undefined",
+    mediaSourceVp8:
+      typeof MediaSource !== "undefined" && MediaSource.isTypeSupported("video/webm;codecs=vp8"),
     videoDecoder: typeof VideoDecoder !== "undefined",
     picture: pictureDeviceSize(),
   }),
 };
+
+Object.assign(window, { bench });

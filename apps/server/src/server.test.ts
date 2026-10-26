@@ -715,6 +715,7 @@ const buildAppUnderTest = (options?: {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(PreviewManager.PreviewManager)({
+              hasSession: () => false,
               open: () => Effect.die("PreviewManager not stubbed in this test"),
               navigate: () => Effect.die("PreviewManager not stubbed in this test"),
               resize: () => Effect.die("PreviewManager not stubbed in this test"),
@@ -2483,6 +2484,22 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
       const pairedSessionId = clients.find((entry) => !entry.current)?.sessionId;
       assert.isDefined(pairedSessionId);
 
+      const socketUrl = yield* getWsServerUrl("/ws", { authenticated: false });
+      const connected = yield* Effect.acquireRelease(
+        Effect.callback<
+          { readonly socket: NodeSocket.NodeWS.WebSocket; readonly closed: Promise<void> },
+          Error
+        >((resume) => {
+          const socket = new NodeSocket.NodeWS.WebSocket(socketUrl, {
+            headers: { cookie: pairedSessionCookie },
+          });
+          const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+          socket.once("open", () => resume(Effect.succeed({ socket, closed })));
+          socket.once("error", (error) => resume(Effect.fail(error)));
+        }),
+        ({ socket }) => Effect.sync(() => socket.close()),
+      );
+
       const revokeResponse = yield* HttpClient.post("/api/auth/clients/revoke", {
         headers: {
           cookie: ownerCookie,
@@ -2499,7 +2516,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
 
       assert.equal(revokeResponse.status, 200);
       assert.equal(pairedClientPairingResponse.status, 401);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+      yield* Effect.promise(() => connected.closed);
+      assert.equal(connected.socket.readyState, NodeSocket.NodeWS.WebSocket.CLOSED);
+    }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("allows reusing the desktop bootstrap credential", () =>

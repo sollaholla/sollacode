@@ -60,6 +60,36 @@ describe("video subscriber recovery", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it("can retain a quiet source after its frame deadline and deliver a later frame", async () => {
+    const onFatal = vi.fn();
+    const onFrameTimeout = vi.fn();
+    const onFrame = vi.fn();
+    const subscriber = createVideoStreamSubscriber({
+      resolveUrl: async () => "wss://example.test/ws/media?ticket=fresh",
+      canvas: {} as HTMLCanvasElement,
+      codecs: ["vp8"],
+      viewport: () => ({ width: 640, height: 480, devicePixelRatio: 1, zoom: 1 }),
+      onFatal,
+      onFrameTimeout,
+      onFrame,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    callbacks().onOpen?.();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(onFrameTimeout).toHaveBeenCalledOnce();
+    expect(onFatal).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(onFrameTimeout).toHaveBeenCalledOnce();
+    frame();
+    expect(onFrame).toHaveBeenCalledOnce();
+    expect(openMediaSubscriber).toHaveBeenCalledOnce();
+    subscriber.stop();
+    expect(close).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
   it("bounds reconnects even when sockets open then immediately close", async () => {
     const { onFatal } = start();
     for (const delay of [0, 500, 1_000, 2_000]) {
@@ -100,6 +130,32 @@ describe("video subscriber recovery", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(onFatal).not.toHaveBeenCalled();
     subscriber.stop();
+  });
+
+  it("keeps recovery subscribed while capture is explicitly unavailable, then expects a frame", async () => {
+    const { subscriber, onFatal } = start();
+    await vi.advanceTimersByTimeAsync(0);
+    callbacks().onOpen?.();
+    expect(subscriber).toHaveProperty("setFrameExpected");
+    subscriber.setFrameExpected(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(onFatal).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    subscriber.setFrameExpected(true);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(onFatal).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("still bounds a lost publisher while capture is unavailable", async () => {
+    const { subscriber, onFatal } = start();
+    await vi.advanceTimersByTimeAsync(0);
+    callbacks().onOpen?.();
+    expect(subscriber).toHaveProperty("setFrameExpected");
+    subscriber.setFrameExpected(false);
+    callbacks().onNotice({ type: "publisher", online: false });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(onFatal).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])(

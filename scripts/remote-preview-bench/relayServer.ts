@@ -3,11 +3,12 @@ import * as NodeHttp from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { AuthSessionId, EnvironmentId, WS_METHODS } from "@t3tools/contracts";
+import { AuthSessionId, EnvironmentId, WS_METHODS, type PreviewEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
@@ -19,6 +20,9 @@ import { PreviewManager } from "../../apps/server/src/preview/Manager.ts";
 import { captureRemotePreviewSnapshot } from "../../apps/server/src/preview/RemotePreviewCapture.ts";
 import { dispatchRemotePreviewInput } from "../../apps/server/src/preview/RemotePreviewInput.ts";
 import * as RemoteFrameRelay from "../../apps/server/src/preview/RemoteFrameRelay.ts";
+import * as PreviewMediaBroker from "../../apps/server/src/preview/PreviewMediaBroker.ts";
+import * as MediaRelay from "../../apps/server/src/media/MediaRelay.ts";
+import { mediaChannelRouteHandler } from "../../apps/server/src/media/mediaChannelRoute.ts";
 import { BenchRpcGroup } from "./benchRpc.ts";
 
 export const BENCH_ENVIRONMENT_ID = EnvironmentId.make("bench-environment");
@@ -30,6 +34,12 @@ const SESSION_ID = AuthSessionId.make("bench-session");
  * WebSocket with permessage-deflate), minus auth and persistence.
  */
 export const startRelayServer = Effect.fn("bench.startRelayServer")(function* () {
+  const scope = yield* Scope.make();
+  const previewEvents = yield* PubSub.unbounded<PreviewEvent>();
+  const mediaRelay = yield* MediaRelay.make.pipe(
+    Scope.provide(scope),
+    Effect.provide(NodeServices.layer),
+  );
   const broker = yield* PreviewAutomationBroker.make.pipe(
     Effect.provideService(
       PreviewManager,
@@ -45,14 +55,29 @@ export const startRelayServer = Effect.fn("bench.startRelayServer")(function* ()
   );
 
   const relay = yield* RemoteFrameRelay.make();
+  const media = yield* PreviewMediaBroker.make({
+    automation: broker,
+    manager: {
+      hasSession: (target) => target.threadId === "bench-thread" && target.tabId === "bench-tab",
+      subscribeEvents: PubSub.subscribe(previewEvents),
+    },
+    relay: mediaRelay,
+    environmentId: BENCH_ENVIRONMENT_ID,
+    owningThreadId: (threadId) => Effect.succeed(threadId),
+  }).pipe(Scope.provide(scope), Effect.provide(NodeServices.layer));
   const handlers = BenchRpcGroup.toLayer({
+    [WS_METHODS.previewReportStatus]: () => Effect.void,
+    [WS_METHODS.previewMediaWatch]: (input) => media.watch(input, SESSION_ID),
+    [WS_METHODS.previewMediaTicket]: (input) => media.issueTicket(input, SESSION_ID),
+    [WS_METHODS.previewHostMediaTicket]: (input) => media.issueHostTicket(input, SESSION_ID),
     [WS_METHODS.previewRemoteFrames]: (input) => relay.watch(input),
     [WS_METHODS.previewRemoteFramePublish]: (input) => relay.publish(input),
     [WS_METHODS.previewAutomationConnect]: (input) => {
-      const events = Stream.unwrap(broker.connect(input));
-      return input.streamsRemoteFrames
-        ? RemoteFrameRelay.withRemoteFrameDemand(events, relay)
-        : events;
+      let events = Stream.unwrap(broker.connect(input, SESSION_ID));
+      if (input.streamsRemoteFrames) events = RemoteFrameRelay.withRemoteFrameDemand(events, relay);
+      if (input.streamsPreviewMedia)
+        events = PreviewMediaBroker.withPreviewMediaDemand(events, media);
+      return events;
     },
     [WS_METHODS.previewAutomationRespond]: (input) => broker.respond(input),
     [WS_METHODS.previewRemoteSnapshot]: (input) =>
@@ -90,9 +115,11 @@ export const startRelayServer = Effect.fn("bench.startRelayServer")(function* ()
     }),
   );
 
-  const scope = yield* Scope.make();
   const context = yield* Layer.buildWithScope(
-    HttpRouter.serve(routes, { disableLogger: true }).pipe(
+    HttpRouter.serve(
+      Layer.merge(routes, HttpRouter.add("GET", "/ws/media", mediaChannelRouteHandler(mediaRelay))),
+      { disableLogger: true },
+    ).pipe(
       Layer.provideMerge(
         NodeHttpServer.layer(() => NodeHttp.createServer(), { host: "127.0.0.1", port: 0 }),
       ),

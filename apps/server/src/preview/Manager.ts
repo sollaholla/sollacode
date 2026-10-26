@@ -67,6 +67,8 @@ export class PreviewManager extends Context.Service<
       input: PreviewCloseInput,
     ) => Effect.Effect<PreviewCloseResult | undefined, PreviewError>;
     readonly list: (input: PreviewListInput) => Effect.Effect<PreviewListResult>;
+    /** Synchronous lifetime check for media grants; never opens or restores a tab. */
+    readonly hasSession: (target: { readonly threadId: string; readonly tabId: string }) => boolean;
     readonly events: Stream.Stream<PreviewEvent>;
     readonly subscribeEvents: Effect.Effect<PubSub.Subscription<PreviewEvent>, never, Scope.Scope>;
   }
@@ -688,6 +690,8 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   );
 
   return PreviewManager.of({
+    hasSession: (target) =>
+      SynchronizedRef.getUnsafe(stateRef).sessions.has(compositeKey(target.threadId, target.tabId)),
     open,
     navigate,
     reportStatus,

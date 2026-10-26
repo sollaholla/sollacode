@@ -24,9 +24,11 @@ import {
 import { createRemoteControlVideoPublishQueue } from "../../../web/src/components/remoteControl/remoteControlVideoPublishQueue.ts";
 import { connectBenchRpc, type BenchRpcConnection } from "./benchRpc.ts";
 import { startMediaHost, type MediaHostHandle } from "./hostMedia.ts";
+import { captureNextEncodedFrame, type NativeQualityCapture } from "./nativeQuality.ts";
 import {
   type BenchScene,
   paintFrame,
+  readFrameNumber,
   SCENE_REPAINT_MS,
   SOURCE_HEIGHT,
   SOURCE_WIDTH,
@@ -37,6 +39,7 @@ export type BenchPipeline = "legacy" | "media";
 interface HostConfig {
   readonly pipeline: BenchPipeline;
   readonly scene: BenchScene;
+  readonly nativeQuality?: boolean;
 }
 
 const now = () => performance.timeOrigin + performance.now();
@@ -89,6 +92,7 @@ function applyInput(input: RemoteControlInput): void {
 
 async function startLegacy(): Promise<() => Promise<void>> {
   const stream = canvas.captureStream();
+  const captureTrack = stream.getVideoTracks()[0]! as CanvasCaptureMediaStreamTrack;
   const connection: BenchRpcConnection = await connectBenchRpc(
     `${location.origin.replace(/^http/, "ws")}/ws?as=host`,
   );
@@ -102,9 +106,15 @@ async function startLegacy(): Promise<() => Promise<void>> {
   let imageFallback = false;
   let jpegRunning = false;
   let restartTimer: number | null = null;
+  let startupFrame: number | null = null;
+  let startupTimer: number | null = null;
 
   const stopRecorder = () => {
     generation += 1;
+    if (startupFrame !== null) cancelAnimationFrame(startupFrame);
+    if (startupTimer !== null) clearTimeout(startupTimer);
+    startupFrame = null;
+    startupTimer = null;
     try {
       recorder?.stop();
     } catch {
@@ -158,6 +168,21 @@ async function startLegacy(): Promise<() => Promise<void>> {
       first = false;
     });
     current.start(REMOTE_CONTROL_TIMESLICE_MS);
+    const primeCapture = () => {
+      if (attempt !== generation) return;
+      paintFrame(ctx, scene, frame);
+      captureTrack.requestFrame();
+    };
+    startupFrame = requestAnimationFrame(() => {
+      startupFrame = null;
+      primeCapture();
+    });
+    // A static canvas may not advance the recorder far enough to emit its
+    // first timeslice. Prime it once more without changing the source marker.
+    startupTimer = window.setTimeout(() => {
+      startupTimer = null;
+      primeCapture();
+    }, REMOTE_CONTROL_TIMESLICE_MS * 2);
   };
 
   // The desktop app captures each JPEG with desktopCapturer in the main
@@ -281,29 +306,37 @@ async function startLegacy(): Promise<() => Promise<void>> {
 }
 
 let mediaHost: MediaHostHandle | null = null;
+let nativeQuality: ReturnType<typeof captureNextEncodedFrame> | null = null;
 
-declare global {
-  interface Window {
-    bench: {
-      start(config: HostConfig): Promise<void>;
-      stop(): Promise<void>;
-      drawLog(): Array<[number, number]>;
-      inputLog(): Array<[number, number]>;
-      counters(): Record<string, unknown>;
-      now(): number;
-    };
-  }
+interface HostBenchApi {
+  start(config: HostConfig): Promise<void>;
+  stop(): Promise<void>;
+  drawLog(): Array<[number, number]>;
+  inputLog(): Array<[number, number]>;
+  counters(): Record<string, unknown>;
+  takeNativeQuality(): Promise<NativeQualityCapture | null>;
+  now(): number;
 }
 
-window.bench = {
+const bench: HostBenchApi = {
   async start(config) {
-    await window.bench.stop();
+    await bench.stop();
     for (const key of Object.keys(counters) as Array<keyof typeof counters>) counters[key] = 0;
     startScene(config.scene);
+    if (config.nativeQuality) {
+      if (config.scene !== "idle" || config.pipeline !== "media") {
+        throw new Error("Native quality capture requires the static idle media pipeline");
+      }
+      nativeQuality = captureNextEncodedFrame(VideoEncoder.prototype);
+    }
     if (config.pipeline === "legacy") {
       stopCurrent = await startLegacy();
     } else {
-      mediaHost = await startMediaHost({ canvas, onInput: applyInput });
+      mediaHost = await startMediaHost({
+        canvas,
+        onInput: applyInput,
+        redrawSource: () => paintFrame(ctx, scene, frame),
+      });
       stopCurrent = () => mediaHost!.stop();
     }
   },
@@ -311,11 +344,39 @@ window.bench = {
     stopScene();
     const stop = stopCurrent;
     stopCurrent = null;
-    if (stop) await stop();
-    mediaHost = null;
+    try {
+      if (stop) await stop();
+    } finally {
+      nativeQuality?.stop();
+      nativeQuality = null;
+      mediaHost = null;
+    }
+  },
+  async takeNativeQuality() {
+    const encoded = nativeQuality?.take();
+    if (!encoded) return null;
+    try {
+      const frozen = new OffscreenCanvas(encoded.displayWidth, encoded.displayHeight);
+      frozen.getContext("2d")!.drawImage(encoded, 0, 0);
+      const marker = readFrameNumber(frozen, frozen.width, frozen.height);
+      if (marker === null) throw new Error("Pre-encode frame marker could not be decoded");
+      const blob = await frozen.convertToBlob({ type: "image/png" });
+      return {
+        frame: marker,
+        width: frozen.width,
+        height: frozen.height,
+        codedWidth: encoded.codedWidth,
+        codedHeight: encoded.codedHeight,
+        png: `data:image/png;base64,${await encodeBlobToBase64(blob)}`,
+      };
+    } finally {
+      encoded.close();
+    }
   },
   drawLog: () => drawLog,
   inputLog: () => inputLog,
   counters: () => ({ ...counters, ...(mediaHost?.stats() ?? {}) }),
   now,
 };
+
+Object.assign(window, { bench });

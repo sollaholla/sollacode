@@ -938,3 +938,686 @@ index 7e2d11f..d5b0d66 100644
      /**
       * Number of columns to render items in.
       * @default 1
+diff --git a/react.d.ts b/react.d.ts
+--- a/react.d.ts
++++ b/react.d.ts
+@@ -28,5 +28,6 @@
+ interface MaintainVisibleContentPositionNormalized<ItemT = any> {
+     data: boolean;
++    deferDuringTouch?: boolean;
+     size: boolean;
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+@@ -456,6 +457,8 @@
+ type LegendListPropsBase<ItemT, TScrollViewProps = Record<string, any>, TItemType extends string | undefined = string | undefined> = BaseScrollViewProps<TScrollViewProps> & LegendListSpecificProps<ItemT, TItemType> & (DataModeProps<ItemT, TItemType> | ChildrenModeProps);
+ interface MaintainVisibleContentPositionConfig<ItemT = any> {
+     data?: boolean;
++    /** Web only: defer relative layout corrections until touch momentum settles. */
++    deferDuringTouch?: boolean;
+     size?: boolean;
+     shouldRestorePosition?: (item: ItemT, index: number, data: readonly ItemT[]) => boolean;
+ }
+diff --git a/react.js b/react.js
+--- a/react.js
++++ b/react.js
+@@ -465,7 +465,8 @@
+   refView,
+   ...props
+ }) {
+-  const [position = POSITION_OUT_OF_VIEW] = useArr$([`containerPosition${id}`]);
++  const [rawPosition = POSITION_OUT_OF_VIEW, touchAdjustPending] = useArr$([`containerPosition${id}`, "scrollAdjustTouchPending"]);
++  const position = rawPosition - (touchAdjustPending || 0);
+   const composed = isArray(style) ? Object.assign({}, ...style) : style;
+   const combinedStyle = horizontal ? { ...baseCss, ...composed, left: position } : { ...baseCss, ...composed, top: position };
+   const {
+@@ -491,10 +492,12 @@
+   children,
+   ...webProps
+ }) {
+-  const [position = POSITION_OUT_OF_VIEW, activeStickyIndex] = useArr$([
++  const [rawPosition = POSITION_OUT_OF_VIEW, activeStickyIndex, touchAdjustPending] = useArr$([
+     `containerPosition${id}`,
+-    "activeStickyIndex"
++    "activeStickyIndex",
++    "scrollAdjustTouchPending"
+   ]);
++  const position = rawPosition - (touchAdjustPending || 0);
+   const composed = React3__namespace.useMemo(
+     () => {
+       var _a3;
+@@ -927,7 +930,7 @@
+     maintainingScrollAtEnd,
+     props: { maintainScrollAtEndThreshold, onEndReachedThreshold }
+   } = state;
+-  const contentSize = getContentSize(ctx);
++  const contentSize = Math.max(0, getContentSize(ctx) - (peek$(ctx, "scrollAdjustTouchPending") || 0));
+   if (contentSize > 0 && queuedInitialLayout) {
+     const insetEnd = getContentInsetEnd(ctx);
+     const distanceFromEnd = contentSize - scroll - scrollLength - insetEnd;
+@@ -3167,6 +3170,12 @@
+   state.positions.length = 0;
+   state.columns.length = 0;
+   state.columnSpans.length = 0;
++}
++
++// Touch corrections use the same logical/physical coordinate split as a
++// pending animated scroll. Native momentum keeps its original coordinate space.
++function getPendingScrollAdjust(ctx) {
++  return (peek$(ctx, "scrollAdjustPending") || 0) + (peek$(ctx, "scrollAdjustTouchPending") || 0);
+ }
+
+ // src/core/syncMountedContainer.ts
+@@ -4183,7 +4192,7 @@
+     const updateScroll2 = (nextScrollState) => {
+       var _a4;
+       nativeScrollState = nextScrollState;
+-      scrollAdjustPending = (_a4 = peek$(ctx, "scrollAdjustPending")) != null ? _a4 : 0;
++      scrollAdjustPending = getPendingScrollAdjust(ctx);
+       scrollAdjustPad = scrollAdjustPending - topPad;
+       scroll = Math.round(nextScrollState + scrollExtra + scrollAdjustPad);
+       if (scroll + scrollLength > totalSize) {
+@@ -4280,10 +4289,11 @@
+       }
+     }
+     const scrollBeforeMVCP = state.scroll;
+-    const scrollAdjustPendingBeforeMVCP = (_f = peek$(ctx, "scrollAdjustPending")) != null ? _f : 0;
++    const touchAdjustPendingBeforeMVCP = peek$(ctx, "scrollAdjustTouchPending") || 0;
++    const scrollAdjustPendingBeforeMVCP = getPendingScrollAdjust(ctx);
+     checkMVCP == null ? void 0 : checkMVCP();
+-    const didMVCPAdjustScroll = !!checkMVCP && (state.scroll !== scrollBeforeMVCP || ((_g = peek$(ctx, "scrollAdjustPending")) != null ? _g : 0) !== scrollAdjustPendingBeforeMVCP);
+-    if (didMVCPAdjustScroll && (initialScroll || state.scrollingTo)) {
++    const didMVCPAdjustScroll = !!checkMVCP && (state.scroll !== scrollBeforeMVCP || getPendingScrollAdjust(ctx) !== scrollAdjustPendingBeforeMVCP);
++    if (didMVCPAdjustScroll && (initialScroll || state.scrollingTo || touchAdjustPendingBeforeMVCP || peek$(ctx, "scrollAdjustTouchPending"))) {
+       updateScroll2(state.scroll);
+       updateScrollRange();
+     }
+@@ -4523,7 +4533,7 @@
+         const itemIndex = indexByKey.get(itemKey);
+         if (itemIndex !== void 0) {
+           didChangePositions = syncMountedContainer(ctx, i, itemIndex, {
+-            scrollAdjustPending,
++            scrollAdjustPending: peek$(ctx, "scrollAdjustPending") || 0,
+             updateLayout: true
+           }).didChangePosition || didChangePositions;
+         }
+@@ -5280,15 +5290,18 @@
+   const ctx = useStateContext();
+   const columnWrapperStyle = ctx.columnWrapperStyle;
+   const isHorizontalRTLList = isHorizontalRTL(ctx.state);
+-  const [otherAxisSize, readyToRender, totalSize] = useArr$(["otherAxisSize", "readyToRender", "totalSize"]);
++  const [otherAxisSize, readyToRender, totalSize, touchAdjustPending] = useArr$(["otherAxisSize", "readyToRender", "totalSize", "scrollAdjustTouchPending"]);
++  // Keep the rendered end in the same coordinate space as the compensated
++  // rows. A smaller logical total must not clamp native momentum mid-gesture.
++  const renderedTotalSize = Math.max(0, totalSize - (touchAdjustPending || 0));
+   useDOMOrder(ref);
+   const style = horizontal ? {
+     direction: isHorizontalRTLList ? "ltr" : void 0,
+     minHeight: otherAxisSize,
+     opacity: readyToRender ? 1 : 0,
+     position: "relative",
+-    width: totalSize
+-  } : { height: totalSize, minWidth: otherAxisSize, opacity: readyToRender ? 1 : 0, position: "relative" };
++    width: renderedTotalSize
++  } : { height: renderedTotalSize, minWidth: otherAxisSize, opacity: readyToRender ? 1 : 0, position: "relative" };
+   if (!readyToRender) {
+     style.pointerEvents = "none";
+   }
+@@ -5860,6 +5873,115 @@
+ function scrollAdjustBy(el, left, top) {
+   el.scrollBy({ behavior: "auto", left, top });
+ }
++// WebKit owns touch momentum. Keep layout corrections as relative deltas until
++// native scrolling ends; writing scrollBy during the glide interrupts it.
++function createDeferredTouchScrollAdjust(element, scrollTarget, isEnabled, readMetrics, apply, onPendingChange) {
++  let touching = false;
++  let momentum = false;
++  let pending = 0;
++  let clampCredit = 0;
++  let previousMetrics = readMetrics();
++  let timer;
++  let disposed = false;
++  const observeNativePosition = () => {
++    const current = readMetrics();
++    const atEnd = Math.abs(current.offset - current.maximum) <= 1;
++    // A shrinking extent can apply part of a negative correction natively.
++    // Only credit a witnessed clamp at the new boundary, not ordinary upward
++    // movement below it; both can arrive in one coalesced native scroll event.
++    if (atEnd && current.maximum < previousMetrics.maximum && previousMetrics.offset > current.maximum) {
++      clampCredit += Math.min(previousMetrics.offset - current.maximum, previousMetrics.maximum - current.maximum);
++    } else if (!atEnd) {
++      clampCredit = 0;
++    }
++    previousMetrics = current;
++    if (pending < 0 && clampCredit > 0) {
++      const consumed = Math.min(-pending, clampCredit);
++      pending += consumed;
++      clampCredit -= consumed;
++      onPendingChange(pending);
++    }
++  };
++  const clearTimer = () => {
++    if (timer !== void 0) clearTimeout(timer);
++    timer = void 0;
++  };
++  const cancel = () => {
++    clearTimer();
++    touching = false;
++    momentum = false;
++    pending = 0;
++    clampCredit = 0;
++    onPendingChange(0);
++  };
++  const settle = () => {
++    if (disposed || touching) return;
++    clearTimer();
++    observeNativePosition();
++    momentum = false;
++    const delta = pending;
++    pending = 0;
++    clampCredit = 0;
++    if (isEnabled() && Math.abs(delta) > 0.01) apply(delta);
++    else onPendingChange(0);
++  };
++  const scheduleSettle = () => {
++    clearTimer();
++    // A fallback for browsers without scrollend, and a tap with no scroll.
++    timer = setTimeout(settle, 150);
++  };
++  const onTouchStart = () => {
++    // Following the end can disable MVCP until the first upward touchmove.
++    // Observe contact now so enabling it mid-gesture still defers writes.
++    if (momentum) observeNativePosition();
++    else previousMetrics = readMetrics();
++    clearTimer();
++    touching = true;
++    momentum = true;
++  };
++  const onTouchEnd = (event) => {
++    if (!touching || event.touches?.length > 0) return;
++    touching = false;
++    scheduleSettle();
++  };
++  const onScroll = () => {
++    if (momentum) observeNativePosition();
++    if (momentum && !touching) scheduleSettle();
++  };
++  const endTarget = element.ownerDocument?.defaultView || element;
++  const passiveCapture = { capture: true, passive: true };
++  element.addEventListener("touchstart", onTouchStart, passiveCapture);
++  endTarget.addEventListener("touchend", onTouchEnd, passiveCapture);
++  endTarget.addEventListener("touchcancel", onTouchEnd, passiveCapture);
++  scrollTarget.addEventListener("scroll", onScroll, { passive: true });
++  scrollTarget.addEventListener("scrollend", settle, { passive: true });
++  return {
++    defer(delta) {
++      if (!isEnabled()) {
++        pending = 0;
++        clampCredit = 0;
++        onPendingChange(0);
++        previousMetrics = readMetrics();
++        return false;
++      }
++      if (!touching && !momentum) return false;
++      pending += delta;
++      observeNativePosition();
++      onPendingChange(pending);
++      return true;
++    },
++    cancel,
++    dispose() {
++      disposed = true;
++      cancel();
++      element.removeEventListener("touchstart", onTouchStart, true);
++      endTarget.removeEventListener("touchend", onTouchEnd, true);
++      endTarget.removeEventListener("touchcancel", onTouchEnd, true);
++      scrollTarget.removeEventListener("scroll", onScroll);
++      scrollTarget.removeEventListener("scrollend", settle);
++    }
++  };
++}
+ function ScrollAdjust() {
+   const ctx = useStateContext();
+   const lastScrollOffsetRef = React3__namespace.useRef(0);
+@@ -5867,6 +5989,76 @@
+   const resetPaddingRafRef = React3__namespace.useRef(void 0);
+   const resetPaddingBaselineRef = React3__namespace.useRef(void 0);
+   const contentNodeRef = React3__namespace.useRef(null);
++  const deferredTouchAdjustRef = React3__namespace.useRef(null);
++  React3__namespace.useEffect(() => {
++    const target = getScrollAdjustTarget(ctx, contentNodeRef.current);
++    if (!target) return;
++    const scroller = ctx.state.refScroller.current;
++    const scrollTarget = scroller?.getScrollEventTarget?.() || target.scrollElement;
++    const releaseFinishedInitialTarget = (event) => {
++      const state = ctx.state;
++      if (!state.didFinishInitialScroll || !state.initialScroll || state.scrollingTo) return;
++      if (event.type === "keydown" && (event.metaKey || event.ctrlKey || event.altKey || !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key))) return;
++      if (event.type === "wheel" && !event.deltaX && !event.deltaY) return;
++      // App-owned live follow may continue after a tap, but a finished bootstrap
++      // must never reclaim the viewport after the person has interacted.
++      state.preservedEndAnchorCorrection = void 0;
++      clearPreservedInitialScrollTarget(state);
++    };
++    const initialTargetInputEvents = ["touchstart", "pointerdown", "wheel", "keydown"];
++    for (const type of initialTargetInputEvents) {
++      target.scrollElement.addEventListener(type, releaseFinishedInitialTarget, { capture: true, passive: true });
++    }
++    const deferred = createDeferredTouchScrollAdjust(
++      target.scrollElement,
++      scrollTarget,
++      () => !!ctx.state.props.maintainVisibleContentPosition.deferDuringTouch,
++      () => {
++        const element = target.scrollElement;
++        const horizontal = !!ctx.state.props.horizontal;
++        const maximum = horizontal ? element.scrollWidth - element.clientWidth : element.scrollHeight - element.clientHeight;
++        return { maximum: Math.max(0, maximum), offset: horizontal ? element.scrollLeft : element.scrollTop };
++      },
++      (delta) => {
++        const currentTarget = getScrollAdjustTarget(ctx, contentNodeRef.current);
++        if (!currentTarget) return;
++        const axis = getScrollAdjustAxis(!!ctx.state.props.horizontal);
++        const element = currentTarget.scrollElement;
++        const targetOffset = (axis.x ? element.scrollLeft : element.scrollTop) + delta;
++        // Commit the logical geometry before changing the native coordinate.
++        // Both operations finish before paint, including an end-range growth.
++        ReactDOM.flushSync(() => {
++          set$(ctx, "scrollAdjustTouchPending", 0);
++          ctx.state.scroll = targetOffset;
++          ctx.state.scrollForNextCalculateItemsInView = void 0;
++          calculateItemsInView(ctx);
++        });
++        // Shrinking the extent may already have clamped the native offset.
++        // An absolute target also avoids WebKit replaying a relative delta
++        // when its asynchronous scrolling thread reconciles the new layout.
++        const remaining = targetOffset - (axis.x ? element.scrollLeft : element.scrollTop);
++        if (Math.abs(remaining) > 0.01) {
++          element.scrollTo({ behavior: "auto", [axis.x ? "left" : "top"]: targetOffset });
++        }
++        const offset = axis.x ? element.scrollLeft : element.scrollTop;
++        ctx.state.scrollPending = offset;
++        updateScroll(ctx, offset, true, { markHasScrolled: false });
++      },
++      (pending) => set$(ctx, "scrollAdjustTouchPending", pending)
++    );
++    deferredTouchAdjustRef.current = deferred;
++    ctx.state.cancelDeferredScrollAdjust = deferred.cancel;
++    return () => {
++      for (const type of initialTargetInputEvents) {
++        target.scrollElement.removeEventListener(type, releaseFinishedInitialTarget, true);
++      }
++      deferred.dispose();
++      deferredTouchAdjustRef.current = null;
++      if (ctx.state.cancelDeferredScrollAdjust === deferred.cancel) {
++        ctx.state.cancelDeferredScrollAdjust = void 0;
++      }
++    };
++  }, [ctx]);
+   const callback = React3__namespace.useCallback(() => {
+     var _a3;
+     const scrollAdjust = peek$(ctx, "scrollAdjust");
+@@ -5877,6 +6069,16 @@
+       const target = getScrollAdjustTarget(ctx, contentNodeRef.current);
+       if (target) {
+         const horizontal = !!ctx.state.props.horizontal;
++        // Consume each signal delta once, including multiple measurements
++        // before the next native scroll event. Never queue an absolute target.
++        if (deferredTouchAdjustRef.current?.defer(signalScrollDelta)) {
++          const offset = horizontal ? target.scrollElement.scrollLeft : target.scrollElement.scrollTop;
++          ctx.state.scroll = offset;
++          ctx.state.scrollPending = offset;
++          lastScrollOffsetRef.current = scrollOffset;
++          lastScrollAdjustUserOffsetRef.current = scrollAdjustUserOffset || 0;
++          return;
++        }
+         const axis = getScrollAdjustAxis(horizontal);
+         const { contentNode, scrollElement: el } = target;
+         const currentScroll = horizontal ? el.scrollLeft : el.scrollTop;
+@@ -6683,6 +6885,8 @@
+   };
+   const startImperativeScroll = (resolve) => {
+     var _a3;
++    // An explicit destination supersedes the previous touch reading anchor.
++    state.cancelDeferredScrollAdjust?.();
+     const token = ++imperativeScrollToken;
+     state.pendingScrollToEnd = void 0;
+     (_a3 = state.pendingScrollResolve) == null ? void 0 : _a3.call(state);
+@@ -6975,6 +7179,7 @@
+   if (value && typeof value === "object") {
+     return {
+       data: (_a3 = value.data) != null ? _a3 : false,
++      deferDuringTouch: value.deferDuringTouch,
+       shouldRestorePosition: value.shouldRestorePosition,
+       size: (_b = value.size) != null ? _b : true
+     };
+diff --git a/react.mjs b/react.mjs
+--- a/react.mjs
++++ b/react.mjs
+@@ -444,7 +444,8 @@
+   refView,
+   ...props
+ }) {
+-  const [position = POSITION_OUT_OF_VIEW] = useArr$([`containerPosition${id}`]);
++  const [rawPosition = POSITION_OUT_OF_VIEW, touchAdjustPending] = useArr$([`containerPosition${id}`, "scrollAdjustTouchPending"]);
++  const position = rawPosition - (touchAdjustPending || 0);
+   const composed = isArray(style) ? Object.assign({}, ...style) : style;
+   const combinedStyle = horizontal ? { ...baseCss, ...composed, left: position } : { ...baseCss, ...composed, top: position };
+   const {
+@@ -470,10 +471,12 @@
+   children,
+   ...webProps
+ }) {
+-  const [position = POSITION_OUT_OF_VIEW, activeStickyIndex] = useArr$([
++  const [rawPosition = POSITION_OUT_OF_VIEW, activeStickyIndex, touchAdjustPending] = useArr$([
+     `containerPosition${id}`,
+-    "activeStickyIndex"
++    "activeStickyIndex",
++    "scrollAdjustTouchPending"
+   ]);
++  const position = rawPosition - (touchAdjustPending || 0);
+   const composed = React3.useMemo(
+     () => {
+       var _a3;
+@@ -906,7 +909,7 @@
+     maintainingScrollAtEnd,
+     props: { maintainScrollAtEndThreshold, onEndReachedThreshold }
+   } = state;
+-  const contentSize = getContentSize(ctx);
++  const contentSize = Math.max(0, getContentSize(ctx) - (peek$(ctx, "scrollAdjustTouchPending") || 0));
+   if (contentSize > 0 && queuedInitialLayout) {
+     const insetEnd = getContentInsetEnd(ctx);
+     const distanceFromEnd = contentSize - scroll - scrollLength - insetEnd;
+@@ -3146,6 +3149,12 @@
+   state.positions.length = 0;
+   state.columns.length = 0;
+   state.columnSpans.length = 0;
++}
++
++// Touch corrections use the same logical/physical coordinate split as a
++// pending animated scroll. Native momentum keeps its original coordinate space.
++function getPendingScrollAdjust(ctx) {
++  return (peek$(ctx, "scrollAdjustPending") || 0) + (peek$(ctx, "scrollAdjustTouchPending") || 0);
+ }
+
+ // src/core/syncMountedContainer.ts
+@@ -4162,7 +4171,7 @@
+     const updateScroll2 = (nextScrollState) => {
+       var _a4;
+       nativeScrollState = nextScrollState;
+-      scrollAdjustPending = (_a4 = peek$(ctx, "scrollAdjustPending")) != null ? _a4 : 0;
++      scrollAdjustPending = getPendingScrollAdjust(ctx);
+       scrollAdjustPad = scrollAdjustPending - topPad;
+       scroll = Math.round(nextScrollState + scrollExtra + scrollAdjustPad);
+       if (scroll + scrollLength > totalSize) {
+@@ -4259,10 +4268,11 @@
+       }
+     }
+     const scrollBeforeMVCP = state.scroll;
+-    const scrollAdjustPendingBeforeMVCP = (_f = peek$(ctx, "scrollAdjustPending")) != null ? _f : 0;
++    const touchAdjustPendingBeforeMVCP = peek$(ctx, "scrollAdjustTouchPending") || 0;
++    const scrollAdjustPendingBeforeMVCP = getPendingScrollAdjust(ctx);
+     checkMVCP == null ? void 0 : checkMVCP();
+-    const didMVCPAdjustScroll = !!checkMVCP && (state.scroll !== scrollBeforeMVCP || ((_g = peek$(ctx, "scrollAdjustPending")) != null ? _g : 0) !== scrollAdjustPendingBeforeMVCP);
+-    if (didMVCPAdjustScroll && (initialScroll || state.scrollingTo)) {
++    const didMVCPAdjustScroll = !!checkMVCP && (state.scroll !== scrollBeforeMVCP || getPendingScrollAdjust(ctx) !== scrollAdjustPendingBeforeMVCP);
++    if (didMVCPAdjustScroll && (initialScroll || state.scrollingTo || touchAdjustPendingBeforeMVCP || peek$(ctx, "scrollAdjustTouchPending"))) {
+       updateScroll2(state.scroll);
+       updateScrollRange();
+     }
+@@ -4502,7 +4512,7 @@
+         const itemIndex = indexByKey.get(itemKey);
+         if (itemIndex !== void 0) {
+           didChangePositions = syncMountedContainer(ctx, i, itemIndex, {
+-            scrollAdjustPending,
++            scrollAdjustPending: peek$(ctx, "scrollAdjustPending") || 0,
+             updateLayout: true
+           }).didChangePosition || didChangePositions;
+         }
+@@ -5259,15 +5269,18 @@
+   const ctx = useStateContext();
+   const columnWrapperStyle = ctx.columnWrapperStyle;
+   const isHorizontalRTLList = isHorizontalRTL(ctx.state);
+-  const [otherAxisSize, readyToRender, totalSize] = useArr$(["otherAxisSize", "readyToRender", "totalSize"]);
++  const [otherAxisSize, readyToRender, totalSize, touchAdjustPending] = useArr$(["otherAxisSize", "readyToRender", "totalSize", "scrollAdjustTouchPending"]);
++  // Keep the rendered end in the same coordinate space as the compensated
++  // rows. A smaller logical total must not clamp native momentum mid-gesture.
++  const renderedTotalSize = Math.max(0, totalSize - (touchAdjustPending || 0));
+   useDOMOrder(ref);
+   const style = horizontal ? {
+     direction: isHorizontalRTLList ? "ltr" : void 0,
+     minHeight: otherAxisSize,
+     opacity: readyToRender ? 1 : 0,
+     position: "relative",
+-    width: totalSize
+-  } : { height: totalSize, minWidth: otherAxisSize, opacity: readyToRender ? 1 : 0, position: "relative" };
++    width: renderedTotalSize
++  } : { height: renderedTotalSize, minWidth: otherAxisSize, opacity: readyToRender ? 1 : 0, position: "relative" };
+   if (!readyToRender) {
+     style.pointerEvents = "none";
+   }
+@@ -5839,6 +5852,115 @@
+ function scrollAdjustBy(el, left, top) {
+   el.scrollBy({ behavior: "auto", left, top });
+ }
++// WebKit owns touch momentum. Keep layout corrections as relative deltas until
++// native scrolling ends; writing scrollBy during the glide interrupts it.
++function createDeferredTouchScrollAdjust(element, scrollTarget, isEnabled, readMetrics, apply, onPendingChange) {
++  let touching = false;
++  let momentum = false;
++  let pending = 0;
++  let clampCredit = 0;
++  let previousMetrics = readMetrics();
++  let timer;
++  let disposed = false;
++  const observeNativePosition = () => {
++    const current = readMetrics();
++    const atEnd = Math.abs(current.offset - current.maximum) <= 1;
++    // A shrinking extent can apply part of a negative correction natively.
++    // Only credit a witnessed clamp at the new boundary, not ordinary upward
++    // movement below it; both can arrive in one coalesced native scroll event.
++    if (atEnd && current.maximum < previousMetrics.maximum && previousMetrics.offset > current.maximum) {
++      clampCredit += Math.min(previousMetrics.offset - current.maximum, previousMetrics.maximum - current.maximum);
++    } else if (!atEnd) {
++      clampCredit = 0;
++    }
++    previousMetrics = current;
++    if (pending < 0 && clampCredit > 0) {
++      const consumed = Math.min(-pending, clampCredit);
++      pending += consumed;
++      clampCredit -= consumed;
++      onPendingChange(pending);
++    }
++  };
++  const clearTimer = () => {
++    if (timer !== void 0) clearTimeout(timer);
++    timer = void 0;
++  };
++  const cancel = () => {
++    clearTimer();
++    touching = false;
++    momentum = false;
++    pending = 0;
++    clampCredit = 0;
++    onPendingChange(0);
++  };
++  const settle = () => {
++    if (disposed || touching) return;
++    clearTimer();
++    observeNativePosition();
++    momentum = false;
++    const delta = pending;
++    pending = 0;
++    clampCredit = 0;
++    if (isEnabled() && Math.abs(delta) > 0.01) apply(delta);
++    else onPendingChange(0);
++  };
++  const scheduleSettle = () => {
++    clearTimer();
++    // A fallback for browsers without scrollend, and a tap with no scroll.
++    timer = setTimeout(settle, 150);
++  };
++  const onTouchStart = () => {
++    // Following the end can disable MVCP until the first upward touchmove.
++    // Observe contact now so enabling it mid-gesture still defers writes.
++    if (momentum) observeNativePosition();
++    else previousMetrics = readMetrics();
++    clearTimer();
++    touching = true;
++    momentum = true;
++  };
++  const onTouchEnd = (event) => {
++    if (!touching || event.touches?.length > 0) return;
++    touching = false;
++    scheduleSettle();
++  };
++  const onScroll = () => {
++    if (momentum) observeNativePosition();
++    if (momentum && !touching) scheduleSettle();
++  };
++  const endTarget = element.ownerDocument?.defaultView || element;
++  const passiveCapture = { capture: true, passive: true };
++  element.addEventListener("touchstart", onTouchStart, passiveCapture);
++  endTarget.addEventListener("touchend", onTouchEnd, passiveCapture);
++  endTarget.addEventListener("touchcancel", onTouchEnd, passiveCapture);
++  scrollTarget.addEventListener("scroll", onScroll, { passive: true });
++  scrollTarget.addEventListener("scrollend", settle, { passive: true });
++  return {
++    defer(delta) {
++      if (!isEnabled()) {
++        pending = 0;
++        clampCredit = 0;
++        onPendingChange(0);
++        previousMetrics = readMetrics();
++        return false;
++      }
++      if (!touching && !momentum) return false;
++      pending += delta;
++      observeNativePosition();
++      onPendingChange(pending);
++      return true;
++    },
++    cancel,
++    dispose() {
++      disposed = true;
++      cancel();
++      element.removeEventListener("touchstart", onTouchStart, true);
++      endTarget.removeEventListener("touchend", onTouchEnd, true);
++      endTarget.removeEventListener("touchcancel", onTouchEnd, true);
++      scrollTarget.removeEventListener("scroll", onScroll);
++      scrollTarget.removeEventListener("scrollend", settle);
++    }
++  };
++}
+ function ScrollAdjust() {
+   const ctx = useStateContext();
+   const lastScrollOffsetRef = React3.useRef(0);
+@@ -5846,6 +5968,76 @@
+   const resetPaddingRafRef = React3.useRef(void 0);
+   const resetPaddingBaselineRef = React3.useRef(void 0);
+   const contentNodeRef = React3.useRef(null);
++  const deferredTouchAdjustRef = React3.useRef(null);
++  React3.useEffect(() => {
++    const target = getScrollAdjustTarget(ctx, contentNodeRef.current);
++    if (!target) return;
++    const scroller = ctx.state.refScroller.current;
++    const scrollTarget = scroller?.getScrollEventTarget?.() || target.scrollElement;
++    const releaseFinishedInitialTarget = (event) => {
++      const state = ctx.state;
++      if (!state.didFinishInitialScroll || !state.initialScroll || state.scrollingTo) return;
++      if (event.type === "keydown" && (event.metaKey || event.ctrlKey || event.altKey || !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key))) return;
++      if (event.type === "wheel" && !event.deltaX && !event.deltaY) return;
++      // App-owned live follow may continue after a tap, but a finished bootstrap
++      // must never reclaim the viewport after the person has interacted.
++      state.preservedEndAnchorCorrection = void 0;
++      clearPreservedInitialScrollTarget(state);
++    };
++    const initialTargetInputEvents = ["touchstart", "pointerdown", "wheel", "keydown"];
++    for (const type of initialTargetInputEvents) {
++      target.scrollElement.addEventListener(type, releaseFinishedInitialTarget, { capture: true, passive: true });
++    }
++    const deferred = createDeferredTouchScrollAdjust(
++      target.scrollElement,
++      scrollTarget,
++      () => !!ctx.state.props.maintainVisibleContentPosition.deferDuringTouch,
++      () => {
++        const element = target.scrollElement;
++        const horizontal = !!ctx.state.props.horizontal;
++        const maximum = horizontal ? element.scrollWidth - element.clientWidth : element.scrollHeight - element.clientHeight;
++        return { maximum: Math.max(0, maximum), offset: horizontal ? element.scrollLeft : element.scrollTop };
++      },
++      (delta) => {
++        const currentTarget = getScrollAdjustTarget(ctx, contentNodeRef.current);
++        if (!currentTarget) return;
++        const axis = getScrollAdjustAxis(!!ctx.state.props.horizontal);
++        const element = currentTarget.scrollElement;
++        const targetOffset = (axis.x ? element.scrollLeft : element.scrollTop) + delta;
++        // Commit the logical geometry before changing the native coordinate.
++        // Both operations finish before paint, including an end-range growth.
++        flushSync(() => {
++          set$(ctx, "scrollAdjustTouchPending", 0);
++          ctx.state.scroll = targetOffset;
++          ctx.state.scrollForNextCalculateItemsInView = void 0;
++          calculateItemsInView(ctx);
++        });
++        // Shrinking the extent may already have clamped the native offset.
++        // An absolute target also avoids WebKit replaying a relative delta
++        // when its asynchronous scrolling thread reconciles the new layout.
++        const remaining = targetOffset - (axis.x ? element.scrollLeft : element.scrollTop);
++        if (Math.abs(remaining) > 0.01) {
++          element.scrollTo({ behavior: "auto", [axis.x ? "left" : "top"]: targetOffset });
++        }
++        const offset = axis.x ? element.scrollLeft : element.scrollTop;
++        ctx.state.scrollPending = offset;
++        updateScroll(ctx, offset, true, { markHasScrolled: false });
++      },
++      (pending) => set$(ctx, "scrollAdjustTouchPending", pending)
++    );
++    deferredTouchAdjustRef.current = deferred;
++    ctx.state.cancelDeferredScrollAdjust = deferred.cancel;
++    return () => {
++      for (const type of initialTargetInputEvents) {
++        target.scrollElement.removeEventListener(type, releaseFinishedInitialTarget, true);
++      }
++      deferred.dispose();
++      deferredTouchAdjustRef.current = null;
++      if (ctx.state.cancelDeferredScrollAdjust === deferred.cancel) {
++        ctx.state.cancelDeferredScrollAdjust = void 0;
++      }
++    };
++  }, [ctx]);
+   const callback = React3.useCallback(() => {
+     var _a3;
+     const scrollAdjust = peek$(ctx, "scrollAdjust");
+@@ -5856,6 +6048,16 @@
+       const target = getScrollAdjustTarget(ctx, contentNodeRef.current);
+       if (target) {
+         const horizontal = !!ctx.state.props.horizontal;
++        // Consume each signal delta once, including multiple measurements
++        // before the next native scroll event. Never queue an absolute target.
++        if (deferredTouchAdjustRef.current?.defer(signalScrollDelta)) {
++          const offset = horizontal ? target.scrollElement.scrollLeft : target.scrollElement.scrollTop;
++          ctx.state.scroll = offset;
++          ctx.state.scrollPending = offset;
++          lastScrollOffsetRef.current = scrollOffset;
++          lastScrollAdjustUserOffsetRef.current = scrollAdjustUserOffset || 0;
++          return;
++        }
+         const axis = getScrollAdjustAxis(horizontal);
+         const { contentNode, scrollElement: el } = target;
+         const currentScroll = horizontal ? el.scrollLeft : el.scrollTop;
+@@ -6662,6 +6864,8 @@
+   };
+   const startImperativeScroll = (resolve) => {
+     var _a3;
++    // An explicit destination supersedes the previous touch reading anchor.
++    state.cancelDeferredScrollAdjust?.();
+     const token = ++imperativeScrollToken;
+     state.pendingScrollToEnd = void 0;
+     (_a3 = state.pendingScrollResolve) == null ? void 0 : _a3.call(state);
+@@ -6954,6 +7158,7 @@
+   if (value && typeof value === "object") {
+     return {
+       data: (_a3 = value.data) != null ? _a3 : false,
++      deferDuringTouch: value.deferDuringTouch,
+       shouldRestorePosition: value.shouldRestorePosition,
+       size: (_b = value.size) != null ? _b : true
+     };

@@ -84,6 +84,34 @@ describe("preview IPC methods", () => {
     );
   });
 
+  effectIt.effect(
+    "uses the IPC sender for video capture instead of a caller-supplied requester",
+    () =>
+      Effect.gen(function* () {
+        const getTabVideoSource = vi.fn(() =>
+          Effect.succeed({
+            sourceId: "source",
+            webContentsId: 42,
+            width: 900,
+            height: 1000,
+            devicePixelRatio: 2,
+          }),
+        );
+        const manager = PreviewManager.PreviewManager.of({ getTabVideoSource } as never);
+        const result = yield* PreviewIpc.getTabVideoSource
+          .handler({ tabId: "tab", requesterWebContentsId: 999 }, { sender: { id: 41 } })
+          .pipe(Effect.provideService(PreviewManager.PreviewManager, manager));
+        expect(result).toMatchObject({ width: 900, height: 1000, webContentsId: 42 });
+        expect(getTabVideoSource).toHaveBeenCalledWith("tab", 41);
+        expect(
+          yield* PreviewIpc.getTabVideoSource
+            .handler({ tabId: "tab" })
+            .pipe(Effect.provideService(PreviewManager.PreviewManager, manager)),
+        ).toBeNull();
+        expect(getTabVideoSource).toHaveBeenCalledTimes(1);
+      }),
+  );
+
   effectIt.effect("renews automation foreground through the preview manager", () => {
     const renewAutomationForeground = vi.fn(() => Effect.void);
     const manager = PreviewManager.PreviewManager.of({ renewAutomationForeground } as never);

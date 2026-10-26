@@ -1,3 +1,5 @@
+import type { LegendListState } from "@legendapp/list/react";
+
 const DISCLOSURE_SELECTOR =
   "[aria-expanded]:not([aria-haspopup]), [data-timeline-disclosure], summary";
 
@@ -40,6 +42,29 @@ export function restoreTimelineDisclosure(scroller: HTMLElement, anchor: Disclos
   if (Math.abs(delta) > 0.5) {
     scroller.scrollTop += delta;
   }
+}
+
+/** Pixels between the visible bottom and the real end of the content. */
+export function timelineDistanceFromEnd(scroller: HTMLElement): number {
+  return Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
+}
+
+/** A disclosure can render before the virtualizer measures its new height. */
+export function timelineMeasurementsMatch(
+  state: Pick<LegendListState, "startBuffered" | "endBuffered" | "elementAtIndex" | "sizeAtIndex">,
+): boolean {
+  for (let index = state.startBuffered; index <= state.endBuffered; index += 1) {
+    const element = state.elementAtIndex(index);
+    if (!element) continue;
+    const measured = state.sizeAtIndex(index);
+    if (
+      !Number.isFinite(measured) ||
+      Math.abs(element.getBoundingClientRect().height - measured) > 1
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Uses the browser's measured extent, including images and the footer. */

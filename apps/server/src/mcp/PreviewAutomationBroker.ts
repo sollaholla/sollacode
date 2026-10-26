@@ -19,6 +19,8 @@ import {
   PreviewCredentialVaultError,
   PreviewHumanVerification,
   PreviewTabId,
+  type AuthSessionId,
+  type PreviewMediaDemand,
   type PreviewCredentialVaultCommand,
   type PreviewAutomationError,
   type PreviewAutomationOperation,
@@ -37,6 +39,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import { PreviewManager } from "../preview/Manager.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -57,12 +60,25 @@ export interface PreviewCredentialVaultInvokeInput {
   readonly timeoutMs?: number;
 }
 
+export interface PreviewMediaHost {
+  readonly clientId: string;
+  readonly connectionId: string;
+  readonly sessionId: AuthSessionId;
+}
+export interface PreviewMediaRoute extends PreviewMediaDemand {
+  readonly environmentId: PreviewAutomationHost["environmentId"];
+}
+
 export class PreviewAutomationBroker extends Context.Service<
   PreviewAutomationBroker,
   {
     readonly connect: (
       host: PreviewAutomationHost,
+      sessionId?: AuthSessionId,
     ) => Effect.Effect<Stream.Stream<PreviewAutomationStreamEvent>>;
+    /** Read-only routing for human viewers; it never creates an agent assignment. */
+    readonly mediaHostFor: (target: PreviewMediaRoute) => PreviewMediaHost | undefined;
+    readonly mediaRoutingChanges: Stream.Stream<number>;
     readonly focusHost: (host: PreviewAutomationHostFocus) => Effect.Effect<void>;
     readonly respond: (
       response: PreviewAutomationResponse,
@@ -87,6 +103,8 @@ interface ClientConnection {
   readonly environmentId: PreviewAutomationHost["environmentId"];
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
   readonly environmentLocal: boolean;
+  readonly sessionId: AuthSessionId | undefined;
+  readonly streamsPreviewMedia: boolean;
   readonly manageCredentials: boolean;
   readonly focused: boolean;
   readonly focusOrder: number;
@@ -257,8 +275,9 @@ const selectorDiagnosticsFromInput = (
   return {};
 };
 
-const hostAssignmentKey = (scope: McpInvocationContext.McpInvocationScope): string =>
-  `${scope.environmentId}\u0000${scope.threadId}`;
+const hostAssignmentKey = (
+  scope: Pick<McpInvocationContext.McpInvocationScope, "environmentId" | "threadId">,
+): string => `${scope.environmentId}\u0000${scope.threadId}`;
 
 const isPreviewTabId = Schema.is(PreviewTabId);
 const isPreviewHumanVerification = Schema.is(PreviewHumanVerification);
@@ -545,6 +564,43 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     focusSequence: 0,
   });
 
+  const mediaRouting = yield* SubscriptionRef.make(0);
+  const routingChanged = SubscriptionRef.update(mediaRouting, (revision) => revision + 1);
+  const mediaHostFor = (target: PreviewMediaRoute): PreviewMediaHost | undefined => {
+    const current = SynchronizedRef.getUnsafe(state);
+    const assigned = current.assignments.get(hostAssignmentKey(target));
+    const assignedHost = assigned ? current.clients.get(assigned.clientId) : undefined;
+    const liveAssigned =
+      assignedHost &&
+      assignedHost.connectionId === assigned?.connectionId &&
+      assignedHost.queue === assigned?.queue &&
+      assignedHost.environmentId === target.environmentId
+        ? assignedHost
+        : undefined;
+    // Match automation routing, including a live older host's ownership. Video
+    // support never authorizes moving a tab to a different physical desktop.
+    const host =
+      liveAssigned ??
+      Array.from(current.clients.values())
+        .filter(
+          (candidate) =>
+            candidate.environmentId === target.environmentId &&
+            supportsOperation(candidate, "snapshot"),
+        )
+        .sort(
+          (left, right) =>
+            right.supportedOperations.size - left.supportedOperations.size ||
+            Number(right.environmentLocal) - Number(left.environmentLocal) ||
+            Number(right.focused) - Number(left.focused) ||
+            right.focusOrder - left.focusOrder,
+        )[0];
+    return host?.streamsPreviewMedia &&
+      host.sessionId !== undefined &&
+      supportsOperation(host, "snapshot")
+      ? { clientId: host.clientId, connectionId: host.connectionId, sessionId: host.sessionId }
+      : undefined;
+  };
+
   const closeConnection = Effect.fn("PreviewAutomationBroker.closeConnection")(function* (
     queue: ClientConnection["queue"],
     removed: Pick<RemovedConnection, "disconnected" | "disconnectedVault">,
@@ -571,11 +627,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const next = removeConnectionFromState(current, clientId, queue);
       return [next, next.state] as const;
     });
+    yield* routingChanged;
     yield* closeConnection(queue, removed);
   });
 
   const acquireConnection = Effect.fn("PreviewAutomationBroker.acquireConnection")(function* (
     host: PreviewAutomationHost,
+    sessionId: AuthSessionId | undefined,
   ) {
     const clientId = host.clientId;
     const queue = yield* Queue.bounded<PreviewAutomationStreamEvent>(
@@ -589,6 +647,8 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       environmentId: host.environmentId,
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
       environmentLocal: host.environmentLocal ?? false,
+      sessionId,
+      streamsPreviewMedia: host.streamsPreviewMedia ?? false,
       manageCredentials: host.manageCredentials ?? false,
       focused: false,
       focusOrder: 0,
@@ -612,6 +672,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         { ...removed.state, clients, focusSequence },
       ] as const;
     });
+    yield* routingChanged;
     if (registration.previousConnection) {
       yield* closeConnection(registration.previousConnection.queue, registration.removed);
     }
@@ -620,10 +681,10 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
 
   const connect: PreviewAutomationBroker["Service"]["connect"] = Effect.fn(
     "PreviewAutomationBroker.connect",
-  )((host) =>
+  )((host, sessionId) =>
     Effect.succeed(
       Stream.unwrap(
-        Effect.acquireRelease(acquireConnection(host), (connection) =>
+        Effect.acquireRelease(acquireConnection(host, sessionId), (connection) =>
           disconnect(connection.clientId, connection.queue),
         ).pipe(Effect.map((connection) => Stream.fromQueue(connection.queue))),
       ),
@@ -651,6 +712,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       });
       return { ...current, clients, focusSequence };
     });
+    yield* routingChanged;
   });
 
   const respond: PreviewAutomationBroker["Service"]["respond"] = Effect.fn(
@@ -821,6 +883,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },
       ] as const;
     });
+    yield* routingChanged;
     if (!route) {
       return yield* new PreviewAutomationNoAvailableHostError({
         operation: input.operation,
@@ -1021,7 +1084,15 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     });
   });
 
-  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke, manageCredentials });
+  return PreviewAutomationBroker.of({
+    connect,
+    focusHost,
+    respond,
+    invoke,
+    manageCredentials,
+    mediaHostFor,
+    mediaRoutingChanges: SubscriptionRef.changes(mediaRouting),
+  });
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 
 export const layer = Layer.effect(PreviewAutomationBroker, make);

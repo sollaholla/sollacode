@@ -24,7 +24,37 @@ Native mobile has no full-screen remote-control entry point; mobile web uses the
 
 ## Browser preview
 
-Visible viewers subscribe to `preview.remoteFrames`. The relay sends demand to a capable desktop
+Compatible web viewers subscribe to `preview.mediaWatch`. `PreviewMediaBroker` binds an opaque
+watch to the authenticated viewer, canonical thread, tab, and selected automation host. Separate
+short-lived tickets grant subscriber or publisher access to the existing `/ws/media` relay.
+The host must advertise video support and own the current automation connection. Closing the tab,
+changing hosts, or removing the last watch invalidates the topic and its pending tickets.
+Revoking a paired session closes its existing RPC connections, releasing their scoped watches
+and host registrations as well as preventing new ticket requests.
+
+Host demand starts a requester-bound Electron tab capture and the shared video publisher. Codec
+negotiation, viewport sizing, congestion feedback, and decoder recovery use the same implementation
+as remote control. The native video-source descriptor measures the selected page or OAuth popup
+and returns its source identity, CSS viewport, and density together. Capture bounds preserve that
+aspect ratio; resize, zoom, and selected-surface changes replace the capture. A padded or mismatched
+track is rejected so normalized input cannot land in the wrong place.
+
+URL, loading, title, download approvals, and agent pointer updates travel as
+validated media broadcasts. Input continues through `preview.remoteInput` using frame fractions,
+which the host maps to its CSS viewport. Encoded pixel dimensions never become input coordinates.
+
+The web viewer keeps the JPEG feed until its first decoded video frame. If video cannot start or
+later fails, it retains the last picture until JPEG provides a replacement. Hiding or unmounting
+the viewer releases the watch, socket, and decoder. Native mobile continues to use JPEG; video
+and JPEG demand are independent, so mixed viewers can watch the same tab.
+Capture interruption is an explicit media broadcast. The viewer shows JPEG while retaining its
+media subscription for native capture retries, then restores video after a recovered frame decodes.
+This does not use frame inactivity as a failure signal, since an unchanged page may send no frames.
+Likewise, a first-frame timeout shows JPEG while leaving an established media subscription ready
+for a later frame. Codec, decoder, and connection failures still release the unusable video path.
+Native source aspect changes reconfigure the encoder even when its target width stays unchanged.
+
+Image viewers subscribe to `preview.remoteFrames`. The relay sends demand to a capable desktop
 host through its preview-automation stream. Chromium screencast frames feed a latest-frame pipeline:
 one picture is processed at a time, and the newest waiting picture replaces an older waiting one.
 A settled-page refresh avoids leaving the final change uncaptured after pacing a busy compositor.
@@ -42,7 +72,9 @@ per viewer. The last viewer leaving drops the relay's pictures and releases capt
 Hidden panels and background native apps unsubscribe. Unsupported hosts and capture failures use
 the existing snapshot path, including unchanged-picture suppression.
 
-Implementation: [`RemoteFrameRelay`](../../apps/server/src/preview/RemoteFrameRelay.ts),
+Implementation: [`PreviewMediaBroker`](../../apps/server/src/preview/PreviewMediaBroker.ts),
+[`remoteMedia`](../../apps/web/src/components/preview/remoteMedia),
+[`RemoteFrameRelay`](../../apps/server/src/preview/RemoteFrameRelay.ts),
 [`remoteFrames`](../../apps/web/src/components/preview/remoteFrames), and the shared
 [`feed`](../../packages/client-runtime/src/preview/remoteFrameFeed.ts).
 

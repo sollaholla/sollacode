@@ -3422,22 +3422,16 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       });
     });
 
-    /**
-     * Message ids on each thread whose force-send has been requested and has
-     * not yet been handed to a provider.
-     *
-     * The interrupt below must not kill a turn that another force-send in the
-     * same burst just started. Pressing "Send now" on two queued messages at
-     * once should send both, not have the second one shoot down the first —
-     * and because these are deliberate user actions arriving milliseconds
-     * apart, "the scheduler probably has not started the turn yet" is not a
-     * guarantee worth relying on. While any earlier force-send on the thread
-     * is still undelivered, later ones skip the interrupt and simply join the
-     * queue: the stop has already happened, and the thread drains in order.
-     * A force-send arriving after the burst has drained finds an empty set and
-     * interrupts normally, which is what a person pressing it later means.
-     */
-    const forceSendsAwaitingDelivery = new Map<string, Set<string>>();
+    // A burst ends when its first message reaches the provider. Its recovery
+    // obligation can remain executing for the entire new turn, and siblings
+    // can still be pending, so their work states do not describe delivery.
+    const forceSendBursts = new Map<
+      string,
+      {
+        readonly afterSequence: number;
+        readonly messageIds: Set<string>;
+      }
+    >();
 
     const processQueuedMessageSendNowRequested = Effect.fn("processQueuedMessageSendNowRequested")(
       function* (
@@ -3485,33 +3479,41 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           return;
         }
 
-        // Decide the burst question BEFORE reviving anything below. The revive
-        // puts this message's row back to `pending`, so asking afterwards would
-        // always find live work and no force-send would ever interrupt.
-        const awaiting = forceSendsAwaitingDelivery.get(threadKey) ?? new Set<string>();
-        // Drop ids whose delivery already settled, so a deliberate press long
-        // after an earlier one is not mistaken for part of a finished burst.
-        // This message's own id is pruned too: that is what separates a repeat
-        // press on a message still waiting to go (idempotent, must not stop the
-        // turn a moment later) from pressing it again after it has been sent.
-        // Deleting the entry the loop is standing on is well-defined for a Set
-        // iterator, so this needs no copy.
-        for (const pending of awaiting) {
-          const row = yield* threadWorkObligations.getByKey({
-            threadId,
-            sourceTurnId: activeTurnWorkSourceId(MessageId.make(pending)),
-            kind: "active-turn-recovery",
-          });
-          if (
-            Option.isNone(row) ||
-            row.value.state === "completed" ||
-            row.value.state === "cancelled"
-          )
-            awaiting.delete(pending);
+        // Use durable event order, not handler execution time: a second press
+        // may already be queued when the first delivery commits. It belongs
+        // to that same burst even if this control lane handles it afterward.
+        let burst = forceSendBursts.get(threadKey);
+        if (burst !== undefined) {
+          const delivered = projectionSnapshotQuery.getThreadDeliveredMessageIds
+            ? yield* projectionSnapshotQuery.getThreadDeliveredMessageIds(
+                threadId,
+                "1970-01-01T00:00:00.000Z",
+                { after: burst.afterSequence, before: event.sequence },
+              )
+            : new Set<string>();
+          if ([...burst.messageIds].some((id) => delivered.has(id))) {
+            burst = undefined;
+          } else {
+            for (const pending of burst.messageIds) {
+              const row = yield* threadWorkObligations.getByKey({
+                threadId,
+                sourceTurnId: activeTurnWorkSourceId(MessageId.make(pending)),
+                kind: "active-turn-recovery",
+              });
+              // A cancelled delivery can be retried. Completed rows alone
+              // cannot end the burst: completion may precede a receipt that
+              // was committed after this particular Send now request.
+              if (Option.isNone(row) || row.value.state === "cancelled") {
+                burst.messageIds.delete(pending);
+              }
+            }
+            if (burst.messageIds.size === 0) burst = undefined;
+          }
         }
-        const burstInProgress = awaiting.size > 0;
-        awaiting.add(String(messageId));
-        forceSendsAwaitingDelivery.set(threadKey, awaiting);
+        const burstInProgress = burst !== undefined;
+        burst ??= { afterSequence: event.sequence, messageIds: new Set<string>() };
+        burst.messageIds.add(String(messageId));
+        forceSendBursts.set(threadKey, burst);
 
         const providerInstanceId =
           thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
@@ -7779,8 +7781,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         }
       });
 
+      // Subscribe to the hot stream before start returns. An immediate user
+      // message can otherwise publish before this consumer exists.
       yield* Effect.forkScoped(
         Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent),
+        { startImmediately: true },
       );
       const providerChanges = yield* providerRegistry.subscribeChanges;
       yield* Effect.forkScoped(

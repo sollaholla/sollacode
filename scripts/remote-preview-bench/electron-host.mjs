@@ -5,8 +5,10 @@
 // desktop host answers. The orchestrator drives it over stdin/stdout.
 import * as NodeFS from "node:fs";
 import * as NodeReadline from "node:readline";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
-import { app, BrowserWindow, nativeImage, webContents } from "electron";
+import { app, BrowserWindow, nativeImage, webContents, ipcMain } from "electron";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
@@ -19,6 +21,7 @@ import {
   REMOTE_FRAME_SCREENCAST_QUALITY,
 } from "../../apps/desktop/src/preview/remoteFrameScreencast.ts";
 import { SCENE_VIEWPORT, SCENES, readMarker } from "./scenes.mjs";
+import { makePreviewAutomationKeySequence } from "../../apps/desktop/src/preview/PreviewKeyboard.ts";
 
 const PROTOCOL_PREFIX = "@@RP ";
 const OLD_JPEG_QUALITY = 78;
@@ -41,9 +44,15 @@ let notifyConnected = () => {};
 let threadId = "bench-thread";
 let tabId = "bench-tab";
 let encoderWindow = null;
+let hostWindow = null;
+let viewerWindow = null;
+let hostReadyForMedia = false;
+let pendingMediaDemand = [];
 let streamer = null;
 let pacer = null;
 let pageState = null;
+let connectedUrl = null;
+let reportToPreviewManager = false;
 let captureFrames = 0;
 let encodeCalls = 0;
 let publishedPictures = 0;
@@ -51,6 +60,39 @@ const encoderCall = (method, ...args) =>
   encoderWindow.webContents.executeJavaScript(
     `previewBenchEncoder.${method}(...${JSON.stringify(args)})`,
   );
+const mediaCall = (method, ...args) =>
+  encoderWindow.webContents.executeJavaScript(
+    `previewBenchMedia.${method}(...${JSON.stringify(args)})`,
+  );
+
+async function viewerCall({ method, args = [], size }) {
+  if (!viewerWindow) {
+    viewerWindow = new BrowserWindow({
+      show: false,
+      width: size?.width ?? 1200,
+      height: size?.height ?? 720,
+      useContentSize: true,
+      paintWhenInitiallyHidden: true,
+      webPreferences: { backgroundThrottling: false },
+    });
+    await viewerWindow.loadURL(NodeURL.pathToFileURL(rendererHtml()).href);
+    await viewerWindow.webContents.executeJavaScript(
+      NodeFS.readFileSync(process.env.BENCH_ENCODER_SCRIPT, "utf8"),
+    );
+  }
+  return viewerWindow.webContents.executeJavaScript(
+    `previewBenchMedia.${method}(...${JSON.stringify(args)})`,
+  );
+}
+
+function rendererHtml() {
+  const path = NodePath.join(NodePath.dirname(process.env.BENCH_ENCODER_SCRIPT), "renderer.html");
+  NodeFS.writeFileSync(
+    path,
+    '<!doctype html><body style="margin:0;background:white"><title>Preview benchmark renderer</title>',
+  );
+  return path;
+}
 
 async function stopCapture() {
   pacer?.dispose();
@@ -203,6 +245,8 @@ async function click(input) {
 }
 
 async function handleRequest(request) {
+  if (request.threadId !== threadId || (request.tabId !== undefined && request.tabId !== tabId))
+    throw new Error("The fixture host does not own this preview target.");
   switch (request.operation) {
     case "snapshot":
       return oldSnapshot();
@@ -223,6 +267,15 @@ async function handleRequest(request) {
     case "type":
       await cdp("Input.insertText", { text: request.input.text });
       return { tabId };
+    case "press": {
+      const sequence = makePreviewAutomationKeySequence(request.input, {
+        // eslint-disable-next-line t3code/no-global-process-runtime -- This is the isolated native Electron fixture entry, not an Effect service.
+        isMac: process.platform === "darwin",
+      });
+      await cdp("Input.dispatchKeyEvent", sequence.keyDown);
+      await cdp("Input.dispatchKeyEvent", sequence.keyUp);
+      return { tabId };
+    }
     default:
       throw new Error(`The bench host does not implement ${request.operation}.`);
   }
@@ -246,7 +299,16 @@ function onHostEvent(event) {
     return;
   }
   if (event.type === "frameDemand") {
-    streamer.setDemand(event.tabs);
+    streamer.setDemand(
+      event.tabs.filter((target) => target.threadId === threadId && target.tabId === tabId),
+    );
+    return;
+  }
+  if (event.type === "mediaDemand") {
+    pendingMediaDemand = event.tabs.filter(
+      (target) => target.threadId === threadId && target.tabId === tabId,
+    );
+    if (hostReadyForMedia) void mediaCall("setDemand", pendingMediaDemand).catch(log);
     return;
   }
   if (event.type === "request") {
@@ -261,14 +323,34 @@ function onHostEvent(event) {
   }
 }
 
-async function connect({ url, environmentId }) {
-  bench = await Effect.runPromise(connectBenchClient(url));
+async function connect({
+  url,
+  environmentId,
+  threadId: nextThreadId,
+  tabId: nextTabId,
+  bearerToken,
+  video = true,
+  reportStatus = false,
+}) {
+  hostReadyForMedia = false;
+  pendingMediaDemand = [];
+  await mediaCall("setDemand", []);
+  streamer.setDemand([]);
+  if (bench) await Effect.runPromise(bench.close);
+  if (nextThreadId) threadId = nextThreadId;
+  if (nextTabId) tabId = nextTabId;
+  connectedUrl = url;
+  reportToPreviewManager = reportStatus;
+  bench = await Effect.runPromise(
+    connectBenchClient(url, bearerToken ? { bearerToken } : undefined),
+  );
   const host = {
     clientId: hostClientId,
     environmentId,
     supportedOperations: ["status", "snapshot", "click", "scroll", "type", "press"],
     environmentLocal: true,
     streamsRemoteFrames: true,
+    ...(video ? { streamsPreviewMedia: true } : {}),
   };
   const ready = new Promise((resolve) => {
     notifyConnected = resolve;
@@ -292,18 +374,36 @@ async function connect({ url, environmentId }) {
   } finally {
     clearTimeout(timer);
   }
+  await mediaCall("startHost", { url, clientId: hostClientId, connectionId, tabId });
+  hostReadyForMedia = true;
+  await mediaCall("setDemand", pendingMediaDemand);
   return { connectionId };
 }
 
-async function loadScene({ name }) {
+async function publishPageState() {
+  streamer.stateChanged(tabId);
+  await mediaCall("setPage", pageState);
+  if (reportToPreviewManager)
+    await Effect.runPromise(
+      bench.client["preview.reportStatus"]({
+        threadId,
+        tabId,
+        navStatus: { _tag: "Success", url: pageState.url, title: pageState.title },
+        canGoBack: guest.navigationHistory.canGoBack(),
+        canGoForward: guest.navigationHistory.canGoForward(),
+      }),
+    );
+}
+
+async function loadScene({ name, url }) {
   const html = SCENES[name]?.();
   if (!html) throw new Error(`Unknown scene ${name}`);
-  await guest.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  await guest.loadURL(url ?? `data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   await cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
   await new Promise((resolve) => setTimeout(resolve, 500));
   const state = await status();
   pageState = { url: state.url, title: state.title, loading: false, pendingDownloadApprovals: [] };
-  streamer.stateChanged(tabId);
+  await publishPageState();
   captureFrames = 0;
   encodeCalls = 0;
   publishedPictures = 0;
@@ -365,7 +465,12 @@ function decodeFrames({ input, output }) {
     if (composite !== null && event.kind !== "same") {
       markerValue = readMarker(luminanceReader(composite.bitmap, composite.width), composite);
     }
-    results.push({ at: event.at, marker: markerValue });
+    results.push({
+      at: event.at,
+      marker: markerValue,
+      width: composite?.width ?? null,
+      height: composite?.height ?? null,
+    });
   }
   NodeFS.writeFileSync(output, results.map((result) => JSON.stringify(result)).join("\n"));
   return { count: results.length };
@@ -376,7 +481,52 @@ const operations = {
   scene: loadScene,
   marks: () => guest.executeJavaScript("window.__marks"),
   decode: decodeFrames,
-  counters: () => ({ captureFrames, encodeCalls, publishedPictures }),
+  compression: ({ data }) => encoderCall("compareCompression", data),
+  counters: async () => ({
+    captureFrames,
+    encodeCalls,
+    publishedPictures,
+    video: await mediaCall("hostStats"),
+  }),
+  videoViewer: viewerCall,
+  capture: ({ available }) => {
+    if (typeof available !== "boolean") throw new Error("Expected capture availability.");
+    return mediaCall("setCaptureAvailable", available);
+  },
+  resize: async ({ width, height }) => {
+    if (![width, height].every((value) => Number.isInteger(value) && value >= 240 && value <= 1600))
+      throw new Error("Fixture source dimensions must be integers between 240 and 1600.");
+    const resized = guest.executeJavaScript(`new Promise((resolve, reject) => {
+      let timer;
+      const cleanup = () => { clearTimeout(timer); window.removeEventListener('resize', changed); };
+      const changed = () => {
+        if (innerWidth !== ${width} || innerHeight !== ${height}) return;
+        cleanup(); resolve({ width: innerWidth, height: innerHeight, devicePixelRatio });
+      };
+      window.addEventListener('resize', changed);
+      timer = setTimeout(() => { cleanup(); reject(new Error('Fixture source resize timed out.')); }, 5000);
+      changed();
+    })`);
+    void resized.catch(() => undefined);
+    hostWindow.setContentSize(width, height);
+    await hostWindow.webContents.executeJavaScript(
+      `Object.assign(document.querySelector('webview').style, { width: '${width}px', height: '${height}px' }); undefined`,
+    );
+    const viewport = await resized;
+    await mediaCall("sourceChanged");
+    return viewport;
+  },
+  fixtureState: () =>
+    guest.executeJavaScript(
+      "({ title:document.title, url:location.href, width:innerWidth, height:innerHeight, devicePixelRatio, scrollY, value:document.querySelector('textarea,input')?.value ?? null, clicks:window.__fixtureClicks ?? 0, marks:window.__marks ?? [] })",
+    ),
+  pageMetadata: async ({ title, agentPointer }) => {
+    if (title !== undefined)
+      await guest.executeJavaScript(`document.title = ${JSON.stringify(title)}`);
+    pageState = { ...pageState, ...(title === undefined ? {} : { title }), agentPointer };
+    await publishPageState();
+    return pageState;
+  },
   quit: () => {
     setTimeout(() => app.exit(0), 50);
     return {};
@@ -391,6 +541,7 @@ app.whenReady().then(async () => {
     paintWhenInitiallyHidden: true,
     webPreferences: { backgroundThrottling: false, webviewTag: true },
   });
+  hostWindow = window;
   await window.loadURL(
     `data:text/html,${encodeURIComponent(
       `<body style="margin:0;overflow:hidden"><webview style="position:fixed;inset:0;width:${SCENE_VIEWPORT.width}px;height:${SCENE_VIEWPORT.height}px;display:flex" src="about:blank" webpreferences="backgroundThrottling=false"></webview></body>`,
@@ -409,9 +560,41 @@ app.whenReady().then(async () => {
   guest.debugger.attach("1.3");
   encoderWindow = new BrowserWindow({
     show: false,
-    webPreferences: { backgroundThrottling: false },
+    webPreferences: {
+      backgroundThrottling: false,
+      preload: NodeURL.fileURLToPath(new URL("./media-preload.cjs", import.meta.url)),
+    },
   });
-  await encoderWindow.loadURL("data:text/html,<title>Preview benchmark encoder</title>");
+  ipcMain.handle("preview-bench-tab-source", async (event) => {
+    if (event.sender !== encoderWindow.webContents)
+      throw new Error("Unexpected tab-capture requester.");
+    const viewport = await guest.executeJavaScript(
+      "({ width: innerWidth, height: innerHeight, devicePixelRatio })",
+    );
+    return {
+      ...viewport,
+      sourceId: guest.getMediaSourceId(encoderWindow.webContents),
+      webContentsId: guest.id,
+    };
+  });
+  ipcMain.handle("preview-bench-host-media-url", async (event, target) => {
+    if (
+      event.sender !== encoderWindow.webContents ||
+      target.threadId !== threadId ||
+      target.tabId !== tabId
+    )
+      throw new Error("Unexpected preview media target.");
+    const { ticket } = await Effect.runPromise(
+      bench.client["preview.hostMediaTicket"]({ ...target, clientId: hostClientId, connectionId }),
+    );
+    const url = new URL(connectedUrl);
+    url.pathname = url.pathname.replace(/\/ws\/?$/, "/ws/media");
+    url.search = "";
+    url.hash = "";
+    url.searchParams.set("ticket", ticket);
+    return url.toString();
+  });
+  await encoderWindow.loadURL(NodeURL.pathToFileURL(rendererHtml()).href);
   await encoderWindow.webContents.executeJavaScript(
     NodeFS.readFileSync(process.env.BENCH_ENCODER_SCRIPT, "utf8"),
   );

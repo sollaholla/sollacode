@@ -20,10 +20,18 @@ export interface SocketCounters {
  * counters read the TCP socket underneath, so they are what a phone's radio
  * would carry.
  */
-export const connectBenchClient = Effect.fn("bench.connectBenchClient")(function* (url: string) {
+export const connectBenchClient = Effect.fn("bench.connectBenchClient")(function* (
+  url: string,
+  options?: { readonly bearerToken?: string },
+) {
   const sockets: Array<InstanceType<typeof NodeSocket.NodeWS.WebSocket>> = [];
   const constructor = Layer.succeed(Socket.WebSocketConstructor, (target, protocols) => {
-    const socket = new NodeSocket.NodeWS.WebSocket(target, protocols, { perMessageDeflate: true });
+    const socket = new NodeSocket.NodeWS.WebSocket(target, protocols, {
+      perMessageDeflate: true,
+      ...(options?.bearerToken
+        ? { headers: { Authorization: `Bearer ${options.bearerToken}` } }
+        : {}),
+    });
     sockets.push(socket);
     return socket as unknown as globalThis.WebSocket;
   });

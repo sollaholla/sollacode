@@ -40,6 +40,26 @@ describe("contextWindow", () => {
     expect(snapshot?.compactsAutomatically).toBe(true);
   });
 
+  it("skips rows that carried a subagent's own token total", () => {
+    const snapshot = deriveLatestContextWindowSnapshot([
+      makeActivity("activity-1", "context-window.updated", {
+        usedTokens: 279_989,
+        maxTokens: 800_000,
+      }),
+      makeActivity("activity-2", "context-window.updated", {
+        usedTokens: 800_000,
+        lastUsedTokens: 800_000,
+        totalProcessedTokens: 4_051_107,
+        maxTokens: 800_000,
+        toolUses: 1623,
+        durationMs: 1_391_337,
+      }),
+    ]);
+
+    expect(snapshot?.usedTokens).toBe(279_989);
+    expect(snapshot?.usedPercentage).toBeCloseTo(35, 0);
+  });
+
   it("ignores malformed payloads", () => {
     const snapshot = deriveLatestContextWindowSnapshot([
       makeActivity("activity-1", "context-window.updated", {}),

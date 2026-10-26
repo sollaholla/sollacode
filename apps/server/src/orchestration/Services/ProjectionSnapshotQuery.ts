@@ -268,6 +268,8 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDeliveredMessageIds?: (
     threadId: ThreadId,
     since: string,
+    /** Use event-log order between these events instead of the timestamp window. */
+    sequenceWindow?: { readonly after: number; readonly before: number },
   ) => Effect.Effect<ReadonlySet<string>, ProjectionRepositoryError>;
 
   readonly getThreadTurnStartContext?: (

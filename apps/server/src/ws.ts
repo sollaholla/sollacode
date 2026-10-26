@@ -131,6 +131,7 @@ import { mediaChannelRouteHandler } from "./media/mediaChannelRoute.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
 import * as TabAudioRelay from "./preview/TabAudioRelay.ts";
 import * as RemoteFrameRelay from "./preview/RemoteFrameRelay.ts";
+import * as PreviewMediaBroker from "./preview/PreviewMediaBroker.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
 import {
@@ -201,6 +202,7 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
+import { withSessionLifetime } from "./auth/sessionLifetime.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
@@ -603,6 +605,7 @@ const makeWsRpcLayer = (
   remoteControlBroker: RemoteControlBroker.RemoteControlBroker["Service"],
   tabAudioRelay: TabAudioRelay.TabAudioRelay["Service"],
   remoteFrameRelay: RemoteFrameRelay.RemoteFrameRelay["Service"],
+  previewMediaBroker: PreviewMediaBroker.PreviewMediaBroker["Service"],
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -3037,6 +3040,24 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "preview" },
           ),
+        [WS_METHODS.previewMediaWatch]: (input) =>
+          observeRpcStream(
+            WS_METHODS.previewMediaWatch,
+            previewMediaBroker.watch(input, currentSessionId),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.previewMediaTicket]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewMediaTicket,
+            previewMediaBroker.issueTicket(input, currentSessionId),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.previewHostMediaTicket]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewHostMediaTicket,
+            previewMediaBroker.issueHostTicket(input, currentSessionId),
+            { "rpc.aggregate": "preview" },
+          ),
         [WS_METHODS.previewRemoteFrames]: (input) =>
           observeRpcStream(WS_METHODS.previewRemoteFrames, remoteFrameRelay.watch(input), {
             "rpc.aggregate": "preview",
@@ -3091,6 +3112,7 @@ const makeWsRpcLayer = (
                 input.manageCredentials && !isLocalDesktopSession
                   ? { ...input, manageCredentials: false }
                   : input,
+                currentSessionId,
               )
               .pipe(
                 Effect.map((events) =>
@@ -3101,6 +3123,11 @@ const makeWsRpcLayer = (
                 Effect.map((events) =>
                   input.streamsRemoteFrames
                     ? RemoteFrameRelay.withRemoteFrameDemand(events, remoteFrameRelay)
+                    : events,
+                ),
+                Effect.map((events) =>
+                  input.streamsPreviewMedia
+                    ? PreviewMediaBroker.withPreviewMediaDemand(events, previewMediaBroker)
                     : events,
                 ),
               ),
@@ -3855,6 +3882,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const remoteControlBroker = yield* RemoteControlBroker.RemoteControlBroker;
     const tabAudioRelay = yield* TabAudioRelay.TabAudioRelay;
     const remoteFrameRelay = yield* RemoteFrameRelay.RemoteFrameRelay;
+    const previewMediaBroker = yield* PreviewMediaBroker.PreviewMediaBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     return HttpRouter.add(
       "GET",
@@ -3863,6 +3891,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const request = yield* HttpServerRequest.HttpServerRequest;
         const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
         const sessions = yield* SessionStore.SessionStore;
+        const sessionChanges = yield* sessions.subscribeChanges;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request).pipe(
           Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, (error) =>
             failEnvironmentAuthInvalid(EnvironmentAuth.serverAuthCredentialReason(error)),
@@ -3881,6 +3910,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               remoteControlBroker,
               tabAudioRelay,
               remoteFrameRelay,
+              previewMediaBroker,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(ProviderMaintenanceRunner.layer),
@@ -3912,7 +3942,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         );
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
-          () => rpcWebSocketHttpEffect,
+          () => withSessionLifetime(session.sessionId, sessionChanges, rpcWebSocketHttpEffect),
           () => sessions.markDisconnected(session.sessionId),
         );
       }).pipe(

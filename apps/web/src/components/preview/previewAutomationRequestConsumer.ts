@@ -4,6 +4,7 @@ import type {
   PreviewAutomationResponse,
   PreviewAutomationStreamEvent,
   PreviewCredentialVaultCommand,
+  PreviewMediaDemand,
   PreviewRemoteFrameDemand,
   PreviewTabAudioTarget,
 } from "@t3tools/contracts";
@@ -74,6 +75,8 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
    * registered with `streamsRemoteFrames` are sent one.
    */
   readonly handleFrameDemand?: (tabs: ReadonlyArray<PreviewRemoteFrameDemand>) => void;
+  /** Video demand is separate so older picture subscribers keep their existing capture. */
+  readonly handleMediaDemand?: (tabs: ReadonlyArray<PreviewMediaDemand>) => void;
   readonly renewAutomationForeground: () => Promise<unknown>;
   readonly respond: (response: PreviewAutomationResponse) => Promise<unknown>;
   readonly label: string;
@@ -151,12 +154,16 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
     const consume = (result: AutomationStreamResult<E>) => {
       if (AsyncResult.isFailure(result)) {
         options.handleFrameDemand?.([]);
+        options.handleMediaDemand?.([]);
         return;
       }
       if (!AsyncResult.isSuccess(result)) return;
       const event = result.value;
       if (event.type === "connected") {
-        if (activeConnectionId !== event.connectionId) options.handleFrameDemand?.([]);
+        if (activeConnectionId !== event.connectionId) {
+          options.handleFrameDemand?.([]);
+          options.handleMediaDemand?.([]);
+        }
         activeConnectionId = event.connectionId;
         connectionExplicitlyAnnounced = true;
       } else if (activeConnectionId === null) {
@@ -184,6 +191,10 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
       }
       if (event.type === "frameDemand") {
         options.handleFrameDemand?.(event.tabs);
+        return;
+      }
+      if (event.type === "mediaDemand") {
+        options.handleMediaDemand?.(event.tabs);
         return;
       }
       if (event.type === "credentialVault") {
@@ -257,6 +268,7 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
     get.addFinalizer(() => {
       disposed = true;
       options.handleFrameDemand?.([]);
+      options.handleMediaDemand?.([]);
       clearForegroundKeepalive();
     });
     const initialRequest = get.once(options.requestsAtom);

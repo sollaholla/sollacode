@@ -92,6 +92,10 @@ import {
 } from "../terminalPaneLayout";
 import { readLocalApi } from "~/localApi";
 import { clientOwnsTerminalGeometry, terminalClientId } from "../terminalClientIdentity";
+import {
+  consumeTerminalGeometryActivation,
+  type TerminalGeometrySurface,
+} from "../terminalGeometryActivation";
 import { useAttachedTerminalSession, useKnownTerminalSessions } from "../state/terminalSessions";
 import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
 import { subscribeTerminalKeyboardInput } from "./terminal/keyboardInput";
@@ -1029,6 +1033,7 @@ interface TerminalViewportProps {
   focusRequestId: number;
   autoFocus: boolean;
   surfaceVisible: boolean;
+  geometrySurface?: TerminalGeometrySurface;
   locallyOpening: boolean;
   resizeEpoch: number;
   /**
@@ -1060,6 +1065,7 @@ export function TerminalViewport({
   focusRequestId,
   autoFocus,
   surfaceVisible,
+  geometrySurface = "drawer",
   locallyOpening,
   resizeEpoch,
   nudgeEpoch = 0,
@@ -1126,6 +1132,7 @@ export function TerminalViewport({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const scheduleTerminalLayoutRef = useRef<(() => void) | null>(null);
   const refreshTerminalLayoutRef = useRef<(() => void) | null>(null);
+  const claimTerminalGeometryRef = useRef<(() => void) | null>(null);
   const initialFollowTailRef = useRef<ReturnType<typeof createTerminalInitialFollowTail> | null>(
     null,
   );
@@ -1248,6 +1255,7 @@ export function TerminalViewport({
   // was born from a local open even after metadata confirms it and removes the
   // id from the pending-open set.
   const locallyOpeningAtMountRef = useRef(locallyOpening);
+  const localOpenGeometryClaimPendingRef = useRef(locallyOpening);
   const [replayOverlayVisible, setReplayOverlayVisible] = useState(() =>
     shouldShowInitialTerminalReplayOverlay(locallyOpeningAtMountRef.current),
   );
@@ -1601,6 +1609,21 @@ export function TerminalViewport({
       request: (callback) => window.requestAnimationFrame(callback),
       cancel: (frameId) => window.cancelAnimationFrame(frameId),
     });
+    const claimTerminalGeometry = () => {
+      if (!surfaceVisibleRef.current || !document.hasFocus()) return;
+      terminalUserActivityAt = Date.now();
+      if (serverGeometryOwnerRef.current !== terminalClientId()) {
+        if (!pendingGeometryClaim || lastObservedOwner !== serverGeometryOwnerRef.current) {
+          // Same-sized panes still transfer ownership. The server suppresses
+          // redundant PTY resizes while publishing the new geometry owner.
+          lastReportedGeometry = null;
+        }
+        pendingGeometryClaim = true;
+      }
+      lastObservedOwner = serverGeometryOwnerRef.current;
+      layoutScheduler.schedule();
+    };
+    claimTerminalGeometryRef.current = claimTerminalGeometry;
     scheduleTerminalLayoutRef.current = layoutScheduler.schedule;
     // Reattachment is restored from the server's parsed screen. Revealing or
     // focusing a pane only refreshes its renderer; synthetic size detours made
@@ -1987,7 +2010,7 @@ export function TerminalViewport({
     // focus switch; re-run layout then so this pane reclaims its fit (the
     // scheduler coalesces to a no-op when nothing changed).
     const handleUserActivityLayout = () => {
-      layoutScheduler.schedule();
+      claimTerminalGeometry();
     };
     mount.addEventListener("keydown", handleUserActivityLayout, {
       capture: true,
@@ -2024,6 +2047,7 @@ export function TerminalViewport({
         scheduleTerminalLayoutRef.current = null;
       }
       refreshTerminalLayoutRef.current = null;
+      claimTerminalGeometryRef.current = null;
       if (initialFollowTailRef.current === initialFollowTail) {
         initialFollowTailRef.current = null;
       }
@@ -2046,6 +2070,26 @@ export function TerminalViewport({
       terminal.dispose();
     };
   }, [cwd, environmentId, runtimeEnvKey, terminalId, threadId, worktreePath]);
+
+  useEffect(() => {
+    if (!surfaceVisible || !document.hasFocus() || terminalStatus !== "running") {
+      return;
+    }
+    const activated =
+      autoFocus && consumeTerminalGeometryActivation(threadRef, terminalId, geometrySurface);
+    if (activated || localOpenGeometryClaimPendingRef.current) {
+      localOpenGeometryClaimPendingRef.current = false;
+      claimTerminalGeometryRef.current?.();
+    }
+  }, [
+    autoFocus,
+    surfaceVisible,
+    focusRequestId,
+    terminalStatus,
+    threadRef,
+    terminalId,
+    geometrySurface,
+  ]);
 
   useEffect(() => {
     const handleDocumentVisibilityChange = () => {
@@ -3623,6 +3667,7 @@ export default function ThreadTerminalDrawer({
               focusRequestId={focusRequestId}
               autoFocus={terminalId === resolvedActiveTerminalId}
               surfaceVisible={visible}
+              geometrySurface={focusOwner ?? (isPanel ? "right-panel" : "drawer")}
               locallyOpening={locallyOpeningTerminalIdSet.has(terminalId)}
               resizeEpoch={resizeEpoch}
               {...(nudgeEpoch !== undefined ? { nudgeEpoch } : {})}
@@ -3916,6 +3961,7 @@ export default function ThreadTerminalDrawer({
                     focusRequestId={focusRequestId}
                     autoFocus
                     surfaceVisible={visible}
+                    geometrySurface={focusOwner ?? (isPanel ? "right-panel" : "drawer")}
                     locallyOpening={locallyOpeningTerminalIdSet.has(resolvedActiveTerminalId)}
                     resizeEpoch={resizeEpoch}
                     {...(nudgeEpoch !== undefined ? { nudgeEpoch } : {})}

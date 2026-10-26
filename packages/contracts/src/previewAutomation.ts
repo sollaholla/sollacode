@@ -7,6 +7,7 @@ import {
   PreviewContextMenuCommand,
   PreviewContextMenuTarget,
   PreviewRemoteFrameDemand,
+  PreviewMediaDemand,
   PreviewRenderedViewportSize,
   PreviewTabAudioTarget,
   PreviewTabId,
@@ -1333,6 +1334,8 @@ export const PreviewAutomationHost = Schema.Struct({
    * viewers of a desktop without it keep polling for snapshots.
    */
   streamsRemoteFrames: Schema.optional(Schema.Boolean),
+  /** Opts into video demand; older hosts continue using JPEG frames. */
+  streamsPreviewMedia: Schema.optional(Schema.Boolean),
   /**
    * Whether this host answers `credentialVault` requests, so a settings screen
    * on another device can manage the passwords this desktop keeps. A flag
@@ -1414,8 +1417,22 @@ export const PreviewAutomationStreamEvent = Schema.Union([
     connectionId: PreviewAutomationConnectionId,
     tabs: Schema.Array(PreviewRemoteFrameDemand),
   }),
+  /** Sent only to hosts registered with streamsPreviewMedia. */
+  Schema.Struct({
+    type: Schema.Literal("mediaDemand"),
+    connectionId: PreviewAutomationConnectionId,
+    tabs: Schema.Array(PreviewMediaDemand),
+  }),
 ]);
 export type PreviewAutomationStreamEvent = typeof PreviewAutomationStreamEvent.Type;
+
+export const PreviewHostMediaTicketInput = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  clientId: PreviewAutomationClientId,
+  connectionId: PreviewAutomationConnectionId,
+});
+export type PreviewHostMediaTicketInput = typeof PreviewHostMediaTicketInput.Type;
 
 export const PreviewAutomationResponse = Schema.Struct({
   clientId: PreviewAutomationClientId,

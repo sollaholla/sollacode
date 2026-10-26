@@ -8,6 +8,7 @@
 import type {
   DesktopPreviewAnnotationTheme,
   DesktopPreviewColorScheme,
+  DesktopPreviewVideoSource,
   DesktopPreviewPointerEvent,
   DesktopPreviewNewTabRequest,
   PreviewAnnotationPayload,
@@ -38,7 +39,7 @@ import type {
   PreviewAutomationUploadResult,
   PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
-import { PreviewCredentialKind } from "@t3tools/contracts";
+import { PreviewCredentialKind, DesktopPreviewVideoSourceSchema } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import {
@@ -112,11 +113,14 @@ import {
   ELEMENT_PICKED_CHANNEL,
   HUMAN_INPUT_CHANNEL,
   START_PICK_CHANNEL,
+  VIDEO_SOURCE_CHANGED_CHANNEL,
 } from "./GuestProtocol.ts";
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { playwrightInjectedRuntimeInstallExpression } from "./PlaywrightInjectedRuntime.ts";
 import { makePreviewAutomationKeySequence } from "./PreviewKeyboard.ts";
 import { PREVIEW_POPUP_WEB_PREFERENCES } from "./WebviewPreferences.ts";
+
+const isDesktopPreviewVideoSource = Schema.is(DesktopPreviewVideoSourceSchema);
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -1098,6 +1102,7 @@ const nextZoomLevel = (current: number, direction: "in" | "out"): number => {
 };
 
 type Listener = (tabId: string, state: PreviewTabState) => Effect.Effect<void>;
+type VideoSourceListener = (tabId: string) => Effect.Effect<void>;
 type RecordingFrameListener = (frame: DesktopPreviewRecordingFrame) => Effect.Effect<void>;
 type RemoteFrameListener = (frame: DesktopPreviewRemoteFrame) => Effect.Effect<void>;
 type NewTabRequestListener = (request: DesktopPreviewNewTabRequest) => Effect.Effect<void>;
@@ -1301,6 +1306,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const popupWindowsByTab = new Map<string, ReadonlyArray<PopupWindowSession>>();
   const popupTabByWebContentsId = new Map<number, string>();
   const listenersRef = yield* Ref.make<ReadonlySet<Listener>>(new Set());
+  const videoSourceListenersRef = yield* Ref.make<ReadonlySet<VideoSourceListener>>(new Set());
+  const videoSelections = new Map<
+    string,
+    { readonly webContentsId: number | null; readonly zoomFactor: number }
+  >();
   const pointerEventListenersRef = yield* Ref.make<ReadonlySet<PointerEventListener>>(new Set());
   const newTabRequestListenersRef = yield* Ref.make<ReadonlySet<NewTabRequestListener>>(new Set());
   const recordingFrameListenersRef = yield* Ref.make<ReadonlySet<RecordingFrameListener>>(
@@ -1644,7 +1654,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       | "recording-frame"
       | "remote-frame"
       | "pointer-event"
-      | "new-tab-request",
+      | "new-tab-request"
+      | "video-source-change",
     tabId: string,
     delivery: () => Effect.Effect<void>,
   ) =>
@@ -1660,6 +1671,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       ),
     );
 
+  const emitVideoSourceChanged = Effect.fn("PreviewManager.emitVideoSourceChanged")(function* (
+    tabId: string,
+  ) {
+    const listeners = yield* Ref.get(videoSourceListenersRef);
+    yield* Effect.forEach(
+      listeners,
+      (listener) => deliverEvent("video-source-change", tabId, () => listener(tabId)),
+      { discard: true },
+    );
+  });
+
   const emit = Effect.fn("PreviewManager.emit")(function* (tabId: string, state: PreviewTabState) {
     const listeners = yield* Ref.get(listenersRef);
     yield* Effect.forEach(
@@ -1667,6 +1689,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       (listener) => deliverEvent("state-change", tabId, () => listener(tabId, state)),
       { discard: true },
     );
+    const selected = {
+      webContentsId: currentWebContentsForTab(state)?.id ?? null,
+      zoomFactor: state.zoomFactor,
+    };
+    const previous = videoSelections.get(tabId);
+    if (selected.webContentsId === null) videoSelections.delete(tabId);
+    else videoSelections.set(tabId, selected);
+    if (
+      previous?.webContentsId !== selected.webContentsId ||
+      previous?.zoomFactor !== selected.zoomFactor
+    ) {
+      yield* emitVideoSourceChanged(tabId);
+    }
   });
 
   const emitNewTabRequest = Effect.fn("PreviewManager.emitNewTabRequest")(function* (
@@ -2859,6 +2894,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         runFork(detachPopupWindow(tabId, popupWebContents.id));
       }
     };
+    const videoSourceChanged = () => {
+      if (active && currentPopupForTab(tabId)?.webContents.id === popupWebContents.id)
+        runFork(emitVideoSourceChanged(tabId));
+    };
     const handleHumanInput = Effect.fn("PreviewManager.handlePopupHumanInput")(function* (
       rawSignal?: unknown,
     ) {
@@ -2979,6 +3018,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         () => {
           active = false;
           window.off("closed", closed);
+          window.off("resize", videoSourceChanged);
+          popupWebContents.off("zoom-changed", videoSourceChanged);
+          popupWebContents.off("did-navigate", videoSourceChanged);
           if (!popupWebContents.isDestroyed()) {
             popupWebContents.off("destroyed", closed);
             popupWebContents.off("will-navigate", willNavigate);
@@ -2991,6 +3033,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { operation: "attachPopupWindowListeners", tabId, webContentsId: popupWebContents.id },
       () => {
         window.on("closed", closed);
+        window.on("resize", videoSourceChanged);
+        popupWebContents.on("zoom-changed", videoSourceChanged);
+        popupWebContents.on("did-navigate", videoSourceChanged);
         popupWebContents.on("destroyed", closed);
         popupWebContents.on("will-navigate", willNavigate);
         popupWebContents.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
@@ -3420,6 +3465,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const unavailable = yield* Deferred.make<void>();
     const webContentsId = wc.id;
     let listenersActive = true;
+    const videoSourceChanged = (event?: Electron.IpcMainEvent) => {
+      if (!listenersActive || (event !== undefined && event.senderFrame !== wc.mainFrame)) return;
+      const current = SynchronizedRef.getUnsafe(tabsRef).get(tabId);
+      if (current && isCurrentWebContentsForTab(current, wc.id))
+        runFork(emitVideoSourceChanged(tabId));
+    };
+    const videoZoomChanged = () => videoSourceChanged();
     let humanInputGeneration = 0;
     let directNewTabIntent: string | null = null;
     let directNewTabIntentGeneration = 0;
@@ -3547,6 +3599,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         navigationAttemptsByTab.set(tabId, { ...attempt, mainFrameCommitted: true });
       }
       runFork(syncState(false));
+      videoSourceChanged();
     };
     const inPageNavigationCommitted = (
       _event: Electron.Event,
@@ -3942,6 +3995,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.off("did-create-window", didCreateWindow);
         wc.off("destroyed", destroyed);
         wc.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
+        wc.ipc.off(VIDEO_SOURCE_CHANGED_CHANNEL, videoSourceChanged);
+        wc.off("zoom-changed", videoZoomChanged);
         guestEditorFocusedTabs.delete(tabId);
       }).pipe(Effect.ignore),
     );
@@ -3959,6 +4014,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.on("destroyed", destroyed);
         wc.on("did-create-window", didCreateWindow);
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
+        wc.ipc.on(VIDEO_SOURCE_CHANGED_CHANNEL, videoSourceChanged);
+        wc.on("zoom-changed", videoZoomChanged);
         wc.setWindowOpenHandler(({ url, disposition, features, frameName, postBody }) => {
           if (!listenersActive) return { action: "deny" };
           // OAuth SDKs retain the child's WindowProxy so the provider can
@@ -6002,6 +6059,55 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
     }
     return yield* Effect.failCause(initializationExit.cause);
+  });
+
+  /** Measures and captures exactly the surface receiving preview input. */
+  const getTabVideoSource = Effect.fn("PreviewManager.getTabVideoSource")(function* (
+    tabId: string,
+    requesterWebContentsId: number,
+  ): Effect.fn.Return<DesktopPreviewVideoSource | null> {
+    const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+    if (!tab || tab.webContentsId === null) return null;
+    const opener = webContents.fromId(tab.webContentsId);
+    const requester = webContents.fromId(requesterWebContentsId);
+    const wc = currentWebContentsForTab(tab);
+    if (
+      !opener ||
+      opener.isDestroyed() ||
+      !requester ||
+      requester.isDestroyed() ||
+      opener.hostWebContents !== requester ||
+      !wc ||
+      wc.isDestroyed()
+    )
+      return null;
+    const geometry = yield* attemptPromiseWithin<unknown>(
+      { operation: "getTabVideoSource.viewport", tabId, webContentsId: wc.id },
+      () =>
+        wc.executeJavaScriptInIsolatedWorld(991, [
+          {
+            code: "({width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio})",
+          },
+        ]),
+      2_000,
+    ).pipe(Effect.orElseSucceed(() => null));
+    if (typeof geometry !== "object" || geometry === null) return null;
+    const current = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+    if (
+      !current ||
+      current.webContentsId !== tab.webContentsId ||
+      currentWebContentsForTab(current) !== wc ||
+      wc.isDestroyed() ||
+      requester.isDestroyed()
+    )
+      return null;
+    const descriptor = { ...geometry, sourceId: "pending", webContentsId: wc.id };
+    if (!isDesktopPreviewVideoSource(descriptor)) return null;
+    const sourceId = yield* attempt(
+      { operation: "getTabVideoSource", tabId, webContentsId: wc.id },
+      () => wc.getMediaSourceId(requester),
+    ).pipe(Effect.orElseSucceed(() => null));
+    return sourceId ? { ...descriptor, sourceId } : null;
   });
 
   /**
@@ -8450,6 +8556,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     yield* Effect.all(
       [
         Ref.set(listenersRef, new Set()),
+        Ref.set(videoSourceListenersRef, new Set()),
         Ref.set(expectedAgentInputsRef, new Map()),
         Ref.set(pointerEventListenersRef, new Set()),
         Ref.set(newTabRequestListenersRef, new Set()),
@@ -8505,6 +8612,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     setColorScheme,
     setMainWindow,
     getTabAudioSource,
+    getTabVideoSource,
     startRemoteFrames,
     stopRemoteFrames,
     refreshRemoteFrame,
@@ -8520,6 +8628,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     subscribeRecordingFrames: (listener: RecordingFrameListener) =>
       subscribe(recordingFrameListenersRef, listener),
     subscribeStateChanges: (listener: Listener) => subscribe(listenersRef, listener),
+    subscribeVideoSourceChanges: (listener: VideoSourceListener) =>
+      subscribe(videoSourceListenersRef, listener),
     zoomIn: (tabId: string) => applyZoom(tabId, (current) => nextZoomLevel(current, "in")),
     zoomOut: (tabId: string) => applyZoom(tabId, (current) => nextZoomLevel(current, "out")),
   };
@@ -8936,6 +9046,10 @@ export class PreviewManager extends Context.Service<
     readonly closePictureInPicture: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly startRecording: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly getTabAudioSource: (tabId: string) => Effect.Effect<string | null>;
+    readonly getTabVideoSource: (
+      tabId: string,
+      requesterWebContentsId: number,
+    ) => Effect.Effect<DesktopPreviewVideoSource | null>;
     /** Streams a tab to remote viewers; see `subscribeRemoteFrames`. */
     readonly startRemoteFrames: (
       tabId: string,
@@ -9011,6 +9125,9 @@ export class PreviewManager extends Context.Service<
       input: { readonly timeoutMs?: number | undefined },
     ) => Effect.Effect<PreviewAutomationWaitForDownloadResult, PreviewManagerError>;
     readonly subscribeStateChanges: (listener: Listener) => Effect.Effect<void, never, Scope.Scope>;
+    readonly subscribeVideoSourceChanges: (
+      listener: VideoSourceListener,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     readonly subscribePointerEvents: (
       listener: PointerEventListener,
     ) => Effect.Effect<void, never, Scope.Scope>;
@@ -9124,6 +9241,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     closePictureInPicture: operations.closePictureInPicture,
     startRecording: operations.startRecording,
     getTabAudioSource: operations.getTabAudioSource,
+    getTabVideoSource: operations.getTabVideoSource,
     startRemoteFrames: operations.startRemoteFrames,
     stopRemoteFrames: operations.stopRemoteFrames,
     refreshRemoteFrame: operations.refreshRemoteFrame,
@@ -9144,6 +9262,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     automationWaitFor: operations.automationWaitFor,
     automationWaitForDownload: operations.automationWaitForDownload,
     subscribeStateChanges: operations.subscribeStateChanges,
+    subscribeVideoSourceChanges: operations.subscribeVideoSourceChanges,
     subscribePointerEvents: operations.subscribePointerEvents,
     subscribeNewTabRequests: operations.subscribeNewTabRequests,
     subscribeRecordingFrames: operations.subscribeRecordingFrames,

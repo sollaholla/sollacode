@@ -21,6 +21,7 @@ import {
   ELEMENT_PICKED_CHANNEL,
   HUMAN_INPUT_CHANNEL,
   START_PICK_CHANNEL,
+  VIDEO_SOURCE_CHANGED_CHANNEL,
 } from "./GuestProtocol.ts";
 const OVERLAY_ATTRIBUTE = "data-t3code-annotation-ui";
 const INPUT_LAYER_ATTRIBUTE = "data-t3code-annotation-input";
@@ -119,6 +120,25 @@ const reportHumanKeyInput = (event: KeyboardEvent): void => {
       event.key === "Enter" && anchor !== null && target === "_blank" ? anchor.href : null,
   });
 };
+
+// Guest layout changes are native capture changes, even when the page does
+// not navigate. Report only events; there is no animation or polling loop.
+if (window.top === window) {
+  const changed = () => ipcRenderer.send(VIDEO_SOURCE_CHANGED_CHANNEL);
+  window.addEventListener("resize", changed);
+  const watchDensity = () => {
+    const density = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    density.addEventListener(
+      "change",
+      () => {
+        changed();
+        watchDensity();
+      },
+      { once: true },
+    );
+  };
+  watchDensity();
+}
 
 window.addEventListener("pointerdown", reportHumanPointerInput, true);
 window.addEventListener("keydown", reportHumanKeyInput, true);
