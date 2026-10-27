@@ -140,6 +140,7 @@ import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryR
 import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
+import * as DeviceManager from "./devices/DeviceManager.ts";
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
@@ -837,6 +838,7 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(Layer.mock(HostVitalsMonitor.HostVitalsMonitor)({ stream: Stream.empty })),
+      Layer.provide(Layer.mock(DeviceManager.DeviceManager)({})),
       Layer.provide(
         Layer.mock(ImageThumbnails.ImageThumbnails)({
           thumbnail: () => Effect.succeed(null),

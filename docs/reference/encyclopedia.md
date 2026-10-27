@@ -129,6 +129,10 @@ The backend agent runtime that actually performs work. Built-in drivers currentl
 
 The two-step screen a new environment shows on its landing page: choose which providers to turn on, then install or sign in to each. Finishing or skipping stores `providerSetupVersion` in server settings, so it opens once per environment, not per device. See [ProviderSetup.tsx](../../apps/web/src/components/onboarding/ProviderSetup.tsx) and [first-run-setup.md](../user/first-run-setup.md).
 
+#### Devices
+
+iOS simulators and Android emulators on the environment's machine, managed in Settings → Devices and opened live in a browser tab. The server's [DeviceManager.ts](../../apps/server/src/devices/DeviceManager.ts) drives `xcrun simctl` and serve-sim for iOS, and the Android SDK's adb, emulator, and avdmanager plus the emulator's gRPC control port for Android, served by a token-gated loopback viewer ([androidViewer.ts](../../apps/server/src/devices/androidViewer.ts)). See [devices.md](../user/devices.md).
+
 #### Session
 
 The live provider-backed runtime attached to a thread. Session shape is in [the orchestration contracts][1], and lifecycle is managed in [ProviderService.ts][14].

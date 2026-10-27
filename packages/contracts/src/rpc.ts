@@ -264,6 +264,16 @@ import {
 } from "./server.ts";
 import { HostVitals } from "./hostVitals.ts";
 import {
+  DeviceCatalog,
+  DeviceCreateInput,
+  DeviceError,
+  DeviceListResult,
+  DevicePowerInput,
+  DeviceRef,
+  DeviceSummary,
+  DeviceViewResult,
+} from "./devices.ts";
+import {
   ResourceTelemetryHistory,
   ResourceTelemetryHistoryInput,
   ResourceTelemetryRetryResult,
@@ -365,6 +375,12 @@ export const WS_METHODS = {
   previewCredentialsList: "previewCredentials.list",
   previewCredentialsSave: "previewCredentials.save",
   previewCredentialsRemove: "previewCredentials.remove",
+  devicesList: "devices.list",
+  devicesCatalog: "devices.catalog",
+  devicesCreate: "devices.create",
+  devicesDelete: "devices.delete",
+  devicesSetPower: "devices.setPower",
+  devicesView: "devices.view",
   remoteControlHostConnect: "remoteControl.hostConnect",
   remoteControlHostRespond: "remoteControl.hostRespond",
   remoteControlHostPublishFrame: "remoteControl.hostPublishFrame",
@@ -1136,6 +1152,42 @@ export const WsPreviewCredentialsRemoveRpc = Rpc.make(WS_METHODS.previewCredenti
   error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
 });
 
+// iOS simulators and Android emulators on the environment's machine.
+export const WsDevicesListRpc = Rpc.make(WS_METHODS.devicesList, {
+  payload: Schema.Struct({}),
+  success: DeviceListResult,
+  error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
+});
+
+export const WsDevicesCatalogRpc = Rpc.make(WS_METHODS.devicesCatalog, {
+  payload: Schema.Struct({}),
+  success: DeviceCatalog,
+  error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
+});
+
+export const WsDevicesCreateRpc = Rpc.make(WS_METHODS.devicesCreate, {
+  payload: DeviceCreateInput,
+  success: DeviceSummary,
+  error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
+});
+
+export const WsDevicesDeleteRpc = Rpc.make(WS_METHODS.devicesDelete, {
+  payload: DeviceRef,
+  error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
+});
+
+export const WsDevicesSetPowerRpc = Rpc.make(WS_METHODS.devicesSetPower, {
+  payload: DevicePowerInput,
+  error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
+});
+
+// Starts the device when it is off.
+export const WsDevicesViewRpc = Rpc.make(WS_METHODS.devicesView, {
+  payload: DeviceRef,
+  success: DeviceViewResult,
+  error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
+});
+
 export const WsRemoteControlHostConnectRpc = Rpc.make(WS_METHODS.remoteControlHostConnect, {
   payload: RemoteControlHost,
   success: RemoteControlHostStreamEvent,
@@ -1703,6 +1755,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewCredentialsListRpc,
   WsPreviewCredentialsSaveRpc,
   WsPreviewCredentialsRemoveRpc,
+  WsDevicesListRpc,
+  WsDevicesCatalogRpc,
+  WsDevicesCreateRpc,
+  WsDevicesDeleteRpc,
+  WsDevicesSetPowerRpc,
+  WsDevicesViewRpc,
   WsRemoteControlHostConnectRpc,
   WsRemoteControlHostRespondRpc,
   WsRemoteControlHostPublishFrameRpc,

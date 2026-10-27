@@ -20,6 +20,7 @@ Solla Code is an independent fork. Start with [fork identity and compatibility n
   - [Side chats](./user/side-chats.md)
   - [Terminal mode](./user/terminal-mode.md)
   - [Remote browser control](./user/remote-browser-control.md)
+  - [Simulators and emulators](./user/devices.md)
   - [Provider account switching](./user/provider-account-switching.md)
   - [The orchestrator](./user/orchestrator.md)
   - [Custom agents](./user/custom-agents.md)

@@ -99,6 +99,10 @@
       "types": "./src/preview/credentialForm.ts",
       "default": "./src/preview/credentialForm.ts"
     },
+    "./devices/device-logic": {
+      "types": "./src/devices/deviceLogic.ts",
+      "default": "./src/devices/deviceLogic.ts"
+    },
     "./relay": {
       "types": "./src/relay/index.ts",
       "default": "./src/relay/index.ts"
@@ -170,6 +174,10 @@
     "./state/vmAgents": {
       "types": "./src/state/vmAgents.ts",
       "default": "./src/state/vmAgents.ts"
+    },
+    "./state/devices": {
+      "types": "./src/state/devices.ts",
+      "default": "./src/state/devices.ts"
     },
     "./state/preview": {
       "types": "./src/state/preview.ts",

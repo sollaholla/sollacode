@@ -847,6 +847,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             configuredUrls={configuredUrls}
             recentlySeenUrls={previewState.recentlySeenUrls}
             onOpenUrl={(next) => void handleOpenServerUrl(next)}
+            onOpenDeviceUrl={(next) => void handleSubmitUrl(next)}
           />
         ) : null}
         {snapshot && desktopOverlay ? (

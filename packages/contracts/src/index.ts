@@ -38,5 +38,6 @@ export * from "./review.ts";
 export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./hostVitals.ts";
+export * from "./devices.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";

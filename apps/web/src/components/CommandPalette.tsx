@@ -36,6 +36,7 @@ import {
   FoldersIcon,
   MonitorPlayIcon,
   KeyRoundIcon,
+  SmartphoneIcon,
   LinkIcon,
   ServerIcon,
   MessageSquareIcon,
@@ -1561,6 +1562,26 @@ function OpenCommandPaletteDialog(props: {
     icon: <KeyRoundIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/settings/credentials" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:devices",
+    searchTerms: [
+      "devices",
+      "simulator",
+      "ios simulator",
+      "iphone",
+      "ipad",
+      "android emulator",
+      "emulator",
+      "pixel",
+    ],
+    title: "Simulators and emulators",
+    icon: <SmartphoneIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings/devices" });
     },
   });
 

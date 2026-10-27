@@ -177,6 +177,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as ByteBoundedResyncBuffer from "./stream/ByteBoundedResyncBuffer.ts";
 import * as ProjectionLiveBuffer from "./stream/ProjectionLiveBuffer.ts";
 import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
+import * as DeviceManager from "./devices/DeviceManager.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
 import * as LiveFeed from "./orchestration/LiveFeed.ts";
@@ -689,6 +690,7 @@ const makeWsRpcLayer = (
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const hostVitals = yield* HostVitalsMonitor.HostVitalsMonitor;
+      const devices = yield* DeviceManager.DeviceManager;
       const projectFolderUsage = yield* ProjectFolderUsage.ProjectFolderUsage;
       const databaseStorage = yield* DatabaseCompaction.DatabaseStorage;
       const liveFeed = yield* LiveFeed.LiveFeed;
@@ -3846,6 +3848,28 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.devicesList]: (_input) =>
+          observeRpcEffect(WS_METHODS.devicesList, devices.list, { "rpc.aggregate": "devices" }),
+        [WS_METHODS.devicesCatalog]: (_input) =>
+          observeRpcEffect(WS_METHODS.devicesCatalog, devices.catalog, {
+            "rpc.aggregate": "devices",
+          }),
+        [WS_METHODS.devicesCreate]: (input) =>
+          observeRpcEffect(WS_METHODS.devicesCreate, devices.create(input), {
+            "rpc.aggregate": "devices",
+          }),
+        [WS_METHODS.devicesDelete]: (input) =>
+          observeRpcEffect(WS_METHODS.devicesDelete, devices.remove(input), {
+            "rpc.aggregate": "devices",
+          }),
+        [WS_METHODS.devicesSetPower]: (input) =>
+          observeRpcEffect(WS_METHODS.devicesSetPower, devices.setPower(input), {
+            "rpc.aggregate": "devices",
+          }),
+        [WS_METHODS.devicesView]: (input) =>
+          observeRpcEffect(WS_METHODS.devicesView, devices.view(input), {
+            "rpc.aggregate": "devices",
+          }),
         [WS_METHODS.subscribeHostVitals]: (_input) =>
           observeRpcStream(WS_METHODS.subscribeHostVitals, hostVitals.stream, {
             "rpc.aggregate": "server",

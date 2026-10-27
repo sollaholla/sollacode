@@ -15,6 +15,7 @@ import {
   PaletteIcon,
   ShieldCheckIcon,
   Settings2Icon,
+  SmartphoneIcon,
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -36,6 +37,7 @@ export type SettingsSectionPath =
   | "/settings/permissions"
   | "/settings/projects"
   | "/settings/credentials"
+  | "/settings/devices"
   | "/settings/appearance"
   | "/settings/keybindings"
   | "/settings/providers"
@@ -54,6 +56,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "General", to: "/settings/general", icon: Settings2Icon },
   { label: "Projects", to: "/settings/projects", icon: FoldersIcon },
   { label: "Credentials", to: "/settings/credentials", icon: KeyRoundIcon },
+  { label: "Devices", to: "/settings/devices", icon: SmartphoneIcon },
   { label: "Appearance", to: "/settings/appearance", icon: PaletteIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },

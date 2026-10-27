@@ -117,6 +117,7 @@ import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClien
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
+import * as DeviceManager from "./devices/DeviceManager.ts";
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as LiveFeed from "./orchestration/LiveFeed.ts";
@@ -481,6 +482,7 @@ const RuntimeDependenciesLive = WebPushRuntimeLive.pipe(
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(HostVitalsMonitor.layer),
+  Layer.provideMerge(DeviceManager.layer),
   Layer.provideMerge(ImageThumbnails.layer),
   Layer.provideMerge(ProjectFolderUsage.layer.pipe(Layer.provide(PersistenceLayerLive))),
   Layer.provideMerge(DatabaseCompaction.layer.pipe(Layer.provide(PersistenceLayerLive))),
