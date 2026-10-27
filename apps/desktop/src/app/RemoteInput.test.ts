@@ -99,7 +99,8 @@ using System.Collections.Generic;
 public static class SollaRemoteInput {
   public static List<string> Calls = new List<string>();
   public static string Blocked = null;
-  public static void Pointer(double x, double y, uint flags, int data) { Calls.Add("Pointer"); }
+  public static bool ButtonsSwapped() { return false; }
+  public static void Pointer(double x, double y, uint flags, int data) { Calls.Add("Pointer:" + flags); }
   public static void MoveRelative(int dx, int dy) { Calls.Add("MoveRelative:" + dx + "," + dy); }
   public static void Mouse(uint flags, int data) { Calls.Add("Mouse:" + flags); }
   public static void Key(ushort vk, bool down) { Calls.Add("Key:" + vk + ":" + down); }
@@ -176,6 +177,183 @@ public static class SollaRemoteInput {
 
     NodeFS.rmSync(directory, { recursive: true, force: true });
   }, 180_000);
+
+  const runWindowsPointerHarness = (input: {
+    readonly swapped: boolean;
+    readonly toggleAfterFirstDown?: boolean;
+    readonly commands: ReadonlyArray<unknown>;
+  }): ReadonlyArray<string> => {
+    const source = remoteInputScriptSource("win32");
+    const open = source.indexOf("Add-Type @'");
+    const close = source.indexOf("'@", open);
+    assert.isAbove(open, -1);
+    assert.isAbove(close, open);
+    // Only native calls are replaced. The real PowerShell dispatch and held
+    // button bookkeeping run unchanged, with no desktop input or setting edits.
+    const recorder = `
+using System;
+using System.Collections.Generic;
+public static class SollaRemoteInput {
+  public static List<string> Calls = new List<string>();
+  public static bool Swapped = ${input.swapped ? "true" : "false"};
+  private static bool Toggled = false;
+  public static bool ButtonsSwapped() { return Swapped; }
+  private static void Record(string method, uint flags) {
+    Calls.Add(method + ":" + flags);
+    if (${input.toggleAfterFirstDown ? "true" : "false"} && !Toggled && (flags & 0x2A) != 0) {
+      Swapped = !Swapped;
+      Toggled = true;
+    }
+  }
+  public static void Pointer(double x, double y, uint flags, int data) { Record("Pointer", flags); }
+  public static void MoveRelative(int dx, int dy) { }
+  public static void Mouse(uint flags, int data) { Record("Mouse", flags); }
+  public static void Key(ushort vk, bool down) { }
+  public static bool CursorLocked() { return false; }
+  public static string CursorShape() { return "default"; }
+  public static void RestorePointerMode() { }
+  public static string BlockReason() { return null; }
+}
+`;
+    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "solla-ps-buttons-"));
+    const script = NodePath.join(directory, "buttons.ps1");
+    try {
+      NodeFS.writeFileSync(
+        script,
+        `${source.slice(0, open)}Add-Type @'${recorder}'@${source.slice(close + 2)}
+[Console]::Error.WriteLine("CALLS " + ([SollaRemoteInput]::Calls -join " | "))
+`,
+      );
+      const run = NodeChildProcess.spawnSync("pwsh", ["-NoProfile", "-File", script], {
+        input: `${input.commands.map((command) => JSON.stringify(command)).join("\n")}\n`,
+        encoding: "utf8",
+        timeout: 120_000,
+      });
+      assert.equal(run.status, 0, String(run.stderr));
+      const replies = String(run.stdout)
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.lengthOf(replies, input.commands.length);
+      for (const reply of replies) assert.isTrue(reply.ok, JSON.stringify(reply));
+      const calls = /^CALLS (.*)$/mu.exec(String(run.stderr));
+      assert.isNotNull(calls, String(run.stderr));
+      return (calls?.[1] ?? "").split(" | ");
+    } finally {
+      NodeFS.rmSync(directory, { recursive: true, force: true });
+    }
+  };
+
+  const pointerCommand = (
+    button: "left" | "right" | "middle",
+    action: "down" | "up",
+    relative: boolean,
+  ) => ({
+    id: 1,
+    kind: "input",
+    input: {
+      type: "pointer",
+      action,
+      x: 0.5,
+      y: 0.5,
+      button,
+      ...(relative ? { dx: 0, dy: 0 } : {}),
+    },
+  });
+
+  it.each([
+    { swapped: false, relative: false },
+    { swapped: true, relative: false },
+    { swapped: false, relative: true },
+    { swapped: true, relative: true },
+  ])(
+    "preserves primary, secondary and middle clicks with Windows settings %j",
+    (settings) => {
+      if (!pwshAvailable) return;
+      const calls = runWindowsPointerHarness({
+        ...settings,
+        commands: (["left", "right", "middle"] as const).flatMap((button) => [
+          pointerCommand(button, "down", settings.relative),
+          pointerCommand(button, "up", settings.relative),
+        ]),
+      });
+      const method = settings.relative ? "Mouse" : "Pointer";
+      const physicalFlags = settings.swapped ? [8, 16, 2, 4, 32, 64] : [2, 4, 8, 16, 32, 64];
+      assert.deepEqual(
+        calls,
+        physicalFlags.map((flag) => `${method}:${flag}`),
+      );
+    },
+    180_000,
+  );
+
+  it.each([
+    { swapped: false, relative: false },
+    { swapped: true, relative: false },
+    { swapped: false, relative: true },
+    { swapped: true, relative: true },
+  ])(
+    "releases every held physical button on reset with Windows settings %j",
+    (settings) => {
+      if (!pwshAvailable) return;
+      const calls = runWindowsPointerHarness({
+        ...settings,
+        commands: [
+          ...(["left", "right", "middle"] as const).map((button) =>
+            pointerCommand(button, "down", settings.relative),
+          ),
+          { id: 2, kind: "reset" },
+        ],
+      });
+      const method = settings.relative ? "Mouse" : "Pointer";
+      const downFlags = settings.swapped ? [8, 2, 32] : [2, 8, 32];
+      assert.deepEqual(
+        calls.slice(0, 3),
+        downFlags.map((flag) => `${method}:${flag}`),
+      );
+      assert.deepEqual(calls.slice(3).toSorted(), ["Mouse:16", "Mouse:4", "Mouse:64"]);
+    },
+    180_000,
+  );
+
+  it.each([
+    { swapped: false, relative: false, reset: false },
+    { swapped: true, relative: false, reset: false },
+    { swapped: false, relative: true, reset: false },
+    { swapped: true, relative: true, reset: false },
+    { swapped: false, relative: false, reset: true },
+    { swapped: true, relative: true, reset: true },
+  ])(
+    "keeps a held button paired when Windows changes primary buttons %j",
+    (settings) => {
+      if (!pwshAvailable) return;
+      const calls = runWindowsPointerHarness({
+        ...settings,
+        toggleAfterFirstDown: true,
+        commands: [
+          pointerCommand("left", "down", settings.relative),
+          pointerCommand("left", "down", settings.relative),
+          settings.reset
+            ? { id: 2, kind: "reset" }
+            : pointerCommand("left", "up", settings.relative),
+          // The next press must pick up the changed preference after release.
+          pointerCommand("left", "down", settings.relative),
+          pointerCommand("left", "up", settings.relative),
+        ],
+      });
+      const method = settings.relative ? "Mouse" : "Pointer";
+      const before = settings.swapped ? [8, 16] : [2, 4];
+      const after = settings.swapped ? [2, 4] : [8, 16];
+      assert.deepEqual(calls, [
+        `${method}:${before[0]}`,
+        `${method}:${before[0]}`,
+        `${settings.reset ? "Mouse" : method}:${before[1]}`,
+        `${method}:${after[0]}`,
+        `${method}:${after[1]}`,
+      ]);
+    },
+    180_000,
+  );
 
   it("treats a blocked host desktop as a reported condition, not an error", () => {
     const source = remoteInputScriptSource("win32");

@@ -463,6 +463,12 @@ public static class SollaRemoteInput {
   [DllImport("user32.dll")]
   private static extern uint MapVirtualKey(uint code, uint mapType);
 
+  [DllImport("user32.dll")]
+  private static extern int GetSystemMetrics(int index);
+
+  // Browser buttons express primary/secondary actions; SendInput uses physical buttons.
+  public static bool ButtonsSwapped() { return GetSystemMetrics(23) != 0; }
+
   [StructLayout(LayoutKind.Sequential)]
   private struct POINT { public int x; public int y; }
 
@@ -1013,6 +1019,14 @@ function Set-PointerPosition($eventData) {
 }
 
 function Get-MouseFlag([string]$button, [string]$action) {
+  # Release the physical button we pressed, even if the host preference changes mid-drag.
+  if ($pressedButtons.ContainsKey($button)) {
+    $upFlag = [uint32]$pressedButtons[$button]
+    return $(if ($action -eq 'down') { $upFlag -shr 1 } else { $upFlag })
+  }
+  if ($button -ne 'middle' -and [SollaRemoteInput]::ButtonsSwapped()) {
+    $button = $(if ($button -eq 'right') { 'left' } else { 'right' })
+  }
   if ($button -eq 'right') { return $(if ($action -eq 'down') { 0x0008 } else { 0x0010 }) }
   if ($button -eq 'middle') { return $(if ($action -eq 'down') { 0x0020 } else { 0x0040 }) }
   return $(if ($action -eq 'down') { 0x0002 } else { 0x0004 })
@@ -1037,7 +1051,7 @@ function Invoke-RemoteInput($eventData) {
       [SollaRemoteInput]::MoveRelative($dx, $dy)
       if ($flag -ne 0) { [SollaRemoteInput]::Mouse([uint32]$flag, 0) }
       if ($eventData.action -ne 'move') {
-        if ($eventData.action -eq 'down') { $pressedButtons[$eventData.button] = $true }
+        if ($eventData.action -eq 'down') { $pressedButtons[$eventData.button] = ($flag -shl 1) }
         else { $pressedButtons.Remove([string]$eventData.button) }
       }
       return
@@ -1049,7 +1063,7 @@ function Invoke-RemoteInput($eventData) {
       0
     )
     if ($eventData.action -ne 'move') {
-      if ($eventData.action -eq 'down') { $pressedButtons[$eventData.button] = $true }
+      if ($eventData.action -eq 'down') { $pressedButtons[$eventData.button] = ($flag -shl 1) }
       else { $pressedButtons.Remove([string]$eventData.button) }
     }
     return

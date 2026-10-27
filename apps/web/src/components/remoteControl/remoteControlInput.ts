@@ -140,6 +140,7 @@ export function remoteSurfaceCursorStyle(input: {
   return REMOTE_CURSOR_KEYWORDS.has(input.shape) ? input.shape : "default";
 }
 
+/** Wire left/right follow browser primary/secondary actions, not the host mouse preference. */
 export function remotePointerButton(button: number): RemoteControlPointerButton {
   if (button === 1) return "middle";
   if (button === 2) return "right";

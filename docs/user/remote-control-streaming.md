@@ -11,3 +11,9 @@ existing video/image path. If the newer path cannot connect or decode, the viewe
 falls back automatically. Remote control remains available through the web and
 desktop clients, including phone browsers. It is not currently a feature of the
 native mobile app.
+
+Remote mouse buttons preserve the controller’s primary and secondary actions.
+If the Windows host has swapped its primary mouse button, Solla accounts for that
+setting so a normal click still selects and a secondary click opens the context
+menu. The host’s mouse preference stays unchanged. A drag releases the same
+physical button it pressed, even if the preference changes while it is held.
