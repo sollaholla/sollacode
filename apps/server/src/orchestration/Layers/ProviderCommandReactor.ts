@@ -3422,9 +3422,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       });
     });
 
-    // A burst ends when its first message reaches the provider. Its recovery
-    // obligation can remain executing for the entire new turn, and siblings
-    // can still be pending, so their work states do not describe delivery.
+    // A burst ends when the queue advances. FIFO may deliver an older message
+    // whose button was never pressed, so the receipt need not name a burst member.
     const forceSendBursts = new Map<
       string,
       {
@@ -3479,6 +3478,19 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           return;
         }
 
+        // A delayed click can arrive after its row disappears on another client.
+        // An accepted held message needs neither another interrupt nor a new burst.
+        if (isHeldMessageId(messageId)) {
+          if (queuedPromotionCoveredMessageIds(thread.activities).has(String(messageId))) return;
+          if (projectionSnapshotQuery.getThreadDeliveredMessageIds) {
+            const delivered = yield* projectionSnapshotQuery.getThreadDeliveredMessageIds(
+              threadId,
+              "1970-01-01T00:00:00.000Z",
+            );
+            if (delivered.has(String(messageId))) return;
+          }
+        }
+
         // Use durable event order, not handler execution time: a second press
         // may already be queued when the first delivery commits. It belongs
         // to that same burst even if this control lane handles it afterward.
@@ -3491,7 +3503,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                 { after: burst.afterSequence, before: event.sequence },
               )
             : new Set<string>();
-          if ([...burst.messageIds].some((id) => delivered.has(id))) {
+          if (delivered.size > 0) {
             burst = undefined;
           } else {
             for (const pending of burst.messageIds) {

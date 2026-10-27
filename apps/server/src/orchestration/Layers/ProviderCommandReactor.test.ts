@@ -80,7 +80,10 @@ import { TextGeneration, type TextGenerationShape } from "../../textGeneration/T
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
-import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import {
+  OrchestrationProjectionSnapshotQueryLive,
+  THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+} from "./ProjectionSnapshotQuery.ts";
 import {
   classifyAuthenticationResumeDispatch,
   providerErrorLabel,
@@ -1107,6 +1110,7 @@ describe("ProviderCommandReactor", () => {
       attemptWork: (attempt: ReturnType<ThreadWorkHandler>) => Effect.runPromise(attempt),
       policySettings,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      snapshotQuery,
       startSession,
       sendTurn,
       interruptTurn,
@@ -4317,6 +4321,385 @@ describe("ProviderCommandReactor", () => {
     expect(harness.interruptTurn).toHaveBeenCalledTimes(2);
     expect(harness.interruptTurn.mock.calls[1]?.[0]).toMatchObject({ turnId: deliveredTurnId });
   });
+
+  it.each(["message.delivered", "provider.queue.promoted"] as const)(
+    "starts another force-send after an earlier unselected message advances the queue (%s)",
+    async (receiptKind) => {
+      const threadId = ThreadId.make("thread-1");
+      const earlier = MessageId.make("held-user-message:earlier-unselected");
+      const selected = MessageId.make("held-user-message:selected-second");
+      const now = "2026-09-06T17:00:00.000Z";
+      const harness = await createHarness({ startReactor: false });
+      vi.spyOn(harness.threadWorkScheduler, "start").mockReturnValue(Effect.void);
+      harness.runtimeSessions.push({
+        threadId,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        status: "running",
+        activeTurnId: TurnId.make("turn-before-queued-pair"),
+        runtimeMode: "approval-required",
+        createdAt: now,
+        updatedAt: now,
+      });
+      for (const [index, messageId] of [earlier, selected].entries()) {
+        await harness.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`unselected-queue-${index}`),
+          threadId,
+          message: { messageId, role: "user", text: `Queued ${index}`, attachments: [] },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          createdAt: `2026-09-06T17:00:0${index}.000Z`,
+        });
+      }
+      await harness.startReactor();
+      await harness.drain();
+      await harness.dispatch({
+        type: "thread.queued-message.send-now",
+        commandId: CommandId.make("force-second-before-first-delivery"),
+        threadId,
+        messageId: selected,
+        createdAt: "2026-09-06T17:00:02.000Z",
+      });
+      await harness.drain();
+      expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
+
+      await harness.dispatch({
+        type: "thread.queued-message.send-now",
+        commandId: CommandId.make("repeat-second-before-first-delivery"),
+        threadId,
+        messageId: selected,
+        createdAt: "2026-09-06T17:00:02.500Z",
+      });
+      await harness.drain();
+      expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
+
+      // FIFO can deliver the older message even though its button was never pressed.
+      const deliveredTurnId = TurnId.make("earlier-queued-message-running");
+      harness.runtimeSessions[0] = {
+        ...harness.runtimeSessions[0]!,
+        activeTurnId: deliveredTurnId,
+      };
+      await harness.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("unselected-delivery-receipt"),
+        threadId,
+        activity: {
+          id: EventId.make("unselected-delivery-receipt"),
+          kind: receiptKind,
+          tone: "info",
+          summary: "Delivered",
+          payload:
+            receiptKind === "message.delivered"
+              ? { messageId: earlier }
+              : { messageIds: [earlier] },
+          turnId: deliveredTurnId,
+          createdAt: "2026-09-06T17:00:03.000Z",
+        },
+        createdAt: "2026-09-06T17:00:03.000Z",
+      });
+      await harness.drain();
+      await harness.dispatch({
+        type: "thread.queued-message.send-now",
+        commandId: CommandId.make("force-second-after-first-delivery"),
+        threadId,
+        messageId: selected,
+        createdAt: "2026-09-06T17:00:04.000Z",
+      });
+      await harness.drain();
+      expect(harness.interruptTurn).toHaveBeenCalledTimes(2);
+      expect(harness.interruptTurn.mock.calls[1]?.[0]).toMatchObject({
+        turnId: deliveredTurnId,
+      });
+      expect(
+        (
+          await harness.obligationByKey({
+            threadId,
+            sourceTurnId: activeTurnWorkSourceId(selected),
+            kind: "active-turn-recovery",
+          })
+        )?.state,
+      ).toBe("pending");
+    },
+  );
+
+  effectIt.live(
+    "delivers the remaining queued message after an unselected message starts running",
+    () =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread-1");
+        const first = MessageId.make("held-user-message:scheduler-earlier");
+        const second = MessageId.make("held-user-message:scheduler-selected");
+        const instanceId = ProviderInstanceId.make("codex");
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const firstDelivered = yield* Deferred.make<void>();
+        const secondDelivered = yield* Deferred.make<void>();
+        const accepted: Array<MessageId> = [];
+        let harness!: Awaited<ReturnType<typeof createHarness>>;
+        harness = yield* Effect.promise(() =>
+          createHarness({
+            startReactor: false,
+            sendTurnEffect: (rawInput, sessions) =>
+              Effect.gen(function* () {
+                const request = rawInput as ProviderSendTurnInput;
+                if (request.liveSteerTarget !== undefined) {
+                  return yield* new ProviderAdapterRequestError({
+                    provider: "codex",
+                    method: "turn/steer",
+                    detail: "This running turn is not accepting a steer",
+                  });
+                }
+                const messageId = request.messageId!;
+                accepted.push(messageId);
+                const turnId = TurnId.make(`delivered:${messageId}`);
+                const sessionIndex = sessions.findIndex((session) => session.threadId === threadId);
+                sessions[sessionIndex] = {
+                  ...sessions[sessionIndex]!,
+                  status: "running",
+                  activeTurnId: turnId,
+                };
+                yield* harness.projectionTurns
+                  .upsertByTurnId({
+                    threadId,
+                    turnId,
+                    pendingMessageId: messageId,
+                    sourceProposedPlanThreadId: null,
+                    sourceProposedPlanId: null,
+                    assistantMessageId: null,
+                    state: "running",
+                    requestedAt: now,
+                    startedAt: now,
+                    completedAt: null,
+                    checkpointTurnCount: null,
+                    checkpointRef: null,
+                    checkpointStatus: null,
+                    checkpointFiles: [],
+                  })
+                  .pipe(Effect.orDie);
+                yield* harness.engine
+                  .dispatch({
+                    type: "thread.session.set",
+                    commandId: CommandId.make(`running:${messageId}`),
+                    threadId,
+                    session: {
+                      threadId,
+                      status: "running",
+                      providerName: "codex",
+                      providerInstanceId: instanceId,
+                      runtimeMode: "approval-required",
+                      activeTurnId: turnId,
+                      lastError: null,
+                      updatedAt: now,
+                    },
+                    createdAt: now,
+                  })
+                  .pipe(Effect.orDie);
+                return { threadId, turnId };
+              }),
+            interruptTurnEffect: () =>
+              Effect.sync(() => {
+                const sessionIndex = harness.runtimeSessions.findIndex(
+                  (session) => session.threadId === threadId,
+                );
+                harness.runtimeSessions[sessionIndex] = {
+                  ...harness.runtimeSessions[sessionIndex]!,
+                  status: "ready",
+                  activeTurnId: undefined,
+                };
+              }),
+          }),
+        );
+        // Record the first force-send before allowing the real scheduler to claim FIFO work.
+        const startScheduler = harness.threadWorkScheduler.start;
+        const schedulerStart = vi
+          .spyOn(harness.threadWorkScheduler, "start")
+          .mockReturnValue(Effect.void);
+        const oldTurnId = TurnId.make("scheduler-original-turn");
+        harness.runtimeSessions.push({
+          threadId,
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: instanceId,
+          status: "running",
+          activeTurnId: oldTurnId,
+          runtimeMode: "approval-required",
+          createdAt: now,
+          updatedAt: now,
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("scheduler-original-session"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId: instanceId,
+            runtimeMode: "approval-required",
+            activeTurnId: oldTurnId,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
+        for (const [index, messageId] of [first, second].entries()) {
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`scheduler-queue-${index}`),
+            threadId,
+            message: { messageId, role: "user", text: `Queued ${index}`, attachments: [] },
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            createdAt: DateTime.formatIso(
+              DateTime.add(DateTime.makeUnsafe(now), { milliseconds: index }),
+            ),
+          });
+        }
+        yield* Effect.promise(() => harness.startReactor());
+        yield* harness.drainEffect;
+        yield* Stream.runForEach(harness.engine.streamDomainEvents, (event) => {
+          if (
+            event.type !== "thread.activity-appended" ||
+            event.payload.activity.kind !== "provider.queue.promoted"
+          )
+            return Effect.void;
+          const ids =
+            (event.payload.activity.payload as { messageIds?: ReadonlyArray<string> }).messageIds ??
+            [];
+          return ids.includes(second)
+            ? Deferred.succeed(secondDelivered, undefined)
+            : ids.includes(first)
+              ? Deferred.succeed(firstDelivered, undefined)
+              : Effect.void;
+        }).pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* harness.engine.dispatch({
+          type: "thread.queued-message.send-now",
+          commandId: CommandId.make("scheduler-force-second-first"),
+          threadId,
+          messageId: second,
+          createdAt: now,
+        });
+        yield* harness.drainEffect;
+        expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
+        schedulerStart.mockRestore();
+        yield* startScheduler().pipe(Scope.provide(scope!));
+        yield* Deferred.await(firstDelivered);
+        yield* harness.drainEffect;
+        expect(accepted).toEqual([first]);
+        expect(
+          (yield* harness.threadWorkObligations.getByKey({
+            threadId,
+            sourceTurnId: activeTurnWorkSourceId(second),
+            kind: "active-turn-recovery",
+          })).pipe(Option.getOrThrow).state,
+        ).toBe("pending");
+        yield* harness.engine.dispatch({
+          type: "thread.queued-message.send-now",
+          commandId: CommandId.make("scheduler-force-second-again"),
+          threadId,
+          messageId: second,
+          createdAt: now,
+        });
+        yield* Deferred.await(secondDelivered);
+        yield* harness.drainEffect;
+        expect(harness.interruptTurn).toHaveBeenCalledTimes(2);
+        expect(accepted).toEqual([first, second]);
+        const deliveredIds = yield* harness.snapshotQuery.getThreadDeliveredMessageIds!(
+          threadId,
+          "1970-01-01T00:00:00.000Z",
+        );
+        expect(deliveredIds.has(first)).toBe(true);
+        expect(deliveredIds.has(second)).toBe(true);
+      }),
+  );
+
+  effectIt.live(
+    "ignores a stale force-send for a delivered held message without blocking the next one",
+    () =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread-1");
+        const first = MessageId.make("held-user-message:stale-delivered-click");
+        const second = MessageId.make("held-user-message:after-stale-click");
+        const now = "2026-09-06T17:00:00.000Z";
+        const harness = yield* Effect.promise(() => createHarness({ startReactor: false }));
+        vi.spyOn(harness.threadWorkScheduler, "start").mockReturnValue(Effect.void);
+        const activeTurnId = TurnId.make("stale-click-running-turn");
+        harness.runtimeSessions.push({
+          threadId,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          status: "running",
+          activeTurnId,
+          runtimeMode: "approval-required",
+          createdAt: now,
+          updatedAt: now,
+        });
+        for (const messageId of [first, second]) {
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`stale-queue-${messageId}`),
+            threadId,
+            message: { messageId, role: "user", text: "Queued correction", attachments: [] },
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            createdAt: now,
+          });
+        }
+        yield* Effect.promise(() => harness.startReactor());
+        yield* harness.drainEffect;
+        yield* harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("stale-click-delivery"),
+          threadId,
+          activity: {
+            id: EventId.make("stale-click-delivery"),
+            kind: "message.delivered",
+            tone: "info",
+            summary: "Delivered",
+            payload: { messageId: first },
+            turnId: activeTurnId,
+            createdAt: "2026-09-06T16:59:59.000Z",
+          },
+          createdAt: "2026-09-06T16:59:59.000Z",
+        });
+        for (let index = 0; index <= THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT; index++) {
+          yield* harness.engine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`stale-click-noise-${index}`),
+            threadId,
+            activity: {
+              id: EventId.make(`stale-click-noise-${index}`),
+              kind: "tool.completed",
+              tone: "info",
+              summary: "Tool completed",
+              payload: {},
+              turnId: activeTurnId,
+              createdAt: "2026-09-06T17:00:01.000Z",
+            },
+            createdAt: "2026-09-06T17:00:01.000Z",
+          });
+        }
+        yield* harness.drainEffect;
+        expect(
+          Option.getOrThrow(
+            yield* harness.snapshotQuery.getThreadDetailById(threadId, {
+              activityLimit: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+            }),
+          ).activities.some((activity) => activity.id === "stale-click-delivery"),
+        ).toBe(false);
+        for (const [index, messageId] of [first, second].entries()) {
+          yield* harness.engine.dispatch({
+            type: "thread.queued-message.send-now",
+            commandId: CommandId.make(`stale-force-${index}`),
+            threadId,
+            messageId,
+            createdAt: `2026-09-06T17:00:0${index + 2}.000Z`,
+          });
+          yield* harness.drainEffect;
+          expect(harness.interruptTurn).toHaveBeenCalledTimes(index);
+        }
+        expect(harness.interruptTurn.mock.calls[0]?.[0]).toMatchObject({ turnId: activeTurnId });
+      }),
+  );
 
   effectIt.live.each(["pending", "completed"] as const)(
     "keeps pre-delivery force-send requests together when the first owner is %s during handling",
