@@ -1472,11 +1472,22 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   const consumeTerminalSignIn = useProviderSignInRequestStore((state) => state.consumeIf);
   useEffect(() => {
     if (pendingTerminalSignIn === null || pendingTerminalSignIn.supportsAccountSwitch) return;
+    if (pendingTerminalSignIn.environmentId !== threadRef.environmentId) return;
     if (!cwd || !visible) return;
-    const request = consumeTerminalSignIn((candidate) => !candidate.supportsAccountSwitch);
+    const request = consumeTerminalSignIn(
+      (candidate) =>
+        !candidate.supportsAccountSwitch && candidate.environmentId === threadRef.environmentId,
+    );
     if (request === null) return;
     launchTerminals([request.command]);
-  }, [consumeTerminalSignIn, cwd, launchTerminals, pendingTerminalSignIn, visible]);
+  }, [
+    consumeTerminalSignIn,
+    cwd,
+    launchTerminals,
+    pendingTerminalSignIn,
+    threadRef.environmentId,
+    visible,
+  ]);
 
   const launchProviders = useMemo<ReadonlyArray<TerminalLaunchProvider>>(() => {
     const byDriver = new Map<string, TerminalLaunchProvider>();
@@ -1984,11 +1995,18 @@ function ChatViewContent(props: ChatViewProps) {
   const pendingSignIn = useProviderSignInRequestStore((state) => state.pending);
   const consumeSignInRequest = useProviderSignInRequestStore((state) => state.consumeIf);
   useEffect(() => {
-    if (pendingSignIn === null || !pendingSignIn.supportsAccountSwitch) return;
-    const request = consumeSignInRequest((candidate) => candidate.supportsAccountSwitch);
+    if (
+      pendingSignIn === null ||
+      !pendingSignIn.supportsAccountSwitch ||
+      pendingSignIn.environmentId !== environmentId
+    )
+      return;
+    const request = consumeSignInRequest(
+      (candidate) => candidate.supportsAccountSwitch && candidate.environmentId === environmentId,
+    );
     if (request === null) return;
     requestProviderAccountSwitch(request.instanceId);
-  }, [consumeSignInRequest, pendingSignIn, requestProviderAccountSwitch]);
+  }, [consumeSignInRequest, environmentId, pendingSignIn, requestProviderAccountSwitch]);
 
   const dismissProviderAccountSwitch = useCallback(() => {
     dismissedProviderAccountSwitchIdRef.current = providerAccountSwitch?.id ?? null;
@@ -4717,7 +4735,7 @@ function ChatViewContent(props: ChatViewProps) {
               className={isPhonePortraitViewport ? "px-1.5" : undefined}
               disabled={message.status === "sending" || sendingNowIds.includes(message.id)}
               onClick={() => void sendHeldMessageNow(message.id)}
-              title="Stop what the thread is doing and send this message now"
+              title="Interrupt current work and send queued messages in order. Earlier messages go first."
             >
               {isPhonePortraitViewport ? (
                 sendingNowIds.includes(message.id) ? (
@@ -5344,21 +5362,40 @@ function ChatViewContent(props: ChatViewProps) {
           : { ...existing, [routeThreadKey]: persistedError },
       );
     }
-    // lastError lives on the session row, so a local hide comes back on the
-    // next projection. Stopping the session clears it and replaces a tripped
-    // provider process (the banner's own "restart the session" instruction).
-    if (isServerThread && activeThreadId && persistedError) {
-      void stopThreadSession({
+  }, [activeServerThread?.session?.lastError, activeThread, routeThreadKey, setThreadError]);
+  const [resettingSessionThreadKey, setResettingSessionThreadKey] = useState<string | null>(null);
+  const resetFailedThreadSession = useCallback(async () => {
+    if (!isServerThread || !activeThreadId || resettingSessionThreadKey !== null) return;
+    setResettingSessionThreadKey(routeThreadKey);
+    try {
+      const result = await stopThreadSession({
         environmentId,
         input: { threadId: activeThreadId },
       });
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) return;
+        throw squashAtomCommandFailure(result);
+      }
+      dismissThreadError();
+      toastManager.add({
+        type: "success",
+        title: "Provider session reset",
+        description: "Your conversation is saved. Send a message to continue.",
+      });
+    } catch (error) {
+      setThreadError(
+        activeThreadId,
+        error instanceof Error ? error.message : "Could not reset the provider session.",
+      );
+    } finally {
+      setResettingSessionThreadKey(null);
     }
   }, [
-    activeServerThread?.session?.lastError,
-    activeThread,
     activeThreadId,
+    dismissThreadError,
     environmentId,
     isServerThread,
+    resettingSessionThreadKey,
     routeThreadKey,
     setThreadError,
     stopThreadSession,
@@ -9993,6 +10030,11 @@ function ChatViewContent(props: ChatViewProps) {
           resumeDisabled={activeEnvironmentUnavailable || isWorking}
           occurredAt={activeServerThread?.session?.updatedAt ?? null}
           onDismiss={dismissThreadError}
+          {...(isServerThread && activeServerThread?.session?.lastError
+            ? { onResetSession: () => void resetFailedThreadSession() }
+            : {})}
+          resettingSession={resettingSessionThreadKey === routeThreadKey}
+          resetSessionDisabled={activeEnvironmentUnavailable || isWorking}
           {...(hostRepairErrorKey && hostRepairStartedErrorKey !== hostRepairErrorKey
             ? { onFixWithAi: () => void startHostRepairForThreadError() }
             : {})}

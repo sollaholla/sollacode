@@ -57,7 +57,7 @@ describe("DesktopPermissionsView", () => {
     expect(markup).toContain("Not requested");
     expect(markup).toContain("Enabled");
     expect(markup).toContain("Restricted");
-    expect(markup).toContain("Continue with 3 unavailable");
+    expect(markup).toContain("Continue to Solla Code");
     expect(markup).toContain('aria-label="Open System Settings for Full Disk Access"');
     expect(markup).toContain("Remove the old Solla Code entry");
     expect(markup).toContain('aria-label="Enable Microphone"');
@@ -80,12 +80,12 @@ describe("DesktopPermissionsView", () => {
         />,
       );
 
-    expect(render(true)).toContain("Set permissions before agents get to work");
+    expect(render(true)).toContain("Optional permissions");
     const settingsMarkup = render(false);
     // Rendered inside SettingsSection ("Permissions" + shield), so the view
     // must not add a second shield or a second title of its own.
     expect(settingsMarkup).not.toContain("lucide-shield-check");
-    expect(settingsMarkup).not.toContain("Set permissions before agents get to work");
+    expect(settingsMarkup).not.toContain("Optional permissions");
     expect(settingsMarkup).not.toContain("macOS permissions");
   });
 

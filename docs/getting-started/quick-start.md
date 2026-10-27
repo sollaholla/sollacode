@@ -15,7 +15,7 @@ vp run dev
 
 Open the complete one-time `pairingUrl` printed by the runner. Use the reported ports; occupied ports can shift them. If `vp` is unavailable after installation, invoke `./node_modules/.bin/vp` from the repository root.
 
-Authenticate your chosen provider on the server machine before starting a thread. See [Providers](../providers/README.md).
+A new environment opens [first-run setup](../user/first-run-setup.md), where you choose providers and sign in to them. You can also authenticate a provider's CLI on the server machine yourself. See [Providers](../providers/README.md).
 
 ## Desktop and remote development
 

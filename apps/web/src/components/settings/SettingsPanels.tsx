@@ -2301,45 +2301,6 @@ export function ProviderSettingsPanel() {
   return (
     <SettingsPageContainer>
       <SettingsSection
-        id="setting-fallback-models"
-        title="Automatic fallback models"
-        headerAction={
-          <div className="sm:hidden">
-            <Popover>
-              <PopoverTrigger
-                render={
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    aria-label="About automatic fallback models"
-                  />
-                }
-              >
-                <InfoIcon aria-hidden className="size-4" />
-              </PopoverTrigger>
-              <PopoverPopup side="bottom" align="end" className="w-[min(20rem,calc(100vw-2rem))]">
-                <p className="text-sm">
-                  Choose which models automatic fallback and quota-reset restoration may use. Thread
-                  and agent restrictions also apply. When no allowed model is available, work waits
-                  instead of switching. Manual model selection is unaffected by this global rule.
-                </p>
-              </PopoverPopup>
-            </Popover>
-          </div>
-        }
-      >
-        <p className="mb-4 hidden text-sm text-muted-foreground sm:block">
-          Choose which models automatic fallback and quota-reset restoration may use. Thread and
-          agent restrictions also apply. When no allowed model is available, work waits instead of
-          switching. Manual model selection is unaffected by this global rule.
-        </p>
-        <ModelPolicyEditor
-          policy={settings.fallbackModelPolicy}
-          providers={serverProviders}
-          onSave={(policy) => saveModelPolicy({ fallbackModelPolicy: policy })}
-        />
-      </SettingsSection>
-      <SettingsSection
         id="setting-providers"
         title="Providers"
         headerAction={
@@ -2391,6 +2352,10 @@ export function ProviderSettingsPanel() {
           </div>
         }
       >
+        <p className="mb-5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+          Connect an AI account to start coding. Install a provider if needed, then sign in with
+          your existing account. Solla Code does not require a separate account.
+        </p>
         {rows.map((row) => {
           const driverOption = getDriverOption(row.driver);
           const liveProvider = serverProviders.find(
@@ -2610,6 +2575,45 @@ export function ProviderSettingsPanel() {
               <span className="text-xs text-muted-foreground">seconds</span>
             </div>
           }
+        />
+      </SettingsSection>
+      <SettingsSection
+        id="setting-fallback-models"
+        title="Automatic fallback models"
+        headerAction={
+          <div className="sm:hidden">
+            <Popover>
+              <PopoverTrigger
+                render={
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label="About automatic fallback models"
+                  />
+                }
+              >
+                <InfoIcon aria-hidden className="size-4" />
+              </PopoverTrigger>
+              <PopoverPopup side="bottom" align="end" className="w-[min(20rem,calc(100vw-2rem))]">
+                <p className="text-sm">
+                  Choose which models automatic fallback and quota-reset restoration may use. Thread
+                  and agent restrictions also apply. When no allowed model is available, work waits
+                  instead of switching. Manual model selection is unaffected by this global rule.
+                </p>
+              </PopoverPopup>
+            </Popover>
+          </div>
+        }
+      >
+        <p className="mb-4 hidden text-sm text-muted-foreground sm:block">
+          Choose which models automatic fallback and quota-reset restoration may use. Thread and
+          agent restrictions also apply. When no allowed model is available, work waits instead of
+          switching. Manual model selection is unaffected by this global rule.
+        </p>
+        <ModelPolicyEditor
+          policy={settings.fallbackModelPolicy}
+          providers={serverProviders}
+          onSave={(policy) => saveModelPolicy({ fallbackModelPolicy: policy })}
         />
       </SettingsSection>
 

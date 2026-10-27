@@ -999,7 +999,17 @@ export const ModelAccessPolicy = Schema.Struct({
 export type ModelAccessPolicy = typeof ModelAccessPolicy.Type;
 export const DEFAULT_MODEL_ACCESS_POLICY: ModelAccessPolicy = { mode: "all", models: [] };
 
+/**
+ * Bump to show first-run provider setup again on environments that finished
+ * an older version. Zero means setup has never been completed or skipped.
+ */
+export const PROVIDER_SETUP_VERSION = 1;
+
 export const ServerSettings = Schema.Struct({
+  /** First-run provider setup this environment finished or skipped. */
+  providerSetupVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(0)),
+  ),
   fallbackModelPolicy: ModelAccessPolicy.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_MODEL_ACCESS_POLICY)),
   ),
@@ -1254,6 +1264,7 @@ const OrchestratorSettingsPatch = Schema.Struct({
 export type OrchestratorSettingsPatch = typeof OrchestratorSettingsPatch.Type;
 
 export const ServerSettingsPatch = Schema.Struct({
+  providerSetupVersion: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   fallbackModelPolicy: Schema.optionalKey(ModelAccessPolicy),
   // Merge individual thread entries, replacing each entire policy atomically.
   threadModelPolicies: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, ModelAccessPolicy)),

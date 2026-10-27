@@ -18,6 +18,7 @@ import { useHomeListOptions } from "./home-list-options";
 import { buildHomeProjectScopes } from "./homeThreadList";
 import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
+import { deriveHomeEmptyState } from "./home-empty-state";
 
 /* ─── Route screen ───────────────────────────────────────────────────── */
 
@@ -33,6 +34,10 @@ export function HomeRouteScreen() {
     useThreadListActions();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
+  const emptyState =
+    threads.some((thread) => thread.archivedAt === null) || pendingTasks.length > 0
+      ? undefined
+      : deriveHomeEmptyState({ catalogState, projectCount: projects.length });
   const environments = useMemo(() => {
     const connectionStateByEnvironmentId = new Map(
       workspaceEnvironments.map(
@@ -98,6 +103,23 @@ export function HomeRouteScreen() {
           }
         />
         <WorkspaceEmptyDetail
+          emptyState={emptyState}
+          onEmptyAction={() => {
+            switch (emptyState?.action) {
+              case "connect":
+                navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" });
+                break;
+              case "connections":
+                navigation.navigate("SettingsSheet", { screen: "SettingsEnvironments" });
+                break;
+              case "project":
+                navigation.navigate("NewTaskSheet", { screen: "AddProject" });
+                break;
+              case "task":
+                navigation.navigate("NewTaskSheet", { screen: "NewTask" });
+                break;
+            }
+          }}
           onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
         />
       </>
@@ -131,6 +153,7 @@ export function HomeRouteScreen() {
         <HomeScreen
           catalogState={catalogState}
           environments={environments}
+          onAddProject={() => navigation.navigate("NewTaskSheet", { screen: "AddProject" })}
           onAddConnection={() =>
             navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" })
           }

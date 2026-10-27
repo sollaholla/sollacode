@@ -283,9 +283,6 @@ export function DesktopPermissionsView({
   onComplete: () => void;
   onRelaunch: () => void;
 }) {
-  const unavailableCount = snapshot.permissions.filter(
-    (permission) => permission.status !== "granted",
-  ).length;
   const shouldOfferRelaunch = snapshot.permissions.some(
     (permission) => permission.status !== "granted" && permission.requiresRestart,
   );
@@ -303,7 +300,7 @@ export function DesktopPermissionsView({
                 <ShieldCheckIcon className="size-5" />
               </div>
               <h1 className="text-2xl font-semibold tracking-[-0.035em] text-foreground">
-                Set permissions before agents get to work
+                Optional permissions
               </h1>
             </>
           ) : null}
@@ -313,8 +310,9 @@ export function DesktopPermissionsView({
               onboarding && "mt-2",
             )}
           >
-            Solla Code checks status without prompting. macOS consent appears only when you choose
-            Enable, and you can revisit every grant here later.
+            Enable the features you want to use. You can start coding without granting every
+            permission and return to Settings → Permissions later. macOS asks for consent only when
+            you choose Enable.
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={onRefresh}>
@@ -355,13 +353,7 @@ export function DesktopPermissionsView({
               Restart Solla Code
             </Button>
           ) : null}
-          {onboarding ? (
-            <Button onClick={onComplete}>
-              {unavailableCount === 0
-                ? "Continue to Solla Code"
-                : `Continue with ${unavailableCount} unavailable`}
-            </Button>
-          ) : null}
+          {onboarding ? <Button onClick={onComplete}>Continue to Solla Code</Button> : null}
         </div>
       </div>
     </div>

@@ -12,6 +12,44 @@ import { ThreadErrorBanner } from "./ThreadErrorBanner";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("session error Resume control", () => {
+  it("keeps dismiss and session reset separate and reports reset progress", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const dismiss = vi.fn();
+    const reset = vi.fn();
+    const render = (resettingSession = false) => (
+      <ThreadErrorBanner
+        error="Provider failed"
+        onDismiss={dismiss}
+        onResetSession={reset}
+        resettingSession={resettingSession}
+      />
+    );
+    try {
+      await act(async () => root.render(render()));
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>('button[aria-label="Dismiss error"]')!.click(),
+      );
+      expect(dismiss).toHaveBeenCalledOnce();
+      expect(reset).not.toHaveBeenCalled();
+      const button = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Reset provider session"]',
+      )!;
+      expect(button.textContent).toBe("Reset session");
+      await act(async () => button.click());
+      expect(reset).toHaveBeenCalledOnce();
+      expect(dismiss).toHaveBeenCalledOnce();
+      await act(async () => root.render(render(true)));
+      expect(button.disabled).toBe(true);
+      expect(button.textContent).toBe("Resetting…");
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
   it("sends one resume from a lost handoff without an assistant anchor, then leaves running work alone", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const container = document.createElement("div");

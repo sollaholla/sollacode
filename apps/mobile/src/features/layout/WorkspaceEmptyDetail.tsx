@@ -1,11 +1,34 @@
 import { SymbolView } from "../../components/AppSymbol";
-import { Pressable, View } from "react-native";
+import { ActivityIndicator, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
+import { EmptyState } from "../../components/EmptyState";
 import { useThemeColor } from "../../lib/useThemeColor";
+import type { deriveHomeEmptyState } from "../home/home-empty-state";
 
-export function WorkspaceEmptyDetail(props: { readonly onStartNewTask?: () => void }) {
+export function WorkspaceEmptyDetail(props: {
+  readonly onStartNewTask?: () => void;
+  readonly emptyState?: ReturnType<typeof deriveHomeEmptyState>;
+  readonly onEmptyAction?: () => void;
+}) {
   const iconColor = useThemeColor("--color-icon-subtle");
+
+  if (props.emptyState) {
+    return (
+      <View className="flex-1 items-center justify-center bg-screen px-6">
+        <View className="w-full max-w-[430px]">
+          <EmptyState
+            variant="plain"
+            title={props.emptyState.title}
+            detail={props.emptyState.detail}
+            actionLabel={props.emptyState.actionLabel}
+            onAction={props.onEmptyAction}
+          />
+          {props.emptyState.loading ? <ActivityIndicator color={iconColor} /> : null}
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View className="flex-1 items-center justify-center bg-screen px-10">

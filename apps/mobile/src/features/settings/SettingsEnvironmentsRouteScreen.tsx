@@ -1,13 +1,12 @@
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { useNavigation } from "@react-navigation/native";
-import { SymbolView } from "../../components/AppSymbol";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useEffect, useState } from "react";
 import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text } from "../../components/AppText";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
+import { ConnectComputerEmptyState } from "../connection/ConnectComputerEmptyState";
 import { ConnectionEnvironmentRow } from "../connection/ConnectionEnvironmentRow";
 import { cn } from "../../lib/cn";
 import { useThemeColor } from "../../lib/useThemeColor";
@@ -34,7 +33,6 @@ export function SettingsEnvironmentsRouteScreen() {
     : connectedEnvironments;
   const hasLocalEnvironments = localEnvironments.length > 0;
   const [expandedId, setExpandedId] = useState<EnvironmentId | null>(null);
-  const accentColor = useThemeColor("--color-icon-muted");
   const headerIconColor = useThemeColor("--color-icon");
 
   useEffect(() => {
@@ -84,7 +82,7 @@ export function SettingsEnvironmentsRouteScreen() {
             onBack={() => navigation.goBack()}
             actions={[
               {
-                accessibilityLabel: "Add environment",
+                accessibilityLabel: "Connect a computer",
                 icon: "plus",
                 onPress: () =>
                   navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" }),
@@ -95,6 +93,7 @@ export function SettingsEnvironmentsRouteScreen() {
       ) : (
         <NativeHeaderToolbar placement="right">
           <NativeHeaderToolbar.Button
+            accessibilityLabel="Connect a computer"
             icon="plus"
             onPress={() =>
               navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" })
@@ -133,20 +132,11 @@ export function SettingsEnvironmentsRouteScreen() {
             ))}
           </View>
         ) : (
-          <View collapsable={false} className="items-center gap-3 rounded-[24px] bg-card px-6 py-8">
-            <View className="h-12 w-12 items-center justify-center rounded-[16px] bg-subtle">
-              <SymbolView
-                name="point.3.connected.trianglepath.dotted"
-                size={20}
-                tintColor={accentColor}
-                type="monochrome"
-              />
-            </View>
-            <Text className="text-center text-sm leading-normal text-foreground-muted">
-              No environments connected yet.{"\n"}Tap{" "}
-              <Text className="font-t3-bold text-foreground">+</Text> to add one.
-            </Text>
-          </View>
+          <ConnectComputerEmptyState
+            onConnect={() =>
+              navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" })
+            }
+          />
         )}
       </ScrollView>
     </View>

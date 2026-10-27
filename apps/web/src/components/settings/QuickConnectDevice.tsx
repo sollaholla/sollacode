@@ -38,6 +38,7 @@ type QuickConnectState =
   | { readonly status: "creating" }
   | { readonly status: "ready"; readonly link: QuickPairingLink }
   | { readonly status: "connected"; readonly link: QuickPairingLink; readonly label: string }
+  | { readonly status: "expired" }
   | { readonly status: "error"; readonly message: string };
 
 export function QuickConnectQrPanel({
@@ -89,6 +90,16 @@ export function QuickConnectDevice({
   const [state, setState] = useState<QuickConnectState>({ status: "idle" });
   const initialSessionIdsRef = useRef(new Set<string>());
   const activeLinkRef = useRef<QuickPairingLink | null>(null);
+  const requestGenerationRef = useRef(0);
+
+  const releaseLink = useCallback(() => {
+    requestGenerationRef.current += 1;
+    const link = activeLinkRef.current;
+    activeLinkRef.current = null;
+    if (link) void revokeServerPairingLink(link.id).catch(() => undefined);
+  }, []);
+
+  useEffect(() => releaseLink, [releaseLink]);
 
   const { copyToClipboard } = useCopyToClipboard<"link">({
     onCopy: () => {
@@ -110,6 +121,8 @@ export function QuickConnectDevice({
   });
 
   const createLink = useCallback(async () => {
+    releaseLink();
+    const generation = requestGenerationRef.current;
     if (!pairingBaseUrl) {
       setState({
         status: "error",
@@ -124,6 +137,10 @@ export function QuickConnectDevice({
         label: "Quick device connection",
         scopes: [...AuthStandardClientScopes],
       });
+      if (generation !== requestGenerationRef.current) {
+        void revokeServerPairingLink(credential.id).catch(() => undefined);
+        return;
+      }
       const link = {
         id: credential.id,
         url: resolveDesktopPairingUrl(pairingBaseUrl, credential.credential),
@@ -132,13 +149,14 @@ export function QuickConnectDevice({
       activeLinkRef.current = link;
       setState({ status: "ready", link });
     } catch (cause) {
+      if (generation !== requestGenerationRef.current) return;
       setState({
         status: "error",
         message:
           cause instanceof Error ? cause.message : "Solla Code could not create a connection link.",
       });
     }
-  }, [pairingBaseUrl]);
+  }, [pairingBaseUrl, releaseLink]);
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -155,19 +173,33 @@ export function QuickConnectDevice({
         initialSessionIdsRef.current = new Set(
           clientSessions.map((clientSession) => clientSession.sessionId),
         );
-        activeLinkRef.current = null;
         void createLink();
         return;
       }
-      const activeLink = activeLinkRef.current;
-      activeLinkRef.current = null;
+      releaseLink();
       setState({ status: "idle" });
-      if (activeLink) {
-        void revokeServerPairingLink(activeLink.id).catch(() => undefined);
-      }
     },
-    [clientSessions, createLink],
+    [clientSessions, createLink, releaseLink],
   );
+
+  // A connected device used the link, so only an unused link can expire.
+  const expiresAt = state.status === "ready" ? state.link.expiresAt : null;
+  useEffect(() => {
+    if (!open || expiresAt === null) return;
+    const expire = () => {
+      if (Date.now() < Date.parse(expiresAt)) return;
+      releaseLink();
+      setState({ status: "expired" });
+    };
+    const timeout = window.setTimeout(expire, Math.max(0, Date.parse(expiresAt) - Date.now()));
+    window.addEventListener("focus", expire);
+    document.addEventListener("visibilitychange", expire);
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener("focus", expire);
+      document.removeEventListener("visibilitychange", expire);
+    };
+  }, [expiresAt, open, releaseLink]);
 
   useEffect(() => {
     if (!open || state.status !== "ready") return;
@@ -187,13 +219,9 @@ export function QuickConnectDevice({
   }, [clientSessions, open, state]);
 
   const retry = useCallback(() => {
-    const activeLink = activeLinkRef.current;
-    activeLinkRef.current = null;
-    if (activeLink) {
-      void revokeServerPairingLink(activeLink.id).catch(() => undefined);
-    }
+    initialSessionIdsRef.current = new Set(clientSessions.map((session) => session.sessionId));
     void createLink();
-  }, [createLink]);
+  }, [clientSessions, createLink]);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -205,8 +233,8 @@ export function QuickConnectDevice({
         <DialogHeader>
           <DialogTitle>Connect another device</DialogTitle>
           <DialogDescription>
-            Scan with the other device. Solla Code opens and connects automatically—there is no code
-            to type.
+            Open the camera on your other device and scan this code, or send yourself the connection
+            link. It opens Solla Code automatically.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -220,28 +248,41 @@ export function QuickConnectDevice({
                 </p>
               </div>
             </div>
-          ) : state.status === "error" ? (
+          ) : state.status === "error" || state.status === "expired" ? (
             <div className="flex min-h-64 flex-col items-center justify-center gap-4 text-center">
               <div>
-                <p className="text-sm font-medium text-foreground">Could not prepare the link</p>
+                <p className="text-sm font-medium text-foreground">
+                  {state.status === "expired"
+                    ? "This connection link has expired"
+                    : "Could not prepare the link"}
+                </p>
                 <p className="mt-2 max-w-sm text-xs leading-relaxed text-muted-foreground">
-                  {state.message}
+                  {state.status === "expired"
+                    ? "Create a new link and scan it on your other device. Devices already connected stay connected."
+                    : state.message}
                 </p>
               </div>
               <Button variant="outline" onClick={retry}>
                 <RefreshCwIcon aria-hidden className="size-4" />
-                Try again
+                {state.status === "expired" ? "Create new link" : "Try again"}
               </Button>
             </div>
           ) : state.status === "connected" ? (
-            <div className="flex min-h-72 flex-col items-center justify-center gap-4 text-center">
-              <CheckCircle2Icon className="size-12 text-success" />
+            <div
+              role="status"
+              className="flex min-h-72 flex-col items-center justify-center gap-4 text-center"
+            >
+              <CheckCircle2Icon aria-hidden className="size-12 text-success" />
               <div>
                 <p className="text-base font-medium text-foreground">Device connected</p>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {state.label} can now reconnect automatically.
                 </p>
               </div>
+              <Button variant="outline" onClick={retry}>
+                <ScanLineIcon aria-hidden className="size-4" />
+                Connect another device
+              </Button>
             </div>
           ) : (
             <>
@@ -250,12 +291,19 @@ export function QuickConnectDevice({
                 onCopy={() => copyToClipboard(state.link.url, "link")}
               />
               <div className="mt-4 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-                <Spinner className="size-3.5" />
-                Waiting for the other device…
+                Works once · expires at{" "}
+                {new Date(state.link.expiresAt).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
               </div>
               <p className="mt-2 text-center text-[11px] text-muted-foreground/75">
                 Both devices must be able to reach the same network. Tailscale is optional.
               </p>
+              <Button className="mt-3 w-full" variant="ghost" size="sm" onClick={retry}>
+                <RefreshCwIcon aria-hidden className="size-3.5" />
+                Create new link
+              </Button>
             </>
           )}
         </DialogPanel>

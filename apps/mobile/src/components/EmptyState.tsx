@@ -18,6 +18,7 @@ export function EmptyState(props: {
         </Text>
         {props.actionLabel && props.onAction ? (
           <Pressable
+            accessibilityRole="button"
             className="mt-5 rounded-full bg-primary px-5 py-3 active:opacity-70"
             onPress={props.onAction}
           >
@@ -38,6 +39,7 @@ export function EmptyState(props: {
       </Text>
       {props.actionLabel && props.onAction ? (
         <Pressable
+          accessibilityRole="button"
           className="mt-4 self-start rounded-full bg-primary px-4 py-2.5 active:opacity-70"
           onPress={props.onAction}
         >

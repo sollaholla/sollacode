@@ -21,28 +21,33 @@ export function isHostRepairEligibleThreadError(error: string | null): boolean {
 }
 
 /**
- * A provider payload that fails to decode means the CLI speaks a protocol this
- * build does not know — almost always because the CLI updated itself underneath
- * us. On its own the raw message ("Invalid payload for method 'thread/resume'
- * during 'decode-payload'") names no cause and no remedy, so it reads as the
- * app being broken with nothing to try.
+ * Translate a protocol failure into recovery steps without assuming which
+ * component changed or promising that another provider operation will work.
  *
  * Deliberately not host-repair eligible: nothing is wrong with this computer,
  * and pointing a repair agent at it would waste the user's time.
  */
 const PROTOCOL_PAYLOAD_DRIFT_PATTERN =
-  /invalid payload for method '[^']+' during '(?:de|en)code-payload'/;
+  /invalid payload for method '([^']+)' during '(?:de|en)code-payload'/;
 
 export function describeThreadErrorGuidance(error: string | null): string | null {
   if (!error) return null;
-  if (!PROTOCOL_PAYLOAD_DRIFT_PATTERN.test(error.toLowerCase())) return null;
-  return "The provider CLI updated to a protocol this build of Solla Code does not understand yet. Starting a new thread on it still works — only resuming an existing one fails. Update Solla Code, or point Settings → Providers at an earlier CLI binary.";
+  const match = PROTOCOL_PAYLOAD_DRIFT_PATTERN.exec(error.toLowerCase());
+  if (!match) return null;
+  const guidance =
+    "Solla Code and the provider could not exchange a valid response. Check for Solla Code updates, then check the provider in Settings → Providers.";
+  return match[1] === "thread/resume"
+    ? `${guidance} This happened while reopening the session. You can also try a new thread; this conversation remains saved.`
+    : guidance;
 }
 
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   occurredAt,
   onDismiss,
+  onResetSession,
+  resettingSession = false,
+  resetSessionDisabled = false,
   onFixWithAi,
   fixingWithAi = false,
   onResume,
@@ -53,6 +58,9 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   /** When the provider recorded it, so an old failure cannot read as a live one. */
   occurredAt?: string | null;
   onDismiss?: () => void;
+  onResetSession?: () => void;
+  resettingSession?: boolean;
+  resetSessionDisabled?: boolean;
   onFixWithAi?: () => void;
   fixingWithAi?: boolean;
   onResume?: () => void;
@@ -95,7 +103,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
             </p>
           ) : null}
         </AlertDescription>
-        {onDismiss || onFixWithAi || onResume ? (
+        {onDismiss || onResetSession || onFixWithAi || onResume ? (
           <AlertAction>
             {onResume ? (
               <Button
@@ -108,6 +116,20 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
                 onClick={onResume}
               >
                 {resuming ? "Resuming…" : "Resume"}
+              </Button>
+            ) : null}
+            {onResetSession ? (
+              <Button
+                variant="destructive-outline"
+                size="sm"
+                className="h-11 touch-manipulation sm:h-8"
+                disabled={resettingSession || resetSessionDisabled}
+                aria-label="Reset provider session"
+                title="Stop the provider session. Your conversation stays saved; your next message starts a fresh session."
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={onResetSession}
+              >
+                {resettingSession ? "Resetting…" : "Reset session"}
               </Button>
             ) : null}
             {onFixWithAi ? (
@@ -134,7 +156,8 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
                 variant="destructive-outline"
                 size="icon-xs"
                 className="size-11 touch-manipulation text-destructive opacity-100 sm:size-6"
-                aria-label="Dismiss error and reset the session"
+                aria-label="Dismiss error"
+                title="Dismiss error"
                 data-chat-thread-error-dismiss="true"
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={onDismiss}

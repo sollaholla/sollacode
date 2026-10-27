@@ -14,6 +14,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
+import { parsePairingCredential } from "./pairingCredential";
 
 export function PairingPendingSurface() {
   return (
@@ -52,18 +53,29 @@ export function PairingRouteSurface({
   const [errorMessage, setErrorMessage] = useState(initialErrorMessage ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const autoSubmittedTokenRef = useRef<string | null>(null);
+  const submitInFlightRef = useRef(false);
 
   const submitCredential = useCallback(
     async (nextCredential: string) => {
+      if (submitInFlightRef.current) return;
+      let token: string;
+      try {
+        token = parsePairingCredential(nextCredential, window.location.href);
+      } catch (error) {
+        setErrorMessage(errorMessageFromUnknown(error));
+        return;
+      }
+      submitInFlightRef.current = true;
       setIsSubmitting(true);
       setErrorMessage("");
 
-      const submitError = await submitServerAuthCredential(nextCredential).then(
+      const submitError = await submitServerAuthCredential(token).then(
         () => null,
         (error) => errorMessageFromUnknown(error),
       );
 
       setIsSubmitting(false);
+      submitInFlightRef.current = false;
 
       if (submitError) {
         setErrorMessage(submitError);
@@ -118,7 +130,7 @@ export function PairingRouteSurface({
           {APP_DISPLAY_NAME}
         </p>
         <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-          Pair with this environment
+          Connect to Solla Code
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
           {describeAuthGate(auth.bootstrapMethods)}
@@ -127,7 +139,7 @@ export function PairingRouteSurface({
         <form className="mt-6 space-y-4" onSubmit={(event) => void handleSubmit(event)}>
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="pairing-token">
-              Pairing token
+              Connection link or pairing code
             </label>
             <Input
               id="pairing-token"
@@ -138,21 +150,31 @@ export function PairingRouteSurface({
               disabled={isSubmitting}
               nativeInput
               onChange={(event) => setCredential(event.currentTarget.value)}
-              placeholder="Paste a one-time token or pairing secret"
+              placeholder="Paste the link from your computer"
               spellCheck={false}
               value={credential}
             />
           </div>
 
           {errorMessage ? (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/6 px-3 py-2 text-sm text-destructive">
+            <div
+              role="alert"
+              className="rounded-lg border border-destructive/30 bg-destructive/6 px-3 py-2 text-sm text-destructive"
+            >
               {errorMessage}
+              <p className="mt-1">
+                If the link expired or was already used, create a new one on your computer.
+              </p>
             </div>
           ) : null}
 
           <div className="flex flex-wrap gap-2">
-            <Button disabled={isSubmitting} size="sm" type="submit">
-              {isSubmitting ? "Pairing..." : "Continue"}
+            <Button
+              disabled={isSubmitting || credential.trim().length === 0}
+              size="sm"
+              type="submit"
+            >
+              {isSubmitting ? "Connecting…" : "Connect"}
             </Button>
             <Button
               disabled={isSubmitting}
@@ -320,10 +342,10 @@ function errorMessageFromUnknown(error: unknown): string {
 
 function describeAuthGate(bootstrapMethods: ReadonlyArray<string>): string {
   if (bootstrapMethods.includes("desktop-bootstrap")) {
-    return "This environment expects a trusted pairing credential before the app can connect.";
+    return "Use a connection link from the computer running Solla Code. No separate Solla account is needed.";
   }
 
-  return "Enter a pairing token to start a session with this environment.";
+  return "Use a connection link to access the projects and chats on this computer. No separate Solla account is needed.";
 }
 
 function describeSupportedMethods(bootstrapMethods: ReadonlyArray<string>): string {
@@ -331,12 +353,12 @@ function describeSupportedMethods(bootstrapMethods: ReadonlyArray<string>): stri
     bootstrapMethods.includes("desktop-bootstrap") &&
     bootstrapMethods.includes("one-time-token")
   ) {
-    return "Desktop-managed pairing and one-time pairing tokens are both accepted for this environment.";
+    return "On your computer, open Solla Code → Settings → Connections → Connect another device. Scan the QR code or copy its connection link here.";
   }
 
   if (bootstrapMethods.includes("desktop-bootstrap")) {
-    return "This environment is desktop-managed. Open it from the desktop app or paste a bootstrap credential if one was issued explicitly.";
+    return "Open Solla Code on the computer where it is installed to continue. Its desktop app manages access to this connection.";
   }
 
-  return "This environment accepts one-time pairing tokens. Pairing links can open this page directly, or you can paste the token here.";
+  return "Open Settings → Connections → Connect another device on the host computer. If you started Solla Code from a terminal, use the pairing link printed there. Each link works once.";
 }

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import type { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 
 /**
  * A pending "sign this provider in" request, handed from wherever it was asked
@@ -17,6 +17,7 @@ import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts"
  * spring a terminal on them at next launch.
  */
 export interface ProviderSignInRequest {
+  readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind | string;
   /** Display name, for the pane's own status text. */

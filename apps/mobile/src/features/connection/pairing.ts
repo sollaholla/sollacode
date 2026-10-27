@@ -1,7 +1,15 @@
-import { readHostedPairingRequest } from "@t3tools/shared/remote";
+import { readHostedPairingRequest, resolveRemotePairingTarget } from "@t3tools/shared/remote";
 import * as Schema from "effect/Schema";
 
 const MOBILE_PAIRING_URL_PARAM = "pairingUrl";
+const MOBILE_SCHEMES = new Set(["t3code:", "t3code-dev:", "t3code-preview:"]);
+
+export function cameraPermissionAction(
+  permission: { readonly granted: boolean; readonly canAskAgain: boolean } | null,
+): "scan" | "request" | "settings" {
+  if (permission?.granted) return "scan";
+  return permission?.canAskAgain === false ? "settings" : "request";
+}
 
 export class PairingQrPayloadEmptyError extends Schema.TaggedErrorClass<PairingQrPayloadEmptyError>()(
   "PairingQrPayloadEmptyError",
@@ -61,17 +69,20 @@ export function extractPairingUrlFromQrPayload(payload: string): string {
     throw new PairingQrPayloadEmptyError({});
   }
 
-  try {
-    const url = new URL(trimmed);
-    if (url.protocol === "t3code:") {
-      const pairingUrl = url.searchParams.get(MOBILE_PAIRING_URL_PARAM)?.trim() ?? "";
-      if (pairingUrl.length > 0) {
-        return pairingUrl;
-      }
-    }
-  } catch {
-    // Treat non-URL payloads as raw pairing-url text so the normal input validation can decide.
-  }
+  return readPairingLink(trimmed);
+}
 
-  return trimmed;
+/** Accept the same direct and hosted links as the connection runtime. */
+export function readPairingLink(value: string): string {
+  let pairingUrl = value.trim();
+  // Parsing errors and missing credentials are reported by the shared validator.
+  let url: URL | undefined;
+  try {
+    url = new URL(pairingUrl);
+  } catch {}
+  if (url && MOBILE_SCHEMES.has(url.protocol)) {
+    pairingUrl = url.searchParams.get(MOBILE_PAIRING_URL_PARAM)?.trim() ?? "";
+  }
+  resolveRemotePairingTarget({ pairingUrl });
+  return pairingUrl;
 }

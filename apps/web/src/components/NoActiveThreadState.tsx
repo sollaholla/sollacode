@@ -4,6 +4,10 @@ import { isElectron } from "../env";
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { Spinner } from "./ui/spinner";
+import { Link } from "@tanstack/react-router";
+import { SearchIcon } from "lucide-react";
+import { openCommandPalette } from "../commandPaletteBus";
+import { Button } from "./ui/button";
 
 export function SideChatLoadingState() {
   return (
@@ -46,10 +50,19 @@ export function NoActiveThreadState() {
         <Empty className="flex-1">
           <div className="w-full max-w-lg px-8 py-12">
             <EmptyHeader className="max-w-none">
-              <EmptyTitle className="text-foreground text-xl">Pick a thread to continue</EmptyTitle>
+              <EmptyTitle className="text-foreground text-xl">Open a thread to continue</EmptyTitle>
               <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
-                Select an existing thread or create a new one to get started.
+                Find an existing conversation, or return to your workspace to start something new.
               </EmptyDescription>
+              <div className="mt-5 flex flex-wrap justify-center gap-2">
+                <Button size="sm" onClick={() => openCommandPalette()}>
+                  <SearchIcon aria-hidden className="size-4" />
+                  Find a thread
+                </Button>
+                <Button size="sm" variant="outline" render={<Link to="/" />}>
+                  Open workspace
+                </Button>
+              </div>
             </EmptyHeader>
           </div>
         </Empty>

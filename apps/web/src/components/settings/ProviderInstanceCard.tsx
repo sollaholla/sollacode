@@ -2,18 +2,15 @@
 
 import {
   ArrowUpCircleIcon,
-  CheckIcon,
   ChevronDownIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
   LoaderIcon,
-  LogInIcon,
   PlusIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useNavigate } from "@tanstack/react-router";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -30,7 +27,6 @@ import {
 import { cn } from "../../lib/utils";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
-import { useProviderSignInRequestStore } from "../../providerSignInRequestStore";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -59,6 +55,7 @@ import {
   type ProviderStatusKey,
 } from "./providerStatus";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
+import { ProviderSettingsSignIn } from "./ProviderSettingsSignIn";
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -155,74 +152,6 @@ export function deriveProviderModelsForDisplay(input: {
       },
   );
   return [...serverModels, ...customModels];
-}
-
-/**
- * The command that signs this provider's CLI in.
- *
- * Not a button: a CLI sign-in opens a browser or waits on a device code, so
- * running it fire-and-forget would report success while the person never saw
- * the prompt. Showing the exact command - with one tap to copy it - is what
- * actually unblocks someone on a phone, who can paste it into a terminal.
- */
-/**
- * Sign in to, or switch, a CLI provider's account.
- *
- * This used to print the command in a code block with a Copy button and tell
- * the person to go run it in a terminal themselves. Signing in is the app's
- * job: the button below runs the command in a Solla terminal pane, where the
- * CLI's browser flow prints its URL and takes its input exactly as it would
- * anywhere else. The command is no longer shown at all - a person who wanted
- * to type it into their own terminal never needed this screen to tell them.
- */
-function ProviderSignInCommand({
-  command,
-  displayName,
-  driver,
-  instanceId,
-  supportsAccountSwitch,
-  signedIn,
-}: {
-  readonly command: string;
-  readonly displayName: string;
-  readonly driver: ProviderDriverKind | string;
-  readonly instanceId: ProviderInstanceId;
-  readonly supportsAccountSwitch: boolean;
-  readonly signedIn: boolean;
-}) {
-  const navigate = useNavigate();
-  const requestSignIn = useProviderSignInRequestStore((state) => state.request);
-  const label = signedIn ? "Switch account" : `Sign in to ${displayName}`;
-  return (
-    <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">
-          {signedIn ? "Change account" : "Sign in"}
-        </span>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 gap-1.5 px-2 text-xs"
-          aria-label={label}
-          onClick={() => {
-            requestSignIn({ instanceId, driver, displayName, command, supportsAccountSwitch });
-            void navigate({ to: "/" });
-          }}
-        >
-          <LogInIcon className="size-3.5" />
-          {label}
-        </Button>
-      </div>
-      <span className="mt-1.5 block text-xs text-muted-foreground">
-        {supportsAccountSwitch
-          ? `Signs in through ${displayName} without leaving the app.`
-          : signedIn
-            ? `Runs ${displayName}'s account switch in a terminal for you.`
-            : `Runs ${displayName}'s sign-in in a terminal for you.`}
-      </span>
-    </div>
-  );
 }
 
 function ProviderAuthEmail(props: {
@@ -1069,13 +998,14 @@ export function ProviderInstanceCard({
         <CollapsibleContent>
           <div id={detailsId} className="space-y-5 px-3 pb-4 pt-2 sm:px-4">
             {signInCommand ? (
-              <ProviderSignInCommand
+              <ProviderSettingsSignIn
                 command={signInCommand}
                 displayName={displayName}
                 driver={liveProvider?.driver ?? instance.driver}
                 instanceId={instanceId}
                 supportsAccountSwitch={liveProvider?.supportsAccountSwitch === true}
                 signedIn={isSignedIn}
+                provider={liveProvider ?? null}
               />
             ) : null}
             {apiKeyAccounts}

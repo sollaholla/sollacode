@@ -911,6 +911,8 @@ interface ComposerPromptEditorProps {
   disabled: boolean;
   placeholder: string;
   className?: string;
+  ariaDescribedBy?: string | undefined;
+  ariaInvalid?: boolean | undefined;
   onRemoveTerminalContext: (contextId: string) => void;
   onChange: (
     nextValue: string,
@@ -1180,6 +1182,8 @@ function NativeIOSComposerPromptEditor(props: ComposerPromptEditorProps) {
           disabled={disabled}
           placeholder={terminalContexts.length > 0 ? "" : placeholder}
           aria-label={placeholder}
+          aria-describedby={props.ariaDescribedBy}
+          aria-invalid={props.ariaInvalid || undefined}
           data-chat-composer-scroll-container="true"
           data-testid="composer-editor"
           autoCapitalize="sentences"
@@ -1856,6 +1860,8 @@ function ComposerPromptEditorInner({
   disabled,
   placeholder,
   className,
+  ariaDescribedBy,
+  ariaInvalid,
   onRemoveTerminalContext,
   onChange,
   onTextPresenceChange,
@@ -2265,6 +2271,8 @@ function ComposerPromptEditorInner({
               data-chat-composer-scroll-container="true"
               data-testid="composer-editor"
               aria-placeholder={placeholder}
+              aria-describedby={ariaDescribedBy}
+              aria-invalid={ariaInvalid || undefined}
               placeholder={() => null}
               onCompositionEnd={(event) => handleVisibleEditorInput(event.currentTarget)}
               onCompositionUpdate={(event) => handleVisibleEditorInput(event.currentTarget)}
@@ -2313,6 +2321,8 @@ function LexicalComposerPromptEditor({
   disabled,
   placeholder,
   className,
+  ariaDescribedBy,
+  ariaInvalid,
   onRemoveTerminalContext,
   onChange,
   onTextPresenceChange,
@@ -2352,6 +2362,8 @@ function LexicalComposerPromptEditor({
         providerSlashCommands={providerSlashCommands}
         disabled={disabled}
         placeholder={placeholder}
+        ariaDescribedBy={ariaDescribedBy}
+        ariaInvalid={ariaInvalid}
         onRemoveTerminalContext={onRemoveTerminalContext}
         onChange={onChange}
         onPaste={onPaste}

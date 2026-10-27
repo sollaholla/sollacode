@@ -377,7 +377,7 @@ const SettingsSheetStack = createNativeStackNavigator({
       screen: ConnectionsNewRouteScreen,
       linking: "environment-new",
       options: {
-        title: "Add Environment",
+        title: "Connect a computer",
       },
     }),
     SettingsCredentials: createNativeStackScreen({

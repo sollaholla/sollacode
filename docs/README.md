@@ -14,6 +14,7 @@ Solla Code is an independent fork. Start with [fork identity and compatibility n
   - [Custom-agent workspaces](./architecture/custom-agent-workspaces.md)
   - [Thread artifacts](./architecture/thread-artifacts.md)
 - User guides
+  - [First-run setup](./user/first-run-setup.md)
   - [Composer and Stop](./user/composer.md)
   - [Sidebar](./user/sidebar.md)
   - [Side chats](./user/side-chats.md)

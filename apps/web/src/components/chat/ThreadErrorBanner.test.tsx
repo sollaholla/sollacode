@@ -16,7 +16,7 @@ describe("ThreadErrorBanner", () => {
     expect(markup).toContain('data-chat-thread-error-banner="true"');
     expect(markup).toContain("pointer-events-auto");
     expect(markup).toContain("z-30");
-    expect(markup).toContain('aria-label="Dismiss error and reset the session"');
+    expect(markup).toContain('aria-label="Dismiss error"');
     expect(markup).toContain('data-chat-thread-error-dismiss="true"');
     expect(markup).toContain("size-11");
     expect(markup).toContain("touch-manipulation");
@@ -55,8 +55,9 @@ describe("ThreadErrorBanner", () => {
     );
 
     expect(markup).toContain('data-chat-thread-error-guidance="true"');
-    expect(markup).toContain("updated to a protocol this build");
-    expect(markup).toContain("Starting a new thread on it still works");
+    expect(markup).toContain("could not exchange a valid response");
+    expect(markup).toContain("You can also try a new thread");
+    expect(markup).not.toContain("still works");
   });
 
   it("recognises payload drift in either direction and leaves other errors alone", () => {
@@ -81,6 +82,16 @@ describe("ThreadErrorBanner", () => {
         "Invalid payload for method 'thread/resume' during 'decode-payload'",
       ),
     ).toBe(false);
+  });
+
+  it("does not call a turn/start failure a resume-only problem", () => {
+    const guidance = describeThreadErrorGuidance(
+      "Invalid payload for method 'turn/start' during 'encode-payload'",
+    );
+    expect(guidance).toContain("Check for Solla Code updates");
+    expect(guidance).not.toContain("reopening");
+    expect(guidance).not.toContain("new thread");
+    expect(guidance).not.toContain("updated to");
   });
 
   it("limits host repair onboarding to resource and startup failures", () => {

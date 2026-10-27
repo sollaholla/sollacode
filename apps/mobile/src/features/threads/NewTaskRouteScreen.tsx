@@ -12,7 +12,7 @@ import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { useProjects, useThreadShells } from "../../state/entities";
-import type { WorkspaceState } from "../../state/workspaceModel";
+import { deriveHomeEmptyState } from "../home/home-empty-state";
 import { useWorkspaceState } from "../../state/workspace";
 import { groupProjectsByRepository } from "../../lib/repositoryGroups";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
@@ -21,61 +21,6 @@ import { useIncomingShare } from "../sharing/IncomingShareProvider";
 type NewTaskRouteParams = {
   readonly incomingShareId?: string | string[];
 };
-
-function deriveProjectEmptyState(catalogState: WorkspaceState): {
-  readonly title: string;
-  readonly detail: string;
-  readonly loading: boolean;
-} {
-  if (catalogState.isLoadingConnections) {
-    return {
-      title: "Loading environments",
-      detail: "Checking saved environments on this device.",
-      loading: true,
-    };
-  }
-
-  if (!catalogState.hasConnections) {
-    return {
-      title: "No environments connected",
-      detail: "Add an environment before creating a task.",
-      loading: false,
-    };
-  }
-
-  if (
-    (catalogState.connectionState === "available" ||
-      catalogState.connectionState === "offline" ||
-      catalogState.connectionState === "error") &&
-    !catalogState.hasLoadedShellSnapshot
-  ) {
-    return {
-      title: "Environment unavailable",
-      detail:
-        catalogState.connectionError ??
-        "The saved environment is offline. Check the URL or start the environment, then retry.",
-      loading: false,
-    };
-  }
-
-  if (
-    catalogState.hasConnectingEnvironment &&
-    !catalogState.hasLoadedShellSnapshot &&
-    catalogState.connectionError === null
-  ) {
-    return {
-      title: "Connecting to environment",
-      detail: "Loading projects from the saved environment.",
-      loading: true,
-    };
-  }
-
-  return {
-    title: "No projects found",
-    detail: "The connected environment did not report any projects.",
-    loading: false,
-  };
-}
 
 export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
@@ -127,7 +72,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
     }
     return nextItems;
   }, [repositoryGroups]);
-  const projectEmptyState = deriveProjectEmptyState(catalogState);
+  const projectEmptyState = deriveHomeEmptyState({ catalogState, projectCount: projects.length });
   const resumedDestinationKeyRef = useRef<string | null>(null);
   const reservedDestinationProject = incomingShare?.destination
     ? (projects.find(
@@ -235,6 +180,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
             ) : null}
             {catalogState.hasReadyEnvironment ? (
               <NativeHeaderToolbar.Button
+                accessibilityLabel="Add project"
                 icon="plus"
                 onPress={() => navigation.navigate("NewTaskSheet", { screen: "AddProject" })}
                 separateBackground
@@ -264,25 +210,22 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
             <Text className="text-center text-sm leading-normal text-foreground-muted">
               {projectEmptyState.detail}
             </Text>
-            {!catalogState.hasReadyEnvironment ? (
+            {projectEmptyState.action ? (
               <Pressable
+                accessibilityRole="button"
                 className="mt-1 rounded-full bg-primary px-4 py-2.5 active:opacity-70"
-                onPress={() => navigation.navigate("ConnectionsNew")}
+                onPress={() => {
+                  if (projectEmptyState.action === "connect") navigation.navigate("ConnectionsNew");
+                  else if (projectEmptyState.action === "connections")
+                    navigation.navigate("Connections");
+                  else navigation.navigate("NewTaskSheet", { screen: "AddProject" });
+                }}
               >
                 <Text className="text-sm font-t3-bold text-primary-foreground">
-                  Add environment
+                  {projectEmptyState.actionLabel}
                 </Text>
               </Pressable>
-            ) : (
-              <Pressable
-                className="mt-1 rounded-full bg-primary px-4 py-2.5 active:opacity-70"
-                onPress={() => navigation.navigate("NewTaskSheet", { screen: "AddProject" })}
-              >
-                <Text className="text-sm font-t3-bold text-primary-foreground">
-                  Add new project
-                </Text>
-              </Pressable>
-            )}
+            ) : null}
           </View>
         ) : (
           <View collapsable={false} className="overflow-hidden rounded-[24px] bg-card">

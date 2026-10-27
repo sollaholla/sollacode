@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 
 import { cn } from "../../lib/utils";
 import { searchSettings, type SettingsSearchResult } from "./settingsSearchIndex";
+import { useSettingsSearchNavigation } from "./useSettingsSearchNavigation";
 
 /**
  * Settings search for the portrait phone layout.
@@ -25,6 +26,16 @@ export function SettingsMobileSearch(): React.JSX.Element {
       }),
     [query],
   );
+  const selectResult = (result: SettingsSearchResult) => {
+    setQuery("");
+    void navigate({ to: result.tab, hash: result.anchorId, replace: true });
+  };
+  const searchNavigation = useSettingsSearchNavigation({
+    query,
+    results,
+    onClear: () => setQuery(""),
+    onSelect: selectResult,
+  });
 
   return (
     <div className="relative min-w-0 flex-1">
@@ -34,14 +45,7 @@ export function SettingsMobileSearch(): React.JSX.Element {
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape" && query.length > 0) {
-              // Clear the query rather than letting the page's Escape leave settings.
-              event.preventDefault();
-              event.stopPropagation();
-              setQuery("");
-            }
-          }}
+          {...searchNavigation.inputProps}
           placeholder="Search settings"
           aria-label="Search settings"
           data-testid="settings-mobile-search-input"
@@ -62,6 +66,9 @@ export function SettingsMobileSearch(): React.JSX.Element {
         // Overlaid rather than in flow: results must not push the tab strip and
         // the panel down the screen while someone is typing.
         <div
+          id={searchNavigation.listId}
+          role="listbox"
+          aria-label="Settings search results"
           data-testid="settings-mobile-search-results"
           className={cn(
             "absolute inset-x-0 top-full z-50 mt-1 max-h-[60vh] overflow-y-auto",
@@ -73,16 +80,19 @@ export function SettingsMobileSearch(): React.JSX.Element {
               No settings match “{trimmed}”.
             </p>
           ) : (
-            results.map((result: SettingsSearchResult) => (
+            results.map((result: SettingsSearchResult, index) => (
               <button
                 key={`${result.tab}#${result.anchorId}`}
+                id={searchNavigation.optionId(index)}
+                role="option"
+                tabIndex={-1}
+                aria-selected={index === searchNavigation.activeIndex}
                 type="button"
-                onClick={() => {
-                  setQuery("");
-                  // The layout scrolls to and flashes the row named by the hash.
-                  void navigate({ to: result.tab, hash: result.anchorId, replace: true });
-                }}
-                className="flex w-full flex-col items-start gap-0 rounded-md px-2 py-1.5 text-left transition-colors active:bg-surface-hover"
+                onClick={() => selectResult(result)}
+                className={cn(
+                  "flex w-full flex-col items-start gap-0 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-hover active:bg-surface-hover",
+                  index === searchNavigation.activeIndex && "bg-surface-hover",
+                )}
               >
                 <span className="truncate text-[13px] text-foreground">{result.title}</span>
                 <span className="truncate text-[11px] text-muted-foreground">

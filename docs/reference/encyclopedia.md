@@ -125,6 +125,10 @@ The live backend agent implementation and its event stream. The main service is 
 
 The backend agent runtime that actually performs work. Built-in drivers currently include Codex, Claude, Cursor, Grok, OpenCode, Antigravity, Deep Code, and the MCP bridge. See [ProviderService.ts][14], [ProviderAdapter.ts][15], and [CodexAdapter.ts][17].
 
+#### First-run setup
+
+The two-step screen a new environment shows on its landing page: choose which providers to turn on, then install or sign in to each. Finishing or skipping stores `providerSetupVersion` in server settings, so it opens once per environment, not per device. See [ProviderSetup.tsx](../../apps/web/src/components/onboarding/ProviderSetup.tsx) and [first-run-setup.md](../user/first-run-setup.md).
+
 #### Session
 
 The live provider-backed runtime attached to a thread. Session shape is in [the orchestration contracts][1], and lifecycle is managed in [ProviderService.ts][14].

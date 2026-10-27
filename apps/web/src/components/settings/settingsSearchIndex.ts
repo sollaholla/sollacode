@@ -337,7 +337,12 @@ export function searchSettings(
     if (!matchedAll) continue;
     results.push({ ...entry, anchorId: entry.anchor ?? settingsRowAnchor(entry.title), score });
   }
+  // At equal scores the shorter title is the closer match: "provider" should
+  // land on "Providers" before "Provider update checks".
   return results.sort(
-    (left, right) => right.score - left.score || left.title.localeCompare(right.title),
+    (left, right) =>
+      right.score - left.score ||
+      left.title.length - right.title.length ||
+      left.title.localeCompare(right.title),
   );
 }

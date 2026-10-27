@@ -29,6 +29,7 @@ import {
 } from "../ui/sidebar";
 import { useCloseSettings } from "./closeSettings";
 import { searchSettings, type SettingsSearchResult } from "./settingsSearchIndex";
+import { useSettingsSearchNavigation } from "./useSettingsSearchNavigation";
 
 export type SettingsSectionPath =
   | "/settings/general"
@@ -100,6 +101,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   );
   const handleResultClick = useCallback(
     (result: SettingsSearchResult) => {
+      setQuery("");
       if (isMobile) {
         setOpenMobile(false);
       }
@@ -108,6 +110,12 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
     },
     [isMobile, navigate, setOpenMobile],
   );
+  const searchNavigation = useSettingsSearchNavigation({
+    query,
+    results,
+    onClear: () => setQuery(""),
+    onSelect: handleResultClick,
+  });
   const handleSectionClick = useCallback(
     (to: SettingsSectionPath) => {
       if (isMobile) {
@@ -135,14 +143,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape" && query.length > 0) {
-                  // Clear the query instead of letting the page's Escape leave settings.
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setQuery("");
-                }
-              }}
+              {...searchNavigation.inputProps}
               placeholder="Search settings"
               aria-label="Search settings"
               data-testid="settings-search-input"
@@ -161,16 +162,27 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
           </label>
         </SidebarGroup>
         {query.trim().length > 0 ? (
-          <SidebarGroup className="p-2" data-testid="settings-search-results">
+          <SidebarGroup
+            className="p-2"
+            data-testid="settings-search-results"
+            id={searchNavigation.listId}
+            role="listbox"
+            aria-label="Settings search results"
+          >
             {results.length === 0 ? (
               <p className="px-2 py-3 text-[12px] text-muted-foreground">
                 No settings match “{query.trim()}”.
               </p>
             ) : (
-              <SidebarMenu>
-                {results.map((result) => (
-                  <SidebarMenuItem key={`${result.tab}#${result.anchorId}`}>
+              <SidebarMenu role="presentation">
+                {results.map((result, index) => (
+                  <SidebarMenuItem key={`${result.tab}#${result.anchorId}`} role="presentation">
                     <SidebarMenuButton
+                      id={searchNavigation.optionId(index)}
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={index === searchNavigation.activeIndex}
+                      isActive={index === searchNavigation.activeIndex}
                       className="h-auto flex-col items-start gap-0 py-1.5"
                       onClick={() => handleResultClick(result)}
                     >

@@ -66,6 +66,7 @@ import {
   type HomeProjectSortOrder,
 } from "./homeThreadList";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-swipe-actions";
+import { deriveHomeEmptyState } from "./home-empty-state";
 import { WorkspaceConnectionStatus } from "./WorkspaceConnectionStatus";
 import { shouldShowWorkspaceConnectionStatus } from "./workspace-connection-status";
 
@@ -92,6 +93,7 @@ interface HomeScreenProps {
   readonly onProjectSortOrderChange: (sortOrder: HomeProjectSortOrder) => void;
   readonly onThreadSortOrderChange: (sortOrder: SidebarThreadSortOrder) => void;
   readonly onAddConnection: () => void;
+  readonly onAddProject: () => void;
   readonly onOpenEnvironments: () => void;
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
@@ -115,69 +117,6 @@ const ESTIMATED_THREAD_ROW_HEIGHT = 72;
  * already consumes the top safe-area inset, so the list only needs breathing
  * room here.
  */
-
-function deriveEmptyState(props: {
-  readonly catalogState: WorkspaceState;
-  readonly projectCount: number;
-}): { readonly title: string; readonly detail: string; readonly loading: boolean } {
-  const { catalogState } = props;
-  if (catalogState.isLoadingConnections) {
-    return {
-      title: "Loading environments",
-      detail: "Checking saved environments on this device.",
-      loading: true,
-    };
-  }
-
-  if (!catalogState.hasConnections) {
-    return {
-      title: "No environments connected",
-      detail: "Add an environment to load projects and start coding sessions.",
-      loading: false,
-    };
-  }
-
-  if (
-    (catalogState.connectionState === "available" ||
-      catalogState.connectionState === "offline" ||
-      catalogState.connectionState === "error") &&
-    !catalogState.hasLoadedShellSnapshot
-  ) {
-    return {
-      title: "Environment unavailable",
-      detail:
-        catalogState.connectionError ??
-        "The saved environment is offline. Check the URL or start the environment, then retry.",
-      loading: false,
-    };
-  }
-
-  if (
-    catalogState.hasConnectingEnvironment &&
-    !catalogState.hasLoadedShellSnapshot &&
-    catalogState.connectionError === null
-  ) {
-    return {
-      title: "Connecting to environment",
-      detail: "Loading projects and threads from the saved environment.",
-      loading: true,
-    };
-  }
-
-  if (props.projectCount === 0 && catalogState.hasLoadedShellSnapshot) {
-    return {
-      title: "No projects found",
-      detail: "The connected environment did not report any projects.",
-      loading: false,
-    };
-  }
-
-  return {
-    title: "No threads yet",
-    detail: "Create a task to start a new coding session in one of your connected projects.",
-    loading: false,
-  };
-}
 
 function HomeTopContentSpacer() {
   return <View className="h-4" />;
@@ -858,7 +797,7 @@ export function HomeScreen(props: HomeScreenProps) {
       : (props.savedConnectionsById[props.selectedEnvironmentId]?.environmentLabel ??
         "this environment");
   const shouldShowConnectionStatus = shouldShowWorkspaceConnectionStatus(props.catalogState);
-  const emptyState = deriveEmptyState({
+  const emptyState = deriveHomeEmptyState({
     catalogState: props.catalogState,
     projectCount: props.projects.length,
   });
@@ -885,8 +824,18 @@ export function HomeScreen(props: HomeScreenProps) {
           <EmptyState
             title={emptyState.title}
             detail={emptyState.detail}
-            actionLabel={!props.catalogState.hasReadyEnvironment ? "Add environment" : undefined}
-            onAction={!props.catalogState.hasReadyEnvironment ? props.onAddConnection : undefined}
+            actionLabel={emptyState.actionLabel}
+            onAction={
+              emptyState.action === "connect"
+                ? props.onAddConnection
+                : emptyState.action === "connections"
+                  ? props.onOpenEnvironments
+                  : emptyState.action === "project"
+                    ? props.onAddProject
+                    : emptyState.action === "task"
+                      ? props.onStartNewTask
+                      : undefined
+            }
             variant="plain"
           />
           {emptyState.loading && !shouldShowConnectionStatus ? (

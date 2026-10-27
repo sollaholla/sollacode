@@ -29,6 +29,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -77,6 +78,7 @@ import {
   type PromptStashEntry,
 } from "../../promptStashStore";
 import { ComposerStashBadge } from "./ComposerStashBadge";
+import { ComposerValidationMessage } from "./ComposerValidationMessage";
 import { ComposerStashMenu } from "./ComposerStashMenu";
 import { revertComposerSettingsToThread } from "./composerSettingsRevert";
 import { compressImageForStash } from "../../lib/stashImageCompression";
@@ -1147,6 +1149,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         `Message is over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString()} character limit`)
       : sendDisabledReason);
   const isSendDisabled = effectiveSendDisabledReason !== null;
+  const validationMessageId = useId();
 
   const settingsUpdateLabel = useMemo(() => {
     if (!activeThread || !isServerThread) return null;
@@ -3313,11 +3316,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       className="chat-composer-measure min-w-0 overscroll-none"
       data-chat-composer-form="true"
     >
-      {selectedModelBlockedReason && (
-        <p role="status" className="mb-2 text-xs text-muted-foreground">
-          This model is blocked. Choose an allowed model or change Model restrictions.
-        </p>
-      )}
+      <ComposerValidationMessage
+        id={validationMessageId}
+        reason={
+          selectedModelBlockedReason
+            ? "This model is blocked. Choose an allowed model or change Model restrictions."
+            : effectiveSendDisabledReason
+        }
+        promptTooLong={currentEditorPromptTooLong && !selectedModelBlockedReason}
+      />
       {activeThreadId && (
         <ThreadModelPolicyDialog
           key={activeThreadId}
@@ -3736,6 +3743,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             <div className="relative">
               <ComposerPromptEditor
                 editorRef={composerEditorRef}
+                ariaDescribedBy={isSendDisabled ? validationMessageId : undefined}
+                ariaInvalid={currentEditorPromptTooLong}
                 value={
                   isComposerApprovalState
                     ? ""

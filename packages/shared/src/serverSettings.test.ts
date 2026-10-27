@@ -136,6 +136,15 @@ describe("serverSettings helpers", () => {
     expect(next.orchestrator.voice).toBe(DEFAULT_SERVER_SETTINGS.orchestrator.voice);
   });
 
+  it("starts provider setup unfinished and records it when finished or skipped", () => {
+    // Older settings files predate setup and decode to "never finished"; the
+    // landing page only offers it to environments without projects.
+    expect(DEFAULT_SERVER_SETTINGS.providerSetupVersion).toBe(0);
+    const next = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { providerSetupVersion: 1 });
+    expect(next.providerSetupVersion).toBe(1);
+    expect(next.providers).toEqual(DEFAULT_SERVER_SETTINGS.providers);
+  });
+
   it("replaces text generation selection when provider/model are provided", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,

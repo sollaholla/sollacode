@@ -1,10 +1,13 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { PROVIDER_SETUP_VERSION } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { LinkIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { openCommandPalette } from "../commandPaletteBus";
-import { sortScopedProjectsForSidebar } from "../components/Sidebar.logic";
+import { GettingStarted } from "../components/GettingStarted";
+import { ProviderSetup } from "../components/onboarding/ProviderSetup";
+import { selectLandingProject } from "../lib/projectLanding";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
@@ -16,6 +19,8 @@ import {
   useThreadShells,
 } from "../state/entities";
 import { useEnvironments } from "../state/environments";
+import { primaryServerConfigAtom } from "../state/server";
+import { useProviderSignInRequestStore } from "../providerSignInRequestStore";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
@@ -41,15 +46,14 @@ function IndexDraftLanding() {
   const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
   const handleNewThread = useNewThreadHandler();
+  const pendingSignIn = useProviderSignInRequestStore((state) => state.pending);
   const startingRef = useRef(false);
   const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
 
   const mostRecentProject = useMemo(
     () =>
-      bootstrapped
-        ? (sortScopedProjectsForSidebar(projects, threads, "updated_at")[0] ?? null)
-        : null,
-    [bootstrapped, projects, threads],
+      bootstrapped ? selectLandingProject(projects, threads, pendingSignIn?.environmentId) : null,
+    [bootstrapped, projects, threads, pendingSignIn?.environmentId],
   );
 
   useEffect(() => {
@@ -106,30 +110,36 @@ function DraftStartError({ onRetry }: { readonly onRetry: () => void }) {
   );
 }
 
+/**
+ * A fresh environment opens provider setup until it is finished or skipped,
+ * then the getting-started checklist, which can reopen setup.
+ */
 function NoProjectsHero() {
-  const openAddProject = useCallback(() => openCommandPalette({ open: "add-project" }), []);
+  const config = useAtomValue(primaryServerConfigAtom);
+  const pendingSignIn = useProviderSignInRequestStore((state) => state.pending);
+  const [setupOverride, setSetupOverride] = useState<"open" | "closed" | null>(null);
+  const setupPending =
+    config !== null && config.settings.providerSetupVersion < PROVIDER_SETUP_VERSION;
+  const showSetup = setupOverride === "open" || (setupOverride === null && setupPending);
+  const connectedProviders = (config?.providers ?? [])
+    .filter(
+      (provider) =>
+        provider.enabled && provider.installed && provider.auth.status === "authenticated",
+    )
+    .map((provider) => provider.displayName ?? provider.driver);
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-        <Empty className="flex-1">
-          <div className="w-full max-w-lg px-8 py-12">
-            <EmptyHeader className="max-w-none">
-              <EmptyTitle className="text-foreground text-2xl sm:text-3xl">
-                What should we work on?
-              </EmptyTitle>
-              <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
-                Add a project to start your first thread.
-              </EmptyDescription>
-              <div className="mt-6 flex justify-center">
-                <Button size="sm" onClick={openAddProject}>
-                  <PlusIcon className="size-4" />
-                  Add project
-                </Button>
-              </div>
-            </EmptyHeader>
-          </div>
-        </Empty>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-background pt-12">
+        {showSetup ? (
+          <ProviderSetup onDone={() => setSetupOverride("closed")} />
+        ) : (
+          <GettingStarted
+            connectedProviders={connectedProviders}
+            pendingSignInName={pendingSignIn?.displayName ?? null}
+            onSetUpProviders={() => setSetupOverride("open")}
+          />
+        )}
       </div>
     </SidebarInset>
   );
@@ -162,16 +172,15 @@ function HostedStaticOnboardingState() {
               <div className="mx-auto mb-5 flex size-11 items-center justify-center rounded-xl border border-border/70 bg-background/70 text-muted-foreground">
                 <LinkIcon className="size-5" />
               </div>
-              <EmptyTitle className="text-foreground text-xl">
-                Connect an environment to get started
-              </EmptyTitle>
+              <EmptyTitle className="text-foreground text-xl">Connect your computer</EmptyTitle>
               <EmptyDescription className="mt-2 text-sm leading-relaxed text-muted-foreground/78">
-                Add a reachable backend manually to start working from this browser.
+                Open Solla Code on the computer where your projects live. In Settings → Connections,
+                choose Show QR code, then open its connection link on this device.
               </EmptyDescription>
               <div className="mt-6 flex justify-center">
                 <Button render={<Link to="/settings/connections" />} size="sm">
                   <PlusIcon className="size-4" />
-                  Add environment
+                  Enter connection link
                 </Button>
               </div>
             </EmptyHeader>
