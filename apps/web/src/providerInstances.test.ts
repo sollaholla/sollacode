@@ -204,6 +204,23 @@ describe("resolveSelectableProviderInstance", () => {
     expect(resolveSelectableProviderInstance(providers, undefined)).toBe(ready);
   });
 
+  it("prefers the app's provider order over the server's snapshot order", () => {
+    const providers = [
+      provider({ provider: ProviderDriverKind.make("antigravity"), instanceId: "antigravity" }),
+      provider({ provider: ProviderDriverKind.make("claudeAgent"), instanceId: "claude_work" }),
+      provider({ provider: ProviderDriverKind.make("claudeAgent"), instanceId: "claudeAgent" }),
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        status: "error",
+      }),
+    ];
+
+    // Codex cannot start, so the built-in Claude instance wins over both
+    // the custom Claude instance and Antigravity, which arrived first.
+    expect(resolveSelectableProviderInstance(providers, undefined)).toBe("claudeAgent");
+  });
+
   it("prefers an unprobed (warning) instance over one whose probe errored", () => {
     const notInstalled = ProviderInstanceId.make("codex");
     const unprobed = ProviderInstanceId.make("claudeAgent");

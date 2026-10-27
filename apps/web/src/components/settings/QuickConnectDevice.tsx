@@ -82,9 +82,12 @@ export function QuickConnectQrPanel({
 export function QuickConnectDevice({
   pairingBaseUrl,
   clientSessions,
+  unreachable = false,
 }: {
   pairingBaseUrl: string | null;
   clientSessions: ReadonlyArray<ServerClientSessionRecord>;
+  /** Other devices cannot reach this computer yet, so a QR code would not work. */
+  unreachable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<QuickConnectState>({ status: "idle" });
@@ -225,7 +228,7 @@ export function QuickConnectDevice({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger render={<Button size="sm" />}>
+      <DialogTrigger render={<Button size="sm" disabled={unreachable} />}>
         <ScanLineIcon aria-hidden className="size-4" />
         Show QR code
       </DialogTrigger>

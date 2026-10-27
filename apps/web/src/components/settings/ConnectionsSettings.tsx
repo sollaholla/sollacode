@@ -3202,6 +3202,7 @@ export function ConnectionsSettings() {
                     null
                   }
                   clientSessions={desktopClientSessions}
+                  unreachable={!isLocalBackendRemotelyReachable}
                 />
               }
             />

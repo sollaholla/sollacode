@@ -31,6 +31,12 @@ Select **Done** when every provider is ready, or **Finish later** to stop here. 
 saved on the computer running Solla Code, so setup does not open again on other devices or after a
 restart.
 
+## Default model for new projects
+
+A new project starts on the first ready provider in the app's order: Codex, Claude, Cursor, Grok,
+OpenCode, Antigravity, Deep Code, Muse Code, then Kimi Code. Change it from the model picker in
+the composer at any time.
+
 ## Coming back to setup
 
 Until you add your first project, the Getting Started page offers **Set up providers** (or **Add

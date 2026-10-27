@@ -25,6 +25,7 @@ import {
   type ServerProviderState,
 } from "@t3tools/contracts";
 
+import { providerDriverPreferenceRank } from "@t3tools/client-runtime/state/model-selection";
 import { formatProviderDriverKindLabel } from "./providerModels";
 
 /**
@@ -301,10 +302,16 @@ export function getDefaultProviderInstanceModel(
 const isSelectableProviderInstanceEntry = (entry: ProviderInstanceEntry): boolean =>
   entry.enabled && entry.isAvailable;
 
+function defaultPreferenceRank(entry: ProviderInstanceEntry): number {
+  // A driver's built-in instance comes before custom instances of it.
+  return providerDriverPreferenceRank(entry.driverKind) * 2 + (entry.isDefault ? 0 : 1);
+}
+
 /**
  * Resolve an exact stored instance when it remains enabled and available.
  * Otherwise choose a deterministic fallback that can plausibly start now:
- * ready first, then a non-error probe result. An errored provider is retained
+ * ready first, then a non-error probe result, each in the app's provider
+ * order (Codex, Claude, then the rest). An errored provider is retained
  * only when it was explicitly requested; it is never invented as a new-user
  * default.
  */
@@ -318,9 +325,12 @@ export function resolveSelectableProviderInstanceEntry(
       return requested;
     }
   }
+  const preferred = entries.toSorted(
+    (left, right) => defaultPreferenceRank(left) - defaultPreferenceRank(right),
+  );
   return (
-    entries.find(isProviderInstancePickerReady) ??
-    entries.find((entry) => isSelectableProviderInstanceEntry(entry) && entry.status !== "error")
+    preferred.find(isProviderInstancePickerReady) ??
+    preferred.find((entry) => isSelectableProviderInstanceEntry(entry) && entry.status !== "error")
   );
 }
 

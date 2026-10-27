@@ -237,7 +237,7 @@ export function ConnectionsNewRouteScreen({
             <Text className="text-lg font-t3-bold">Your workspace, on this device</Text>
             <Text className="text-sm leading-normal text-foreground-muted">
               Projects and agents run on your computer. Connect this device to use the same threads
-              wherever you are. No separate Solla account is needed.
+              wherever you are. No separate Solla Code account is needed.
             </Text>
             <Text className="text-sm leading-normal text-foreground-muted">
               On your computer, open Solla Code → Settings → Connections → Connect another device.

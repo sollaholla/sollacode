@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { ProviderInstanceId, type ServerConfig } from "@t3tools/contracts";
 
-import { buildModelOptions } from "./modelOptions";
+import { buildModelOptions, preferredDefaultModelOption } from "./modelOptions";
 
 describe("mobile model options", () => {
   it("normalizes a legacy fallback selection against current capabilities", () => {
@@ -77,4 +77,19 @@ it("groups AGY models and retains a selected legacy effort without a duplicate r
     model: "gemini-flash-low",
     options: [{ id: "effort", value: "low" }],
   });
+});
+
+it("defaults to the provider the app lists first, not the first snapshot", () => {
+  const option = (providerDriver: string, isDefault: boolean) => ({ providerDriver, isDefault });
+  expect(
+    preferredDefaultModelOption([
+      option("antigravity", true),
+      option("claudeAgent", false),
+      option("claudeAgent", true),
+      option("codex", false),
+    ]),
+  ).toEqual(option("claudeAgent", true));
+  expect(preferredDefaultModelOption([option("kimi", false), option("grok", false)])).toEqual(
+    option("grok", false),
+  );
 });

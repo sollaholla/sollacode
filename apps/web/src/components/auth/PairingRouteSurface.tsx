@@ -342,10 +342,10 @@ function errorMessageFromUnknown(error: unknown): string {
 
 function describeAuthGate(bootstrapMethods: ReadonlyArray<string>): string {
   if (bootstrapMethods.includes("desktop-bootstrap")) {
-    return "Use a connection link from the computer running Solla Code. No separate Solla account is needed.";
+    return "Use a connection link from the computer running Solla Code. No separate Solla Code account is needed.";
   }
 
-  return "Use a connection link to access the projects and chats on this computer. No separate Solla account is needed.";
+  return "Use a connection link to access the projects and chats on this computer. No separate Solla Code account is needed.";
 }
 
 function describeSupportedMethods(bootstrapMethods: ReadonlyArray<string>): string {

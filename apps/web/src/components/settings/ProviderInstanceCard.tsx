@@ -453,7 +453,12 @@ export function ProviderInstanceCard({
     (liveProvider?.status as ProviderStatusKey | undefined) ?? (enabled ? "warning" : "disabled");
   const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
   const statusLabel = describeProviderStatus(statusKey);
-  const rawSummary = getProviderSummary(liveProvider);
+  // A provider that is off is never probed, so "waiting for the server" would
+  // never resolve; say it is off instead.
+  const rawSummary =
+    !liveProvider && !enabled
+      ? { headline: "Off", detail: "Turn it on to check this provider." }
+      : getProviderSummary(liveProvider);
   const authEmail = liveProvider?.auth.email;
   const hasAuthenticatedEmail =
     liveProvider?.auth.status === "authenticated" && Boolean(authEmail?.trim());

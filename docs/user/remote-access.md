@@ -142,8 +142,12 @@ If you are already running the desktop app and want to make it reachable from ot
 2. Choose **Show QR code** under **Connect another device**.
 3. Scan the QR code or open the link on the other device.
 
-New desktop installs enable private-network access by default. If the QR panel asks you to enable
-it, open **Advanced connection settings**, turn on **Network access**, and let Solla Code restart.
+New desktop installs enable private-network access by default. While other devices cannot reach
+this computer, **Show QR code** stays disabled and the row asks you to enable it: open **Advanced
+connection settings**, turn on **Network access**, and let Solla Code restart.
+
+Each link works once and expires. After a device connects, the dialog shows **Device connected**;
+choose **Connect another device** for a fresh link. An expired link offers **Create new link**.
 
 Advanced connection settings show the default reachable endpoint, with a `+N` control when more
 endpoints are available. The default controls the QR code and connection link. The preference is

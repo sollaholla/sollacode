@@ -1,3 +1,4 @@
+import { providerDriverPreferenceRank } from "@t3tools/client-runtime/state/model-selection";
 import type {
   ModelCapabilities,
   ModelSelection,
@@ -164,4 +165,21 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
     providerLabel: group.providerLabel,
     models: group.models,
   }));
+}
+
+/** A provider's own default model, from the provider Solla Code lists first. */
+export function preferredDefaultModelOption<
+  T extends { readonly isDefault: boolean; readonly providerDriver: string },
+>(options: ReadonlyArray<T>): T | undefined {
+  const defaults = options.filter((option) => option.isDefault);
+  const candidates = defaults.length > 0 ? defaults : options;
+  return candidates.reduce<T | undefined>(
+    (best, option) =>
+      best === undefined ||
+      providerDriverPreferenceRank(option.providerDriver) <
+        providerDriverPreferenceRank(best.providerDriver)
+        ? option
+        : best,
+    undefined,
+  );
 }
