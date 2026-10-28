@@ -5,8 +5,10 @@ import { cn } from "~/lib/utils";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
   COMPOSER_FAILED_CHIP_CLASS_NAME,
+  COMPOSER_RAIL_POPUP_WIDE_CLASS_NAME,
   COMPOSER_STATUS_COUNT_CHIP_CLASS_NAME,
   COMPOSER_WAITING_CHIP_CLASS_NAME,
+  useComposerRailAnchor,
 } from "./composerStatusIconChip";
 
 function queuedMessagesSummary(count: number, failedCount: number): string {
@@ -36,9 +38,11 @@ export function QueuedMessagesChip(props: {
   const [open, setOpen] = useState(false);
   const failed = props.failedCount > 0;
   const summary = queuedMessagesSummary(props.count, props.failedCount);
+  const rail = useComposerRailAnchor();
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
+        ref={rail.triggerRef}
         aria-label={`${summary}. Show queued messages.`}
         title={`${summary} · ${props.status}`}
         className={cn(
@@ -59,7 +63,8 @@ export function QueuedMessagesChip(props: {
       <PopoverPopup
         side="top"
         align="end"
-        className="w-[min(28rem,calc(100vw-2rem))]"
+        anchor={rail.anchor}
+        className={COMPOSER_RAIL_POPUP_WIDE_CLASS_NAME}
         viewportClassName="py-3 [--viewport-inline-padding:--spacing(3)]"
       >
         <QueuedMessagesDetails summary={summary} status={props.status}>

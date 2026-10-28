@@ -1,3 +1,5 @@
+import { useCallback, useRef } from "react";
+
 export const COMPOSER_STATUS_ICON_CHIP_CLASS_NAME =
   "chat-composer-status-chip pointer-events-auto flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full border bg-background/95 p-1.5 text-xs font-medium";
 
@@ -21,3 +23,21 @@ export const COMPOSER_IDLE_CHIP_CLASS_NAME =
 
 export const COMPOSER_FAILED_CHIP_CLASS_NAME =
   "border-destructive/40 text-destructive hover:bg-destructive/5";
+
+/**
+ * Chip popups anchor to the whole status rail rather than to their chip, and
+ * are never wider than it. Sized from the viewport and aligned to a chip near
+ * the edge, a popup ran past a phone's right edge and hid each row's Stop
+ * button. The rail always fits on screen, so a popup aligned to its end does.
+ */
+export function useComposerRailAnchor() {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const anchor = useCallback(
+    () => triggerRef.current?.closest("[data-chat-composer-status-rail]") ?? triggerRef.current,
+    [],
+  );
+  return { triggerRef, anchor };
+}
+
+export const COMPOSER_RAIL_POPUP_NARROW_CLASS_NAME = "w-[min(20rem,var(--anchor-width))]";
+export const COMPOSER_RAIL_POPUP_WIDE_CLASS_NAME = "w-[min(28rem,var(--anchor-width))]";

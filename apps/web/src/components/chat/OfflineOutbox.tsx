@@ -7,8 +7,10 @@ import { formatShortTimestamp } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
+  COMPOSER_RAIL_POPUP_NARROW_CLASS_NAME,
   COMPOSER_STATUS_ICON_CHIP_CLASS_NAME,
   COMPOSER_WAITING_CHIP_CLASS_NAME,
+  useComposerRailAnchor,
 } from "./composerStatusIconChip";
 
 export interface OfflineOutboxMessage {
@@ -91,6 +93,7 @@ export function OfflineOutboxChip(props: {
   readonly onRetry: (id: string) => void;
   readonly onDiscard: (id: string) => void;
 }) {
+  const rail = useComposerRailAnchor();
   if (props.phase === "sent") {
     return (
       <span
@@ -116,6 +119,7 @@ export function OfflineOutboxChip(props: {
   return (
     <Popover>
       <PopoverTrigger
+        ref={rail.triggerRef}
         aria-label={`${summary}. Show details.`}
         title={summary}
         className={cn(
@@ -137,7 +141,8 @@ export function OfflineOutboxChip(props: {
       <PopoverPopup
         side="top"
         align="end"
-        className="w-[min(20rem,calc(100vw-2rem))]"
+        anchor={rail.anchor}
+        className={COMPOSER_RAIL_POPUP_NARROW_CLASS_NAME}
         viewportClassName="py-3 [--viewport-inline-padding:--spacing(3)]"
       >
         <OfflineOutboxDetails

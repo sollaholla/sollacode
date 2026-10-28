@@ -23,8 +23,10 @@ import { cn } from "~/lib/utils";
 import { TERMINAL_WORKING_DOT_CLASS } from "./chat/TerminalSessionIcon";
 import {
   COMPOSER_IDLE_CHIP_CLASS_NAME,
+  COMPOSER_RAIL_POPUP_WIDE_CLASS_NAME,
   COMPOSER_STATUS_COUNT_CHIP_CLASS_NAME,
   COMPOSER_WORKING_CHIP_CLASS_NAME,
+  useComposerRailAnchor,
 } from "./chat/composerStatusIconChip";
 import { Button } from "./ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
@@ -74,9 +76,11 @@ export function ProviderTasksChip(props: {
   const summary = working
     ? `${activeCount} ${tasksNoun(activeCount)} active`
     : `${count} ${tasksNoun(count)} need a look`;
+  const rail = useComposerRailAnchor();
   return (
     <Popover>
       <PopoverTrigger
+        ref={rail.triggerRef}
         aria-label={`${summary}. Show background tasks.`}
         title={summary}
         className={cn(
@@ -96,7 +100,8 @@ export function ProviderTasksChip(props: {
       <PopoverPopup
         side="top"
         align="end"
-        className="w-[min(26rem,calc(100vw-2rem))]"
+        anchor={rail.anchor}
+        className={COMPOSER_RAIL_POPUP_WIDE_CLASS_NAME}
         viewportClassName="py-3 [--viewport-inline-padding:--spacing(3)]"
       >
         <ProviderTaskDetails
