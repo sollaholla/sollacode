@@ -142,6 +142,8 @@ import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts
 import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
 import * as DeviceManager from "./devices/DeviceManager.ts";
 import * as RelayedEnvironments from "./relay/RelayedEnvironments.ts";
+import * as AgentCalls from "./vm/AgentCalls.ts";
+import { ThreadWorkObligationRepository } from "./persistence/Services/ThreadWorkObligations.ts";
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
@@ -845,6 +847,11 @@ const buildAppUnderTest = (options?: {
           Layer.mock(RelayedEnvironments.RelayedEnvironments)({
             list: Stream.make({ environments: [] }),
           }),
+          Layer.mock(AgentCalls.AgentCalls)({
+            changes: Stream.make({ type: "snapshot" as const, calls: [] }),
+          }),
+          // Agent-call voice routes read message delivery state.
+          Layer.mock(ThreadWorkObligationRepository)({}),
         ),
       ),
       Layer.provide(

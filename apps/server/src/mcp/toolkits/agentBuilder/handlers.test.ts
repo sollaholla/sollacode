@@ -18,6 +18,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ServerConfig from "../../../config.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
+import { AgentCalls } from "../../../vm/AgentCalls.ts";
 import { VmAgentTaskScheduler } from "../../../vm/VmAgentTaskScheduler.ts";
 import { VmAgentWorkspace, type CreateWorkspaceTaskInput } from "../../../vm/VmAgentWorkspace.ts";
 import { VmManager } from "../../../vm/VmManager.ts";
@@ -58,6 +59,7 @@ const makeHarness = (existingAgents: ReadonlyArray<VmAgent> = [agent]) => {
   const createdAgents: Array<{ name: string; purpose: string; threadId: ThreadId | null }> = [];
   const createdTasks: CreateWorkspaceTaskInput[] = [];
   const deletedAgents: string[] = [];
+  const endedCallsFor: string[] = [];
   let wakeCount = 0;
 
   const engineLayer = Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
@@ -108,14 +110,25 @@ const makeHarness = (existingAgents: ReadonlyArray<VmAgent> = [agent]) => {
   const schedulerLayer = Layer.mock(VmAgentTaskScheduler)({
     wake: () => Effect.sync(() => void (wakeCount += 1)),
   });
+  const callsLayer = Layer.mock(AgentCalls)({
+    endForAgent: (vmAgentId) => Effect.sync(() => void endedCallsFor.push(vmAgentId)),
+  });
 
   return {
     dispatched,
     createdAgents,
     createdTasks,
     deletedAgents,
+    endedCallsFor,
     wakeCount: () => wakeCount,
-    layer: Layer.mergeAll(engineLayer, storeLayer, managerLayer, workspaceLayer, schedulerLayer),
+    layer: Layer.mergeAll(
+      engineLayer,
+      storeLayer,
+      managerLayer,
+      workspaceLayer,
+      schedulerLayer,
+      callsLayer,
+    ),
   };
 };
 
@@ -128,7 +141,8 @@ type Services =
   | VmAgentStore
   | VmManager
   | VmAgentWorkspace
-  | VmAgentTaskScheduler;
+  | VmAgentTaskScheduler
+  | AgentCalls;
 const run = <A, E>(
   effect: Effect.Effect<
     A,
@@ -250,12 +264,15 @@ it.effect("delete_agent demands the exact name before destroying anything", () =
     );
     assert.strictEqual(refused._tag, "AgentBuilderInvalidInputError");
     assert.lengthOf(harness.deletedAgents, 0);
+    assert.lengthOf(harness.endedCallsFor, 0);
 
     yield* run(
       handleAgentBuilder({ action: "delete_agent", agentName: "Scout", confirmName: "Scout" }),
       harness.layer,
     );
     assert.deepStrictEqual(harness.deletedAgents, [agent.vmAgentId]);
+    // Its calls end with it.
+    assert.deepStrictEqual(harness.endedCallsFor, [agent.vmAgentId]);
     // The dedicated chat goes with the agent.
     assert.include(
       harness.dispatched.map((command) => command.type),

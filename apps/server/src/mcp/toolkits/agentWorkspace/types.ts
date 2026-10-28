@@ -21,12 +21,13 @@ export const AgentWorkspaceInput = Schema.Struct({
     "notify_user",
     "report_blocker",
     "resolve_blocker",
+    "call_user",
     "define_artifact",
     "update_artifact",
     "set_icon",
   ]).annotate({
     description:
-      "Workspace operation. Recurring tasks created by an agent remain drafts until the user approves them, unless the user enabled task auto-approval and this chat runs in Agent mode — then they activate immediately. report_blocker keeps a standing, visible request in front of the user when work is blocked on something only they can do (a login, a CAPTCHA, a permission, a purchase) — it persists across turns and runs until resolved, unlike prose in the chat. A blocker is already user-visible attention: NEVER also call notify_user for that request. notify_user is only for independent informational updates that require no user action. resolve_blocker clears one you raised once it no longer blocks you.",
+      "Workspace operation. Recurring tasks created by an agent remain drafts until the user approves them, unless the user enabled task auto-approval and this chat runs in Agent mode — then they activate immediately. report_blocker keeps a standing, visible request in front of the user when work is blocked on something only they can do (a login, a CAPTCHA, a permission, a purchase) — it persists across turns and runs until resolved, unlike prose in the chat. A blocker is already user-visible attention: NEVER also call notify_user for that request. notify_user is only for independent informational updates that require no user action. resolve_blocker clears one you raised once it no longer blocks you. call_user rings the user's devices for a live voice call with you; use it only when a real conversation is genuinely needed. report_blocker and questions already ring the user when calls are on, so never pair call_user with report_blocker or notify_user.",
   }),
   taskId: Schema.optional(Schema.String).annotate({
     description: "Task id for update_task or complete_task.",
@@ -58,6 +59,10 @@ export const AgentWorkspaceInput = Schema.Struct({
       description: "report_blocker: where the user should go to unblock, when there is one place.",
     },
   ),
+  callReason: Schema.optional(Schema.String.check(Schema.isMaxLength(500))).annotate({
+    description:
+      "call_user: one sentence on why you are calling. The call opens with it, and it shows on the incoming-call screen.",
+  }),
 });
 export type AgentWorkspaceInput = typeof AgentWorkspaceInput.Type;
 

@@ -48,9 +48,10 @@ const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
  * The clearing rules MUST match ProjectionPipeline's pending accounting —
  * resolved activities always clear, respond.failed clears only when the
  * failure detail marks the request stale/unknown — or settle would be
- * rejected on threads whose shell flags read as clear.
+ * rejected on threads whose shell flags read as clear. Agent calls use the
+ * same rule to tell which question a spoken answer can still fill.
  */
-function isStaleRequestFailureDetail(payload: Record<string, unknown> | null): boolean {
+export function isStaleRequestFailureDetail(payload: Record<string, unknown> | null): boolean {
   const detail = typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
   if (detail === null) return false;
   return (

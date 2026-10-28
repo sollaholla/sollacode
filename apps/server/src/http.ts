@@ -1,7 +1,13 @@
 import Mime from "@effect/platform-node/Mime";
 import {
+  AGENT_CALL_DELEGATION_PATH,
+  AGENT_CALL_SESSION_HEARTBEAT_PATH,
+  AGENT_CALL_SESSION_PATH,
+  AGENT_CALL_SESSION_RELEASE_PATH,
+  AgentCallSessionStartInput,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthVmOperateScope,
   EnvironmentHttpApi,
   ORCHESTRATOR_REALTIME_TOKEN_PATH,
   ORCHESTRATOR_RUN_COMMAND_PATH,
@@ -9,6 +15,7 @@ import {
   ORCHESTRATOR_LIVE_DELEGATION_PATH,
   OrchestratorLiveStartInput,
   OrchestratorLiveDelegationInput,
+  type OrchestratorLiveWorkEvent,
 } from "@t3tools/contracts";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import { decodeOtlpTraceRecords } from "@t3tools/shared/observability";
@@ -49,6 +56,7 @@ import {
 } from "./fileView.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import * as SessionStore from "./auth/SessionStore.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import {
   annotateEnvironmentRequest,
@@ -60,6 +68,8 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as OrchestratorCredentials from "./orchestrator/OrchestratorCredentials.ts";
 import { OrchestratorLive, OrchestratorLiveError } from "./orchestrator/OrchestratorLive.ts";
 import * as ReadOnlyCommand from "./orchestrator/readOnlyCommand.ts";
+import { AgentCallLive } from "./vm/AgentCallLive.ts";
+import { sessionDeviceLabel } from "./vm/AgentCalls.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as Duration from "effect/Duration";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -308,7 +318,10 @@ export function resolveDevRedirectUrl(devUrl: URL, requestUrl: URL): string {
 }
 
 const authenticateRawRouteWithScope = (
-  scope: typeof AuthOrchestrationReadScope | typeof AuthOrchestrationOperateScope,
+  scope:
+    | typeof AuthOrchestrationReadScope
+    | typeof AuthOrchestrationOperateScope
+    | typeof AuthVmOperateScope,
 ) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -324,6 +337,7 @@ const authenticateRawRouteWithScope = (
     if (!session.scopes.includes(scope)) {
       return yield* failEnvironmentScopeRequired(scope);
     }
+    return session;
   });
 
 export const serverEnvironmentHttpApiLayer = HttpApiBuilder.group(
@@ -404,6 +418,23 @@ export const otlpTracesProxyRouteLayer = HttpRouter.add(
 const liveRouteError = (error: OrchestratorLiveError) =>
   Effect.succeed(HttpServerResponse.text(error.detail, { status: error.status }));
 
+/** NDJSON work events, with blank keepalive lines so idle proxies keep the stream open. */
+const liveWorkResponse = <E>(events: Stream.Stream<OrchestratorLiveWorkEvent, E>) => {
+  const encoder = new TextEncoder();
+  return HttpServerResponse.stream(
+    events.pipe(
+      Stream.map((event) => encoder.encode(JSON.stringify(event) + "\n")),
+      Stream.merge(Stream.tick("15 seconds").pipe(Stream.map(() => encoder.encode("\n"))), {
+        haltStrategy: "left",
+      }),
+    ),
+    {
+      contentType: "application/x-ndjson",
+      headers: { "cache-control": "no-store", "x-accel-buffering": "no" },
+    },
+  );
+};
+
 export const orchestratorLiveRouteLayer = Layer.mergeAll(
   HttpRouter.add(
     "POST",
@@ -449,21 +480,7 @@ export const orchestratorLiveRouteLayer = Layer.mergeAll(
         ),
       );
       const id = yield* service.delegate(input);
-      const encoder = new TextEncoder();
-      return HttpServerResponse.stream(
-        service.watch(id).pipe(
-          Stream.map((event) => encoder.encode(JSON.stringify(event) + "\n")),
-          // Keep idle proxy connections open without polling the worker or
-          // inventing progress. The final work receipt ends both streams.
-          Stream.merge(Stream.tick("15 seconds").pipe(Stream.map(() => encoder.encode("\n"))), {
-            haltStrategy: "left",
-          }),
-        ),
-        {
-          contentType: "application/x-ndjson",
-          headers: { "cache-control": "no-store", "x-accel-buffering": "no" },
-        },
-      );
+      return liveWorkResponse(service.watch(id));
     }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
   ),
   HttpRouter.add(
@@ -481,6 +498,98 @@ export const orchestratorLiveRouteLayer = Layer.mergeAll(
       yield* service.release(input.sessionId);
       return HttpServerResponse.empty({ status: 204 });
     }),
+  ),
+);
+
+/** `{ sessionId }`, the body of the agent-call release and heartbeat routes. */
+const agentCallSessionRef = HttpServerRequest.HttpServerRequest.pipe(
+  Effect.flatMap((request) => request.json),
+  Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ sessionId: Schema.NonEmptyString }))),
+  Effect.mapError(
+    () => new OrchestratorLiveError({ status: 400, detail: "A session id is required." }),
+  ),
+);
+
+/**
+ * GPT-Live voice calls with one agent. Starting a session answers (claims) the
+ * call for this device, which then keeps the call's lease with heartbeats
+ * (delegations renew it too); delegations carry what was said into the agent's
+ * chat and stream its progress back. Needs only vm:operate and the OpenAI key,
+ * not the orchestrator.
+ */
+export const agentCallRouteLayer = Layer.mergeAll(
+  HttpRouter.add(
+    "POST",
+    AGENT_CALL_SESSION_PATH,
+    Effect.gen(function* () {
+      const session = yield* authenticateRawRouteWithScope(AuthVmOperateScope);
+      const service = yield* AgentCallLive;
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const input = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(AgentCallSessionStartInput)),
+        Effect.mapError(
+          () =>
+            new OrchestratorLiveError({
+              status: 400,
+              detail: "A valid call and voice connection offer are required.",
+            }),
+        ),
+      );
+      const deviceLabel = yield* sessionDeviceLabel(
+        yield* SessionStore.SessionStore,
+        session.sessionId,
+      );
+      return yield* service
+        .start(input, deviceLabel)
+        .pipe(
+          Effect.map((result) =>
+            HttpServerResponse.jsonUnsafe(result, { headers: { "cache-control": "no-store" } }),
+          ),
+        );
+    }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
+  ),
+  HttpRouter.add(
+    "POST",
+    AGENT_CALL_DELEGATION_PATH,
+    Effect.gen(function* () {
+      yield* authenticateRawRouteWithScope(AuthVmOperateScope);
+      const service = yield* AgentCallLive;
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const input = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(OrchestratorLiveDelegationInput)),
+        Effect.mapError(
+          () =>
+            new OrchestratorLiveError({
+              status: 400,
+              detail: "A valid voice delegation is required.",
+            }),
+        ),
+      );
+      return liveWorkResponse(yield* service.delegate(input));
+    }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
+  ),
+  HttpRouter.add(
+    "POST",
+    AGENT_CALL_SESSION_RELEASE_PATH,
+    Effect.gen(function* () {
+      yield* authenticateRawRouteWithScope(AuthVmOperateScope);
+      const service = yield* AgentCallLive;
+      const input = yield* agentCallSessionRef;
+      yield* service.release(input.sessionId);
+      return HttpServerResponse.empty({ status: 204 });
+    }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
+  ),
+  // The device holding the call checks in; a call whose device stops ends.
+  HttpRouter.add(
+    "POST",
+    AGENT_CALL_SESSION_HEARTBEAT_PATH,
+    Effect.gen(function* () {
+      yield* authenticateRawRouteWithScope(AuthVmOperateScope);
+      const service = yield* AgentCallLive;
+      const input = yield* agentCallSessionRef;
+      yield* service.heartbeat(input.sessionId);
+      return HttpServerResponse.empty({ status: 204 });
+    }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
   ),
 );
 

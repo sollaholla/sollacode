@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
+import { AgentCalls } from "../../../vm/AgentCalls.ts";
 import { createAgentThread, deleteAgentThread } from "../../../vm/agentThread.ts";
 import { VmAgentTaskScheduler } from "../../../vm/VmAgentTaskScheduler.ts";
 import { VmAgentWorkspace } from "../../../vm/VmAgentWorkspace.ts";
@@ -310,6 +311,9 @@ export const handleAgentBuilder = Effect.fn("AgentBuilder.handle")(function* (
       const threadId = yield* manager
         .deleteAgent(agent.vmAgentId)
         .pipe(Effect.mapError(mapFailure("deleting the agent")));
+      // A deleted agent's calls end with it.
+      const calls = yield* AgentCalls;
+      yield* calls.endForAgent(agent.vmAgentId);
       if (threadId !== null) {
         yield* deleteAgentThread(threadId).pipe(Effect.ignoreCause({ log: true }));
       }

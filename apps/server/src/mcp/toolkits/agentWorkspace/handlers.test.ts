@@ -22,6 +22,11 @@ import {
 } from "../../../vm/VmAgentWorkspace.ts";
 import { VmAgentTaskScheduler } from "../../../vm/VmAgentTaskScheduler.ts";
 import { VmManager } from "../../../vm/VmManager.ts";
+import {
+  AgentCalls,
+  type AgentCallRingOutcome,
+  type AgentCallsShape,
+} from "../../../vm/AgentCalls.ts";
 import { handleAgentWorkspace } from "./handlers.ts";
 
 const threadId = ThreadId.make("thread-agent-workspace");
@@ -70,7 +75,12 @@ const invocation = (
   issuedAt: 1,
 });
 
-const makeHarness = (boundAgent: VmAgent | null = agent, autoApprovesTasks = false) => {
+const makeHarness = (
+  boundAgent: VmAgent | null = agent,
+  autoApprovesTasks = false,
+  ringOutcome: AgentCallRingOutcome["status"] = "disabled",
+) => {
+  const rings: Array<Parameters<AgentCallsShape["ring"]>[0]> = [];
   const created: CreateWorkspaceTaskInput[] = [];
   const updated: UpdateWorkspaceTaskInput[] = [];
   const raised: Array<{ readonly title: string; readonly detail: string }> = [];
@@ -179,18 +189,26 @@ const makeHarness = (boundAgent: VmAgent | null = agent, autoApprovesTasks = fal
         return { ...agent, icon };
       }),
   });
+  const callsLayer = Layer.mock(AgentCalls)({
+    ring: (input) =>
+      Effect.sync(() => {
+        rings.push(input);
+        return { status: ringOutcome } as AgentCallRingOutcome;
+      }),
+  });
   return {
     created,
     updated,
     raised,
     resolvedIds,
     icons,
+    rings,
     wakeCount: () => wakeCount,
-    layer: Layer.mergeAll(storeLayer, workspaceLayer, schedulerLayer, managerLayer),
+    layer: Layer.mergeAll(storeLayer, workspaceLayer, schedulerLayer, managerLayer, callsLayer),
   };
 };
 
-type Services = VmAgentStore | VmAgentWorkspace | VmAgentTaskScheduler | VmManager;
+type Services = VmAgentStore | VmAgentWorkspace | VmAgentTaskScheduler | VmManager | AgentCalls;
 const run = <A, E>(
   effect: Effect.Effect<A, E, McpInvocationContext.McpInvocationContext | Services>,
   layer: Layer.Layer<Services>,
@@ -388,5 +406,32 @@ it.effect("reports stopped scheduling instead of promising execution", () =>
       harness.layer,
     );
     assert.include(updated.status, "approval");
+  }),
+);
+
+it.effect("call_user rings as an explicit request and reports each gate in words", () =>
+  Effect.gen(function* () {
+    const ringing = makeHarness(agent, false, "ringing");
+    const result = yield* run(
+      handleAgentWorkspace({ action: "call_user", callReason: "  Which account should I use?  " }),
+      ringing.layer,
+    );
+    assert.match(result.status, /^ringing/);
+    assert.strictEqual(ringing.rings.length, 1);
+    assert.strictEqual(ringing.rings[0]?.reason, "request");
+    assert.strictEqual(ringing.rings[0]?.vmAgentId, vmAgentId);
+    assert.strictEqual(ringing.rings[0]?.topic, "Which account should I use?");
+    assert.match(ringing.rings[0]?.key ?? "", /^request:/);
+
+    for (const [outcome, status] of [
+      ["disabled", "calls are turned off"],
+      ["already-ringing", "already ringing"],
+      ["rate-limited", "rate-limited — use report_blocker instead"],
+    ] as const) {
+      const harness = makeHarness(agent, false, outcome);
+      const gated = yield* run(handleAgentWorkspace({ action: "call_user" }), harness.layer);
+      assert.strictEqual(gated.status, status);
+      assert.strictEqual(harness.rings[0]?.topic, null);
+    }
   }),
 );

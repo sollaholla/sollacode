@@ -1,9 +1,12 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
 import { VmAgentBlockerId, VmAgentTaskId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
+import { AgentCalls, type AgentCallRingOutcome } from "../../../vm/AgentCalls.ts";
 import { VmAgentWorkspace } from "../../../vm/VmAgentWorkspace.ts";
 import { VmAgentTaskScheduler } from "../../../vm/VmAgentTaskScheduler.ts";
 import { VmManager } from "../../../vm/VmManager.ts";
@@ -24,6 +27,18 @@ const requireString = (
   return typeof value === "string" && value.trim().length > 0
     ? Effect.succeed(value.trim())
     : Effect.fail(new AgentWorkspaceInvalidInputError({ action: input.action, missing: field }));
+};
+
+/** What call_user tells the agent; it decides its next step from this. */
+const CALL_USER_STATUS: Record<AgentCallRingOutcome["status"], string> = {
+  ringing:
+    "ringing — if the user answers, what they say on the call arrives in this chat as messages. End your turn so you can reply to them.",
+  disabled: "calls are turned off",
+  "already-ringing": "already ringing",
+  busy: "already on a call with the user",
+  duplicate: "already ringing",
+  cooldown: "rate-limited — use report_blocker instead",
+  "rate-limited": "rate-limited — use report_blocker instead",
 };
 
 const mapFailure = (operation: string) => (error: unknown) =>
@@ -194,6 +209,16 @@ export const handleAgentWorkspace = Effect.fn("AgentWorkspace.handle")(function*
         };
       }
       return { action: input.action, status: "Blocker resolved.", blocker: resolved.value };
+    }
+    case "call_user": {
+      const calls = yield* AgentCalls;
+      const outcome = yield* calls.ring({
+        vmAgentId,
+        reason: "request",
+        topic: input.callReason?.trim() || null,
+        key: `request:${invocation.threadId}:${NodeCrypto.randomUUID()}`,
+      });
+      return { action: input.action, status: CALL_USER_STATUS[outcome.status] };
     }
     case "define_artifact":
     case "update_artifact": {

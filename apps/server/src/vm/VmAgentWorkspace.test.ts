@@ -19,7 +19,11 @@ import { VmAgentWorkspaceStoreLive } from "../persistence/Layers/VmAgentWorkspac
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { VmAgentWorkspace, VmAgentWorkspaceLive } from "./VmAgentWorkspace.ts";
+import {
+  type VmAgentBlockerEvent,
+  VmAgentWorkspace,
+  VmAgentWorkspaceLive,
+} from "./VmAgentWorkspace.ts";
 
 const stores = Layer.mergeAll(VmAgentStoreLive, VmAgentWorkspaceStoreLive).pipe(
   Layer.provideMerge(SqlitePersistenceMemory),
@@ -308,6 +312,17 @@ workspaceLayer("VmAgentWorkspace", (it) => {
         taskFailures: true,
         agentMessages: true,
       });
+      // Missed calls neither spend the agent's hourly budget nor wait on it.
+      const missedCall = (index: number) =>
+        workspace.notify({
+          vmAgentId: agent.vmAgentId,
+          notificationId: VmAgentNotificationId.make(`missed-call:call-${index}`),
+          kind: "agent-message",
+          title: "Missed call from Agent notify",
+          body: "Sign in",
+          dedupeKey: `missed-call:call-${index}`,
+        });
+      for (let index = 0; index < 3; index += 1) assert.isTrue(yield* missedCall(index));
       for (let index = 0; index < 10; index += 1) {
         const delivered = yield* workspace.notify({
           vmAgentId: agent.vmAgentId,
@@ -326,6 +341,7 @@ workspaceLayer("VmAgentWorkspace", (it) => {
         }),
       );
       assert.strictEqual(error._tag, "VmAgentWorkspaceOperationError");
+      assert.isTrue(yield* missedCall(3));
     }),
   );
 
@@ -448,5 +464,44 @@ workspaceLayer("VmAgentWorkspace", (it) => {
         assert.strictEqual(latest()?.unreadNotificationCount, 1);
         unsubscribe();
       }),
+  );
+
+  it.effect("tells blocker listeners which reports are new, refreshed or resolved", () =>
+    Effect.gen(function* () {
+      const workspace = yield* VmAgentWorkspace;
+      const agent = yield* insertAgent("blocker-events");
+      const events: VmAgentBlockerEvent[] = [];
+      const unsubscribe = yield* workspace.subscribeBlockers((event) =>
+        Effect.sync(() => void events.push(event)),
+      );
+      const report = { vmAgentId: agent.vmAgentId, title: "Sign in", detail: "Needs a login." };
+      const first = yield* workspace.raiseBlocker(report);
+      yield* workspace.raiseBlocker({ ...report, detail: "Still needs a login." });
+      yield* workspace.resolveBlocker({
+        vmAgentId: agent.vmAgentId,
+        blockerId: first.blockerId,
+        resolvedBy: "agent",
+      });
+      // Resolving twice is not a second resolution.
+      yield* workspace.resolveBlocker({
+        vmAgentId: agent.vmAgentId,
+        blockerId: first.blockerId,
+        resolvedBy: "agent",
+      });
+      unsubscribe();
+      yield* workspace.raiseBlocker({ ...report, title: "Another" });
+      assert.deepStrictEqual(
+        events.map((event) => [
+          event.type,
+          event.blocker.blockerId,
+          event.type === "raised" ? event.created : null,
+        ]),
+        [
+          ["raised", first.blockerId, true],
+          ["raised", first.blockerId, false],
+          ["resolved", first.blockerId, null],
+        ],
+      );
+    }),
   );
 });

@@ -3,6 +3,7 @@ import { SqlClient } from "effect/unstable/sql";
 import type { EnvironmentId, OrchestrationEvent } from "@t3tools/contracts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { MISSED_CALL_NOTIFICATION_PREFIX } from "../vm/AgentCalls.ts";
 import { VmAgentWorkspace } from "../vm/VmAgentWorkspace.ts";
 import { WebPush, type PushAttention } from "./WebPush.ts";
 
@@ -55,6 +56,10 @@ export const WebPushReactorLive = Layer.effectDiscard(
     const threadPath = (threadId: string) =>
       `/${encodeURIComponent(environmentId)}/${encodeURIComponent(threadId)}`;
 
+    // A missed call's inbox entry is never pushed on its own: the call's
+    // missed-call push already replaced its ringing notification in place.
+    const missedCallIds = `${MISSED_CALL_NOTIFICATION_PREFIX}%`;
+
     const captureAgentAttention = Effect.fn("WebPush.captureAgentAttention")(
       function* () {
         const cutoff = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { hours: 24 }));
@@ -68,6 +73,7 @@ export const WebPushReactorLive = Layer.effectDiscard(
         }>`
       SELECT 'notification:' || notification_id AS key, 'agent' AS kind, vm_agent_id AS "agentId", title, body, created_at AS "createdAt"
       FROM vm_agent_notifications WHERE read_at IS NULL AND archived_at IS NULL AND created_at >= ${cutoff}
+        AND notification_id NOT LIKE ${missedCallIds}
       UNION ALL
       SELECT 'blocker:' || blocker_id, 'request', vm_agent_id, title, detail, created_at
       FROM vm_agent_blockers WHERE resolved_at IS NULL AND created_at >= ${cutoff}

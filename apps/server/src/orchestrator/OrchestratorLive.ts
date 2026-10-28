@@ -45,6 +45,103 @@ const LiveResponse = Schema.Struct({
 });
 const terminalStatuses = new Set(["completed", "failed", "cancelled", "expired"]);
 
+/** The configured voice when GPT-Live has it, otherwise its default. */
+export const liveVoiceFor = (voice: string): string =>
+  (OPENAI_LIVE_VOICES as readonly string[]).includes(voice) ? voice : "marin";
+
+/**
+ * Creates one GPT-Live WebRTC session with client delegation from the
+ * browser's SDP offer. The key stays on the server; the result carries only
+ * the opaque session id and the SDP answer. Shared by the orchestrator's voice
+ * session and agent calls.
+ */
+export const createGptLiveSession = Effect.fn("createGptLiveSession")(function* (
+  http: HttpClient.HttpClient,
+  input: {
+    readonly key: string;
+    readonly instructions: string;
+    readonly voice: string;
+    readonly history: ReadonlyArray<{ readonly role: "user" | "assistant"; readonly text: string }>;
+    readonly sdp: string;
+  },
+) {
+  // Keep startup context below the API's 8,192-token limit even for text
+  // whose tokenizer has a high token-to-character ratio.
+  let remainingBytes = 6_000;
+  const history = input.history
+    .toReversed()
+    .filter((entry) => {
+      const bytes = new TextEncoder().encode(entry.text).length;
+      if (bytes > remainingBytes) return false;
+      remainingBytes -= bytes;
+      return true;
+    })
+    .toReversed();
+  const request = yield* HttpClientRequest.post("https://api.openai.com/v1/live/sessions").pipe(
+    HttpClientRequest.bearerToken(input.key),
+    HttpClientRequest.bodyJson({
+      session: {
+        model: OPENAI_LIVE_MODEL,
+        instructions: input.instructions,
+        delegation: { type: "client" },
+        audio: { output: { voice: input.voice } },
+        store: false,
+        input: history.map((entry) => ({
+          type: "message",
+          role: entry.role,
+          content: [
+            { type: entry.role === "assistant" ? "output_text" : "input_text", text: entry.text },
+          ],
+        })),
+      },
+      transport: { type: "webrtc", sdp: input.sdp },
+    }),
+    Effect.mapError(
+      () =>
+        new OrchestratorLiveError({
+          status: 500,
+          detail: "Could not prepare the GPT-Live session request.",
+        }),
+    ),
+  );
+  const response = yield* http.execute(request).pipe(
+    Effect.timeout("25 seconds"),
+    Effect.mapError(
+      () =>
+        new OrchestratorLiveError({
+          status: 502,
+          detail: "Could not connect to GPT-Live. Check the network and try again.",
+        }),
+    ),
+  );
+  if (response.status < 200 || response.status >= 300)
+    return yield* new OrchestratorLiveError({
+      status:
+        response.status === 401 || response.status === 403
+          ? 409
+          : response.status === 429
+            ? 429
+            : 502,
+      detail:
+        response.status === 401 || response.status === 403
+          ? "The configured OpenAI key cannot start GPT-Live. Check its access in OpenAI."
+          : response.status === 429
+            ? "OpenAI declined the session because of a usage or rate limit. Check API billing and retry."
+            : "OpenAI could not start GPT-Live. Try again shortly.",
+    });
+  const result = yield* response.json.pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(LiveResponse)),
+    Effect.mapError(
+      () =>
+        new OrchestratorLiveError({
+          status: 502,
+          detail: "OpenAI returned an invalid GPT-Live session.",
+        }),
+    ),
+  );
+  return { sessionId: result.session.id, sdp: result.transport.sdp };
+});
+
 export function liveVoiceInstructions(settings: OrchestratorSettings, agentName: string): string {
   return [
     "You are the Solla Code voice orchestrator, an AI assistant. Be concise, natural and clear. Listen while speaking and acknowledge corrections.",
@@ -155,77 +252,15 @@ export const makeOrchestratorLive = Effect.gen(function* () {
         status: 429,
         detail: "Too many live sessions. Close an existing voice session first.",
       });
-    const voice = (OPENAI_LIVE_VOICES as readonly string[]).includes(settings.voice)
-      ? settings.voice
-      : "marin";
-    // Keep startup context below the API's 8,192-token limit even for text
-    // whose tokenizer has a high token-to-character ratio.
-    let remainingBytes = 6_000;
-    const history = input.history
-      .toReversed()
-      .filter((entry) => {
-        const bytes = new TextEncoder().encode(entry.text).length;
-        if (bytes > remainingBytes) return false;
-        remainingBytes -= bytes;
-        return true;
-      })
-      .toReversed();
-    const request = yield* HttpClientRequest.post("https://api.openai.com/v1/live/sessions").pipe(
-      HttpClientRequest.bearerToken(key.value),
-      HttpClientRequest.bodyJson({
-        session: {
-          model: OPENAI_LIVE_MODEL,
-          instructions: liveVoiceInstructions(settings, agent.value.name),
-          delegation: { type: "client" },
-          audio: { output: { voice } },
-          store: false,
-          input: history.map((entry) => ({
-            type: "message",
-            role: entry.role,
-            content: [
-              { type: entry.role === "assistant" ? "output_text" : "input_text", text: entry.text },
-            ],
-          })),
-        },
-        transport: { type: "webrtc", sdp: input.sdp },
-      }),
-    );
-    const response = yield* http.execute(request).pipe(
-      Effect.timeout("25 seconds"),
-      Effect.mapError(
-        () =>
-          new OrchestratorLiveError({
-            status: 502,
-            detail: "Could not connect to GPT-Live. Check the network and try again.",
-          }),
-      ),
-    );
-    if (response.status < 200 || response.status >= 300)
-      return yield* new OrchestratorLiveError({
-        status:
-          response.status === 401 || response.status === 403
-            ? 409
-            : response.status === 429
-              ? 429
-              : 502,
-        detail:
-          response.status === 401 || response.status === 403
-            ? "The configured OpenAI key cannot start GPT-Live. Check its access in OpenAI."
-            : response.status === 429
-              ? "OpenAI declined the session because of a usage or rate limit. Check API billing and retry."
-              : "OpenAI could not start GPT-Live. Try again shortly.",
-      });
-    const result = yield* response.json.pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(LiveResponse)),
-      Effect.mapError(
-        () =>
-          new OrchestratorLiveError({
-            status: 502,
-            detail: "OpenAI returned an invalid GPT-Live session.",
-          }),
-      ),
-    );
-    sessions.set(result.session.id, {
+    const voice = liveVoiceFor(settings.voice);
+    const result = yield* createGptLiveSession(http, {
+      key: key.value,
+      instructions: liveVoiceInstructions(settings, agent.value.name),
+      voice,
+      history: input.history,
+      sdp: input.sdp,
+    });
+    sessions.set(result.sessionId, {
       agentId: agent.value.vmAgentId,
       createdAt: yield* nowMs,
       authority: settings.authority,
@@ -238,8 +273,8 @@ export const makeOrchestratorLive = Effect.gen(function* () {
       agentId: agent.value.vmAgentId,
     });
     return {
-      sessionId: result.session.id,
-      sdp: result.transport.sdp,
+      sessionId: result.sessionId,
+      sdp: result.sdp,
       model: OPENAI_LIVE_MODEL,
       voice,
       agentName: agent.value.name,

@@ -23,11 +23,22 @@ const DEFAULT_PREFERENCES: WebPushPreferences = {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const VapidKeys = Schema.Struct({ publicKey: Schema.String, privateKey: Schema.String });
 type VapidKeys = typeof VapidKeys.Type;
+const PushKind = Schema.Literals(["agent", "request", "call", "call-ended", "missed-call"]);
+/**
+ * The service-worker payload. `kind: "call"` asks the worker for a ringing
+ * notification (require interaction, renotify, vibrate); a later message with
+ * the same `tag` replaces it on the device: `call-ended` quietly ("Answered on
+ * <device>", "Call ended"), `missed-call` as a missed-call notice. `expiresAt`
+ * bounds delivery: the push TTL counts down to it and an undelivered message
+ * settles once past it.
+ */
 const PushMessage = Schema.Struct({
   title: Schema.String,
   body: Schema.String,
   path: Schema.String,
   tag: Schema.String,
+  kind: Schema.optionalKey(PushKind),
+  expiresAt: Schema.optionalKey(Schema.String),
 });
 const encodeKeys = Schema.encodeEffect(Schema.fromJsonString(VapidKeys));
 const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(VapidKeys));
@@ -35,16 +46,32 @@ const decodeSubscription = Schema.decodeUnknownEffect(Schema.fromJsonString(WebP
 const decodePreferences = Schema.decodeUnknownEffect(Schema.fromJsonString(WebPushPreferences));
 const isWebPushError = Schema.is(WebPushError);
 const encodeMessage = Schema.encodeSync(Schema.fromJsonString(PushMessage));
+const decodeMessage = Schema.decodeUnknownOption(Schema.fromJsonString(PushMessage));
 const encodeSubscription = Schema.encodeSync(Schema.fromJsonString(WebPushSubscription));
 const encodePreferences = Schema.encodeSync(Schema.fromJsonString(WebPushPreferences));
 export interface PushAttention {
   readonly key: string;
-  readonly kind: "agent" | "request";
+  /** `agent` is gated by the agent-alerts preference; every other kind by requests. */
+  readonly kind: typeof PushKind.Type;
   readonly title: string;
   readonly body: string;
   readonly path: string;
   readonly createdAt: string;
+  /** Notification tag; defaults to a hash of `key`. Same tag, same notification slot. */
+  readonly tag?: string;
+  /** When the message stops being worth delivering; omitted means one hour of push TTL. */
+  readonly expiresAt?: string;
 }
+
+const DEFAULT_TTL_SECONDS = 3600;
+/** What a device shows when its owner did not opt in to message details. */
+const PRIVATE_TEXT: Record<PushAttention["kind"], { title: string; body: string }> = {
+  agent: { title: "Solla Code", body: "An agent sent you a notification." },
+  request: { title: "Solla Code", body: "Your approval or input is needed." },
+  call: { title: "Incoming call", body: "One of your agents is calling." },
+  "call-ended": { title: "Call ended", body: "A call from one of your agents stopped ringing." },
+  "missed-call": { title: "Missed call", body: "You missed a call from one of your agents." },
+};
 
 /** Push endpoints are capabilities, not arbitrary authenticated HTTP destinations. */
 export function isSupportedPushEndpoint(endpoint: string): boolean {
@@ -75,16 +102,17 @@ export class WebPushTransport extends Context.Service<
       subscription: WebPushSubscription,
       payload: string,
       keys: VapidKeys,
+      options?: { readonly ttlSeconds?: number },
     ) => Effect.Effect<number>;
   }
 >()("t3/notifications/WebPush/WebPushTransport") {
   static readonly layer = Layer.succeed(this, {
-    send: (subscription, payload, keys) =>
+    send: (subscription, payload, keys, options) =>
       Effect.tryPromise({
         try: () =>
           webpush.sendNotification(subscription, payload, {
             vapidDetails: { subject: "https://github.com/sollaholla/sollacode", ...keys },
-            TTL: 3600,
+            TTL: options?.ttlSeconds ?? DEFAULT_TTL_SECONDS,
             urgency: "high",
             timeout: 10_000,
           }),
@@ -181,8 +209,23 @@ export const makeWebPush = Effect.gen(function* () {
     yield* Effect.forEach(
       rows,
       Effect.fn("WebPush.deliver")(function* (row) {
+        const expiresAt = decodeMessage(row.payload).pipe(
+          Option.flatMap((message) => Option.fromUndefinedOr(message.expiresAt)),
+          Option.map((iso) => Date.parse(iso)),
+        );
+        const remainingSeconds = Option.isSome(expiresAt)
+          ? Math.ceil((expiresAt.value - Date.parse(now)) / 1_000)
+          : DEFAULT_TTL_SECONDS;
+        // A ring nobody received in time is not worth delivering late.
+        if (remainingSeconds <= 0) {
+          yield* sql`UPDATE web_push_deliveries SET settled_at = ${now}
+          WHERE subscription_id = ${row.id} AND event_key = ${row.eventKey}`;
+          return;
+        }
         const subscription = yield* decodeSubscription(row.subscription);
-        const status = yield* transport.send(subscription, row.payload, vapid);
+        const status = yield* transport.send(subscription, row.payload, vapid, {
+          ttlSeconds: Math.min(DEFAULT_TTL_SECONDS, remainingSeconds),
+        });
         if (status === 404 || status === 410) {
           yield* sql`DELETE FROM web_push_subscriptions WHERE id = ${row.id}`;
           return;
@@ -194,8 +237,10 @@ export const makeWebPush = Effect.gen(function* () {
         const nextAttempt = DateTime.formatIso(
           DateTime.add(yield* DateTime.now, { seconds: Math.min(3600, 30 * 2 ** row.attempts) }),
         );
+        // `cancel` and a preference change settle rows without the lock, so a
+        // row settled while its send was in flight stays settled.
         yield* sql`UPDATE web_push_deliveries SET attempts = attempts + 1,
-        next_attempt_at = ${nextAttempt}, settled_at = ${settled ? now : null}
+        next_attempt_at = ${nextAttempt}, settled_at = COALESCE(settled_at, ${settled ? now : null})
         WHERE subscription_id = ${row.id} AND event_key = ${row.eventKey}`;
       }),
       { concurrency: 4, discard: true },
@@ -290,14 +335,16 @@ export const makeWebPush = Effect.gen(function* () {
       const prefs = yield* decodePreferences(row.preferences);
       if (attention.kind === "agent" ? !prefs.agentAlerts : !prefs.requests) continue;
       const payload = encodeMessage({
-        title: prefs.includeDetails ? attention.title.slice(0, 120) : "Solla Code",
+        title: prefs.includeDetails
+          ? attention.title.slice(0, 120)
+          : PRIVATE_TEXT[attention.kind].title,
         body: prefs.includeDetails
           ? attention.body.slice(0, 300)
-          : attention.kind === "agent"
-            ? "An agent sent you a notification."
-            : "Your approval or input is needed.",
+          : PRIVATE_TEXT[attention.kind].body,
         path: attention.path,
-        tag: idFor(attention.key),
+        tag: attention.tag ?? idFor(attention.key),
+        kind: attention.kind,
+        ...(attention.expiresAt === undefined ? {} : { expiresAt: attention.expiresAt }),
       });
       yield* sql`INSERT OR IGNORE INTO web_push_deliveries
         (subscription_id, event_key, payload_json, created_at, next_attempt_at)

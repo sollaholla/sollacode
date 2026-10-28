@@ -32,9 +32,18 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces.ts";
 import { ARCHIVED_NOTIFICATION_RETENTION_HOURS } from "../persistence/Layers/VmAgentWorkspaces.ts";
+import { MISSED_CALL_NOTIFICATION_PREFIX } from "./AgentCalls.ts";
 
 type WorkspaceListener = (snapshot: VmAgentWorkspaceSnapshot) => Effect.Effect<void>;
 type AttentionListener = (snapshot: VmAgentAttentionSnapshot) => Effect.Effect<void>;
+/**
+ * A blocker was raised or resolved. `created` is false when a same-title
+ * report refreshed a blocker that was already open.
+ */
+export type VmAgentBlockerEvent =
+  | { readonly type: "raised"; readonly blocker: VmAgentBlocker; readonly created: boolean }
+  | { readonly type: "resolved"; readonly blocker: VmAgentBlocker };
+type BlockerListener = (event: VmAgentBlockerEvent) => Effect.Effect<void>;
 
 export interface CreateWorkspaceTaskInput {
   readonly vmAgentId: VmAgentId;
@@ -78,6 +87,8 @@ export interface VmAgentWorkspaceShape {
   readonly subscribeAttention: (
     listener: AttentionListener,
   ) => Effect.Effect<() => void, VmAgentWorkspaceError>;
+  /** Blocker raises and resolutions as they happen; agent calls ring on new ones. */
+  readonly subscribeBlockers: (listener: BlockerListener) => Effect.Effect<() => void>;
   readonly createTask: (
     input: CreateWorkspaceTaskInput,
   ) => Effect.Effect<VmAgentTask, VmAgentWorkspaceError>;
@@ -190,6 +201,7 @@ export const make = Effect.gen(function* () {
   const projections = yield* ProjectionSnapshotQuery;
   const listeners = new Map<string, Set<WorkspaceListener>>();
   const attentionListeners = new Set<AttentionListener>();
+  const blockerListeners = new Set<BlockerListener>();
 
   const requireAgent = Effect.fn("VmAgentWorkspace.requireAgent")(function* (vmAgentId: VmAgentId) {
     const agent = yield* agents
@@ -257,6 +269,20 @@ export const make = Effect.gen(function* () {
       yield* listener(next).pipe(Effect.ignoreCause({ log: true }));
     }
   });
+
+  const publishBlocker = Effect.fnUntraced(function* (event: VmAgentBlockerEvent) {
+    for (const listener of blockerListeners) {
+      yield* listener(event).pipe(Effect.ignoreCause({ log: true }));
+    }
+  });
+
+  const subscribeBlockers: VmAgentWorkspaceShape["subscribeBlockers"] = (listener) =>
+    Effect.sync(() => {
+      blockerListeners.add(listener);
+      return () => {
+        blockerListeners.delete(listener);
+      };
+    });
 
   const refresh: VmAgentWorkspaceShape["refresh"] = (vmAgentId) =>
     publish(vmAgentId).pipe(Effect.ignoreCause({ log: true }));
@@ -472,11 +498,16 @@ export const make = Effect.gen(function* () {
             ? preferences.taskCompletions
             : preferences.taskFailures);
       if (!permitted) return false;
-      if (input.kind === "agent-message") {
+      // Missed calls land as agent messages, but the agent's hourly budget is
+      // for what it chose to say: they neither spend it nor wait on it.
+      const isMissedCall = (id: string | undefined) =>
+        id?.startsWith(MISSED_CALL_NOTIFICATION_PREFIX) === true;
+      if (input.kind === "agent-message" && !isMissedCall(input.notificationId)) {
         const oneHourAgo = DateTime.toEpochMillis(DateTime.makeUnsafe(now)) - 60 * 60 * 1_000;
         const recentAgentMessages = current.notifications.filter(
           (notification) =>
             notification.kind === "agent-message" &&
+            !isMissedCall(notification.notificationId) &&
             DateTime.toEpochMillis(DateTime.makeUnsafe(notification.createdAt)) >= oneHourAgo,
         ).length;
         if (recentAgentMessages >= 10) {
@@ -578,9 +609,10 @@ export const make = Effect.gen(function* () {
   )(function* (input) {
     yield* ensure(input.vmAgentId);
     const now = yield* nowIso;
+    const blockerId = VmAgentBlockerId.make(NodeCrypto.randomUUID());
     const blocker = yield* store
       .raiseBlocker({
-        blockerId: VmAgentBlockerId.make(NodeCrypto.randomUUID()),
+        blockerId,
         vmAgentId: input.vmAgentId,
         title: input.title,
         detail: input.detail,
@@ -593,6 +625,8 @@ export const make = Effect.gen(function* () {
     // for one request, and could deliver a second desktop alert for it.
     yield* publish(input.vmAgentId);
     yield* publishAttention();
+    // A same-title report refreshes the open row and keeps its original id.
+    yield* publishBlocker({ type: "raised", blocker, created: blocker.blockerId === blockerId });
     return blocker;
   });
 
@@ -610,6 +644,8 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.mapError(operationError("resolving a blocker")));
     yield* publish(input.vmAgentId);
     yield* publishAttention();
+    if (Option.isSome(resolved))
+      yield* publishBlocker({ type: "resolved", blocker: resolved.value });
     return resolved;
   });
 
@@ -618,6 +654,7 @@ export const make = Effect.gen(function* () {
     snapshot,
     subscribe,
     subscribeAttention,
+    subscribeBlockers,
     prepareResume,
     createTask,
     autoApprovesTasks,

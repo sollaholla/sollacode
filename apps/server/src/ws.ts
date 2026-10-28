@@ -27,7 +27,6 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
-  AgentCallError,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AuthAccessStreamError,
   AuthOrchestrationOperateScope,
@@ -135,6 +134,7 @@ import * as RemoteFrameRelay from "./preview/RemoteFrameRelay.ts";
 import * as PreviewMediaBroker from "./preview/PreviewMediaBroker.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
+import { AgentCalls, sessionDeviceLabel } from "./vm/AgentCalls.ts";
 import {
   readVmAgentRulesFile,
   resolveVmAgentRulesPath,
@@ -636,6 +636,7 @@ const makeWsRpcLayer = (
       const vmAgentTaskScheduler = yield* VmAgentTaskScheduler.VmAgentTaskScheduler;
       const vmAgentCollaboration = yield* VmAgentCollaboration.VmAgentCollaboration;
       const vmAgentStore = yield* VmAgentStore;
+      const agentCalls = yield* AgentCalls;
       const textGeneration = yield* TextGeneration.TextGeneration;
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
@@ -3314,13 +3315,13 @@ const makeWsRpcLayer = (
         [WS_METHODS.vmAgentDelete]: (input) =>
           observeRpcEffect(
             WS_METHODS.vmAgentDelete,
-            vmManager
-              .deleteAgent(input.vmAgentId)
-              .pipe(
-                Effect.flatMap((threadId) =>
-                  threadId === null ? Effect.void : deleteAgentThread(threadId),
-                ),
+            vmManager.deleteAgent(input.vmAgentId).pipe(
+              // A deleted agent's calls end with it.
+              Effect.tap(() => agentCalls.endForAgent(input.vmAgentId)),
+              Effect.flatMap((threadId) =>
+                threadId === null ? Effect.void : deleteAgentThread(threadId),
               ),
+            ),
             { "rpc.aggregate": "vm" },
           ),
         [WS_METHODS.vmAgentStart]: (input) =>
@@ -3614,14 +3615,32 @@ const makeWsRpcLayer = (
             vmAgentWorkspace.updateNotification(input),
             { "rpc.aggregate": "vm-workspace" },
           ),
-        // Placeholders until the AgentCalls service lands; they keep the RPC
-        // group complete. Replace with the real handlers.
         [WS_METHODS.vmAgentCallsSubscribe]: () =>
-          Stream.make({ type: "snapshot" as const, calls: [] }),
-        [WS_METHODS.vmAgentCallPlace]: () =>
-          Effect.fail(new AgentCallError({ detail: "Agent calls are not available yet." })),
-        [WS_METHODS.vmAgentCallDecline]: () => Effect.void,
-        [WS_METHODS.vmAgentCallEnd]: () => Effect.void,
+          observeRpcStream(WS_METHODS.vmAgentCallsSubscribe, agentCalls.changes, {
+            "rpc.aggregate": "vm-workspace",
+          }),
+        [WS_METHODS.vmAgentCallPlace]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentCallPlace,
+            sessionDeviceLabel(sessions, currentSessionId).pipe(
+              Effect.flatMap((deviceLabel) =>
+                agentCalls.place({ vmAgentId: input.vmAgentId, deviceLabel }),
+              ),
+            ),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentCallDecline]: (input) =>
+          observeRpcEffect(WS_METHODS.vmAgentCallDecline, agentCalls.decline(input.callId), {
+            "rpc.aggregate": "vm-workspace",
+          }),
+        [WS_METHODS.vmAgentCallEnd]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentCallEnd,
+            agentCalls.end(input.callId, { ifRinging: input.ifRinging === true }),
+            {
+              "rpc.aggregate": "vm-workspace",
+            },
+          ),
         [WS_METHODS.vmAgentBlockerResolve]: (input) =>
           observeRpcEffect(
             WS_METHODS.vmAgentBlockerResolve,

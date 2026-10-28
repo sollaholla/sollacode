@@ -55,7 +55,7 @@ it("routes provider approvals and questions and cancels matching resolutions", (
 });
 
 it.effect(
-  "bridges live requests and persisted unread agent alerts, blockers, and pending input",
+  "bridges live requests and persisted unread agent alerts, blockers, and pending input, never missed calls",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -63,8 +63,11 @@ it.effect(
       yield* sql`INSERT INTO vm_agents (vm_agent_id, name, name_lower, handle, purpose, vm_id, thread_id,
     status, control_mode, created_at, updated_at) VALUES
     ('agent', 'Agent', 'agent', 'agent', 'test', 'vm', 'agent-thread', 'running', 'agent', ${now}, ${now})`;
+      // The second row is a missed call's inbox entry: its call push already
+      // replaced the ringing notification, so it is never pushed on its own.
       yield* sql`INSERT INTO vm_agent_notifications (notification_id, vm_agent_id, kind, title, body, deep_link, dedupe_key, created_at)
-    VALUES ('notice', 'agent', 'agent-message', 'Report ready', 'Read the report', '/agents/agent', 'unique-notice', ${now})`;
+    VALUES ('notice', 'agent', 'agent-message', 'Report ready', 'Read the report', '/agents/agent', 'unique-notice', ${now}),
+    ('missed-call:call-1', 'agent', 'agent-message', 'Missed call from Agent', 'Sign in', '/agents/agent', 'missed-call:call-1', ${now})`;
       yield* sql`INSERT INTO vm_agent_blockers (blocker_id, vm_agent_id, title, detail, created_at, updated_at)
     VALUES ('block', 'agent', 'Sign in', 'Open the login page', ${now}, ${now})`;
       yield* sql`INSERT INTO projection_pending_approvals (request_id, thread_id, status, created_at)

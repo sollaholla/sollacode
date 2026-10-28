@@ -2,6 +2,9 @@ import { WebPushLive, WebPushTransport } from "./notifications/WebPush.ts";
 import { WebPushReactorLive } from "./notifications/WebPushReactor.ts";
 import * as PreviewExpiry from "./preview/Expiry.ts";
 import { OrchestratorLiveLayer } from "./orchestrator/OrchestratorLive.ts";
+import * as AgentCalls from "./vm/AgentCalls.ts";
+import { AgentCallLiveLayer } from "./vm/AgentCallLive.ts";
+import { AgentCallReactorLive } from "./vm/AgentCallReactor.ts";
 import { EnvironmentHttpApi } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,6 +21,7 @@ import {
   orchestratorRealtimeTokenRouteLayer,
   orchestratorLiveRouteLayer,
   orchestratorRunCommandRouteLayer,
+  agentCallRouteLayer,
   assetRouteLayer,
   fileViewRouteLayer,
   serverEnvironmentHttpApiLayer,
@@ -479,7 +483,20 @@ const WebPushRuntimeLive = WebPushReactorLive.pipe(
   Layer.provideMerge(WebPushLayerLive),
 );
 
-const RuntimeDependenciesLive = WebPushRuntimeLive.pipe(
+// Agent calls: the in-memory call registry (shared by RPCs, HTTP voice routes
+// and the agent_workspace tool) and the reactor that rings on blockers and
+// questions and pushes call state to devices.
+const AgentCallsLayerLive = AgentCalls.layer.pipe(
+  Layer.provide(ServerSettingsLayerLive),
+  Layer.provide(ServerSecretStore.layer),
+  Layer.provide(VmAgentPersistenceLayerLive),
+);
+const AgentCallRuntimeLive = AgentCallReactorLive.pipe(
+  Layer.provideMerge(AgentCallsLayerLive),
+  Layer.provideMerge(WebPushRuntimeLive),
+);
+
+const RuntimeDependenciesLive = AgentCallRuntimeLive.pipe(
   // Misc.
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
@@ -512,6 +529,7 @@ export const makeRoutesLayer = Layer.mergeAll(
     orchestratorRealtimeTokenRouteLayer,
     orchestratorLiveRouteLayer,
     orchestratorRunCommandRouteLayer,
+    agentCallRouteLayer,
     assetRouteLayer,
     fileViewRouteLayer,
     staticAndDevRouteLayer,
@@ -526,6 +544,7 @@ export const makeRoutesLayer = Layer.mergeAll(
 ).pipe(
   HttpRouter.provideRequest(ThreadArtifactLayerLive),
   HttpRouter.provideRequest(OrchestratorLiveLayer),
+  HttpRouter.provideRequest(AgentCallLiveLayer),
   Layer.provide(ActionApprovalBroker.layer),
   Layer.provide(PreviewMediaBroker.layer),
   Layer.provide(PreviewAutomationBroker.layer),

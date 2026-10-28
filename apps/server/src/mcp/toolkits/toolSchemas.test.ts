@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Tool } from "effect/unstable/ai";
 
+import { AgentWorkspaceToolkit } from "./agentWorkspace/tools.ts";
 import { AppUpdateToolkit } from "./appUpdate/tools.ts";
 import { ActionApprovalToolkit } from "./actionApproval/tools.ts";
 import { ThreadCollaborationToolkit } from "./collaboration/tools.ts";
@@ -29,6 +30,7 @@ const ALL_TOOLKITS = {
   WorkspaceOrchestrationToolkit,
   WorkspaceConsultToolkit,
   ThreadTerminalsToolkit,
+  AgentWorkspaceToolkit,
 } as const;
 
 /**
@@ -73,4 +75,14 @@ it("gives every MCP tool a description an agent can route on", () => {
       ).toBeGreaterThan(40);
     }
   }
+});
+
+it("lets an agent ask for a call with a flat, optional callReason", () => {
+  const schema = Tool.getJsonSchema(AgentWorkspaceToolkit.tools.agent_workspace) as {
+    readonly properties: Record<string, unknown>;
+    readonly required?: ReadonlyArray<string>;
+  };
+  expect(JSON.stringify(schema.properties.action)).toContain('"call_user"');
+  expect(JSON.stringify(schema.properties.callReason)).toContain('"type":"string"');
+  expect(schema.required ?? []).not.toContain("callReason");
 });

@@ -29,13 +29,21 @@ const messageSchema = Schema.Struct({
   body: Schema.String,
   path: Schema.String,
   tag: Schema.String,
+  kind: Schema.optional(Schema.String),
+  expiresAt: Schema.optional(Schema.String),
 });
 const decodeMessage = Schema.decodeUnknownSync(Schema.fromJsonString(messageSchema));
 const fixture = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const sent: { endpoint: string; payload: ReturnType<typeof decodeMessage>; publicKey: string }[] =
-    [];
+  const sent: {
+    endpoint: string;
+    payload: ReturnType<typeof decodeMessage>;
+    publicKey: string;
+    ttlSeconds: number | undefined;
+  }[] = [];
   let response = 201;
+  // Runs while a send is in flight, before the push service answers.
+  let duringSend: Effect.Effect<void> = Effect.void;
   const secretValues = new Map<string, Uint8Array>();
   const secretLayer = Layer.mock(ServerSecretStore)({
     get: (key) => Effect.sync(() => Option.fromUndefinedOr(secretValues.get(key))),
@@ -45,15 +53,15 @@ const fixture = Effect.gen(function* () {
       }),
   });
   const transportLayer = Layer.succeed(WebPushTransport, {
-    send: (target, payload, keys) =>
+    send: (target, payload, keys, options) =>
       Effect.sync(() => {
         sent.push({
           endpoint: target.endpoint,
           payload: decodeMessage(payload),
           publicKey: keys.publicKey,
+          ttlSeconds: options?.ttlSeconds,
         });
-        return response;
-      }),
+      }).pipe(Effect.andThen(Effect.suspend(() => duringSend)), Effect.as(response)),
   });
   for (const id of [sessionId, secondSession]) {
     yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at, expires_at)
@@ -79,6 +87,9 @@ const fixture = Effect.gen(function* () {
     secretValues,
     setResponse: (value: number) => {
       response = value;
+    },
+    setDuringSend: (effect: Effect.Effect<void>) => {
+      duringSend = effect;
     },
   };
 });
@@ -177,6 +188,154 @@ describe("Web Push delivery", () => {
         yield* push.drain;
         yield* push.cancel("approval:1");
         yield* TestClock.adjust("1 minute");
+        yield* push.drain;
+        assert.strictEqual(sent.length, 1);
+      }),
+    ),
+  );
+
+  it.effect("a ring withdrawn while its send is in flight is never retried", () =>
+    scenario(({ push, sent, setResponse, setDuringSend }) =>
+      Effect.gen(function* () {
+        yield* push.subscribe(sessionId, { subscription, preferences });
+        const now = yield* DateTime.now;
+        // The call is answered on another device while the push service is
+        // still answering, and then the send fails.
+        setDuringSend(push.cancel("call:one").pipe(Effect.orDie));
+        setResponse(503);
+        yield* push.publish({
+          key: "call:one",
+          kind: "call",
+          tag: "call:one",
+          title: "Scout is calling",
+          body: "Sign in to Google",
+          path: "/call/host/one",
+          createdAt: DateTime.formatIso(now),
+          expiresAt: DateTime.formatIso(DateTime.add(now, { seconds: 45 })),
+        });
+        yield* push.drain;
+        assert.strictEqual(sent.length, 1);
+        // Still inside the ring window: a retry would ring again.
+        yield* TestClock.adjust("30 seconds");
+        yield* push.drain;
+        yield* push.flush;
+        assert.strictEqual(sent.length, 1);
+      }),
+    ),
+  );
+
+  it.effect("rings with a call notification that stops being delivered when the ring ends", () =>
+    scenario(({ push, sent, setResponse }) =>
+      Effect.gen(function* () {
+        yield* push.subscribe(sessionId, { subscription, preferences });
+        const now = yield* DateTime.now;
+        const call: PushAttention = {
+          key: "call:one",
+          kind: "call",
+          tag: "call:one",
+          title: "Scout is calling",
+          body: "Sign in to Google",
+          path: "/call/host/one",
+          createdAt: DateTime.formatIso(now),
+          expiresAt: DateTime.formatIso(DateTime.add(now, { seconds: 45 })),
+        };
+        setResponse(503);
+        yield* push.publish(call);
+        yield* push.drain;
+        assert.deepStrictEqual(sent[0]?.payload, {
+          title: "Incoming call",
+          body: "One of your agents is calling.",
+          path: "/call/host/one",
+          tag: "call:one",
+          kind: "call",
+          expiresAt: call.expiresAt,
+        });
+        assert.strictEqual(sent[0]?.ttlSeconds, 45);
+        // A retry inside the ring window only lives as long as the ring.
+        yield* TestClock.adjust("30 seconds");
+        yield* push.drain;
+        assert.strictEqual(sent.length, 2);
+        assert.strictEqual(sent[1]?.ttlSeconds, 15);
+        // Past the ring window the delivery settles instead of ringing late.
+        yield* TestClock.adjust("1 minute");
+        yield* push.drain;
+        yield* push.flush;
+        assert.strictEqual(sent.length, 2);
+
+        setResponse(201);
+        yield* push.publish({
+          key: "call:one:missed",
+          kind: "missed-call",
+          tag: "call:one",
+          title: "Missed call from Scout",
+          body: "Sign in to Google",
+          path: "/agents/host/scout",
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+        });
+        yield* push.drain;
+        assert.strictEqual(sent[2]?.payload.title, "Missed call");
+        assert.strictEqual(sent[2]?.payload.tag, "call:one");
+        assert.strictEqual(sent[2]?.payload.kind, "missed-call");
+        assert.strictEqual(sent[2]?.ttlSeconds, 3600);
+
+        // A ring that was answered elsewhere is replaced quietly, privately worded.
+        const endedAt = yield* DateTime.now;
+        yield* push.publish({
+          key: "call:one:ended",
+          kind: "call-ended",
+          tag: "call:one",
+          title: "Answered on Office Mac",
+          body: "Call with Scout.",
+          path: "/call/host/one",
+          createdAt: DateTime.formatIso(endedAt),
+          expiresAt: DateTime.formatIso(DateTime.add(endedAt, { minutes: 10 })),
+        });
+        yield* push.drain;
+        assert.deepStrictEqual(sent[3]?.payload, {
+          title: "Call ended",
+          body: "A call from one of your agents stopped ringing.",
+          path: "/call/host/one",
+          tag: "call:one",
+          kind: "call-ended",
+          expiresAt: DateTime.formatIso(DateTime.add(endedAt, { minutes: 10 })),
+        });
+        assert.strictEqual(sent[3]?.ttlSeconds, 600);
+      }),
+    ),
+  );
+
+  it.effect("shows who is calling only to devices that opted in to details", () =>
+    scenario(({ push, sent }) =>
+      Effect.gen(function* () {
+        yield* push.subscribe(sessionId, {
+          subscription,
+          preferences: { ...preferences, includeDetails: true },
+        });
+        yield* push.publish({
+          key: "call:two",
+          kind: "call",
+          tag: "call:two",
+          title: "Scout is calling",
+          body: "Sign in to Google",
+          path: "/call/host/two",
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+        });
+        yield* push.drain;
+        assert.strictEqual(sent[0]?.payload.title, "Scout is calling");
+        assert.strictEqual(sent[0]?.payload.body, "Sign in to Google");
+        // Calls follow the requests preference.
+        yield* push.subscribe(sessionId, {
+          subscription,
+          preferences: { ...preferences, requests: false },
+        });
+        yield* push.publish({
+          key: "call:three",
+          kind: "call",
+          title: "Scout is calling",
+          body: "",
+          path: "/call/host/three",
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+        });
         yield* push.drain;
         assert.strictEqual(sent.length, 1);
       }),

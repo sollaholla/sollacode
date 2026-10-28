@@ -6,6 +6,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ServerConfig from "../../../config.ts";
+import { AgentCalls } from "../../../vm/AgentCalls.ts";
 import { VmAgentTaskScheduler } from "../../../vm/VmAgentTaskScheduler.ts";
 import { VmAgentWorkspace } from "../../../vm/VmAgentWorkspace.ts";
 import { VmManager } from "../../../vm/VmManager.ts";
@@ -24,6 +25,8 @@ export const AgentBuilderTool = Tool.make("agent_builder", {
     VmAgentTaskScheduler,
     VmManager,
     OrchestrationEngine.OrchestrationEngineService,
+    // delete_agent ends the agent's calls.
+    AgentCalls,
     // createAgentThread provisions the agent's isolated working directory.
     ServerConfig.ServerConfig,
     FileSystem.FileSystem,
