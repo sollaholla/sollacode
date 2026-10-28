@@ -28,15 +28,14 @@ export const PROVIDER_TASK_STALE_AFTER_MS = BACKGROUND_TASK_STALE_AFTER_MS;
 export const PROVIDER_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
- * How long finished work stays listed after its last event.
+ * How long a failed task stays listed after its last event.
  *
- * Completed and stopped tasks have answered their question, so they leave
- * after a glanceable window — before this, every finished build of a long
- * session sat in the panel for a day and the list ran into the hundreds.
- * Failures hold on longer, because a failure the user has not noticed yet is
- * the one finished state that still needs them.
+ * Completed and stopped tasks leave the list as soon as they finish: they have
+ * answered their question, and the owner asked for them to clear themselves
+ * rather than linger (they used to stay ten minutes). The transcript keeps the
+ * record. A failure holds on, because a failure the user has not noticed yet
+ * is the one finished state that still needs them.
  */
-export const PROVIDER_TASK_COMPLETED_RETENTION_MS = 10 * 60 * 1000;
 export const PROVIDER_TASK_FAILED_RETENTION_MS = 60 * 60 * 1000;
 
 /**
@@ -101,37 +100,32 @@ function isFinished(status: ProviderTaskStatus): boolean {
   return status === "completed" || status === "failed" || status === "stopped";
 }
 
+interface ProviderTaskSessionOptions {
+  /**
+   * The provider session that owned these tasks has been torn down.
+   *
+   * Nothing can still be running once the process is gone, so unfinished
+   * rows are reported as `stopped` immediately instead of waiting out the
+   * staleness timer. Without this the panel advertises live background work
+   * on a chat the user can plainly see is stopped.
+   */
+  readonly providerSessionEnded?: boolean;
+  /** When the session actually ended. */
+  readonly providerSessionEndedAt?: string;
+}
+
 /**
- * Folds task activities into one entry per task, newest activity last.
+ * Folds task activities into one entry per task, newest activity last, every
+ * task the thread ever started included.
  *
  * A `task.progress` for a task we never saw start still creates a row: the
  * events are independent, and dropping progress for a missed start would hide
  * exactly the long-running work this panel exists to show.
- *
- * The result is a *status* view, not a log: finished work ages out within
- * minutes (an hour for failures), a hard cap keeps bursts from flooding the
- * list, and silent "running" work is downgraded to `stale`. Without these,
- * the panel accumulates every task since the thread began and reports
- * long-dead processes as live.
  */
-export function deriveProviderTasks(
+export function foldProviderTasks(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-  options?: {
-    readonly nowMs?: number;
-    /**
-     * The provider session that owned these tasks has been torn down.
-     *
-     * Nothing can still be running once the process is gone, so unfinished
-     * rows are reported as `stopped` immediately instead of waiting out the
-     * staleness timer. Without this the panel advertises live background work
-     * on a chat the user can plainly see is stopped.
-     */
-    readonly providerSessionEnded?: boolean;
-    /** When the session actually ended, so a long task gets a visible stopped state. */
-    readonly providerSessionEndedAt?: string;
-  },
+  options?: ProviderTaskSessionOptions,
 ): ReadonlyArray<ProviderTask> {
-  const nowMs = options?.nowMs ?? Date.now();
   const byTaskId = new Map<string, ProviderTask>();
 
   for (const activity of activities) {
@@ -175,9 +169,37 @@ export function deriveProviderTasks(
     });
   }
 
+  // A background task cannot outlive the process that owns it. Once the
+  // provider session is torn down there is nothing left to run, so a row
+  // still folded as "running" is a ghost: the runtime died before it could
+  // emit `task.completed`, and the fold has no other way to learn that.
+  // `stopped` is the honest status: we know it is not running.
+  return [...byTaskId.values()].map((task) =>
+    options?.providerSessionEnded === true && !isFinished(task.status)
+      ? {
+          ...task,
+          status: "stopped" as const,
+          updatedAt: options.providerSessionEndedAt ?? task.updatedAt,
+        }
+      : task,
+  );
+}
+
+/**
+ * The tasks worth showing: a *status* view, not a log. Completed and stopped
+ * work clears itself as soon as it finishes, failures stay an hour, a hard
+ * cap keeps a burst of failures from flooding the list, and silent "running"
+ * work is downgraded to `stale`. Without these, the list accumulates every
+ * task since the thread began and reports long-dead processes as live.
+ */
+export function deriveProviderTasks(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  options?: ProviderTaskSessionOptions & { readonly nowMs?: number },
+): ReadonlyArray<ProviderTask> {
+  const nowMs = options?.nowMs ?? Date.now();
   const aged: ProviderTask[] = [];
-  for (const task of byTaskId.values()) {
-    const updatedMs = Date.parse(task.updatedAt);
+  for (const settled of foldProviderTasks(activities, options)) {
+    const updatedMs = Date.parse(settled.updatedAt);
     const ageMs = Number.isNaN(updatedMs) ? 0 : nowMs - updatedMs;
 
     // Checked before the status branch so it applies to everything. A task
@@ -185,27 +207,9 @@ export function deriveProviderTasks(
     // saw it end — and a ghost never will.
     if (ageMs > PROVIDER_TASK_MAX_AGE_MS) continue;
 
-    // A background task cannot outlive the process that owns it. Once the
-    // provider session is torn down there is nothing left to run, so a row
-    // still folded as "running" is a ghost: the runtime died before it could
-    // emit `task.completed`, and the fold has no other way to learn that.
-    // `stopped` is the honest status — we know it is not running — and it also
-    // makes the row age out and become dismissable like any other finished work.
-    const settled =
-      options?.providerSessionEnded === true && !isFinished(task.status)
-        ? {
-            ...task,
-            status: "stopped" as const,
-            updatedAt: options.providerSessionEndedAt ?? task.updatedAt,
-          }
-        : task;
-
     if (isFinished(settled.status)) {
-      const retentionMs =
-        settled.status === "failed"
-          ? PROVIDER_TASK_FAILED_RETENTION_MS
-          : PROVIDER_TASK_COMPLETED_RETENTION_MS;
-      if (nowMs - Date.parse(settled.updatedAt) > retentionMs) continue;
+      if (settled.status !== "failed") continue;
+      if (nowMs - Date.parse(settled.updatedAt) > PROVIDER_TASK_FAILED_RETENTION_MS) continue;
       aged.push(settled);
       continue;
     }

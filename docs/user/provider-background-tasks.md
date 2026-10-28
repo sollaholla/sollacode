@@ -1,6 +1,6 @@
 # Provider background tasks
 
-The background-tasks chip at the top right of the composer counts work the provider has started and still owns: running tasks while any run, finished ones after that. Select it to see every task. Shell commands show their status without agent token or tool-use counters. Agent tasks retain provider-reported usage.
+The background-tasks chip at the top right of the composer counts work the provider has started and still owns: running tasks while any run, then failed or silent ones that still need a look. Select it to see every task. Shell commands show their status without agent token or tool-use counters. Agent tasks retain provider-reported usage.
 
 A subagent's tokens count only on its own row. They never move the chat's context meter, which measures the main conversation that the provider compacts. Before version 0.1.740, Claude wrote each subagent's running total into the meter, which often pinned it at 100% while the chat had plenty of room. The meter now skips those old readings and shows the chat's last real one.
 
@@ -10,10 +10,10 @@ Nothing a provider runs survives a Solla Code restart. When the server starts, e
 
 Claude log monitors are labeled **Monitor · Watching**. A monitor can keep watching after the command that writes its log has finished, and after Claude answers. It finishes when its source ends, its timeout expires, or it is stopped. Use its Stop control to end a watch you no longer need; finishing the parent turn does not pretend that the watch has ended.
 
-Claude completed, failed, and killed status updates settle the row immediately, even if the separate final notification arrives later. Final notifications can still supply the result summary. Finished rows leave the list after the existing retention window and can be dismissed sooner.
+Claude completed, failed, and killed status updates settle the row immediately, even if the separate final notification arrives later. Final notifications can still supply the result summary. Completed and stopped tasks leave the list as soon as they finish; the conversation keeps the record. Before 0.1.752 they stayed for ten minutes. Failed tasks stay for an hour so a failure is not missed, and **Clear** or the row's dismiss button removes them sooner.
 
 Idle-session cleanup keeps Claude alive while it owns background commands, monitors, or agent tasks, including when those tasks wake Claude between foreground turns. The inactivity clock also accounts for native provider output.
 
-Recent task lifecycle records are included separately from the normal conversation activity window, so reopening a busy thread or side chat still shows task status. If the provider session ends, interrupted commands remain visible as **Stopped** for ten minutes from that session end, rather than disappearing based on when the command began.
+Recent task lifecycle records are included separately from the normal conversation activity window, so reopening a busy thread or side chat still shows task status. If the provider session ends, interrupted commands are marked stopped and leave the list with it, rather than lingering as running.
 
 Switching providers closes the outgoing provider session, including its background tasks, before starting the replacement. Claude's idle event reader is released during shutdown so it cannot hold the switch open. If a provider fails to acknowledge Stop, the thread still leaves the working state and reports the shutdown failure.

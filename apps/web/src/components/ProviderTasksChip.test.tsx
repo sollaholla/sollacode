@@ -135,7 +135,7 @@ describe("ProviderTasksChip", () => {
     expect(markup).not.toContain(task.title);
   });
 
-  it("goes quiet and counts finished tasks once nothing runs", () => {
+  it("goes quiet and counts what still needs a look once nothing runs", () => {
     const markup = renderToStaticMarkup(
       <ProviderTasksChip
         tasks={[
@@ -145,7 +145,7 @@ describe("ProviderTasksChip", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="2 background tasks finished. Show background tasks."');
+    expect(markup).toContain('aria-label="2 background tasks need a look. Show background tasks."');
     expect(markup).toContain("text-muted-foreground");
     expect(markup).not.toContain("text-gold-600");
   });

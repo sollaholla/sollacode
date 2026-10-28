@@ -59,8 +59,9 @@ function tasksNoun(count: number): string {
 /**
  * The composer rail's chip for the sub-agents and background work a provider
  * started. Without it, a turn that fans out to sub-agents looks like a turn
- * that has simply gone quiet. The chip counts running tasks, or finished ones
- * once nothing runs; tapping it lists every task.
+ * that has simply gone quiet. The chip counts running tasks. Completed work
+ * clears itself, so once nothing runs it counts what is left: failures and
+ * tasks that went silent. Tapping it lists every task.
  */
 export function ProviderTasksChip(props: {
   readonly tasks: ReadonlyArray<ProviderTask>;
@@ -72,7 +73,7 @@ export function ProviderTasksChip(props: {
   const count = working ? activeCount : props.tasks.length;
   const summary = working
     ? `${activeCount} ${tasksNoun(activeCount)} active`
-    : `${count} ${tasksNoun(count)} finished`;
+    : `${count} ${tasksNoun(count)} need a look`;
   return (
     <Popover>
       <PopoverTrigger
@@ -127,7 +128,7 @@ export function ProviderTaskDetails(props: {
           </p>
         </div>
         {/*
-         * Clears finished, failed, stopped and stale rows — never running ones.
+         * Clears failed and stale rows — never running ones.
          * A bulk control gets used without reading the list, so it must not be
          * able to hide work that is still going.
          */}
@@ -136,7 +137,7 @@ export function ProviderTaskDetails(props: {
             size="xs"
             variant="ghost"
             onClick={() => dismissTasks(dismissableProviderTaskIds(props.tasks))}
-            title="Dismiss finished, failed and stale tasks. Running work is kept."
+            title="Dismiss failed and stale tasks. Running work is kept."
           >
             Clear
           </Button>
@@ -174,7 +175,7 @@ export function ProviderTaskDetails(props: {
                     type="button"
                     onClick={() => props.onStopTask?.(task.taskId)}
                     aria-label={`Stop ${task.title}`}
-                    title="Stop this task. The row reports the outcome, then clears itself."
+                    title="Stop this task. It leaves the list once it stops."
                     className="rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
                   >
                     <CircleStop aria-hidden className="size-3.5" />

@@ -9,6 +9,7 @@ import {
   countActiveProviderTasks,
   describeSendOverRunningTasks,
   deriveProviderTasks,
+  foldProviderTasks,
   providerTaskStatusLabel,
   providerTaskTypeLabel,
   type ProviderTask,
@@ -40,7 +41,7 @@ describe("deriveProviderTasks", () => {
         usage: { total_tokens: 1234 },
       }),
     ];
-    const tasks = deriveProviderTasks(rows, { nowMs: Date.parse("2026-01-01T00:00:02.000Z") });
+    const tasks = foldProviderTasks(rows);
     NodeAssert.equal(tasks.length, 1);
     NodeAssert.equal(tasks[0]?.title, "Codex subagent /root/installed_task_probe");
     NodeAssert.equal(tasks[0]?.status, "completed");
@@ -69,14 +70,8 @@ describe("deriveProviderTasks", () => {
         status: "completed",
       }),
     ];
-    NodeAssert.equal(
-      deriveProviderTasks(rows, { nowMs: Date.parse("2026-08-01T10:01:00Z") })[0]?.totalTokens,
-      1234,
-    );
-    NodeAssert.equal(
-      deriveProviderTasks(rows, { nowMs: Date.parse("2026-08-01T10:01:00Z") })[0]?.status,
-      "completed",
-    );
+    NodeAssert.equal(foldProviderTasks(rows)[0]?.totalTokens, 1234);
+    NodeAssert.equal(foldProviderTasks(rows)[0]?.status, "completed");
     rows.push(
       activity("task.started", "2026-08-01T10:00:08Z", {
         taskId: "codex-subagent:child",
@@ -95,29 +90,24 @@ describe("deriveProviderTasks", () => {
   });
 
   it("folds start, progress and completion into one row", () => {
-    const tasks = deriveProviderTasks(
-      [
-        activity("task.started", "2026-08-01T10:00:00Z", {
-          taskId: "a1",
-          taskType: "local_agent",
-          detail: "Explore interaction modes",
-        }),
-        activity("task.progress", "2026-08-01T10:00:05Z", {
-          taskId: "a1",
-          title: "Running grep",
-          lastToolName: "Bash",
-          usage: { tool_uses: 4 },
-        }),
-        activity("task.completed", "2026-08-01T10:00:09Z", {
-          taskId: "a1",
-          status: "completed",
-          summary: "Found 3 files",
-        }),
-      ],
-      // Pinned clock: with real retention, a completed row would age out of a
-      // test that happened to run at the wrong time of day.
-      { nowMs: Date.parse("2026-08-01T10:00:10Z") },
-    );
+    const tasks = foldProviderTasks([
+      activity("task.started", "2026-08-01T10:00:00Z", {
+        taskId: "a1",
+        taskType: "local_agent",
+        detail: "Explore interaction modes",
+      }),
+      activity("task.progress", "2026-08-01T10:00:05Z", {
+        taskId: "a1",
+        title: "Running grep",
+        lastToolName: "Bash",
+        usage: { tool_uses: 4 },
+      }),
+      activity("task.completed", "2026-08-01T10:00:09Z", {
+        taskId: "a1",
+        status: "completed",
+        summary: "Found 3 files",
+      }),
+    ]);
 
     NodeAssert.equal(tasks.length, 1);
     NodeAssert.deepEqual(
@@ -168,9 +158,14 @@ describe("deriveProviderTasks", () => {
     // Same input, live session: still running.
     NodeAssert.equal(deriveProviderTasks(activities, { nowMs })[0]?.status, "running");
 
-    const settled = deriveProviderTasks(activities, { nowMs, providerSessionEnded: true });
+    const settled = foldProviderTasks(activities, { providerSessionEnded: true });
     NodeAssert.equal(settled[0]?.status, "stopped");
     NodeAssert.equal(countActiveProviderTasks(settled), 0);
+    // Stopped work clears itself from the list, like completed work.
+    NodeAssert.equal(
+      deriveProviderTasks(activities, { nowMs, providerSessionEnded: true }).length,
+      0,
+    );
   });
 
   it("does not rewrite a task that already reported how it finished", () => {
@@ -184,7 +179,7 @@ describe("deriveProviderTasks", () => {
     NodeAssert.equal(settled[0]?.status, "failed");
   });
 
-  it("retains a newly stopped long-running command from the session end time", () => {
+  it("stamps a stopped long-running command with the session end time", () => {
     const activities = [
       activity("task.started", "2026-08-01T10:00:00Z", {
         taskId: "capture",
@@ -193,15 +188,11 @@ describe("deriveProviderTasks", () => {
       }),
     ];
     const options = { providerSessionEnded: true, providerSessionEndedAt: "2026-08-01T11:00:00Z" };
-    const tasks = deriveProviderTasks(activities, {
-      ...options,
-      nowMs: Date.parse("2026-08-01T11:01:00Z"),
-    });
-    NodeAssert.equal(tasks.length, 1);
+    const tasks = foldProviderTasks(activities, options);
     NodeAssert.equal(tasks[0]?.status, "stopped");
     NodeAssert.equal(tasks[0]?.updatedAt, options.providerSessionEndedAt);
     NodeAssert.equal(
-      deriveProviderTasks(activities, { ...options, nowMs: Date.parse("2026-08-01T11:11:00Z") })
+      deriveProviderTasks(activities, { ...options, nowMs: Date.parse("2026-08-01T11:01:00Z") })
         .length,
       0,
     );
@@ -233,7 +224,7 @@ describe("deriveProviderTasks", () => {
     const tasks = deriveProviderTasks(
       [
         activity("task.started", "2026-08-01T10:00:00Z", { taskId: "done", detail: "Done" }),
-        activity("task.completed", "2026-08-01T10:00:01Z", { taskId: "done", status: "completed" }),
+        activity("task.completed", "2026-08-01T10:00:01Z", { taskId: "done", status: "failed" }),
         activity("task.started", "2026-08-01T09:00:00Z", { taskId: "live", detail: "Live" }),
       ],
       { nowMs: Date.parse("2026-08-01T09:00:10Z") },
@@ -307,7 +298,7 @@ describe("deriveProviderTasks", () => {
     NodeAssert.equal(tasks[0]?.status, "running");
   });
 
-  it("completed work leaves in minutes while failures hold on longer", () => {
+  it("completed work clears at once while failures hold on for an hour", () => {
     const nowMs = Date.parse("2026-08-02T12:00:00Z");
     const tasks = deriveProviderTasks(
       [
@@ -334,21 +325,20 @@ describe("deriveProviderTasks", () => {
       ],
       { nowMs },
     );
-    // Twenty minutes past completion is history; five is not. A forty-minute
-    // failure survives where a completion would not, and seventy-five minutes
-    // is too old even for a failure.
+    // Completed work is gone however recent. A forty-minute failure stays,
+    // and seventy-five minutes is too old even for a failure.
     NodeAssert.deepEqual(
       tasks.map((task) => task.taskId),
-      ["fresh", "broke"],
+      ["broke"],
     );
   });
 
-  it("caps finished rows so a burst cannot flood the pager", () => {
+  it("caps failed rows so a burst cannot flood the list", () => {
     const nowMs = Date.parse("2026-08-01T12:06:00Z");
     const burst = Array.from({ length: 25 }, (_, index) =>
       activity("task.completed", `2026-08-01T12:05:${String(index).padStart(2, "0")}Z`, {
         taskId: `t${index}`,
-        status: "completed",
+        status: "failed",
       }),
     );
     const tasks = deriveProviderTasks(
@@ -376,7 +366,7 @@ describe("deriveProviderTasks", () => {
     const tasks = deriveProviderTasks(
       [
         activity("task.started", "2026-08-01T13:59:00Z", { taskId: "done", detail: "Done" }),
-        activity("task.completed", "2026-08-01T13:59:30Z", { taskId: "done", status: "completed" }),
+        activity("task.completed", "2026-08-01T13:59:30Z", { taskId: "done", status: "failed" }),
         activity("task.started", "2026-08-01T10:00:00Z", { taskId: "ghost", detail: "Ghost" }),
         activity("task.progress", "2026-08-01T13:59:50Z", { taskId: "live", title: "Live" }),
       ],
@@ -398,16 +388,13 @@ describe("deriveProviderTasks", () => {
     NodeAssert.ok(watching);
     NodeAssert.equal(providerTaskTypeLabel(watching), "Monitor");
     NodeAssert.equal(providerTaskStatusLabel(watching), "Watching");
-    const [finished] = deriveProviderTasks(
-      [
-        start,
-        activity("task.completed", "2026-08-01T10:02:00Z", {
-          taskId: "watch",
-          status: "completed",
-        }),
-      ],
-      { nowMs: Date.parse("2026-08-01T10:02:01Z") },
-    );
+    const [finished] = foldProviderTasks([
+      start,
+      activity("task.completed", "2026-08-01T10:02:00Z", {
+        taskId: "watch",
+        status: "completed",
+      }),
+    ]);
     NodeAssert.ok(finished);
     NodeAssert.equal(providerTaskStatusLabel(finished), "Completed");
     NodeAssert.equal(countActiveProviderTasks([finished]), 0);
