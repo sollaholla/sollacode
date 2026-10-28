@@ -1,8 +1,8 @@
-import { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ORCHESTRATOR_THREAD_ID, ThreadId } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ThreadWorktreeIndicator } from "./ThreadStatusIndicators";
+import { ThreadProvenanceIndicators, ThreadWorktreeIndicator } from "./ThreadStatusIndicators";
 
 describe("ThreadWorktreeIndicator", () => {
   it("renders the worktree folder and branch in an accessible label", () => {
@@ -35,5 +35,51 @@ describe("ThreadWorktreeIndicator", () => {
     );
 
     expect(markup).toBe("");
+  });
+});
+
+describe("ThreadProvenanceIndicators", () => {
+  const environmentId = EnvironmentId.make("env-provenance");
+
+  it("names the creator instead of assuming an agent", () => {
+    const fromOrchestrator = renderToStaticMarkup(
+      <ThreadProvenanceIndicators
+        thread={{
+          id: ThreadId.make("thread-1"),
+          environmentId,
+          createdByThreadId: ORCHESTRATOR_THREAD_ID,
+          browserProfileThreadId: null,
+        }}
+      />,
+    );
+    expect(fromOrchestrator).toContain('aria-label="Created by the Orchestrator"');
+
+    const fromUnknownChat = renderToStaticMarkup(
+      <ThreadProvenanceIndicators
+        thread={{
+          id: ThreadId.make("thread-2"),
+          environmentId,
+          createdByThreadId: ThreadId.make("chat-not-loaded"),
+          browserProfileThreadId: ThreadId.make("chat-not-loaded"),
+        }}
+      />,
+    );
+    expect(fromUnknownChat).toContain('aria-label="Created by another chat"');
+    expect(fromUnknownChat).toContain('aria-label="Uses a shared browser profile"');
+  });
+
+  it("renders nothing for a thread the person started", () => {
+    expect(
+      renderToStaticMarkup(
+        <ThreadProvenanceIndicators
+          thread={{
+            id: ThreadId.make("thread-3"),
+            environmentId,
+            createdByThreadId: null,
+            browserProfileThreadId: null,
+          }}
+        />,
+      ),
+    ).toBe("");
   });
 });

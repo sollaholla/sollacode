@@ -15,6 +15,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/time";
 import { useThemeColor } from "../../lib/useThemeColor";
+import { useThreadCreatorLabel } from "../../state/threadCreator";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useThreadPr } from "../../state/use-thread-pr";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
@@ -282,7 +283,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const status = resolveThreadListV2Status(thread);
   const statusLabel = STATUS_LABEL_BY_STATUS[status];
   const timeLabel = threadTimeLabel(thread);
-  const threadAccessibilityLabel = [thread.title, threadProvenanceAccessibilityLabel(thread)]
+  const creatorLabel = useThreadCreatorLabel(thread);
+  const threadAccessibilityLabel = [
+    thread.title,
+    threadProvenanceAccessibilityLabel(thread, creatorLabel),
+  ]
     .filter((part): part is string => Boolean(part))
     .join(", ");
 

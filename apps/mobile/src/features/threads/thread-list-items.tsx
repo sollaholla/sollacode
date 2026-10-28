@@ -17,6 +17,7 @@ import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/time";
 import { useThemeColor } from "../../lib/useThemeColor";
+import { useThreadCreatorLabel } from "../../state/threadCreator";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useThreadPr, type ThreadPr } from "../../state/use-thread-pr";
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
@@ -457,9 +458,10 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const timestamp = relativeTime(
     thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
   );
+  const creatorLabel = useThreadCreatorLabel(thread);
   const threadAccessibilityLabel = [
     thread.title,
-    threadProvenanceAccessibilityLabel(thread),
+    threadProvenanceAccessibilityLabel(thread, creatorLabel),
     pr?.accessibilityLabel,
   ]
     .filter((part): part is string => Boolean(part))

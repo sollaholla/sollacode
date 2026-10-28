@@ -176,7 +176,7 @@ export function PreviewChromeRow({
               render={
                 <span
                   role="img"
-                  aria-label="Shared agent browser profile"
+                  aria-label="Shared browser profile"
                   className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border/60 bg-muted/35 px-1.5 text-[10px] font-medium text-muted-foreground"
                 />
               }
@@ -185,7 +185,7 @@ export function PreviewChromeRow({
               <span className="hidden lg:inline">Shared browser</span>
             </TooltipTrigger>
             <TooltipPopup>
-              Cookies, storage, and cache are inherited from the agent that created this thread.
+              Cookies, storage, and cache are inherited from the chat that created this thread.
             </TooltipPopup>
           </Tooltip>
         ) : null}

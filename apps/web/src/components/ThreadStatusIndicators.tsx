@@ -10,6 +10,7 @@ import { useMemo } from "react";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
 import { useProject } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
+import { useThreadCreatorLabel } from "../state/threadCreator";
 import { useKnownTerminalSessions } from "../state/terminalSessions";
 import { deriveWorkingTerminalActivity } from "../terminalActivity";
 import { vcsEnvironment } from "../state/vcs";
@@ -175,24 +176,28 @@ export function ThreadWorktreeIndicator({
   );
 }
 
+/** Marks a thread another chat or agent opened, naming the creator, and an inherited browser. */
 export function ThreadProvenanceIndicators({
   thread,
 }: {
-  thread: Pick<SidebarThreadSummary, "id" | "createdByThreadId" | "browserProfileThreadId">;
+  thread: Pick<
+    SidebarThreadSummary,
+    "id" | "environmentId" | "createdByThreadId" | "browserProfileThreadId"
+  >;
 }) {
-  const agentCreated = thread.createdByThreadId != null;
+  const creatorLabel = useThreadCreatorLabel(thread);
   const sharedBrowser = thread.browserProfileThreadId != null;
-  if (!agentCreated && !sharedBrowser) return null;
+  if (creatorLabel === null && !sharedBrowser) return null;
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1">
-      {agentCreated ? (
+      {creatorLabel !== null ? (
         <Tooltip>
           <TooltipTrigger
             render={
               <span
                 role="img"
-                aria-label="Created by an agent"
+                aria-label={creatorLabel}
                 data-testid={`thread-agent-created-${thread.id}`}
                 className="inline-flex items-center justify-center text-muted-foreground/55"
               />
@@ -200,7 +205,7 @@ export function ThreadProvenanceIndicators({
           >
             <BotIcon className="size-3" />
           </TooltipTrigger>
-          <TooltipPopup side="top">Created by an agent</TooltipPopup>
+          <TooltipPopup side="top">{creatorLabel}</TooltipPopup>
         </Tooltip>
       ) : null}
       {sharedBrowser ? (
@@ -209,7 +214,7 @@ export function ThreadProvenanceIndicators({
             render={
               <span
                 role="img"
-                aria-label="Uses a shared agent browser profile"
+                aria-label="Uses a shared browser profile"
                 data-testid={`thread-shared-browser-${thread.id}`}
                 className="inline-flex items-center justify-center text-muted-foreground/55"
               />
@@ -218,7 +223,7 @@ export function ThreadProvenanceIndicators({
             <Share2Icon className="size-3" />
           </TooltipTrigger>
           <TooltipPopup side="top">
-            Uses browser cookies, storage, and cache inherited from another agent thread
+            Uses browser cookies, storage, and cache inherited from another chat
           </TooltipPopup>
         </Tooltip>
       ) : null}

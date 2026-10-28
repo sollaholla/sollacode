@@ -239,6 +239,10 @@
       "types": "./src/state/threadSettled.ts",
       "default": "./src/state/threadSettled.ts"
     },
+    "./state/thread-provenance": {
+      "types": "./src/state/threadProvenance.ts",
+      "default": "./src/state/threadProvenance.ts"
+    },
     "./state/settings-updates": {
       "types": "./src/state/settingsUpdates.ts",
       "default": "./src/state/settingsUpdates.ts"

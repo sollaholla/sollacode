@@ -1079,7 +1079,7 @@ function renderFeedEntry(
                 onPress={() => props.onOpenSenderThread(message.senderThreadId!)}
               >
                 <Text className="font-t3-medium text-sm text-foreground">
-                  {message.senderThreadTitle || "Another AI thread"}
+                  {message.senderThreadTitle || "Another chat"}
                 </Text>
               </Pressable>
             ) : null}

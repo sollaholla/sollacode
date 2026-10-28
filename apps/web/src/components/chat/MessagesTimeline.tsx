@@ -2083,7 +2083,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             className="mb-2 inline-flex max-w-full items-center gap-1.5 rounded-full border border-sky-500/25 bg-sky-500/10 px-2.5 py-1 text-sm font-medium text-foreground hover:bg-sky-500/20 focus-visible:outline-2 focus-visible:outline-ring"
           >
             <BotIcon className="size-4" aria-hidden />
-            <span className="truncate">{row.message.senderThreadTitle || "Another AI thread"}</span>
+            <span className="truncate">{row.message.senderThreadTitle || "Another chat"}</span>
           </Link>
         ) : null}
         {voiceNotes.length > 0 && (
