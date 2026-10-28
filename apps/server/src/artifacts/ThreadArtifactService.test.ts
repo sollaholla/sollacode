@@ -400,6 +400,48 @@ layer("ThreadArtifactService", (it) => {
     }),
   );
 
+  it.effect("carries video in web bundles at the large-file cap", () =>
+    Effect.gen(function* () {
+      const service = yield* ThreadArtifactService;
+      const threadId = ThreadId.make("thread-artifact-media");
+      yield* insertThread(threadId);
+      const page = {
+        path: "index.html",
+        contentType: "text/html",
+        bytes: encoder.encode('<video src="run.mp4" controls playsinline muted></video>'),
+      };
+      // An MP4 opens with its ftyp box. Past the 5 MB cap for ordinary files, so
+      // a recording is held to the image and PDF cap instead.
+      const mp4 = new Uint8Array(6 * 1024 * 1024);
+      mp4.set([0, 0, 0, 0x20, ...encoder.encode("ftypisom")]);
+
+      const published = yield* service.publish({
+        threadId,
+        key: key("recordings"),
+        title: "Recordings",
+        kind: "web",
+        entryPath: "index.html",
+        files: [page, { path: "run.mp4", contentType: "video/mp4", bytes: mp4 }],
+      });
+      assert.strictEqual(published.artifact.currentRevision, 1);
+
+      const notAVideo = yield* service
+        .publish({
+          threadId,
+          key: key("recordings"),
+          title: "Recordings",
+          kind: "web",
+          entryPath: "index.html",
+          files: [
+            page,
+            { path: "run.mp4", contentType: "video/mp4", bytes: encoder.encode("<html>") },
+          ],
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(notAVideo._tag, "ThreadArtifactInvalidInputError");
+    }),
+  );
+
   it.effect("publishes bounded live snapshots to connected clients", () =>
     Effect.scoped(
       Effect.gen(function* () {

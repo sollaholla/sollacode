@@ -32,10 +32,19 @@ quota, and cannot be undone. Archive only hides an artifact and does not free qu
 Connected side chats manage their parent's artifacts until promoted or the parent is gone;
 agents cannot choose an unrelated thread as the owner for deletion.
 
+## Video and audio
+
+Web artifacts can include video (`.mp4`, `.m4v`, `.mov`, `.webm`) and audio (`.mp3`, `.m4a`,
+`.wav`, `.ogg`) files, up to 20 MB each and 20 MB per revision. They play inside the artifact on
+web, desktop, and the mobile app, can seek, and can go full screen. Clips a page builds in memory
+(`blob:` URLs) or inlines as `data:` URIs play too. Before 0.1.750 artifacts refused all media, so
+every player stayed black at 0:00.
+
 ## Preview boundary
 
 Web bundles run in an opaque, script-only sandbox. Popups, downloads, forms, modal dialogs,
-same-origin privilege, and top-level navigation are unavailable. The mobile WebView accepts only
+same-origin privilege, and top-level navigation are unavailable. Media loads only from the
+artifact's own files, `blob:`, and `data:`. The mobile WebView accepts only
 the signed asset subtree on the connected host and blocks new windows and external navigation.
 SVG icons are loaded as images from signed host resources; clients never inject their markup into
 the application document.

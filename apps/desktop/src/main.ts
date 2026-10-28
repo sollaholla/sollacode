@@ -143,6 +143,9 @@ Electron.protocol.registerSchemesAsPrivileged(
         secure: true,
         supportFetchAPI: true,
         corsEnabled: true,
+        // Artifacts and file previews reach the renderer through this scheme;
+        // <video> and <audio> only play from a scheme that can stream.
+        stream: true,
       },
     }),
   ),

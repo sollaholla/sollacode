@@ -142,6 +142,11 @@ describe("artifactResponseHeaders", () => {
     expect(headers["Content-Security-Policy"]).toContain(
       "script-src https://remote.test/api/assets/payload.signature/",
     );
+    // Video and audio play from the revision's own files and from clips a
+    // page assembles in memory; `media-src 'none'` left every player at 0:00.
+    expect(headers["Content-Security-Policy"]).toContain(
+      "media-src https://remote.test/api/assets/payload.signature/ data: blob:",
+    );
     expect(headers["Content-Security-Policy"]).not.toContain("allow-same-origin");
     expect(headers["Content-Security-Policy"]).not.toContain("'self'");
     expect(headers["Permissions-Policy"]).toContain("camera=()");

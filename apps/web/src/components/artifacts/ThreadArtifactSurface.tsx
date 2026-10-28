@@ -38,6 +38,8 @@ import {
 
 type ArtifactSurface = Extract<RightPanelSurface, { kind: "artifact" }>;
 
+export const ARTIFACT_FRAME_ALLOW = "autoplay; fullscreen; picture-in-picture";
+
 export function artifactFrameSandbox(kind: ThreadArtifactKind): string {
   return kind === "web" ? "allow-scripts" : "";
 }
@@ -133,6 +135,9 @@ function ResolvedArtifactPreview(props: {
       src={content.url}
       title={props.title}
       sandbox={artifactFrameSandbox(props.kind)}
+      // Lets a video in the page go full screen and start when it is tapped.
+      allow={ARTIFACT_FRAME_ALLOW}
+      allowFullScreen
       referrerPolicy="no-referrer"
       className="min-h-0 min-w-0 flex-1 border-0 bg-background"
     />

@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ThreadArtifactId, ThreadId } from "@t3tools/contracts";
 
-import { artifactFrameSandbox, resolveArtifactContentResource } from "./ThreadArtifactSurface";
+import {
+  ARTIFACT_FRAME_ALLOW,
+  artifactFrameSandbox,
+  resolveArtifactContentResource,
+} from "./ThreadArtifactSurface";
 
 describe("artifact iframe isolation", () => {
   it("allows only interactive scripts", () => {
     expect(artifactFrameSandbox("web")).toBe("allow-scripts");
+  });
+
+  it("lets a video in the page go full screen and start on a tap", () => {
+    expect(ARTIFACT_FRAME_ALLOW.split("; ")).toEqual(
+      expect.arrayContaining(["autoplay", "fullscreen"]),
+    );
   });
 
   it("gives non-web documents no sandbox capabilities", () => {

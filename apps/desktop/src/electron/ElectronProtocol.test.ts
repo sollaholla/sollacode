@@ -238,6 +238,10 @@ describe("ElectronProtocol", () => {
         `style-src sollacode://app${ElectronProtocol.DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/${encodedRoot}/ 'unsafe-inline'`,
       );
       assert.notInclude(policy, "style-src sollacode: 'unsafe-inline'");
+      assert.include(
+        policy,
+        `media-src sollacode://app${ElectronProtocol.DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/${encodedRoot}/ data: blob:`,
+      );
     }).pipe(Effect.provide(ElectronProtocol.layer)),
   );
 

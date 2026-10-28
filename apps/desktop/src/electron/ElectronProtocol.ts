@@ -216,7 +216,7 @@ function makeDesktopArtifactContentSecurityPolicy(requestUrl: URL): string {
     "frame-src 'none'",
     `img-src ${revisionSource} data: blob:`,
     "manifest-src 'none'",
-    "media-src 'none'",
+    `media-src ${revisionSource} data: blob:`,
     "object-src 'none'",
     `script-src ${revisionSource} 'unsafe-inline'`,
     `style-src ${revisionSource} 'unsafe-inline'`,

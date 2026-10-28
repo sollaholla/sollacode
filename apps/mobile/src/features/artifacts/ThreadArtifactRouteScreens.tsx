@@ -149,7 +149,9 @@ function ArtifactWebSurface(props: { readonly title: string; readonly uri: strin
         javaScriptCanOpenWindowsAutomatically={false}
         setSupportMultipleWindows={false}
         allowsBackForwardNavigationGestures={false}
-        allowsFullscreenVideo={false}
+        // Videos in an artifact play in the page, and can still go full screen.
+        allowsInlineMediaPlayback
+        allowsFullscreenVideo
         onShouldStartLoadWithRequest={(request) => {
           if (isAllowedArtifactNavigation(request.url, entryUri)) return true;
           setError("This artifact tried to leave its signed host surface. Navigation was blocked.");

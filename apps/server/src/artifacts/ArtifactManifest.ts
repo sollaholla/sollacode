@@ -23,6 +23,17 @@ const startsWithBytes = (
   offset = 0,
 ): boolean => signature.every((value, index) => bytes[offset + index] === value);
 
+/** ISO base media (MP4, QuickTime, M4A): a box type at offset 4. */
+const ISO_MEDIA_BOX_TYPES = ["ftyp", "moov", "mdat", "wide", "free", "skip"];
+const isIsoMedia = (bytes: Uint8Array): boolean =>
+  ISO_MEDIA_BOX_TYPES.some((box) =>
+    startsWithBytes(
+      bytes,
+      [...box].map((character) => character.charCodeAt(0)),
+      4,
+    ),
+  );
+
 export function deriveArtifactMimeType(path: string, bytes: Uint8Array): string | null {
   const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
   switch (extension) {
@@ -71,6 +82,28 @@ export function deriveArtifactMimeType(path: string, bytes: Uint8Array): string 
         : null;
     case ".ico":
       return startsWithBytes(bytes, [0x00, 0x00, 0x01, 0x00]) ? "image/vnd.microsoft.icon" : null;
+    case ".mp4":
+    case ".m4v":
+      return isIsoMedia(bytes) ? "video/mp4" : null;
+    case ".mov":
+      return isIsoMedia(bytes) ? "video/quicktime" : null;
+    case ".m4a":
+      return isIsoMedia(bytes) ? "audio/mp4" : null;
+    case ".webm":
+      return startsWithBytes(bytes, [0x1a, 0x45, 0xdf, 0xa3]) ? "video/webm" : null;
+    case ".mp3":
+      // An ID3 tag, or straight into an MPEG audio frame sync.
+      return startsWithBytes(bytes, [0x49, 0x44, 0x33]) ||
+        (bytes[0] === 0xff && ((bytes[1] ?? 0) & 0xe0) === 0xe0)
+        ? "audio/mpeg"
+        : null;
+    case ".wav":
+      return startsWithBytes(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+        startsWithBytes(bytes, [0x57, 0x41, 0x56, 0x45], 8)
+        ? "audio/wav"
+        : null;
+    case ".ogg":
+      return startsWithBytes(bytes, [0x4f, 0x67, 0x67, 0x53]) ? "audio/ogg" : null;
     default:
       return null;
   }

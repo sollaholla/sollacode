@@ -102,7 +102,9 @@ export function artifactResponseHeaders(url: URL): Record<string, string> {
     "frame-src 'none'",
     `img-src ${revisionSource} data: blob:`,
     "manifest-src 'none'",
-    "media-src 'none'",
+    // Video and audio play from the revision's own files, and from clips a
+    // page builds in memory (blob:) or inlines (data:).
+    `media-src ${revisionSource} data: blob:`,
     "object-src 'none'",
     `script-src ${revisionSource} 'unsafe-inline'`,
     `style-src ${revisionSource} 'unsafe-inline'`,
