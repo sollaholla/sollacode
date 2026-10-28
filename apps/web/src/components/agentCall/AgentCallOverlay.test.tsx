@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => {
     endAfterReply: vi.fn(),
     hush: vi.fn(),
     setMuted: vi.fn(),
+    setMicrophone: vi.fn(),
     state: "idle" as string,
   };
   const ringtoneStop = vi.fn();
@@ -319,6 +320,41 @@ describe("incoming agent call", () => {
       button("End").click();
     });
     expect(endsSent()).toEqual([{ environmentId: "host-1", input: { callId: "call-1" } }]);
+  });
+});
+
+describe("microphone choice", () => {
+  it("offers the microphones on Mute and moves the call to the one chosen", async () => {
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      mediaDevices: {
+        enumerateDevices: async () => [
+          { deviceId: "default", groupId: "g-mac", kind: "audioinput", label: "Default - Mac" },
+          { deviceId: "mac", groupId: "g-mac", kind: "audioinput", label: "Mac" },
+          { deviceId: "air", groupId: "g-air", kind: "audioinput", label: "AirPods" },
+        ],
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+    });
+    render();
+    await answer();
+    await claimed();
+    await act(async () => {
+      button("Choose microphone").click();
+    });
+    const airPods = await vi.waitFor(() => {
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(
+        (element) => element.textContent?.includes("AirPods"),
+      );
+      if (!item) throw new Error("AirPods not offered");
+      return item;
+    });
+    expect(document.body.textContent).toContain("Mac, follows your system");
+    await act(async () => {
+      airPods.click();
+    });
+    expect(mocks.session.setMicrophone).toHaveBeenCalledWith("air");
   });
 });
 

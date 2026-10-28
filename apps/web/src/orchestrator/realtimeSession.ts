@@ -42,7 +42,8 @@ import {
   type BufferedUtterance,
   type FlushedUtterance,
 } from "./utteranceCoalesce";
-import { applyVoiceIsolation, microphoneConstraints } from "./voiceIsolation";
+import { openMicrophoneStream } from "./microphones";
+import { applyVoiceIsolation } from "./voiceIsolation";
 import {
   DISCONNECTED_GRACE_MS,
   isConnectionLostState,
@@ -281,6 +282,8 @@ export interface VoiceSessionOptions {
    * costs them their voice rather than merely degrading it.
    */
   readonly voiceIsolation?: boolean;
+  /** The microphone to open; null or omitted opens the system default. */
+  readonly microphoneId?: string | null;
   /**
    * Whether cues sound, and how loud, consulted at each play. Omitted means
    * always on at designed volume — the setting is a client concern and this
@@ -346,6 +349,12 @@ export interface VoiceSession {
    * Only transports that support it implement this.
    */
   setMuted?(muted: boolean): void;
+  /**
+   * Moves the session to another microphone (null: the system default, which
+   * it then follows) without dropping it. Only transports that support it
+   * implement this.
+   */
+  setMicrophone?(deviceId: string | null): void;
   readonly state: VoiceSessionState;
 }
 
@@ -1964,9 +1973,7 @@ export function createVoiceSession(
         }
       };
 
-      const acquiredMicStream = await navigator.mediaDevices.getUserMedia({
-        audio: microphoneConstraints(),
-      });
+      const acquiredMicStream = await openMicrophoneStream(options.microphoneId ?? null);
       if (stopped) {
         // stop() already ran and found nothing to release for this stream —
         // the microphone was granted after the fact and must not stay hot.

@@ -24,6 +24,7 @@ import type {
 } from "../../agentCall/AgentCallProvider";
 import { cn } from "../../lib/utils";
 import { AgentGlyph } from "../agents/AgentGlyph";
+import { MicrophoneMenu } from "./MicrophoneMenu";
 
 /**
  * Seconds since the call connected, ticking once a second while it runs.
@@ -57,22 +58,27 @@ export function CallRoundButton(props: {
   readonly onClick: () => void;
   readonly pressed?: boolean;
   readonly disabled?: boolean;
+  /** A small secondary control pinned to the button's corner (the microphone menu on Mute). */
+  readonly accessory?: ReactNode;
 }) {
   return (
     <div className="flex w-20 flex-col items-center gap-2">
-      <button
-        type="button"
-        aria-label={props.label}
-        aria-pressed={props.pressed}
-        disabled={props.disabled}
-        onClick={props.onClick}
-        className={cn(
-          "flex size-16 cursor-pointer items-center justify-center rounded-full transition-colors duration-150 outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-default disabled:opacity-40 motion-reduce:transition-none [&_svg]:size-7",
-          TONE_CLASS[props.tone],
-        )}
-      >
-        {props.icon}
-      </button>
+      <div className="relative">
+        <button
+          type="button"
+          aria-label={props.label}
+          aria-pressed={props.pressed}
+          disabled={props.disabled}
+          onClick={props.onClick}
+          className={cn(
+            "flex size-16 cursor-pointer items-center justify-center rounded-full transition-colors duration-150 outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-default disabled:opacity-40 motion-reduce:transition-none [&_svg]:size-7",
+            TONE_CLASS[props.tone],
+          )}
+        >
+          {props.icon}
+        </button>
+        {props.accessory}
+      </div>
       <span aria-hidden className="text-xs text-muted-foreground">
         {props.label}
       </span>
@@ -208,6 +214,7 @@ export function AgentCallScreen(props: {
               tone={live.muted ? "selected" : "neutral"}
               pressed={live.muted}
               onClick={api.toggleMute}
+              accessory={<MicrophoneMenu onChoose={api.chooseMicrophone} />}
             />
             {!props.embedded ? (
               <CallRoundButton

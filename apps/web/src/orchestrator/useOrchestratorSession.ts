@@ -69,6 +69,7 @@ import { decideReconnect } from "./reconnect";
 import { entriesSinceLastBoundary } from "./conversationBoundary";
 import type { ProposedPlanInput } from "./proposedPlan";
 import { createScreenWakeLock, findWakeLockRequester } from "./screenWakeLock";
+import { readPreferredMicrophone } from "./microphones";
 import { createVoiceSession, type VoiceSession, type VoiceSessionState } from "./realtimeSession";
 import type { RecentConversationEntry } from "./realtimeProtocol";
 import {
@@ -1902,6 +1903,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
           // settings lands mid-session without restarting voice.
           cuePolicy: () => resolveVoiceCuePolicy(getClientSettings()),
           voiceIsolation: orchestrator.voiceIsolation === true,
+          microphoneId: readPreferredMicrophone(),
           // Forced off on a phone: with the speaker centimetres from the
           // microphone the assistant's own voice comes back in, gets
           // transcribed as the user, and the conversation runs away by itself.

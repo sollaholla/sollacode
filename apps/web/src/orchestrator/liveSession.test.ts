@@ -25,8 +25,22 @@ function fixture(
   options: Partial<VoiceSessionOptions> = {},
 ) {
   const listeners = new Map<string, (event: { data: string }) => void>();
-  const track = { enabled: true, stop: vi.fn(), addEventListener: vi.fn() };
-  const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+  /** A capture of one microphone; its "ended" handlers can be fired by the test. */
+  const capture = (deviceId: string) => {
+    const ended: Array<() => void> = [];
+    const track = {
+      enabled: true,
+      stop: vi.fn(),
+      getSettings: () => ({ deviceId }),
+      addEventListener: vi.fn((name: string, fn: () => void) => {
+        if (name === "ended") ended.push(fn);
+      }),
+      end: () => ended.forEach((fn) => fn()),
+    };
+    return { track, stream: { getTracks: () => [track], getAudioTracks: () => [track] } };
+  };
+  const { track, stream } = capture("mic-a");
+  const captures: Array<ReturnType<typeof capture>> = [];
   const channel = {
     readyState: "open",
     send: vi.fn(),
@@ -40,7 +54,7 @@ function fixture(
     localDescription: { sdp: "offer" },
     connectionState: "connected",
     close: vi.fn(),
-    addTrack: vi.fn(),
+    addTrack: vi.fn(() => sender),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     createDataChannel: () => channel,
@@ -50,8 +64,36 @@ function fixture(
       negotiated.resolve();
     }),
   };
-  const getUserMedia = vi.fn(async () => stream);
-  vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
+  const sender = { replaceTrack: vi.fn(async (_track: unknown) => undefined) };
+  // The first capture is `stream`; later ones (microphone switches) are new.
+  const getUserMedia = vi.fn(async (constraints?: MediaStreamConstraints) => {
+    if (captures.length === 0) {
+      captures.push({ track, stream });
+      return stream;
+    }
+    const audio = constraints?.audio as MediaTrackConstraints | undefined;
+    const exact = (audio?.deviceId as ConstrainDOMStringParameters | undefined)?.exact;
+    const next = capture(typeof exact === "string" ? exact : "mic-default");
+    captures.push(next);
+    return next.stream;
+  });
+  const devices: Array<Pick<MediaDeviceInfo, "deviceId" | "groupId" | "kind" | "label">> = [
+    { deviceId: "default", groupId: "g-a", kind: "audioinput", label: "Default - Mic A" },
+    { deviceId: "mic-a", groupId: "g-a", kind: "audioinput", label: "Mic A" },
+  ];
+  const deviceListeners = new Set<() => void>();
+  vi.stubGlobal("navigator", {
+    mediaDevices: {
+      getUserMedia,
+      enumerateDevices: vi.fn(async () => devices),
+      addEventListener: (name: string, fn: () => void) => {
+        if (name === "devicechange") deviceListeners.add(fn);
+      },
+      removeEventListener: (name: string, fn: () => void) => {
+        if (name === "devicechange") deviceListeners.delete(fn);
+      },
+    },
+  });
   vi.stubGlobal(
     "AudioContext",
     class {
@@ -61,7 +103,7 @@ function fixture(
         fftSize: 256,
         getByteTimeDomainData: (array: Uint8Array) => array.fill(128),
       });
-      createMediaStreamSource = () => ({ connect: vi.fn() });
+      createMediaStreamSource = () => ({ connect: vi.fn(), disconnect: vi.fn() });
     },
   );
   vi.stubGlobal(
@@ -115,6 +157,12 @@ function fixture(
     event,
     channel,
     peer,
+    sender,
+    captures,
+    devices,
+    /** The system's microphones changed. */
+    deviceChange: () => deviceListeners.forEach((fn) => fn()),
+    listensForDevices: () => deviceListeners.size > 0,
     track,
     getUserMedia,
     stream,
@@ -269,6 +317,91 @@ describe("GPT-Live transport", () => {
 });
 
 describe("GPT-Live routes and mute", () => {
+  it("opens the chosen microphone, and the default when that one is gone", async () => {
+    const chosen = fixture({}, { microphoneId: "mic-b" });
+    await chosen.ready();
+    expect(chosen.getUserMedia.mock.calls[0]?.[0]).toMatchObject({
+      audio: { deviceId: { exact: "mic-b" } },
+    });
+
+    const gone = fixture({}, { microphoneId: "mic-b" });
+    gone.getUserMedia.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("gone"), { name: "OverconstrainedError" });
+    });
+    await gone.ready();
+    expect(gone.getUserMedia).toHaveBeenCalledTimes(2);
+    expect(gone.getUserMedia.mock.calls[1]?.[0]?.audio).not.toHaveProperty("deviceId");
+  });
+
+  it("switches microphones mid-session without dropping it", async () => {
+    const f = fixture();
+    await f.ready();
+    f.session.setMicrophone?.("mic-b");
+    await vi.waitFor(() => expect(f.sender.replaceTrack).toHaveBeenCalledOnce());
+    const next = f.captures[1]!;
+    expect(f.sender.replaceTrack).toHaveBeenCalledWith(next.track);
+    expect(next.track.enabled).toBe(true);
+    expect(f.track.stop).toHaveBeenCalled();
+    expect(f.session.state).not.toBe("idle");
+  });
+
+  it("keeps a muted session muted on the new microphone", async () => {
+    const f = fixture();
+    await f.ready();
+    f.session.setMuted?.(true);
+    f.session.setMicrophone?.("mic-b");
+    await vi.waitFor(() => expect(f.sender.replaceTrack).toHaveBeenCalledOnce());
+    expect(f.captures[1]!.track.enabled).toBe(false);
+  });
+
+  it("follows the system default when it changes, and only then", async () => {
+    const f = fixture();
+    await f.ready();
+    expect(f.listensForDevices()).toBe(true);
+    // A device came and went, but the default is still Mic A.
+    f.devices.push({ deviceId: "mic-c", groupId: "g-c", kind: "audioinput", label: "Mic C" });
+    f.deviceChange();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.sender.replaceTrack).not.toHaveBeenCalled();
+    // AirPods connect and become the default.
+    f.devices[0] = {
+      deviceId: "default",
+      groupId: "g-c",
+      kind: "audioinput",
+      label: "Default - Mic C",
+    };
+    f.deviceChange();
+    await vi.waitFor(() => expect(f.sender.replaceTrack).toHaveBeenCalledOnce());
+    f.session.stop();
+    f.event({ type: "session.closed", usage: { seconds: 1 } });
+    expect(f.listensForDevices()).toBe(false);
+  });
+
+  it("moves to another microphone when the one in use is unplugged", async () => {
+    const onError = vi.fn();
+    const f = fixture({ onError });
+    await f.ready();
+    f.track.end();
+    await vi.waitFor(() => expect(f.sender.replaceTrack).toHaveBeenCalledOnce());
+    expect(onError).not.toHaveBeenCalled();
+    expect(f.session.state).not.toBe("idle");
+  });
+
+  it("ends the session when no microphone is left", async () => {
+    const onError = vi.fn();
+    const f = fixture({ onError });
+    await f.ready();
+    f.getUserMedia.mockImplementation(async () => {
+      throw Object.assign(new Error("none"), { name: "NotFoundError" });
+    });
+    f.track.end();
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(
+        "The microphone disconnected. Reconnect it and start voice again.",
+      ),
+    );
+  });
+
   it("applies the answer with the final line break its trimmed result dropped", async () => {
     const f = fixture();
     await f.ready();

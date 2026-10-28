@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   DEFAULT_UNIFIED_SETTINGS,
   ORCHESTRATOR_VOICE_PROVIDERS,
@@ -22,6 +22,11 @@ import { shortcutLabelForCommand } from "../../keybindings";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import {
+  listMicrophones,
+  usePreferredMicrophone,
+  type MicrophoneChoices,
+} from "../../orchestrator/microphones";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import {
@@ -597,6 +602,11 @@ export function OrchestratorSettingsPanel() {
 
       <SettingsSection title="Microphone">
         <SettingsRow
+          title="Microphone"
+          description="The microphone voice uses on this device, for agent calls and the orchestrator. Default follows your system's microphone and switches when it changes, such as when headphones connect. You can also change it during a call from the arrow on Mute. Names appear once this browser has used the microphone."
+          control={<PreferredMicrophoneSelect />}
+        />
+        <SettingsRow
           title="Filter background noise"
           description="Runs your microphone through a noise gate before it is sent, so fans, traffic and typing are held down between the things you actually say. Your browser's own speech isolation is always used where it exists; this is an extra stage on top of it. Off by default: it sits in the outgoing audio, so if you sound clipped or quiet words go missing, turn it back off."
           control={
@@ -818,5 +828,52 @@ export function OrchestratorSettingsPanel() {
         ))}
       </SettingsSection>
     </SettingsPageContainer>
+  );
+}
+
+const SYSTEM_DEFAULT_MICROPHONE = "default";
+
+/** This device's voice microphone: the system default (followed as it changes) or one chosen. */
+function PreferredMicrophoneSelect() {
+  const [preferred, setPreferred] = usePreferredMicrophone();
+  const [choices, setChoices] = useState<MicrophoneChoices | null>(null);
+  useEffect(() => {
+    const refresh = () => {
+      listMicrophones().then(setChoices, () => setChoices(null));
+    };
+    refresh();
+    const devices = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
+    devices?.addEventListener?.("devicechange", refresh);
+    return () => devices?.removeEventListener?.("devicechange", refresh);
+  }, []);
+  const options = choices?.devices ?? [];
+  const chosen = options.find((option) => option.deviceId === preferred);
+  return (
+    <Select
+      value={preferred ?? SYSTEM_DEFAULT_MICROPHONE}
+      onValueChange={(value) =>
+        setPreferred(
+          value === SYSTEM_DEFAULT_MICROPHONE || typeof value !== "string" ? null : value,
+        )
+      }
+    >
+      <SelectTrigger className="w-full sm:w-56" aria-label="Microphone">
+        <SelectValue>
+          {preferred === null ? "Default" : (chosen?.label ?? "Chosen microphone (not connected)")}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectPopup align="end" alignItemWithTrigger={false}>
+        <SelectItem hideIndicator value={SYSTEM_DEFAULT_MICROPHONE}>
+          {choices?.defaultLabel ? `Default (${choices.defaultLabel})` : "Default"}
+        </SelectItem>
+        {options.map((option) =>
+          option.deviceId === null ? null : (
+            <SelectItem key={option.deviceId} hideIndicator value={option.deviceId}>
+              {option.label}
+            </SelectItem>
+          ),
+        )}
+      </SelectPopup>
+    </Select>
   );
 }

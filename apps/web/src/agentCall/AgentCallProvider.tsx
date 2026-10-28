@@ -27,6 +27,7 @@ import {
 import { closeCallNotifications } from "../browser/webPush";
 import { useOrchestratorSessionContext } from "../orchestrator/OrchestratorSessionProvider";
 import { createLiveVoiceSession } from "../orchestrator/liveSession";
+import { readPreferredMicrophone } from "../orchestrator/microphones";
 import { useLiveUsageStore } from "../orchestrator/liveUsageStore";
 import type { VoiceSession, VoiceSessionState } from "../orchestrator/realtimeSession";
 import { createScreenWakeLock, findWakeLockRequester } from "../orchestrator/screenWakeLock";
@@ -125,6 +126,8 @@ export interface AgentCallApi {
    */
   readonly end: (environmentId: EnvironmentId, callId: AgentCallId) => void;
   readonly toggleMute: () => void;
+  /** Moves a running call to this microphone (null: the system default) without dropping it. */
+  readonly chooseMicrophone: (deviceId: string | null) => void;
   readonly setMinimised: (minimised: boolean) => void;
   /** Clears a finished call's screen. */
   readonly dismiss: () => void;
@@ -347,6 +350,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
           authority: "read-only",
           confirmDestructiveActions: true,
           language: "en",
+          microphoneId: readPreferredMicrophone(),
           live: {
             sessionPath: AGENT_CALL_SESSION_PATH,
             releasePath: AGENT_CALL_SESSION_RELEASE_PATH,
@@ -622,6 +626,10 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     sessionRef.current?.setMuted?.(next);
   }, []);
 
+  const chooseMicrophone = useCallback((deviceId: string | null) => {
+    sessionRef.current?.setMicrophone?.(deviceId);
+  }, []);
+
   const dismiss = useCallback(() => {
     const current = activeRef.current;
     if (current !== null && !isAgentCallPhaseOpen(current.phase)) commitActive(null);
@@ -779,10 +787,23 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       hangUp,
       end,
       toggleMute,
+      chooseMicrophone,
       setMinimised,
       dismiss,
     }),
-    [activeCall, answer, decline, dismiss, end, hangUp, minimised, place, ringing, toggleMute],
+    [
+      activeCall,
+      answer,
+      decline,
+      dismiss,
+      end,
+      hangUp,
+      minimised,
+      place,
+      ringing,
+      toggleMute,
+      chooseMicrophone,
+    ],
   );
   const live = useMemo<AgentCallLive>(
     () => ({ sessionState, working, muted, transcript }),

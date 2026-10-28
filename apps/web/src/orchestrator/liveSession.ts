@@ -13,7 +13,12 @@ import type {
   VoiceSessionOptions,
   VoiceSessionState,
 } from "./realtimeSession";
-import { applyVoiceIsolation, microphoneConstraints } from "./voiceIsolation";
+import {
+  defaultMicrophoneKey,
+  isMissingMicrophoneError,
+  microphoneConstraintsFor,
+} from "./microphones";
+import { applyVoiceIsolation } from "./voiceIsolation";
 import {
   createLiveTranscriptContext,
   liveAppendChunks,
@@ -49,6 +54,14 @@ export function createLiveVoiceSession(
   let channel: RTCDataChannel | null = null;
   let mic: MediaStream | null = null;
   let sent: MediaStream | null = null;
+  /** The chosen microphone; null follows the system default. */
+  let microphoneId = options.microphoneId ?? null;
+  /** Which system default the capture was opened on, to notice the default changing. */
+  let followedDefault: string | null = null;
+  let micSender: RTCRtpSender | null = null;
+  let micSource: MediaStreamAudioSourceNode | null = null;
+  let micAnalyser: AnalyserNode | null = null;
+  let switching: Promise<void> = Promise.resolve();
   let audio: HTMLAudioElement | null = null;
   let audioContext: AudioContext | null = null;
   let releaseIsolation: (() => void) | null = null;
@@ -143,6 +156,7 @@ export function createLiveVoiceSession(
     readyReject = null;
     opening.abort();
     if (typeof window !== "undefined") window.removeEventListener("pagehide", onPageHide);
+    navigator.mediaDevices?.removeEventListener?.("devicechange", onDeviceChange);
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = null;
     if (meter) clearInterval(meter);
@@ -516,6 +530,101 @@ export function createLiveVoiceSession(
       delegationTimers.add(timer);
     }
   };
+  /**
+   * Opens the chosen microphone, or the system default. A chosen one that is
+   * gone (unplugged, Bluetooth off) falls back to the default.
+   */
+  const openMicrophone = async (): Promise<MediaStream> => {
+    if (microphoneId !== null) {
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: microphoneConstraintsFor(microphoneId),
+        });
+      } catch (error) {
+        if (!isMissingMicrophoneError(error)) throw error;
+      }
+    }
+    const captured = await navigator.mediaDevices.getUserMedia({
+      audio: microphoneConstraintsFor(null),
+    });
+    followedDefault = await readDefaultMicrophoneKey();
+    return captured;
+  };
+  const readDefaultMicrophoneKey = async () => {
+    try {
+      return defaultMicrophoneKey(await navigator.mediaDevices.enumerateDevices());
+    } catch {
+      return null;
+    }
+  };
+  /** A microphone that goes away mid-session hands over to another instead of ending it. */
+  const watchMicrophone = (captured: MediaStream) => {
+    for (const track of captured.getAudioTracks())
+      track.addEventListener("ended", () => {
+        if (closing || stopped || mic !== captured) return;
+        void switchMicrophone().catch(() => {
+          if (closing || stopped) return;
+          callbacks.onError?.("The microphone disconnected. Reconnect it and start voice again.");
+          close();
+        });
+      });
+  };
+  /** Moves the live session to the chosen (or default) microphone without dropping it. */
+  const switchMicrophone = () => {
+    const next = switching.then(async () => {
+      if (stopped || closing || !micSender || !audioContext) return;
+      const context = audioContext;
+      const sender = micSender;
+      const captured = await openMicrophone();
+      const isolation = await applyVoiceIsolation({
+        stream: captured,
+        context,
+        enabled: options.voiceIsolation === true,
+      });
+      const track = isolation.stream.getAudioTracks()[0];
+      if (stopped || closing || track === undefined) {
+        isolation.release();
+        isolation.stream.getTracks().forEach((each) => each.stop());
+        captured.getTracks().forEach((each) => each.stop());
+        if (track === undefined && !stopped) throw new Error("The microphone gave no audio.");
+        return;
+      }
+      track.enabled = ready && !muted;
+      await sender.replaceTrack(track);
+      micSource?.disconnect();
+      micSource = context.createMediaStreamSource(captured);
+      if (micAnalyser) micSource.connect(micAnalyser);
+      const previous = { mic, sent, release: releaseIsolation };
+      mic = captured;
+      sent = isolation.stream;
+      releaseIsolation = isolation.release;
+      watchMicrophone(captured);
+      previous.release?.();
+      for (const each of previous.sent?.getTracks() ?? []) each.stop();
+      for (const each of previous.mic?.getTracks() ?? []) each.stop();
+    });
+    switching = next.catch(() => undefined);
+    return next;
+  };
+  /**
+   * A device came or went. Following the system default, a new default takes
+   * over; a chosen microphone that came back is picked up again.
+   */
+  const onDeviceChange = () => {
+    if (stopped || closing || !micSender) return;
+    void (async () => {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      if (stopped || closing) return;
+      const current = mic?.getAudioTracks()[0]?.getSettings().deviceId ?? null;
+      const chosenPresent =
+        microphoneId !== null &&
+        devices.some((device) => device.kind === "audioinput" && device.deviceId === microphoneId);
+      const wanted = chosenPresent
+        ? current !== microphoneId
+        : defaultMicrophoneKey(devices) !== followedDefault;
+      if (wanted) await switchMicrophone();
+    })().catch(() => undefined);
+  };
   const start = async () => {
     if (stopped || state !== "idle") return;
     setState("connecting");
@@ -529,22 +638,13 @@ export function createLiveVoiceSession(
       audioContext = new AudioContext();
       await audioContext.resume();
       if (stopped) return;
-      const captured = await navigator.mediaDevices.getUserMedia({
-        audio: microphoneConstraints(),
-      });
+      const captured = await openMicrophone();
       if (stopped) {
         captured.getTracks().forEach((track) => track.stop());
         return;
       }
       mic = captured;
-      mic.getAudioTracks().forEach((track) =>
-        track.addEventListener("ended", () => {
-          if (!closing && !stopped) {
-            callbacks.onError?.("The microphone disconnected. Reconnect it and start voice again.");
-            close();
-          }
-        }),
-      );
+      watchMicrophone(captured);
       const isolation = await applyVoiceIsolation({
         stream: captured,
         context: audioContext,
@@ -562,9 +662,10 @@ export function createLiveVoiceSession(
       audio = new Audio();
       audio.autoplay = true;
       let remoteAnalyser: AnalyserNode | null = null;
-      const micAnalyser = audioContext.createAnalyser();
+      micAnalyser = audioContext.createAnalyser();
       micAnalyser.fftSize = 256;
-      audioContext.createMediaStreamSource(captured).connect(micAnalyser);
+      micSource = audioContext.createMediaStreamSource(captured);
+      micSource.connect(micAnalyser);
       const samples = new Uint8Array(256);
       const level = (analyser: AnalyserNode | null) => {
         if (!analyser) return 0;
@@ -601,8 +702,9 @@ export function createLiveVoiceSession(
       });
       for (const track of sent.getAudioTracks()) {
         track.enabled = false;
-        connection.addTrack(track, sent);
+        micSender = connection.addTrack(track, sent);
       }
+      navigator.mediaDevices.addEventListener?.("devicechange", onDeviceChange);
       const events = connection.createDataChannel("oai-events");
       channel = events;
       events.addEventListener("message", (event: MessageEvent<unknown>) => {
@@ -750,6 +852,14 @@ export function createLiveVoiceSession(
         append("session.instructions.append", "Stop speaking and listen to the user.", null);
         setState("listening");
       }
+    },
+    setMicrophone: (deviceId) => {
+      if (microphoneId === deviceId) return;
+      microphoneId = deviceId;
+      if (!micSender || stopped || closing) return;
+      void switchMicrophone().catch(() => {
+        if (!stopped && !closing) callbacks.onError?.("That microphone could not be opened.");
+      });
     },
     setMuted: (next) => {
       if (muted === next) return;
