@@ -174,6 +174,14 @@ export function OrchestratorSettingsPanel() {
     else updateSettings({ orchestrator: patch });
   };
 
+  // GPT-Live (the OpenAI default) speaks only its own voices. Every way of
+  // landing on it — the picker, Reset, switching provider — keeps a Live voice.
+  const withLiveVoice = (patch: { model: string; voice?: string }) =>
+    patch.model === OPENAI_LIVE_MODEL &&
+    !(OPENAI_LIVE_VOICES as readonly string[]).includes(patch.voice ?? orchestrator.voice)
+      ? { ...patch, voice: "marin" }
+      : patch;
+
   const switchProvider = (next: OrchestratorVoiceProvider) => {
     if (next === orchestrator.provider) return;
     const resolved = resolveOrchestratorVoiceSelection({
@@ -181,7 +189,7 @@ export function OrchestratorSettingsPanel() {
       model: orchestrator.model,
       voice: orchestrator.voice,
     });
-    applyRealtime({ provider: next, ...resolved });
+    applyRealtime({ provider: next, ...withLiveVoice(resolved) });
   };
 
   // Changing this now restarts a live session, so there is no drift to report
@@ -488,7 +496,7 @@ export function OrchestratorSettingsPanel() {
             orchestrator.model !== catalog.defaultModel ? (
               <SettingResetButton
                 label="model"
-                onClick={() => applyRealtime({ model: catalog.defaultModel })}
+                onClick={() => applyRealtime(withLiveVoice({ model: catalog.defaultModel }))}
               />
             ) : null
           }
@@ -497,13 +505,7 @@ export function OrchestratorSettingsPanel() {
               value={orchestrator.model}
               onValueChange={(value) => {
                 if (typeof value !== "string" || value === orchestrator.model) return;
-                applyRealtime({
-                  model: value,
-                  ...(value === OPENAI_LIVE_MODEL &&
-                  !(OPENAI_LIVE_VOICES as readonly string[]).includes(orchestrator.voice)
-                    ? { voice: "marin" }
-                    : {}),
-                });
+                applyRealtime(withLiveVoice({ model: value }));
               }}
             >
               <SelectTrigger className="w-full sm:w-56" aria-label="Orchestrator model">
@@ -517,6 +519,27 @@ export function OrchestratorSettingsPanel() {
                 ))}
               </SelectPopup>
             </Select>
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Agent calls">
+        <SettingsRow
+          title="Agents can call me"
+          description="Your agents ring this host's devices when they raise a blocker, wait on a question or approval, or ask to talk. Calls use GPT-Live with the OpenAI key above. You can call an agent yourself from its header either way."
+          status={
+            orchestrator.openAiApiKeyConfigured
+              ? undefined
+              : "Needs the OpenAI API key above: without it nothing rings, and agents cannot be called."
+          }
+          control={
+            <Switch
+              checked={orchestrator.agentCalls}
+              onCheckedChange={(checked) =>
+                updateSettings({ orchestrator: { agentCalls: Boolean(checked) } })
+              }
+              aria-label="Agents can call me"
+            />
           }
         />
       </SettingsSection>

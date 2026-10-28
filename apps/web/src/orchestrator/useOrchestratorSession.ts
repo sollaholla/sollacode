@@ -107,6 +107,7 @@ import {
   type ProviderCatalog,
 } from "./threadSettings";
 import { useOrchestratorThread } from "./useOrchestratorThread";
+import { isAgentCallLive } from "../agentCall/agentCallActivity";
 import { randomUUID } from "../lib/utils";
 import { ORCHESTRATOR_RUN_COMMAND_PATH } from "@t3tools/contracts";
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -369,12 +370,13 @@ async function fetchThreadContents(
 }
 
 /**
- * Best-effort read of the orchestrator thread's recent exchanges, folded into
- * the voice session's opening instructions so speech continues the typed
- * conversation. Bounded and fallible by design: a slow or failed fetch must
- * never delay or block the microphone.
+ * Best-effort read of a thread's recent exchanges — the orchestrator's by
+ * default, an agent's for an agent call — folded into the voice session's
+ * opening instructions so speech continues the typed conversation. Bounded and
+ * fallible by design: a slow or failed fetch must never delay or block the
+ * microphone.
  */
-async function fetchRecentThreadHistory(
+export async function fetchRecentThreadHistory(
   connection: {
     readonly httpBaseUrl: string;
     readonly bearerToken: string | null;
@@ -1831,6 +1833,9 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
 
   const start = useCallback(() => {
     if (sessionRef.current !== null) return;
+    // One microphone per device: the keybinding, the bubble and the
+    // awaited-work wake all land here, and none may cut into an agent call.
+    if (isAgentCallLive()) return;
     // From here a drop is worth chasing; `stop` clears this again.
     sessionWantedRef.current = true;
     if (primaryEnvironmentId === null) {

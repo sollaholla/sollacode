@@ -30,6 +30,7 @@ import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar"
 import { Button } from "../ui/button";
 import { ToolbarControl } from "../ui/toolbar-control";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { AgentCallButton } from "../agentCall/AgentCallButton";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { AgentGlyph } from "./AgentGlyph";
 import { AgentPowerToggle } from "./AgentPowerToggle";
@@ -378,6 +379,7 @@ function AgentWorkspaceResolved(props: {
                 activeEnvironmentId={environmentId}
                 className="h-7 rounded-lg border-[var(--line)] px-2.5 text-[12px]"
               />
+              <AgentCallButton environmentId={environmentId} agent={agent} />
               {panelToggle}
             </div>
           </header>
@@ -405,6 +407,8 @@ function AgentWorkspaceResolved(props: {
                   />
                 </span>
               </button>
+              {/* Folded, the card's actions are gone; calling must not go with them. */}
+              <AgentCallButton environmentId={environmentId} agent={agent} />
               {panelToggle}
             </>,
             topBarSlot,

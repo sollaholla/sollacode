@@ -125,6 +125,7 @@ import {
 import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
+import { useAgentCallPaletteItems } from "./agentCall/useAgentCallPaletteItems";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
 import { ProjectFavicon } from "./ProjectFavicon";
@@ -581,6 +582,7 @@ function OpenCommandPaletteDialog(props: {
   readonly clearOpenIntent: () => void;
 }) {
   const navigate = useNavigate();
+  const agentCallItems = useAgentCallPaletteItems();
   const { clearOpenIntent, openIntent, openOverlayMode, setOpen } = props;
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const [query, setQuery] = useState("");
@@ -1426,7 +1428,10 @@ function OpenCommandPaletteDialog(props: {
     pushPaletteView,
   ]);
 
-  const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  // A live call's "End call" leads, ahead of everything else.
+  const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [
+    ...agentCallItems,
+  ];
 
   if (projects.length > 0) {
     const activeProjectTitle =

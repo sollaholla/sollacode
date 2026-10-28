@@ -66,3 +66,44 @@ export async function enableBrowserPush(publicKey: string) {
   }
   return registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
 }
+
+/**
+ * Closes this browser's system notifications for a call (the push worker's
+ * "is calling" ring, tagged `call:<callId>`) once it stops ringing, so the
+ * sticky ring does not wait for the host's replacement push. A missed-call
+ * notice that already replaced the ring under that tag stays.
+ */
+export function closeCallNotifications(callId: string): void {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+  void navigator.serviceWorker
+    .getRegistration("/")
+    .then((registration) => registration?.getNotifications({ tag: `call:${callId}` }))
+    .then((notifications) => {
+      for (const notification of notifications ?? []) {
+        // The worker stores the push kind in the notification's data.
+        const data: unknown = notification.data;
+        const kind = typeof data === "object" && data !== null && "kind" in data ? data.kind : null;
+        if (kind !== "missed-call") notification.close();
+      }
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * The in-app path a push worker's `{ type: "solla-navigate", url }` message
+ * asks an open window to show, or null for any other message. The worker
+ * posts it when a notification is tapped instead of navigating the window,
+ * which would reload it and drop a live call.
+ */
+export function serviceWorkerNavigationPath(data: unknown, origin: string): string | null {
+  if (typeof data !== "object" || data === null) return null;
+  const { type, url } = data as { readonly type?: unknown; readonly url?: unknown };
+  if (type !== "solla-navigate" || typeof url !== "string") return null;
+  try {
+    const target = new URL(url, origin);
+    if (target.origin !== origin) return null;
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return null;
+  }
+}

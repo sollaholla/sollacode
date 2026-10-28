@@ -14,6 +14,7 @@ import {
   CircleDashedIcon,
   HandIcon,
   MessageSquareDotIcon,
+  PhoneIcon,
   PlusIcon,
   PowerIcon,
   ShieldAlertIcon,
@@ -66,6 +67,8 @@ import {
   sortAgentEnvironments,
 } from "./agentRegistryState";
 import { shouldSendAgentDesktopNotification } from "./agentNotifications";
+import { isAgentCallPhaseOpen } from "../../agentCall/agentCallLogic";
+import { useAgentCallContext } from "../../agentCall/AgentCallProvider";
 
 const AGENT_SECTION_BODY_ID = "agent-stack-sections";
 
@@ -464,6 +467,16 @@ function AgentSidebarRow(props: {
     onCommit: onRequestDelete,
   });
   const { consumeSuppressedClick } = swipe;
+  // This device's call with the agent, shown on its row wherever the person
+  // goes in the app; tapping it brings the call screen back.
+  const agentCalls = useAgentCallContext();
+  const activeCall = agentCalls?.activeCall ?? null;
+  const onCall =
+    activeCall !== null &&
+    isAgentCallPhaseOpen(activeCall.phase) &&
+    activeCall.environmentId === props.environmentId &&
+    activeCall.agent.vmAgentId === agent.vmAgentId;
+  const returnToCall = () => agentCalls?.setMinimised(false);
   const handleOpen = useCallback(() => {
     // A row that slid must not also open the agent it slid.
     if (consumeSuppressedClick()) return;
@@ -489,7 +502,7 @@ function AgentSidebarRow(props: {
         type="button"
         isActive={props.isActive}
         onClick={handleOpen}
-        aria-label={`Open ${agent.name} on ${props.environmentLabel}, ${presence.description}${needsApproval ? ", waiting for your approval" : needsInput ? ", waiting for your input" : ""}${props.unreadNotifications > 0 ? `, ${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "alert" : "alerts"}` : ""}`}
+        aria-label={`Open ${agent.name} on ${props.environmentLabel}, ${presence.description}${onCall ? ", on a call" : ""}${needsApproval ? ", waiting for your approval" : needsInput ? ", waiting for your input" : ""}${props.unreadNotifications > 0 ? `, ${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "alert" : "alerts"}` : ""}`}
         data-testid="agent-sidebar-entry"
         className={cn(
           "group/agent-row",
@@ -514,6 +527,30 @@ function AgentSidebarRow(props: {
           })}
         />
         <span className="flex-1 truncate text-left">{agent.name}</span>
+        {onCall ? (
+          <span
+            role="button"
+            tabIndex={0}
+            aria-label={`Return to the call with ${agent.name}`}
+            title={`On a call with ${agent.name}`}
+            data-testid="agent-sidebar-on-call"
+            className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-success hover:bg-foreground/10"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              returnToCall();
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+              returnToCall();
+            }}
+          >
+            <PhoneIcon className="size-3.5 shrink-0" />
+          </span>
+        ) : null}
         {/* Deliberately identical to the thread rows' working indicator, minus
             their "Working 4m" label — same CircleDashedIcon, same sky tint,
             same duty-cycled fade from `animate-sidebar-working-text`. It span

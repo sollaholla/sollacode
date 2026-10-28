@@ -554,6 +554,11 @@ describe("DesktopWindow", () => {
         assert.isFalse(decide("media", { mediaTypes: ["video"] }));
         // Electron would otherwise default to granting these.
         assert.isFalse(decide("geolocation", {}));
+        // Agent alerts and incoming agent calls notify from the app's own
+        // pages; nothing else in the session may.
+        assert.isTrue(decide("notifications", { requestingUrl: "t3code-dev://app/agents/a/b" }));
+        assert.isFalse(decide("notifications", { requestingUrl: "https://example.com/" }));
+        assert.isFalse(decide("notifications", { requestingUrl: "sollacode://other/" }));
         assert.isFalse(decide("notifications", {}));
 
         // navigator.clipboard.writeText() is gated on this permission — NOT on
@@ -586,6 +591,8 @@ describe("DesktopWindow", () => {
         assert.isTrue(check(null, "media", "sollacode://app", { mediaType: "unknown" }));
         assert.isTrue(check(null, "media", "sollacode://app", {}));
         assert.isFalse(check(null, "geolocation", "sollacode://app", {}));
+        assert.isTrue(check(null, "notifications", "t3code-dev://app", {}));
+        assert.isFalse(check(null, "notifications", "https://example.com", {}));
       }).pipe(Effect.provide(layer));
     }),
   );

@@ -2,8 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   browserPushUnavailableReason,
+  closeCallNotifications,
   enableBrowserPush,
   isBrowserPushEnabled,
+  serviceWorkerNavigationPath,
   setBrowserPushEnabled,
 } from "./webPush";
 
@@ -94,5 +96,44 @@ describe("browser push registration", () => {
     expect(isBrowserPushEnabled("other")).toBe(false);
     setBrowserPushEnabled("host", false);
     expect(isBrowserPushEnabled("host")).toBe(false);
+  });
+});
+
+describe("call notifications and notification taps", () => {
+  it("closes a call's notifications by its tag, except a missed-call notice", async () => {
+    const close = vi.fn();
+    const keep = vi.fn();
+    const getNotifications = vi.fn().mockResolvedValue([
+      { data: { url: "/call/host/call-1", kind: "call" }, close },
+      // Shown by an older worker, which stored no kind.
+      { data: { url: "/call/host/call-1" }, close },
+      { data: null, close },
+      { data: { url: "/agents/host/agent-1", kind: "missed-call" }, close: keep },
+    ]);
+    const getRegistration = vi.fn().mockResolvedValue({ getNotifications });
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: { getRegistration },
+    });
+    closeCallNotifications("call-1");
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(3));
+    expect(keep).not.toHaveBeenCalled();
+    expect(getRegistration).toHaveBeenCalledWith("/");
+    expect(getNotifications).toHaveBeenCalledWith({ tag: "call:call-1" });
+  });
+
+  it("follows only the worker's own navigation messages, to this origin", () => {
+    const origin = "https://my-host.ts.net";
+    expect(
+      serviceWorkerNavigationPath(
+        { type: "solla-navigate", url: `${origin}/call/host/call-1?x=1#top` },
+        origin,
+      ),
+    ).toBe("/call/host/call-1?x=1#top");
+    expect(
+      serviceWorkerNavigationPath({ type: "solla-navigate", url: "https://evil.test/" }, origin),
+    ).toBeNull();
+    expect(serviceWorkerNavigationPath({ type: "other", url: `${origin}/` }, origin)).toBeNull();
+    expect(serviceWorkerNavigationPath("solla-navigate", origin)).toBeNull();
   });
 });

@@ -732,6 +732,20 @@ export const make = Effect.gen(function* () {
       // relative motion never engages.
       "pointerLock",
     ]);
+    // Agent alerts and incoming agent calls are renderer notifications. Only
+    // the app's own pages may raise them, never another page in this session.
+    // Scheme and host, not `URL.origin`: the app's custom scheme has an opaque
+    // origin, which would make every custom-scheme URL look the same.
+    const isApplicationPage = (candidate: string | undefined): boolean => {
+      if (!candidate) return false;
+      try {
+        const application = new URL(applicationUrl);
+        const page = new URL(candidate);
+        return page.protocol === application.protocol && page.host === application.host;
+      } catch {
+        return false;
+      }
+    };
     const isAudioOnlyMediaRequest = (details: unknown): boolean => {
       const requested = (details as { mediaTypes?: ReadonlyArray<string> }).mediaTypes ?? [];
       // The app never captures video, so a video request is a signal something
@@ -744,11 +758,16 @@ export const make = Effect.gen(function* () {
           callback(isAudioOnlyMediaRequest(details));
           return;
         }
+        if (permission === "notifications") {
+          callback(isApplicationPage(details.requestingUrl));
+          return;
+        }
         callback(allowedRendererPermissions.has(permission));
       },
     );
     window.webContents.session.setPermissionCheckHandler(
-      (_webContents, permission, _origin, details) => {
+      (_webContents, permission, requestingOrigin, details) => {
+        if (permission === "notifications") return isApplicationPage(requestingOrigin);
         if (permission === "media") {
           // Only an explicit video check is refused. Chromium also runs this
           // check with `mediaType: "unknown"` — device enumeration, label

@@ -7,21 +7,39 @@ import {
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type {
+  LiveSessionRoutes,
   VoiceSession,
   VoiceSessionCallbacks,
   VoiceSessionOptions,
   VoiceSessionState,
 } from "./realtimeSession";
 import { applyVoiceIsolation, microphoneConstraints } from "./voiceIsolation";
-import { createLiveTranscriptContext, liveAppendChunks, parseLiveTranscript } from "./liveProtocol";
+import {
+  createLiveTranscriptContext,
+  liveAppendChunks,
+  parseLiveTranscript,
+  trimLiveHistory,
+} from "./liveProtocol";
+import type { RecentConversationEntry } from "./realtimeProtocol";
 
 const decodeStart = Schema.decodeUnknownSync(OrchestratorLiveStartResult);
 const decodeWork = Schema.decodeUnknownSync(OrchestratorLiveWorkEvent);
 const terminalWork = new Set(["completed", "failed", "cancelled", "expired"]);
 const MAX_WIRE_EVENT_CHARS = 100_000;
+/** Longest wait for trailing speech before re-asking a delegation that found nothing new. */
+const TRAILING_TRANSCRIPT_MS = 1_500;
+
+const ORCHESTRATOR_LIVE_ROUTES: LiveSessionRoutes = {
+  sessionPath: ORCHESTRATOR_LIVE_SESSION_PATH,
+  releasePath: `${ORCHESTRATOR_LIVE_SESSION_PATH}/release`,
+  delegationPath: ORCHESTRATOR_LIVE_DELEGATION_PATH,
+};
 
 /** GPT-Live has its own full-duplex protocol. Realtime response/VAD commands
- * must never be sent on this channel. Backend task lifetime is independent. */
+ * must never be sent on this channel. Backend task lifetime is independent.
+ * The orchestrator's routes unless `options.live` names others (agent calls).
+ * Leaving the page releases the host session at once (a keepalive request),
+ * since the graceful close cannot finish during unload. */
 export function createLiveVoiceSession(
   options: VoiceSessionOptions,
   callbacks: VoiceSessionCallbacks,
@@ -46,18 +64,26 @@ export function createLiveVoiceSession(
   let lastAudible = 0;
   let mutedOutput = false;
   let endAfterAudio = false;
+  let muted = false;
   let meter: ReturnType<typeof setInterval> | null = null;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
   let unstableTimer: ReturnType<typeof setTimeout> | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let released = false;
   let readyResolve: (() => void) | null = null;
   let readyReject: ((error: Error) => void) | null = null;
   let model = options.model ?? "gpt-live-1";
   let voice = "marin";
+  const routes = options.live ?? ORCHESTRATOR_LIVE_ROUTES;
   const opening = new AbortController();
   const workStreams = new Set<AbortController>();
   const delegationTimers = new Set<ReturnType<typeof setTimeout>>();
   const handledEvents = new Set<string>();
   const handledDelegations = new Set<string>();
+  /** User transcript fragments heard so far; a delegation notes the count it was sent with. */
+  let userFragments = 0;
+  /** Called when the user's transcript goes quiet (its caption flushes). */
+  const userTranscriptSettled = new Set<() => void>();
   const context = createLiveTranscriptContext(options.recentHistory);
   const transcripts: Record<
     "user" | "assistant",
@@ -89,8 +115,9 @@ export function createLiveVoiceSession(
     if (sessionId) callbacks.onLiveUsage?.({ sessionId, seconds: usageSeconds, finalized });
   };
   const releaseSession = () => {
-    if (!sessionId) return;
-    void fetch(url(`${ORCHESTRATOR_LIVE_SESSION_PATH}/release`), {
+    if (!sessionId || released) return;
+    released = true;
+    void fetch(url(routes.releasePath), {
       method: "POST",
       headers,
       credentials: "include",
@@ -98,6 +125,9 @@ export function createLiveVoiceSession(
       keepalive: true,
     }).catch(() => undefined);
   };
+  // Reload, tab close or navigating away: `stop()` waits for GPT-Live's final
+  // receipt, which never arrives during unload, so free the host's session now.
+  const onPageHide = () => releaseSession();
   const cleanup = () => {
     if (stopped) return;
     stopped = true;
@@ -107,11 +137,15 @@ export function createLiveVoiceSession(
     readyResolve = null;
     readyReject = null;
     opening.abort();
+    if (typeof window !== "undefined") window.removeEventListener("pagehide", onPageHide);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
     if (meter) clearInterval(meter);
     if (closeTimer) clearTimeout(closeTimer);
     if (unstableTimer) clearTimeout(unstableTimer);
     for (const timer of delegationTimers) clearTimeout(timer);
     delegationTimers.clear();
+    userTranscriptSettled.clear();
     for (const request of workStreams) request.abort();
     workStreams.clear();
     flush("user");
@@ -193,9 +227,65 @@ export function createLiveVoiceSession(
     cleanup();
     if (reconnect) callbacks.onConnectionLost?.();
   };
-  const runDelegation = async (delegationId: string, sequence: number, attempt = 0) => {
+  /** The host refused a leased session (409): it has nothing left to release. */
+  const gone = () => {
+    if (stopped) return;
+    released = true;
+    cleanup();
+    callbacks.onSessionGone?.();
+  };
+  const startHeartbeat = () => {
+    const heartbeat = routes.heartbeat;
+    if (!heartbeat || !sessionId || heartbeatTimer) return;
+    const id = sessionId;
+    heartbeatTimer = setInterval(() => {
+      if (stopped) return;
+      void fetch(url(heartbeat.path), {
+        method: "POST",
+        headers,
+        credentials: "include",
+        body: JSON.stringify({ sessionId: id }),
+      }).then(
+        (response) => {
+          if (response.status === 409) gone();
+        },
+        // A missed beat is fine: the lease outlasts a few of them.
+        () => undefined,
+      );
+    }, heartbeat.everySeconds * 1_000);
+  };
+  /**
+   * Asks again, once, for a delegation the host answered with nothing new:
+   * the person's words can trail GPT-Live's delegation. Waits for the user
+   * transcript to settle (at once if it already did since the request was
+   * sent), at most {@link TRAILING_TRANSCRIPT_MS}.
+   */
+  const rerunAfterTranscript = (delegationId: string, sequence: number, heard: number) => {
+    const settled = userFragments > heard && transcripts.user.timer === null;
+    const run = () => {
+      userTranscriptSettled.delete(run);
+      clearTimeout(timer);
+      delegationTimers.delete(timer);
+      void runDelegation(delegationId, sequence, 0, true);
+    };
+    const timer = setTimeout(run, settled ? 0 : TRAILING_TRANSCRIPT_MS);
+    delegationTimers.add(timer);
+    if (!settled) userTranscriptSettled.add(run);
+  };
+  const runDelegation = async (
+    delegationId: string,
+    sequence: number,
+    attempt = 0,
+    rerun = false,
+  ): Promise<void> => {
     if (closing || stopped || !sessionId || latestDelegationId !== delegationId) return;
     if (!context.hasUserSpeech()) {
+      // The person's first words can trail the delegation too: wait for them
+      // once before asking them to say it again.
+      if (!rerun) {
+        rerunAfterTranscript(delegationId, sequence, userFragments);
+        return;
+      }
       append(
         "session.commentary.append",
         "The transcript is not available yet. Ask the user to repeat the request before starting work.",
@@ -207,14 +297,21 @@ export function createLiveVoiceSession(
     workStreams.add(abort);
     callbacks.onWorkingChange?.(true);
     let terminal = false;
+    const heard = userFragments;
     try {
-      const response = await fetch(url(ORCHESTRATOR_LIVE_DELEGATION_PATH), {
+      const response = await fetch(url(routes.delegationPath), {
         method: "POST",
         headers,
         credentials: "include",
         signal: abort.signal,
         body: JSON.stringify({ sessionId, delegationId, sequence, context: context.context() }),
       });
+      if (response.status === 409 && routes.heartbeat) {
+        // The host ended this leased session (the call), or restarted.
+        await response.body?.cancel();
+        gone();
+        return;
+      }
       if (!response.ok)
         throw new Error(
           (await response.text()).slice(0, 500) || "The assistant could not accept the task.",
@@ -232,6 +329,8 @@ export function createLiveVoiceSession(
       const decoder = new TextDecoder();
       let pending = "";
       let lastText = "";
+      /** Whether any event carried text for GPT-Live. */
+      let spoke = false;
       try {
         for (;;) {
           if (stopped || closing || latestDelegationId !== delegationId) break;
@@ -258,6 +357,7 @@ export function createLiveVoiceSession(
                 delegationId,
               );
               lastText = event.text;
+              if (event.text.trim()) spoke = true;
             }
           }
           if (chunk.done || terminal) break;
@@ -270,6 +370,13 @@ export function createLiveVoiceSession(
         throw new Error(
           "Task updates disconnected. The task may still be running; check agent activity.",
         );
+      // A silent ending: nothing new reached the chat. Ask again once the
+      // person's words arrive; a second one closes the delegation quietly.
+      if (terminal && !spoke && !closing && !stopped && latestDelegationId === delegationId) {
+        if (rerun)
+          append("session.thinking.append", "Nothing new reached my chat for that.", delegationId);
+        else rerunAfterTranscript(delegationId, sequence, heard);
+      }
     } catch (cause) {
       if (!abort.signal.aborted && !closing && !stopped && latestDelegationId === delegationId) {
         if (
@@ -280,7 +387,7 @@ export function createLiveVoiceSession(
           const timer = setTimeout(
             () => {
               delegationTimers.delete(timer);
-              void runDelegation(delegationId, sequence, attempt + 1);
+              void runDelegation(delegationId, sequence, attempt + 1, rerun);
             },
             1_000 * (attempt + 1),
           );
@@ -317,7 +424,8 @@ export function createLiveVoiceSession(
       if (closing) return;
       ready = true;
       lastActivity = Date.now();
-      for (const track of sent?.getAudioTracks() ?? []) track.enabled = true;
+      for (const track of sent?.getAudioTracks() ?? []) track.enabled = !muted;
+      if (muted) send({ type: "session.input_audio.mute" });
       callbacks.onSessionReady?.({ model, voice });
       setState("listening");
       readyResolve?.();
@@ -361,10 +469,14 @@ export function createLiveVoiceSession(
     if (fragment) {
       context.append(fragment);
       lastActivity = Date.now();
+      if (fragment.role === "user") userFragments += 1;
       const pending = transcripts[fragment.role];
       pending.text += fragment.text;
       if (pending.timer) clearTimeout(pending.timer);
-      pending.timer = setTimeout(() => flush(fragment.role), 800);
+      pending.timer = setTimeout(() => {
+        flush(fragment.role);
+        if (fragment.role === "user") for (const settled of userTranscriptSettled) settled();
+      }, 800);
       if (pending.text.length > 4_000) flush(fragment.role);
       return;
     }
@@ -402,6 +514,12 @@ export function createLiveVoiceSession(
   const start = async () => {
     if (stopped || state !== "idle") return;
     setState("connecting");
+    if (typeof window !== "undefined") window.addEventListener("pagehide", onPageHide);
+    // Started now so a caller's lookups run while the microphone opens; only
+    // awaited once the offer is ready. The catch keeps an early rejection from
+    // surfacing as unhandled before then.
+    const extraBody = routes.startBody ? Promise.resolve().then(routes.startBody) : null;
+    extraBody?.catch(() => undefined);
     try {
       audioContext = new AudioContext();
       await audioContext.resume();
@@ -515,20 +633,36 @@ export function createLiveVoiceSession(
           check();
         });
       if (stopped) return;
-      const response = await fetch(url(ORCHESTRATOR_LIVE_SESSION_PATH), {
+      const awaitedBody: Readonly<Record<string, unknown>> = extraBody ? await extraBody : {};
+      const { history: extraHistory, ...extra } = awaitedBody;
+      if (stopped) return;
+      const response = await fetch(url(routes.sessionPath), {
         method: "POST",
         headers,
         credentials: "include",
         signal: opening.signal,
         body: JSON.stringify({
           sdp: connection.localDescription?.sdp,
-          history: (options.recentHistory ?? [])
-            .slice(-24)
-            .map((entry) => ({ role: entry.role, text: entry.text.slice(-4_000) })),
+          ...extra,
+          // Every caller's history is held to the start request's limits.
+          history: trimLiveHistory(
+            Array.isArray(extraHistory)
+              ? (extraHistory as ReadonlyArray<RecentConversationEntry>)
+              : (options.recentHistory ?? []),
+          ),
         }),
       });
-      if (!response.ok)
-        throw new Error((await response.text()).slice(0, 500) || "GPT-Live could not start.");
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500) || "GPT-Live could not start.";
+        // A leased session's 409 is the host refusing the claim, not a fault.
+        if (response.status === 409 && routes.heartbeat && callbacks.onStartRefused) {
+          if (stopped) return;
+          cleanup();
+          callbacks.onStartRefused(detail);
+          return;
+        }
+        throw new Error(detail);
+      }
       const result = decodeStart(await response.json());
       sessionId = result.sessionId;
       model = result.model;
@@ -537,6 +671,7 @@ export function createLiveVoiceSession(
         releaseSession();
         return;
       }
+      startHeartbeat();
       reportUsage();
       const started = new Promise<void>((resolve, reject) => {
         readyResolve = resolve;
@@ -608,6 +743,14 @@ export function createLiveVoiceSession(
         append("session.instructions.append", "Stop speaking and listen to the user.", null);
         setState("listening");
       }
+    },
+    setMuted: (next) => {
+      if (muted === next) return;
+      muted = next;
+      // Before startup the flag is applied when the session starts.
+      if (!ready || closing || stopped) return;
+      for (const track of sent?.getAudioTracks() ?? []) track.enabled = !muted;
+      send({ type: muted ? "session.input_audio.mute" : "session.input_audio.unmute" });
     },
     get state() {
       return state;

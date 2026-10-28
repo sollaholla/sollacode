@@ -30,6 +30,7 @@ import { Route as SettingsArchivedRouteImport } from './routes/settings.archived
 import { Route as SettingsAppearanceRouteImport } from './routes/settings.appearance'
 import { Route as SettingsAgentsRouteImport } from './routes/settings.agents'
 import { Route as OrchestratorLiveRouteImport } from './routes/orchestrator_.live'
+import { Route as CallEnvironmentIdCallIdRouteImport } from './routes/call.$environmentId.$callId'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatAgentsAgentIdRouteImport } from './routes/_chat.agents.$agentId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
@@ -140,6 +141,11 @@ const OrchestratorLiveRoute = OrchestratorLiveRouteImport.update({
   path: '/orchestrator/live',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CallEnvironmentIdCallIdRoute = CallEnvironmentIdCallIdRouteImport.update({
+  id: '/call/$environmentId/$callId',
+  path: '/call/$environmentId/$callId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ChatDraftDraftIdRoute = ChatDraftDraftIdRouteImport.update({
   id: '/draft/$draftId',
   path: '/draft/$draftId',
@@ -193,6 +199,7 @@ export interface FileRoutesByFullPath {
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/agents/$agentId': typeof ChatAgentsAgentIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
+  '/call/$environmentId/$callId': typeof CallEnvironmentIdCallIdRoute
   '/agents/$environmentId/$agentId': typeof ChatAgentsEnvironmentIdAgentIdRoute
   '/settings/projects/$environmentId/$projectId': typeof SettingsProjectsEnvironmentIdProjectIdRoute
 }
@@ -220,6 +227,7 @@ export interface FileRoutesByTo {
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/agents/$agentId': typeof ChatAgentsAgentIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
+  '/call/$environmentId/$callId': typeof CallEnvironmentIdCallIdRoute
   '/agents/$environmentId/$agentId': typeof ChatAgentsEnvironmentIdAgentIdRoute
   '/settings/projects/$environmentId/$projectId': typeof SettingsProjectsEnvironmentIdProjectIdRoute
 }
@@ -249,6 +257,7 @@ export interface FileRoutesById {
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/agents/$agentId': typeof ChatAgentsAgentIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
+  '/call/$environmentId/$callId': typeof CallEnvironmentIdCallIdRoute
   '/_chat/agents/$environmentId/$agentId': typeof ChatAgentsEnvironmentIdAgentIdRoute
   '/settings/projects_/$environmentId/$projectId': typeof SettingsProjectsEnvironmentIdProjectIdRoute
 }
@@ -278,6 +287,7 @@ export interface FileRouteTypes {
     | '/$environmentId/$threadId'
     | '/agents/$agentId'
     | '/draft/$draftId'
+    | '/call/$environmentId/$callId'
     | '/agents/$environmentId/$agentId'
     | '/settings/projects/$environmentId/$projectId'
   fileRoutesByTo: FileRoutesByTo
@@ -305,6 +315,7 @@ export interface FileRouteTypes {
     | '/$environmentId/$threadId'
     | '/agents/$agentId'
     | '/draft/$draftId'
+    | '/call/$environmentId/$callId'
     | '/agents/$environmentId/$agentId'
     | '/settings/projects/$environmentId/$projectId'
   id:
@@ -333,6 +344,7 @@ export interface FileRouteTypes {
     | '/_chat/$environmentId/$threadId'
     | '/_chat/agents/$agentId'
     | '/_chat/draft/$draftId'
+    | '/call/$environmentId/$callId'
     | '/_chat/agents/$environmentId/$agentId'
     | '/settings/projects_/$environmentId/$projectId'
   fileRoutesById: FileRoutesById
@@ -343,6 +355,7 @@ export interface RootRouteChildren {
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
   OrchestratorLiveRoute: typeof OrchestratorLiveRoute
+  CallEnvironmentIdCallIdRoute: typeof CallEnvironmentIdCallIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -494,6 +507,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OrchestratorLiveRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/call/$environmentId/$callId': {
+      id: '/call/$environmentId/$callId'
+      path: '/call/$environmentId/$callId'
+      fullPath: '/call/$environmentId/$callId'
+      preLoaderRoute: typeof CallEnvironmentIdCallIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_chat/draft/$draftId': {
       id: '/_chat/draft/$draftId'
       path: '/draft/$draftId'
@@ -599,6 +619,7 @@ const rootRouteChildren: RootRouteChildren = {
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,
   OrchestratorLiveRoute: OrchestratorLiveRoute,
+  CallEnvironmentIdCallIdRoute: CallEnvironmentIdCallIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

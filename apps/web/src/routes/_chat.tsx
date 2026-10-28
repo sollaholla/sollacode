@@ -23,6 +23,7 @@ import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { isPushToTalkShortcut } from "../pushToTalk";
 import { useOrchestratorSessionContext } from "../orchestrator/OrchestratorSessionProvider";
+import { isAgentCallLive } from "../agentCall/agentCallActivity";
 import { isRemoteControlInputCaptured } from "../components/remoteControl/remoteControlInput";
 
 function ChatRouteGlobalShortcuts() {
@@ -126,6 +127,16 @@ function ChatRouteGlobalShortcuts() {
       if (command === "orchestrator.voice.toggle") {
         event.preventDefault();
         event.stopPropagation();
+        if (isAgentCallLive()) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: "You're on a call",
+              description: "End the agent call to talk to the orchestrator.",
+            }),
+          );
+          return;
+        }
         if (orchestratorVoice === null || !orchestratorVoice.canStart) {
           toastManager.add(
             stackedThreadToast({

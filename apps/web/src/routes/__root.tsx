@@ -49,6 +49,9 @@ import { useAtomValue } from "@effect/atom-react";
 import { useAtomCommand } from "../state/use-atom-command";
 import { OrchestratorListeningOverlay } from "../components/orchestrator/OrchestratorListeningOverlay";
 import { OrchestratorSessionProvider } from "../orchestrator/OrchestratorSessionProvider";
+import { AgentCallProvider } from "../agentCall/AgentCallProvider";
+import { AgentCallOverlay } from "../components/agentCall/AgentCallOverlay";
+import { useServiceWorkerNavigation } from "../browser/useServiceWorkerNavigation";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
   primaryServerConfigAtom,
@@ -127,6 +130,7 @@ export const Route = createRootRoute({
 function RootRouteView() {
   const pathname = useLocation({ select: (location) => location.pathname });
   useRememberSettingsReturn();
+  useServiceWorkerNavigation();
   const initialPathnameRef = useRef(pathname);
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
@@ -200,14 +204,19 @@ function RootRouteView() {
 
   const appShell = (
     <OrchestratorSessionProvider>
-      <CommandPaletteLoader>
-        <AppSidebarLayout>
-          <Outlet />
-        </AppSidebarLayout>
-      </CommandPaletteLoader>
-      {/* Inside the provider so it can read the live session, and after the
-          shell so it layers over it. */}
-      <OrchestratorListeningOverlay />
+      {/* Inside the orchestrator's provider so a call can stop its microphone;
+          around the shell so calls survive navigation. */}
+      <AgentCallProvider>
+        <CommandPaletteLoader>
+          <AppSidebarLayout>
+            <Outlet />
+          </AppSidebarLayout>
+        </CommandPaletteLoader>
+        {/* Inside the provider so it can read the live session, and after the
+            shell so it layers over it. */}
+        <OrchestratorListeningOverlay />
+        <AgentCallOverlay />
+      </AgentCallProvider>
     </OrchestratorSessionProvider>
   );
 

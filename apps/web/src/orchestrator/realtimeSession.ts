@@ -238,6 +238,19 @@ export interface VoiceSessionCallbacks {
   readonly onUsage?: (usage: RealtimeUsage) => void;
   /** GPT-Live reports cumulative seconds, separately from backend/token usage. */
   readonly onLiveUsage?: (usage: LiveVoiceUsage) => void;
+  /**
+   * A leased GPT-Live session (`LiveSessionRoutes.heartbeat`) the host no
+   * longer holds: it refused a heartbeat or a delegation with 409 because it
+   * ended the session or restarted. The session is already torn down.
+   */
+  readonly onSessionGone?: () => void;
+  /**
+   * A leased GPT-Live session whose start the host refused with 409: another
+   * device took the call first, or the host had already settled it. `detail`
+   * is the host's reason ("Answered on Mac"). The session is already torn
+   * down. Without this callback the refusal fails the start like any error.
+   */
+  readonly onStartRefused?: (detail: string) => void;
 }
 
 export interface VoiceSessionOptions {
@@ -274,6 +287,37 @@ export interface VoiceSessionOptions {
    * module must keep working without one.
    */
   readonly cuePolicy?: () => VoiceCuePolicy;
+  /**
+   * GPT-Live only: the routes the session talks to and what else its start
+   * request carries. Omitted means the orchestrator's own routes.
+   */
+  readonly live?: LiveSessionRoutes;
+}
+
+/** Where a GPT-Live session is created, released and delegates work. */
+export interface LiveSessionRoutes {
+  /** Creates the session; the body carries the SDP offer and opening history. */
+  readonly sessionPath: string;
+  /** Frees the server session; body `{ sessionId }`. */
+  readonly releasePath: string;
+  /** Client delegations; answers with an NDJSON stream of work events. */
+  readonly delegationPath: string;
+  /**
+   * Extra fields merged over the start request body. Called as the session
+   * starts and awaited only just before the offer is sent, so a caller can
+   * start from a tap (which unlocks audio) before it knows them — a call id
+   * still being placed, history still loading. A rejection fails the start.
+   */
+  readonly startBody?: () =>
+    | Readonly<Record<string, unknown>>
+    | Promise<Readonly<Record<string, unknown>>>;
+  /**
+   * Keeps a leased session alive: `{ sessionId }` is POSTed to `path` every
+   * `everySeconds` once the host has created the session. A 409 from it, or
+   * from a delegation, means the host no longer holds the session, which ends
+   * with `onSessionGone`. Omitted (the orchestrator) sends no heartbeat.
+   */
+  readonly heartbeat?: { readonly path: string; readonly everySeconds: number };
 }
 
 export interface VoiceSession {
@@ -297,6 +341,11 @@ export interface VoiceSession {
   endAfterReply(): void;
   /** Cuts off whatever is being said right now, and keeps listening. */
   hush(): void;
+  /**
+   * Stops (or resumes) sending the microphone without ending the session.
+   * Only transports that support it implement this.
+   */
+  setMuted?(muted: boolean): void;
   readonly state: VoiceSessionState;
 }
 

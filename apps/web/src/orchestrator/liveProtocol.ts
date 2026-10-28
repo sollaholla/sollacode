@@ -53,6 +53,29 @@ export function liveAppendChunks(text: string, maxChunks = 8): string[] {
   return chunks;
 }
 
+/**
+ * Opening history as a GPT-Live start request may carry it: the newest 24
+ * entries, each cut to its last 4,000 characters (the start contracts'
+ * limits, which the host enforces with a 400), and only what fits the host's
+ * 6,000-byte opening budget, newest first (createGptLiveSession drops the
+ * rest the same way).
+ */
+export function trimLiveHistory(
+  entries: ReadonlyArray<RecentConversationEntry>,
+): RecentConversationEntry[] {
+  const encoder = new TextEncoder();
+  let remainingBytes = 6_000;
+  const kept: RecentConversationEntry[] = [];
+  for (const entry of entries.slice(-24).toReversed()) {
+    const text = entry.text.slice(-4_000);
+    const bytes = encoder.encode(text).length;
+    if (bytes > remainingBytes) continue;
+    remainingBytes -= bytes;
+    kept.push({ role: entry.role, text });
+  }
+  return kept.toReversed();
+}
+
 /** Retains timing and both speakers; a fragment alone never starts work. */
 export function createLiveTranscriptContext(history: readonly RecentConversationEntry[] = []) {
   const fragments: LiveTranscriptDelta[] = [];

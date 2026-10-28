@@ -1,7 +1,16 @@
 // @effect-diagnostics preferSchemaOverJson:off
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createVoiceSession, type VoiceSessionCallbacks } from "./realtimeSession";
-import { createLiveTranscriptContext, liveAppendChunks, parseLiveTranscript } from "./liveProtocol";
+import {
+  createVoiceSession,
+  type VoiceSessionCallbacks,
+  type VoiceSessionOptions,
+} from "./realtimeSession";
+import {
+  createLiveTranscriptContext,
+  liveAppendChunks,
+  parseLiveTranscript,
+  trimLiveHistory,
+} from "./liveProtocol";
 import { mergeLiveVoiceUsage } from "./liveUsageStore";
 
 function deferred<T>() {
@@ -11,7 +20,10 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-function fixture(callbacks: Partial<VoiceSessionCallbacks> = {}) {
+function fixture(
+  callbacks: Partial<VoiceSessionCallbacks> = {},
+  options: Partial<VoiceSessionOptions> = {},
+) {
   const listeners = new Map<string, (event: { data: string }) => void>();
   const track = { enabled: true, stop: vi.fn(), addEventListener: vi.fn() };
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
@@ -93,6 +105,7 @@ function fixture(callbacks: Partial<VoiceSessionCallbacks> = {}) {
       authority: "full",
       confirmDestructiveActions: true,
       language: "en",
+      ...options,
     },
     { onToolCall: async () => undefined, ...callbacks },
   );
@@ -255,7 +268,478 @@ describe("GPT-Live transport", () => {
   });
 });
 
+describe("GPT-Live routes and mute", () => {
+  it("keeps the orchestrator's routes and body when no alternate routes are given", async () => {
+    const f = fixture({}, { recentHistory: [{ role: "user", text: "earlier" }] });
+    await f.ready();
+    const [url, init] = f.fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://environment.example/api/orchestrator/live/session");
+    expect(JSON.parse(String(init.body))).toEqual({
+      sdp: "offer",
+      history: [{ role: "user", text: "earlier" }],
+    });
+    f.session.stop();
+    f.event({ type: "session.closed", usage: { seconds: 1 } });
+    expect(f.fetchMock.mock.calls.at(-1)?.[0]).toBe(
+      "https://environment.example/api/orchestrator/live/session/release",
+    );
+  });
+
+  it("sends agent calls to their own routes with the awaited start body", async () => {
+    const placed = deferred<{ callId: string }>();
+    const startBody = vi.fn(async () => {
+      const call = await placed.promise;
+      return { callId: call.callId, history: [{ role: "assistant", text: "Last reply" }] };
+    });
+    const f = fixture(
+      {},
+      {
+        live: {
+          sessionPath: "/api/agents/call/session",
+          releasePath: "/api/agents/call/session/release",
+          delegationPath: "/api/agents/call/delegation",
+          startBody,
+        },
+      },
+    );
+    const starting = f.session.start();
+    // Asked for at once, so placing the call overlaps opening the microphone.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(startBody).toHaveBeenCalledOnce();
+    expect(f.fetchMock).not.toHaveBeenCalled();
+    placed.resolve({ callId: "call-1" });
+    await f.negotiating;
+    f.event({ type: "session.started" });
+    await starting;
+    const [url, init] = f.fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://environment.example/api/agents/call/session");
+    expect(init.credentials).toBe("include");
+    expect(init.headers).toMatchObject({ authorization: "Bearer fixture-token" });
+    expect(JSON.parse(String(init.body))).toEqual({
+      sdp: "offer",
+      history: [{ role: "assistant", text: "Last reply" }],
+      callId: "call-1",
+    });
+    f.event({
+      type: "session.input_transcript.delta",
+      delta: "Ship it",
+      start_ms: 0,
+      end_ms: 500,
+    });
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(350);
+    await f.workRequest.promise;
+    expect(f.fetchMock.mock.calls.at(-1)?.[0]).toBe(
+      "https://environment.example/api/agents/call/delegation",
+    );
+    f.session.stop();
+    f.event({ type: "session.closed", usage: { seconds: 3 } });
+    expect(f.fetchMock.mock.calls.at(-1)?.[0]).toBe(
+      "https://environment.example/api/agents/call/session/release",
+    );
+  });
+
+  it("fails the start, without creating a session, when the start body rejects", async () => {
+    const errors = vi.fn();
+    const f = fixture(
+      { onError: errors },
+      {
+        live: {
+          sessionPath: "/session",
+          releasePath: "/release",
+          delegationPath: "/delegation",
+          startBody: async () => {
+            throw new Error("The call could not be placed.");
+          },
+        },
+      },
+    );
+    await f.session.start();
+    expect(errors).toHaveBeenCalledWith("The call could not be placed.");
+    expect(f.fetchMock).not.toHaveBeenCalled();
+    expect(f.session.state).toBe("error");
+    expect(f.track.stop).toHaveBeenCalled();
+  });
+
+  it("holds any caller's history to the start request's limits", async () => {
+    const history = Array.from({ length: 30 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      text: index === 29 ? "x".repeat(5_000) : `line ${index}`,
+    }));
+    const f = fixture(
+      {},
+      {
+        live: {
+          sessionPath: "/api/agents/call/session",
+          releasePath: "/api/agents/call/session/release",
+          delegationPath: "/api/agents/call/delegation",
+          startBody: () => ({ callId: "call-1", history }),
+        },
+      },
+    );
+    await f.ready();
+    const body = JSON.parse(String(f.fetchMock.mock.calls[0]![1].body)) as {
+      callId: string;
+      history: Array<{ role: string; text: string }>;
+    };
+    expect(body.callId).toBe("call-1");
+    expect(body.history).toHaveLength(24);
+    expect(body.history[0]).toEqual({ role: "user", text: "line 6" });
+    expect(body.history.at(-1)?.text).toBe("x".repeat(4_000));
+    expect(body.history.every((entry) => entry.text.length <= 4_000)).toBe(true);
+  });
+
+  it("mutes the microphone and tells GPT-Live, including a mute chosen before startup", async () => {
+    const f = fixture();
+    const starting = f.session.start();
+    f.session.setMuted?.(true);
+    await f.negotiating;
+    f.event({ type: "session.started" });
+    await starting;
+    expect(f.track.enabled).toBe(false);
+    f.session.setMuted?.(false);
+    expect(f.track.enabled).toBe(true);
+    f.session.setMuted?.(false);
+    expect(f.channel.send.mock.calls.map(([raw]) => JSON.parse(raw).type)).toEqual([
+      "session.input_audio.mute",
+      "session.input_audio.unmute",
+    ]);
+  });
+});
+
+describe("GPT-Live session liveness", () => {
+  const callRoutes = {
+    sessionPath: "/api/agents/call/session",
+    releasePath: "/api/agents/call/session/release",
+    delegationPath: "/api/agents/call/delegation",
+    heartbeat: { path: "/api/agents/call/session/heartbeat", everySeconds: 15 },
+  };
+  /** Answers heartbeats with `status`; everything else as the fixture does. */
+  function answerHeartbeats(f: ReturnType<typeof fixture>, status: () => number) {
+    const original = f.fetchMock.getMockImplementation()!;
+    f.fetchMock.mockImplementation(async (url: string, init: RequestInit) =>
+      url.endsWith("/heartbeat") ? new Response(null, { status: status() }) : original(url, init),
+    );
+  }
+  const urls = (f: ReturnType<typeof fixture>) => f.fetchMock.mock.calls.map(([url]) => url);
+
+  it("renews a leased session, and ends it when the host no longer holds it", async () => {
+    const gone = vi.fn();
+    const lostConnection = vi.fn();
+    const f = fixture(
+      { onSessionGone: gone, onConnectionLost: lostConnection },
+      { live: callRoutes },
+    );
+    let heartbeatStatus = 204;
+    answerHeartbeats(f, () => heartbeatStatus);
+    await f.ready();
+    await vi.advanceTimersByTimeAsync(15_000);
+    const beat = f.fetchMock.mock.calls.find(([url]) => url.endsWith("/heartbeat"))!;
+    expect(beat[0]).toBe("https://environment.example/api/agents/call/session/heartbeat");
+    expect(JSON.parse(String(beat[1].body))).toEqual({ sessionId: "session-opaque" });
+    expect(gone).not.toHaveBeenCalled();
+
+    heartbeatStatus = 409;
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(gone).toHaveBeenCalledOnce();
+    expect(lostConnection).not.toHaveBeenCalled();
+    expect(f.peer.close).toHaveBeenCalledOnce();
+    expect(f.track.stop).toHaveBeenCalled();
+    expect(f.session.state).toBe("idle");
+    // The host has nothing left to free, and the beats stop.
+    expect(urls(f).some((url) => url.endsWith("/release"))).toBe(false);
+    const beats = urls(f).filter((url) => url.endsWith("/heartbeat")).length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(urls(f).filter((url) => url.endsWith("/heartbeat"))).toHaveLength(beats);
+  });
+
+  it("ends a leased session whose delegation the host refuses with 409", async () => {
+    const gone = vi.fn();
+    const errors = vi.fn();
+    const f = fixture({ onSessionGone: gone, onError: errors }, { live: callRoutes });
+    const original = f.fetchMock.getMockImplementation()!;
+    f.fetchMock.mockImplementation(async (url: string, init: RequestInit) =>
+      url.endsWith("/delegation")
+        ? new Response("This call has ended.", { status: 409 })
+        : original(url, init),
+    );
+    await f.ready();
+    f.event({
+      type: "session.input_transcript.delta",
+      delta: "Run the tests",
+      start_ms: 0,
+      end_ms: 500,
+    });
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(350);
+    expect(gone).toHaveBeenCalledOnce();
+    expect(errors).not.toHaveBeenCalled();
+    expect(f.peer.close).toHaveBeenCalledOnce();
+  });
+
+  it("reports a leased session's refused start (the call was taken elsewhere) apart from errors", async () => {
+    const refused = vi.fn();
+    const errors = vi.fn();
+    const f = fixture({ onStartRefused: refused, onError: errors }, { live: callRoutes });
+    const original = f.fetchMock.getMockImplementation()!;
+    f.fetchMock.mockImplementation(async (url: string, init: RequestInit) =>
+      url.endsWith("/api/agents/call/session")
+        ? new Response("Answered on Mac", { status: 409 })
+        : original(url, init),
+    );
+    await f.session.start();
+    expect(refused).toHaveBeenCalledWith("Answered on Mac");
+    expect(errors).not.toHaveBeenCalled();
+    expect(f.session.state).toBe("idle");
+    expect(f.track.stop).toHaveBeenCalled();
+    expect(urls(f).some((url) => url.endsWith("/release"))).toBe(false);
+  });
+
+  it("fails the orchestrator's refused start as an error", async () => {
+    const refused = vi.fn();
+    const errors = vi.fn();
+    const f = fixture({ onStartRefused: refused, onError: errors });
+    f.fetchMock.mockImplementation(async () => new Response("Voice is off.", { status: 409 }));
+    await f.session.start();
+    expect(refused).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalledWith("Voice is off.");
+    expect(f.session.state).toBe("error");
+  });
+
+  it("keeps the orchestrator's behaviour: no heartbeat, and a refused delegation is spoken as an error", async () => {
+    const gone = vi.fn();
+    const errors = vi.fn();
+    const f = fixture({ onSessionGone: gone, onError: errors });
+    const original = f.fetchMock.getMockImplementation()!;
+    f.fetchMock.mockImplementation(async (url: string, init: RequestInit) =>
+      url.endsWith("/delegation")
+        ? new Response("The orchestrator is disabled.", { status: 409 })
+        : original(url, init),
+    );
+    await f.ready();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(urls(f).some((url) => url.endsWith("/heartbeat"))).toBe(false);
+    f.event({
+      type: "session.input_transcript.delta",
+      delta: "Check my mail",
+      start_ms: 0,
+      end_ms: 500,
+    });
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(350);
+    expect(errors).toHaveBeenCalledWith("The orchestrator is disabled.");
+    expect(gone).not.toHaveBeenCalled();
+    expect(f.peer.close).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the orchestrator", {}],
+    ["an agent call", { live: callRoutes }],
+  ])(
+    "releases %s's host session when the page goes away, once",
+    async (_name, options: Partial<VoiceSessionOptions>) => {
+      const page = new EventTarget();
+      vi.stubGlobal("window", page);
+      const f = fixture({}, options);
+      answerHeartbeats(f, () => 204);
+      await f.ready();
+      page.dispatchEvent(new Event("pagehide"));
+      const releases = f.fetchMock.mock.calls.filter(([url]) => url.endsWith("/release"));
+      expect(releases).toHaveLength(1);
+      expect(releases[0]![1]).toMatchObject({ keepalive: true, method: "POST" });
+      expect(JSON.parse(String(releases[0]![1].body))).toEqual({ sessionId: "session-opaque" });
+      // Tearing down afterwards (or another pagehide) does not release twice.
+      f.session.stop();
+      f.event({ type: "session.closed", usage: { seconds: 1 } });
+      page.dispatchEvent(new Event("pagehide"));
+      expect(urls(f).filter((url) => url.endsWith("/release"))).toHaveLength(1);
+    },
+  );
+
+  it("stops listening for the page going away once the session ends", async () => {
+    const page = new EventTarget();
+    const remove = vi.spyOn(page, "removeEventListener");
+    vi.stubGlobal("window", page);
+    const f = fixture();
+    await f.ready();
+    f.session.stop();
+    f.event({ type: "session.closed", usage: { seconds: 1 } });
+    expect(remove).toHaveBeenCalledWith("pagehide", expect.any(Function));
+  });
+});
+
+describe("delegations that find nothing new", () => {
+  const callRoutes = {
+    sessionPath: "/api/agents/call/session",
+    releasePath: "/api/agents/call/session/release",
+    delegationPath: "/api/agents/call/delegation",
+    heartbeat: { path: "/api/agents/call/session/heartbeat", everySeconds: 15 },
+  };
+  /** The host's quiet answer: the chat got no new words from this delegation. */
+  const quiet = { delegationId: "work", status: "completed", text: "" };
+  /** Answers each delegation with the next scripted work events; returns the request bodies. */
+  function scriptDelegations(f: ReturnType<typeof fixture>, answers: Array<Array<object>>) {
+    const bodies: Array<Record<string, unknown>> = [];
+    const original = f.fetchMock.getMockImplementation()!;
+    f.fetchMock.mockImplementation(async (url: string, init: RequestInit) => {
+      if (!url.endsWith("/delegation")) return original(url, init);
+      bodies.push(JSON.parse(String(init.body)));
+      const events = answers.shift() ?? [];
+      return new Response(events.map((event) => JSON.stringify(event) + "\n").join(""));
+    });
+    return bodies;
+  }
+  const sent = (f: ReturnType<typeof fixture>) =>
+    f.channel.send.mock.calls.map(([raw]) => JSON.parse(raw) as Record<string, unknown>);
+  const said = (text: string, delegationId: string) =>
+    expect.objectContaining({
+      type: "session.commentary.append",
+      delegation_id: delegationId,
+      content: text,
+    });
+
+  it("asks again with the same id and sequence once the person's trailing words settle", async () => {
+    const working = vi.fn();
+    const f = fixture({ onWorkingChange: working }, { live: callRoutes });
+    const bodies = scriptDelegations(f, [
+      [quiet],
+      [{ delegationId: "work", status: "completed", text: "Running the tests now." }],
+    ]);
+    await f.ready();
+    f.event({ type: "session.input_transcript.delta", delta: "Thanks.", start_ms: 0, end_ms: 400 });
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(350);
+    expect(bodies).toHaveLength(1);
+    expect(working).toHaveBeenLastCalledWith(false);
+    // The words GPT-Live delegated for arrive after the delegation did.
+    f.event({
+      type: "session.input_transcript.delta",
+      delta: " Now run the tests too.",
+      start_ms: 500,
+      end_ms: 1_400,
+    });
+    await vi.advanceTimersByTimeAsync(799);
+    expect(bodies).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toMatchObject({
+      sessionId: "session-opaque",
+      delegationId: "d1",
+      sequence: 1,
+    });
+    expect(String(bodies[1]!.context)).toContain("Now run the tests too.");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent(f)).toContainEqual(said("Running the tests now.", "d1"));
+  });
+
+  it("closes the delegation with a quiet note when asking again still finds nothing", async () => {
+    const f = fixture({}, { live: callRoutes });
+    const bodies = scriptDelegations(f, [[quiet], [quiet]]);
+    await f.ready();
+    f.event({ type: "session.input_transcript.delta", delta: "Thanks.", start_ms: 0, end_ms: 400 });
+    // The caption has settled before the delegation: nothing more is coming.
+    await vi.advanceTimersByTimeAsync(900);
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(350);
+    expect(bodies).toHaveLength(1);
+    // Asked again once the wait for trailing words runs out.
+    await vi.advanceTimersByTimeAsync(1_499);
+    expect(bodies).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toMatchObject({ delegationId: "d1", sequence: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent(f)).toContainEqual({
+      type: "session.thinking.append",
+      event_id: expect.any(String),
+      delegation_id: "d1",
+      content: "Nothing new reached my chat for that.",
+    });
+    expect(sent(f).some((event) => event.type === "session.commentary.append")).toBe(false);
+    // Once only.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(bodies).toHaveLength(2);
+  });
+
+  it("waits for the person's first words when the delegation arrives before them", async () => {
+    const f = fixture({}, { live: callRoutes });
+    const bodies = scriptDelegations(f, [
+      [{ delegationId: "work", status: "completed", text: "Running the tests now." }],
+    ]);
+    await f.ready();
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(350);
+    expect(bodies).toHaveLength(0);
+    f.event({
+      type: "session.input_transcript.delta",
+      delta: "Run the tests.",
+      start_ms: 0,
+      end_ms: 900,
+    });
+    // Sent once the caption settles, not asked to be repeated.
+    await vi.advanceTimersByTimeAsync(799);
+    expect(bodies).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(bodies).toEqual([expect.objectContaining({ delegationId: "d1", sequence: 1 })]);
+    expect(String(bodies[0]!.context)).toContain("Run the tests.");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent(f)).toContainEqual(said("Running the tests now.", "d1"));
+    expect(sent(f)).not.toContainEqual(
+      expect.objectContaining({ content: expect.stringContaining("Ask the user to repeat") }),
+    );
+  });
+
+  it("asks the person to repeat once when their words never arrive", async () => {
+    const f = fixture({}, { live: callRoutes });
+    const bodies = scriptDelegations(f, []);
+    await f.ready();
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(350 + 1_499);
+    expect(sent(f)).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    const repeat = said(
+      "The transcript is not available yet. Ask the user to repeat the request before starting work.",
+      "d1",
+    );
+    expect(sent(f)).toEqual([repeat]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sent(f)).toEqual([repeat]);
+    expect(bodies).toHaveLength(0);
+  });
+
+  it("does not ask again for a delegation a newer one replaced", async () => {
+    const f = fixture({}, { live: callRoutes });
+    const bodies = scriptDelegations(f, [
+      [quiet],
+      [{ delegationId: "work", status: "completed", text: "Done." }],
+    ]);
+    await f.ready();
+    f.event({ type: "session.input_transcript.delta", delta: "Thanks.", start_ms: 0, end_ms: 400 });
+    await vi.advanceTimersByTimeAsync(900);
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(350);
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d2" } });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(bodies.map((body) => body.delegationId)).toEqual(["d1", "d2"]);
+    expect(sent(f)).toContainEqual(said("Done.", "d2"));
+  });
+});
+
 describe("Live transcript and usage protocol", () => {
+  it("keeps the newest opening history within the host's byte budget", () => {
+    // Three-byte characters: 2,500 of them is 7,500 bytes, over the budget.
+    const wide = "語".repeat(2_500);
+    expect(
+      trimLiveHistory([
+        { role: "user", text: "first" },
+        { role: "assistant", text: wide },
+        { role: "user", text: "latest" },
+      ]),
+    ).toEqual([
+      { role: "user", text: "first" },
+      { role: "user", text: "latest" },
+    ]);
+  });
   it("bounds appends in UTF-8 without splitting characters and rejects malformed transcript timing", () => {
     const chunks = liveAppendChunks("🌊".repeat(260));
     expect(chunks.join("")).toBe("🌊".repeat(260));
