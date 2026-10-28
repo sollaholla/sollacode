@@ -8,22 +8,21 @@ import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import { WorkspaceConsultError, WorkspaceConsultInput, WorkspaceConsultResult } from "./types.ts";
 
 /**
- * Lets a VM agent reach the rest of the workspace.
+ * The message door between chats: any chat (a person's chat, a custom agent or
+ * its side chats, a terminal CLI on a thread's credential) can discover the
+ * workspace's projects and conversations, put a real question to one, and get
+ * the reply back. `thread_collaboration` covers a caller's own side-chat
+ * family; this reaches everything else.
  *
- * An agent's own environment is a browser; plenty of what it needs to answer —
- * how a product actually behaves, what a codebase does, what a project decided —
- * lives in the user's other conversations instead. The preview browser cannot
- * reach those, and `thread_collaboration` scopes a caller to its own side-chat
- * family.
- * This is the outward door: discover projects and threads, then put a real
- * question to one and get the reply back.
- *
- * Gated on the caller being a VM agent (resolved through {@link VmAgentStore}),
- * mirroring how the orchestrator's toolkit is gated on its reserved thread id.
+ * Open to every chat holding the universal "collaboration" capability. The
+ * handler carries the loop guards: no messages into the caller's own family,
+ * the orchestrator, Agent Builder or delegated-worker chats; a request may pass
+ * through at most three chats and never back to one waiting on it; asks and
+ * opened threads are capped per caller.
  */
 export const WorkspaceConsultTool = Tool.make("workspace_consult", {
   description:
-    "Consult the rest of this workspace — its projects and their conversations — when the answer lives outside your own browser. Use `list_projects` and `list_threads` to see what exists, then `ask` to put a question to a project (which opens a new agent-created thread that shares this agent's browser login/cache profile) or to an existing thread, and you get the reply back. Ideal for questions about a product's real behavior, a codebase, or a past decision that you would otherwise have to guess at: ask the conversation that owns that context instead of guessing. If `ask` returns while the other side is still working, poll `read_thread` for the reply. The other conversation cannot see your screen or your chat, so include the context it needs in the question.",
+    "Talk to other chats and custom agents in this workspace. `list_projects` and `list_threads` show what exists (`isAgent` marks an agent's chat); `ask` sends a question or request to an existing thread, or to a project (opening a new thread that shares the calling chat's browser profile), and waits for the reply; `read_thread` reads a conversation's recent messages. Ask the conversation that owns the context instead of guessing about a product, a codebase or a past decision. To have the person called, ask an agent's chat to use call_user. The other chat cannot see yours, so include the context it needs. Limits: not your own side-chat family, the orchestrator, Agent Builder or delegated-worker chats; a request passes through at most 3 chats and never back to one waiting on it; 20 asks per 10 minutes; 10 open threads you created. Work your message starts or joins asks the person before consequential actions.",
   parameters: WorkspaceConsultInput,
   success: WorkspaceConsultResult,
   failure: WorkspaceConsultError,
@@ -35,14 +34,14 @@ export const WorkspaceConsultTool = Tool.make("workspace_consult", {
     Crypto.Crypto,
   ],
 })
-  .annotate(Tool.Title, "Consult the workspace")
+  .annotate(Tool.Title, "Message other chats and agents")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false)
-  // Eagerly loaded: the whole point is that the agent reaches for this
-  // instead of guessing, which it will never do if the tool is merely
-  // discoverable on search.
+  // Eagerly loaded: the whole point is that a chat reaches for this instead
+  // of guessing, which it will never do if the tool is merely discoverable on
+  // search.
   .annotate(Tool.Meta, { "anthropic/alwaysLoad": true });
 
 export const WorkspaceConsultToolkit = Toolkit.make(WorkspaceConsultTool);

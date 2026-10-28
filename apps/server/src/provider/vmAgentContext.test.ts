@@ -62,6 +62,18 @@ describe("buildVmAgentContext", () => {
     expect(context).toContain("independent informational updates that require no user action");
   });
 
+  it("says which agent a delegated worker acts as and that cross-chat tasks wait", () => {
+    const context = buildVmAgentContext(agent);
+    expect(context).toContain("Your side chats act as you with both tools.");
+    // A worker forked from the target agent's chat acts as that agent, not the delegator.
+    expect(context).toContain("the agent whose chat it was forked from");
+    expect(context).toContain("the target agent for work you delegate to it");
+    expect(context).toContain(
+      "Tasks added or changed in a turn another chat started wait for the person's approval.",
+    );
+    expect(context).toContain("Any chat can message you the same way");
+  });
+
   it("asks for direction when no purpose is set", () => {
     expect(buildVmAgentContext({ name: "Scout", purpose: "   " })).toContain(
       "no standing purpose set yet",

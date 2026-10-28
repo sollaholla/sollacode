@@ -18,6 +18,7 @@ import { ProjectionSnapshotQuery } from "../../../orchestration/Services/Project
 import { TerminalManager } from "../../../terminal/Manager.ts";
 import { WorkspaceOrchestrationToolkit } from "./tools.ts";
 import {
+  ORCHESTRATOR_ONLY_WORKSPACE_ACTIONS,
   WorkspaceOrchestrationInvalidInputError,
   WorkspaceOrchestrationOperationFailedError,
   WorkspaceOrchestrationScopeError,
@@ -131,11 +132,19 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
 ) {
   const invocation = yield* McpInvocationContext.McpInvocationContext;
 
-  // Gated on identity, not on a capability flag: this toolkit grants
-  // whole-workspace write access, so it must not be grantable to an ordinary
-  // thread by widening a capability set somewhere else.
-  if (!isOrchestratorThreadId(invocation.threadId)) {
-    return yield* new WorkspaceOrchestrationScopeError({ threadId: invocation.threadId });
+  // Reading the workspace is open to every chat. The actions that change
+  // another thread are gated on identity, not on a capability flag, so widening
+  // a capability set somewhere else can never grant them to an ordinary thread;
+  // other chats message a thread through workspace_consult instead.
+  const isOrchestrator = isOrchestratorThreadId(invocation.threadId);
+  const allowed = ORCHESTRATOR_ONLY_WORKSPACE_ACTIONS.has(input.action)
+    ? isOrchestrator
+    : isOrchestrator || invocation.capabilities.has("collaboration");
+  if (!allowed) {
+    return yield* new WorkspaceOrchestrationScopeError({
+      threadId: invocation.threadId,
+      action: input.action,
+    });
   }
 
   const projection = yield* ProjectionSnapshotQuery;
@@ -230,9 +239,10 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
       const threadsById = new Map(threads.map((thread) => [thread.id, thread] as const));
       const summaries = threads
         .filter((thread) => thread.archivedAt === null)
-        // The orchestrator never needs to act on itself; listing it invites
-        // the model to send itself messages and loop.
-        .filter((thread) => !isOrchestratorThreadId(thread.id))
+        // Neither the caller nor the orchestrator is listed: a chat never needs
+        // to act on itself, and listing it invites the model to send itself
+        // messages and loop.
+        .filter((thread) => thread.id !== invocation.threadId && !isOrchestratorThreadId(thread.id))
         .map((thread) =>
           summarizeThread(thread, {
             threadsById,
@@ -426,7 +436,12 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
     }
 
     case "interrupt_thread": {
-      const thread = yield* requireThread(yield* requireThreadId());
+      const threadId = yield* requireThreadId();
+      if (threadId === invocation.threadId) {
+        // Interrupting itself would stop the very turn making this call.
+        return yield* new WorkspaceOrchestrationThreadNotFoundError({ threadId });
+      }
+      const thread = yield* requireThread(threadId);
       const randomId = crypto.randomUUIDv4.pipe(
         Effect.mapError(
           () =>

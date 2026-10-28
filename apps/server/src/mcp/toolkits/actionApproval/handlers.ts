@@ -1,3 +1,4 @@
+import { isOrchestratorThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
@@ -39,13 +40,13 @@ export const handleActionApproval = Effect.fn("ActionApproval.handle")(function*
     });
   }
 
-  const getActiveTurnDelegation = projection.getActiveTurnDelegation;
-  if (getActiveTurnDelegation === undefined) {
+  const getTurnTrigger = projection.getTurnTrigger;
+  if (getTurnTrigger === undefined) {
     return yield* new ActionApprovalOperationFailedError({
       threadId: invocation.threadId,
     });
   }
-  const activeDelegation = yield* getActiveTurnDelegation(invocation.threadId).pipe(
+  const trigger = yield* getTurnTrigger(invocation.threadId).pipe(
     Effect.mapError(
       () =>
         new ActionApprovalOperationFailedError({
@@ -53,8 +54,18 @@ export const handleActionApproval = Effect.fn("ActionApproval.handle")(function*
         }),
     ),
   );
+  // Agent mode stands in for the person only on work the person started. Work
+  // another chat started or joined (delegated work, or a workspace_consult
+  // message, even one steered into the person's running turn) asks the person.
+  // The orchestrator speaks for the person, and a side chat stands for its own
+  // family, so the trigger already resolves both to whoever they answer to.
+  const startedByAnotherChat = Option.match(trigger, {
+    onNone: () => false,
+    onSome: ({ senderThreadId, delegationId }) =>
+      delegationId !== null || (senderThreadId !== null && !isOrchestratorThreadId(senderThreadId)),
+  });
 
-  if (thread.value.interactionMode === "agent" && Option.isNone(activeDelegation)) {
+  if (thread.value.interactionMode === "agent" && !startedByAnotherChat) {
     return {
       status: "approved" as const,
       approvalMode: "agent" as const,

@@ -452,11 +452,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         yield* removeSessionShellBridge(previous);
         McpProviderSession.clearMcpProviderSession(threadId);
       }
-      // A custom agent's own thread — and the side chats forked from it, which
-      // act on the agent's behalf — get the "vm" capability (historical name).
-      // It marks the thread as agent-owned and gates agent_workspace and
-      // workspace_consult. VmAgentStore is optional (absent in unit tests,
-      // where no thread is an agent anyway).
+      // A custom agent's own thread — and the side chats forked from it,
+      // including delegated workers, which act on the agent's behalf — get the
+      // "vm" capability (historical name). It marks the thread as agent-owned
+      // and gates agent_workspace; workspace_consult is open to every chat
+      // through "collaboration". VmAgentStore is optional (absent in unit
+      // tests, where no thread is an agent anyway).
       const snapshotQuery = yield* Effect.serviceOption(ProjectionSnapshotQuery);
       const isVmAgent = yield* Option.match(yield* Effect.serviceOption(VmAgentStore), {
         onNone: () => Effect.succeed(false),

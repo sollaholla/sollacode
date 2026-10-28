@@ -1,6 +1,7 @@
 import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentCollaborationStore } from "../../../persistence/Services/VmAgentCollaborations.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import { VmAgentCollaboration } from "../../../vm/VmAgentCollaboration.ts";
@@ -13,7 +14,7 @@ import {
 
 export const AgentCollaborationTool = Tool.make("agent_collaboration", {
   description:
-    "Collaborate with VM agents in this Solla environment through bounded durable work. list_agents returns sanitized capabilities and provider/model summaries plus hasMoreAgents when the roster is truncated; delegate targets either one explicit existing agent or a hidden one-off ephemeral worker; list_work returns compact previews for work in your authorized family plus hasMoreWork when older work is truncated, and read_work returns one full request, result, error, and message history; send_message adds a durable note, question, answer, or follow-up; cancel stops work you coordinate. The server derives source identity from this credential, enforces one generation of workers, three active children, a 30-minute wall clock, five follow-ups, 200 messages, same-environment/model inheritance, and explicit human approval for consequential delegated actions.",
+    "Collaborate with custom agents in this Solla environment through bounded durable work. Any chat can list_agents, which returns sanitized capabilities and provider/model summaries plus hasMoreAgents when the roster is truncated. The other actions belong to a custom agent's chat, its side chats (which act as that agent) and its delegated workers; other chats message an agent's chat with workspace_consult ask instead. delegate targets either one explicit existing agent or a hidden one-off ephemeral worker; list_work returns compact previews for work in your authorized family plus hasMoreWork when older work is truncated, and read_work returns one full request, result, error, and message history; send_message adds a durable note, question, answer, or follow-up; cancel stops work you coordinate. The server derives source identity from this credential, enforces one generation of workers, three active children, a 30-minute wall clock, five follow-ups, 200 messages, same-environment/model inheritance, and explicit human approval for consequential delegated actions.",
   parameters: AgentCollaborationInput,
   success: AgentCollaborationResult,
   failure: AgentCollaborationError,
@@ -21,11 +22,12 @@ export const AgentCollaborationTool = Tool.make("agent_collaboration", {
     McpInvocationContext.McpInvocationContext,
     VmAgentStore,
     VmAgentCollaborationStore,
+    ProjectionSnapshotQuery,
     VmAgentCollaboration,
     VmAgentTaskScheduler,
   ],
 })
-  .annotate(Tool.Title, "Collaborate with VM agents")
+  .annotate(Tool.Title, "Collaborate with custom agents")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)

@@ -40,7 +40,7 @@ export const WorkspaceConsultInput = Schema.Struct({
   }),
   waitMs: Schema.optional(LenientNumber).annotate({
     description:
-      "How long `ask` waits for an answer before returning early, in milliseconds. Clamped server-side. If it returns still working, poll `read_thread` for the reply.",
+      "How long `ask` waits for an answer before returning early, in milliseconds (at most 120000; 0 sends without waiting). If it returns still working, poll `read_thread` for the reply.",
   }),
   limit: Schema.optional(LenientNumber).annotate({
     description: "How many recent messages `read_thread` returns. Defaults to 10.",
@@ -63,7 +63,7 @@ export const ConsultThreadSummary = Schema.Struct({
   /** Latest turn state: running, completed, error, … */
   state: Schema.optional(Schema.String),
   isWorking: Schema.Boolean,
-  /** True when this thread belongs to another VM agent rather than a person. */
+  /** True for a custom agent's own chat: ask it to reach that agent. */
   isAgent: Schema.Boolean,
   lastActivityAt: Schema.optional(IsoDateTime),
 });
@@ -100,12 +100,13 @@ export class WorkspaceConsultUnavailableError extends Schema.TaggedErrorClass<Wo
   }
 }
 
-export class WorkspaceConsultNotAnAgentError extends Schema.TaggedErrorClass<WorkspaceConsultNotAnAgentError>()(
-  "WorkspaceConsultNotAnAgentError",
-  { threadId: ThreadId },
+/** A guard declined the request; `reason` tells the calling chat what to do instead. */
+export class WorkspaceConsultRefusedError extends Schema.TaggedErrorClass<WorkspaceConsultRefusedError>()(
+  "WorkspaceConsultRefusedError",
+  { reason: Schema.String },
 ) {
   override get message(): string {
-    return "This chat is not a VM agent, so it cannot consult the workspace.";
+    return this.reason;
   }
 }
 
@@ -138,7 +139,7 @@ export class WorkspaceConsultFailedError extends Schema.TaggedErrorClass<Workspa
 
 export const WorkspaceConsultError = Schema.Union([
   WorkspaceConsultUnavailableError,
-  WorkspaceConsultNotAnAgentError,
+  WorkspaceConsultRefusedError,
   WorkspaceConsultInvalidInputError,
   WorkspaceConsultNotFoundError,
   WorkspaceConsultFailedError,

@@ -166,14 +166,27 @@ export const WorkspaceOrchestrationResult = Schema.Union([
 ]);
 export type WorkspaceOrchestrationResult = typeof WorkspaceOrchestrationResult.Type;
 
+/**
+ * Actions that change another thread. Only the orchestrator thread may take
+ * them; every chat can use the read actions.
+ */
+export const ORCHESTRATOR_ONLY_WORKSPACE_ACTIONS: ReadonlySet<string> = new Set([
+  "send_to_thread",
+  "interrupt_thread",
+  "write_to_terminal",
+]);
+
 export class WorkspaceOrchestrationScopeError extends Schema.TaggedErrorClass<WorkspaceOrchestrationScopeError>()(
   "WorkspaceOrchestrationScopeError",
   {
     threadId: ThreadId,
+    action: Schema.String,
   },
 ) {
   override get message(): string {
-    return "Workspace orchestration is only available to the orchestrator thread.";
+    return ORCHESTRATOR_ONLY_WORKSPACE_ACTIONS.has(this.action)
+      ? `workspace_orchestration ${this.action} is only available to the orchestrator thread. To message another chat or agent, use workspace_consult ask (waitMs 0 just sends).`
+      : "workspace_orchestration is not available to this credential.";
   }
 }
 

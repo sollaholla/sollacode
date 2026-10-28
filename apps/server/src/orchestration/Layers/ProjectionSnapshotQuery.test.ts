@@ -2,6 +2,7 @@ import {
   CheckpointRef,
   EventId,
   MessageId,
+  ORCHESTRATOR_THREAD_ID,
   ProjectId,
   ThreadId,
   TurnId,
@@ -17,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { RESUME_PROMPT } from "@t3tools/shared/resumePrompt";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
@@ -2750,6 +2752,283 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         ThreadId.make("thread-delegation-provenance"),
       );
       assert.isTrue(Option.isNone(ordinary));
+    }),
+  );
+
+  /** Seeds threads, turns and input messages for turn-provenance reads. */
+  const seedTurnProvenance = (input: {
+    readonly threads: ReadonlyArray<{
+      readonly id: string;
+      readonly parent?: string;
+      readonly activeTurnId: string | null;
+      readonly latestTurnId: string;
+    }>;
+    readonly messages: ReadonlyArray<{
+      readonly id: string;
+      readonly threadId: string;
+      readonly at: number;
+      /** The turn this message started; omitted for a message steered into a running turn. */
+      readonly startsTurn?: string;
+      readonly text?: string;
+      readonly inputOrigin?: string;
+      readonly sender?: string;
+      readonly delegationId?: string;
+    }>;
+  }) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const at = (second: number) => `2026-08-21T20:00:${String(second).padStart(2, "0")}.000Z`;
+      yield* sql`DELETE FROM projection_thread_sessions`;
+      yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`INSERT INTO projection_projects (
+        project_id, title, workspace_root, default_model_selection_json, scripts_json,
+        created_at, updated_at, deleted_at
+      ) VALUES (
+        'project-turn-trigger', 'Trigger', '/tmp/trigger',
+        '{"provider":"codex","model":"gpt-5"}', '[]', ${at(0)}, ${at(0)}, NULL
+      )`;
+      for (const thread of input.threads) {
+        yield* sql`INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode,
+          interaction_mode, branch, worktree_path, latest_turn_id, latest_user_message_at,
+          pending_approval_count, pending_user_input_count, has_actionable_proposed_plan,
+          created_at, updated_at, deleted_at, is_side_chat, side_chat_parent_thread_id
+        ) VALUES (
+          ${thread.id}, 'project-turn-trigger', ${thread.id},
+          '{"provider":"codex","model":"gpt-5"}', 'full-access', 'agent', NULL, NULL,
+          ${thread.latestTurnId}, ${at(0)}, 0, 0, 0, ${at(0)}, ${at(0)}, NULL,
+          ${thread.parent === undefined ? 0 : 1}, ${thread.parent ?? null}
+        )`;
+        if (thread.activeTurnId !== null) {
+          yield* sql`INSERT INTO projection_thread_sessions (
+            thread_id, status, provider_name, provider_session_id, provider_thread_id,
+            runtime_mode, active_turn_id, last_error, updated_at
+          ) VALUES (
+            ${thread.id}, 'running', 'codex', ${`session-${thread.id}`},
+            ${`provider-${thread.id}`}, 'full-access', ${thread.activeTurnId}, NULL, ${at(0)}
+          )`;
+        }
+      }
+      for (const message of input.messages) {
+        yield* sql`INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at,
+          input_origin, sender_thread_id, delegation_id
+        ) VALUES (
+          ${message.id}, ${message.threadId}, ${message.startsTurn ?? null}, 'user',
+          ${message.text ?? "Do the thing"}, 0, ${at(message.at)}, ${at(message.at)},
+          ${message.inputOrigin ?? null}, ${message.sender ?? null}, ${message.delegationId ?? null}
+        )`;
+        if (message.startsTurn !== undefined) {
+          yield* sql`INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${message.threadId}, ${message.startsTurn}, ${message.id}, NULL, 'completed',
+            ${at(message.at)}, ${at(message.at)}, ${at(message.at)}, '[]'
+          )`;
+        }
+      }
+    });
+
+  const readTurnTrigger = (threadId: string) =>
+    Effect.gen(function* () {
+      const getTurnTrigger = (yield* ProjectionSnapshotQuery).getTurnTrigger;
+      if (getTurnTrigger === undefined) {
+        return yield* Effect.die("getTurnTrigger is not configured");
+      }
+      return Option.getOrNull(yield* getTurnTrigger(ThreadId.make(threadId)));
+    });
+
+  it.effect("reads who the active turn's work answers to, else the latest turn's", () =>
+    Effect.gen(function* () {
+      yield* seedTurnProvenance({
+        threads: [
+          {
+            id: "thread-turn-trigger",
+            activeTurnId: "turn-from-chat",
+            latestTurnId: "turn-from-person",
+          },
+        ],
+        messages: [
+          {
+            id: "message-from-chat",
+            threadId: "thread-turn-trigger",
+            at: 1,
+            startsTurn: "turn-from-chat",
+            sender: "thread-asking-chat",
+          },
+          {
+            id: "message-from-person",
+            threadId: "thread-turn-trigger",
+            at: 2,
+            startsTurn: "turn-from-person",
+          },
+        ],
+      });
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-turn-trigger"), {
+        senderThreadId: ThreadId.make("thread-asking-chat"),
+        delegationId: null,
+        senderThreadIds: [ThreadId.make("thread-asking-chat")],
+      });
+
+      // With no active turn the latest one answers, settled or not.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE projection_thread_sessions SET active_turn_id = NULL
+        WHERE thread_id = 'thread-turn-trigger'`;
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-turn-trigger"), {
+        senderThreadId: null,
+        delegationId: null,
+        senderThreadIds: [],
+      });
+      assert.isNull(yield* readTurnTrigger("thread-missing"));
+    }),
+  );
+
+  it.effect("counts a message another chat steered into the person's running turn", () =>
+    Effect.gen(function* () {
+      yield* seedTurnProvenance({
+        threads: [{ id: "thread-busy", activeTurnId: "turn-person", latestTurnId: "turn-person" }],
+        messages: [
+          { id: "message-person", threadId: "thread-busy", at: 1, startsTurn: "turn-person" },
+          // Both joined the running turn instead of starting turns of their own.
+          {
+            id: "message-orchestrator",
+            threadId: "thread-busy",
+            at: 2,
+            sender: ORCHESTRATOR_THREAD_ID,
+          },
+          { id: "message-steered", threadId: "thread-busy", at: 3, sender: "thread-other" },
+        ],
+      });
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-busy"), {
+        senderThreadId: ThreadId.make("thread-other"),
+        delegationId: null,
+        senderThreadIds: [ORCHESTRATOR_THREAD_ID, ThreadId.make("thread-other")],
+      });
+    }),
+  );
+
+  it.effect("carries continuations and resumes back to the work they continue", () =>
+    Effect.gen(function* () {
+      const seed = (activeTurnId: string) =>
+        seedTurnProvenance({
+          threads: [{ id: "thread-loop", activeTurnId, latestTurnId: activeTurnId }],
+          messages: [
+            { id: "message-person", threadId: "thread-loop", at: 1, startsTurn: "turn-person" },
+            {
+              id: "message-asked",
+              threadId: "thread-loop",
+              at: 2,
+              startsTurn: "turn-asked",
+              sender: "thread-asker",
+            },
+            {
+              id: "message-continue",
+              threadId: "thread-loop",
+              at: 3,
+              startsTurn: "turn-continue",
+              inputOrigin: "agent-loop",
+            },
+            {
+              id: "startup-auto-resume-message:thread-loop:turn-continue",
+              threadId: "thread-loop",
+              at: 4,
+              startsTurn: "turn-resume",
+              text: RESUME_PROMPT,
+              inputOrigin: "agent-loop",
+            },
+            {
+              id: "vm-task:run-1",
+              threadId: "thread-loop",
+              at: 5,
+              startsTurn: "turn-task",
+              inputOrigin: "agent-loop",
+            },
+          ],
+        });
+
+      for (const turnId of ["turn-asked", "turn-continue", "turn-resume"]) {
+        yield* seed(turnId);
+        assert.strictEqual(
+          (yield* readTurnTrigger("thread-loop"))?.senderThreadId,
+          ThreadId.make("thread-asker"),
+          turnId,
+        );
+      }
+      // A scheduled task run is new work the person set up.
+      yield* seed("turn-task");
+      assert.isNull((yield* readTurnTrigger("thread-loop"))?.senderThreadId);
+    }),
+  );
+
+  it.effect("lets a side chat stand for its own family's work", () =>
+    Effect.gen(function* () {
+      const seed = (parentSender: string | undefined) =>
+        seedTurnProvenance({
+          threads: [
+            { id: "thread-parent", activeTurnId: "turn-parent", latestTurnId: "turn-parent" },
+            {
+              id: "thread-side",
+              parent: "thread-parent",
+              activeTurnId: "turn-side",
+              latestTurnId: "turn-side",
+            },
+            {
+              id: "thread-worker",
+              parent: "thread-parent",
+              activeTurnId: "turn-worker",
+              latestTurnId: "turn-worker",
+            },
+          ],
+          messages: [
+            {
+              id: "message-parent",
+              threadId: "thread-parent",
+              at: 1,
+              startsTurn: "turn-parent",
+              ...(parentSender === undefined ? {} : { sender: parentSender }),
+            },
+            {
+              id: "message-side",
+              threadId: "thread-side",
+              at: 2,
+              startsTurn: "turn-side",
+              sender: "thread-parent",
+            },
+            {
+              id: "message-worker",
+              threadId: "thread-worker",
+              at: 2,
+              startsTurn: "turn-worker",
+              sender: "thread-parent",
+              delegationId: "delegation-worker",
+            },
+          ],
+        });
+
+      // The person's chat opened the side chat: it acts for the person.
+      yield* seed(undefined);
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-side"), {
+        senderThreadId: null,
+        delegationId: null,
+        senderThreadIds: [],
+      });
+      // Delegated work stays delegated whoever forked it.
+      assert.strictEqual(
+        (yield* readTurnTrigger("thread-worker"))?.delegationId,
+        VmAgentDelegationId.make("delegation-worker"),
+      );
+
+      // Another chat asked the parent: the side chat answers to that chat too.
+      yield* seed("thread-asker");
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-side"), {
+        senderThreadId: ThreadId.make("thread-asker"),
+        delegationId: null,
+        senderThreadIds: [ThreadId.make("thread-asker")],
+      });
     }),
   );
 

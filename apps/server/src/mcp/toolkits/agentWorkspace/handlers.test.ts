@@ -1,11 +1,14 @@
 import {
   EnvironmentId,
+  ORCHESTRATOR_THREAD_ID,
   ProviderInstanceId,
   ThreadId,
   VmAgentBlockerId,
+  VmAgentDelegationId,
   VmAgentId,
   VmAgentTaskId,
   VmId,
+  type OrchestrationThreadShell,
   type VmAgent,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
@@ -14,6 +17,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionTurnTrigger,
+} from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { PersistenceSqlError } from "../../../persistence/Errors.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import {
   VmAgentWorkspace,
@@ -30,6 +38,23 @@ import {
 import { handleAgentWorkspace } from "./handlers.ts";
 
 const threadId = ThreadId.make("thread-agent-workspace");
+/** A side chat the person forked from the agent's chat. */
+const sideChatThreadId = ThreadId.make("thread-agent-workspace-side-chat");
+/** A delegated worker forked from the agent's chat. */
+const workerThreadId = ThreadId.make("delegation-worker:delegation-agent-workspace");
+/** Who started the caller's turn: a delegation, another chat, or the orchestrator. */
+const delegatedTurn: ProjectionTurnTrigger = {
+  senderThreadId: ThreadId.make("thread-other-agent"),
+  delegationId: VmAgentDelegationId.make("delegation-agent-workspace"),
+};
+const otherChatTurn: ProjectionTurnTrigger = {
+  senderThreadId: ThreadId.make("thread-plain-chat"),
+  delegationId: null,
+};
+const orchestratorTurn: ProjectionTurnTrigger = {
+  senderThreadId: ThreadId.make(ORCHESTRATOR_THREAD_ID),
+  delegationId: null,
+};
 const vmAgentId = VmAgentId.make("agent-workspace");
 const iso = "2026-08-21T20:00:00.000Z";
 const agent: VmAgent = {
@@ -63,12 +88,21 @@ const recurringTask = {
   createdAt: iso,
   updatedAt: iso,
 };
+const onceTask = {
+  ...recurringTask,
+  taskId: VmAgentTaskId.make("once-task"),
+  title: "Send the report",
+  prompt: "Send the weekly report.",
+  schedule: { kind: "once" as const, runAt: "2026-08-22T20:00:00.000Z" },
+  createdBy: "agent" as const,
+};
 
 const invocation = (
   capabilities = new Set<McpInvocationContext.McpCapability>(["vm"]),
+  callerThreadId: ThreadId = threadId,
 ): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("env-agent-workspace"),
-  threadId,
+  threadId: callerThreadId,
   providerSessionId: "session-agent-workspace",
   providerInstanceId: ProviderInstanceId.make("codex"),
   capabilities,
@@ -79,6 +113,8 @@ const makeHarness = (
   boundAgent: VmAgent | null = agent,
   autoApprovesTasks = false,
   ringOutcome: AgentCallRingOutcome["status"] = "disabled",
+  /** The caller's turn trigger; "unreadable" makes the lookup fail. */
+  trigger: ProjectionTurnTrigger | null | "unreadable" = null,
 ) => {
   const rings: Array<Parameters<AgentCallsShape["ring"]>[0]> = [];
   const created: CreateWorkspaceTaskInput[] = [];
@@ -87,14 +123,31 @@ const makeHarness = (
   const resolvedIds: string[] = [];
   let wakeCount = 0;
   const storeLayer = Layer.mock(VmAgentStore)({
-    getByThreadId: () => Effect.succeed(Option.fromNullishOr(boundAgent)),
+    getByThreadId: (id) =>
+      Effect.succeed(Option.fromNullishOr(boundAgent?.threadId === id ? boundAgent : null)),
+  });
+  const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
+    getThreadShellById: (id) =>
+      Effect.succeed(
+        id === sideChatThreadId || id === workerThreadId
+          ? Option.some({
+              id,
+              isSideChat: true,
+              sideChatParentThreadId: threadId,
+            } as OrchestrationThreadShell)
+          : Option.none(),
+      ),
+    getTurnTrigger: () =>
+      trigger === "unreadable"
+        ? Effect.fail(new PersistenceSqlError({ operation: "getTurnTrigger" }))
+        : Effect.succeed(Option.fromNullishOr(trigger)),
   });
   const workspaceLayer = Layer.mock(VmAgentWorkspace)({
     snapshot: () =>
       Effect.succeed({
         type: "snapshot" as const,
         vmAgentId,
-        tasks: [recurringTask],
+        tasks: [recurringTask, onceTask],
         runs: [],
         artifact: null,
         notifications: [],
@@ -111,18 +164,20 @@ const makeHarness = (
     createTask: (input) =>
       Effect.sync(() => {
         created.push(input);
-        const recurring = input.schedule?.kind === "interval";
+        // Mirrors VmAgentWorkspace.createTask's agent rule.
+        const mayActivate =
+          autoApprovesTasks || (input.activate === true && input.schedule?.kind !== "interval");
         return {
           taskId: VmAgentTaskId.make("created-task"),
           vmAgentId: input.vmAgentId,
           title: input.title,
           prompt: input.prompt,
           completionCriteria: input.completionCriteria,
-          status: recurring ? "draft" : "active",
+          status: mayActivate ? (input.status ?? "active") : "draft",
           schedule: input.schedule,
           nextRunAt: null,
           createdBy: "agent",
-          approvalState: recurring ? "pending" : "approved",
+          approvalState: mayActivate ? "approved" : "pending",
           notificationPolicy: input.notificationPolicy ?? "always",
           artifactId: null,
           createdAt: iso,
@@ -166,15 +221,16 @@ const makeHarness = (
     updateTask: (input) =>
       Effect.sync(() => {
         updated.push(input);
+        const base = input.taskId === onceTask.taskId ? onceTask : recurringTask;
         return {
-          ...recurringTask,
-          title: input.title ?? recurringTask.title,
-          prompt: input.prompt ?? recurringTask.prompt,
-          completionCriteria: input.completionCriteria ?? recurringTask.completionCriteria,
-          status: input.status ?? recurringTask.status,
-          schedule: input.schedule === undefined ? recurringTask.schedule : input.schedule,
-          approvalState: input.approvalState ?? recurringTask.approvalState,
-          notificationPolicy: input.notificationPolicy ?? recurringTask.notificationPolicy,
+          ...base,
+          title: input.title ?? base.title,
+          prompt: input.prompt ?? base.prompt,
+          completionCriteria: input.completionCriteria ?? base.completionCriteria,
+          status: input.status ?? base.status,
+          schedule: input.schedule === undefined ? base.schedule : input.schedule,
+          approvalState: input.approvalState ?? base.approvalState,
+          notificationPolicy: input.notificationPolicy ?? base.notificationPolicy,
         };
       }),
   });
@@ -204,18 +260,35 @@ const makeHarness = (
     icons,
     rings,
     wakeCount: () => wakeCount,
-    layer: Layer.mergeAll(storeLayer, workspaceLayer, schedulerLayer, managerLayer, callsLayer),
+    layer: Layer.mergeAll(
+      storeLayer,
+      projectionLayer,
+      workspaceLayer,
+      schedulerLayer,
+      managerLayer,
+      callsLayer,
+    ),
   };
 };
 
-type Services = VmAgentStore | VmAgentWorkspace | VmAgentTaskScheduler | VmManager | AgentCalls;
+type Services =
+  | VmAgentStore
+  | ProjectionSnapshotQuery
+  | VmAgentWorkspace
+  | VmAgentTaskScheduler
+  | VmManager
+  | AgentCalls;
 const run = <A, E>(
   effect: Effect.Effect<A, E, McpInvocationContext.McpInvocationContext | Services>,
   layer: Layer.Layer<Services>,
   capabilities?: Set<McpInvocationContext.McpCapability>,
+  callerThreadId?: ThreadId,
 ) =>
   effect.pipe(
-    Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities)),
+    Effect.provideService(
+      McpInvocationContext.McpInvocationContext,
+      invocation(capabilities, callerThreadId),
+    ),
     Effect.provide(layer),
   );
 
@@ -226,6 +299,158 @@ it.effect("rejects non-VM callers before resolving an agent", () =>
       run(handleAgentWorkspace({ action: "list_tasks" }), harness.layer, new Set(["history"])),
     );
     assert.strictEqual(error._tag, "AgentWorkspaceCapabilityUnavailableError");
+    // A plain chat that wants the person called goes through an agent.
+    assert.include(error.message, "workspace_consult ask");
+    assert.include(error.message, "call_user");
+  }),
+);
+
+it.effect("acts as the owning agent from one of the agent's side chats", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness(agent, false, "ringing");
+    yield* run(
+      handleAgentWorkspace({ action: "create_task", title: "Follow up", prompt: "Check again." }),
+      harness.layer,
+      undefined,
+      sideChatThreadId,
+    );
+    assert.strictEqual(harness.created[0]?.vmAgentId, vmAgentId);
+
+    const call = yield* run(
+      handleAgentWorkspace({ action: "call_user", callReason: "Which account?" }),
+      harness.layer,
+      undefined,
+      sideChatThreadId,
+    );
+    assert.strictEqual(harness.rings[0]?.vmAgentId, vmAgentId);
+    // The answered call talks in the agent's main chat, never in this side chat.
+    assert.match(call.status, /^ringing/);
+    assert.include(call.status, "main chat, not this one");
+  }),
+);
+
+it.effect("a delegated worker's create_task is a draft even when the main chat auto-approves", () =>
+  Effect.gen(function* () {
+    // The agent's main chat runs in Agent mode, so createTask alone would approve.
+    const harness = makeHarness(agent, true, "disabled", delegatedTurn);
+    const result = yield* run(
+      handleAgentWorkspace({
+        action: "create_task",
+        title: "Send it",
+        prompt: "Send the email to X.",
+        schedule: { kind: "once", runAt: "2026-08-22T20:00:00.000Z" },
+      }),
+      harness.layer,
+      undefined,
+      workerThreadId,
+    );
+    assert.strictEqual(harness.created[0]?.vmAgentId, vmAgentId);
+    assert.strictEqual(harness.created[0]?.activate, false);
+    // Never schedulable, not even between the two writes.
+    assert.strictEqual(harness.created[0]?.status, "draft");
+    assert.deepStrictEqual(harness.updated, [
+      {
+        vmAgentId,
+        taskId: VmAgentTaskId.make("created-task"),
+        status: "draft",
+        approvalState: "pending",
+      },
+    ]);
+    assert.strictEqual(result.task?.approvalState, "pending");
+    assert.strictEqual(result.task?.status, "draft");
+    assert.include(result.status, "another chat started this turn");
+  }),
+);
+
+it.effect("a turn another chat's message started cannot activate a task", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness(agent, false, "disabled", otherChatTurn);
+    const result = yield* run(
+      handleAgentWorkspace({ action: "create_task", title: "Send it", prompt: "Send the email." }),
+      harness.layer,
+    );
+    assert.strictEqual(harness.created[0]?.activate, false);
+    // createTask already saved a pending draft; nothing to withdraw.
+    assert.strictEqual(harness.updated.length, 0);
+    assert.strictEqual(result.task?.approvalState, "pending");
+    assert.include(result.status, "waiting for user approval");
+  }),
+);
+
+it.effect("an unreadable turn trigger fails closed to a draft", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness(agent, false, "disabled", "unreadable");
+    const result = yield* run(
+      handleAgentWorkspace({ action: "create_task", title: "Send it", prompt: "Send the email." }),
+      harness.layer,
+    );
+    assert.strictEqual(harness.created[0]?.activate, false);
+    assert.strictEqual(result.task?.approvalState, "pending");
+  }),
+);
+
+it.effect("person and orchestrator turns still activate one-off work", () =>
+  Effect.gen(function* () {
+    for (const trigger of [null, orchestratorTurn]) {
+      const harness = makeHarness(agent, false, "disabled", trigger);
+      const result = yield* run(
+        handleAgentWorkspace({ action: "create_task", title: "Check", prompt: "Check again." }),
+        harness.layer,
+      );
+      assert.strictEqual(harness.created[0]?.activate, true);
+      assert.strictEqual(harness.created[0]?.status, undefined);
+      assert.strictEqual(harness.updated.length, 0);
+      assert.strictEqual(result.task?.approvalState, "approved");
+    }
+  }),
+);
+
+it.effect("update_task from another chat's turn sends changed work back for approval", () =>
+  Effect.gen(function* () {
+    const changed = makeHarness(agent, true, "disabled", delegatedTurn);
+    const result = yield* run(
+      handleAgentWorkspace({
+        action: "update_task",
+        taskId: onceTask.taskId,
+        prompt: "Send the email to X with Y.",
+      }),
+      changed.layer,
+      undefined,
+      workerThreadId,
+    );
+    assert.strictEqual(changed.updated[0]?.status, "draft");
+    assert.strictEqual(changed.updated[0]?.approvalState, "pending");
+    assert.include(result.status, "another chat started this turn");
+
+    // Recurring work never borrows the main chat's auto-approval either.
+    const recurring = makeHarness(agent, true, "disabled", otherChatTurn);
+    yield* run(
+      handleAgentWorkspace({ action: "update_task", taskId: recurringTask.taskId }),
+      recurring.layer,
+    );
+    assert.strictEqual(recurring.updated[0]?.approvalState, "pending");
+
+    // Settings that do not change the work keep the approval it has.
+    const quiet = makeHarness(agent, false, "disabled", otherChatTurn);
+    const quietResult = yield* run(
+      handleAgentWorkspace({
+        action: "update_task",
+        taskId: onceTask.taskId,
+        notificationPolicy: "failure",
+      }),
+      quiet.layer,
+    );
+    assert.strictEqual(quiet.updated[0]?.approvalState, undefined);
+    assert.strictEqual(quiet.updated[0]?.status, undefined);
+    assert.strictEqual(quietResult.status, "Task updated.");
+
+    // The person's own turn keeps editing approved one-off work in place.
+    const own = makeHarness(agent, false, "disabled", null);
+    yield* run(
+      handleAgentWorkspace({ action: "update_task", taskId: onceTask.taskId, prompt: "Again." }),
+      own.layer,
+    );
+    assert.strictEqual(own.updated[0]?.approvalState, undefined);
   }),
 );
 
@@ -359,7 +584,7 @@ it.effect("update_task keeps recurring work active when auto-approval applies", 
     );
     assert.strictEqual(harness.updated[0]?.status, "active");
     assert.strictEqual(harness.updated[0]?.approvalState, "approved");
-    assert.include(result.status, "auto-approved");
+    assert.include(result.status, "auto-approved: the agent's main chat runs in Agent mode");
   }),
 );
 
@@ -417,6 +642,7 @@ it.effect("call_user rings as an explicit request and reports each gate in words
       ringing.layer,
     );
     assert.match(result.status, /^ringing/);
+    assert.include(result.status, "arrives in this chat, the agent's main chat");
     assert.strictEqual(ringing.rings.length, 1);
     assert.strictEqual(ringing.rings[0]?.reason, "request");
     assert.strictEqual(ringing.rings[0]?.vmAgentId, vmAgentId);

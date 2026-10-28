@@ -50,7 +50,7 @@ async function request(method, params, notification = false) {
       : `'${value.replaceAll("'", "'\\''")}'`;
   const command = `${platform === "win32" ? 'set "ELECTRON_RUN_AS_NODE=1" && ' : "ELECTRON_RUN_AS_NODE=1 "}${quote(process.execPath)} ${quote(file)}`;
   return `[Solla host tools]
-You have access to this thread's MCP tools, including persisted history, workspace consultation, collaboration, terminal and preview tools. Prefer the native t3-code tools when present. If your provider does not expose them natively, use your shell tool to run this session-scoped MCP client:
+You have access to this thread's MCP tools, including persisted history, workspace consultation (messaging other chats and custom agents), collaboration, terminal and preview tools. Prefer the native t3-code tools when present. If your provider does not expose them natively, use your shell tool to run this session-scoped MCP client:
 ${command} list
 ${command} describe thread_history_query
 ${command} call thread_history_query '{}'

@@ -27,7 +27,7 @@ export const AgentWorkspaceInput = Schema.Struct({
     "set_icon",
   ]).annotate({
     description:
-      "Workspace operation. Recurring tasks created by an agent remain drafts until the user approves them, unless the user enabled task auto-approval and this chat runs in Agent mode — then they activate immediately. report_blocker keeps a standing, visible request in front of the user when work is blocked on something only they can do (a login, a CAPTCHA, a permission, a purchase) — it persists across turns and runs until resolved, unlike prose in the chat. A blocker is already user-visible attention: NEVER also call notify_user for that request. notify_user is only for independent informational updates that require no user action. resolve_blocker clears one you raised once it no longer blocks you. call_user rings the user's devices for a live voice call with you; use it only when a real conversation is genuinely needed. report_blocker and questions already ring the user when calls are on, so never pair call_user with report_blocker or notify_user.",
+      "Workspace operation. Recurring tasks created by an agent remain drafts until the user approves them, unless the user enabled task auto-approval and the agent's main chat runs in Agent mode — then they activate immediately. Tasks added or changed during a turn another chat started always wait for approval. report_blocker keeps a standing, visible request in front of the user when work is blocked on something only they can do (a login, a CAPTCHA, a permission, a purchase) — it persists across turns and runs until resolved, unlike prose in the chat. A blocker is already user-visible attention: NEVER also call notify_user for that request. notify_user is only for independent informational updates that require no user action. resolve_blocker clears one you raised once it no longer blocks you. call_user rings the user's devices for a live voice call with you; use it only when a real conversation is genuinely needed. report_blocker and questions already ring the user when calls are on, so never pair call_user with report_blocker or notify_user.",
   }),
   taskId: Schema.optional(Schema.String).annotate({
     description: "Task id for update_task or complete_task.",
@@ -80,7 +80,7 @@ export class AgentWorkspaceCapabilityUnavailableError extends Schema.TaggedError
   { threadId: ThreadId },
 ) {
   override get message(): string {
-    return "The agent_workspace tool is only available inside a custom agent's dedicated chat.";
+    return "The agent_workspace tool belongs to custom agents: it works in an agent's chat, its side chats and its delegated workers. To have the person called, ask an agent with workspace_consult ask (its chat) to use call_user.";
   }
 }
 
@@ -89,7 +89,7 @@ export class AgentWorkspaceNoAgentError extends Schema.TaggedErrorClass<AgentWor
   { threadId: ThreadId },
 ) {
   override get message(): string {
-    return "This chat does not belong to a custom VM agent.";
+    return "This chat does not belong to a custom agent.";
   }
 }
 

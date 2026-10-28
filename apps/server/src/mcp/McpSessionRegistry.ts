@@ -12,10 +12,11 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpProviderSession from "./McpProviderSession.ts";
 
 /**
- * Capabilities every thread gets by default. `"vm"` is deliberately NOT here —
- * it marks a thread as owned by a custom agent (gating agent_workspace and
- * workspace_consult) and is granted per-thread in
- * ProviderService.prepareMcpSession.
+ * Capabilities every thread gets by default. `"collaboration"` opens
+ * workspace_consult, the read actions of workspace_orchestration and
+ * agent_collaboration list_agents to every chat. `"vm"` is deliberately NOT
+ * here — it marks a thread as owned by a custom agent (gating agent_workspace)
+ * and is granted per-thread in ProviderService.prepareMcpSession.
  */
 export const DEFAULT_MCP_CAPABILITIES: ReadonlyArray<McpInvocationContext.McpCapability> = [
   "app-update",

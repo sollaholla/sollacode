@@ -3,8 +3,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentCollaborationStore } from "../../../persistence/Services/VmAgentCollaborations.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
+import { resolveOwningVmAgent } from "../../../vm/owningAgent.ts";
 import { type CollaborationActor, VmAgentCollaboration } from "../../../vm/VmAgentCollaboration.ts";
 import { VmAgentTaskScheduler } from "../../../vm/VmAgentTaskScheduler.ts";
 import { AgentCollaborationToolkit } from "./tools.ts";
@@ -57,28 +59,49 @@ export const handleAgentCollaboration = Effect.fn("AgentCollaboration.handle")(f
   }
   const agents = yield* VmAgentStore;
   const store = yield* VmAgentCollaborationStore;
+  const projection = yield* ProjectionSnapshotQuery;
   const collaboration = yield* VmAgentCollaboration;
   const scheduler = yield* VmAgentTaskScheduler;
-  const callingAgent = yield* agents
-    .getByThreadId(invocation.threadId)
-    .pipe(Effect.mapError(operationFailure("resolving the calling agent")));
-  let resolved: ResolvedActor;
-  if (Option.isSome(callingAgent)) {
-    resolved = {
-      kind: "agent",
-      actor: { kind: "agent", vmAgentId: callingAgent.value.vmAgentId },
-    };
-  } else {
+
+  /**
+   * The delegated worker comes first: a worker thread is a side chat of an
+   * agent's chat, and resolving it as that agent would let it create
+   * grandchildren. Any other side chat of an agent acts as the agent. Every
+   * other chat has no actor and may only read the roster.
+   */
+  const resolveActor = Effect.fn("AgentCollaboration.resolveActor")(function* () {
     const workerDelegation = yield* store
       .getByWorkerThreadId(invocation.threadId)
       .pipe(Effect.mapError(operationFailure("resolving the delegated worker")));
-    if (Option.isNone(workerDelegation)) {
+    if (Option.isSome(workerDelegation)) {
+      return {
+        kind: "worker",
+        actor: { kind: "worker", delegationId: workerDelegation.value.delegationId },
+        rootVmAgentId: workerDelegation.value.rootVmAgentId,
+      } satisfies ResolvedActor;
+    }
+    const owningAgent = yield* resolveOwningVmAgent({
+      threadId: invocation.threadId,
+      getAgentByThreadId: agents.getByThreadId,
+      getThreadShellById: projection.getThreadShellById,
+    }).pipe(Effect.mapError(operationFailure("resolving the calling agent")));
+    if (Option.isNone(owningAgent)) return null;
+    return {
+      kind: "agent",
+      actor: { kind: "agent", vmAgentId: owningAgent.value.vmAgentId },
+    } satisfies ResolvedActor;
+  });
+  const resolved: ResolvedActor | null = yield* resolveActor();
+  if (resolved === null) {
+    if (input.action !== "list_agents") {
       return yield* new AgentCollaborationNoActorError({ threadId: invocation.threadId });
     }
-    resolved = {
-      kind: "worker",
-      actor: { kind: "worker", delegationId: workerDelegation.value.delegationId },
-      rootVmAgentId: workerDelegation.value.rootVmAgentId,
+    const roster = yield* collaboration.snapshot();
+    return {
+      action: input.action,
+      status: `${roster.agents.length} agent${roster.agents.length === 1 ? "" : "s"} in this environment. To reach one, find its chat with workspace_consult list_threads (isAgent) and message it with ask.`,
+      agents: roster.agents,
+      hasMoreAgents: roster.hasMoreAgents === true,
     };
   }
 
@@ -129,7 +152,7 @@ export const handleAgentCollaboration = Effect.fn("AgentCollaboration.handle")(f
       if (resolved.kind !== "agent") {
         return yield* new AgentCollaborationInvalidInputError({
           action: input.action,
-          missing: "a root VM-agent credential (delegated workers cannot create workers)",
+          missing: "a custom agent's chat or side chat (delegated workers cannot create workers)",
         });
       }
       const targetKind = yield* requireField(input, "targetKind");

@@ -2,6 +2,7 @@ import { expect, it, vi } from "@effect/vitest";
 import {
   ApprovalRequestId,
   EnvironmentId,
+  ORCHESTRATOR_THREAD_ID,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -76,11 +77,17 @@ const invocation = (
   issuedAt: 1,
 });
 
+/** Who started the turn asking for approval; `null` means the person did. */
+type TurnStarter =
+  | { readonly kind: "delegation" }
+  | { readonly kind: "chat"; readonly senderThreadId: ThreadId }
+  | null;
+
 const run = (
   interactionMode: "default" | "plan" | "agent",
   outcome: ActionApprovalPrompt.ActionApprovalPromptOutcome = { status: "pending", requestId },
   capabilities?: Set<McpInvocationContext.McpCapability>,
-  delegated = false,
+  startedBy: TurnStarter = null,
   liveTurnId: TurnId | null = null,
 ) => {
   const request = vi.fn(() => Effect.succeed(outcome));
@@ -94,11 +101,13 @@ const run = (
       ProjectionSnapshotQuery,
       ProjectionSnapshotQuery.of({
         getThreadShellById,
-        getActiveTurnDelegation: () =>
+        getTurnTrigger: () =>
           Effect.succeed(
-            delegated
-              ? Option.some({ delegationId: "delegation-action-approval" as never })
-              : Option.none(),
+            Option.some({
+              senderThreadId: startedBy?.kind === "chat" ? startedBy.senderThreadId : null,
+              delegationId:
+                startedBy?.kind === "delegation" ? ("delegation-action-approval" as never) : null,
+            }),
           ),
       } as never),
     ),
@@ -140,7 +149,7 @@ it.effect("returns a durable pending request in normal interaction mode", () => 
 });
 
 it.effect("passes the live turn so requesting approval can interrupt it", () => {
-  const harness = run("default", { status: "pending", requestId }, undefined, false, activeTurnId);
+  const harness = run("default", { status: "pending", requestId }, undefined, null, activeTurnId);
   return Effect.gen(function* () {
     expect(yield* harness.effect).toMatchObject({ status: "pending", requestId });
     expect(harness.request).toHaveBeenCalledWith(input, {
@@ -159,7 +168,9 @@ it.effect("auto-approves in agent mode without opening a prompt", () => {
 });
 
 it.effect("requires explicit approval for the exact delegated turn even in agent mode", () => {
-  const harness = run("agent", { status: "pending", requestId }, undefined, true);
+  const harness = run("agent", { status: "pending", requestId }, undefined, {
+    kind: "delegation",
+  });
   return Effect.gen(function* () {
     expect(yield* harness.effect).toMatchObject({
       status: "pending",
@@ -167,6 +178,32 @@ it.effect("requires explicit approval for the exact delegated turn even in agent
       requestId,
     });
     expect(harness.request).toHaveBeenCalledOnce();
+  });
+});
+
+it.effect("asks the person for a turn another chat's message started, even in agent mode", () => {
+  const harness = run("agent", { status: "pending", requestId }, undefined, {
+    kind: "chat",
+    senderThreadId: ThreadId.make("thread-asking-chat"),
+  });
+  return Effect.gen(function* () {
+    expect(yield* harness.effect).toMatchObject({
+      status: "pending",
+      approvalMode: "user",
+      requestId,
+    });
+    expect(harness.request).toHaveBeenCalledOnce();
+  });
+});
+
+it.effect("auto-approves an agent-mode turn the orchestrator started for the person", () => {
+  const harness = run("agent", { status: "pending", requestId }, undefined, {
+    kind: "chat",
+    senderThreadId: ORCHESTRATOR_THREAD_ID,
+  });
+  return Effect.gen(function* () {
+    expect(yield* harness.effect).toEqual({ status: "approved", approvalMode: "agent" });
+    expect(harness.request).not.toHaveBeenCalled();
   });
 });
 
@@ -184,7 +221,7 @@ it.effect("reuses the open pending request instead of creating a duplicate card"
 });
 
 it.effect("does not treat an unrelated agent-mode turn as delegated", () => {
-  const harness = run("agent", { status: "pending", requestId }, undefined, false);
+  const harness = run("agent", { status: "pending", requestId }, undefined, null);
   return Effect.gen(function* () {
     expect(yield* harness.effect).toEqual({ status: "approved", approvalMode: "agent" });
     expect(harness.request).not.toHaveBeenCalled();

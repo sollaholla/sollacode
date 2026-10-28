@@ -112,6 +112,26 @@ export interface ProjectionActiveTurnDelegation {
 }
 
 /**
+ * Who a thread's current work answers to. That work runs from the message that
+ * started the active turn (or the latest turn when none runs), looking past
+ * app-authored continuations and resumes to the message that began them,
+ * through every message delivered since, whether steered into the turn or
+ * queued behind it. A message from the thread's own side-chat family stands for
+ * that chat's own provenance, so a side chat acts for its family.
+ *
+ * `senderThreadId` is another chat whenever any of those messages came from
+ * one (the earliest), else the orchestrator when it sent one, else null for the
+ * person. `delegationId` is the delegated work any of them belongs to.
+ * Approvals read these two; cross-chat loop guards walk `senderThreadIds`.
+ */
+export interface ProjectionTurnTrigger {
+  readonly senderThreadId: ThreadId | null;
+  readonly delegationId: VmAgentDelegationId | null;
+  /** Every chat whose message reached this work, oldest first; omitted means just `senderThreadId`. */
+  readonly senderThreadIds?: ReadonlyArray<ThreadId>;
+}
+
+/**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
@@ -301,6 +321,11 @@ export interface ProjectionSnapshotQueryShape {
   readonly getActiveTurnDelegation?: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<ProjectionActiveTurnDelegation>, ProjectionRepositoryError>;
+
+  /** Resolve who the thread's current work answers to: see {@link ProjectionTurnTrigger}. */
+  readonly getTurnTrigger?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<ProjectionTurnTrigger>, ProjectionRepositoryError>;
 
   /**
    * Read only the bounded message/plan state needed while ingesting provider

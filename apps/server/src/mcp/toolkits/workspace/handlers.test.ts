@@ -236,17 +236,106 @@ const runAs = (
   );
 
 it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
-  it.effect("refuses any caller that is not the orchestrator thread", () =>
+  it.effect("opens the read actions to every chat, never listing the caller itself", () =>
+    Effect.gen(function* () {
+      const terminal = makeTerminalSummary({ threadId: blockedThreadId });
+      const harness = makeHarness(DEFAULT_THREADS, {
+        terminals: [terminal],
+        snapshots: [
+          {
+            threadId: blockedThreadId,
+            terminalId: "term-1",
+            cwd: "/tmp/rover",
+            worktreePath: null,
+            status: "running",
+            pid: 42,
+            history: "ready\n",
+            exitCode: null,
+            exitSignal: null,
+            label: "claude",
+            updatedAt: createdAt,
+          },
+        ],
+      });
+      const listed = (yield* runAs(
+        workingThreadId,
+        harness,
+        handleWorkspaceOrchestration({ action: "list_threads" }),
+      )) as { readonly threads: ReadonlyArray<{ readonly threadId: string }> };
+      // Neither the caller nor the orchestrator: listing itself invites a chat
+      // to message itself and loop.
+      expect(listed.threads.map((thread) => thread.threadId)).toEqual([blockedThreadId]);
+
+      const described = (yield* runAs(
+        workingThreadId,
+        harness,
+        handleWorkspaceOrchestration({ action: "describe_thread", threadId: blockedThreadId }),
+      )) as { readonly thread: { readonly waitingOn?: string } };
+      expect(described.thread.waitingOn).toBe("approval");
+
+      const terminals = (yield* runAs(
+        workingThreadId,
+        harness,
+        handleWorkspaceOrchestration({ action: "list_terminals" }),
+      )) as { readonly totalCount: number };
+      expect(terminals.totalCount).toBe(1);
+
+      const read = (yield* runAs(
+        workingThreadId,
+        harness,
+        handleWorkspaceOrchestration({
+          action: "read_terminal",
+          threadId: blockedThreadId,
+          terminalId: "term-1",
+        }),
+      )) as { readonly output: string };
+      expect(read.output).toContain("ready");
+      expect(harness.commands).toHaveLength(0);
+    }),
+  );
+
+  it.effect("keeps send, interrupt and terminal writes orchestrator-only", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness(DEFAULT_THREADS, { terminals: [makeTerminalSummary()] });
+      const attempts = [
+        { action: "send_to_thread", threadId: blockedThreadId, message: "hello" },
+        { action: "interrupt_thread", threadId: blockedThreadId },
+        {
+          action: "write_to_terminal",
+          threadId: workingThreadId,
+          terminalId: "term-1",
+          data: "ls",
+        },
+      ] as const;
+      for (const attempt of attempts) {
+        const error = yield* Effect.flip(
+          runAs(workingThreadId, harness, handleWorkspaceOrchestration(attempt)),
+        );
+        // Gated on identity rather than a capability flag, so widening a
+        // capability set elsewhere can never hand an ordinary thread write
+        // access. The refusal points at the open message door instead.
+        expect((error as { readonly _tag: string })._tag).toBe("WorkspaceOrchestrationScopeError");
+        expect(error.message).toContain(attempt.action);
+        expect(error.message).toContain("workspace_consult ask");
+      }
+      expect(harness.commands).toHaveLength(0);
+      expect(harness.writes).toHaveLength(0);
+    }),
+  );
+
+  it.effect("refuses the read actions to a credential without collaboration", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
       const error = yield* Effect.flip(
-        runAs(workingThreadId, harness, handleWorkspaceOrchestration({ action: "list_threads" })),
+        handleWorkspaceOrchestration({ action: "list_threads" }).pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, {
+            ...invocationFor(workingThreadId),
+            capabilities: new Set<McpInvocationContext.McpCapability>(["history"]),
+          }),
+          Effect.provide(harness.layer),
+        ),
       );
-      // Gated on identity rather than a capability flag, so widening a
-      // capability set elsewhere can never hand an ordinary thread
-      // whole-workspace write access.
       expect((error as { readonly _tag: string })._tag).toBe("WorkspaceOrchestrationScopeError");
-      expect(harness.commands).toHaveLength(0);
     }),
   );
 
@@ -679,6 +768,26 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
 
       expect(harness.commands).toHaveLength(1);
       expect(harness.commands[0]?.type).toBe("thread.turn.interrupt");
+    }),
+  );
+
+  it.effect("refuses to interrupt its own turn", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const error = yield* Effect.flip(
+        runAs(
+          ORCHESTRATOR_THREAD_ID,
+          harness,
+          handleWorkspaceOrchestration({
+            action: "interrupt_thread",
+            threadId: ORCHESTRATOR_THREAD_ID,
+          }),
+        ),
+      );
+      expect((error as { readonly _tag: string })._tag).toBe(
+        "WorkspaceOrchestrationThreadNotFoundError",
+      );
+      expect(harness.commands).toHaveLength(0);
     }),
   );
 

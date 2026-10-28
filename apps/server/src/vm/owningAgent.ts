@@ -7,10 +7,12 @@ const MAX_HOPS = 8;
 
 /**
  * Resolve the custom agent that owns a thread: the agent whose dedicated chat
- * this is, or — for a side chat forked from an agent's chat (at any depth) —
- * the agent at the top of the side-chat chain. Side chats share the agent's
- * browser and its consulting rights, so tools that gate on "is this an agent
- * thread" must look through the chain rather than at the thread id alone.
+ * this is, or — for a side chat forked from an agent's chat (at any depth),
+ * delegated workers included — the agent at the top of the side-chat chain.
+ * Side chats share the agent's browser and act as the agent in agent_workspace
+ * (and, except delegated workers, in agent_collaboration), so tools that ask
+ * "which agent is this" must look through the chain rather than at the thread
+ * id alone.
  */
 export const resolveOwningVmAgent = <E1, E2>(input: {
   readonly threadId: ThreadId;

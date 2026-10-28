@@ -33,6 +33,7 @@ import {
   ProjectId,
   ThreadId,
   ThreadTurnStartRequestedPayload,
+  isOrchestratorThreadId,
 } from "@t3tools/contracts";
 import {
   toolCallIdOfToolActivityPayload,
@@ -41,6 +42,8 @@ import {
 import {
   ACTIVE_TURN_WORK_SOURCE_PREFIX,
   activeTurnMessageIdFromSourceTurnId,
+  isSyntheticAgentLoopUserMessage,
+  isVmAgentTaskPromptMessageId,
 } from "../agentModeContinuation.ts";
 import {
   HELD_MESSAGE_PREFIX,
@@ -57,6 +60,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import type { SqlError } from "effect/unstable/sql/SqlError";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import {
@@ -257,8 +261,33 @@ const ProjectionProviderTurnForMessageRowSchema = Schema.Struct({
   state: Schema.Literals(["running", "interrupted", "incomplete", "completed", "error"]),
   sourceMessageId: Schema.optionalKey(Schema.NullOr(MessageId)),
 });
-const ProjectionActiveTurnDelegationRowSchema = Schema.Struct({
-  delegationId: VmAgentDelegationId,
+const ProjectionTurnTriggerRowSchema = Schema.Struct({
+  turnState: Schema.String,
+  requestedAt: Schema.String,
+  delegationId: Schema.NullOr(VmAgentDelegationId),
+});
+const ProjectionTurnInputRowSchema = Schema.Struct({
+  requestedAt: Schema.String,
+  messageId: Schema.NullOr(Schema.String),
+  inputOrigin: Schema.NullOr(Schema.String),
+  /** The input's text when it is short enough to be an app-authored prompt. */
+  shortText: Schema.NullOr(Schema.String),
+  createdAt: Schema.NullOr(Schema.String),
+});
+const ProjectionTurnInputsLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  requestedAt: Schema.String,
+});
+const ProjectionWorkSenderRowSchema = Schema.Struct({
+  senderThreadId: Schema.NullOr(ThreadId),
+  delegationId: Schema.NullOr(VmAgentDelegationId),
+});
+const ProjectionWorkSendersLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  since: Schema.String,
+});
+const ProjectionSideChatParentRowSchema = Schema.Struct({
+  sideChatParentThreadId: Schema.NullOr(ThreadId),
 });
 const ProjectionTaskTitleRowSchema = Schema.Struct({
   kind: Schema.String,
@@ -633,6 +662,39 @@ export function dropSupersededToolUpdates<
  * while discarding the megabytes behind it.
  */
 const SNAPSHOT_RAW_OUTPUT_MAX_CHARS = 2_048;
+
+/** Turns read back from the active one looking for the input that began its work. */
+const TURN_PROVENANCE_TURN_LIMIT = 64;
+/** Distinct senders reported for one stretch of work. */
+const TURN_PROVENANCE_SENDER_LIMIT = 32;
+/** Side-chat family members whose own work a sender may be resolved through. */
+const TURN_PROVENANCE_FAMILY_HOPS = 4;
+/** App-authored prompts are short; longer inputs are never read in full here. */
+const TURN_INPUT_SHORT_TEXT_CHARS = 512;
+
+/**
+ * Whether a turn's input carries on the work before it instead of starting
+ * work of its own: Agent-mode continuations, resumes, blocker notices and tab
+ * cleanup are app-authored, and a turn with no input message is the provider
+ * carrying on. A scheduled task run is new work the person set up.
+ */
+function continuesEarlierWork(input: {
+  readonly messageId: string | null;
+  readonly inputOrigin: string | null;
+  readonly shortText: string | null;
+}): boolean {
+  if (input.messageId === null) return true;
+  if (isVmAgentTaskPromptMessageId(input.messageId)) return false;
+  return (
+    input.inputOrigin === "agent-loop" ||
+    isSyntheticAgentLoopUserMessage({
+      role: "user",
+      id: input.messageId,
+      text: input.shortText ?? "",
+      inputOrigin: input.inputOrigin,
+    })
+  );
+}
 
 /**
  * Trims long text anywhere inside a tool's `rawOutput` for snapshot readers.
@@ -1637,24 +1699,84 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
-  const getActiveTurnDelegationRow = SqlSchema.findOneOption({
+  // The active turn, or the latest turn when none runs, with its input message's delegation.
+  const getTurnTriggerRow = SqlSchema.findOneOption({
     Request: ThreadIdLookupInput,
-    Result: ProjectionActiveTurnDelegationRowSchema,
+    Result: ProjectionTurnTriggerRowSchema,
     execute: ({ threadId }) => sql`
-      SELECT messages.delegation_id AS "delegationId"
+      SELECT
+        turns.state AS "turnState",
+        turns.requested_at AS "requestedAt",
+        messages.delegation_id AS "delegationId"
       FROM projection_threads AS threads
       LEFT JOIN projection_thread_sessions AS sessions
         ON sessions.thread_id = threads.thread_id
       JOIN projection_turns AS turns
         ON turns.thread_id = threads.thread_id
         AND turns.turn_id = COALESCE(sessions.active_turn_id, threads.latest_turn_id)
-      JOIN projection_thread_messages AS messages
+      LEFT JOIN projection_thread_messages AS messages
         ON messages.thread_id = turns.thread_id
         AND messages.message_id = turns.pending_message_id
       WHERE threads.thread_id = ${threadId}
         AND threads.deleted_at IS NULL
-        AND turns.state = 'running'
-        AND messages.delegation_id IS NOT NULL
+      LIMIT 1
+    `,
+  });
+
+  // Started turns up to a point, newest first, with their input messages.
+  const listTurnInputsUpTo = SqlSchema.findAll({
+    Request: ProjectionTurnInputsLookupInput,
+    Result: ProjectionTurnInputRowSchema,
+    execute: ({ threadId, requestedAt }) => sql`
+      SELECT
+        turns.requested_at AS "requestedAt",
+        messages.message_id AS "messageId",
+        messages.input_origin AS "inputOrigin",
+        CASE
+          WHEN length(messages.text) <= ${TURN_INPUT_SHORT_TEXT_CHARS} THEN messages.text
+          ELSE NULL
+        END AS "shortText",
+        messages.created_at AS "createdAt"
+      FROM projection_turns AS turns
+      LEFT JOIN projection_thread_messages AS messages
+        ON messages.thread_id = turns.thread_id
+        AND messages.message_id = turns.pending_message_id
+      WHERE turns.thread_id = ${threadId}
+        AND turns.turn_id IS NOT NULL
+        AND turns.requested_at <= ${requestedAt}
+      ORDER BY turns.requested_at DESC, turns.row_id DESC
+      LIMIT ${TURN_PROVENANCE_TURN_LIMIT}
+    `,
+  });
+
+  // Each chat (or delegation) whose user message reached a thread since a point.
+  const listWorkSendersSince = SqlSchema.findAll({
+    Request: ProjectionWorkSendersLookupInput,
+    Result: ProjectionWorkSenderRowSchema,
+    execute: ({ threadId, since }) => sql`
+      SELECT
+        sender_thread_id AS "senderThreadId",
+        MAX(delegation_id) AS "delegationId"
+      FROM projection_thread_messages
+      WHERE thread_id = ${threadId}
+        AND role = 'user'
+        AND created_at >= ${since}
+        AND (sender_thread_id IS NOT NULL OR delegation_id IS NOT NULL)
+      GROUP BY sender_thread_id
+      ORDER BY MIN(created_at) ASC
+      LIMIT ${TURN_PROVENANCE_SENDER_LIMIT}
+    `,
+  });
+
+  const getSideChatParentRow = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionSideChatParentRowSchema,
+    execute: ({ threadId }) => sql`
+      SELECT
+        CASE WHEN is_side_chat = 1 THEN side_chat_parent_thread_id ELSE NULL END
+          AS "sideChatParentThreadId"
+      FROM projection_threads
+      WHERE thread_id = ${threadId}
       LIMIT 1
     `,
   });
@@ -3457,11 +3579,114 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const getActiveTurnDelegation: NonNullable<
     ProjectionSnapshotQueryShape["getActiveTurnDelegation"]
   > = (threadId) =>
-    getActiveTurnDelegationRow({ threadId }).pipe(
+    getTurnTriggerRow({ threadId }).pipe(
+      Effect.map(
+        Option.flatMap((row) =>
+          row.turnState === "running" && row.delegationId !== null
+            ? Option.some({ delegationId: row.delegationId })
+            : Option.none(),
+        ),
+      ),
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "ProjectionSnapshotQuery.getActiveTurnDelegation:query",
           "ProjectionSnapshotQuery.getActiveTurnDelegation:decodeRow",
+        ),
+      ),
+    );
+
+  /** The top of a thread's side-chat chain: the chat its family hangs from. */
+  const sideChatFamilyRoot = Effect.fn("ProjectionSnapshotQuery.sideChatFamilyRoot")(function* (
+    threadId: ThreadId,
+  ) {
+    const seen = new Set<ThreadId>();
+    let current = threadId;
+    while (!seen.has(current) && seen.size < TURN_PROVENANCE_FAMILY_HOPS * 2) {
+      seen.add(current);
+      const row = yield* getSideChatParentRow({ threadId: current });
+      const parent = Option.isSome(row) ? row.value.sideChatParentThreadId : null;
+      if (parent === null) break;
+      current = parent;
+    }
+    return current;
+  });
+
+  /**
+   * Senders of every message that reached a thread's current work (see
+   * ProjectionTurnTrigger), oldest first. A sender in the thread's own
+   * side-chat family is replaced by that chat's own senders; one that cannot
+   * be resolved (too deep, a cycle, no work of its own) stays as itself, which
+   * reads as another chat.
+   */
+  const readWorkSenders = (
+    threadId: ThreadId,
+    visited: Set<ThreadId>,
+    familyHops: number,
+  ): Effect.Effect<
+    Option.Option<ReadonlyArray<typeof ProjectionWorkSenderRowSchema.Type>>,
+    SqlError | Schema.SchemaError
+  > =>
+    Effect.gen(function* () {
+      const anchor = yield* getTurnTriggerRow({ threadId });
+      if (Option.isNone(anchor)) return Option.none();
+      const inputs = yield* listTurnInputsUpTo({
+        threadId,
+        requestedAt: anchor.value.requestedAt,
+      });
+      const origin = inputs.find((input) => !continuesEarlierWork(input));
+      // Past the bounded look-back the oldest turn read stands in for the start.
+      const since =
+        origin?.createdAt ??
+        origin?.requestedAt ??
+        inputs.at(-1)?.requestedAt ??
+        anchor.value.requestedAt;
+      const rows = yield* listWorkSendersSince({ threadId, since });
+      const senders: Array<typeof ProjectionWorkSenderRowSchema.Type> = [];
+      let root: ThreadId | null = null;
+      for (const row of rows) {
+        const sender = row.senderThreadId;
+        if (sender !== null && familyHops > 0 && !visited.has(sender)) {
+          root ??= yield* sideChatFamilyRoot(threadId);
+          if ((yield* sideChatFamilyRoot(sender)) === root) {
+            visited.add(sender);
+            const upstream = yield* readWorkSenders(sender, visited, familyHops - 1);
+            if (Option.isSome(upstream)) {
+              senders.push(...upstream.value);
+              if (row.delegationId !== null) {
+                senders.push({ senderThreadId: null, delegationId: row.delegationId });
+              }
+              continue;
+            }
+          }
+        }
+        senders.push(row);
+      }
+      return Option.some(senders);
+    });
+
+  const getTurnTrigger: NonNullable<ProjectionSnapshotQueryShape["getTurnTrigger"]> = (threadId) =>
+    readWorkSenders(threadId, new Set([threadId]), TURN_PROVENANCE_FAMILY_HOPS).pipe(
+      Effect.map(
+        Option.map((senders) => {
+          const senderThreadIds = [
+            ...new Set(
+              senders.flatMap((row) => (row.senderThreadId === null ? [] : [row.senderThreadId])),
+            ),
+          ];
+          return {
+            senderThreadId:
+              senderThreadIds.find((id) => !isOrchestratorThreadId(id)) ??
+              senderThreadIds[0] ??
+              null,
+            delegationId: senders.find((row) => row.delegationId !== null)?.delegationId ?? null,
+            senderThreadIds,
+          };
+        }),
+      ),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getTurnTrigger:query",
+          "ProjectionSnapshotQuery.getTurnTrigger:decodeRow",
         ),
       ),
     );
@@ -4042,6 +4267,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadProviderTurnForMessage,
     getThreadProviderTurnById,
     getActiveTurnDelegation,
+    getTurnTrigger,
     getThreadIngestionContext,
     getThreadAssetSource,
     getLatestThreadActivityByKind,

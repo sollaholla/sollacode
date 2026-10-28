@@ -63,7 +63,7 @@ export class AgentCollaborationCapabilityUnavailableError extends Schema.TaggedE
   { threadId: ThreadId },
 ) {
   override get message(): string {
-    return "agent_collaboration is only available to a credential-bound VM agent or delegated worker.";
+    return "agent_collaboration needs the collaboration capability, which this credential does not carry.";
   }
 }
 
@@ -72,7 +72,7 @@ export class AgentCollaborationNoActorError extends Schema.TaggedErrorClass<Agen
   { threadId: ThreadId },
 ) {
   override get message(): string {
-    return "This chat is not a VM agent or an active delegated worker.";
+    return "Only a custom agent's chat, its side chats and its delegated workers can delegate or track work; any chat can list_agents. To reach an agent from this chat, message the agent's chat with workspace_consult ask.";
   }
 }
 
