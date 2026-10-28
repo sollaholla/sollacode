@@ -2,6 +2,8 @@ import type { AgentAvatarMood } from "@t3tools/client-runtime/state/agent-appear
 import type {
   AgentCall,
   AgentCallDirection,
+  AgentCallParticipant,
+  AgentCallRosterEntry,
   AgentCallStatus,
   EnvironmentId,
 } from "@t3tools/contracts";
@@ -88,7 +90,12 @@ export function agentCallStatusText(input: {
   readonly direction: AgentCallDirection;
   readonly elapsedSeconds: number | null;
   readonly error: string | null;
+  /** The agent a spoken transfer is moving the call to. */
+  readonly transferringTo?: string | null;
 }): string {
+  if (input.transferringTo && isAgentCallPhaseOpen(input.phase)) {
+    return `Transferring to ${input.transferringTo}…`;
+  }
   switch (input.phase) {
     case "placing":
       return "Calling…";
@@ -331,4 +338,45 @@ export function incomingCallOpening(input: {
 }): string {
   const topic = input.topic?.trim() || "you need the person's input";
   return `Open the call: greet the person, say you're ${input.agentName}, and that you're calling because: ${topic}. Then ask how they'd like to proceed.`;
+}
+
+/** Whether two snapshots list the same participants, so an unchanged one changes nothing. */
+export function sameCallParticipants(
+  a: ReadonlyArray<AgentCallParticipant>,
+  b: ReadonlyArray<AgentCallParticipant>,
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every((participant, index) => {
+      const other = b[index];
+      return (
+        other !== undefined &&
+        other.threadId === participant.threadId &&
+        other.title === participant.title &&
+        other.vmAgentId === participant.vmAgentId
+      );
+    })
+  );
+}
+
+/**
+ * Who the Add picker offers: the roster minus whoever is already on the call,
+ * agents first, then chats, each in the roster's order.
+ */
+export function addableCallRoster(input: {
+  readonly roster: ReadonlyArray<AgentCallRosterEntry>;
+  readonly participants: ReadonlyArray<AgentCallParticipant>;
+  /** The called agent's own chat. */
+  readonly ownThreadId: string | null;
+}): {
+  readonly agents: ReadonlyArray<AgentCallRosterEntry>;
+  readonly chats: ReadonlyArray<AgentCallRosterEntry>;
+} {
+  const onCall = new Set<string>(input.participants.map((participant) => participant.threadId));
+  if (input.ownThreadId !== null) onCall.add(input.ownThreadId);
+  const addable = input.roster.filter((entry) => !onCall.has(entry.threadId));
+  return {
+    agents: addable.filter((entry) => entry.vmAgentId !== null),
+    chats: addable.filter((entry) => entry.vmAgentId === null),
+  };
 }

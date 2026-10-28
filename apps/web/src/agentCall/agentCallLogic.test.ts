@@ -1,7 +1,14 @@
-import { AgentCallId, EnvironmentId, VmAgentId, type AgentCall } from "@t3tools/contracts";
+import {
+  AgentCallId,
+  EnvironmentId,
+  ThreadId,
+  VmAgentId,
+  type AgentCall,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  addableCallRoster,
   agentCallKey,
   agentCallMood,
   agentCallStatusText,
@@ -17,6 +24,7 @@ import {
   openAgentCallElsewhere,
   ringAlerts,
   ringingCallForDevice,
+  sameCallParticipants,
   shouldNotifyIncomingCall,
   trackRingingCalls,
 } from "./agentCallLogic";
@@ -96,6 +104,15 @@ describe("call timer and status", () => {
     expect(status("ended")).toBe("Call ended");
     expect(status("failed")).toBe("Call failed");
     expect(status("failed", "incoming", null, "Answered on iPhone")).toBe("Answered on iPhone");
+    expect(
+      agentCallStatusText({
+        phase: "live",
+        direction: "outgoing",
+        elapsedSeconds: 42,
+        error: null,
+        transferringTo: "Gregg",
+      }),
+    ).toBe("Transferring to Gregg…");
     expect(endedAgentCallTitle("missed")).toBe("Missed call");
     expect(endedAgentCallTitle("declined")).toBe("Call declined");
     expect(endedAgentCallTitle(null)).toBe("This call has ended");
@@ -341,5 +358,32 @@ describe("calls held elsewhere", () => {
     expect(
       describeAgentCallElsewhere(call("a", { direction: "outgoing", answeredBy: "Mac" }), "Nova"),
     ).toBe("Calling Nova from Mac");
+  });
+});
+
+describe("people on a call", () => {
+  const thread = (id: string) => ThreadId.make(id);
+  const roster = [
+    { name: "Notes", threadId: thread("t-notes"), vmAgentId: null },
+    { name: "Gregg", threadId: thread("t-gregg"), vmAgentId: VmAgentId.make("agent-2") },
+    { name: "Nova", threadId: thread("t-nova"), vmAgentId: VmAgentId.make("agent-1") },
+    { name: "Ivy", threadId: thread("t-ivy"), vmAgentId: VmAgentId.make("agent-3") },
+  ];
+
+  it("offers the roster less whoever is on the call, agents first", () => {
+    const addable = addableCallRoster({
+      roster,
+      participants: [{ threadId: thread("t-ivy"), title: "Ivy", vmAgentId: null }],
+      ownThreadId: "t-nova",
+    });
+    expect(addable.agents.map((entry) => entry.name)).toEqual(["Gregg"]);
+    expect(addable.chats.map((entry) => entry.name)).toEqual(["Notes"]);
+  });
+
+  it("treats a snapshot listing the same people as unchanged", () => {
+    const gregg = { threadId: thread("t-gregg"), title: "Gregg", vmAgentId: null };
+    expect(sameCallParticipants([gregg], [{ ...gregg }])).toBe(true);
+    expect(sameCallParticipants([gregg], [{ ...gregg, title: "Greg" }])).toBe(false);
+    expect(sameCallParticipants([gregg], [])).toBe(false);
   });
 });

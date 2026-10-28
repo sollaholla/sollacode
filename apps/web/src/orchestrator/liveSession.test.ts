@@ -616,6 +616,23 @@ describe("GPT-Live routes and mute", () => {
       "session.input_audio.unmute",
     ]);
   });
+
+  it("tells the voice silently, and only once the session is up", async () => {
+    const f = fixture();
+    const starting = f.session.start();
+    f.session.instruct?.("Gregg joined the call.");
+    await f.negotiating;
+    f.event({ type: "session.started" });
+    await starting;
+    f.session.instruct?.("Gregg left the call.");
+    expect(f.channel.send.mock.calls.map(([raw]) => JSON.parse(raw))).toEqual([
+      expect.objectContaining({
+        type: "session.instructions.append",
+        delegation_id: null,
+        content: "Gregg left the call.",
+      }),
+    ]);
+  });
 });
 
 describe("GPT-Live session liveness", () => {

@@ -1,14 +1,17 @@
 import * as NodeCrypto from "node:crypto";
 import {
   AGENT_CALL_LEASE_SECONDS,
+  AGENT_CALL_MAX_PARTICIPANTS,
   AGENT_CALL_RING_SECONDS,
   type AgentCall,
   AgentCallError,
   AgentCallId,
+  type AgentCallParticipant,
   type AgentCallReason,
   type AgentCallsSnapshot,
   type AuthClientMetadata,
   type AuthSessionId,
+  type ThreadId,
   type VmAgentId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -116,6 +119,20 @@ export interface AgentCallsShape {
   ) => Effect.Effect<void>;
   /** Ringing or active → failed: voice could not start. */
   readonly fail: (callId: AgentCallId) => Effect.Effect<void>;
+  /**
+   * Adds a chat to an active call. Refuses the agent called, a chat already
+   * on the call, and more than AGENT_CALL_MAX_PARTICIPANTS; the caller checks
+   * that the chat exists and may join.
+   */
+  readonly addParticipant: (
+    callId: AgentCallId,
+    participant: AgentCallParticipant,
+  ) => Effect.Effect<AgentCall, AgentCallError>;
+  /** Takes a chat off a call. Idempotent; returns the call as it stands. */
+  readonly removeParticipant: (
+    callId: AgentCallId,
+    threadId: ThreadId,
+  ) => Effect.Effect<AgentCall, AgentCallError>;
   /** Ends every ringing or active call of an agent, for when the agent is deleted. */
   readonly endForAgent: (vmAgentId: VmAgentId) => Effect.Effect<void>;
   /** The trigger behind a ringing call resolved before anyone answered. */
@@ -327,6 +344,7 @@ export const make = Effect.gen(function* () {
           answeredAt: null,
           endedAt: null,
           expiresAt: isoAt(now + AGENT_CALL_OUTGOING_RING_SECONDS * 1_000),
+          participants: [],
         };
         yield* commit(null, call, null);
         yield* after(
@@ -373,6 +391,7 @@ export const make = Effect.gen(function* () {
           answeredAt: null,
           endedAt: null,
           expiresAt: isoAt(now + AGENT_CALL_RING_SECONDS * 1_000),
+          participants: [],
         };
         yield* commit(null, call, input.key);
         yield* after(
@@ -420,6 +439,52 @@ export const make = Effect.gen(function* () {
     (effect) => lock.withPermits(1)(effect),
   );
 
+  const addParticipant: AgentCallsShape["addParticipant"] = Effect.fn("AgentCalls.addParticipant")(
+    function* (callId, participant) {
+      const record = records.get(callId);
+      if (record?.call.status === "ringing")
+        return yield* new AgentCallError({ detail: "Answer the call before adding anyone." });
+      if (!record || record.call.status !== "active")
+        return yield* new AgentCallError({ detail: "This call has ended." });
+      const title = participant.title.slice(0, 200);
+      const participants = record.call.participants ?? [];
+      if (participant.vmAgentId !== null && participant.vmAgentId === record.call.vmAgentId)
+        return yield* new AgentCallError({ detail: `You're already talking to ${title}.` });
+      if (participants.some((entry) => entry.threadId === participant.threadId))
+        return yield* new AgentCallError({ detail: `${title} is already on the call.` });
+      if (participants.length >= AGENT_CALL_MAX_PARTICIPANTS)
+        return yield* new AgentCallError({
+          detail: `A call can have at most ${AGENT_CALL_MAX_PARTICIPANTS} others on it.`,
+        });
+      const call: AgentCall = {
+        ...record.call,
+        participants: [...participants, { ...participant, title }],
+      };
+      yield* commit(record.call, call, record.key, record.leaseUntil);
+      return call;
+    },
+    (effect) => lock.withPermits(1)(effect),
+  );
+
+  const removeParticipant: AgentCallsShape["removeParticipant"] = Effect.fn(
+    "AgentCalls.removeParticipant",
+  )(
+    function* (callId, threadId) {
+      const record = records.get(callId);
+      if (!record) return yield* new AgentCallError({ detail: "This call has ended." });
+      const participants = record.call.participants ?? [];
+      if (!isOpen(record.call) || !participants.some((entry) => entry.threadId === threadId))
+        return record.call;
+      const call: AgentCall = {
+        ...record.call,
+        participants: participants.filter((entry) => entry.threadId !== threadId),
+      };
+      yield* commit(record.call, call, record.key, record.leaseUntil);
+      return call;
+    },
+    (effect) => lock.withPermits(1)(effect),
+  );
+
   const cancelByKey: AgentCallsShape["cancelByKey"] = (key) =>
     lock.withPermits(1)(
       Effect.gen(function* () {
@@ -454,6 +519,8 @@ export const make = Effect.gen(function* () {
     end: (callId, options) =>
       settleLocked(callId, options?.ifRinging ? ["ringing"] : ["ringing", "active"], "ended"),
     fail: (callId) => settleLocked(callId, ["ringing", "active"], "failed"),
+    addParticipant,
+    removeParticipant,
     endForAgent,
     cancelByKey,
   });

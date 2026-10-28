@@ -4,12 +4,20 @@ import {
   MicIcon,
   MicOffIcon,
   PhoneOffIcon,
+  UserPlusIcon,
   XIcon,
 } from "lucide-react";
 import { agentAvatarTraits } from "@t3tools/client-runtime/state/agent-appearance";
+import {
+  AGENT_CALL_MAX_PARTICIPANTS,
+  type AgentCallParticipant,
+  type AgentCallRosterEntry,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 
 import {
+  addableCallRoster,
   agentCallMood,
   agentCallStatusText,
   callElapsedSeconds,
@@ -24,6 +32,15 @@ import type {
 } from "../../agentCall/AgentCallProvider";
 import { cn } from "../../lib/utils";
 import { AgentGlyph } from "../agents/AgentGlyph";
+import {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { MicrophoneMenu } from "./MicrophoneMenu";
 
 /**
@@ -50,6 +67,11 @@ const TONE_CLASS: Record<CallButtonTone, string> = {
   danger: "bg-destructive text-white hover:bg-destructive/90",
 };
 
+const ROUND_BUTTON_CLASS =
+  "flex size-16 cursor-pointer items-center justify-center rounded-full transition-colors duration-150 outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-default disabled:opacity-40 data-disabled:cursor-default data-disabled:opacity-40 motion-reduce:transition-none [&_svg]:size-7";
+/** Narrower on phones, so four buttons fit a row. */
+const ROUND_BUTTON_SLOT_CLASS = "flex w-18 flex-col items-center gap-2 sm:w-20";
+
 /** A phone's round call button with its label underneath. */
 export function CallRoundButton(props: {
   readonly label: string;
@@ -62,7 +84,7 @@ export function CallRoundButton(props: {
   readonly accessory?: ReactNode;
 }) {
   return (
-    <div className="flex w-20 flex-col items-center gap-2">
+    <div className={ROUND_BUTTON_SLOT_CLASS}>
       <div className="relative">
         <button
           type="button"
@@ -70,10 +92,7 @@ export function CallRoundButton(props: {
           aria-pressed={props.pressed}
           disabled={props.disabled}
           onClick={props.onClick}
-          className={cn(
-            "flex size-16 cursor-pointer items-center justify-center rounded-full transition-colors duration-150 outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-default disabled:opacity-40 motion-reduce:transition-none [&_svg]:size-7",
-            TONE_CLASS[props.tone],
-          )}
+          className={cn(ROUND_BUTTON_CLASS, TONE_CLASS[props.tone])}
         >
           {props.icon}
         </button>
@@ -101,6 +120,114 @@ export function CallBackdrop(props: { readonly agent: CallScreenAgent }) {
   return <div aria-hidden className="pointer-events-none absolute inset-0" style={style} />;
 }
 
+/**
+ * The call's Add button: a picker of the roster the voice was given, less
+ * whoever is already on the call, agents first.
+ */
+function AddParticipantMenu(props: {
+  readonly call: ActiveAgentCall;
+  readonly disabled: boolean;
+  readonly onAdd: (threadId: ThreadId) => void;
+}) {
+  const { call } = props;
+  const addable =
+    call.roster === null
+      ? null
+      : addableCallRoster({
+          roster: call.roster,
+          participants: call.participants,
+          ownThreadId: call.agent.threadId,
+        });
+  const item = (entry: AgentCallRosterEntry) => (
+    <MenuItem key={entry.threadId} onClick={() => props.onAdd(entry.threadId)}>
+      <span className="min-w-0 truncate">{entry.name}</span>
+    </MenuItem>
+  );
+  return (
+    <div className={ROUND_BUTTON_SLOT_CLASS}>
+      <Menu>
+        <MenuTrigger
+          aria-label="Add someone to the call"
+          disabled={props.disabled}
+          className={cn(ROUND_BUTTON_CLASS, TONE_CLASS.neutral)}
+        >
+          <UserPlusIcon />
+        </MenuTrigger>
+        <MenuPopup side="top" align="center" className="w-72">
+          {addable === null ? (
+            <p className="px-2 py-1.5 text-sm text-muted-foreground">Loading…</p>
+          ) : addable.agents.length + addable.chats.length === 0 ? (
+            <p className="px-2 py-1.5 text-sm text-muted-foreground">No one else to add</p>
+          ) : (
+            <>
+              {addable.agents.length > 0 ? (
+                <MenuGroup>
+                  <MenuGroupLabel>Agents</MenuGroupLabel>
+                  {addable.agents.map(item)}
+                </MenuGroup>
+              ) : null}
+              {addable.agents.length > 0 && addable.chats.length > 0 ? <MenuSeparator /> : null}
+              {addable.chats.length > 0 ? (
+                <MenuGroup>
+                  <MenuGroupLabel>Chats</MenuGroupLabel>
+                  {addable.chats.map(item)}
+                </MenuGroup>
+              ) : null}
+            </>
+          )}
+        </MenuPopup>
+      </Menu>
+      <span aria-hidden className="text-xs text-muted-foreground">
+        Add
+      </span>
+    </div>
+  );
+}
+
+/** Who else is on the call, each with a way to take them off while it runs. */
+function CallParticipants(props: {
+  readonly participants: ReadonlyArray<AgentCallParticipant>;
+  readonly onRemove: ((threadId: ThreadId) => void) | null;
+}) {
+  if (props.participants.length === 0) return null;
+  return (
+    <ul aria-label="Also on the call" className="flex max-w-md flex-wrap justify-center gap-2">
+      {props.participants.map((participant) => (
+        <li
+          key={participant.threadId}
+          className={cn(
+            "flex max-w-full items-center gap-1.5 rounded-full bg-muted/70 py-0.5 pl-0.5 text-sm ring-1 ring-foreground/5",
+            props.onRemove === null ? "pr-2.5" : "pr-0.5",
+          )}
+        >
+          {participant.vmAgentId !== null ? (
+            <AgentGlyph agentId={participant.vmAgentId} online className="size-6 shrink-0" />
+          ) : (
+            <span
+              aria-hidden
+              className="flex size-6 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-xs font-medium"
+            >
+              {Array.from(participant.title.trim())[0]?.toUpperCase() ?? "#"}
+            </span>
+          )}
+          <span className="max-w-36 truncate">{participant.title}</span>
+          {props.onRemove !== null ? (
+            <button
+              type="button"
+              aria-label={`Remove ${participant.title} from the call`}
+              title={`Remove ${participant.title} from the call`}
+              onClick={() => props.onRemove?.(participant.threadId)}
+              className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-hidden hover:bg-foreground/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
+            >
+              <XIcon />
+            </button>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** What the call surfaces need from the agent, live record or captured. */
 export interface CallScreenAgent {
   readonly vmAgentId: string;
@@ -109,9 +236,10 @@ export interface CallScreenAgent {
 }
 
 /**
- * The call, full screen: the agent's face, name, a timer, one line of live
- * caption, and Mute / Chat / End. Looks and behaves like a phone call; the
- * agent's chat stays the full record of what was said and done.
+ * The call, full screen: the agent's face, name, whoever else is on the call,
+ * a timer, one line of live caption, and Mute / Add / Chat / End. Looks and
+ * behaves like a phone call; the agent's chat stays the full record of what
+ * was said and done.
  */
 export function AgentCallScreen(props: {
   readonly api: AgentCallApi;
@@ -131,7 +259,12 @@ export function AgentCallScreen(props: {
     direction: call.direction,
     elapsedSeconds: elapsed,
     error: call.error,
+    transferringTo: call.transferringTo,
   });
+  const canAdd =
+    call.phase === "live" &&
+    call.transferringTo === null &&
+    call.participants.length < AGENT_CALL_MAX_PARTICIPANTS;
   const mood = agentCallMood({
     phase: call.phase,
     sessionState: live.sessionState,
@@ -183,6 +316,10 @@ export function AgentCallScreen(props: {
           />
         </div>
         <h1 className="max-w-full truncate text-3xl font-semibold">{agent.name}</h1>
+        <CallParticipants
+          participants={call.participants}
+          onRemove={open ? api.removeParticipant : null}
+        />
         <p
           className={cn(
             "text-base tabular-nums",
@@ -192,6 +329,9 @@ export function AgentCallScreen(props: {
         >
           {status}
         </p>
+        {open && call.participantError ? (
+          <p className="max-w-md text-sm text-destructive-foreground">{call.participantError}</p>
+        ) : null}
         {open && live.working ? (
           <p className="text-sm text-muted-foreground">Working on it in the chat. Keep talking.</p>
         ) : null}
@@ -205,7 +345,7 @@ export function AgentCallScreen(props: {
         </p>
       </div>
 
-      <div className="relative flex shrink-0 items-start justify-center gap-6 px-6 pt-4 pb-[max(env(safe-area-inset-bottom),2.5rem)]">
+      <div className="relative flex shrink-0 items-start justify-center gap-3 px-4 pt-4 pb-[max(env(safe-area-inset-bottom),2.5rem)] sm:gap-6 sm:px-6">
         {open ? (
           <>
             <CallRoundButton
@@ -216,6 +356,7 @@ export function AgentCallScreen(props: {
               onClick={api.toggleMute}
               accessory={<MicrophoneMenu onChoose={api.chooseMicrophone} />}
             />
+            <AddParticipantMenu call={call} disabled={!canAdd} onAdd={api.addParticipant} />
             {!props.embedded ? (
               <CallRoundButton
                 label="Chat"
@@ -249,14 +390,16 @@ export function AgentCallPill(props: {
   const open = isAgentCallPhaseOpen(call.phase);
   const elapsed = useCallElapsedSeconds(call.startedAt, call.phase === "live");
   const status =
-    call.phase === "live" && elapsed !== null
+    call.phase === "live" && elapsed !== null && call.transferringTo === null
       ? formatCallDuration(elapsed)
       : agentCallStatusText({
           phase: call.phase,
           direction: call.direction,
           elapsedSeconds: elapsed,
           error: call.phase === "failed" ? "Call failed" : call.error,
+          transferringTo: call.transferringTo,
         });
+  const others = call.participants.length;
   return (
     <div
       data-testid="agent-call-pill"
@@ -265,7 +408,9 @@ export function AgentCallPill(props: {
       <button
         type="button"
         onClick={() => api.setMinimised(false)}
-        aria-label={`Return to the call with ${agent.name}`}
+        aria-label={`Return to the call with ${agent.name}${
+          others > 0 ? ` and ${others} other${others === 1 ? "" : "s"}` : ""
+        }`}
         className="flex min-w-0 cursor-pointer items-center gap-2 rounded-full py-1 pr-2 pl-2.5 text-sm outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
       >
         <span
@@ -274,6 +419,9 @@ export function AgentCallPill(props: {
         />
         <span className="tabular-nums">{status}</span>
         <span className="max-w-40 truncate font-medium">{agent.name}</span>
+        {others > 0 ? (
+          <span className="shrink-0 text-background/70 tabular-nums">+{others}</span>
+        ) : null}
       </button>
       {open ? (
         <button

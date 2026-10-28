@@ -4,9 +4,18 @@ import type { UserInputQuestion } from "@t3tools/contracts";
 export const ACTION_APPROVAL_QUESTION_ID = "t3_action_approval";
 export const ACTION_APPROVAL_CHOICE = "Approve";
 export const ACTION_APPROVAL_REQUEST_ID_PREFIX = "action-approval:";
+/**
+ * Message-id prefix of the turn that carries the person's answer back to the
+ * agent. That turn continues the work that asked, so provenance reads past it.
+ */
+export const ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX = "action-approval-response:";
 
 export function isActionApprovalRequestId(requestId: string): boolean {
   return requestId.startsWith(ACTION_APPROVAL_REQUEST_ID_PREFIX);
+}
+
+export function isActionApprovalResponseMessageId(messageId: string): boolean {
+  return messageId.startsWith(ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX);
 }
 
 export type ActionApprovalAnswer =

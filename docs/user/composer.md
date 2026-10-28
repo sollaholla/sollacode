@@ -141,7 +141,11 @@ In Agent mode these action-approval requests are approved automatically, except 
 and in turns that received a message from another chat, which always ask you; see
 [Messages between chats](./cross-thread-messages.md#approvals). Other interaction modes keep the
 explicit approval step. Sending the request pauses the agent until you answer; a second
-identical request reuses the same card instead of stacking another.
+identical request reuses the same card instead of stacking another. Once you approve a proposal,
+the agent asking for the same proposal again during the same work goes ahead without another card;
+this holds even when other work started before you answered. That covers one
+re-request: doing the same thing a second time (another identical email or purchase) asks you
+again. New work asks again, as does a repeat after Solla Code restarts.
 
 ## Browser download approval
 

@@ -48,7 +48,10 @@ export const AGENT_CALL_LEASE_SECONDS = 50;
  * holds: `held` when the page places or answers a call, `connected` once the
  * host accepted this page's claim (the call is live on this phone), `released`
  * when it hangs up or the call ends, `failed` with the reason when voice
- * couldn't start or dropped.
+ * couldn't start or dropped. A `released` for a call hung up to transfer the
+ * person carries `transfer:<vmAgentId>` in `detail` (see
+ * `@t3tools/shared/agentCallBridge`): the screen then follows the page's next
+ * call instead of closing.
  */
 export const AGENT_CALL_NATIVE_MESSAGE_TYPE = "solla-agent-call";
 export type AgentCallNativeMessage = {

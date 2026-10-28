@@ -126,10 +126,47 @@ const run = (
             openByFingerprint.set(fingerprint, remembered);
           }),
         findOpen: ({ fingerprint }) => Effect.succeed(openByFingerprint.get(fingerprint) ?? null),
+        wasApproved: () => Effect.succeed(false),
       }),
     ),
   );
   return { effect, request, getThreadShellById, openByFingerprint };
+};
+
+/**
+ * Runs requests against the real broker, as from a chat whose work another
+ * chat started at `work.startedAt` (mutable between calls).
+ */
+const runWithBroker = (work: { startedAt: string }) => {
+  let nextRequest = 0;
+  const request = vi.fn(() =>
+    Effect.succeed({
+      status: "pending" as const,
+      requestId: ApprovalRequestId.make(`action-approval:request-${++nextRequest}`),
+    }),
+  );
+  const handle = handleActionApproval(input).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, invocation()),
+    Effect.provideService(
+      ProjectionSnapshotQuery,
+      ProjectionSnapshotQuery.of({
+        getThreadShellById: () => Effect.succeed(Option.some(makeThread("agent"))),
+        getTurnTrigger: () =>
+          Effect.sync(() =>
+            Option.some({
+              senderThreadId: ThreadId.make("thread-asking-chat"),
+              delegationId: null,
+              workStartedAt: work.startedAt,
+            }),
+          ),
+      } as never),
+    ),
+    Effect.provideService(
+      ActionApprovalPrompt.ActionApprovalPrompt,
+      ActionApprovalPrompt.ActionApprovalPrompt.of({ request }),
+    ),
+  );
+  return { handle, request };
 };
 
 it.effect("returns a durable pending request in normal interaction mode", () => {
@@ -218,6 +255,66 @@ it.effect("reuses the open pending request instead of creating a duplicate card"
     });
     expect(harness.request).toHaveBeenCalledOnce();
   });
+});
+
+it.effect(
+  "does not ask twice for a proposal the person just approved, but asks for a repeat",
+  () => {
+    const work = { startedAt: "2026-08-21T12:00:00.000Z" };
+    const harness = runWithBroker(work);
+    return Effect.gen(function* () {
+      const broker = yield* ActionApprovalBroker.ActionApprovalBroker;
+      const firstRequestId = ApprovalRequestId.make("action-approval:request-1");
+      expect(yield* harness.handle).toMatchObject({ status: "pending", requestId: firstRequestId });
+      yield* broker.resolve({
+        threadId,
+        requestId: firstRequestId,
+        answers: { t3_action_approval: "Approve" },
+      });
+
+      // The answer turn carries on the work that asked, so the same proposal is approved.
+      expect(yield* harness.handle).toMatchObject({ status: "approved", approvalMode: "user" });
+      expect(harness.request).toHaveBeenCalledOnce();
+
+      // Once: doing the same thing again in that work asks the person again.
+      expect(yield* harness.handle).toMatchObject({ status: "pending", approvalMode: "user" });
+      expect(harness.request).toHaveBeenCalledTimes(2);
+
+      // New work asks again too, even for the identical proposal.
+      const secondRequestId = ApprovalRequestId.make("action-approval:request-2");
+      yield* broker.resolve({
+        threadId,
+        requestId: secondRequestId,
+        answers: { t3_action_approval: "Approve" },
+      });
+      work.startedAt = "2026-08-21T12:05:00.000Z";
+      expect(yield* harness.handle).toMatchObject({ status: "pending", approvalMode: "user" });
+      expect(harness.request).toHaveBeenCalledTimes(3);
+    }).pipe(Effect.provide(ActionApprovalBroker.layer));
+  },
+);
+
+it.effect("asks again after the person answered with corrections", () => {
+  const harness = runWithBroker({ startedAt: "2026-08-21T12:00:00.000Z" });
+  return Effect.gen(function* () {
+    const broker = yield* ActionApprovalBroker.ActionApprovalBroker;
+    const firstRequestId = ApprovalRequestId.make("action-approval:request-1");
+    expect(yield* harness.handle).toMatchObject({ status: "pending", requestId: firstRequestId });
+    yield* broker.resolve({
+      threadId,
+      requestId: firstRequestId,
+      answers: { t3_action_approval: "Send it to Sam instead." },
+    });
+
+    // The first card is answered, so this is a new card rather than "already waiting".
+    expect(yield* harness.handle).toEqual({
+      status: "pending",
+      approvalMode: "user",
+      requestId: ApprovalRequestId.make("action-approval:request-2"),
+      message: expect.not.stringContaining("already waiting"),
+    });
+    expect(harness.request).toHaveBeenCalledTimes(2);
+  }).pipe(Effect.provide(ActionApprovalBroker.layer));
 });
 
 it.effect("does not treat an unrelated agent-mode turn as delegated", () => {

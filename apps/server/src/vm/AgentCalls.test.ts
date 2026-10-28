@@ -3,6 +3,7 @@ import {
   AGENT_CALL_HEARTBEAT_SECONDS,
   AGENT_CALL_LEASE_SECONDS,
   AGENT_CALL_RING_SECONDS,
+  AgentCallId,
   DEFAULT_SERVER_SETTINGS,
   ThreadId,
   VmAgentId,
@@ -378,3 +379,71 @@ it("names devices by label, then browser and OS, then kind", () => {
   assert.strictEqual(describeClientDevice({ deviceType: "tablet" }), "a tablet");
   assert.strictEqual(describeClientDevice(undefined), "another device");
 });
+
+const participant = (index: number) => ({
+  threadId: ThreadId.make(`thread-chat-${index}`),
+  title: `Chat ${index}`,
+  vmAgentId: null,
+});
+
+it.effect("chats join an active call up to the limit, once each, and leave idempotently", () =>
+  withCalls({}, (calls) =>
+    Effect.gen(function* () {
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      assert.deepStrictEqual(placed.participants, []);
+      assert.strictEqual(
+        (yield* Effect.flip(calls.addParticipant(placed.callId, participant(1)))).detail,
+        "Answer the call before adding anyone.",
+      );
+      yield* calls.claim(placed.callId, "Office Mac");
+
+      const added = yield* calls.addParticipant(placed.callId, participant(1));
+      assert.deepStrictEqual(added.participants, [participant(1)]);
+      // Every device sees who is on the call.
+      const snapshot = (yield* calls.snapshot).calls.find((call) => call.callId === placed.callId);
+      assert.deepStrictEqual(snapshot?.participants, [participant(1)]);
+      assert.strictEqual(
+        (yield* Effect.flip(calls.addParticipant(placed.callId, participant(1)))).detail,
+        "Chat 1 is already on the call.",
+      );
+      // The agent called is on the call already.
+      assert.strictEqual(
+        (yield* Effect.flip(
+          calls.addParticipant(placed.callId, {
+            threadId: ThreadId.make(`thread-${vmAgentId}`),
+            title: "Scout",
+            vmAgentId,
+          }),
+        )).detail,
+        "You're already talking to Scout.",
+      );
+      for (const index of [2, 3, 4]) yield* calls.addParticipant(placed.callId, participant(index));
+      assert.strictEqual(
+        (yield* Effect.flip(calls.addParticipant(placed.callId, participant(5)))).detail,
+        "A call can have at most 4 others on it.",
+      );
+
+      const removed = yield* calls.removeParticipant(placed.callId, participant(2).threadId);
+      assert.deepStrictEqual(
+        removed.participants?.map((entry) => entry.title),
+        ["Chat 1", "Chat 3", "Chat 4"],
+      );
+      const again = yield* calls.removeParticipant(placed.callId, participant(2).threadId);
+      assert.deepStrictEqual(again.participants, removed.participants);
+      assert.strictEqual(
+        (yield* Effect.flip(
+          calls.removeParticipant(AgentCallId.make("gone"), participant(1).threadId),
+        )).detail,
+        "This call has ended.",
+      );
+
+      // Adding someone keeps the call's lease: it still ends when its device goes away.
+      yield* TestClock.adjust(`${AGENT_CALL_LEASE_SECONDS} seconds`);
+      assert.strictEqual(yield* statusOf(calls, placed.callId), "ended");
+      assert.strictEqual(
+        (yield* Effect.flip(calls.addParticipant(placed.callId, participant(5)))).detail,
+        "This call has ended.",
+      );
+    }),
+  ),
+);

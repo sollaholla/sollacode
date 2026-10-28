@@ -7,11 +7,14 @@ import {
   type AgentCall,
   type AgentCallDirection,
   type AgentCallId,
+  type AgentCallParticipant,
+  type AgentCallRosterEntry,
   type EnvironmentId,
   type ThreadId,
   type VmAgent,
   type VmAgentId,
 } from "@t3tools/contracts";
+import { agentCallTransferDetail } from "@t3tools/shared/agentCallBridge";
 import * as Cause from "effect/Cause";
 import {
   createContext,
@@ -49,13 +52,20 @@ import {
   isTerminalAgentCallStatus,
   nextRingExpiry,
   ringingCallForDevice,
+  sameCallParticipants,
   trackRingingCalls,
   type AgentCallLocation,
   type AgentCallPhase,
   type EnvironmentAgentCalls,
 } from "./agentCallLogic";
 import { setAgentCallLive } from "./agentCallActivity";
-import { useEnvironmentAgentCalls } from "./agentCallData";
+import { useEnvironmentAgentCalls, useEnvironmentAgents } from "./agentCallData";
+import {
+  callParticipantNotice,
+  callRosterInstructions,
+  readCallDirectives,
+  resolveSpokenNames,
+} from "./callDirectives";
 import { isPhoneAppWebView, postAgentCallNativeMessage } from "./phoneAppBridge";
 
 /** Who is on the other end, captured when the call starts. */
@@ -78,6 +88,22 @@ export interface ActiveAgentCall {
   /** Epoch ms the conversation started: the host's `answeredAt` once known. */
   readonly startedAt: number | null;
   readonly error: string | null;
+  /** Chats on the call besides the agent, oldest first, as its host reports them. */
+  readonly participants: ReadonlyArray<AgentCallParticipant>;
+  /**
+   * Who the call's voice can transfer to or add, fetched once the call is
+   * live; null until then (or from a host too old to say).
+   */
+  readonly roster: ReadonlyArray<AgentCallRosterEntry> | null;
+  /** The agent a spoken transfer is moving the call to, while the voice finishes. */
+  readonly transferringTo: string | null;
+  /**
+   * The call a spoken transfer hung up to place this one, so a page showing
+   * that call can follow the person here.
+   */
+  readonly transferredFrom: AgentCallId | null;
+  /** Why adding or removing someone just failed; the next change that works clears it. */
+  readonly participantError: string | null;
 }
 
 export interface AgentCallTranscriptLine {
@@ -130,6 +156,10 @@ export interface AgentCallApi {
    */
   readonly end: (environmentId: EnvironmentId, callId: AgentCallId) => void;
   readonly toggleMute: () => void;
+  /** Adds a chat from the call's roster to this device's live call. */
+  readonly addParticipant: (threadId: ThreadId) => void;
+  /** Takes a chat off this device's call. */
+  readonly removeParticipant: (threadId: ThreadId) => void;
   /** Moves a running call to this microphone (null: the system default) without dropping it. */
   readonly chooseMicrophone: (deviceId: string | null) => void;
   readonly setMinimised: (minimised: boolean) => void;
@@ -137,7 +167,12 @@ export interface AgentCallApi {
   readonly dismiss: () => void;
 }
 
-/** The provider's record of the open call: which one it is, and how this device got it. */
+/**
+ * The provider's record of the open call: which one it is, and how this
+ * device got it. Until the host gives a transferred call an id, the phone app
+ * still follows the one it replaced (`transferredFrom`), so a failure is
+ * reported against that.
+ */
 type HeldCall = ActiveAgentCall & {
   readonly generation: number;
   /** From this device's `place()`; false for a call it answered or joined. */
@@ -188,6 +223,8 @@ const HISTORY_TIMEOUT_MS = 1_500;
 /** How long answering waits for the host's connection, e.g. a phone app just woken by the ring. */
 const HOST_CONNECTION_TIMEOUT_MS = 15_000;
 
+const NO_PARTICIPANTS: ReadonlyArray<AgentCallParticipant> = [];
+
 const commandFailureMessage = (cause: Cause.Cause<unknown>, fallback: string) => {
   const squashed = Cause.squash(cause);
   return squashed instanceof Error && squashed.message.trim().length > 0
@@ -201,6 +238,13 @@ const partyFor = (agent: VmAgent | null, vmAgentId: VmAgentId): AgentCallParty =
   avatarColor: agent?.avatarColor ?? null,
   threadId: agent?.threadId ?? null,
 });
+
+/** A spoken transfer waiting for the voice to finish saying so. */
+interface PendingTransfer {
+  readonly generation: number;
+  /** From the roster; the host's agent record replaces it when loaded. */
+  readonly party: AgentCallParty;
+}
 
 /**
  * Hosts agent calls for the whole app, beside the orchestrator's session, so a
@@ -227,10 +271,31 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
   const placeCall = useAtomCommand(vmAgentEnvironment.placeCall, { reportFailure: false });
   const declineCall = useAtomCommand(vmAgentEnvironment.declineCall, { reportFailure: false });
   const endCall = useAtomCommand(vmAgentEnvironment.endCall, { reportFailure: false });
-  const commandsRef = useRef({ placeCall, declineCall, endCall });
+  const callRoster = useAtomCommand(vmAgentEnvironment.callRoster, { reportFailure: false });
+  const addCallParticipant = useAtomCommand(vmAgentEnvironment.addCallParticipant, {
+    reportFailure: false,
+  });
+  const removeCallParticipant = useAtomCommand(vmAgentEnvironment.removeCallParticipant, {
+    reportFailure: false,
+  });
+  const commandsRef = useRef({
+    placeCall,
+    declineCall,
+    endCall,
+    callRoster,
+    addCallParticipant,
+    removeCallParticipant,
+  });
   useEffect(() => {
-    commandsRef.current = { placeCall, declineCall, endCall };
-  }, [declineCall, endCall, placeCall]);
+    commandsRef.current = {
+      placeCall,
+      declineCall,
+      endCall,
+      callRoster,
+      addCallParticipant,
+      removeCallParticipant,
+    };
+  }, [addCallParticipant, callRoster, declineCall, endCall, placeCall, removeCallParticipant]);
 
   const [callsByEnvironment, setCallsByEnvironment] = useState<
     ReadonlyMap<EnvironmentId, ReadonlyArray<AgentCall>>
@@ -255,6 +320,19 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
   const seenCallRef = useRef<string | null>(null);
   /** Calls seen ringing, to clear their notifications once they stop. */
   const ringingCallsRef = useRef<ReadonlyMap<string, AgentCallLocation>>(new Map());
+  const transferRef = useRef<PendingTransfer | null>(null);
+  /** Moves the call on once the voice finished announcing a transfer; false when none waits. */
+  const completeTransferRef = useRef<(generation: number) => boolean>(() => false);
+  /** The open call's host's agents, to call a transfer's agent as its own record. */
+  const agentsRef = useRef<{
+    readonly environmentId: EnvironmentId;
+    readonly agents: ReadonlyArray<VmAgent>;
+  } | null>(null);
+  /** The participants the voice was last told about, and the call they were on. */
+  const toldParticipantsRef = useRef<{
+    readonly generation: number;
+    readonly participants: ReadonlyArray<AgentCallParticipant>;
+  } | null>(null);
   // The phone app's bridge is injected before the page loads; it never comes or goes.
   const [inPhoneApp] = useState(isPhoneAppWebView);
 
@@ -295,6 +373,8 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       generation: number,
       outcome: { readonly phase: "ended" | "failed"; readonly error: string | null },
       release: HostRelease,
+      /** A transfer: the person is moving on to this agent, not hanging up. */
+      options: { readonly transferTo?: VmAgentId } = {},
     ) => {
       const current = activeRef.current;
       if (current === null || current.generation !== generation) return;
@@ -311,15 +391,28 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       mutedRef.current = false;
       commitActive({ ...current, phase: outcome.phase, error: outcome.error });
       // A connected call ending, from either side, sounds like a phone hanging up.
-      if (current.phase === "live") {
+      if (current.phase === "live" && options.transferTo === undefined) {
         const cues = resolveVoiceCuePolicy(getClientSettings());
         if (cues.enabled) playHangUpTone(cues.volume);
       }
+      if (
+        current.callId === null &&
+        current.transferredFrom !== null &&
+        outcome.phase === "failed"
+      ) {
+        // A transfer that failed before the host placed the new call: the
+        // phone app's screen stays open on the old call to show why.
+        postAgentCallNativeMessage("failed", current.transferredFrom, outcome.error);
+      }
       if (current.callId !== null) {
+        // A transfer's release says where the call is going, so the phone
+        // app's screen waits for the new call instead of closing.
         postAgentCallNativeMessage(
           outcome.phase === "failed" ? "failed" : "released",
           current.callId,
-          outcome.error,
+          options.transferTo === undefined
+            ? outcome.error
+            : agentCallTransferDetail(options.transferTo),
         );
         // A call this device finished never rings here again: a failed or
         // unclaimed answer leaves it ringing on the host for the other
@@ -330,6 +423,129 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       if (release !== "none") releaseCall(current, release);
     },
     [commitActive, releaseCall],
+  );
+
+  /**
+   * Shows why adding or removing someone failed, and tells the voice
+   * silently: so it can answer truthfully if asked, or, with `correct`, so
+   * it tells the person now (it said it added someone nobody could find).
+   */
+  const reportParticipantError = useCallback(
+    (generation: number, error: string, options: { readonly correct?: boolean } = {}) => {
+      updateActive(generation, { participantError: error });
+      if (activeRef.current?.generation === generation) {
+        sessionRef.current?.instruct?.(
+          options.correct
+            ? `${error} Tell the person now, and ask who they meant.`
+            : `${error} Tell the person if they ask.`,
+        );
+      }
+    },
+    [updateActive],
+  );
+
+  /** Adds a chat to the call or takes one off, on the call's host. */
+  const changeParticipants = useCallback(
+    async (
+      call: HeldCall,
+      change: "add" | "remove",
+      target: { readonly threadId: ThreadId; readonly name: string },
+    ) => {
+      if (call.callId === null) return;
+      const request = {
+        environmentId: call.environmentId,
+        input: { callId: call.callId, threadId: target.threadId },
+      };
+      const result =
+        change === "add"
+          ? await commandsRef.current.addCallParticipant(request)
+          : await commandsRef.current.removeCallParticipant(request);
+      // The participants themselves arrive with the host's snapshot.
+      if (result._tag === "Success") {
+        updateActive(call.generation, { participantError: null });
+        return;
+      }
+      reportParticipantError(
+        call.generation,
+        commandFailureMessage(
+          result.cause,
+          change === "add"
+            ? `${target.name} couldn't be added to the call.`
+            : `${target.name} couldn't be taken off the call.`,
+        ),
+      );
+    },
+    [reportParticipantError, updateActive],
+  );
+
+  /**
+   * Acts on what the voice just said it is doing: transferring the person
+   * to another agent, or adding or removing people (each phrase, and each
+   * name in "Adding Gregg and Nova to the call."). Names resolve against the
+   * roster the voice was given, so a name it was never offered (or a reply
+   * that only sounds like the phrase) transfers nobody; an add or remove
+   * whose name fits nobody is reported, so the voice can put it right.
+   */
+  const actOnDirective = useCallback(
+    (generation: number, session: VoiceSession, text: string) => {
+      const directives = readCallDirectives(text);
+      const call = activeRef.current;
+      if (directives.length === 0 || call === null || call.generation !== generation) return;
+      if (call.phase !== "live" || call.transferringTo !== null) return;
+      const roster = call.roster ?? [];
+      const [first] = directives;
+      if (first?.kind === "transfer") {
+        const { found } = resolveSpokenNames(first.name, roster, { agentsOnly: true });
+        const [target] = found;
+        if (found.length !== 1 || target === undefined || target.vmAgentId === null) return;
+        if (target.vmAgentId === call.agent.vmAgentId) return;
+        transferRef.current = {
+          generation,
+          party: {
+            vmAgentId: target.vmAgentId,
+            name: target.name,
+            avatarColor: null,
+            threadId: target.threadId,
+          },
+        };
+        updateActive(generation, { transferringTo: target.name });
+        // The call moves on once these last words are spoken (completeTransfer).
+        session.endAfterReply();
+        return;
+      }
+      const onCall = call.participants.map((participant) => ({
+        name: participant.title,
+        threadId: participant.threadId,
+        vmAgentId: participant.vmAgentId,
+      }));
+      const missing: string[] = [];
+      const changes: Array<Promise<void>> = [];
+      for (const directive of directives) {
+        if (directive.kind === "add") {
+          const resolved = resolveSpokenNames(directive.name, roster);
+          missing.push(
+            ...resolved.missing.map((name) => `No one called ${name} is on the call list.`),
+          );
+          for (const target of resolved.found) {
+            const present =
+              target.threadId === call.agent.threadId ||
+              onCall.some((participant) => participant.threadId === target.threadId);
+            if (!present) changes.push(changeParticipants(call, "add", target));
+          }
+        } else if (directive.kind === "remove") {
+          const resolved = resolveSpokenNames(directive.name, onCall);
+          missing.push(...resolved.missing.map((name) => `${name} isn't on this call.`));
+          for (const target of resolved.found)
+            changes.push(changeParticipants(call, "remove", target));
+        }
+      }
+      // Said once the others went through, so a success can't clear it from the screen.
+      if (missing.length > 0)
+        void Promise.all(changes).then(() =>
+          reportParticipantError(generation, missing.join(" "), { correct: true }),
+        );
+    },
+    [changeParticipants, reportParticipantError, updateActive],
   );
 
   /**
@@ -397,6 +613,8 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
             // connected, so it fails with whatever reason it reported.
             queueMicrotask(() => {
               if (sessionRef.current !== session) return;
+              // The voice finished "Transferring you to …": the call moves on.
+              if (completeTransferRef.current(generation)) return;
               const failed = session.state === "error" || !claimedRef.current;
               finish(
                 generation,
@@ -416,6 +634,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
           onTranscript: (entry) => {
             if (sessionRef.current !== session) return;
             setTranscript((current) => [...current, entry].slice(-MAX_TRANSCRIPT_LINES));
+            if (entry.role === "assistant") actOnDirective(generation, session, entry.text);
           },
           onLiveUsage: (usage) => {
             // Bills the same OpenAI key as the orchestrator, so it lands in the
@@ -454,7 +673,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       if (mutedRef.current) session.setMuted?.(true);
       void session.start();
     },
-    [commitActive, finish, updateActive],
+    [actOnDirective, commitActive, finish, updateActive],
   );
 
   /** Starts the call's voice once its host's connection is ready. */
@@ -501,7 +720,16 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
   /** Clears the way for a new call: the orchestrator's mic, any earlier call. */
   const beginCall = useCallback(
     (
-      call: Omit<HeldCall, "phase" | "startedAt" | "error" | "generation">,
+      call: Pick<
+        HeldCall,
+        | "environmentId"
+        | "agent"
+        | "callId"
+        | "direction"
+        | "topic"
+        | "placedHere"
+        | "transferredFrom"
+      >,
       phase: AgentCallPhase,
     ) => {
       const voice = orchestratorRef.current;
@@ -516,6 +744,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       }
       generationRef.current += 1;
       claimedRef.current = false;
+      transferRef.current = null;
       mutedRef.current = false;
       setMuted(false);
       setWorking(false);
@@ -523,11 +752,15 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       setMinimised(false);
       setSessionState("connecting");
       setAgentCallLive(true);
-      const next = {
+      const next: HeldCall = {
         ...call,
         phase,
         startedAt: null,
         error: null,
+        participants: NO_PARTICIPANTS,
+        roster: null,
+        transferringTo: null,
+        participantError: null,
         generation: generationRef.current,
       };
       commitActive(next);
@@ -536,8 +769,12 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     [commitActive, finish],
   );
 
-  const place = useCallback(
-    (environmentId: EnvironmentId, agent: VmAgent) => {
+  const placeParty = useCallback(
+    (
+      environmentId: EnvironmentId,
+      party: AgentCallParty,
+      transferredFrom: AgentCallId | null = null,
+    ) => {
       const current = activeRef.current;
       if (current !== null && isAgentCallPhaseOpen(current.phase)) {
         // Already on a call: bring it back rather than start a second one.
@@ -547,25 +784,31 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       const call = beginCall(
         {
           environmentId,
-          agent: partyFor(agent, agent.vmAgentId),
+          agent: party,
           callId: null,
           direction: "outgoing",
           topic: null,
           placedHere: true,
+          transferredFrom,
         },
         "placing",
       );
       // Asked for as the session starts, so placing the call and reading the
       // chat's recent turns overlap the microphone opening.
       openSession(call, async () => {
-        const history = readHistory(environmentId, agent.threadId);
+        const history = readHistory(environmentId, party.threadId);
         const result = await commandsRef.current.placeCall({
           environmentId,
-          input: { vmAgentId: agent.vmAgentId },
+          input: { vmAgentId: party.vmAgentId },
         });
         if (result._tag !== "Success") {
           const error = commandFailureMessage(result.cause, "The call could not be placed.");
           updateActive(call.generation, { error });
+          // The phone app's screen is still on the call this replaced, and
+          // closes on its own soon after that call ended: say why now, not
+          // once the microphone and network have finished opening.
+          if (transferredFrom !== null && call.generation === generationRef.current)
+            postAgentCallNativeMessage("failed", transferredFrom, error);
           throw new Error(error);
         }
         const callId = result.value.callId;
@@ -581,6 +824,50 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     },
     [beginCall, openSession, readHistory, updateActive],
   );
+
+  const place = useCallback(
+    (environmentId: EnvironmentId, agent: VmAgent) =>
+      placeParty(environmentId, partyFor(agent, agent.vmAgentId)),
+    [placeParty],
+  );
+
+  /**
+   * Moves a call whose voice just said "Transferring you to <Name>." to that
+   * agent: hangs this one up quietly (no tone, no "Call ended" in between)
+   * and calls the agent from this device, as if the person had tapped Call.
+   */
+  const completeTransfer = useCallback(
+    (generation: number): boolean => {
+      const pending = transferRef.current;
+      if (pending === null || pending.generation !== generation) return false;
+      transferRef.current = null;
+      const current = activeRef.current;
+      if (current === null || current.generation !== generation) return false;
+      if (!isAgentCallPhaseOpen(current.phase)) return false;
+      const wasMuted = mutedRef.current;
+      finish(generation, { phase: "ended", error: null }, hangUpRelease(claimedRef.current), {
+        transferTo: pending.party.vmAgentId,
+      });
+      const registry = agentsRef.current;
+      const agent =
+        registry?.environmentId === current.environmentId
+          ? registry.agents.find((candidate) => candidate.vmAgentId === pending.party.vmAgentId)
+          : undefined;
+      placeParty(
+        current.environmentId,
+        agent === undefined ? pending.party : partyFor(agent, agent.vmAgentId),
+        current.callId,
+      );
+      // The new voice opens asynchronously and reads this before starting its microphone.
+      mutedRef.current = wasMuted;
+      setMuted(wasMuted);
+      return true;
+    },
+    [finish, placeParty],
+  );
+  useEffect(() => {
+    completeTransferRef.current = completeTransfer;
+  }, [completeTransfer]);
 
   const answer = useCallback(
     (environmentId: EnvironmentId, call: AgentCall, agent: VmAgent | null) => {
@@ -602,6 +889,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
           direction: call.direction,
           topic: call.topic,
           placedHere: false,
+          transferredFrom: null,
         },
         "connecting",
       );
@@ -657,6 +945,28 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     sessionRef.current?.setMuted?.(next);
   }, []);
 
+  const addParticipant = useCallback(
+    (threadId: ThreadId) => {
+      const call = activeRef.current;
+      if (call === null || call.phase !== "live" || call.transferringTo !== null) return;
+      const name = call.roster?.find((entry) => entry.threadId === threadId)?.name ?? "That chat";
+      void changeParticipants(call, "add", { threadId, name });
+    },
+    [changeParticipants],
+  );
+
+  const removeParticipant = useCallback(
+    (threadId: ThreadId) => {
+      const call = activeRef.current;
+      if (call === null || !isAgentCallPhaseOpen(call.phase)) return;
+      const name =
+        call.participants.find((participant) => participant.threadId === threadId)?.title ??
+        "That chat";
+      void changeParticipants(call, "remove", { threadId, name });
+    },
+    [changeParticipants],
+  );
+
   const chooseMicrophone = useCallback((deviceId: string | null) => {
     sessionRef.current?.setMicrophone?.(deviceId);
   }, []);
@@ -701,16 +1011,59 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     }
     seenCallRef.current = key;
     if (isTerminalAgentCallStatus(record.status)) {
+      // Ended on the host (another device's End, the agent deleted, the time
+      // cap): the person is not moving on, so a transfer still being
+      // announced is dropped. This device's own transfer ends its call only
+      // once its voice has gone quiet (completeTransfer), never through here.
+      if (transferRef.current?.generation === active.generation) transferRef.current = null;
       finish(active.generation, hostSettledCallOutcome(record.status, active.error), "none");
       return;
     }
+    const patch: { startedAt?: number; participants?: ReadonlyArray<AgentCallParticipant> } = {};
     if (record.answeredAt !== null) {
       const startedAt = Date.parse(record.answeredAt);
-      if (Number.isFinite(startedAt) && startedAt !== active.startedAt) {
-        updateActive(active.generation, { startedAt });
-      }
+      if (Number.isFinite(startedAt) && startedAt !== active.startedAt) patch.startedAt = startedAt;
     }
+    const participants = record.participants ?? NO_PARTICIPANTS;
+    if (!sameCallParticipants(participants, active.participants)) patch.participants = participants;
+    if (Object.keys(patch).length > 0) updateActive(active.generation, patch);
   }, [active, callsByEnvironment, finish, updateActive]);
+
+  // Once the call is live, ask its host once who the voice can transfer to
+  // or add, and teach the voice the phrases this device acts on. A host too
+  // old to say leaves the roster empty and the voice untaught.
+  const rosterAskedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (active === null || active.phase !== "live" || active.callId === null) return;
+    if (rosterAskedRef.current === active.generation) return;
+    rosterAskedRef.current = active.generation;
+    const { generation, environmentId, callId } = active;
+    void commandsRef.current.callRoster({ environmentId, input: { callId } }).then((result) => {
+      const roster = result._tag === "Success" ? result.value.entries : [];
+      updateActive(generation, { roster });
+      const lines = callRosterInstructions(roster);
+      const current = activeRef.current;
+      if (lines.length === 0 || current?.generation !== generation || current.phase !== "live")
+        return;
+      // One append each: a long roster stays within an append's bound.
+      for (const line of lines) sessionRef.current?.instruct?.(line);
+    });
+  }, [active, updateActive]);
+
+  // The voice hears who joined or left the call, once each: diffed by chat
+  // against what it was last told, so a repeated snapshot says nothing.
+  useEffect(() => {
+    if (active === null || active.phase !== "live") return;
+    const told = toldParticipantsRef.current;
+    const known = told?.generation === active.generation ? told.participants : NO_PARTICIPANTS;
+    if (known === active.participants) return;
+    toldParticipantsRef.current = {
+      generation: active.generation,
+      participants: active.participants,
+    };
+    const notice = callParticipantNotice(known, active.participants);
+    if (notice !== null) sessionRef.current?.instruct?.(notice);
+  }, [active]);
 
   // "Call ended" says what happened, then gets out of the way. Failures stay
   // until dismissed: their reason has to be readable.
@@ -801,6 +1154,13 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     return ids;
   }, [environments, primaryEnvironmentId]);
 
+  const reportAgents = useCallback(
+    (environmentId: EnvironmentId, agents: ReadonlyArray<VmAgent> | null) => {
+      agentsRef.current = agents === null ? null : { environmentId, agents };
+    },
+    [],
+  );
+
   const activeCall = useMemo<ActiveAgentCall | null>(() => {
     if (active === null) return null;
     const { generation: _generation, placedHere: _placedHere, ...call } = active;
@@ -818,12 +1178,15 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       hangUp,
       end,
       toggleMute,
+      addParticipant,
+      removeParticipant,
       chooseMicrophone,
       setMinimised,
       dismiss,
     }),
     [
       activeCall,
+      addParticipant,
       answer,
       decline,
       dismiss,
@@ -831,6 +1194,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       hangUp,
       minimised,
       place,
+      removeParticipant,
       ringing,
       toggleMute,
       chooseMicrophone,
@@ -851,10 +1215,30 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
             onCalls={reportCalls}
           />
         ))}
+        {callOpen ? (
+          <AgentsObserver
+            key={active.environmentId}
+            environmentId={active.environmentId}
+            onAgents={reportAgents}
+          />
+        ) : null}
         {children}
       </AgentCallLiveContext.Provider>
     </AgentCallContext.Provider>
   );
+}
+
+/** Keeps the open call's host's agents at hand, for a transfer, without re-rendering the provider. */
+function AgentsObserver(props: {
+  readonly environmentId: EnvironmentId;
+  readonly onAgents: (environmentId: EnvironmentId, agents: ReadonlyArray<VmAgent> | null) => void;
+}) {
+  const { environmentId, onAgents } = props;
+  const agents = useEnvironmentAgents(environmentId);
+  useEffect(() => {
+    onAgents(environmentId, agents);
+  }, [agents, environmentId, onAgents]);
+  return null;
 }
 
 /** Keeps one host's call snapshot flowing into the provider. */

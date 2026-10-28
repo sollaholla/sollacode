@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX } from "@t3tools/shared/actionApproval";
 import { RESUME_PROMPT } from "@t3tools/shared/resumePrompt";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
@@ -2755,6 +2756,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  /** The seeded time `second` seconds into the turn-provenance fixtures. */
+  const provenanceAt = (second: number) => {
+    const minutes = String(Math.floor(second / 60)).padStart(2, "0");
+    const seconds = String(second % 60).padStart(2, "0");
+    return `2026-08-21T20:${minutes}:${seconds}.000Z`;
+  };
+
   /** Seeds threads, turns and input messages for turn-provenance reads. */
   const seedTurnProvenance = (input: {
     readonly threads: ReadonlyArray<{
@@ -2769,15 +2777,33 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       readonly at: number;
       /** The turn this message started; omitted for a message steered into a running turn. */
       readonly startsTurn?: string;
+      /** When that turn ended; null while it runs. Defaults to when it was requested. */
+      readonly turnCompletedAt?: number | null;
       readonly text?: string;
       readonly inputOrigin?: string;
       readonly sender?: string;
       readonly delegationId?: string;
     }>;
+    /** User-input requests raised, by request id. */
+    readonly requests?: ReadonlyArray<{
+      readonly threadId: string;
+      readonly requestId: string;
+      readonly at: number;
+    }>;
   }) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      const at = (second: number) => `2026-08-21T20:00:${String(second).padStart(2, "0")}.000Z`;
+      const at = provenanceAt;
+      yield* sql`DELETE FROM projection_thread_activities`;
+      for (const request of input.requests ?? []) {
+        yield* sql`INSERT INTO projection_thread_activities (
+          activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at
+        ) VALUES (
+          ${`request-${request.requestId}`}, ${request.threadId}, 'approval',
+          'user-input.requested', 'Approval requested',
+          ${encodeUnknownJson({ requestId: request.requestId, questions: [] })}, 1, ${at(request.at)}
+        )`;
+      }
       yield* sql`DELETE FROM projection_thread_sessions`;
       yield* sql`DELETE FROM projection_turns`;
       yield* sql`DELETE FROM projection_thread_messages`;
@@ -2826,8 +2852,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             thread_id, turn_id, pending_message_id, assistant_message_id, state,
             requested_at, started_at, completed_at, checkpoint_files_json
           ) VALUES (
-            ${message.threadId}, ${message.startsTurn}, ${message.id}, NULL, 'completed',
-            ${at(message.at)}, ${at(message.at)}, ${at(message.at)}, '[]'
+            ${message.threadId}, ${message.startsTurn}, ${message.id}, NULL,
+            ${message.turnCompletedAt === null ? "running" : "completed"},
+            ${at(message.at)}, ${at(message.at)},
+            ${message.turnCompletedAt === null ? null : at(message.turnCompletedAt ?? message.at)},
+            '[]'
           )`;
         }
       }
@@ -2872,6 +2901,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         senderThreadId: ThreadId.make("thread-asking-chat"),
         delegationId: null,
         senderThreadIds: [ThreadId.make("thread-asking-chat")],
+        workStartedAt: provenanceAt(1),
       });
 
       // With no active turn the latest one answers, settled or not.
@@ -2882,6 +2912,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         senderThreadId: null,
         delegationId: null,
         senderThreadIds: [],
+        workStartedAt: provenanceAt(2),
       });
       assert.isNull(yield* readTurnTrigger("thread-missing"));
     }),
@@ -2907,6 +2938,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         senderThreadId: ThreadId.make("thread-other"),
         delegationId: null,
         senderThreadIds: [ORCHESTRATOR_THREAD_ID, ThreadId.make("thread-other")],
+        workStartedAt: provenanceAt(1),
       });
     }),
   );
@@ -3015,6 +3047,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         senderThreadId: null,
         delegationId: null,
         senderThreadIds: [],
+        workStartedAt: provenanceAt(2),
       });
       // Delegated work stays delegated whoever forked it.
       assert.strictEqual(
@@ -3028,6 +3061,259 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         senderThreadId: ThreadId.make("thread-asker"),
         delegationId: null,
         senderThreadIds: [ThreadId.make("thread-asker")],
+        workStartedAt: provenanceAt(2),
+      });
+    }),
+  );
+
+  it.effect("keeps a side chat on the parent's work from when the parent wrote to it", () =>
+    Effect.gen(function* () {
+      yield* seedTurnProvenance({
+        threads: [
+          { id: "thread-parent", activeTurnId: "turn-later", latestTurnId: "turn-later" },
+          {
+            id: "thread-side",
+            parent: "thread-parent",
+            activeTurnId: "turn-side",
+            latestTurnId: "turn-side",
+          },
+        ],
+        messages: [
+          {
+            id: "message-asked",
+            threadId: "thread-parent",
+            at: 1,
+            startsTurn: "turn-asked",
+            sender: "thread-asker",
+          },
+          {
+            id: "message-side",
+            threadId: "thread-side",
+            at: 2,
+            startsTurn: "turn-side",
+            sender: "thread-parent",
+          },
+          // After the parent wrote to the side chat: another chat joins the
+          // parent's work, then the person starts new work there.
+          { id: "message-late", threadId: "thread-parent", at: 3, sender: "thread-late" },
+          { id: "message-person", threadId: "thread-parent", at: 4, startsTurn: "turn-later" },
+        ],
+      });
+
+      assert.strictEqual((yield* readTurnTrigger("thread-parent"))?.senderThreadId, null);
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-side"), {
+        senderThreadId: ThreadId.make("thread-asker"),
+        delegationId: null,
+        senderThreadIds: [ThreadId.make("thread-asker")],
+        workStartedAt: provenanceAt(2),
+      });
+    }),
+  );
+
+  it.effect("reads the parent's work as the turn running when it wrote, not one queued then", () =>
+    Effect.gen(function* () {
+      yield* seedTurnProvenance({
+        threads: [
+          { id: "thread-parent", activeTurnId: "turn-person", latestTurnId: "turn-person" },
+          {
+            id: "thread-side",
+            parent: "thread-parent",
+            activeTurnId: "turn-side",
+            latestTurnId: "turn-side",
+          },
+        ],
+        messages: [
+          // Another chat's work runs from 1 to 10.
+          {
+            id: "message-asked",
+            threadId: "thread-parent",
+            at: 1,
+            startsTurn: "turn-asked",
+            turnCompletedAt: 10,
+            sender: "thread-asker",
+          },
+          // The person's message, queued at 2, starts its turn only after that.
+          {
+            id: "message-person",
+            threadId: "thread-parent",
+            at: 2,
+            startsTurn: "turn-person",
+            turnCompletedAt: null,
+          },
+          // Still inside the other chat's work, the parent writes to its side chat.
+          {
+            id: "message-side",
+            threadId: "thread-side",
+            at: 3,
+            startsTurn: "turn-side",
+            sender: "thread-parent",
+          },
+        ],
+      });
+
+      assert.strictEqual((yield* readTurnTrigger("thread-parent"))?.senderThreadId, null);
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-side"), {
+        senderThreadId: ThreadId.make("thread-asker"),
+        delegationId: null,
+        senderThreadIds: [ThreadId.make("thread-asker")],
+        workStartedAt: provenanceAt(3),
+      });
+    }),
+  );
+
+  it.effect("reads the person's approval answer as the work that asked for it", () =>
+    Effect.gen(function* () {
+      yield* seedTurnProvenance({
+        threads: [
+          { id: "thread-approval", activeTurnId: "turn-answer", latestTurnId: "turn-answer" },
+        ],
+        messages: [
+          { id: "message-person", threadId: "thread-approval", at: 1, startsTurn: "turn-person" },
+          {
+            id: "message-consult",
+            threadId: "thread-approval",
+            at: 2,
+            startsTurn: "turn-consult",
+            sender: "thread-asker",
+          },
+          {
+            id: `${ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX}action-approval:request-1`,
+            threadId: "thread-approval",
+            at: 3,
+            startsTurn: "turn-answer",
+            text: "The user approved the action. Proceed with exactly that action now.",
+          },
+        ],
+      });
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-approval"), {
+        senderThreadId: ThreadId.make("thread-asker"),
+        delegationId: null,
+        senderThreadIds: [ThreadId.make("thread-asker")],
+        workStartedAt: provenanceAt(2),
+      });
+    }),
+  );
+
+  it.effect("reads an approval answer as the work that asked, even after other work began", () =>
+    Effect.gen(function* () {
+      const requestId = "action-approval:request-1";
+      yield* seedTurnProvenance({
+        threads: [
+          { id: "thread-approval", activeTurnId: "turn-answer", latestTurnId: "turn-answer" },
+        ],
+        messages: [
+          // Another chat's request, whose turn raised the card at 2 and stopped at 3.
+          {
+            id: "message-consult",
+            threadId: "thread-approval",
+            at: 1,
+            startsTurn: "turn-consult",
+            turnCompletedAt: 3,
+            sender: "thread-asker",
+          },
+          // The person (or a scheduled task) started other work before answering.
+          { id: "message-person", threadId: "thread-approval", at: 4, startsTurn: "turn-person" },
+          {
+            id: `${ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX}${requestId}`,
+            threadId: "thread-approval",
+            at: 5,
+            startsTurn: "turn-answer",
+          },
+        ],
+        requests: [{ threadId: "thread-approval", requestId, at: 2 }],
+      });
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-approval"), {
+        senderThreadId: ThreadId.make("thread-asker"),
+        delegationId: null,
+        senderThreadIds: [ThreadId.make("thread-asker")],
+        workStartedAt: provenanceAt(1),
+      });
+    }),
+  );
+
+  it.effect("reads long work that never shows its beginning from as far back as it looked", () =>
+    Effect.gen(function* () {
+      const continuations = Array.from({ length: 70 }, (_, index) => ({
+        id: `message-continue-${index}`,
+        threadId: "thread-long-closed",
+        at: 2 + index,
+        startsTurn: `turn-continue-${index}`,
+        inputOrigin: "agent-loop",
+      }));
+      yield* seedTurnProvenance({
+        threads: [
+          {
+            id: "thread-long-closed",
+            activeTurnId: "turn-continue-69",
+            latestTurnId: "turn-continue-69",
+          },
+        ],
+        messages: [
+          {
+            id: "message-first",
+            threadId: "thread-long-closed",
+            at: 0,
+            startsTurn: "turn-first",
+            inputOrigin: "agent-loop",
+          },
+          // Another chat steered into the work: it never began a turn of its own.
+          {
+            id: "message-steered",
+            threadId: "thread-long-closed",
+            at: 1,
+            sender: "thread-asker",
+          },
+          ...continuations,
+        ],
+      });
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-long-closed"), {
+        senderThreadId: ThreadId.make("thread-asker"),
+        delegationId: null,
+        senderThreadIds: [ThreadId.make("thread-asker")],
+        workStartedAt: provenanceAt(0),
+      });
+    }),
+  );
+
+  it.effect("finds where long work began past the turn look-back", () =>
+    Effect.gen(function* () {
+      const continuations = Array.from({ length: 70 }, (_, index) => ({
+        id: `message-continue-${index}`,
+        threadId: "thread-long",
+        at: 4 + index,
+        startsTurn: `turn-continue-${index}`,
+        inputOrigin: "agent-loop",
+      }));
+      yield* seedTurnProvenance({
+        threads: [
+          { id: "thread-long", activeTurnId: "turn-continue-69", latestTurnId: "turn-continue-69" },
+        ],
+        messages: [
+          { id: "message-person", threadId: "thread-long", at: 1, startsTurn: "turn-person" },
+          {
+            id: "message-asked",
+            threadId: "thread-long",
+            at: 2,
+            startsTurn: "turn-asked",
+            sender: "thread-asker",
+          },
+          // Not an Agent-loop prompt, but it still carries on the work before it.
+          {
+            id: `${ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX}action-approval:request-1`,
+            threadId: "thread-long",
+            at: 3,
+            startsTurn: "turn-answer",
+          },
+          // The person steered into a running turn: it joined the work, never began it.
+          { id: "message-steered", threadId: "thread-long", at: 6, text: "keep going" },
+          ...continuations,
+        ],
+      });
+      assert.deepStrictEqual(yield* readTurnTrigger("thread-long"), {
+        senderThreadId: ThreadId.make("thread-asker"),
+        delegationId: null,
+        senderThreadIds: [ThreadId.make("thread-asker")],
+        workStartedAt: provenanceAt(2),
       });
     }),
   );

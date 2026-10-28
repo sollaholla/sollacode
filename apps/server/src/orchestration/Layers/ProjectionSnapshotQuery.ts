@@ -50,6 +50,10 @@ import {
   HELD_MESSAGE_REMOVED,
   isHeldMessageId,
 } from "@t3tools/shared/heldMessages";
+import {
+  ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX,
+  isActionApprovalResponseMessageId,
+} from "@t3tools/shared/actionApproval";
 import { STOPPED_BEFORE_SEND_REASON } from "../../persistence/Services/ThreadWorkObligations.ts";
 import * as Arr from "effect/Array";
 import * as DateTime from "effect/DateTime";
@@ -278,13 +282,51 @@ const ProjectionTurnInputsLookupInput = Schema.Struct({
   threadId: ThreadId,
   requestedAt: Schema.String,
 });
+const ProjectionTurnTriggerAsOfLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  asOf: Schema.String,
+});
+const ProjectionTurnSpanRowSchema = Schema.Struct({
+  turnState: Schema.String,
+  requestedAt: Schema.String,
+  completedAt: Schema.NullOr(Schema.String),
+});
+const ProjectionWorkOriginCandidateRowSchema = Schema.Struct({
+  messageId: Schema.String,
+  inputOrigin: Schema.NullOr(Schema.String),
+  shortText: Schema.NullOr(Schema.String),
+  createdAt: Schema.String,
+});
+const ProjectionWorkOriginLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  createdAt: Schema.String,
+});
+const ProjectionOldestTurnRowSchema = Schema.Struct({
+  requestedAt: Schema.NullOr(Schema.String),
+});
+const ProjectionRequestRaisedLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: Schema.String,
+  until: Schema.String,
+});
+const ProjectionRequestRaisedRowSchema = Schema.Struct({
+  createdAt: Schema.String,
+});
 const ProjectionWorkSenderRowSchema = Schema.Struct({
   senderThreadId: Schema.NullOr(ThreadId),
   delegationId: Schema.NullOr(VmAgentDelegationId),
+  /** When this sender's first message of the work arrived. */
+  firstAt: Schema.String,
 });
+type ProjectionWorkSender = Pick<
+  typeof ProjectionWorkSenderRowSchema.Type,
+  "senderThreadId" | "delegationId"
+>;
 const ProjectionWorkSendersLookupInput = Schema.Struct({
   threadId: ThreadId,
   since: Schema.String,
+  /** Only messages up to this point; null reads to now. */
+  until: Schema.NullOr(Schema.String),
 });
 const ProjectionSideChatParentRowSchema = Schema.Struct({
   sideChatParentThreadId: Schema.NullOr(ThreadId),
@@ -665,6 +707,14 @@ const SNAPSHOT_RAW_OUTPUT_MAX_CHARS = 2_048;
 
 /** Turns read back from the active one looking for the input that began its work. */
 const TURN_PROVENANCE_TURN_LIMIT = 64;
+/** Turns read back past that look-back, for their inputs, when it found no beginning. */
+const TURN_PROVENANCE_MESSAGE_SCAN_LIMIT = 512;
+/** Of those, the newest few that are not Agent-loop prompts, checked one by one. */
+const TURN_PROVENANCE_ORIGIN_CANDIDATES = 8;
+/** Approval answers followed back to the work that asked, one inside another. */
+const TURN_PROVENANCE_APPROVAL_HOPS = 4;
+/** User-input requests read back, newest first, for the one an approval answer answers. */
+const TURN_PROVENANCE_REQUEST_SCAN_LIMIT = 256;
 /** Distinct senders reported for one stretch of work. */
 const TURN_PROVENANCE_SENDER_LIMIT = 32;
 /** Side-chat family members whose own work a sender may be resolved through. */
@@ -675,8 +725,9 @@ const TURN_INPUT_SHORT_TEXT_CHARS = 512;
 /**
  * Whether a turn's input carries on the work before it instead of starting
  * work of its own: Agent-mode continuations, resumes, blocker notices and tab
- * cleanup are app-authored, and a turn with no input message is the provider
- * carrying on. A scheduled task run is new work the person set up.
+ * cleanup are app-authored, the person's answer to an action approval goes
+ * back to the work that asked, and a turn with no input message is the
+ * provider carrying on. A scheduled task run is new work the person set up.
  */
 function continuesEarlierWork(input: {
   readonly messageId: string | null;
@@ -685,6 +736,7 @@ function continuesEarlierWork(input: {
 }): boolean {
   if (input.messageId === null) return true;
   if (isVmAgentTaskPromptMessageId(input.messageId)) return false;
+  if (isActionApprovalResponseMessageId(input.messageId)) return true;
   return (
     input.inputOrigin === "agent-loop" ||
     isSyntheticAgentLoopUserMessage({
@@ -1723,6 +1775,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     `,
   });
 
+  // Started turns requested by a past moment, newest first, with when they ended.
+  const listTurnSpansUpTo = SqlSchema.findAll({
+    Request: ProjectionTurnTriggerAsOfLookupInput,
+    Result: ProjectionTurnSpanRowSchema,
+    execute: ({ threadId, asOf }) => sql`
+      SELECT
+        turns.state AS "turnState",
+        turns.requested_at AS "requestedAt",
+        turns.completed_at AS "completedAt"
+      FROM projection_turns AS turns
+      JOIN projection_threads AS threads
+        ON threads.thread_id = turns.thread_id
+        AND threads.deleted_at IS NULL
+      WHERE turns.thread_id = ${threadId}
+        AND turns.turn_id IS NOT NULL
+        AND turns.requested_at <= ${asOf}
+      ORDER BY turns.requested_at DESC, turns.row_id DESC
+      LIMIT ${TURN_PROVENANCE_TURN_LIMIT}
+    `,
+  });
+
   // Started turns up to a point, newest first, with their input messages.
   const listTurnInputsUpTo = SqlSchema.findAll({
     Request: ProjectionTurnInputsLookupInput,
@@ -1749,18 +1822,100 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     `,
   });
 
-  // Each chat (or delegation) whose user message reached a thread since a point.
+  /**
+   * The newest inputs of started turns requested at or before a point that
+   * are not Agent-loop prompts, newest first: only messages that began a
+   * turn, never one steered into a running turn (that joins the work it
+   * found). Reads at most TURN_PROVENANCE_MESSAGE_SCAN_LIMIT turns back along
+   * the (thread_id, requested_at) index, and the text of only the few it
+   * returns.
+   */
+  const listWorkOriginCandidatesUpTo = SqlSchema.findAll({
+    Request: ProjectionWorkOriginLookupInput,
+    Result: ProjectionWorkOriginCandidateRowSchema,
+    execute: ({ threadId, createdAt }) => sql`
+      SELECT
+        messages.message_id AS "messageId",
+        messages.input_origin AS "inputOrigin",
+        CASE
+          WHEN length(messages.text) <= ${TURN_INPUT_SHORT_TEXT_CHARS} THEN messages.text
+          ELSE NULL
+        END AS "shortText",
+        messages.created_at AS "createdAt"
+      FROM (
+        SELECT pending_message_id, requested_at, row_id
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id IS NOT NULL
+          AND requested_at <= ${createdAt}
+        ORDER BY requested_at DESC, row_id DESC
+        LIMIT ${TURN_PROVENANCE_MESSAGE_SCAN_LIMIT}
+      ) AS recent
+      JOIN projection_thread_messages AS messages
+        ON messages.thread_id = ${threadId}
+        AND messages.message_id = recent.pending_message_id
+      WHERE (messages.input_origin IS NOT 'agent-loop' OR messages.message_id LIKE 'vm-task:%')
+        AND messages.message_id NOT LIKE ${`${ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX}%`}
+      ORDER BY recent.requested_at DESC, recent.row_id DESC
+      LIMIT ${TURN_PROVENANCE_ORIGIN_CANDIDATES}
+    `,
+  });
+
+  // The oldest of the turns that look-back scans: where work that never
+  // showed its beginning is read from, so no sender in reach is missed.
+  const getOldestScannedTurn = SqlSchema.findOneOption({
+    Request: ProjectionWorkOriginLookupInput,
+    Result: ProjectionOldestTurnRowSchema,
+    execute: ({ threadId, createdAt }) => sql`
+      SELECT MIN(requested_at) AS "requestedAt"
+      FROM (
+        SELECT requested_at
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id IS NOT NULL
+          AND requested_at <= ${createdAt}
+        ORDER BY requested_at DESC, row_id DESC
+        LIMIT ${TURN_PROVENANCE_MESSAGE_SCAN_LIMIT}
+      )
+    `,
+  });
+
+  // When a user-input request was raised, among the thread's newest few,
+  // along the (thread_id, kind, created_at) index.
+  const getRequestRaisedAt = SqlSchema.findOneOption({
+    Request: ProjectionRequestRaisedLookupInput,
+    Result: ProjectionRequestRaisedRowSchema,
+    execute: ({ threadId, requestId, until }) => sql`
+      SELECT created_at AS "createdAt"
+      FROM (
+        SELECT created_at, payload_json
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind = 'user-input.requested'
+          AND created_at <= ${until}
+        ORDER BY created_at DESC
+        LIMIT ${TURN_PROVENANCE_REQUEST_SCAN_LIMIT}
+      )
+      WHERE json_extract(payload_json, '$.requestId') = ${requestId}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+  });
+
+  // Each chat (or delegation) whose user message reached a thread in a window.
   const listWorkSendersSince = SqlSchema.findAll({
     Request: ProjectionWorkSendersLookupInput,
     Result: ProjectionWorkSenderRowSchema,
-    execute: ({ threadId, since }) => sql`
+    execute: ({ threadId, since, until }) => sql`
       SELECT
         sender_thread_id AS "senderThreadId",
-        MAX(delegation_id) AS "delegationId"
+        MAX(delegation_id) AS "delegationId",
+        MIN(created_at) AS "firstAt"
       FROM projection_thread_messages
       WHERE thread_id = ${threadId}
         AND role = 'user'
         AND created_at >= ${since}
+        ${until === null ? sql`` : sql`AND created_at <= ${until}`}
         AND (sender_thread_id IS NOT NULL OR delegation_id IS NOT NULL)
       GROUP BY sender_thread_id
       ORDER BY MIN(created_at) ASC
@@ -3612,36 +3767,126 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   });
 
   /**
+   * When the work the turn requested at `anchorRequestedAt` belongs to began
+   * (`startedAt`), and from when messages reached it (`since`): the message
+   * that started it, past app-authored continuations. The person's answer to
+   * an action approval carries on the work that raised the request, read as
+   * of when it was raised, even when other work started in between: that
+   * work's start is reported, and `since` reaches back far enough to count
+   * the senders of both. When the whole turn look-back is continuations, the
+   * input of the newest work-starting turn further back stands in, else the
+   * oldest turn that search reached.
+   */
+  const readWorkStart = (
+    threadId: ThreadId,
+    anchorRequestedAt: string,
+    approvalHops: number = TURN_PROVENANCE_APPROVAL_HOPS,
+  ): Effect.Effect<
+    { readonly startedAt: string; readonly since: string },
+    SqlError | Schema.SchemaError
+  > =>
+    Effect.gen(function* () {
+      const inputs = yield* listTurnInputsUpTo({ threadId, requestedAt: anchorRequestedAt });
+      const originIndex = inputs.findIndex((input) => !continuesEarlierWork(input));
+      const origin = inputs[originIndex];
+      const newestStart =
+        origin !== undefined
+          ? (origin.createdAt ?? origin.requestedAt)
+          : yield* readLongWorkStart(threadId, inputs, anchorRequestedAt);
+      const answer = inputs.find(
+        (input, index) =>
+          (originIndex === -1 || index < originIndex) &&
+          input.messageId !== null &&
+          isActionApprovalResponseMessageId(input.messageId),
+      );
+      if (answer === undefined || answer.messageId === null || approvalHops <= 0)
+        return { startedAt: newestStart, since: newestStart };
+      const raised = yield* getRequestRaisedAt({
+        threadId,
+        requestId: answer.messageId.slice(ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX.length),
+        until: answer.createdAt ?? answer.requestedAt,
+      });
+      if (Option.isNone(raised)) return { startedAt: newestStart, since: newestStart };
+      const asking = yield* readTurnRunningAsOf(threadId, raised.value.createdAt);
+      if (Option.isNone(asking)) return { startedAt: newestStart, since: newestStart };
+      const asked = yield* readWorkStart(threadId, asking.value, approvalHops - 1);
+      return {
+        startedAt: asked.startedAt,
+        since: asked.since < newestStart ? asked.since : newestStart,
+      };
+    });
+
+  /**
+   * Where work whose whole turn look-back was continuations began: the input
+   * of the newest work-starting turn further back, else the oldest turn that
+   * search reached, so a sender anywhere in reach still counts.
+   */
+  const readLongWorkStart = Effect.fn("ProjectionSnapshotQuery.readLongWorkStart")(function* (
+    threadId: ThreadId,
+    inputs: ReadonlyArray<typeof ProjectionTurnInputRowSchema.Type>,
+    anchorRequestedAt: string,
+  ) {
+    const oldest = inputs.at(-1);
+    if (oldest === undefined) return anchorRequestedAt;
+    if (inputs.length < TURN_PROVENANCE_TURN_LIMIT) return oldest.requestedAt;
+    const candidates = yield* listWorkOriginCandidatesUpTo({
+      threadId,
+      createdAt: oldest.requestedAt,
+    });
+    const origin = candidates.find((candidate) => !continuesEarlierWork(candidate));
+    if (origin !== undefined) return origin.createdAt;
+    const scanned = yield* getOldestScannedTurn({ threadId, createdAt: oldest.requestedAt });
+    return Option.getOrNull(scanned)?.requestedAt ?? oldest.requestedAt;
+  });
+
+  /**
+   * When the turn a thread was on at a past moment was requested. A turn
+   * queued before that moment keeps its queue time once it starts, so the
+   * latest requested by then can be one that only started later: the turn
+   * running then is the oldest of them not yet over by then. With none
+   * running, the latest one.
+   */
+  const readTurnRunningAsOf = Effect.fn("ProjectionSnapshotQuery.readTurnRunningAsOf")(function* (
+    threadId: ThreadId,
+    asOf: string,
+  ) {
+    const turns = yield* listTurnSpansUpTo({ threadId, asOf });
+    const running = turns.findLast((turn) =>
+      turn.completedAt === null ? turn.turnState === "running" : turn.completedAt > asOf,
+    );
+    return Option.map(Option.fromUndefinedOr(running ?? turns[0]), (turn) => turn.requestedAt);
+  });
+
+  /**
    * Senders of every message that reached a thread's current work (see
-   * ProjectionTurnTrigger), oldest first. A sender in the thread's own
-   * side-chat family is replaced by that chat's own senders; one that cannot
-   * be resolved (too deep, a cycle, no work of its own) stays as itself, which
+   * ProjectionTurnTrigger), oldest first, with when that work began. With
+   * `asOf` it reads the work the thread was on at that moment instead, up to
+   * that moment. A sender in the thread's own side-chat family is replaced by
+   * that chat's senders as of its first message here; one that cannot be
+   * resolved (too deep, a cycle, no work of its own) stays as itself, which
    * reads as another chat.
    */
   const readWorkSenders = (
     threadId: ThreadId,
     visited: Set<ThreadId>,
     familyHops: number,
+    asOf: string | null,
   ): Effect.Effect<
-    Option.Option<ReadonlyArray<typeof ProjectionWorkSenderRowSchema.Type>>,
+    Option.Option<{
+      readonly startedAt: string;
+      readonly senders: ReadonlyArray<ProjectionWorkSender>;
+    }>,
     SqlError | Schema.SchemaError
   > =>
     Effect.gen(function* () {
-      const anchor = yield* getTurnTriggerRow({ threadId });
+      const anchor =
+        asOf === null
+          ? Option.map(yield* getTurnTriggerRow({ threadId }), (row) => row.requestedAt)
+          : yield* readTurnRunningAsOf(threadId, asOf);
       if (Option.isNone(anchor)) return Option.none();
-      const inputs = yield* listTurnInputsUpTo({
-        threadId,
-        requestedAt: anchor.value.requestedAt,
-      });
-      const origin = inputs.find((input) => !continuesEarlierWork(input));
-      // Past the bounded look-back the oldest turn read stands in for the start.
-      const since =
-        origin?.createdAt ??
-        origin?.requestedAt ??
-        inputs.at(-1)?.requestedAt ??
-        anchor.value.requestedAt;
-      const rows = yield* listWorkSendersSince({ threadId, since });
-      const senders: Array<typeof ProjectionWorkSenderRowSchema.Type> = [];
+      const { startedAt, since } = yield* readWorkStart(threadId, anchor.value);
+      const rows = yield* listWorkSendersSince({ threadId, since, until: asOf });
+      const senders: Array<ProjectionWorkSender> = [];
       let root: ThreadId | null = null;
       for (const row of rows) {
         const sender = row.senderThreadId;
@@ -3649,9 +3894,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           root ??= yield* sideChatFamilyRoot(threadId);
           if ((yield* sideChatFamilyRoot(sender)) === root) {
             visited.add(sender);
-            const upstream = yield* readWorkSenders(sender, visited, familyHops - 1);
+            const upstream = yield* readWorkSenders(sender, visited, familyHops - 1, row.firstAt);
             if (Option.isSome(upstream)) {
-              senders.push(...upstream.value);
+              senders.push(...upstream.value.senders);
               if (row.delegationId !== null) {
                 senders.push({ senderThreadId: null, delegationId: row.delegationId });
               }
@@ -3659,15 +3904,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             }
           }
         }
-        senders.push(row);
+        senders.push({ senderThreadId: row.senderThreadId, delegationId: row.delegationId });
       }
-      return Option.some(senders);
+      return Option.some({ startedAt, senders });
     });
 
   const getTurnTrigger: NonNullable<ProjectionSnapshotQueryShape["getTurnTrigger"]> = (threadId) =>
-    readWorkSenders(threadId, new Set([threadId]), TURN_PROVENANCE_FAMILY_HOPS).pipe(
+    readWorkSenders(threadId, new Set([threadId]), TURN_PROVENANCE_FAMILY_HOPS, null).pipe(
       Effect.map(
-        Option.map((senders) => {
+        Option.map(({ startedAt, senders }) => {
           const senderThreadIds = [
             ...new Set(
               senders.flatMap((row) => (row.senderThreadId === null ? [] : [row.senderThreadId])),
@@ -3680,6 +3925,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               null,
             delegationId: senders.find((row) => row.delegationId !== null)?.delegationId ?? null,
             senderThreadIds,
+            workStartedAt: startedAt,
           };
         }),
       ),

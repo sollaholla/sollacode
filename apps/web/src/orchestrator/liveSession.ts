@@ -886,6 +886,9 @@ export function createLiveVoiceSession(
         if (!stopped && !closing) callbacks.onError?.("That microphone could not be opened.");
       });
     },
+    instruct: (text) => {
+      append("session.instructions.append", text, null);
+    },
     setMuted: (next) => {
       if (muted === next) return;
       muted = next;

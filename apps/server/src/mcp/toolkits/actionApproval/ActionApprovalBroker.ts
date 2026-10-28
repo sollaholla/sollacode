@@ -3,6 +3,7 @@ import {
   type ProviderUserInputAnswers,
   type ThreadId,
 } from "@t3tools/contracts";
+import { actionApprovalAnswerFromUnknown } from "@t3tools/shared/actionApproval";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -28,6 +29,13 @@ type RetiredApproval = {
 type BrokerEntry = PendingApproval | RetiredApproval;
 
 const MAX_RETIRED_APPROVALS = 256;
+const MAX_APPROVED_FINGERPRINTS = 256;
+
+type OpenFingerprint = {
+  readonly threadId: ThreadId;
+  readonly key: string;
+  readonly workStartedAt: string | undefined;
+};
 
 export class ActionApprovalBroker extends Context.Service<
   ActionApprovalBroker,
@@ -45,15 +53,32 @@ export class ActionApprovalBroker extends Context.Service<
       readonly threadId: ThreadId;
       readonly requestId: ApprovalRequestId;
     }) => Effect.Effect<void>;
+    /**
+     * Remembers a proposal waiting for the person. `workStartedAt` is the
+     * thread's current work (ProjectionTurnTrigger), which an approval of it
+     * then covers.
+     */
     readonly rememberOpen: (input: {
       readonly threadId: ThreadId;
       readonly requestId: ApprovalRequestId;
       readonly fingerprint: string;
+      readonly workStartedAt?: string;
     }) => Effect.Effect<void>;
     readonly findOpen: (input: {
       readonly threadId: ThreadId;
       readonly fingerprint: string;
     }) => Effect.Effect<ApprovalRequestId | null>;
+    /**
+     * Whether the person approved this exact proposal during this same work
+     * and it has not been used yet. Uses it up: the approval covers the one
+     * re-request that follows the person's answer, and a later repeat of the
+     * same action asks again.
+     */
+    readonly wasApproved: (input: {
+      readonly threadId: ThreadId;
+      readonly fingerprint: string;
+      readonly workStartedAt: string;
+    }) => Effect.Effect<boolean>;
   }
 >()("t3/mcp/toolkits/actionApproval/ActionApprovalBroker") {}
 
@@ -62,13 +87,30 @@ const fingerprintKey = (threadId: ThreadId, fingerprint: string) => `${threadId}
 const make = Effect.fn("ActionApprovalBroker.make")(function* () {
   const entries = new Map<ApprovalRequestId, BrokerEntry>();
   const openByFingerprint = new Map<string, ApprovalRequestId>();
-  const fingerprintByRequest = new Map<ApprovalRequestId, string>();
+  const fingerprintByRequest = new Map<ApprovalRequestId, OpenFingerprint>();
+  // Fingerprint key -> the work an approval of it belongs to, oldest first.
+  const approvedWorkByFingerprint = new Map<string, string>();
 
   const forgetFingerprint = (requestId: ApprovalRequestId) => {
-    const key = fingerprintByRequest.get(requestId);
-    if (key === undefined) return;
+    const open = fingerprintByRequest.get(requestId);
+    if (open === undefined) return undefined;
     fingerprintByRequest.delete(requestId);
-    if (openByFingerprint.get(key) === requestId) openByFingerprint.delete(key);
+    if (openByFingerprint.get(open.key) === requestId) openByFingerprint.delete(open.key);
+    return open;
+  };
+
+  // An answered request is no longer open; an approved one covers one
+  // identical re-request in the work it was asked in.
+  const settleFingerprint = (requestId: ApprovalRequestId, answers: ProviderUserInputAnswers) => {
+    const open = forgetFingerprint(requestId);
+    if (open?.workStartedAt === undefined) return;
+    if (actionApprovalAnswerFromUnknown(answers).status !== "approved") return;
+    approvedWorkByFingerprint.delete(open.key);
+    approvedWorkByFingerprint.set(open.key, open.workStartedAt);
+    for (const key of approvedWorkByFingerprint.keys()) {
+      if (approvedWorkByFingerprint.size <= MAX_APPROVED_FINGERPRINTS) break;
+      approvedWorkByFingerprint.delete(key);
+    }
   };
 
   const pruneRetired = () => {
@@ -105,6 +147,9 @@ const make = Effect.fn("ActionApprovalBroker.make")(function* () {
   const resolve: ActionApprovalBroker["Service"]["resolve"] = Effect.fn(
     "ActionApprovalBroker.resolve",
   )(function* (input) {
+    if (fingerprintByRequest.get(input.requestId)?.threadId === input.threadId) {
+      settleFingerprint(input.requestId, input.answers);
+    }
     const entry = entries.get(input.requestId);
     if (!entry || entry.threadId !== input.threadId) return "not_owned" as const;
     if (entry.state === "retired") return "duplicate" as const;
@@ -114,7 +159,6 @@ const make = Effect.fn("ActionApprovalBroker.make")(function* () {
       threadId: input.threadId,
     });
     pruneRetired();
-    forgetFingerprint(input.requestId);
     yield* Deferred.succeed(entry.deferred, input.answers);
     return "accepted" as const;
   }, Effect.uninterruptible);
@@ -141,7 +185,11 @@ const make = Effect.fn("ActionApprovalBroker.make")(function* () {
     yield* Effect.sync(() => {
       const key = fingerprintKey(input.threadId, input.fingerprint);
       openByFingerprint.set(key, input.requestId);
-      fingerprintByRequest.set(input.requestId, key);
+      fingerprintByRequest.set(input.requestId, {
+        threadId: input.threadId,
+        key,
+        workStartedAt: input.workStartedAt,
+      });
     });
   });
 
@@ -153,7 +201,25 @@ const make = Effect.fn("ActionApprovalBroker.make")(function* () {
     );
   });
 
-  return ActionApprovalBroker.of({ register, resolve, retire, rememberOpen, findOpen });
+  const wasApproved: ActionApprovalBroker["Service"]["wasApproved"] = Effect.fn(
+    "ActionApprovalBroker.wasApproved",
+  )(function* (input) {
+    return yield* Effect.sync(() => {
+      const key = fingerprintKey(input.threadId, input.fingerprint);
+      if (approvedWorkByFingerprint.get(key) !== input.workStartedAt) return false;
+      approvedWorkByFingerprint.delete(key);
+      return true;
+    });
+  });
+
+  return ActionApprovalBroker.of({
+    register,
+    resolve,
+    retire,
+    rememberOpen,
+    findOpen,
+    wasApproved,
+  });
 });
 
 export const layer = Layer.effect(ActionApprovalBroker, make());

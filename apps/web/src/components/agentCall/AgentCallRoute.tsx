@@ -45,6 +45,28 @@ export function AgentCallRoute() {
   const onThisDevice = isThisCall && isAgentCallPhaseOpen(active.phase);
   const [declinedHere, setDeclinedHere] = useState(false);
 
+  // A spoken transfer hung this call up and placed another from this
+  // device: the page follows the person there, so what is under the call
+  // screen (and the pill) is the call they are on, not one offering to call
+  // back the agent they just left.
+  const movedTo =
+    active !== null &&
+    active.environmentId === environmentId &&
+    active.transferredFrom === callId &&
+    active.callId !== null &&
+    isAgentCallPhaseOpen(active.phase)
+      ? active.callId
+      : null;
+  useEffect(() => {
+    if (movedTo === null) return;
+    void navigate({
+      to: "/call/$environmentId/$callId",
+      params: { environmentId, callId: movedTo },
+      search: true,
+      replace: true,
+    });
+  }, [environmentId, movedTo, navigate]);
+
   // Arriving here means "show me the call", not the pill.
   const setMinimised = api?.setMinimised;
   useEffect(() => {
@@ -80,6 +102,10 @@ export function AgentCallRoute() {
   } else if (call?.status === "active") {
     title = `On a call with ${name}`;
     detail = call.answeredBy ? `Answered on ${call.answeredBy}.` : "Answered on another device.";
+    const others = call.participants ?? [];
+    if (others.length > 0) {
+      detail += ` Also on the call: ${others.map((participant) => participant.title).join(", ")}.`;
+    }
     // The way out of a call a closed tab or a lost phone left open.
     showEnd = true;
   } else {

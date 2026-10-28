@@ -300,8 +300,11 @@ The Agents list shows a numbered notification bubble for each agent's unread, un
 ## Calling an agent
 
 You can talk with an agent by voice, like a phone call. The call screen shows the agent's
-character, its name, a timer and its buttons: **Mute**, **Chat** and **End** on web and desktop,
-**Mute** and **End** in the phone app. A one-line caption shows the last thing said.
+character, its name, a timer and its buttons: **Mute**, **Add**, **Chat** and **End** on web and
+desktop, **Mute**, **Add** and **End** in the phone app. A one-line caption shows the last thing
+said. The agent can put you through to another agent, and you can bring other agents and chats
+onto the call; see [Transferring a call](#transferring-a-call) and
+[Adding others to a call](#adding-others-to-a-call).
 
 Say goodbye to end a call by voice: once you say bye (or "that's all", "hang up") and the agent
 answers with its own goodbye, the call hangs up as soon as that goodbye finishes. A connected call
@@ -375,6 +378,120 @@ still connecting: if another device takes a call this phone placed, the screen s
 closing it leaves that call alone. When a call this phone was on ends, including one you hang up
 before it connects, the screen shows that it ended and then closes. If the call fails, the screen
 stays open with the reason until you close it.
+
+### Transferring a call
+
+Ask the agent you're talking to for another of your agents, for example "Can I talk to Gregg?",
+and it answers "Transferring you to Gregg." The screen reads "Transferring to Gregg…" while it says
+so. Then the call hangs up quietly, with no hang-up tone and no "Call ended" screen, and the same
+device calls Gregg, as if you had tapped **Call** on Gregg. The new call is a call of its own: it
+talks in Gregg's chat and starts a new timer. Others you added to the first call don't come along.
+Your microphone choice and mute state carry over. If the new call can't be placed, the call screen shows why.
+
+Only agents can take a transferred call, and only the ones the agent was told about when the call
+connected: your other agents on that computer that aren't stopped. Ask for anyone else and the
+agent says it can't reach them. A name that comes out a little differently in the transcript, such
+as "Greg" for "Gregg", still finds the agent when only one fits. The agent has to say the phrase as
+its own sentence: "I won't be transferring you to Gregg." or a reply it reads out that mentions a
+transfer doesn't move the call.
+
+If you opened the call from its own page (a call notification), that page moves to the new call
+too, so minimising the call shows the call you're on, not the one you left.
+
+In the phone app, the call screen follows the call to the new agent instead of closing, and its
+title changes to that agent. If the new call can't be placed, the screen stays open with the
+reason. Closing the screen during or after a transfer hangs up the new call, or cancels it if it is
+still ringing. Close the screen in the moment before the new call reaches the phone and that call
+keeps ringing until it times out, about 30 seconds, during which calling that agent again says
+you're already on a call.
+
+### Adding others to a call
+
+You can bring up to four others onto a call: your other agents and your recent chats. The agent
+you called stays the only voice. The others hear what you say to them and answer through it.
+
+Add someone:
+
+- by voice: "Add Gregg to the call." The agent answers "Adding Gregg to the call." and Gregg
+  joins. Ask for several at once ("Add Gregg and Nova") and the agent adds each of them. Someone
+  already on the call is left as they are. If the agent names someone who isn't on the list, that
+  name isn't added: the call screen says "No one called … is on the call list." and the agent tells
+  you and asks who you meant.
+- with **Add** on the call screen, which lists who you can add, agents first, then chats. It works
+  once the call is connected, and is greyed out with four others already on the call or during a
+  transfer.
+- with **Add someone to the call...** in the command palette while a call is live on web or
+  desktop.
+
+The list is fixed when the call connects. It holds your other agents that aren't stopped, then up
+to 12 of your most recently active chats, at most 30 names in all. Archived chats, side chats, the
+orchestrator, Agent Builder and delegated workers are never on it, and neither is a chat whose title
+reads the same as a name already listed. An agent joins under its name, a chat under its title. An
+agent or chat created after the call connected can join the next call. With an older version of
+Solla Code on the computer the agent runs on, or on the device holding the call, the agent doesn't
+offer transfers or adds.
+
+Everyone else on the call shows under the agent's name, each with a remove button. Take someone off
+with that button, by voice (ask the agent to drop Gregg and it answers "Removing Gregg from the
+call."), or with **Remove <name> from the call** in the command palette. Removing a chat only takes
+it off the call; work it already started goes on in its chat. The minimised pill shows **+N** for
+the others on the call, and the page for a call held on another device lists them under "Also on
+the call". The phone app's call page has the same **Add** button and list; on iOS 26 and later the
+screen's header also shows "with Gregg, Nova" under the agent's name.
+
+If adding or removing someone fails, the reason shows on the call screen, for example "A call can
+have at most 4 others on it." or "That chat is archived. Unarchive it to add it to a call." The
+agent doesn't say it aloud, but knows it if you ask. If the agent says it is dropping someone who
+isn't on the call, the screen says "<name> isn't on this call." and the agent tells you and asks
+who you meant.
+
+Where your words go:
+
+- What you say goes to the agent you called, as on any call.
+- Name someone on the call and it goes to them instead: "Gregg, what's on my calendar today?" Name
+  the agent you called as well and it goes to both. Only what you just said decides this: earlier
+  words the agent handled itself, such as "Add Gregg to the call." or "Thanks, everyone.", don't.
+- An agent whose name has two or more words can be named by its first word, when that word has four
+  or more letters and nobody else on the call shares it ("Nova" for "Nova Bright"). A chat needs its
+  whole title ("Quarterly report", not "Quarterly"), because titles often start with everyday
+  words.
+- Speak to the group and it goes to everyone on the call: "all of you", "you all", "y'all", "both
+  of you" or "you guys" anywhere, "you two" as in "Can you two…?", and "everyone", "everybody",
+  "guys" or "folks" when you say it to them: "Everyone, …", "Everyone ready?", "…, everybody?",
+  "What do you think, everyone?", "Hey guys", "Thanks everyone", "What does everyone think?".
+  "Everyone" about other people ("send it to everyone on the team", "Everyone on the team needs
+  access.") isn't said to the call. Neither is "are you all set" or "are you all right", and a
+  question you open with a name ("Scout, does everyone have access?") goes to that one.
+- When a chat on the call asks you a question about what you just said to it, or asks one the agent
+  has just read out to you, you can answer without naming it, as long as nobody else on the call is
+  also waiting on an answer. This works for questions you can answer by voice, not for approvals. A
+  question you talked past (you spoke to someone else after hearing it) needs its name: "Gregg, the
+  work account."
+- Names are matched as whole words, ignoring case, accents and punctuation. A name said only inside
+  a longer name on the call counts as the longer one: "Atlas migration, …" goes to the "Atlas
+  migration" chat, not to the agent Atlas. A name of four or more letters that the transcript
+  spells a little differently ("Greg" for "Gregg") still counts when you say it to them, as in
+  "Greg, …" or "…, Greg?", and nobody else on the call fits it. A chat titled with a common word
+  also takes sentences that use that word: a chat called "Deploy" gets "deploy it now". Remove it
+  from the call if that gets in the way.
+
+Each chat gets your words as a message from you, starting with "From our voice call" and with a
+line saying who else is on the call, so its usual tools, rules and approval policy apply as for a
+message you typed there. A chat only gets what was said since the last words went out, and only
+when those words are for it: it doesn't hear what you said to the others. If it was waiting on a
+question you can answer by voice, your words go in as the answer instead.
+
+Each chat's replies come back with its name, and the agent reads each one out as theirs as soon as
+it arrives: "Gregg: …", followed by who is not done yet. A question or an approval from any chat on
+the call is passed on right away, with its name, and always ends with what you have to do
+(approvals still happen in Solla Code). When several chats answer the same words, each reply is
+shortened so all of them fit, and the full replies stay in their chats. A chat that can't answer
+reads as "<name> couldn't answer", and the others still do. A chat still working when you say
+something else keeps being followed, so its reply still reaches you. If a chat on the call is
+deleted, it leaves the call and the agent tells you; the call goes on. An answer arriving just as you speak again is carried into the next stream, even when you address the same chat. You may hear that answer again if the earlier stream had already played it.
+
+The call keeps one voice session, so adding others doesn't start a second one billed to your
+OpenAI key. Each chat on the call works with its own provider, as it would for a typed message.
 
 ## When an agent calls you
 

@@ -3,6 +3,7 @@ import {
   type AgentCall,
   type AgentCallNativeMessage,
 } from "@t3tools/contracts";
+import { agentCallTransferDetail } from "@t3tools/shared/agentCallBridge";
 import { describe, expect, it } from "vite-plus/test";
 
 import { buildOrchestratorUrl } from "../orchestrator/orchestratorUrl";
@@ -10,6 +11,7 @@ import {
   agentCallBlockedReason,
   agentCallKey,
   agentCallPage,
+  agentCallParticipantsLine,
   applyAgentCallNativeMessage,
   callsToEndOnLeave,
   createAgentCallKeySet,
@@ -17,6 +19,7 @@ import {
   isCallHeldHere,
   openCallForAgent,
   parseAgentCallNativeMessage,
+  previousFollowedStatus,
   RING_HAPTIC_BURST_MS,
   RING_HAPTIC_PERIOD_MS,
   resolveAgentCallScreenAction,
@@ -445,6 +448,167 @@ describe("agent call screen hold", () => {
   it("ignores a release for a call it never held", () => {
     const hold = initialAgentCallScreenHold({ callId: "call-1", placedHere: false });
     expect(applyAgentCallNativeMessage(hold, message("released", "call-9"))).toBe(hold);
+  });
+
+  it("follows a transfer to the new call, and leaving hangs up only that one", () => {
+    // This phone called Atlas; the voice then transferred the person to Nova.
+    const atlas = makeCall({ direction: "outgoing", status: "ended", answeredBy: "iPhone" });
+    let nova = makeCall({
+      callId: "call-2" as AgentCall["callId"],
+      vmAgentId: "agent-2" as AgentCall["vmAgentId"],
+      direction: "outgoing",
+      status: "ringing",
+    });
+    const findCall = (callId: string) =>
+      [atlas, nova].find((call) => call.callId === callId) ?? null;
+    let hold = initialAgentCallScreenHold({ callId: "call-1", placedHere: true });
+    hold = applyAgentCallNativeMessage(hold, message("held", "call-1"));
+    hold = applyAgentCallNativeMessage(hold, message("connected", "call-1"));
+
+    // The page hangs up Atlas's call, saying it is moving to Nova. Its
+    // ending waits for the page's new call, longer than the usual linger.
+    hold = applyAgentCallNativeMessage(
+      hold,
+      message("released", "call-1", agentCallTransferDetail("agent-2")),
+    );
+    expect(hold.callId).toBe("call-1");
+    expect(hold.transfer).toEqual({ fromCallId: "call-1", vmAgentId: "agent-2" });
+    expect(
+      resolveAgentCallScreenAction({
+        previousStatus: "active",
+        status: "ended",
+        heldHere: isCallHeldHere(hold, "call-1", "ended"),
+        failed: false,
+        transferring: hold.transfer?.fromCallId === "call-1",
+      }),
+    ).toBe("await-hold");
+    // Leaving in between cancels the ring the page is placing to Nova, once
+    // the host shows it; Atlas's call is already over.
+    const ringingTo = (vmAgentId: string) => (vmAgentId === "agent-2" ? "call-2" : null);
+    expect(callsToEndOnLeave({ hold, findCall })).toEqual([]);
+    expect(callsToEndOnLeave({ hold, findCall, findOutgoingRing: ringingTo })).toEqual([
+      cancel("call-2"),
+    ]);
+    expect(callsToEndOnLeave({ hold, findCall, findOutgoingRing: () => null })).toEqual([]);
+
+    // The page holds the call it placed to Nova, and the screen follows it.
+    hold = applyAgentCallNativeMessage(hold, message("held", "call-2"));
+    expect(hold.callId).toBe("call-2");
+    expect(hold.transfer).toBeNull();
+    expect(isCallHeldHere(hold, "call-2", "ringing")).toBe(true);
+    // A new call: its first status is no change, so nothing closes, and
+    // Atlas's ending behind it is no longer the screen's to act on.
+    const previousStatus = previousFollowedStatus({ callId: "call-1", status: "ended" }, "call-2");
+    expect(previousStatus).toBeNull();
+    expect(
+      resolveAgentCallScreenAction({
+        previousStatus,
+        status: "ringing",
+        heldHere: isCallHeldHere(hold, "call-2", "ringing"),
+        failed: false,
+      }),
+    ).toBe("stay");
+    // Not connected yet: leaving only cancels Nova's ring, once.
+    expect(callsToEndOnLeave({ hold, findCall, findOutgoingRing: ringingTo })).toEqual([
+      cancel("call-2"),
+    ]);
+
+    hold = applyAgentCallNativeMessage(hold, message("connected", "call-2"));
+    nova = { ...nova, status: "active", answeredBy: "iPhone", expiresAt: null };
+    expect(
+      resolveAgentCallScreenAction({
+        previousStatus: previousFollowedStatus({ callId: "call-2", status: "ringing" }, "call-2"),
+        status: "active",
+        heldHere: isCallHeldHere(hold, "call-2", "active"),
+        failed: false,
+      }),
+    ).toBe("stay");
+    expect(callsToEndOnLeave({ hold, findCall })).toEqual([end("call-2")]);
+
+    // Nova's call ending is then this phone's call ending, as usual.
+    expect(
+      resolveAgentCallScreenAction({
+        previousStatus: "active",
+        status: "ended",
+        heldHere: isCallHeldHere(hold, "call-2", "ended"),
+        failed: false,
+      }),
+    ).toBe("dismiss-soon");
+  });
+
+  it("keeps a transfer that failed to connect on screen with its reason", () => {
+    let hold = initialAgentCallScreenHold({ callId: "call-1", placedHere: false });
+    hold = applyAgentCallNativeMessage(hold, message("connected", "call-1"));
+    hold = applyAgentCallNativeMessage(hold, message("released", "call-1"));
+    hold = applyAgentCallNativeMessage(hold, message("held", "call-2"));
+    hold = applyAgentCallNativeMessage(hold, message("failed", "call-2", "Nova is offline."));
+    expect(hold.callId).toBe("call-2");
+    expect(hold.failure).toBe("Nova is offline.");
+    expect(
+      callsToEndOnLeave({
+        hold,
+        findCall: () => makeCall({ direction: "outgoing", status: "ringing" }),
+      }),
+    ).toEqual([]);
+
+    // A transfer that failed before the host gave the new call an id can only
+    // be reported against the old call; that keeps the screen open on it too.
+    let early = initialAgentCallScreenHold({ callId: "call-1", placedHere: false });
+    early = applyAgentCallNativeMessage(early, message("connected", "call-1"));
+    early = applyAgentCallNativeMessage(
+      early,
+      message("released", "call-1", agentCallTransferDetail("agent-2")),
+    );
+    early = applyAgentCallNativeMessage(early, message("failed", "call-1", "Nova is offline."));
+    expect(early.callId).toBe("call-1");
+    expect(early.failure).toBe("Nova is offline.");
+    // No longer placing anything: leaving cancels no one's ring.
+    expect(early.transfer).toBeNull();
+    expect(
+      resolveAgentCallScreenAction({
+        previousStatus: "active",
+        status: "ended",
+        heldHere: isCallHeldHere(early, "call-1", "ended"),
+        failed: early.failure !== null,
+      }),
+    ).toBe("stay");
+    expect(
+      callsToEndOnLeave({ hold: early, findCall: () => makeCall({ status: "ended" }) }),
+    ).toEqual([]);
+  });
+});
+
+describe("previousFollowedStatus", () => {
+  it("reads the followed call's last status, and nothing for a call the screen just moved to", () => {
+    expect(previousFollowedStatus({ callId: "call-1", status: "active" }, "call-1")).toBe("active");
+    expect(previousFollowedStatus({ callId: "call-1", status: "ended" }, "call-2")).toBeNull();
+    expect(previousFollowedStatus(null, "call-1")).toBeNull();
+  });
+});
+
+describe("agentCallParticipantsLine", () => {
+  const participant = (title: string, index: number) => ({
+    threadId: `thread-${index}`,
+    title,
+    vmAgentId: null,
+  });
+  const withParticipants = (...titles: string[]) =>
+    makeCall({
+      participants: titles.map(participant) as unknown as AgentCall["participants"],
+    });
+
+  it("names who else is on the call, in the order they joined", () => {
+    expect(agentCallParticipantsLine(withParticipants("Gregg", "Nova"))).toBe("with Gregg, Nova");
+    expect(agentCallParticipantsLine(withParticipants(" Release notes "))).toBe(
+      "with Release notes",
+    );
+  });
+
+  it("says nothing for a call with no one else on it, or from an older host", () => {
+    expect(agentCallParticipantsLine(withParticipants())).toBeNull();
+    expect(agentCallParticipantsLine(withParticipants(" "))).toBeNull();
+    expect(agentCallParticipantsLine(makeCall())).toBeNull();
+    expect(agentCallParticipantsLine(null)).toBeNull();
   });
 });
 

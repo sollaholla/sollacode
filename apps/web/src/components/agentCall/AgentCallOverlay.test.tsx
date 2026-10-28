@@ -8,10 +8,14 @@ import {
   AGENT_CALL_SESSION_PATH,
   AGENT_CALL_SESSION_RELEASE_PATH,
   AgentCallId,
+  ThreadId,
   VmAgentId,
   type AgentCall,
+  type AgentCallParticipant,
+  type AgentCallRosterEntry,
   type VmAgent,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -23,6 +27,9 @@ const mocks = vi.hoisted(() => {
     place: Symbol.for("agent-call-place"),
     decline: Symbol.for("agent-call-decline"),
     end: Symbol.for("agent-call-end"),
+    roster: Symbol.for("agent-call-roster"),
+    add: Symbol.for("agent-call-add-participant"),
+    remove: Symbol.for("agent-call-remove-participant"),
   };
   const session = {
     start: vi.fn(async () => undefined),
@@ -32,18 +39,30 @@ const mocks = vi.hoisted(() => {
     hush: vi.fn(),
     setMuted: vi.fn(),
     setMicrophone: vi.fn(),
+    instruct: vi.fn((_text: string) => undefined),
     state: "idle" as string,
   };
   const ringtoneStop = vi.fn();
+  const roster = { entries: [] as Array<unknown> };
   return {
     tokens,
     session,
     ringtoneStop,
+    roster,
     calls: [] as Array<unknown>,
     agent: null as unknown,
+    /** The host's agent registry. */
+    agents: [] as Array<{ readonly vmAgentId: string }>,
     placeCall: vi.fn(async () => ({ _tag: "Success" as const, value: undefined })),
     declineCall: vi.fn(async () => ({ _tag: "Success" as const, value: undefined })),
     endCall: vi.fn(async (_request: unknown) => ({ _tag: "Success" as const, value: undefined })),
+    callRoster: vi.fn(async (_request: unknown) => ({ _tag: "Success" as const, value: roster })),
+    addCallParticipant: vi.fn(
+      async (_request: unknown): Promise<unknown> => ({ _tag: "Success", value: undefined }),
+    ),
+    removeCallParticipant: vi.fn(
+      async (_request: unknown): Promise<unknown> => ({ _tag: "Success", value: undefined }),
+    ),
     createLiveVoiceSession: vi.fn((_options: unknown, _callbacks: unknown) => session),
     startRingtone: vi.fn((_input: unknown) => ({ stop: ringtoneStop })),
     playHangUpTone: vi.fn((_volume: number) => undefined),
@@ -62,21 +81,29 @@ vi.mock("~/state/vmAgents", () => ({
     placeCall: mocks.tokens.place,
     declineCall: mocks.tokens.decline,
     endCall: mocks.tokens.end,
+    callRoster: mocks.tokens.roster,
+    addCallParticipant: mocks.tokens.add,
+    removeCallParticipant: mocks.tokens.remove,
   },
 }));
 
 vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: (command: unknown) =>
-    command === mocks.tokens.place
-      ? mocks.placeCall
-      : command === mocks.tokens.decline
-        ? mocks.declineCall
-        : mocks.endCall,
+    new Map<unknown, unknown>([
+      [mocks.tokens.place, mocks.placeCall],
+      [mocks.tokens.decline, mocks.declineCall],
+      [mocks.tokens.end, mocks.endCall],
+      [mocks.tokens.roster, mocks.callRoster],
+      [mocks.tokens.add, mocks.addCallParticipant],
+      [mocks.tokens.remove, mocks.removeCallParticipant],
+    ]).get(command),
 }));
 
 vi.mock("~/agentCall/agentCallData", () => ({
   useEnvironmentAgentCalls: () => mocks.calls,
-  useAgentRecord: () => mocks.agent,
+  useAgentRecord: (_environmentId: unknown, vmAgentId: string | null) =>
+    mocks.agents.find((agent) => agent.vmAgentId === vmAgentId) ?? mocks.agent,
+  useEnvironmentAgents: () => mocks.agents,
 }));
 
 vi.mock("~/state/environments", () => ({
@@ -237,6 +264,8 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   mocks.calls = [ringingCall];
   mocks.agent = nova;
+  mocks.agents = [];
+  mocks.roster.entries = [];
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -631,9 +660,14 @@ describe("call page", () => {
   });
 
   it("ends a call held on another device", async () => {
-    mocks.calls = [activeCall];
+    mocks.calls = [
+      {
+        ...activeCall,
+        participants: [{ threadId: ThreadId.make("thread-2"), title: "Gregg", vmAgentId: null }],
+      },
+    ];
     render({ route: true });
-    expect(container.textContent).toContain("Answered on iPhone.");
+    expect(container.textContent).toContain("Answered on iPhone. Also on the call: Gregg.");
     await act(async () => {
       button("End call").click();
     });
@@ -717,5 +751,361 @@ describe("inside the phone app", () => {
       callId: "call-1",
       detail: "Answered on Mac",
     });
+  });
+});
+
+const greggEntry: AgentCallRosterEntry = {
+  name: "Gregg",
+  threadId: ThreadId.make("thread-2"),
+  vmAgentId: VmAgentId.make("agent-2"),
+};
+const notesEntry: AgentCallRosterEntry = {
+  name: "Release notes",
+  threadId: ThreadId.make("thread-3"),
+  vmAgentId: null,
+};
+const participantFor = (entry: AgentCallRosterEntry): AgentCallParticipant => ({
+  threadId: entry.threadId,
+  title: entry.name,
+  vmAgentId: entry.vmAgentId,
+});
+
+/** Answers the ringing call, has the host give it to this device, and connects voice. */
+async function goLive(options: { readonly route?: boolean } = {}) {
+  render(options);
+  await answer();
+  await claimed();
+  hostReports([activeCall]);
+  await act(async () => {
+    mocks.session.state = "listening";
+    sessionCallbacks().onStateChange?.("listening");
+  });
+  // The roster, asked for once the call is live.
+  await act(async () => undefined);
+}
+
+/** The voice finished saying something. */
+async function voiceSays(text: string) {
+  await act(async () => {
+    sessionCallbacks().onTranscript?.({ role: "assistant", text });
+  });
+}
+
+function callScreenText() {
+  return container.querySelector('[data-testid="agent-call-screen"]')?.textContent ?? "";
+}
+
+describe("transfer by voice", () => {
+  it("moves the call to the agent the voice names: a quiet plain end, then a call to them", async () => {
+    const postMessage = vi.fn();
+    Object.defineProperty(window, "ReactNativeWebView", {
+      configurable: true,
+      value: { postMessage },
+    });
+    mocks.search = { embedded: "1" };
+    const gregg = { ...nova, vmAgentId: greggEntry.vmAgentId, name: "Gregg", threadId: "thread-2" };
+    mocks.agents = [nova, gregg] as Array<VmAgent>;
+    mocks.roster.entries = [greggEntry, notesEntry];
+    const transferred: AgentCall = {
+      ...ringingCall,
+      callId: AgentCallId.make("call-2"),
+      vmAgentId: greggEntry.vmAgentId!,
+      direction: "outgoing",
+      reason: "user",
+      topic: null,
+    };
+    mocks.placeCall.mockResolvedValueOnce({ _tag: "Success", value: transferred } as never);
+    await goLive({ route: true });
+    await act(async () => button("Mute").click());
+    mocks.session.setMuted.mockClear();
+    expect(mocks.callRoster).toHaveBeenCalledWith({
+      environmentId: "host-1",
+      input: { callId: "call-1" },
+    });
+
+    await voiceSays("Sure thing. Transferring you to Greg.");
+    expect(mocks.session.endAfterReply).toHaveBeenCalledOnce();
+    expect(callScreenText()).toContain("Transferring to Gregg…");
+    expect(mocks.endCall).not.toHaveBeenCalled();
+
+    // The voice's last words are out: its session closes itself.
+    await act(async () => {
+      mocks.session.state = "idle";
+      sessionCallbacks().onStateChange?.("idle");
+    });
+    expect(endsSent()).toEqual([{ environmentId: "host-1", input: { callId: "call-1" } }]);
+    expect(mocks.playHangUpTone).not.toHaveBeenCalled();
+    expect(callScreenText()).not.toContain("Call ended");
+    expect(callScreenText()).toContain("Gregg");
+    expect(callScreenText()).toContain("Calling…");
+
+    expect(mocks.createLiveVoiceSession).toHaveBeenCalledTimes(2);
+    expect(mocks.session.setMuted).toHaveBeenCalledWith(true);
+    const options = mocks.createLiveVoiceSession.mock.calls[1]![0] as VoiceSessionOptions;
+    await act(async () => {
+      await expect(options.live?.startBody?.()).resolves.toMatchObject({ callId: "call-2" });
+    });
+    expect(mocks.placeCall).toHaveBeenCalledWith({
+      environmentId: "host-1",
+      input: { vmAgentId: "agent-2" },
+    });
+    const posted = postMessage.mock.calls.map(
+      ([raw]) => JSON.parse(String(raw)) as Record<string, unknown>,
+    );
+    expect(posted.map((message) => `${String(message.event)}:${String(message.callId)}`)).toEqual([
+      "held:call-1",
+      "connected:call-1",
+      "released:call-1",
+      "held:call-2",
+    ]);
+    // The release says where the call went, so the phone app waits for it.
+    expect(posted[2]?.detail).toBe("transfer:agent-2");
+    // The page the person was on follows them to the new call.
+    render({ route: true });
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/call/$environmentId/$callId",
+      params: { environmentId: "host-1", callId: "call-2" },
+      search: true,
+      replace: true,
+    });
+  });
+
+  it("reports a transfer the host refused against the old call, so the phone app shows why", async () => {
+    const postMessage = vi.fn();
+    Object.defineProperty(window, "ReactNativeWebView", {
+      configurable: true,
+      value: { postMessage },
+    });
+    mocks.search = { embedded: "1" };
+    mocks.roster.entries = [greggEntry];
+    mocks.placeCall.mockResolvedValueOnce({
+      _tag: "Failure",
+      cause: Cause.fail(new Error("You're already on a call with Gregg.")),
+    } as never);
+    await goLive({ route: true });
+    await voiceSays("Transferring you to Gregg.");
+    await act(async () => {
+      mocks.session.state = "idle";
+      sessionCallbacks().onStateChange?.("idle");
+    });
+    const options = mocks.createLiveVoiceSession.mock.calls[1]![0] as VoiceSessionOptions;
+    await act(async () => {
+      await expect(options.live?.startBody?.()).rejects.toThrow();
+    });
+    const messages = () =>
+      postMessage.mock.calls.map(([raw]) => JSON.parse(String(raw)) as Record<string, unknown>);
+    // Said as soon as the host refuses, before the new session gives up
+    // opening the microphone: the phone app's screen is about to close.
+    expect(
+      messages().map((message) => `${String(message.event)}:${String(message.callId)}`),
+    ).toEqual(["held:call-1", "connected:call-1", "released:call-1", "failed:call-1"]);
+    expect(messages().at(-1)?.detail).toBe("You're already on a call with Gregg.");
+    // The new session fails as its start does; saying so again changes nothing.
+    await act(async () => {
+      mocks.session.state = "error";
+      sessionCallbacks().onStateChange?.("error");
+    });
+    expect(messages().at(-1)).toMatchObject({
+      event: "failed",
+      callId: "call-1",
+      detail: "You're already on a call with Gregg.",
+    });
+  });
+
+  it("an End from another device while the transfer is announced ends the call there", async () => {
+    mocks.roster.entries = [greggEntry];
+    await goLive();
+    await voiceSays("Transferring you to Gregg.");
+    expect(callScreenText()).toContain("Transferring to Gregg…");
+
+    // Another device ends the call before this one's voice finishes.
+    hostReports([{ ...activeCall, status: "ended", endedAt: new Date().toISOString() }]);
+    await act(async () => {
+      mocks.session.state = "idle";
+      sessionCallbacks().onStateChange?.("idle");
+    });
+    expect(mocks.placeCall).not.toHaveBeenCalled();
+    expect(mocks.createLiveVoiceSession).toHaveBeenCalledOnce();
+    expect(callScreenText()).toContain("Call ended");
+    expect(callScreenText()).not.toContain("Transferring to");
+  });
+
+  it("does nothing for a name that is not an agent on the roster", async () => {
+    mocks.roster.entries = [greggEntry, notesEntry];
+    await goLive();
+    await voiceSays("Transferring you to Release notes.");
+    await voiceSays("Transferring you to Morgan.");
+    expect(mocks.session.endAfterReply).not.toHaveBeenCalled();
+    expect(callScreenText()).not.toContain("Transferring to");
+  });
+});
+
+describe("people on the call", () => {
+  it("teaches the voice who it can transfer to or add once the roster arrives", async () => {
+    mocks.roster.entries = [greggEntry, notesEntry];
+    await goLive();
+    const taught = mocks.session.instruct.mock.calls.map(([text]) => text);
+    // One append each, the phrases before the names.
+    expect(taught).toHaveLength(5);
+    expect(taught[0]).toContain("'Transferring you to <Name>.'");
+    expect(taught).toContain("Your transfer list: Gregg.");
+    expect(taught.at(-1)).toBe("Your call list: Gregg, Release notes.");
+  });
+
+  it("teaches nothing when there is no one to name, or the host can't say", async () => {
+    await goLive();
+    expect(mocks.callRoster).toHaveBeenCalledOnce();
+    expect(mocks.session.instruct).not.toHaveBeenCalled();
+  });
+
+  it("adds and removes whoever the voice names, and tells the voice once who joined or left", async () => {
+    mocks.roster.entries = [greggEntry, notesEntry];
+    await goLive();
+    // Past teaching the roster (see above).
+    mocks.session.instruct.mockClear();
+
+    await voiceSays("Okay, adding release notes to the call.");
+    expect(mocks.addCallParticipant).toHaveBeenCalledWith({
+      environmentId: "host-1",
+      input: { callId: "call-1", threadId: "thread-3" },
+    });
+    expect(mocks.session.instruct).not.toHaveBeenCalled();
+    hostReports([{ ...activeCall, participants: [participantFor(notesEntry)] }]);
+    expect(mocks.session.instruct).toHaveBeenCalledOnce();
+    expect(mocks.session.instruct.mock.calls[0]![0]).toMatch(/^Release notes joined the call\./u);
+    // The same snapshot again says nothing new.
+    hostReports([{ ...activeCall, participants: [participantFor(notesEntry)] }]);
+    expect(mocks.session.instruct).toHaveBeenCalledOnce();
+
+    await voiceSays("Removing Release notes from the call.");
+    expect(mocks.removeCallParticipant).toHaveBeenCalledWith({
+      environmentId: "host-1",
+      input: { callId: "call-1", threadId: "thread-3" },
+    });
+    hostReports([{ ...activeCall, participants: [] }]);
+    expect(mocks.session.instruct).toHaveBeenLastCalledWith("Release notes left the call.");
+    expect(mocks.session.instruct).toHaveBeenCalledTimes(2);
+  });
+
+  it("does nothing when the voice only sounds like it is adding someone", async () => {
+    mocks.roster.entries = [greggEntry, notesEntry];
+    await goLive();
+    mocks.session.instruct.mockClear();
+    await voiceSays("Gregg says the fetch fails, so he's adding a timeout to the call.");
+    await voiceSays("Gregg says he wrapped the fetch, adding logging to the call.");
+    expect(mocks.addCallParticipant).not.toHaveBeenCalled();
+    expect(mocks.session.instruct).not.toHaveBeenCalled();
+    expect(callScreenText()).not.toContain("call list");
+  });
+
+  it("adds everyone the voice names at once, and says who it couldn't find", async () => {
+    const nova: AgentCallRosterEntry = {
+      name: "Nova Bright",
+      threadId: ThreadId.make("thread-4"),
+      vmAgentId: VmAgentId.make("agent-4"),
+    };
+    mocks.roster.entries = [greggEntry, notesEntry, nova];
+    await goLive();
+    mocks.session.instruct.mockClear();
+    const added = () =>
+      mocks.addCallParticipant.mock.calls.map(
+        ([request]) => (request as { input: { threadId: string } }).input.threadId,
+      );
+
+    await voiceSays("Sure. Adding Gregg to the call. Adding the release notes chat to the call.");
+    expect(added()).toEqual(["thread-2", "thread-3"]);
+    await voiceSays("Adding Gregg and Nova Bright to the call.");
+    expect(added()).toEqual(["thread-2", "thread-3", "thread-2", "thread-4"]);
+    expect(mocks.session.instruct).not.toHaveBeenCalled();
+
+    // A name nobody on the list has: shown, and the voice is told to put it
+    // right, even when someone else in the same phrase was added.
+    await voiceSays("Okay, adding Release notes and Morgan to the call.");
+    expect(added()).toHaveLength(5);
+    expect(callScreenText()).toContain("No one called Morgan is on the call list.");
+    expect(mocks.session.instruct).toHaveBeenCalledWith(
+      "No one called Morgan is on the call list. Tell the person now, and ask who they meant.",
+    );
+  });
+
+  it("shows why adding someone failed on the call screen", async () => {
+    mocks.roster.entries = [greggEntry];
+    mocks.addCallParticipant.mockResolvedValueOnce({
+      _tag: "Failure",
+      cause: Cause.fail(new Error("Gregg's chat was archived.")),
+    });
+    await goLive();
+    await voiceSays("Adding Gregg to the call.");
+    expect(callScreenText()).toContain("Gregg's chat was archived.");
+    expect(mocks.session.instruct).toHaveBeenCalledWith(
+      "Gregg's chat was archived. Tell the person if they ask.",
+    );
+  });
+
+  it("lists who else is on the call, takes them off, and adds from the roster", async () => {
+    mocks.roster.entries = [greggEntry, notesEntry];
+    await goLive();
+    hostReports([{ ...activeCall, participants: [participantFor(greggEntry)] }]);
+    expect(container.querySelector('[aria-label="Also on the call"]')?.textContent).toContain(
+      "Gregg",
+    );
+
+    await act(async () => {
+      button("Remove Gregg from the call").click();
+    });
+    expect(mocks.removeCallParticipant).toHaveBeenCalledWith({
+      environmentId: "host-1",
+      input: { callId: "call-1", threadId: "thread-2" },
+    });
+
+    await act(async () => {
+      button("Add someone to the call").click();
+    });
+    const offered = await vi.waitFor(() => {
+      const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+      if (items.length === 0) throw new Error("No one offered");
+      return items;
+    });
+    // Gregg is already on the call.
+    expect(offered.map((item) => item.textContent)).toEqual(["Release notes"]);
+    await act(async () => {
+      offered[0]!.click();
+    });
+    expect(mocks.addCallParticipant).toHaveBeenCalledWith({
+      environmentId: "host-1",
+      input: { callId: "call-1", threadId: "thread-3" },
+    });
+  });
+
+  it("says when there is no one else to add, and stops adding at the limit", async () => {
+    mocks.roster.entries = [greggEntry];
+    await goLive();
+    hostReports([{ ...activeCall, participants: [participantFor(greggEntry)] }]);
+    await act(async () => {
+      button("Add someone to the call").click();
+    });
+    await vi.waitFor(() => {
+      if (!document.body.textContent?.includes("No one else to add")) throw new Error("Not shown");
+    });
+
+    const full = ["a", "b", "c", "d"].map((id) => ({
+      threadId: ThreadId.make(`thread-${id}`),
+      title: `Chat ${id}`,
+      vmAgentId: null,
+    }));
+    hostReports([{ ...activeCall, participants: full }]);
+    const add = button("Add someone to the call");
+    expect(add.disabled || add.hasAttribute("data-disabled")).toBe(true);
+  });
+
+  it("shows +N on the minimised call", async () => {
+    await goLive();
+    hostReports([{ ...activeCall, participants: [participantFor(notesEntry)] }]);
+    await act(async () => {
+      button("Minimise call").click();
+    });
+    const pill = container.querySelector('[data-testid="agent-call-pill"]');
+    expect(pill?.textContent).toContain("+1");
+    expect(button("Return to the call with Nova and 1 other")).toBeTruthy();
   });
 });

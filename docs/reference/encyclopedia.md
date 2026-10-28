@@ -270,7 +270,9 @@ agent, which retains a dedicated chat after the delegation ends.
 
 #### Agent call
 
-A [GPT-Live](#gpt-live) voice call between the person and one custom agent. The `AgentCall` record
+A [GPT-Live](#gpt-live) voice call between the person and one custom agent, which can bring
+[call participants](#call-participant) onto it or hand the person on with a
+[call transfer](#call-transfer). The `AgentCall` record
 ([agentCall.ts](../../packages/contracts/src/agentCall.ts)) has a `direction`: `outgoing` when the
 person calls, `incoming` when the agent rings. Its `reason` is `user` for outgoing calls, and
 `blocker`, `question`, `approval` or `request` (agent_workspace `call_user`) for incoming ones. Its
@@ -282,7 +284,10 @@ Calls are server memory, not persisted ([AgentCalls.ts](../../apps/server/src/vm
 Every device follows them with `vmAgent.calls.subscribe` (open calls plus recently ended ones) and
 changes them with `vmAgent.call.place`, `vmAgent.call.decline` and `vmAgent.call.end`; clients use
 `vmAgentEnvironment.calls`, `placeCall`, `declineCall` and `endCall` from
-[vmAgents.ts](../../packages/client-runtime/src/state/vmAgents.ts). Rings are gated by the
+[vmAgents.ts](../../packages/client-runtime/src/state/vmAgents.ts). The device on a live call reads
+its [call roster](#call-roster) with `vmAgent.call.roster` (`callRoster`) and changes who else is on
+it with `vmAgent.call.addParticipant` and `vmAgent.call.removeParticipant` (`addCallParticipant`,
+`removeCallParticipant`). Rings are gated by the
 `orchestrator.agentCalls` setting and a saved OpenAI key, with one open call per agent, a cooldown
 between automatic rings and an hourly cap on `call_user`. `call_user` works from the agent's chat,
 its side chats and its delegated workers, all as the agent; any other chat asks the agent with a
@@ -299,7 +304,9 @@ Answering is a compare-and-set claim: `POST /api/agents/call/session` (`AGENT_CA
 moves the call from `ringing` to `active` and creates the GPT-Live session with the agent's persona;
 a second device gets HTTP 409. `/api/agents/call/delegation` forwards what was said since the last
 delegation into the agent's own chat as a user message (or as the answer to the chat's pending
-question) and streams the chat's progress back as `OrchestratorLiveWorkEvent`s.
+question) and streams the chat's progress back as `OrchestratorLiveWorkEvent`s. With
+[call participants](#call-participant) it forwards to the chats the words are for and merges their
+progress into one stream.
 `/api/agents/call/session/release` frees the session and ends the call; the web client also sends it
 when the page is hidden for good (`pagehide`).
 
@@ -324,6 +331,56 @@ install a message handler, so every page in them sees `window.ReactNativeWebView
 incoming calls to the native observer instead of ringing itself.
 See [custom-agents.md](../user/custom-agents.md#calling-an-agent) and
 [web-push.md](../architecture/web-push.md).
+
+#### Call roster
+
+Who an [agent call](#agent-call)'s voice can transfer the person to or bring onto the call
+(`AgentCallRoster`, entries `{name, threadId, vmAgentId}`). `callRoster` in
+[agentCallGroup.ts](../../apps/server/src/vm/agentCallGroup.ts) builds it once when the call
+connects: the host's other agents that aren't stopped and have a chat (`vmAgentId` set), then up
+to 12 of the most recently updated chats that aren't archived, side chats, internal threads or
+agents' main chats (`vmAgentId` null). It is bounded to 30 entries and 1,500 characters of names; a
+name equal to one already listed or to the called agent's (case, accents and punctuation ignored)
+is dropped, so agents win. The host keeps it on the call's session and never puts it in the voice's
+instructions: `vmAgent.call.roster` returns it to the device holding the call once the call is
+live, and that device teaches the voice the exact phrases and the names as silent instructions
+(`callRosterInstructions`), resolves the names the voice transfers to or adds only against it
+(`resolveSpokenNames` in [callDirectives.ts](../../apps/web/src/agentCall/callDirectives.ts)),
+and fills the **Add** picker and the command palette's **Add someone to the call...** from it. A
+device that can't act on the phrases never teaches them.
+See
+[custom-agent-workspaces.md](../architecture/custom-agent-workspaces.md#call-transfer-and-merged-calls).
+
+#### Call participant
+
+A chat on an [agent call](#agent-call) besides the agent called: another agent's main chat (named
+by the agent) or a regular chat (named by its title). `AgentCall.participants` holds them
+(`AgentCallParticipant`, at most `AGENT_CALL_MAX_PARTICIPANTS`, 4); `vmAgent.call.addParticipant`
+and `vmAgent.call.removeParticipant` change them, from the call screen's **Add** picker and remove
+buttons, the command palette, or the voice saying "Adding <Name> to the call." / "Removing <Name>
+from the call." (once per person, or one phrase naming several). Only an active call takes
+participants. The call keeps one voice, the called agent's. `callDelegationTargets` sends the
+person's latest words to the chats named in them, to everyone when they speak to the group, else
+to the called agent (or to the one participant waiting on their answer). Each target gets an
+ordinary transcription message with a "(Group call: …)" line (or the words as the answer to its
+open question), and `mergeCallWorkEvents` speaks each
+reply back as "Name: …" as soon as it lands; a participant still working when the person says
+something else is followed by the next delegation, so its reply is not lost. A participant whose
+chat is deleted leaves the call; the call goes on.
+
+#### Call transfer
+
+The voice of an [agent call](#agent-call) handing the person to another agent. When it says
+"Transferring you to <Name>." as its own sentence and nothing after it, the device holding the call
+resolves the name against the agents in the [call roster](#call-roster), lets the voice finish,
+ends the call quietly (a plain end, no hang-up tone, no ended screen) and places a new outgoing
+call to that agent from the same device. It is client-side
+([AgentCallProvider.tsx](../../apps/web/src/agentCall/AgentCallProvider.tsx)); the host sees an
+ended call and a new one. In the phone app the page posts `released` for the old call, saying which
+agent it is moving to (`agentCallTransferDetail` in
+[agentCallBridge.ts](../../packages/shared/src/agentCallBridge.ts)), then `held` for the new one (or
+`failed` against the old one with the reason), and the native call screen waits for it and follows
+it. A `/call` page showing the old call moves to the new one. Participants stay behind.
 
 ### Thread artifacts
 
@@ -373,6 +430,19 @@ server turns into agent work. Used by the orchestrator
 #### Grok Voice (xAI)
 
 xAI's Speech-to-Speech API. The server mints an ephemeral client secret at `POST /v1/realtime/client_secrets`; the browser opens `wss://api.x.ai/v1/realtime` with the `xai-client-secret.` subprotocol and streams PCM16. Catalog and capability flags live in [orchestratorVoice.ts][27]. Setup: [orchestrator-grok-voice.md][28].
+
+#### Preferred microphone
+
+The microphone voice uses on one device, for [agent calls](#agent-call) and the orchestrator. The
+person picks it in **Settings → Orchestrator → Microphone** or from the small arrow on a call's
+**Mute** button ([MicrophoneMenu.tsx](../../apps/web/src/components/agentCall/MicrophoneMenu.tsx)).
+It is kept in that browser's local storage (`solla:voice-microphone`,
+[microphones.ts](../../apps/web/src/orchestrator/microphones.ts)), so each device, and the phone
+app's call page, has its own. **Default** (null) follows the system microphone and switches
+mid-call when it changes, such as when headphones connect. A chosen microphone that is missing
+falls back to the default instead of failing the session. Each voice session reads the choice when
+it opens, and a choice made during a call switches that call's microphone. See
+[custom-agents.md](../user/custom-agents.md#calling-an-agent).
 
 ### Relayed environments
 

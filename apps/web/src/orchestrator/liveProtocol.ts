@@ -31,6 +31,9 @@ export function parseLiveTranscript(event: unknown): LiveTranscriptDelta | null 
   };
 }
 
+/** UTF-8 bytes of one append chunk; see `liveAppendChunks`. */
+export const LIVE_APPEND_CHUNK_BYTES = 480;
+
 /** Appends contain at most 500 tokens. A UTF-8 byte ceiling is conservative
  * for every tokenizer, including scripts where one character spans many tokens. */
 export function liveAppendChunks(text: string, maxChunks = 8): string[] {
@@ -40,7 +43,7 @@ export function liveAppendChunks(text: string, maxChunks = 8): string[] {
   let bytes = 0;
   for (const character of text) {
     const length = encoder.encode(character).length;
-    if (bytes + length > 480) {
+    if (bytes + length > LIVE_APPEND_CHUNK_BYTES) {
       chunks.push(chunk);
       chunk = "";
       bytes = 0;

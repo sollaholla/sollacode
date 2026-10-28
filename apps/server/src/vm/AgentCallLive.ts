@@ -1,12 +1,16 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 import {
+  AGENT_CALL_MAX_PARTICIPANTS,
+  AgentCallError,
   ApprovalRequestId,
   CommandId,
   MessageId,
   OPENAI_LIVE_MODEL,
   type AgentCallDirection,
   type AgentCallId,
+  type AgentCallParticipantInput,
+  type AgentCallRoster,
   type AgentCallSessionStartInput,
   type OrchestrationEvent,
   type OrchestrationThread,
@@ -14,6 +18,7 @@ import {
   type OrchestratorLiveWorkEvent,
   type ThreadId,
   type TurnId,
+  type VmAgent,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -45,6 +50,13 @@ import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { KIMI_DRIVER_KIND } from "../provider/acp/KimiAcpSupport.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { AgentCalls } from "./AgentCalls.ts";
+import {
+  callAddressing,
+  callParticipantFor,
+  callRoster,
+  groupCallNote,
+  type CallDelegationTarget,
+} from "./agentCallGroup.ts";
 
 /** How much of the agent's reply is spoken before pointing at the chat. */
 const SPOKEN_REPLY_MAX_CHARS = 1_500;
@@ -52,6 +64,13 @@ const MAX_CALL_SESSIONS = 32;
 const SESSION_MAX_AGE_MS = 2 * 60 * 60_000;
 /** How often a watch re-reads a steer its provider has not confirmed yet. */
 const UNCONFIRMED_STEER_RECHECK = "1500 millis";
+/**
+ * How long before a delegation reaches the host the device may already have
+ * stopped reading the one before it: it switches as GPT-Live starts the new
+ * delegation, then waits for trailing words (350 ms) and the network. What an
+ * older delegation's stream sent in that window may never have been heard.
+ */
+const HEARD_GRACE_MS = 2_500;
 const TERMINAL_WORK = new Set<OrchestratorLiveWorkEvent["status"]>([
   "completed",
   "failed",
@@ -74,7 +93,12 @@ const asSentence = (text: string) => {
   return /[.!?]$/u.test(trimmed) ? trimmed : `${trimmed}.`;
 };
 
-/** GPT-Live `instructions` for a call with one agent. Immutable once the call starts. */
+/**
+ * GPT-Live `instructions` for a call with one agent. Immutable once the call
+ * starts. Who the voice can transfer to or add, and the phrases that do it,
+ * come from the device holding the call once it has the roster (see apps/web
+ * callDirectives): only a device that acts on those phrases teaches them.
+ */
 export function agentCallInstructions(input: {
   readonly name: string;
   readonly purpose: string;
@@ -112,6 +136,13 @@ function joinFragments(fragments: ReadonlyArray<string>): string {
 
 export interface CallConversationDelta {
   readonly userText: string;
+  /**
+   * The person's latest words: the new user fragments since the last thing
+   * the voice said before them. What they said earlier and the voice handled
+   * itself ("Add Gregg to the call.", "Thanks, everyone.") is in `userText`
+   * but never decides who these words are for.
+   */
+  readonly latestUserText: string;
   readonly assistantText: string;
   /** Every timed fragment in the context; once forwarded, none of them is sent again. */
   readonly fragments: ReadonlyArray<string>;
@@ -147,16 +178,30 @@ export function extractCallDelta(
     if (!forwarded.has(key)) (fragment.role === "user" ? user : assistant).push(fragment.text);
     return key;
   });
-  return { userText: joinFragments(user), assistantText: joinFragments(assistant), fragments };
+  const isNewWords = (index: number) =>
+    timed[index]?.role === "user" && !forwarded.has(fragments[index] ?? "");
+  const latest: string[] = [];
+  for (let index = timed.findLastIndex((_, at) => isNewWords(at)); isNewWords(index); index--)
+    latest.unshift(timed[index]?.text ?? "");
+  return {
+    userText: joinFragments(user),
+    latestUserText: joinFragments(latest),
+    assistantText: joinFragments(assistant),
+    fragments,
+  };
 }
 
-/** The user message an agent's chat receives for one stretch of the call. */
-export function forwardedCallMessage(delta: CallConversationDelta): string {
+/**
+ * The user message an agent's chat receives for one stretch of the call.
+ * `voiceName` names the voice for a chat that is not the agent called (one
+ * added to the call), whose replies on the call were not its own.
+ */
+export function forwardedCallMessage(delta: CallConversationDelta, voiceName?: string): string {
   return [
     "From our voice call:",
     `You said: ${delta.userText.slice(-8_000)}`,
     ...(delta.assistantText
-      ? [`(On the call I replied: ${delta.assistantText.slice(-2_000)})`]
+      ? [`(On the call ${voiceName ?? "I"} replied: ${delta.assistantText.slice(-2_000)})`]
       : []),
   ].join("\n");
 }
@@ -170,10 +215,8 @@ const plainSpoken = (text: string) =>
     .replace(/\s+/gu, " ")
     .trim();
 
-/** The agent's reply as something to say: code left in the chat, long text cut at a sentence. */
-export function spokenReply(text: string, maxChars = SPOKEN_REPLY_MAX_CHARS): string {
-  const plain = plainSpoken(text);
-  if (plain.length <= maxChars) return plain;
+/** The head of spoken text that fits `maxChars`, cut at a sentence or else a word. */
+function headOf(plain: string, maxChars: number): string {
   const head = plain.slice(0, maxChars);
   const sentenceEnd = Math.max(
     head.lastIndexOf(". "),
@@ -184,7 +227,31 @@ export function spokenReply(text: string, maxChars = SPOKEN_REPLY_MAX_CHARS): st
     sentenceEnd >= maxChars / 2
       ? head.slice(0, sentenceEnd + 1)
       : head.slice(0, Math.max(head.lastIndexOf(" "), maxChars / 2));
-  return `${cut.trim()} ${FULL_REPLY_IN_CHAT}`;
+  return cut.trim();
+}
+
+/** The agent's reply as something to say: code left in the chat, long text cut at a sentence. */
+export function spokenReply(text: string, maxChars = SPOKEN_REPLY_MAX_CHARS): string {
+  const plain = plainSpoken(text);
+  if (plain.length <= maxChars) return plain;
+  return `${headOf(plain, maxChars)} ${FULL_REPLY_IN_CHAT}`;
+}
+
+/**
+ * A request read out in its frame ("I need your approval for … — please
+ * approve or decline it in Solla Code; …"). With `maxChars` (a merged call's
+ * share) only the request's own text is cut, so what the person must do, and
+ * that a spoken yes can't do it, always survives.
+ */
+function framedRequest(
+  frame: (request: string) => string,
+  request: string,
+  maxChars: number | undefined,
+): string {
+  if (maxChars === undefined) return frame(request);
+  const plain = plainSpoken(request);
+  const budget = Math.max(80, maxChars - frame("").length);
+  return frame(plain.length <= budget ? plain : `${headOf(plain, budget)} …`);
 }
 
 /**
@@ -364,8 +431,13 @@ export interface AgentCallThreadView {
   readonly delivery: "pending" | "unconfirmed" | "settled" | "cancelled";
 }
 
-const approvalText = (open: CallThreadActivity | undefined) =>
-  `I need your approval for ${open ? requestText(open) : "a step in my chat"} — please approve or decline it in Solla Code; a spoken yes can't approve it.`;
+const approvalText = (open: CallThreadActivity | undefined, maxChars?: number) =>
+  framedRequest(
+    (request) =>
+      `I need your approval for ${request} — please approve or decline it in Solla Code; a spoken yes can't approve it.`,
+    open ? requestText(open) : "a step in my chat",
+    maxChars,
+  );
 
 /**
  * Where the agent's chat stands on what one delegation passed it, as a
@@ -380,6 +452,11 @@ export function agentCallWorkEvent(input: {
   readonly delegationId: string;
   readonly target: AgentCallWatchTarget;
   readonly view: AgentCallThreadView;
+  /**
+   * How much of the reply, or of a request's own text, to speak; a merged
+   * call splits SPOKEN_REPLY_MAX_CHARS.
+   */
+  readonly maxChars?: number | undefined;
 }): OrchestratorLiveWorkEvent {
   const { target, view } = input;
   const { thread } = view;
@@ -466,7 +543,10 @@ export function agentCallWorkEvent(input: {
   ) {
     if (handling.state === "error")
       return event("failed", thread.session?.lastError ?? "My chat ran into an error.");
-    const reply = spokenReplies(replies.map((message) => message.text));
+    const reply = spokenReplies(
+      replies.map((message) => message.text),
+      input.maxChars,
+    );
     if (reply) return event("completed", reply);
     if (handling.state === "interrupted")
       return event("failed", "The work in my chat was stopped before it replied.");
@@ -475,19 +555,25 @@ export function agentCallWorkEvent(input: {
 
   if (openInput !== undefined) {
     if (isActionApprovalRequest(openInput))
-      return event("pending-approval", approvalText(openInput));
+      return event("pending-approval", approvalText(openInput, input.maxChars));
     return event(
       "waiting-input",
-      voiceAnswerableRequest(openInput, thread.session?.providerName ?? null) !== null
-        ? `My chat is asking you: ${requestText(openInput)}`
-        : `My chat is asking: ${requestText(openInput)} — that has to be answered in Solla Code; I can't answer it from this call.`,
+      framedRequest(
+        voiceAnswerableRequest(openInput, thread.session?.providerName ?? null) !== null
+          ? (request) => `My chat is asking you: ${request}`
+          : (request) =>
+              `My chat is asking: ${request} — that has to be answered in Solla Code; I can't answer it from this call.`,
+        requestText(openInput),
+        input.maxChars,
+      ),
     );
   }
   // The flag can trail an answer the call just gave or an earlier turn's
   // leftover question; anything else is a request outside the window.
   if (view.hasPendingUserInput && target.answeredRequestId === null && !orphanedInput)
     return event("waiting-input", "My chat is waiting for an answer in Solla Code.");
-  if (view.hasPendingApprovals) return event("pending-approval", approvalText(openApproval));
+  if (view.hasPendingApprovals)
+    return event("pending-approval", approvalText(openApproval, input.maxChars));
 
   if (!working && thread.session?.status === "error" && thread.session.updatedAt >= target.sentAt)
     return event("failed", thread.session.lastError ?? "My chat ran into an error.");
@@ -526,21 +612,237 @@ export function wakesCallWatch(event: OrchestrationEvent, threadId: ThreadId): b
   }
 }
 
-/** A delegation's answer: the work it passed to the chat, or one event. */
-type DelegationAnswer = AgentCallWatchTarget | OrchestratorLiveWorkEvent;
+const FAILED_WORK = new Set<OrchestratorLiveWorkEvent["status"]>([
+  "failed",
+  "cancelled",
+  "expired",
+]);
+/** What one part of a merged reply adds besides its text: "<Name> couldn't answer: " and a blank line. */
+const MERGED_PART_OVERHEAD = 20;
+/** What a chat added to the call says once its thread is gone; the call drops it. */
+const PARTICIPANT_GONE = "My chat is no longer available, so I've left the call.";
+
+const failedWork = (delegationId: string, text: string): OrchestratorLiveWorkEvent => ({
+  delegationId,
+  status: "failed",
+  text,
+});
+const sameWorkEvent = (left: OrchestratorLiveWorkEvent, right: OrchestratorLiveWorkEvent) =>
+  left.status === right.status && left.text === right.text;
+
+/**
+ * How much of each chat's reply a delegation to several chats speaks, so the
+ * merged reply, names included, fits SPOKEN_REPLY_MAX_CHARS.
+ */
+export function callReplyShare(names: ReadonlyArray<string>): number {
+  const overhead = names.reduce((total, name) => total + name.length + MERGED_PART_OVERHEAD, 0);
+  return Math.max(80, Math.floor((SPOKEN_REPLY_MAX_CHARS - overhead) / Math.max(1, names.length)));
+}
+
+/**
+ * The status a finished reply is read out with while other chats on the
+ * call still work: the device speaks waiting-input (and pending-approval)
+ * without ending the work stream. The progress event sent right after it
+ * puts the call back to working.
+ */
+const AUDIBLE_PROGRESS: OrchestratorLiveWorkEvent["status"] = "waiting-input";
+
+/**
+ * The work events for a delegation that went to several chats on a call, as
+ * one chat's event changes (`event` is null until a chat's first one).
+ * `reported` marks a chat whose finished reply the call already heard;
+ * `heardRequest` is the question or approval of a chat the call already
+ * read out, which is not repeated (a chat waiting on the person is followed
+ * by every later delegation until it is done).
+ *
+ * Each reply is read out as soon as it lands: while others are not done, in
+ * an audible event that names them, then the progress while anyone still
+ * works; a chat that needs the person is surfaced by name at once, after any
+ * replies not heard yet; once every chat is done, the replies not heard yet.
+ * A reply reads "Name: …", a failure "Name couldn't answer: …", each cut to
+ * its share so the whole fits SPOKEN_REPLY_MAX_CHARS; failed only when every
+ * chat failed. A request reads "Name: …" as its watch framed it (cut there,
+ * so what it asks of the person survives). While the only chats not done
+ * wait on the person for what the call already heard, a quiet waiting event
+ * (no text) says nobody is working. `reported` and `asked` list the chats
+ * whose replies and requests these events read out.
+ */
+export function mergeCallWorkEvents(input: {
+  readonly delegationId: string;
+  readonly targets: ReadonlyArray<{
+    readonly name: string;
+    readonly event: OrchestratorLiveWorkEvent | null;
+    readonly reported?: boolean | undefined;
+    readonly heardRequest?: string | null | undefined;
+  }>;
+}): {
+  readonly events: ReadonlyArray<OrchestratorLiveWorkEvent>;
+  readonly reported: ReadonlyArray<number>;
+  readonly asked: ReadonlyArray<number>;
+} {
+  const { delegationId, targets } = input;
+  const share = callReplyShare(targets.map((target) => target.name));
+  const fit = (text: string) =>
+    text.length <= share ? text : spokenReply(text, share - FULL_REPLY_IN_CHAT.length - 1);
+  const event = (status: OrchestratorLiveWorkEvent["status"], text: string) => ({
+    delegationId,
+    status,
+    text: text.slice(0, 8_000),
+  });
+  const done = (current: OrchestratorLiveWorkEvent | null) =>
+    current !== null && TERMINAL_WORK.has(current.status);
+  const reported = targets.flatMap((target, index) =>
+    target.reported !== true && done(target.event) ? [index] : [],
+  );
+  const replies = targets.flatMap(({ name, event: current }, index) => {
+    if (current === null || !reported.includes(index)) return [];
+    const text = fit(current.text.trim());
+    if (FAILED_WORK.has(current.status)) return [`${name} couldn't answer: ${text}`];
+    return text ? [`${name}: ${text}`] : [];
+  });
+  const asked = targets.flatMap(({ event: current, heardRequest }, index) =>
+    (current?.status === "waiting-input" || current?.status === "pending-approval") &&
+    current.text !== heardRequest
+      ? [index]
+      : [],
+  );
+  if (asked.length > 0) {
+    const asking = asked.flatMap((index) => {
+      const target = targets[index];
+      return target?.event ? [{ name: target.name, event: target.event }] : [];
+    });
+    return {
+      events: [
+        event(
+          asking.some(({ event: current }) => current.status === "pending-approval")
+            ? "pending-approval"
+            : "waiting-input",
+          [
+            ...replies,
+            ...asking.map(({ name, event: current }) => `${name}: ${current.text}`),
+          ].join("\n\n"),
+        ),
+      ],
+      reported,
+      asked,
+    };
+  }
+  if (targets.every(({ event: current }) => done(current))) {
+    const allFailed = targets.every(
+      ({ event: current }) => current !== null && FAILED_WORK.has(current.status),
+    );
+    return {
+      events: [event(allFailed ? "failed" : "completed", replies.join("\n\n"))],
+      reported,
+      asked,
+    };
+  }
+  // Past here a chat waiting on the person was already heard: it is not
+  // working, and nothing about it is said again.
+  const waitingOnPerson = (current: OrchestratorLiveWorkEvent) =>
+    current.status === "waiting-input" || current.status === "pending-approval";
+  const progressStatus = targets.some(
+    ({ event: current }) =>
+      current === null ||
+      (!done(current) && current.status !== "queued" && !waitingOnPerson(current)),
+  )
+    ? "running"
+    : targets.some(({ event: current }) => current?.status === "queued")
+      ? "queued"
+      : null;
+  const progress =
+    progressStatus === null
+      ? // Everyone not done waits on the person, who already heard why.
+        [event(AUDIBLE_PROGRESS, "")]
+      : [
+          event(
+            progressStatus,
+            targets
+              .map(({ name, event: current }) =>
+                current === null
+                  ? `${name}: Passing that to my chat.`
+                  : done(current)
+                    ? `${name} is done.`
+                    : `${name}: ${current.text}`,
+              )
+              .join("\n"),
+          ),
+        ];
+  if (replies.length === 0) return { events: progress, reported, asked };
+  const pending = targets.filter(({ event: current }) => !done(current)).map(({ name }) => name);
+  return {
+    events: [
+      event(AUDIBLE_PROGRESS, [...replies, `Not done yet: ${pending.join(", ")}.`].join("\n\n")),
+      ...progress,
+    ],
+    reported,
+    asked,
+  };
+}
+
+/** One chat a delegation passed the person's words to. */
+interface DelegationTarget {
+  readonly threadId: ThreadId;
+  /** The agent's name or the chat's title, as the call names it. */
+  readonly name: string;
+  /** The agent called; false for a chat added to the call. */
+  readonly primary: boolean;
+  /** The work it watches, or its one event when the words never reached the chat. */
+  readonly work: AgentCallWatchTarget | OrchestratorLiveWorkEvent;
+  /** A finished answer overtaken by newer words to this same chat. */
+  readonly previousReply?: string;
+  /**
+   * When its finished reply went out on the call; null until then, and a
+   * later delegation keeps following it, so a reply is never dropped for
+   * newer words.
+   */
+  reported: Hearing | null;
+  /** Its question or approval the call already read out, never read twice. */
+  heardRequest: (Hearing & { readonly text: string }) | null;
+}
+
+/**
+ * Something the call heard: when it went out, and on which delegation's
+ * stream. It counts only while that delegation is the newest the host has
+ * seen, and is taken back when a newer one arrives within HEARD_GRACE_MS:
+ * the device may already have dropped that stream.
+ */
+interface Hearing {
+  readonly delegationId: string;
+  /** That delegation's sequence: what is heard on it was heard after its words went out. */
+  readonly sequence: number;
+  readonly at: number;
+}
+
+/** A delegation's answer: the chats it passed words to, or one event. */
+type DelegationAnswer = ReadonlyArray<DelegationTarget> | OrchestratorLiveWorkEvent;
 
 interface CallSession {
   readonly callId: AgentCallId;
   readonly threadId: ThreadId;
+  /** The agent called, as chats added to the call hear of it. */
+  readonly agentName: string;
+  /** Who the voice was told it can transfer the person to or add. */
+  readonly roster: AgentCallRoster;
   readonly createdAt: number;
   /** Transcript fragments already in the chat (see `extractCallDelta`). */
   forwardedFragments: ReadonlySet<string>;
   /** Questions this call answered whose resolution may not have landed yet. */
   readonly answeredRequestIds: Set<string>;
   lastSequence: number;
-  active: AgentCallWatchTarget | null;
-  /** Per delegation id that passed the chat something: the work it watches. */
-  readonly requests: Map<string, AgentCallWatchTarget>;
+  /** The newest delegation to reach the host, as it arrives; the device reads only that one's stream. */
+  newest: { readonly delegationId: string; readonly sequence: number } | null;
+  active: ReadonlyArray<DelegationTarget> | null;
+  /**
+   * The delegation the person's last words went out on, and the chats they
+   * went to: only those chats, and chats whose question the call read out
+   * since, take unnamed words as an answer.
+   */
+  lastDelivery: { readonly sequence: number; readonly targets: ReadonlyArray<DelegationTarget> };
+  /** Delegations answered quietly because the person's words had not arrived yet. */
+  readonly awaitingWords: Set<string>;
+  /** Per delegation id that passed chats something: the chats it watches. */
+  readonly requests: Map<string, ReadonlyArray<DelegationTarget>>;
 }
 
 /** The turn running on a thread right now, if any. */
@@ -550,6 +852,10 @@ const runningTurnOf = (shell: Pick<OrchestrationThread, "session" | "latestTurn"
     : shell.latestTurn?.state === "running"
       ? shell.latestTurn.turnId
       : null;
+
+/** A delegation's message and command id: per call session, delegation and chat. */
+const forwardIdFor = (parts: ReadonlyArray<string>) =>
+  NodeCrypto.createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
 
 export const makeAgentCallLive = Effect.gen(function* () {
   const settingsService = yield* ServerSettingsService;
@@ -578,6 +884,13 @@ export const makeAgentCallLive = Effect.gen(function* () {
         sessions.delete(id);
     }
   });
+
+  /** Who a call's voice can transfer to or add; empty when the workspace can't be read. */
+  const readRoster = (agent: VmAgent) =>
+    Effect.all([agents.list(), projections.getShellSnapshot()]).pipe(
+      Effect.map(([all, shell]) => callRoster({ agent, agents: all, threads: shell.threads })),
+      Effect.orElseSucceed((): AgentCallRoster => ({ entries: [] })),
+    );
 
   /** Claims the call for `deviceLabel` and opens GPT-Live as the agent. */
   const start = Effect.fn("AgentCallLive.start")(function* (
@@ -614,6 +927,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
     const claimed = yield* calls
       .claim(input.callId, deviceLabel)
       .pipe(Effect.mapError((error) => ended(error.detail)));
+    const roster = yield* readRoster(agent.value);
     const voice = liveVoiceFor(settings.voice);
     const created = yield* createGptLiveSession(http, {
       key: key.value,
@@ -631,11 +945,16 @@ export const makeAgentCallLive = Effect.gen(function* () {
     sessions.set(created.sessionId, {
       callId: input.callId,
       threadId: agent.value.threadId,
+      agentName: agent.value.name,
+      roster,
       createdAt: yield* nowMs,
       forwardedFragments: new Set(),
       answeredRequestIds: new Set(),
       lastSequence: 0,
+      newest: null,
       active: null,
+      lastDelivery: { sequence: 0, targets: [] },
+      awaitingWords: new Set(),
       requests: new Map(),
     });
     yield* Effect.logInfo("agent call GPT-Live session created", {
@@ -643,6 +962,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
       voice,
       agentId: agent.value.vmAgentId,
       direction: claimed.direction,
+      rosterSize: roster.entries.length,
     });
     return {
       sessionId: created.sessionId,
@@ -712,13 +1032,26 @@ export const makeAgentCallLive = Effect.gen(function* () {
     target: AgentCallWatchTarget,
     delegationId: string,
     view: AgentCallThreadView | null,
+    maxChars?: number,
   ): OrchestratorLiveWorkEvent =>
     view === null
-      ? { delegationId, status: "failed", text: "My chat is no longer available." }
-      : agentCallWorkEvent({ delegationId, target, view });
+      ? failedWork(delegationId, "My chat is no longer available.")
+      : agentCallWorkEvent({ delegationId, target, view, maxChars });
 
-  /** Work events for what one delegation passed the chat, until it replies or fails. */
-  const watch = (threadId: ThreadId, target: AgentCallWatchTarget, delegationId: string) =>
+  /**
+   * Work events for what one delegation passed a chat, until it replies or
+   * fails. `gone` runs if the chat disappears (a chat added to the call
+   * leaves it), which then reads as PARTICIPANT_GONE.
+   */
+  const watch = (
+    threadId: ThreadId,
+    target: AgentCallWatchTarget,
+    delegationId: string,
+    options: {
+      readonly maxChars?: number | undefined;
+      readonly gone?: Effect.Effect<void> | undefined;
+    } = {},
+  ) =>
     Stream.unwrap(
       Effect.gen(function* () {
         const wake = yield* Queue.sliding<void>(1);
@@ -762,22 +1095,147 @@ export const makeAgentCallLive = Effect.gen(function* () {
             readView(threadId, target).pipe(Effect.tap(followUnconfirmedSteer)),
           ),
           Stream.filter(Option.isSome),
-          Stream.map(({ value: view }) => workEvent(target, delegationId, view)),
-          Stream.changesWith(
-            (left, right) => left.status === right.status && left.text === right.text,
+          Stream.mapEffect(({ value: view }) =>
+            view === null && options.gone !== undefined
+              ? options.gone.pipe(Effect.as(failedWork(delegationId, PARTICIPANT_GONE)))
+              : Effect.succeed(workEvent(target, delegationId, view, options.maxChars)),
           ),
+          Stream.changesWith(sameWorkEvent),
           Stream.takeUntil((event) => TERMINAL_WORK.has(event.status)),
         );
       }),
     );
 
+  /** Takes a chat that went away off the call; that never ends the call. */
+  const leave = (session: CallSession, threadId: ThreadId) =>
+    calls.removeParticipant(session.callId, threadId).pipe(Effect.ignore);
+
+  /** Work events for one chat a delegation passed words to. */
+  const followTarget = (
+    session: CallSession,
+    target: DelegationTarget,
+    delegationId: string,
+    maxChars?: number,
+  ) => {
+    const current =
+      "sentAt" in target.work
+        ? watch(target.threadId, target.work, delegationId, {
+            maxChars,
+            gone: target.primary ? undefined : leave(session, target.threadId),
+          })
+        : Stream.make({ ...target.work, delegationId });
+    return target.previousReply
+      ? Stream.concat(
+          Stream.make({
+            delegationId,
+            status: "waiting-input" as const,
+            text: target.previousReply,
+          }),
+          current,
+        )
+      : current;
+  };
+
   /**
-   * The chat's open question: `answer` when the person's words can fill it,
+   * What one delegation passed its chats, as one stream of work events. Only
+   * the agent called: its own events, unchanged. Otherwise each chat's events
+   * merged (see `mergeCallWorkEvents`). Either way a chat whose finished
+   * reply goes out is marked `reported`, and one whose request goes out
+   * `heardRequest`, while this is the newest delegation (see `Hearing`).
+   */
+  const follow = (
+    session: CallSession,
+    targets: ReadonlyArray<DelegationTarget>,
+    delegationId: string,
+  ): Stream.Stream<OrchestratorLiveWorkEvent> => {
+    /** Marks what this stream sent as heard, unless a newer delegation already took over. */
+    const heard = (mark: (hearing: Hearing) => void) =>
+      Effect.map(nowMs, (at) => {
+        const newest = session.newest;
+        if (newest?.delegationId === delegationId)
+          mark({ delegationId, sequence: newest.sequence, at });
+      });
+    const [only] = targets;
+    if (only !== undefined && targets.length === 1 && only.primary)
+      return followTarget(session, only, delegationId).pipe(
+        Stream.tap((event) =>
+          heard((hearing) => {
+            if (TERMINAL_WORK.has(event.status)) only.reported = hearing;
+            if (event.status === "waiting-input" || event.status === "pending-approval")
+              only.heardRequest = { ...hearing, text: event.text };
+          }),
+        ),
+      );
+    const maxChars =
+      callReplyShare(targets.map((target) => target.name)) - FULL_REPLY_IN_CHAT.length - 1;
+    return Stream.mergeAll(
+      targets.map((target, index) =>
+        followTarget(session, target, delegationId, maxChars).pipe(
+          Stream.map((event) => ({ index, event })),
+        ),
+      ),
+      { concurrency: "unbounded" },
+    ).pipe(
+      Stream.mapAccum(
+        () => ({
+          latest: targets.map((): OrchestratorLiveWorkEvent | null => null),
+          heard: new Set<number>(),
+          // A retry of this delegation says its requests again: the device
+          // may not have got them before the stream broke.
+          requests: targets.map((target) =>
+            target.heardRequest === null || target.heardRequest.delegationId === delegationId
+              ? null
+              : target.heardRequest.text,
+          ),
+        }),
+        (state, { index, event }) => {
+          const latest = state.latest.with(index, event);
+          const merged = mergeCallWorkEvents({
+            delegationId,
+            targets: targets.map((target, at) => ({
+              name: target.name,
+              event: latest[at] ?? null,
+              reported: state.heard.has(at),
+              heardRequest: state.requests[at] ?? null,
+            })),
+          });
+          const requests = state.requests.map((request, at) =>
+            merged.asked.includes(at) ? (latest[at]?.text ?? request) : request,
+          );
+          return [
+            { latest, heard: new Set([...state.heard, ...merged.reported]), requests },
+            [{ ...merged, requests }],
+          ] as const;
+        },
+      ),
+      Stream.tap(({ reported, asked, requests }) =>
+        heard((hearing) => {
+          for (const at of reported) {
+            const target = targets[at];
+            if (target !== undefined) target.reported = hearing;
+          }
+          for (const at of asked) {
+            const target = targets[at];
+            const text = requests[at];
+            if (target !== undefined && typeof text === "string")
+              target.heardRequest = { ...hearing, text };
+          }
+        }),
+      ),
+      Stream.map(({ events }) => events),
+      Stream.flattenIterable,
+      Stream.changesWith(sameWorkEvent),
+      Stream.takeUntil((event) => TERMINAL_WORK.has(event.status)),
+    );
+  };
+
+  /**
+   * A chat's open question: `answer` when the person's words can fill it,
    * else `dismissedRequestId` when forwarding them as a message dismisses it
    * (an option-only chat, whose question turn the message interrupts).
    */
-  const openQuestion = (session: CallSession) =>
-    projections.getThreadDetailById(session.threadId, { messageLimit: 1, activityLimit: 80 }).pipe(
+  const openQuestion = (session: CallSession, threadId: ThreadId) =>
+    projections.getThreadDetailById(threadId, { messageLimit: 1, activityLimit: 80 }).pipe(
       Effect.map((thread) => {
         const none = { answer: null, dismissedRequestId: null };
         if (Option.isNone(thread)) return none;
@@ -799,68 +1257,159 @@ export const makeAgentCallLive = Effect.gen(function* () {
     );
 
   /**
-   * Passes what was said since the last delegation to the agent's chat — as
-   * the answer to its open question when it has one a spoken answer can fill,
-   * otherwise as a user message — then streams the chat's progress. Retries
-   * of one delegation id reattach to the same work instead of sending again;
-   * a delegation that found nothing new is not remembered, so its retry reads
-   * the transcript again once the person's words have arrived.
+   * Takes back what older delegations' streams sent in the HEARD_GRACE_MS
+   * before a newer delegation arrived: the device had likely dropped them
+   * already, so those chats are followed again and their requests repeated.
    */
-  const delegate = Effect.fn("AgentCallLive.delegate")(
-    function* (input: OrchestratorLiveDelegationInput) {
-      const session = yield* liveSession(input.sessionId);
-      const answer = (target: DelegationAnswer) =>
-        "sentAt" in target
-          ? watch(session.threadId, target, input.delegationId)
-          : Stream.make({ ...target, delegationId: input.delegationId });
-      const existing = session.requests.get(input.delegationId);
-      if (existing) return answer(existing);
-      const delta = extractCallDelta(input.context, session.forwardedFragments);
-      if (input.sequence <= session.lastSequence || !delta.userText) {
-        // Nothing new for the chat: an out-of-order delegation, or speech whose
-        // transcript has not arrived yet. Stay with work still under way, but
-        // never hand a finished reply to a new request; end quietly instead
-        // (empty text: the client retries once the transcript settles).
-        const active = session.active;
-        const current =
-          active === null
-            ? Option.none<OrchestratorLiveWorkEvent>()
-            : Option.map(yield* readView(session.threadId, active), (view) =>
-                workEvent(active, input.delegationId, view),
-              );
-        const target: DelegationAnswer =
-          active === null
-            ? {
-                delegationId: input.delegationId,
-                status: "completed",
-                text: "I didn't catch a new request. Ask the person to say it again.",
-              }
-            : Option.isSome(current) && TERMINAL_WORK.has(current.value.status)
-              ? { delegationId: input.delegationId, status: "completed", text: "" }
-              : active;
-        return answer(target);
+  const reopenUnheard = (session: CallSession, delegationId: string, arrivedAt: number) => {
+    const recent = (hearing: Hearing | null) =>
+      hearing !== null &&
+      hearing.delegationId !== delegationId &&
+      hearing.at >= arrivedAt - HEARD_GRACE_MS;
+    for (const target of session.active ?? []) {
+      if (recent(target.reported)) target.reported = null;
+      if (recent(target.heardRequest)) target.heardRequest = null;
+    }
+  };
+
+  /**
+   * Passes what was said since the last delegation to the chats it is for —
+   * the agent called, unless the person's latest words named chats added to
+   * the call or addressed everyone (see `callAddressing`) — each as the
+   * answer to its open question when it has one a spoken answer can fill,
+   * otherwise as a user message, then streams their progress merged into
+   * one. Retries of one delegation id reattach to the same work instead of
+   * sending again; a delegation that found nothing new is not remembered, so
+   * its retry reads the transcript again once the person's words have
+   * arrived.
+   */
+  const delegateInOrder = Effect.fnUntraced(function* (
+    input: OrchestratorLiveDelegationInput,
+    arrivedAt: number,
+  ) {
+    const session = yield* liveSession(input.sessionId);
+    const answer = (work: DelegationAnswer) =>
+      "status" in work
+        ? Stream.make({ ...work, delegationId: input.delegationId })
+        : follow(session, work, input.delegationId);
+    const existing = session.requests.get(input.delegationId);
+    if (existing) return answer(existing);
+    const inOrder = input.sequence > session.lastSequence;
+    if (inOrder) reopenUnheard(session, input.delegationId, arrivedAt);
+    const delta = extractCallDelta(input.context, session.forwardedFragments);
+    if (inOrder && !delta.userText && !session.awaitingWords.has(input.delegationId)) {
+      // The person's words can trail GPT-Live's delegation: end quietly
+      // (empty text) and the device asks again once its transcript settles.
+      session.awaitingWords.add(input.delegationId);
+      return answer({ delegationId: input.delegationId, status: "completed", text: "" });
+    }
+    if (!inOrder || !delta.userText) {
+      // Nothing new for the chats: an out-of-order delegation, or one still
+      // without words when asked again. Stay with work whose reply has not
+      // gone out, but never hand a reply the call already heard to a new
+      // request, nor a request it already heard asked: those chats come
+      // with later words. End quietly when nothing is left.
+      const active = session.active;
+      const unheard = (active ?? []).filter(
+        (target) => target.reported === null && target.heardRequest === null,
+      );
+      const target: DelegationAnswer =
+        active === null
+          ? {
+              delegationId: input.delegationId,
+              status: "completed",
+              text: "I didn't catch a new request. Ask the person to say it again.",
+            }
+          : unheard.length === 0
+            ? { delegationId: input.delegationId, status: "completed", text: "" }
+            : unheard;
+      return answer(target);
+    }
+    const participants = Option.match(yield* calls.get(session.callId), {
+      onNone: () => [],
+      onSome: (call) => call.participants ?? [],
+    });
+    // A chat the last words went to, or one whose question the call read
+    // out since, that asks a question a spoken answer can fill: unnamed words
+    // answer it (see `callDelegationTargets`). An action approval, a question
+    // only Solla Code can answer, one an earlier turn left open, or one the
+    // person talked past (heard before their last words) keeps nobody's words.
+    const { lastDelivery } = session;
+    const askedBy = (session.active ?? []).filter(
+      (target) =>
+        !target.primary &&
+        participants.some((participant) => participant.threadId === target.threadId) &&
+        (lastDelivery.targets.includes(target) ||
+          (target.heardRequest !== null && target.heardRequest.sequence >= lastDelivery.sequence)),
+    );
+    const asking = new Set<ThreadId>();
+    if (askedBy.length > 0)
+      for (const threadId of [session.threadId, ...askedBy.map((target) => target.threadId)]) {
+        const shell = yield* projections
+          .getThreadShellById(threadId)
+          .pipe(Effect.orElseSucceed(() => Option.none()));
+        if (Option.isNone(shell) || !shell.value.hasPendingUserInput) continue;
+        if ((yield* openQuestion(session, threadId)).answer !== null) asking.add(threadId);
       }
+    const addressing = callAddressing(
+      delta.latestUserText || delta.userText,
+      { threadId: session.threadId, name: session.agentName },
+      participants,
+      asking,
+    );
+    const chosen = addressing.targets.slice(0, 1 + AGENT_CALL_MAX_PARTICIPANTS);
+    const onCall = [
+      { threadId: session.threadId, name: session.agentName },
+      ...participants.map((participant) => ({
+        threadId: participant.threadId,
+        name: participant.title,
+      })),
+    ];
+    /** With chats added to the call, every message says who is on it. */
+    const messageFor = (target: CallDelegationTarget) => {
+      if (participants.length === 0) return forwardedCallMessage(delta);
+      const others = onCall
+        .filter((entry) => entry.threadId !== target.threadId)
+        .map((entry) => entry.name);
+      const forwarded = forwardedCallMessage(delta, target.primary ? undefined : session.agentName);
+      return `${forwarded}\n${groupCallNote({ others, everyone: addressing.everyone })}`;
+    };
+    let undelivered = 0;
+    const sendTo = Effect.fnUntraced(function* (
+      target: CallDelegationTarget,
+    ): Effect.fn.Return<DelegationTarget, OrchestratorLiveError> {
       const shell = yield* projections
-        .getThreadShellById(session.threadId)
+        .getThreadShellById(target.threadId)
         .pipe(Effect.orElseSucceed(() => Option.none()));
       if (Option.isNone(shell)) {
-        // The chat was deleted: nothing can reach it, so the call is over.
-        sessions.delete(input.sessionId);
-        yield* calls.fail(session.callId);
-        return yield* ended("This agent's chat is no longer available.");
+        if (target.primary) {
+          // The chat was deleted: nothing can reach it, so the call is over.
+          sessions.delete(input.sessionId);
+          yield* calls.fail(session.callId);
+          return yield* ended("This agent's chat is no longer available.");
+        }
+        // A chat added to the call went away: it leaves; the call goes on.
+        yield* leave(session, target.threadId);
+        return {
+          ...target,
+          work: failedWork(input.delegationId, PARTICIPANT_GONE),
+          reported: null,
+          heardRequest: null,
+        };
       }
-      const id = NodeCrypto.createHash("sha256")
-        .update(`${input.sessionId}\0${input.delegationId}`)
-        .digest("hex")
-        .slice(0, 32);
+      const id = forwardIdFor(
+        target.primary
+          ? [input.sessionId, input.delegationId]
+          : [input.sessionId, input.delegationId, target.threadId],
+      );
       const commandId = CommandId.make(`agent-call:${id}`);
       const sentAt = DateTime.formatIso(yield* DateTime.now);
       const open = shell.value.hasPendingUserInput
-        ? yield* openQuestion(session)
+        ? yield* openQuestion(session, target.threadId)
         : { answer: null, dismissedRequestId: null };
       const question = open.answer;
       const messageId = MessageId.make(`agent-call:${id}`);
-      const target: AgentCallWatchTarget =
+      const work: AgentCallWatchTarget =
         question === null
           ? {
               messageId,
@@ -869,16 +1418,17 @@ export const makeAgentCallLive = Effect.gen(function* () {
               busyTurnId: runningTurnOf(shell.value),
             }
           : { messageId: null, answeredRequestId: question.requestId, sentAt, busyTurnId: null };
-      yield* (
+      const sent = (
         question === null
-          ? engine.dispatch({
+          ? // The person spoke to this chat directly: no sender chat.
+            engine.dispatch({
               type: "thread.turn.start",
               commandId,
-              threadId: session.threadId,
+              threadId: target.threadId,
               message: {
                 messageId,
                 role: "user",
-                text: forwardedCallMessage(delta),
+                text: messageFor(target),
                 inputOrigin: "transcription",
                 attachments: [],
               },
@@ -891,7 +1441,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
             engine.dispatch({
               type: "thread.user-input.respond",
               commandId,
-              threadId: session.threadId,
+              threadId: target.threadId,
               requestId: ApprovalRequestId.make(question.requestId),
               answers: Object.fromEntries(
                 question.questionIds.map((questionId) => [
@@ -910,20 +1460,115 @@ export const makeAgentCallLive = Effect.gen(function* () {
             }),
         ),
       );
-      if (target.answeredRequestId !== null)
-        session.answeredRequestIds.add(target.answeredRequestId);
-      session.requests.set(input.delegationId, target);
-      session.active = target;
-      session.lastSequence = input.sequence;
-      session.forwardedFragments = new Set(delta.fragments);
-      return answer(target);
-    },
-    (effect) => semaphore.withPermits(1)(effect),
-  );
+      if (chosen.length === 1) yield* sent;
+      else if ((yield* Effect.result(sent))._tag === "Failure") {
+        // One chat refusing doesn't hold up the others; it reads as failed.
+        undelivered += 1;
+        return {
+          ...target,
+          work: failedWork(input.delegationId, "My chat didn't get that."),
+          reported: null,
+          heardRequest: null,
+        };
+      }
+      if (work.answeredRequestId !== null) session.answeredRequestIds.add(work.answeredRequestId);
+      return { ...target, work, reported: null, heardRequest: null };
+    });
+    // Read finished answers before dispatching more words to the same chat:
+    // the newer turn can replace its projection before the old stream is read.
+    const previousReplies = new Map<ThreadId, string>();
+    for (const previous of session.active ?? []) {
+      if (previous.reported !== null || !chosen.some((next) => next.threadId === previous.threadId))
+        continue;
+      const work = previous.work;
+      const event =
+        "sentAt" in work
+          ? Option.map(yield* readView(previous.threadId, work), (view) =>
+              workEvent(work, input.delegationId, view),
+            )
+          : Option.some(work);
+      if (Option.isSome(event) && TERMINAL_WORK.has(event.value.status) && event.value.text)
+        previousReplies.set(previous.threadId, event.value.text);
+    }
+    const delivered = yield* Effect.forEach(chosen, (target) =>
+      sendTo(target).pipe(
+        Effect.map((sent) => {
+          const previousReply = previousReplies.get(target.threadId);
+          return previousReply === undefined ? sent : { ...sent, previousReply };
+        }),
+      ),
+    );
+    if (undelivered > 0 && !delivered.some((target) => "sentAt" in target.work))
+      return yield* new OrchestratorLiveError({
+        status: 502,
+        detail: "I couldn't pass that to my chat. Try again.",
+      });
+    // Chats still on the call whose reply to earlier words has not gone
+    // out stay followed: the client drops an older delegation's stream once
+    // a newer one starts, so their replies come with this one.
+    const carried = (session.active ?? []).filter(
+      (target) =>
+        target.reported === null &&
+        !delivered.some((next) => next.threadId === target.threadId) &&
+        (target.primary ||
+          participants.some((participant) => participant.threadId === target.threadId)),
+    );
+    const targets = [...delivered, ...carried];
+    session.requests.set(input.delegationId, targets);
+    session.active = targets;
+    session.lastDelivery = { sequence: input.sequence, targets: delivered };
+    session.lastSequence = input.sequence;
+    session.forwardedFragments = new Set(delta.fragments);
+    return answer(targets);
+  });
+
+  const delegate = Effect.fn("AgentCallLive.delegate")(function* (
+    input: OrchestratorLiveDelegationInput,
+  ) {
+    // Noted as it arrives, before waiting its turn: from now on the device
+    // reads this delegation's stream, not an older one's.
+    const arrivedAt = yield* nowMs;
+    const session = sessions.get(input.sessionId);
+    if (session !== undefined && input.sequence > (session.newest?.sequence ?? 0))
+      session.newest = { delegationId: input.delegationId, sequence: input.sequence };
+    return yield* semaphore.withPermits(1)(delegateInOrder(input, arrivedAt));
+  });
+
+  /** The roster a live call's voice started with; ended once no session holds the call. */
+  const roster = Effect.fn("AgentCallLive.roster")(function* (callId: AgentCallId) {
+    yield* prune;
+    for (const session of sessions.values()) if (session.callId === callId) return session.roster;
+    return yield* new AgentCallError({ detail: "This call has ended." });
+  });
+
+  /**
+   * Adds a chat to an active call: it must exist and may join (see
+   * `callParticipantFor`); an agent's main chat joins as the agent.
+   */
+  const addParticipant = Effect.fn("AgentCallLive.addParticipant")(function* (
+    input: AgentCallParticipantInput,
+  ) {
+    const [thread, owner] = yield* Effect.all([
+      projections.getThreadShellById(input.threadId),
+      agents.getByThreadId(input.threadId),
+    ]).pipe(Effect.mapError(() => new AgentCallError({ detail: "Could not look up that chat." })));
+    const participant = callParticipantFor({
+      threadId: input.threadId,
+      thread: Option.getOrNull(thread),
+      agent: Option.getOrNull(owner),
+    });
+    if ("refusal" in participant) return yield* new AgentCallError({ detail: participant.refusal });
+    return yield* calls.addParticipant(input.callId, participant);
+  });
 
   return {
     start,
     delegate,
+    roster,
+    addParticipant,
+    /** Takes a chat off a call. Idempotent. */
+    removeParticipant: (input: AgentCallParticipantInput) =>
+      calls.removeParticipant(input.callId, input.threadId),
     /**
      * The device holding the call is still there; 409 once the call is over.
      * Never waits behind a delegation: the renewal is atomic in AgentCalls.

@@ -74,6 +74,22 @@ export const handleActionApproval = Effect.fn("ActionApproval.handle")(function*
 
   const fingerprint = actionApprovalFingerprint(input);
   const broker = yield* ActionApprovalBroker.ActionApprovalBroker;
+  // The person already approved this exact proposal for the work still going
+  // on (the answer turn continues it): asking again would ask them twice.
+  const workStartedAt = Option.match(trigger, {
+    onNone: () => undefined,
+    onSome: (value) => value.workStartedAt,
+  });
+  if (
+    workStartedAt !== undefined &&
+    (yield* broker.wasApproved({ threadId: invocation.threadId, fingerprint, workStartedAt }))
+  ) {
+    return {
+      status: "approved" as const,
+      approvalMode: "user" as const,
+      message: "The user already approved this exact action. Proceed exactly as shown.",
+    };
+  }
   const existing = yield* broker.findOpen({ threadId: invocation.threadId, fingerprint });
   if (existing !== null) {
     return {
@@ -96,6 +112,7 @@ export const handleActionApproval = Effect.fn("ActionApproval.handle")(function*
         threadId: invocation.threadId,
         requestId: outcome.requestId,
         fingerprint,
+        ...(workStartedAt === undefined ? {} : { workStartedAt }),
       });
       return {
         status: "pending" as const,

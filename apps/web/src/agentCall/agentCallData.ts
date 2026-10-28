@@ -35,3 +35,15 @@ export function useAgentRecord(
   if (latest?.type !== "snapshot") return null;
   return latest.agents.find((agent) => agent.vmAgentId === vmAgentId) ?? null;
 }
+
+/** A host's agents, from its registry; null until it loads. */
+export function useEnvironmentAgents(
+  environmentId: EnvironmentId | null,
+): ReadonlyArray<VmAgent> | null {
+  const atom = useMemo(
+    () => (environmentId === null ? null : vmAgentEnvironment.agents({ environmentId, input: {} })),
+    [environmentId],
+  );
+  const latest = useEnvironmentQuery(atom).data;
+  return latest?.type === "snapshot" ? latest.agents : null;
+}

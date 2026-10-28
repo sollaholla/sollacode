@@ -4,12 +4,21 @@ import {
   actionApprovalAnswerFromUnknown,
   actionApprovalFingerprint,
   isActionApprovalRequestId,
+  isActionApprovalResponseMessageId,
 } from "./actionApproval.ts";
 
 describe("durable action approvals", () => {
   it("recognizes only the reserved request namespace", () => {
     expect(isActionApprovalRequestId("action-approval:abc")).toBe(true);
     expect(isActionApprovalRequestId("provider-user-input:abc")).toBe(false);
+    expect(isActionApprovalRequestId("action-approval-response:action-approval:abc")).toBe(false);
+  });
+
+  it("recognizes the answer turn's message without mistaking the request for it", () => {
+    expect(isActionApprovalResponseMessageId("action-approval-response:action-approval:abc")).toBe(
+      true,
+    );
+    expect(isActionApprovalResponseMessageId("action-approval:abc")).toBe(false);
   });
 
   it("distinguishes approval, corrections, and cancellation", () => {

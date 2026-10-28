@@ -22,6 +22,7 @@ import {
   type OrchestrationMessage,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
+  type OrchestratorLiveWorkEvent,
   type VmAgent,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -55,6 +56,7 @@ import {
   forwardedCallMessage,
   AgentCallLiveLayer,
   makeAgentCallLive,
+  mergeCallWorkEvents,
   spokenReplies,
   spokenReply,
   voiceAnswerableRequest,
@@ -177,6 +179,7 @@ it("forwards each transcript fragment once, whenever its transcript arrives", ()
   ].join("\n");
   const first = extractCallDelta(context, new Set());
   assert.strictEqual(first.userText, "Can you check the deploy?");
+  assert.strictEqual(first.latestUserText, "Can you check the deploy?");
   assert.strictEqual(first.assistantText, "Sure, I'll ask my chat.");
   assert.strictEqual(first.fragments.length, 4);
   assert.strictEqual(
@@ -205,9 +208,11 @@ it("forwards each transcript fragment once, whenever its transcript arrives", ()
     new Set(second.fragments),
   );
   assert.deepStrictEqual([late.userText, late.assistantText], ["And staging too.", ""]);
+  assert.strictEqual(late.latestUserText, "And staging too.");
 
   assert.deepStrictEqual(extractCallDelta("user: no timestamps", new Set()), {
     userText: "",
+    latestUserText: "",
     assistantText: "",
     fragments: [],
   });
@@ -223,6 +228,24 @@ it("forwards each transcript fragment once, whenever its transcript arrives", ()
       .userText,
     "Deploy to staging now",
   );
+});
+
+it("tells the person's latest words apart from what the voice already handled", () => {
+  // "Add Gregg" was handled by the voice itself, never delegated: it stays in
+  // the next delegation's words but does not decide who they are for.
+  const delta = extractCallDelta(
+    [
+      "user [0-900ms]: Add Gregg to the call.",
+      "assistant [1000-1800ms]: Adding Gregg to the call.",
+      "user [3000-3600ms]:  What's on my calendar",
+      "user [3600-3900ms]:  today?",
+      // The voice says it is asking, after the words it delegates.
+      "assistant [4000-4400ms]: Let me check.",
+    ].join("\n"),
+    new Set(),
+  );
+  assert.strictEqual(delta.userText, "Add Gregg to the call. What's on my calendar today?");
+  assert.strictEqual(delta.latestUserText, "What's on my calendar today?");
 });
 
 it("builds the call persona from the agent and why it called", () => {
@@ -251,6 +274,210 @@ it("builds the call persona from the agent and why it called", () => {
   assert.include(outgoing, "Your job: Triage.\n");
   assert.include(outgoing, "Speak French.");
   assert.notInclude(outgoing, "You called the person");
+  assert.notInclude(outgoing, "transfer");
+  assert.notInclude(outgoing, "bring people onto this call");
+});
+
+it("leaves who the voice can transfer to or add to the device holding the call", () => {
+  // Only a device that acts on the phrases teaches them (apps/web callDirectives).
+  const instructions = agentCallInstructions({
+    name: "Scout",
+    purpose: "Triage.",
+    language: "en",
+    direction: "outgoing",
+    topic: null,
+  });
+  assert.notInclude(instructions, "Transferring you to");
+  assert.notInclude(instructions, "to the call.");
+  assert.match(instructions, /Speak English\.$/u);
+});
+
+it("merges the replies of several chats on a call, each read out as soon as it lands", () => {
+  const work = (
+    status: "running" | "queued" | "waiting-input" | "pending-approval" | "completed" | "failed",
+    text: string,
+  ) => ({ delegationId: "d", status, text });
+  const merge = (
+    targets: ReadonlyArray<{
+      name: string;
+      event: ReturnType<typeof work> | null;
+      reported?: boolean;
+      heardRequest?: string;
+    }>,
+  ) => mergeCallWorkEvents({ delegationId: "d", targets });
+  const last = (targets: Parameters<typeof merge>[0]) => merge(targets).events.at(-1);
+
+  // A reply that lands while someone still works is read out at once (an
+  // audible event), then the call goes back to working.
+  const early = merge([
+    { name: "Scout", event: work("completed", "All green.") },
+    { name: "Gregg", event: null },
+  ]);
+  assert.deepStrictEqual(early, {
+    events: [
+      {
+        delegationId: "d",
+        status: "waiting-input",
+        text: "Scout: All green.\n\nNot done yet: Gregg.",
+      },
+      {
+        delegationId: "d",
+        status: "running",
+        text: "Scout is done.\nGregg: Passing that to my chat.",
+      },
+    ],
+    reported: [0],
+    asked: [],
+  });
+  // Once heard, it is not read out again.
+  assert.deepStrictEqual(
+    merge([
+      { name: "Scout", event: work("completed", "All green."), reported: true },
+      { name: "Gregg", event: work("running", "Working on it in my chat.") },
+    ]).events,
+    [
+      {
+        delegationId: "d",
+        status: "running",
+        text: "Scout is done.\nGregg: Working on it in my chat.",
+      },
+    ],
+  );
+  assert.strictEqual(
+    last([
+      { name: "Scout", event: work("queued", "Your request is waiting.") },
+      { name: "Gregg", event: work("completed", "Done.") },
+    ])?.status,
+    "queued",
+  );
+  // A question surfaces at once, by name; an approval outranks it.
+  assert.deepStrictEqual(
+    merge([
+      { name: "Scout", event: work("running", "Working on it in my chat.") },
+      { name: "Gregg", event: work("waiting-input", "My chat is asking you: Which account?") },
+    ]),
+    {
+      events: [
+        {
+          delegationId: "d",
+          status: "waiting-input",
+          text: "Gregg: My chat is asking you: Which account?",
+        },
+      ],
+      reported: [],
+      asked: [1],
+    },
+  );
+  // A request the call already read out is not read again: still not done.
+  const heardAsk = merge([
+    { name: "Scout", event: work("completed", "Production is green.") },
+    {
+      name: "Gregg",
+      event: work("pending-approval", "I need your approval."),
+      heardRequest: "I need your approval.",
+    },
+  ]);
+  // Gregg waits on the person, so nobody works: after the reply, a quiet
+  // waiting event (nothing to say) instead of "working".
+  assert.deepStrictEqual(
+    heardAsk.events.map((event) => [event.status, event.text]),
+    [
+      ["waiting-input", "Scout: Production is green.\n\nNot done yet: Gregg."],
+      ["waiting-input", ""],
+    ],
+  );
+  assert.deepStrictEqual(heardAsk.asked, []);
+  // Nobody new to read out and nobody working: quiet, never a "working" spinner.
+  assert.deepStrictEqual(
+    merge([
+      { name: "Scout", event: work("completed", "Production is green."), reported: true },
+      {
+        name: "Gregg",
+        event: work("waiting-input", "My chat is asking you: Which?"),
+        heardRequest: "My chat is asking you: Which?",
+      },
+    ]).events.map((event) => [event.status, event.text]),
+    [["waiting-input", ""]],
+  );
+  // A request is read out as its watch framed it, never cut like a reply.
+  const approval = `I need your approval for ${"a long email draft ".repeat(60)}— please approve or decline it in Solla Code; a spoken yes can't approve it.`;
+  const asked = merge([
+    { name: "Scout", event: work("running", "Working on it in my chat.") },
+    { name: "Gregg", event: work("pending-approval", approval) },
+  ]).events.at(-1);
+  assert.strictEqual(asked?.text, `Gregg: ${approval}`);
+  assert.deepStrictEqual(
+    merge([
+      { name: "Scout", event: work("running", "Working on it in my chat.") },
+      {
+        name: "Gregg",
+        event: work("pending-approval", "I need your approval."),
+        heardRequest: "I need your approval.",
+      },
+    ]).events.map((event) => event.status),
+    ["running"],
+  );
+  assert.strictEqual(
+    last([
+      { name: "Scout", event: work("pending-approval", "I need your approval.") },
+      { name: "Gregg", event: work("waiting-input", "My chat is asking you: Which?") },
+    ])?.status,
+    "pending-approval",
+  );
+  // A reply not heard yet goes out with the question, never behind it.
+  assert.deepStrictEqual(
+    merge([
+      { name: "Scout", event: work("completed", "Production is green.") },
+      { name: "Gregg", event: work("waiting-input", "My chat is asking you: Which account?") },
+    ]),
+    {
+      events: [
+        {
+          delegationId: "d",
+          status: "waiting-input",
+          text: "Scout: Production is green.\n\nGregg: My chat is asking you: Which account?",
+        },
+      ],
+      reported: [0],
+      asked: [1],
+    },
+  );
+  // Done once everyone is: each reply not heard yet by name, a failure said as such.
+  assert.deepStrictEqual(
+    last([
+      { name: "Scout", event: work("completed", "Production is green.") },
+      { name: "Gregg", event: work("failed", "My chat ran into an error.") },
+    ]),
+    {
+      delegationId: "d",
+      status: "completed",
+      text: "Scout: Production is green.\n\nGregg couldn't answer: My chat ran into an error.",
+    },
+  );
+  assert.deepStrictEqual(
+    last([
+      { name: "Scout", event: work("completed", "Production is green."), reported: true },
+      { name: "Gregg", event: work("completed", "Staging too.") },
+    ]),
+    { delegationId: "d", status: "completed", text: "Gregg: Staging too." },
+  );
+  assert.strictEqual(
+    last([
+      { name: "Scout", event: work("failed", "My chat stopped before it got to that.") },
+      { name: "Gregg", event: work("failed", "My chat ran into an error.") },
+    ])?.status,
+    "failed",
+  );
+  // Long replies share the spoken budget.
+  const long = "The deploy is green and every check passed. ".repeat(80);
+  const merged = last([
+    { name: "Scout", event: work("completed", long) },
+    { name: "Gregg", event: work("completed", long) },
+    { name: "Release notes", event: work("completed", long) },
+  ]);
+  assert.isAtMost(merged?.text.length ?? Infinity, 1_500);
+  assert.match(merged?.text ?? "", /^Scout: The deploy is green/u);
+  assert.include(merged?.text, "\n\nRelease notes: The deploy is green");
 });
 
 it("speaks short replies whole and long ones up to a sentence", () => {
@@ -646,6 +873,16 @@ it("answers by voice only questions whose provider keeps free text", () => {
 const decodeFetchBody = async (init?: RequestInit) =>
   (await new Response(init?.body).json()) as { session: { instructions: string; audio: unknown } };
 
+const greggThreadId = ThreadId.make("thread-gregg");
+const gregg: VmAgent = {
+  ...agent,
+  vmAgentId: VmAgentId.make("agent-gregg"),
+  name: "Gregg",
+  handle: "gregg",
+  vmId: VmId.make("vm-gregg"),
+  threadId: greggThreadId,
+};
+
 function fixture(options: { readonly liveStatus?: number } = {}) {
   const requests: Array<{ session: { instructions: string; audio: unknown } }> = [];
   const dispatched: OrchestrationCommand[] = [];
@@ -673,6 +910,21 @@ function fixture(options: { readonly liveStatus?: number } = {}) {
     session: null as OrchestrationThread["session"],
     latestTurn: null as OrchestrationThread["latestTurn"],
   };
+  /** Other chats by id: an agent's main chat or a regular one, for merged calls. */
+  const chats = new Map<
+    string,
+    { title: string; thread: AgentCallThreadView["thread"]; shell: typeof shell }
+  >();
+  const shellFor = (id: string) =>
+    id === threadId
+      ? chatExists
+        ? Option.some({ ...shell, id, title: agent.name, archivedAt: null } as never)
+        : Option.none()
+      : Option.fromUndefinedOr(chats.get(id)).pipe(
+          Option.map(
+            (chat) => ({ ...chat.shell, id, title: chat.title, archivedAt: null }) as never,
+          ),
+        );
   const settings = {
     ...DEFAULT_SERVER_SETTINGS,
     orchestrator: { ...DEFAULT_SERVER_SETTINGS.orchestrator, voice: "alloy" },
@@ -699,7 +951,12 @@ function fixture(options: { readonly liveStatus?: number } = {}) {
             : Option.none(),
         ),
     }),
-    Layer.mock(VmAgentStore)({ getById: () => Effect.succeed(Option.some(agent)) }),
+    Layer.mock(VmAgentStore)({
+      getById: () => Effect.succeed(Option.some(agent)),
+      list: () => Effect.succeed([agent, gregg]),
+      getByThreadId: (id) =>
+        Effect.succeed(Option.fromUndefinedOr([agent, gregg].find((row) => row.threadId === id))),
+    }),
   );
   return {
     requests,
@@ -741,6 +998,25 @@ function fixture(options: { readonly liveStatus?: number } = {}) {
     removeChat: () => {
       chatExists = false;
     },
+    /** Another chat, idle until a test says otherwise. */
+    addChat: (id: ThreadId, title: string) => {
+      chats.set(id, {
+        title,
+        thread: { messages: [], activities: [], latestTurn: null, session: null },
+        shell: { ...shell, session: null, latestTurn: null },
+      });
+    },
+    setChatThread: (id: ThreadId, next: Partial<AgentCallThreadView["thread"]>) => {
+      const chat = chats.get(id);
+      if (chat) chat.thread = { ...chat.thread, ...next };
+    },
+    setChatShell: (id: ThreadId, next: Partial<typeof shell>) => {
+      const chat = chats.get(id);
+      if (chat) chat.shell = { ...chat.shell, ...next };
+    },
+    deleteChat: (id: ThreadId) => {
+      chats.delete(id);
+    },
     layer: (events: PubSub.PubSub<OrchestrationEvent>, firstRead?: Deferred.Deferred<void>) =>
       Layer.mergeAll(
         AgentCallsLayer.pipe(Layer.provideMerge(base)),
@@ -757,14 +1033,29 @@ function fixture(options: { readonly liveStatus?: number } = {}) {
           streamDomainEvents: Stream.fromPubSub(events),
         }),
         Layer.mock(ProjectionSnapshotQuery)({
-          getThreadShellById: () =>
-            Effect.sync(() => (chatExists ? Option.some({ ...shell } as never) : Option.none())),
-          getThreadDetailById: () =>
+          getThreadShellById: (id) => Effect.sync(() => shellFor(id)),
+          getThreadDetailById: (id) =>
             Effect.gen(function* () {
+              if (id !== threadId)
+                return Option.map(Option.fromUndefinedOr(chats.get(id)), (chat) => ({
+                  ...chat.thread,
+                })) as never;
               const current = { ...thread };
               if (firstRead) yield* Deferred.succeed(firstRead, undefined);
               return Option.some(current as never);
             }),
+          getShellSnapshot: () =>
+            Effect.sync(() => ({
+              snapshotSequence: 1,
+              projects: [],
+              threads: [threadId, ...chats.keys()].flatMap((id) =>
+                Option.toArray(shellFor(id)).map((row) => ({
+                  ...(row as object),
+                  updatedAt: at(1),
+                })),
+              ) as never,
+              updatedAt: at(1),
+            })),
         }),
         // Forwarded messages have been delivered unless a test says otherwise.
         Layer.mock(ThreadWorkObligationRepository)({
@@ -781,6 +1072,12 @@ function fixture(options: { readonly liveStatus?: number } = {}) {
 }
 
 const offer = { sdp: "offer", history: [] };
+/** What a call's device reads out of work events: terminal ones, questions and approvals. */
+const spokenText = (events: ReadonlyArray<OrchestratorLiveWorkEvent>) =>
+  events
+    .filter((event) => event.status !== "running" && event.status !== "queued")
+    .map((event) => event.text)
+    .join("\n\n");
 const sessionSet = {
   type: "thread.session-set",
   aggregateKind: "thread",
@@ -960,9 +1257,10 @@ it.effect("forwards each stretch of the call once and streams the chat's reply",
         next?.type === "thread.turn.start" ? next.message.text : undefined,
         "From our voice call:\nYou said: And staging?\n(On the call I replied: Checking.)",
       );
+      // Within the take-back window, replay the answer the device may have missed.
       assert.strictEqual(
-        (yield* Stream.runHead(nextUpdates)).pipe(Option.getOrUndefined)?.status,
-        "running",
+        (yield* Stream.runHead(nextUpdates)).pipe(Option.getOrUndefined)?.text,
+        "Yes, all green.",
       );
 
       // Hanging up ends the session for later delegations.
@@ -1390,3 +1688,792 @@ it.effect(
     }).pipe(Effect.scoped);
   },
 );
+
+it.effect("a call starts with a roster its voice and its device share", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(ThreadId.make("thread-release"), "Release notes");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      // No session holds the call yet.
+      assert.strictEqual(
+        (yield* Effect.flip(live.roster(placed.callId))).detail,
+        "This call has ended.",
+      );
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      const roster = yield* live.roster(placed.callId);
+      assert.deepStrictEqual(roster.entries, [
+        { name: "Gregg", threadId: greggThreadId, vmAgentId: gregg.vmAgentId },
+        { name: "Release notes", threadId: ThreadId.make("thread-release"), vmAgentId: null },
+      ]);
+      // The device holding the call teaches the voice who they are.
+      const instructions = f.requests[0]?.session.instructions ?? "";
+      assert.notInclude(instructions, "Gregg");
+      assert.notInclude(instructions, "Release notes");
+
+      yield* live.release("live-call");
+      assert.strictEqual(
+        (yield* Effect.flip(live.roster(placed.callId))).detail,
+        "This call has ended.",
+      );
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("chats join under their own names; internal or missing ones are refused", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(greggThreadId, "Gregg's chat");
+    f.addChat(ThreadId.make("thread-release"), "Release notes");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      const join = (id: string) =>
+        live.addParticipant({ callId: placed.callId, threadId: ThreadId.make(id) });
+      // An agent's main chat joins as the agent.
+      yield* join(greggThreadId);
+      const joined = yield* join("thread-release");
+      assert.deepStrictEqual(joined.participants, [
+        { threadId: greggThreadId, title: "Gregg", vmAgentId: gregg.vmAgentId },
+        { threadId: ThreadId.make("thread-release"), title: "Release notes", vmAgentId: null },
+      ]);
+      assert.strictEqual(
+        (yield* Effect.flip(join(threadId))).detail,
+        "You're already talking to Scout.",
+      );
+      assert.strictEqual(
+        (yield* Effect.flip(join("thread-missing"))).detail,
+        "That chat no longer exists.",
+      );
+      assert.strictEqual(
+        (yield* Effect.flip(join("solla-orchestrator"))).detail,
+        "The orchestrator can't join a call.",
+      );
+      const left = yield* live.removeParticipant({
+        callId: placed.callId,
+        threadId: greggThreadId,
+      });
+      assert.deepStrictEqual(
+        left.participants?.map((entry) => entry.title),
+        ["Release notes"],
+      );
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("words go to the chats the person names, and their replies come back merged", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(at(0)));
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(greggThreadId, "Gregg's chat");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+
+      // Named: only Gregg's chat hears it, told who else is on the call.
+      const first = "user [0-900ms]: Gregg, is staging green?";
+      const toGregg = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d1",
+        sequence: 1,
+        context: first,
+      });
+      assert.strictEqual(f.dispatched.length, 1);
+      const sent = f.dispatched[0];
+      if (sent?.type !== "thread.turn.start") return assert.fail("expected a forwarded message");
+      assert.strictEqual(sent.threadId, greggThreadId);
+      assert.strictEqual(sent.message.inputOrigin, "transcription");
+      assert.isUndefined(sent.message.senderThreadId);
+      assert.strictEqual(
+        sent.message.text,
+        "From our voice call:\nYou said: Gregg, is staging green?\n(Group call: you're on a call with the person and Scout. The person addressed you.)",
+      );
+      const finished = (second: number, text: string) => ({
+        messages: [message(`reply-${second}`, "assistant", text, second)],
+        session: session("ready"),
+        latestTurn: turn("completed", second, { requestedSecond: second }),
+      });
+      f.setChatThread(greggThreadId, finished(0, "Staging is green."));
+      assert.deepStrictEqual((yield* Stream.runCollect(toGregg)).at(-1), {
+        delegationId: "d1",
+        status: "completed",
+        text: "Gregg: Staging is green.",
+      });
+
+      // Everyone: both chats, one reply each, by name.
+      const second = `${first}\nassistant [1000-1500ms]: Gregg says it's green.\nuser [2000-2600ms]: Thanks, everyone. Anything else?`;
+      const toAll = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d2",
+        sequence: 2,
+        context: second,
+      });
+      assert.deepStrictEqual(
+        f.dispatched
+          .slice(1)
+          .map((command) => (command.type === "thread.turn.start" ? command.threadId : null)),
+        [threadId, greggThreadId],
+      );
+      const [toScout, toGreggAgain] = f.dispatched.slice(1);
+      assert.strictEqual(
+        toScout?.type === "thread.turn.start" ? toScout.message.text : undefined,
+        "From our voice call:\nYou said: Thanks, everyone. Anything else?\n(On the call I replied: Gregg says it's green.)\n(Group call: you're on a call with the person and Gregg. The person addressed everyone.)",
+      );
+      assert.include(
+        toGreggAgain?.type === "thread.turn.start" ? toGreggAgain.message.text : "",
+        "(On the call Scout replied: Gregg says it's green.)",
+      );
+      // Distinct, stable ids per chat.
+      assert.notStrictEqual(toScout?.commandId, toGreggAgain?.commandId);
+      f.setThread(finished(0, "Nothing else from me."));
+      f.setChatThread(greggThreadId, {
+        messages: [message("reply-gregg", "assistant", "All quiet.", 0)],
+      });
+      const merged = [...(yield* Stream.runCollect(toAll))];
+      assert.strictEqual(merged.at(-1)?.status, "completed");
+      // Each reply is read out once, by name, whichever lands first.
+      const heard = spokenText(merged);
+      assert.include(heard, "Scout: Nothing else from me.");
+      assert.include(heard, "Gregg: All quiet.");
+      assert.strictEqual(heard.split("Scout:").length, 2);
+      // The preceding reply is also recovered within the take-back window.
+      assert.include(heard, "Gregg: Staging is green.");
+      assert.strictEqual(heard.split("Gregg:").length, 3);
+
+      // A retry reattaches to both chats instead of sending again.
+      const retried = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d2",
+        sequence: 2,
+        context: second,
+      });
+      assert.strictEqual(f.dispatched.length, 3);
+      assert.strictEqual((yield* Stream.runCollect(retried)).at(-1)?.status, "completed");
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("unnamed words answer the question a chat on the call just asked", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(greggThreadId, "Gregg's chat");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+      const first = "user [0-900ms]: Gregg, set up staging.";
+      yield* live
+        .delegate({ sessionId: "live-call", delegationId: "d1", sequence: 1, context: first })
+        .pipe(Effect.asVoid);
+      const sentTo = (index: number) => {
+        const command = f.dispatched[index];
+        return command !== undefined && "threadId" in command ? command.threadId : undefined;
+      };
+      assert.strictEqual(sentTo(0), greggThreadId);
+      // Gregg asks which account; the person answers without naming Gregg.
+      const asking = {
+        session: session("running", null, "codex"),
+        latestTurn: turn("running", null, { requestedSecond: 1 }),
+      };
+      f.setChatShell(greggThreadId, { hasPendingUserInput: true, ...asking });
+      f.setChatThread(greggThreadId, { activities: [question()], ...asking });
+      yield* live
+        .delegate({
+          sessionId: "live-call",
+          delegationId: "d2",
+          sequence: 2,
+          context: `${first}\nassistant [1000-1500ms]: Gregg asks which account.\nuser [2000-2600ms]: The work one.`,
+        })
+        .pipe(Effect.asVoid);
+      const answer = f.dispatched[1];
+      if (answer?.type !== "thread.user-input.respond")
+        return assert.fail("expected an answer to Gregg's question");
+      assert.strictEqual(answer.threadId, greggThreadId);
+      assert.deepStrictEqual(answer.answers, { "Which account should I use?": "The work one." });
+
+      // Once nobody on the call is asking, unnamed words go to the agent called.
+      f.setChatShell(greggThreadId, { hasPendingUserInput: false });
+      yield* live
+        .delegate({
+          sessionId: "live-call",
+          delegationId: "d3",
+          sequence: 3,
+          context: `${first}\nassistant [1000-1500ms]: Gregg asks which account.\nuser [2000-2600ms]: The work one.\nuser [3000-3400ms]: Thanks.`,
+        })
+        .pipe(Effect.asVoid);
+      assert.strictEqual(sentTo(2), threadId);
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect(
+  "unnamed words never answer an action approval or a question only Solla Code takes",
+  () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      const events = yield* PubSub.unbounded<OrchestrationEvent>();
+      f.addChat(greggThreadId, "Gregg's chat");
+      yield* Effect.gen(function* () {
+        const calls = yield* AgentCalls;
+        const live = yield* makeAgentCallLive;
+        const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+        yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+        yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+        const sentTo = (index: number) => {
+          const command = f.dispatched[index];
+          return command === undefined
+            ? undefined
+            : `${command.type}:${String("threadId" in command ? command.threadId : "")}`;
+        };
+        let context = "user [0-900ms]: Gregg, email Bob the draft.";
+        const say = (sequence: number, words: string) => {
+          context = `${context}\nuser [${sequence * 1000}-${sequence * 1000 + 400}ms]: ${words}`;
+          return live
+            .delegate({ sessionId: "live-call", delegationId: `d${sequence}`, sequence, context })
+            .pipe(Effect.asVoid);
+        };
+        yield* live
+          .delegate({ sessionId: "live-call", delegationId: "d1", sequence: 1, context })
+          .pipe(Effect.asVoid);
+        assert.strictEqual(sentTo(0), `thread.turn.start:${greggThreadId}`);
+
+        // Gregg asks to approve sending the email: approved in Solla Code, never by voice.
+        const running = {
+          session: session("running", null, "codex"),
+          latestTurn: turn("running", null, { requestedSecond: 1 }),
+        };
+        const approval = activity("user-input.requested", {
+          requestId: "send",
+          questions: [{ id: "q", header: "Send", question: "Send the draft to Bob?", options: [] }],
+          actionApproval: { actionKind: "send_email" },
+        });
+        f.setChatShell(greggThreadId, { hasPendingUserInput: true, ...running });
+        f.setChatThread(greggThreadId, { activities: [approval], ...running });
+        context = `${context}\nuser [2000-2400ms]: OK, later. What's on my calendar today?`;
+        const toScout = yield* live.delegate({
+          sessionId: "live-call",
+          delegationId: "d2",
+          sequence: 2,
+          context,
+        });
+        assert.strictEqual(sentTo(1), `thread.turn.start:${threadId}`);
+
+        // The agent called waits on an approval while Gregg, still followed,
+        // asks something a spoken answer fills, and the call reads it out:
+        // the answer is Gregg's.
+        f.setShell({ hasPendingUserInput: true });
+        f.setThread({ activities: [approval] });
+        f.setChatThread(greggThreadId, { activities: [question()] });
+        yield* Stream.runCollect(
+          toScout.pipe(Stream.takeUntil((event) => event.text.includes("Which account"))),
+        );
+        // The person answers once they have heard it.
+        yield* TestClock.adjust("5 seconds");
+        yield* say(3, "The work one.");
+        assert.strictEqual(sentTo(2), `thread.user-input.respond:${greggThreadId}`);
+      }).pipe(Effect.provide(f.layer(events)));
+    }).pipe(Effect.scoped);
+  },
+);
+
+it.effect(
+  "a finished reply is read out even when another chat asks, and its answer goes on",
+  () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(at(0)));
+      const events = yield* PubSub.unbounded<OrchestrationEvent>();
+      f.addChat(greggThreadId, "Gregg's chat");
+      yield* Effect.gen(function* () {
+        const calls = yield* AgentCalls;
+        const live = yield* makeAgentCallLive;
+        const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+        yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+        yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+        const first = "user [0-900ms]: Everyone, status?";
+        const status = yield* live.delegate({
+          sessionId: "live-call",
+          delegationId: "d1",
+          sequence: 1,
+          context: first,
+        });
+        assert.strictEqual(f.dispatched.length, 2);
+        // Scout answers; Gregg asks which account before it can.
+        f.setThread({
+          messages: [message("reply-scout", "assistant", "Production is green.", 0)],
+          session: session("ready"),
+          latestTurn: turn("completed", 0, { requestedSecond: 0 }),
+        });
+        const asking = {
+          session: session("running", null, "codex"),
+          latestTurn: turn("running", null, { requestedSecond: 1 }),
+        };
+        f.setChatShell(greggThreadId, { hasPendingUserInput: true, ...asking });
+        f.setChatThread(greggThreadId, { activities: [question()], ...asking });
+        let heard = "";
+        yield* Stream.runCollect(
+          status.pipe(
+            Stream.takeUntil((event) => {
+              heard += `${spokenText([event])}\n`;
+              return heard.includes("Production is green.") && heard.includes("Which account");
+            }),
+          ),
+        );
+        assert.include(heard, "Scout: Production is green.");
+        assert.include(heard, "Gregg: My chat is asking you: Which account should I use?");
+
+        // The person answers Gregg; Scout's reply, already heard, is not followed again.
+        yield* TestClock.adjust("5 seconds");
+        const answer = yield* live.delegate({
+          sessionId: "live-call",
+          delegationId: "d2",
+          sequence: 2,
+          context: `${first}\nuser [2000-2600ms]: The work one.`,
+        });
+        const respond = f.dispatched[2];
+        assert.strictEqual(respond?.type, "thread.user-input.respond");
+        f.setChatShell(greggThreadId, { hasPendingUserInput: false });
+        f.setChatThread(greggThreadId, {
+          messages: [message("reply-gregg", "assistant", "Deployed with the work account.", 6)],
+          session: session("ready"),
+          latestTurn: turn("completed", 6, { requestedSecond: 1 }),
+        });
+        assert.deepStrictEqual([...(yield* Stream.runCollect(answer))].at(-1), {
+          delegationId: "d2",
+          status: "completed",
+          text: "Gregg: Deployed with the work account.",
+        });
+      }).pipe(Effect.provide(f.layer(events)));
+    }).pipe(Effect.scoped);
+  },
+);
+
+it.effect("a finished reply survives new words sent to the same chat", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(at(0)));
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      const first = "user [0-900ms]: Run the tests.";
+      const old = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d1",
+        sequence: 1,
+        context: first,
+      });
+      f.setThread({
+        messages: [message("first-reply", "assistant", "All tests pass.", 0)],
+        session: session("ready"),
+        latestTurn: turn("completed", 0, { requestedSecond: 0 }),
+      });
+      yield* Stream.runCollect(old);
+      yield* TestClock.adjust("1 second");
+      const next = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d2",
+        sequence: 2,
+        context: `${first}\nuser [1000-1900ms]: And lint?`,
+      });
+      f.setThread({
+        messages: [message("second-reply", "assistant", "Lint is clean.", 1)],
+        session: session("ready"),
+        latestTurn: turn("completed", 1, { requestedSecond: 1 }),
+      });
+      const heard = spokenText([...(yield* Stream.runCollect(next))]);
+      assert.include(heard, "All tests pass.");
+      assert.include(heard, "Lint is clean.");
+      assert.strictEqual(f.dispatched.length, 2);
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("a chat still working on earlier words is followed by the next delegation", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(at(0)));
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(greggThreadId, "Gregg's chat");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+      const first = "user [0-900ms]: Gregg, run the tests.";
+      // Its stream is dropped by the client once the next delegation answers.
+      yield* live
+        .delegate({ sessionId: "live-call", delegationId: "d1", sequence: 1, context: first })
+        .pipe(Effect.asVoid);
+      f.setChatThread(greggThreadId, {
+        session: session("running"),
+        latestTurn: turn("running", null, { requestedSecond: 0 }),
+      });
+      const next = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d2",
+        sequence: 2,
+        context: `${first}\nuser [2000-2600ms]: Scout, what's next?`,
+      });
+      // Only Scout hears the new words.
+      assert.deepStrictEqual(
+        f.dispatched.map((command) => ("threadId" in command ? command.threadId : null)),
+        [greggThreadId, threadId],
+      );
+      const finished = (text: string) => ({
+        messages: [message(`reply-${text.length}`, "assistant", text, 0)],
+        session: session("ready"),
+        latestTurn: turn("completed", 0, { requestedSecond: 0 }),
+      });
+      f.setThread(finished("Ship the release."));
+      f.setChatThread(greggThreadId, finished("All tests pass."));
+      const updates = [...(yield* Stream.runCollect(next))];
+      assert.strictEqual(updates.at(-1)?.status, "completed");
+      const heard = spokenText(updates);
+      assert.include(heard, "Scout: Ship the release.");
+      assert.include(heard, "Gregg: All tests pass.");
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("a chat on the call that goes away leaves it, and the call goes on", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(greggThreadId, "Gregg's chat");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+      f.deleteChat(greggThreadId);
+      const updates = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d1",
+        sequence: 1,
+        context: "user [0-900ms]: Gregg, are you there?",
+      });
+      assert.strictEqual(f.dispatched.length, 0);
+      assert.deepStrictEqual(
+        [...(yield* Stream.runCollect(updates))],
+        [
+          {
+            delegationId: "d1",
+            status: "failed",
+            text: "Gregg couldn't answer: My chat is no longer available, so I've left the call.",
+          },
+        ],
+      );
+      const call = Option.getOrUndefined(yield* calls.get(placed.callId));
+      assert.strictEqual(call?.status, "active");
+      assert.deepStrictEqual(call?.participants, []);
+      // Nobody is left to name: the next words go to the agent called.
+      yield* live
+        .delegate({
+          sessionId: "live-call",
+          delegationId: "d2",
+          sequence: 2,
+          context: "user [0-900ms]: Gregg, are you there?\nuser [1000-1400ms]: Never mind.",
+        })
+        .pipe(Effect.asVoid);
+      const next = f.dispatched[0];
+      if (next?.type !== "thread.turn.start") return assert.fail("expected a forwarded message");
+      assert.strictEqual(next.threadId, threadId);
+      assert.strictEqual(next.message.text, "From our voice call:\nYou said: Never mind.");
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it("cuts a merged call's request to its share but keeps what the person must do", () => {
+  const draft = "Hi Ana, thanks for the meeting yesterday. ".repeat(40);
+  const approval = activity("user-input.requested", {
+    requestId: "send",
+    questions: [{ id: "q", header: "Send", question: `Send this email? ${draft}`, options: [] }],
+    actionApproval: { actionKind: "send_email" },
+  });
+  const asking = (activities: ReadonlyArray<OrchestrationThreadActivity>, maxChars?: number) =>
+    agentCallWorkEvent({
+      delegationId: "d",
+      target: {
+        messageId: MessageId.make("m"),
+        answeredRequestId: null,
+        sentAt: at(1),
+        busyTurnId: null,
+      },
+      view: view(
+        { activities: [...activities], session: session("running", null, "codex") },
+        { hasPendingUserInput: true },
+      ),
+      maxChars,
+    });
+  const cut = asking([approval], 400);
+  assert.strictEqual(cut.status, "pending-approval");
+  assert.match(cut.text, /^I need your approval for Send this email\? Hi Ana/u);
+  assert.match(
+    cut.text,
+    / … — please approve or decline it in Solla Code; a spoken yes can't approve it\.$/u,
+  );
+  assert.notInclude(cut.text, "The full reply is in my chat.");
+  assert.isAtMost(cut.text.length, 400);
+  // A question only Solla Code takes keeps saying so.
+  const kimi = agentCallWorkEvent({
+    delegationId: "d",
+    target: {
+      messageId: MessageId.make("m"),
+      answeredRequestId: null,
+      sentAt: at(1),
+      busyTurnId: null,
+    },
+    view: view(
+      {
+        activities: [
+          activity("user-input.requested", {
+            requestId: "ask",
+            questions: [{ id: "q", header: "Pick", question: draft, options: [] }],
+          }),
+        ],
+        session: session("running", null, "kimi"),
+      },
+      { hasPendingUserInput: true },
+    ),
+    maxChars: 300,
+  });
+  assert.match(
+    kimi.text,
+    /that has to be answered in Solla Code; I can't answer it from this call\.$/u,
+  );
+  // A call with one chat reads it whole, as before.
+  assert.include(asking([approval]).text, draft.trim());
+});
+
+it.effect("words the voice handled itself never decide who later words are for", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(greggThreadId, "Gregg's chat");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+      yield* live
+        .delegate({
+          sessionId: "live-call",
+          delegationId: "d1",
+          sequence: 1,
+          context: [
+            "user [0-900ms]: Add Gregg to the call.",
+            "assistant [1000-1800ms]: Adding Gregg to the call.",
+            "user [3000-3600ms]:  What's on my calendar today?",
+          ].join("\n"),
+        })
+        .pipe(Effect.asVoid);
+      const sent = f.dispatched[0];
+      if (sent?.type !== "thread.turn.start") return assert.fail("expected a forwarded message");
+      // The agent called gets it, with everything said, not Gregg.
+      assert.strictEqual(sent.threadId, threadId);
+      assert.include(sent.message.text, "You said: Add Gregg to the call. What's on my calendar");
+      assert.strictEqual(f.dispatched.length, 1);
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("a reply sent on a stream the device had already dropped is read out again", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(at(0)));
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(greggThreadId, "Gregg's chat");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+      let context = "user [0-900ms]: Gregg, run the tests.";
+      const say = (sequence: number, words: string) => {
+        context = `${context}\nuser [${sequence * 1000}-${sequence * 1000 + 400}ms]: ${words}`;
+        return live.delegate({
+          sessionId: "live-call",
+          delegationId: `d${sequence}`,
+          sequence,
+          context,
+        });
+      };
+      const toGregg = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d1",
+        sequence: 1,
+        context,
+      });
+      const finished = (text: string, second: number) => ({
+        messages: [message(`reply-${second}`, "assistant", text, second)],
+        session: session("ready"),
+        latestTurn: turn("completed", second, { requestedSecond: 0 }),
+      });
+      // Gregg's reply goes out on d1's stream a moment before the person's
+      // next words reach the host: the device had already moved on to d2.
+      f.setChatThread(greggThreadId, finished("All tests pass.", 0));
+      assert.include(spokenText([...(yield* Stream.runCollect(toGregg))]), "All tests pass.");
+      const next = yield* say(2, "Scout, what's next?");
+      f.setThread(finished("Ship the release.", 2));
+      const heard = spokenText([...(yield* Stream.runCollect(next))]);
+      assert.include(heard, "Scout: Ship the release.");
+      assert.include(heard, "Gregg: All tests pass.");
+
+      // A stream a newer delegation has replaced marks nothing as heard.
+      yield* TestClock.adjust("10 seconds");
+      const older = yield* say(3, "Gregg, and lint?");
+      f.setChatThread(greggThreadId, {
+        session: session("running"),
+        latestTurn: turn("running", null, { requestedSecond: 10 }),
+      });
+      yield* say(4, "Scout, thanks.").pipe(Effect.asVoid);
+      f.setChatThread(greggThreadId, finished("Lint is clean.", 11));
+      assert.include(spokenText([...(yield* Stream.runCollect(older))]), "Lint is clean.");
+      yield* TestClock.adjust("10 seconds");
+      const later = yield* say(5, "Scout, anything else?");
+      let laterHeard = "";
+      yield* Stream.runCollect(
+        later.pipe(
+          Stream.takeUntil((event) => {
+            laterHeard += spokenText([event]);
+            return laterHeard.includes("Lint is clean.");
+          }),
+        ),
+      );
+      assert.include(laterHeard, "Gregg: Lint is clean.");
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("an answer whose words trail the delegation still reaches the chat that asked", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(at(0)));
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(greggThreadId, "Gregg's chat");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+      const first = "user [0-900ms]: Gregg, deploy staging.";
+      const deploy = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d1",
+        sequence: 1,
+        context: first,
+      });
+      const asking = {
+        session: session("running", null, "codex"),
+        latestTurn: turn("running", null, { requestedSecond: 1 }),
+      };
+      f.setChatShell(greggThreadId, { hasPendingUserInput: true, ...asking });
+      f.setChatThread(greggThreadId, { activities: [question()], ...asking });
+      yield* Stream.runCollect(
+        deploy.pipe(Stream.takeUntil((event) => event.text.includes("Which account"))),
+      );
+      yield* TestClock.adjust("5 seconds");
+
+      // "The work one." is delegated before its transcript arrives: the
+      // delegation ends quietly, so the device asks again once it settles.
+      const early = () =>
+        live.delegate({ sessionId: "live-call", delegationId: "d2", sequence: 2, context: first });
+      assert.deepStrictEqual(
+        [...(yield* Stream.runCollect(yield* early()))],
+        [{ delegationId: "d2", status: "completed", text: "" }],
+      );
+      // Asked again still without words: Gregg waits on a question the call
+      // already read out and nobody works, so it ends quietly, never spinning.
+      assert.deepStrictEqual(
+        [...(yield* Stream.runCollect(yield* early()))],
+        [{ delegationId: "d2", status: "completed", text: "" }],
+      );
+      assert.strictEqual(f.dispatched.length, 1);
+      yield* live
+        .delegate({
+          sessionId: "live-call",
+          delegationId: "d2",
+          sequence: 2,
+          context: `${first}\nuser [6000-6400ms]: The work one.`,
+        })
+        .pipe(Effect.asVoid);
+      const answer = f.dispatched[1];
+      if (answer?.type !== "thread.user-input.respond")
+        return assert.fail("expected an answer to Gregg's question");
+      assert.strictEqual(answer.threadId, greggThreadId);
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("a question the person talked past does not take their next unnamed words", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(at(0)));
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    f.addChat(greggThreadId, "Gregg's chat");
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls.place({ vmAgentId, deviceLabel: "Office Mac" });
+      yield* live.start({ callId: placed.callId, ...offer }, "Office Mac");
+      yield* live.addParticipant({ callId: placed.callId, threadId: greggThreadId });
+      let context = "user [0-900ms]: Gregg, deploy.";
+      const deploy = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d1",
+        sequence: 1,
+        context,
+      });
+      const asking = {
+        session: session("running", null, "codex"),
+        latestTurn: turn("running", null, { requestedSecond: 1 }),
+      };
+      f.setChatShell(greggThreadId, { hasPendingUserInput: true, ...asking });
+      f.setChatThread(greggThreadId, { activities: [question()], ...asking });
+      yield* Stream.runCollect(
+        deploy.pipe(Stream.takeUntil((event) => event.text.includes("Which account"))),
+      );
+      const say = (sequence: number, words: string) => {
+        context = `${context}\nuser [${sequence * 1000}-${sequence * 1000 + 400}ms]: ${words}`;
+        return live
+          .delegate({ sessionId: "live-call", delegationId: `d${sequence}`, sequence, context })
+          .pipe(Effect.asVoid);
+      };
+      yield* TestClock.adjust("5 seconds");
+      yield* say(2, "Scout, what's on my calendar?");
+      yield* TestClock.adjust("5 seconds");
+      yield* say(3, "And what about tomorrow?");
+      assert.deepStrictEqual(
+        f.dispatched.map((command) =>
+          "threadId" in command ? `${command.type}:${String(command.threadId)}` : command.type,
+        ),
+        [
+          `thread.turn.start:${greggThreadId}`,
+          `thread.turn.start:${threadId}`,
+          `thread.turn.start:${threadId}`,
+        ],
+      );
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});

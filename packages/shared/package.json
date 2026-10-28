@@ -59,6 +59,10 @@
       "types": "./src/actionApproval.ts",
       "import": "./src/actionApproval.ts"
     },
+    "./agentCallBridge": {
+      "types": "./src/agentCallBridge.ts",
+      "import": "./src/agentCallBridge.ts"
+    },
     "./agentAttentionFollowUp": {
       "types": "./src/agentAttentionFollowUp.ts",
       "import": "./src/agentAttentionFollowUp.ts"

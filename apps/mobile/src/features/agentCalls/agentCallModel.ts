@@ -16,6 +16,7 @@ import {
   type AgentCallNativeMessage,
   type AgentCallStatus,
 } from "@t3tools/contracts";
+import { agentCallTransferTarget } from "@t3tools/shared/agentCallBridge";
 
 /** How long "Call ended" stays on screen after a call this phone held ends. */
 export const AGENT_CALL_ENDED_LINGER_MS = 1_500;
@@ -76,7 +77,9 @@ export type AgentCallScreenAction = "stay" | "dismiss" | "dismiss-soon" | "await
  *
  * Only an observed transition acts: a screen opened on a call that has
  * already ended stays and shows how it ended. `heldHere` is
- * `isCallHeldHere`; `failed` means the page reported a failure for it.
+ * `isCallHeldHere`; `failed` means the page reported a failure for it;
+ * `transferring` that the page hung it up to move the person to another
+ * agent (`AgentCallScreenHold.transfer`).
  *
  * - A failure stays, so the reason can be read; the person closes it.
  * - A ring this phone placed or took stays when it connects or is declined,
@@ -87,17 +90,23 @@ export type AgentCallScreenAction = "stay" | "dismiss" | "dismiss-soon" | "await
  *   word means another device answered, and the screen closes.
  * - Any other ring that stops closes the screen: declined, missed, cancelled.
  * - A call this phone held that ends lingers briefly on "Call ended", like a
- *   phone's call screen.
+ *   phone's call screen. One the page hung up to transfer the person waits
+ *   longer (`await-hold`): the page then holds the new call, and the screen
+ *   follows it there instead of closing, or reports why it failed.
  */
 export function resolveAgentCallScreenAction(input: {
   readonly previousStatus: AgentCallStatus | null;
   readonly status: AgentCallStatus;
   readonly heldHere: boolean;
   readonly failed: boolean;
+  readonly transferring?: boolean;
 }): AgentCallScreenAction {
   const { previousStatus, status } = input;
   if (input.failed) return "stay";
   if (previousStatus === null || previousStatus === status) return "stay";
+  // A transfer: the call the page hung up ends, and the screen waits as long
+  // as for any claim for the call it places (or why it couldn't).
+  if (input.transferring && status !== "active" && status !== "ringing") return "await-hold";
   if (status === "failed" || status === "ringing") return "stay";
   if (previousStatus === "ringing") {
     if (input.heldHere) return status === "ended" ? "dismiss-soon" : "stay";
@@ -107,6 +116,35 @@ export function resolveAgentCallScreenAction(input: {
     return input.heldHere ? "dismiss-soon" : "dismiss";
   }
   return "stay";
+}
+
+/**
+ * The followed call's status when the screen last looked at it, for
+ * `resolveAgentCallScreenAction`. Null once the screen has moved on to
+ * another call: a transfer's new call starts fresh, so its first status never
+ * reads as a change, and the old call ending behind it is not the screen's
+ * to act on.
+ */
+export function previousFollowedStatus(
+  previous: { readonly callId: string; readonly status: AgentCallStatus } | null,
+  callId: string,
+): AgentCallStatus | null {
+  return previous?.callId === callId ? previous.status : null;
+}
+
+/**
+ * Who else is on the call, under the agent's name in the call screen's
+ * header: "with Gregg, Nova". Null without participants, including from hosts
+ * older than merged calls. Read-only: people are added and dropped on the
+ * call page or by voice.
+ */
+export function agentCallParticipantsLine(
+  call: Pick<AgentCall, "participants"> | null,
+): string | null {
+  const titles = (call?.participants ?? [])
+    .map((participant) => participant.title.trim())
+    .filter((title) => title.length > 0);
+  return titles.length === 0 ? null : `with ${titles.join(", ")}`;
 }
 
 /**
@@ -149,6 +187,8 @@ export interface AgentCallLeaveEnd {
 export function callsToEndOnLeave(input: {
   readonly hold: AgentCallScreenHold;
   readonly findCall: (callId: string) => Pick<AgentCall, "direction" | "status"> | null;
+  /** The call the host shows ringing out to this agent, if any. */
+  readonly findOutgoingRing?: (vmAgentId: string) => string | null;
 }): ReadonlyArray<AgentCallLeaveEnd> {
   const { hold } = input;
   const ends: AgentCallLeaveEnd[] = [];
@@ -169,6 +209,13 @@ export function callsToEndOnLeave(input: {
     }
   }
   if (hold.placedHere && !hold.held.has(hold.openedCallId)) cancelIfRinging(hold.openedCallId);
+  // Mid-transfer the page is placing a call whose id it hasn't said yet: the
+  // one ringing out to that agent is it (the host allows one open call per
+  // agent). Before the host's snapshot shows it, its ring runs out on its own.
+  const placing =
+    hold.transfer === null ? null : (input.findOutgoingRing?.(hold.transfer.vmAgentId) ?? null);
+  if (placing !== null && !ends.some((each) => each.callId === placing))
+    ends.push({ callId: placing, ifRinging: true });
   return ends;
 }
 
@@ -221,9 +268,14 @@ export function openCallForAgent(
  * Which calls the phone's call screen holds, learnt only from the page it
  * hosts (`AgentCallNativeMessage`): `held` when the page places or answers a
  * call, `connected` once the host accepted its claim, `released` when it hangs
- * up or the call ends, `failed` when voice couldn't start or dropped. Touches prove nothing (VoiceOver and keyboards
- * answer without one), and the page can move on to a call the screen didn't
- * open on, which the screen then follows.
+ * up or the call ends, `failed` when voice couldn't start or dropped. Touches
+ * prove nothing (VoiceOver and keyboards answer without one).
+ *
+ * The page can move on to a call the screen didn't open on, which the screen
+ * then follows. A transfer is that: the page posts `released` for the old
+ * call with the agent it is moving to (`agentCallTransferDetail`), then
+ * `held` and `connected` for the call it placed to that agent, and leaving
+ * the screen hangs up the new call, never the old one again.
  */
 export interface AgentCallScreenHold {
   /** The call in the screen's route. */
@@ -240,6 +292,11 @@ export interface AgentCallScreenHold {
   readonly connected: ReadonlySet<string>;
   /** Why the followed call failed, as the page reported it; the screen stays open on it. */
   readonly failure: string | null;
+  /**
+   * A transfer in flight: the call the page hung up for it and the agent it
+   * is calling instead, until the page holds that call or reports a failure.
+   */
+  readonly transfer: { readonly fromCallId: string; readonly vmAgentId: string } | null;
 }
 
 export function initialAgentCallScreenHold(input: {
@@ -254,6 +311,7 @@ export function initialAgentCallScreenHold(input: {
     heldEver: new Set(),
     connected: new Set(),
     failure: null,
+    transfer: null,
   };
 }
 
@@ -280,6 +338,8 @@ export function applyAgentCallNativeMessage(
   message: AgentCallNativeMessage,
 ): AgentCallScreenHold {
   const { callId } = message;
+  // The page holding a call other than the one it hung up has finished the transfer.
+  const transfer = hold.transfer?.fromCallId === callId ? hold.transfer : null;
   switch (message.event) {
     case "held":
       return {
@@ -288,6 +348,7 @@ export function applyAgentCallNativeMessage(
         held: new Set(hold.held).add(callId),
         heldEver: new Set(hold.heldEver).add(callId),
         failure: null,
+        transfer,
       };
     case "connected":
       return {
@@ -297,6 +358,7 @@ export function applyAgentCallNativeMessage(
         heldEver: new Set(hold.heldEver).add(callId),
         connected: new Set(hold.connected).add(callId),
         failure: null,
+        transfer,
       };
     case "released": {
       if (!hold.held.has(callId) && !hold.connected.has(callId)) return hold;
@@ -304,7 +366,13 @@ export function applyAgentCallNativeMessage(
       held.delete(callId);
       const connected = new Set(hold.connected);
       connected.delete(callId);
-      return { ...hold, held, connected };
+      const movingTo = agentCallTransferTarget(message.detail);
+      return {
+        ...hold,
+        held,
+        connected,
+        transfer: movingTo === null ? transfer : { fromCallId: callId, vmAgentId: movingTo },
+      };
     }
     case "failed": {
       // A failed call is no longer the page's: it either told the host, or
@@ -320,6 +388,7 @@ export function applyAgentCallNativeMessage(
         held,
         connected,
         failure: message.detail ?? "The call failed.",
+        transfer: null,
       };
     }
   }

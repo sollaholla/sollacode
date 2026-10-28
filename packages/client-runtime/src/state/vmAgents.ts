@@ -393,6 +393,22 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       tag: WS_METHODS.vmAgentCallEnd,
       scheduler: lifecycleScheduler,
     }),
+    /** Who a live call's voice can transfer to or add: the roster it started with. */
+    callRoster: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:call-roster",
+      tag: WS_METHODS.vmAgentCallRoster,
+      scheduler: lifecycleScheduler,
+    }),
+    addCallParticipant: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:call-add-participant",
+      tag: WS_METHODS.vmAgentCallAddParticipant,
+      scheduler: lifecycleScheduler,
+    }),
+    removeCallParticipant: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:call-remove-participant",
+      tag: WS_METHODS.vmAgentCallRemoveParticipant,
+      scheduler: lifecycleScheduler,
+    }),
     collaboration: (target: {
       readonly environmentId: Parameters<typeof collaboration>[0]["environmentId"];
       readonly input: Record<string, never>;

@@ -34,6 +34,7 @@ import {
   shouldAgentContinueAfterReply,
 } from "@t3tools/shared/agentMode";
 import {
+  ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX,
   actionApprovalAnswerFromUnknown,
   isActionApprovalRequestId,
 } from "@t3tools/shared/actionApproval";
@@ -4008,7 +4009,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             commandId: CommandId.make(`server:action-approval-followup:${event.payload.requestId}`),
             threadId: event.payload.threadId,
             message: {
-              messageId: MessageId.make(`action-approval-response:${event.payload.requestId}`),
+              messageId: MessageId.make(
+                `${ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX}${event.payload.requestId}`,
+              ),
               role: "user",
               text: actionApprovalContinuationMessage({
                 requestId: event.payload.requestId,

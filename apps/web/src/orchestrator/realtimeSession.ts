@@ -355,6 +355,12 @@ export interface VoiceSession {
    * implement this.
    */
   setMicrophone?(deviceId: string | null): void;
+  /**
+   * Tells the voice something it should know without saying anything now
+   * (someone joined or left an agent call). Only transports that support
+   * silent instructions implement this.
+   */
+  instruct?(text: string): void;
   readonly state: VoiceSessionState;
 }
 

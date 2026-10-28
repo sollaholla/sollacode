@@ -134,6 +134,7 @@ import * as RemoteFrameRelay from "./preview/RemoteFrameRelay.ts";
 import * as PreviewMediaBroker from "./preview/PreviewMediaBroker.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
+import { AgentCallLive } from "./vm/AgentCallLive.ts";
 import { AgentCalls, sessionDeviceLabel } from "./vm/AgentCalls.ts";
 import {
   readVmAgentRulesFile,
@@ -637,6 +638,7 @@ const makeWsRpcLayer = (
       const vmAgentCollaboration = yield* VmAgentCollaboration.VmAgentCollaboration;
       const vmAgentStore = yield* VmAgentStore;
       const agentCalls = yield* AgentCalls;
+      const agentCallLive = yield* AgentCallLive;
       const textGeneration = yield* TextGeneration.TextGeneration;
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
@@ -3640,6 +3642,22 @@ const makeWsRpcLayer = (
             {
               "rpc.aggregate": "vm-workspace",
             },
+          ),
+        [WS_METHODS.vmAgentCallRoster]: (input) =>
+          observeRpcEffect(WS_METHODS.vmAgentCallRoster, agentCallLive.roster(input.callId), {
+            "rpc.aggregate": "vm-workspace",
+          }),
+        [WS_METHODS.vmAgentCallAddParticipant]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentCallAddParticipant,
+            agentCallLive.addParticipant(input),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentCallRemoveParticipant]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentCallRemoveParticipant,
+            agentCallLive.removeParticipant(input),
+            { "rpc.aggregate": "vm-workspace" },
           ),
         [WS_METHODS.vmAgentBlockerResolve]: (input) =>
           observeRpcEffect(

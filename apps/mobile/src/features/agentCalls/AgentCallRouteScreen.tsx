@@ -23,12 +23,14 @@ import {
   AGENT_CALL_HOLD_GRACE_MS,
   agentCallKey,
   agentCallPage,
+  agentCallParticipantsLine,
   applyAgentCallNativeMessage,
   callsPlacedHere,
   callsToEndOnLeave,
   initialAgentCallScreenHold,
   isCallHeldHere,
   parseAgentCallNativeMessage,
+  previousFollowedStatus,
   resolveAgentCallScreenAction,
   ringRemainingMs,
   startRingingHaptics,
@@ -92,7 +94,9 @@ function CloseCallHeaderButton() {
  * closes itself when a ring stops without this phone taking it, and leaving it
  * hangs up the calls this phone holds, since the audio lives in the WebView.
  * Which calls those are, the page says (`AgentCallNativeMessage`); the screen
- * follows the page to another call if it moves on to one.
+ * follows the page to another call if it moves on to one, as it does when the
+ * voice transfers the person to another agent, and its header then names that
+ * call's agent and who else is on it.
  */
 export function AgentCallRouteScreen({ route }: AgentCallRouteProps) {
   const navigation = useNavigation();
@@ -119,6 +123,7 @@ export function AgentCallRouteScreen({ route }: AgentCallRouteProps) {
   const heldHere = isCallHeldHere(hold, hold.callId, status);
   const answeredHere = hold.heldEver.has(hold.callId);
   const failed = hold.failure !== null;
+  const transferring = hold.transfer?.fromCallId === hold.callId;
 
   const leavingRef = useRef(false);
   const close = useCallback(() => {
@@ -135,10 +140,11 @@ export function AgentCallRouteScreen({ route }: AgentCallRouteProps) {
     const previous = previousRef.current;
     previousRef.current = { callId: hold.callId, status };
     const action = resolveAgentCallScreenAction({
-      previousStatus: previous?.callId === hold.callId ? previous.status : null,
+      previousStatus: previousFollowedStatus(previous, hold.callId),
       status,
       heldHere,
       failed,
+      transferring,
     });
     if (action === "dismiss") {
       close();
@@ -154,7 +160,7 @@ export function AgentCallRouteScreen({ route }: AgentCallRouteProps) {
       return () => clearTimeout(timer);
     }
     return;
-  }, [close, failed, heldHere, hold.callId, status]);
+  }, [close, failed, heldHere, hold.callId, status, transferring]);
 
   const ringDirection = call?.direction ?? null;
   const ringExpiresAt = call?.expiresAt ?? null;
@@ -193,6 +199,13 @@ export function AgentCallRouteScreen({ route }: AgentCallRouteProps) {
         hold: latest.hold,
         findCall: (callId) =>
           latest.calls?.find((candidate) => candidate.callId === callId) ?? null,
+        findOutgoingRing: (vmAgentId) =>
+          latest.calls?.find(
+            (candidate) =>
+              candidate.vmAgentId === vmAgentId &&
+              candidate.direction === "outgoing" &&
+              candidate.status === "ringing",
+          )?.callId ?? null,
       });
       for (const { callId, ifRinging } of ends) {
         void endCall({ environmentId, input: { callId: AgentCallId.make(callId), ifRinging } });
@@ -201,13 +214,16 @@ export function AgentCallRouteScreen({ route }: AgentCallRouteProps) {
   }, [endCall, environmentId]);
   useEffect(() => () => endOnLeaveRef.current(), []);
 
+  // iOS shows the subtitle (iOS 26 and later); the page lists the same people.
+  const participantsLine = agentCallParticipantsLine(call);
   useLayoutEffect(() => {
     navigation.setOptions({
       title: agentName ?? "Call",
+      unstable_headerSubtitle: participantsLine ?? undefined,
       headerBackVisible: false,
       headerLeft: CloseCallHeaderButton,
     });
-  }, [agentName, navigation]);
+  }, [agentName, navigation, participantsLine]);
 
   // The page that opened stays loaded when the page moves on to another call:
   // reloading it would drop that call's voice.

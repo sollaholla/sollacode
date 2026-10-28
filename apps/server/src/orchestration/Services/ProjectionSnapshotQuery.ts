@@ -117,7 +117,8 @@ export interface ProjectionActiveTurnDelegation {
  * app-authored continuations and resumes to the message that began them,
  * through every message delivered since, whether steered into the turn or
  * queued behind it. A message from the thread's own side-chat family stands for
- * that chat's own provenance, so a side chat acts for its family.
+ * that chat's provenance when it sent the message, so a side chat acts for its
+ * family's work at the time, not for whatever that chat does next.
  *
  * `senderThreadId` is another chat whenever any of those messages came from
  * one (the earliest), else the orchestrator when it sent one, else null for the
@@ -129,6 +130,11 @@ export interface ProjectionTurnTrigger {
   readonly delegationId: VmAgentDelegationId | null;
   /** Every chat whose message reached this work, oldest first; omitted means just `senderThreadId`. */
   readonly senderThreadIds?: ReadonlyArray<ThreadId>;
+  /**
+   * When this work began (the starting message's time). Two reads with the
+   * same value are the same stretch of work; omitted when unknown.
+   */
+  readonly workStartedAt?: string;
 }
 
 /**
