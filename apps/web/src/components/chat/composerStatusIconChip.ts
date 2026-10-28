@@ -25,10 +25,11 @@ export const COMPOSER_FAILED_CHIP_CLASS_NAME =
   "border-destructive/40 text-destructive hover:bg-destructive/5";
 
 /**
- * Chip popups anchor to the whole status rail rather than to their chip, and
- * are never wider than it. Sized from the viewport and aligned to a chip near
- * the edge, a popup ran past a phone's right edge and hid each row's Stop
- * button. The rail always fits on screen, so a popup aligned to its end does.
+ * Chip popups line up with the end of the whole status rail, so every chip's
+ * popup shares the composer's right edge. Their width comes from the viewport,
+ * not from `--anchor-width`: Base UI sizes the positioner before it has set
+ * that variable, so a popup sized from it was measured at its text width and
+ * then grew past a phone's right edge, hiding each row's Stop button.
  */
 export function useComposerRailAnchor() {
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -39,5 +40,5 @@ export function useComposerRailAnchor() {
   return { triggerRef, anchor };
 }
 
-export const COMPOSER_RAIL_POPUP_NARROW_CLASS_NAME = "w-[min(20rem,var(--anchor-width))]";
-export const COMPOSER_RAIL_POPUP_WIDE_CLASS_NAME = "w-[min(28rem,var(--anchor-width))]";
+export const COMPOSER_RAIL_POPUP_NARROW_CLASS_NAME = "w-[min(20rem,calc(100vw-1.5rem))]";
+export const COMPOSER_RAIL_POPUP_WIDE_CLASS_NAME = "w-[min(28rem,calc(100vw-1.5rem))]";

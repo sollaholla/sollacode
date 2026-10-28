@@ -37,6 +37,13 @@ function PopoverPopup({
   anchor?: PopoverPrimitive.Positioner.Props["anchor"];
 }) {
   return (
+    // The popup's max width is `calc(var(--available-width))`, not the bare
+    // variable. When a popup opens, Base UI measures it once to size the
+    // positioner, with `--available-width` set to `max-content`. A bare
+    // `max-width: max-content` shrank a fixed-width popup to its text, so the
+    // positioner locked to that narrower width and the popup, back at full
+    // width, spilled past the anchor (off a phone's right edge for `align="end"`).
+    // Inside `calc()` the keyword is invalid, so measurement sees no cap at all.
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Positioner
         align={align}
@@ -49,7 +56,7 @@ function PopoverPopup({
       >
         <PopoverPrimitive.Popup
           className={cn(
-            "dropdown-glass relative flex min-w-0 max-w-(--available-width) h-(--popup-height,auto) w-(--popup-width,auto) origin-(--transform-origin) rounded-lg text-popover-foreground outline-none transition-[width,height,scale,opacity] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] has-data-[slot=calendar]:rounded-xl has-data-[slot=calendar]:before:rounded-[calc(var(--radius-xl)-1px)] data-starting-style:scale-98 data-starting-style:opacity-0 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
+            "dropdown-glass relative flex min-w-0 max-w-[calc(var(--available-width))] h-(--popup-height,auto) w-(--popup-width,auto) origin-(--transform-origin) rounded-lg text-popover-foreground outline-none transition-[width,height,scale,opacity] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] has-data-[slot=calendar]:rounded-xl has-data-[slot=calendar]:before:rounded-[calc(var(--radius-xl)-1px)] data-starting-style:scale-98 data-starting-style:opacity-0 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
             tooltipStyle &&
               "w-fit text-balance rounded-md text-xs shadow-md/5 before:rounded-[calc(var(--radius-md)-1px)]",
             className,
