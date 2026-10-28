@@ -285,6 +285,23 @@ describe("GPT-Live routes and mute", () => {
     );
   });
 
+  it("sends cookies only when no bearer token authenticates the requests", async () => {
+    const withToken = fixture();
+    await withToken.ready();
+    withToken.session.stop();
+    withToken.event({ type: "session.closed", usage: { seconds: 1 } });
+    for (const [, init] of withToken.fetchMock.mock.calls) {
+      expect(init.credentials).toBe("omit");
+      expect(init.headers).toMatchObject({ authorization: "Bearer fixture-token" });
+    }
+
+    const sameOrigin = fixture({}, { bearerToken: null });
+    await sameOrigin.ready();
+    const [, init] = sameOrigin.fetchMock.mock.calls[0]!;
+    expect(init.credentials).toBe("include");
+    expect(init.headers).not.toHaveProperty("authorization");
+  });
+
   it("sends agent calls to their own routes with the awaited start body", async () => {
     const placed = deferred<{ callId: string }>();
     const startBody = vi.fn(async () => {
@@ -313,7 +330,8 @@ describe("GPT-Live routes and mute", () => {
     await starting;
     const [url, init] = f.fetchMock.mock.calls[0]!;
     expect(url).toBe("https://environment.example/api/agents/call/session");
-    expect(init.credentials).toBe("include");
+    // The bearer authenticates; cookies would fail the host's wildcard CORS.
+    expect(init.credentials).toBe("omit");
     expect(init.headers).toMatchObject({ authorization: "Bearer fixture-token" });
     expect(JSON.parse(String(init.body))).toEqual({
       sdp: "offer",

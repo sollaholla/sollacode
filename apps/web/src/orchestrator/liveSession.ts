@@ -96,6 +96,11 @@ export function createLiveVoiceSession(
     "content-type": "application/json",
     ...(options.bearerToken ? { authorization: `Bearer ${options.bearerToken}` } : {}),
   };
+  // A bearer token authenticates on its own; cookies only stand in for it on
+  // the same origin. Sending them cross-origin (the desktop app's custom scheme
+  // to its local server) fails the host's wildcard CORS before the request
+  // leaves, as "Failed to fetch".
+  const credentials: RequestCredentials = options.bearerToken ? "omit" : "include";
   const url = (path: string) => `${options.httpBaseUrl.replace(/\/$/, "")}${path}`;
   const setState = (next: VoiceSessionState) => {
     if (state !== next) {
@@ -120,7 +125,7 @@ export function createLiveVoiceSession(
     void fetch(url(routes.releasePath), {
       method: "POST",
       headers,
-      credentials: "include",
+      credentials,
       body: JSON.stringify({ sessionId }),
       keepalive: true,
     }).catch(() => undefined);
@@ -243,7 +248,7 @@ export function createLiveVoiceSession(
       void fetch(url(heartbeat.path), {
         method: "POST",
         headers,
-        credentials: "include",
+        credentials,
         body: JSON.stringify({ sessionId: id }),
       }).then(
         (response) => {
@@ -302,7 +307,7 @@ export function createLiveVoiceSession(
       const response = await fetch(url(routes.delegationPath), {
         method: "POST",
         headers,
-        credentials: "include",
+        credentials,
         signal: abort.signal,
         body: JSON.stringify({ sessionId, delegationId, sequence, context: context.context() }),
       });
@@ -639,7 +644,7 @@ export function createLiveVoiceSession(
       const response = await fetch(url(routes.sessionPath), {
         method: "POST",
         headers,
-        credentials: "include",
+        credentials,
         signal: opening.signal,
         body: JSON.stringify({
           sdp: connection.localDescription?.sdp,
