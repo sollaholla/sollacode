@@ -233,7 +233,9 @@ import {
   AgentCallError,
   AgentCallPlaceInput,
   AgentCallEndInput,
+  AgentCallParticipantInput,
   AgentCallRef,
+  AgentCallRoster,
   AgentCallsSnapshot,
 } from "./agentCall.ts";
 import {
@@ -429,6 +431,9 @@ export const WS_METHODS = {
   vmAgentCallPlace: "vmAgent.call.place",
   vmAgentCallDecline: "vmAgent.call.decline",
   vmAgentCallEnd: "vmAgent.call.end",
+  vmAgentCallRoster: "vmAgent.call.roster",
+  vmAgentCallAddParticipant: "vmAgent.call.addParticipant",
+  vmAgentCallRemoveParticipant: "vmAgent.call.removeParticipant",
   vmAgentNotificationPreferencesUpdate: "vmAgent.notification.preferences.update",
   vmAgentCollaborationSubscribe: "vmAgent.collaboration.subscribe",
   vmAgentCollaborationGet: "vmAgent.collaboration.get",
@@ -1378,6 +1383,27 @@ export const WsVmAgentCallEndRpc = Rpc.make(WS_METHODS.vmAgentCallEnd, {
   error: Schema.Union([AgentCallError, EnvironmentAuthorizationError]),
 });
 
+/** Who the live call's voice can transfer to or add: the roster it started with. */
+export const WsVmAgentCallRosterRpc = Rpc.make(WS_METHODS.vmAgentCallRoster, {
+  payload: AgentCallRef,
+  success: AgentCallRoster,
+  error: Schema.Union([AgentCallError, EnvironmentAuthorizationError]),
+});
+
+/** Adds a chat to an active call (at most `AGENT_CALL_MAX_PARTICIPANTS`). */
+export const WsVmAgentCallAddParticipantRpc = Rpc.make(WS_METHODS.vmAgentCallAddParticipant, {
+  payload: AgentCallParticipantInput,
+  success: AgentCall,
+  error: Schema.Union([AgentCallError, EnvironmentAuthorizationError]),
+});
+
+/** Takes a chat off a call. Idempotent. */
+export const WsVmAgentCallRemoveParticipantRpc = Rpc.make(WS_METHODS.vmAgentCallRemoveParticipant, {
+  payload: AgentCallParticipantInput,
+  success: AgentCall,
+  error: Schema.Union([AgentCallError, EnvironmentAuthorizationError]),
+});
+
 export const WsVmAgentBlockerResolveRpc = Rpc.make(WS_METHODS.vmAgentBlockerResolve, {
   payload: VmAgentBlockerResolveInput,
   error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
@@ -1845,6 +1871,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsVmAgentCallPlaceRpc,
   WsVmAgentCallDeclineRpc,
   WsVmAgentCallEndRpc,
+  WsVmAgentCallRosterRpc,
+  WsVmAgentCallAddParticipantRpc,
+  WsVmAgentCallRemoveParticipantRpc,
   WsVmAgentTaskCreateRpc,
   WsVmAgentTaskUpdateRpc,
   WsVmAgentTaskDeleteRpc,

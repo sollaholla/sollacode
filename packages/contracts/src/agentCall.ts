@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { OrchestratorLiveHistoryEntry } from "./orchestratorLive.ts";
 import { VmAgentId } from "./vm.ts";
 
@@ -101,6 +101,24 @@ export const AgentCallStatus = Schema.Literals([
 ]);
 export type AgentCallStatus = typeof AgentCallStatus.Type;
 
+/** How many chats besides the agent called can be on one call. */
+export const AGENT_CALL_MAX_PARTICIPANTS = 4;
+
+/**
+ * A chat on a call besides the agent called: another agent's main chat or a
+ * regular chat. The call keeps one voice, the called agent's; what the person
+ * says reaches a participant's chat when they name it or address everyone,
+ * and its reply is spoken back with its name.
+ */
+export const AgentCallParticipant = Schema.Struct({
+  threadId: ThreadId,
+  /** The agent's name, or the chat's title. */
+  title: Schema.String.check(Schema.isMaxLength(200)),
+  /** The agent whose main chat this is; null for a regular chat. */
+  vmAgentId: Schema.NullOr(VmAgentId),
+});
+export type AgentCallParticipant = typeof AgentCallParticipant.Type;
+
 export const AgentCall = Schema.Struct({
   callId: AgentCallId,
   vmAgentId: VmAgentId,
@@ -116,6 +134,8 @@ export const AgentCall = Schema.Struct({
   endedAt: Schema.NullOr(IsoDateTime),
   /** When a `ringing` call stops ringing; null once answered or ended. */
   expiresAt: Schema.NullOr(IsoDateTime),
+  /** Chats added to the call, oldest first. Absent from hosts before merged calls. */
+  participants: Schema.optionalKey(Schema.Array(AgentCallParticipant)),
 });
 export type AgentCall = typeof AgentCall.Type;
 
@@ -142,6 +162,33 @@ export const AgentCallEndInput = Schema.Struct({
   ifRinging: Schema.optionalKey(Schema.Boolean),
 });
 export type AgentCallEndInput = typeof AgentCallEndInput.Type;
+
+/** Adds a chat to an active call, or takes it off. */
+export const AgentCallParticipantInput = Schema.Struct({
+  callId: AgentCallId,
+  threadId: ThreadId,
+});
+export type AgentCallParticipantInput = typeof AgentCallParticipantInput.Type;
+
+/**
+ * Someone a call's voice can transfer the person to or add to the call, as
+ * named in its instructions: the host's other agents and the person's recent
+ * chats. The device holding the call resolves a spoken name against this
+ * list, so it acts on exactly the names the voice was given.
+ */
+export const AgentCallRosterEntry = Schema.Struct({
+  name: Schema.String.check(Schema.isMaxLength(200)),
+  threadId: ThreadId,
+  /** Set for an agent's main chat: only agents can take a transferred call. */
+  vmAgentId: Schema.NullOr(VmAgentId),
+});
+export type AgentCallRosterEntry = typeof AgentCallRosterEntry.Type;
+
+/** The roster a live call's voice was given when it started. */
+export const AgentCallRoster = Schema.Struct({
+  entries: Schema.Array(AgentCallRosterEntry),
+});
+export type AgentCallRoster = typeof AgentCallRoster.Type;
 
 /** Body of `AGENT_CALL_SESSION_PATH`. The result is an `OrchestratorLiveStartResult`. */
 export const AgentCallSessionStartInput = Schema.Struct({
