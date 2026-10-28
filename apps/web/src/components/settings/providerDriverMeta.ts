@@ -68,14 +68,12 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     value: ProviderDriverKind.make("cursor"),
     label: "Cursor",
     icon: CursorIcon,
-    badgeLabel: "Early Access",
     settingsSchema: CursorSettings,
   },
   {
     value: ProviderDriverKind.make("grok"),
     label: "Grok",
     icon: GrokIcon,
-    badgeLabel: "Early Access",
     settingsSchema: GrokSettings,
   },
   {
@@ -88,28 +86,24 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     value: ProviderDriverKind.make("antigravity"),
     label: "Antigravity",
     icon: AntigravityIcon,
-    badgeLabel: "Early Access",
     settingsSchema: AntigravitySettings,
   },
   {
     value: ProviderDriverKind.make("deepcode"),
     label: "Deep Code",
     icon: DeepCodeIcon,
-    badgeLabel: "Early Access",
     settingsSchema: DeepCodeSettings,
   },
   {
     value: ProviderDriverKind.make("muse"),
     label: "Muse Code",
     icon: MuseIcon,
-    badgeLabel: "Early Access",
     settingsSchema: MuseSettings,
   },
   {
     value: ProviderDriverKind.make("kimi"),
     label: "Kimi Code",
     icon: KimiIcon,
-    badgeLabel: "Early Access",
     settingsSchema: KimiSettings,
   },
   {
