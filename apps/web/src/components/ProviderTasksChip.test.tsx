@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ProviderTask } from "../providerTasks";
-import { ProviderTaskPanel } from "./ProviderTaskPanel";
+import { ProviderTaskDetails, ProviderTasksChip } from "./ProviderTasksChip";
 
 const task: ProviderTask = {
   taskId: "mobile-layout-task",
@@ -16,10 +16,10 @@ const task: ProviderTask = {
   toolUses: 2,
 };
 
-describe("ProviderTaskPanel", () => {
+describe("ProviderTaskDetails", () => {
   it("shows actual provider tokens and reports missing totals as unknown", () => {
     const markup = renderToStaticMarkup(
-      <ProviderTaskPanel
+      <ProviderTaskDetails
         tasks={[
           {
             ...task,
@@ -33,12 +33,11 @@ describe("ProviderTaskPanel", () => {
     );
     expect(markup).toContain("1,234 tokens");
     expect(markup).toContain("tokens unknown");
-    expect(markup).toContain('data-provider-task-placement="composer"');
   });
 
   it("shows commands and monitors without agent usage fields", () => {
     const markup = renderToStaticMarkup(
-      <ProviderTaskPanel
+      <ProviderTaskDetails
         tasks={[
           {
             ...task,
@@ -59,7 +58,7 @@ describe("ProviderTaskPanel", () => {
     );
     expect(markup).toContain("Background command · Running");
     expect(markup).toContain("Monitor · Watching");
-    expect(markup).toContain("Background tasks · 2 active");
+    expect(markup).toContain("2 active");
     expect(markup).not.toContain("tokens");
     expect(markup).not.toContain("tool uses");
     expect(markup).not.toContain("Sub-agent");
@@ -67,24 +66,21 @@ describe("ProviderTaskPanel", () => {
 
   it("does not invent token usage for tasks without an agent type", () => {
     const markup = renderToStaticMarkup(
-      <ProviderTaskPanel tasks={[{ ...task, taskType: null, toolUses: null }]} />,
+      <ProviderTaskDetails tasks={[{ ...task, taskType: null, toolUses: null }]} />,
     );
     expect(markup).not.toContain("tokens unknown");
   });
 
-  it("renders every task in a bounded composer drawer instead of paginating", () => {
+  it("lists every task in one scrolling list instead of paginating", () => {
     const tasks = Array.from({ length: 12 }, (_, index) => ({
       ...task,
       taskId: `composer-task-${index + 1}`,
       title: `Background task ${index + 1}`,
     }));
 
-    const markup = renderToStaticMarkup(<ProviderTaskPanel tasks={tasks} />);
+    const markup = renderToStaticMarkup(<ProviderTaskDetails tasks={tasks} />);
 
     expect(markup).toContain('aria-label="Background tasks"');
-    expect(markup).toContain('data-provider-task-placement="composer"');
-    expect(markup).toContain("flex-col-reverse");
-    expect(markup).toContain("max-h-[min(38dvh,22rem)]");
     expect(markup).toContain("overflow-y-auto");
     expect(markup).toContain("Background task 12");
     expect(markup).not.toContain('aria-label="Task pages"');
@@ -92,7 +88,7 @@ describe("ProviderTaskPanel", () => {
 
   it("offers Stop but never Dismiss for a running task", () => {
     const markup = renderToStaticMarkup(
-      <ProviderTaskPanel tasks={[task]} onStopTask={() => undefined} />,
+      <ProviderTaskDetails tasks={[task]} onStopTask={() => undefined} />,
     );
     expect(markup).toContain(`aria-label="Stop ${task.title}"`);
     // Dismissing live work hid the row while the task still held the turn, so
@@ -101,7 +97,7 @@ describe("ProviderTaskPanel", () => {
   });
 
   it("withholds Dismiss from a running task even when no Stop channel is wired", () => {
-    const markup = renderToStaticMarkup(<ProviderTaskPanel tasks={[task]} />);
+    const markup = renderToStaticMarkup(<ProviderTaskDetails tasks={[task]} />);
 
     expect(markup).not.toContain(`aria-label="Stop ${task.title}"`);
     expect(markup).not.toContain(`aria-label="Dismiss ${task.title}"`);
@@ -111,32 +107,46 @@ describe("ProviderTaskPanel", () => {
     // A dead runtime is still reachable: silence past PROVIDER_TASK_STALE_AFTER_MS
     // downgrades the task to `stale`, which is what makes the row hideable again.
     const markup = renderToStaticMarkup(
-      <ProviderTaskPanel tasks={[{ ...task, status: "stale" }]} onStopTask={() => undefined} />,
+      <ProviderTaskDetails tasks={[{ ...task, status: "stale" }]} onStopTask={() => undefined} />,
     );
 
     expect(markup).toContain(`aria-label="Dismiss ${task.title}"`);
     expect(markup).not.toContain(`aria-label="Stop ${task.title}"`);
   });
 
-  it("gives Clear a hit area as tall as the header", () => {
-    const markup = renderToStaticMarkup(
-      <ProviderTaskPanel tasks={[{ ...task, status: "completed" }]} />,
-    );
-    const clear = markup.match(/<button[^>]*>Clear<\/button>/)?.[0] ?? "";
+  it("offers Clear only when a row can be dismissed", () => {
+    expect(renderToStaticMarkup(<ProviderTaskDetails tasks={[task]} />)).not.toContain(">Clear<");
+    expect(
+      renderToStaticMarkup(<ProviderTaskDetails tasks={[{ ...task, status: "completed" }]} />),
+    ).toContain(">Clear<");
+  });
+});
 
-    // A near miss on the small label landed on the collapse toggle underneath
-    // and folded the panel instead of clearing it.
-    expect(clear).toContain("before:absolute");
-    expect(clear).toContain("before:-inset-y-2");
+describe("ProviderTasksChip", () => {
+  it("is a rail chip counting running tasks, with the list kept in its popup", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderTasksChip tasks={[task, { ...task, taskId: "done", status: "completed" }]} />,
+    );
+
+    expect(markup).toContain('data-chat-composer-status-chip="background-tasks"');
+    expect(markup).toContain('aria-label="1 background task active. Show background tasks."');
+    expect(markup).toContain("text-gold-600");
+    // The rows live in the popup, which stays closed until the chip is tapped.
+    expect(markup).not.toContain(task.title);
   });
 
-  it("starts collapsed when it is bound to a thread", () => {
+  it("goes quiet and counts finished tasks once nothing runs", () => {
     const markup = renderToStaticMarkup(
-      <ProviderTaskPanel tasks={[task]} threadKey="environment:thread" />,
+      <ProviderTasksChip
+        tasks={[
+          { ...task, status: "completed" },
+          { ...task, taskId: "failed", status: "failed" },
+        ]}
+      />,
     );
 
-    expect(markup).toContain('aria-expanded="false"');
-    expect(markup).toContain("Background tasks · 1 active");
-    expect(markup).not.toContain(task.title);
+    expect(markup).toContain('aria-label="2 background tasks finished. Show background tasks."');
+    expect(markup).toContain("text-muted-foreground");
+    expect(markup).not.toContain("text-gold-600");
   });
 });

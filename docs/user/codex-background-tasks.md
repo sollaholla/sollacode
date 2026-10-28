@@ -1,6 +1,6 @@
 # Codex background tasks
 
-Codex subagents appear in the same **Background tasks** panel under the composer as Claude tasks. Each row identifies the child, its current work, status, and provider-reported cumulative tokens. A missing token reading says **tokens unknown**. Repeated readings replace the total rather than adding to it.
+Codex subagents appear under the same background-tasks chip at the top right of the composer as Claude tasks. Each row identifies the child, its current work, status, and provider-reported cumulative tokens. A missing token reading says **tokens unknown**. Repeated readings replace the total rather than adding to it.
 
 Child text, reasoning and command streams stay out of the main assistant transcript. Their progress and final summary belong to their background task. The main assistant can still report or discuss a child's results in its own reply.
 

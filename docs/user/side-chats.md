@@ -58,8 +58,8 @@ Voice recording and model controls are owned by the composer where they were inv
 recording can only update and focus the side-chat draft, and side-chat model or trait selections do
 not replace the main chat's selection or the default used for new threads.
 
-Provider background tasks live in a per-thread drawer directly beneath the composer and checkout
-strip. Expanding the drawer moves the conversation viewport upward and gives a long task list its own
-bounded scroll area; its state is remembered per thread. Grok background commands use the same
-drawer as Claude sub-agents, agent mode waits for them to finish, and you can stop a running Grok
-command from its row without leaving the chat or opening a second panel.
+Provider background tasks show as a chip at the top right of the composer, beside the side-chat
+chip. It counts running tasks, or finished ones once nothing runs; select it to list every task in a
+popup with its own scroll area. Grok background commands use the same chip as Claude sub-agents,
+agent mode waits for them to finish, and you can stop a running Grok command from its row without
+leaving the chat.

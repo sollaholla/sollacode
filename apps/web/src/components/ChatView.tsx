@@ -15,7 +15,11 @@ import {
   type OfflineOutboxMessage,
   useOfflineOutboxChipPhase,
 } from "./chat/OfflineOutbox";
-import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
+import { QueuedMessagesChip } from "./chat/QueuedMessagesChip";
+import {
+  COMPOSER_STATUS_COUNT_CHIP_CLASS_NAME,
+  COMPOSER_WORKING_CHIP_CLASS_NAME,
+} from "./chat/composerStatusIconChip";
 import {
   HELD_MESSAGE_PREFIX,
   isHeldMessageId,
@@ -172,7 +176,7 @@ import {
   deriveUnsentMessage,
   expandDeliveredMessageIds,
 } from "../messageDelivery";
-import { ProviderTaskPanel } from "./ProviderTaskPanel";
+import { ProviderTasksChip } from "./ProviderTasksChip";
 import { useUiStateStore } from "../uiStateStore";
 import { buildPlanImplementationThreadTitle, buildPlanImplementationPrompt } from "../proposedPlan";
 import {
@@ -4074,17 +4078,9 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeThreadId, environmentId, stopThreadTask],
   );
-  const providerTaskPanel =
+  const providerTasksChip =
     providerTasks.length === 0 ? null : (
-      <ProviderTaskPanel
-        onStopTask={onStopProviderTask}
-        tasks={providerTasks}
-        threadKey={
-          activeThreadId === null
-            ? null
-            : scopedThreadKey({ environmentId, threadId: activeThreadId })
-        }
-      />
+      <ProviderTasksChip onStopTask={onStopProviderTask} tasks={providerTasks} />
     );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
@@ -4668,11 +4664,10 @@ function ChatViewContent(props: ChatViewProps) {
       setSendingNowIds((current) => current.filter((entry) => entry !== id));
     }
   };
-  const heldSendPanel =
+  const queuedMessagesChip =
     activeThreadKey === null || threadHeldMessages.length === 0 ? null : (
-      <QueuedMessagesPanel
+      <QueuedMessagesChip
         key={activeThreadKey}
-        threadKey={activeThreadKey}
         count={threadHeldMessages.length}
         failedCount={threadHeldMessages.filter((message) => message.status === "failed").length}
         status={
@@ -4683,98 +4678,109 @@ function ChatViewContent(props: ChatViewProps) {
               : "Sends when the current work finishes"
         }
       >
-        {usageGuardPaused && usageGuardPauseNotice && (
-          <QueuedMessageCountdown notice={usageGuardPauseNotice} />
-        )}
-        {threadHeldMessages.map((message, index) => (
-          <div
-            key={message.id}
-            className="group flex items-start gap-2 rounded-lg border border-border/60 bg-card/60 p-2"
-            role="status"
-          >
-            <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md bg-muted text-[10px] tabular-nums text-muted-foreground">
-              {index + 1}
-            </span>
-            <span className="sr-only">
-              {message.status === "sending"
-                ? "Sending"
-                : message.status === "failed"
-                  ? "Send failed"
-                  : usageGuardPaused
-                    ? "Queued · waiting for credits"
-                    : "Queued"}
-            </span>
-            <span
-              className="min-w-0 flex-1 whitespace-pre-wrap break-words text-xs leading-relaxed line-clamp-3"
-              title={message.error ?? message.text}
-            >
-              {message.error ?? (message.text || "Attachment")}
-            </span>
-            {message.attachmentCount > 0 && (
-              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                {message.attachmentCount} attachment{message.attachmentCount === 1 ? "" : "s"}
-              </span>
+        {(closeQueuedMessages) => (
+          <>
+            {usageGuardPaused && usageGuardPauseNotice && (
+              <QueuedMessageCountdown notice={usageGuardPauseNotice} />
             )}
-            {message.status === "failed" && (
-              <Button
-                variant="ghost"
-                size="xs"
-                className={isPhonePortraitViewport ? "px-1.5" : undefined}
-                onClick={() => heldMessageQueue.retry(message.id)}
-                title="Retry"
+            {threadHeldMessages.map((message, index) => (
+              <div
+                key={message.id}
+                className="group flex items-start gap-2 rounded-lg border border-border/60 bg-card/60 p-2"
+                role="status"
               >
-                {isPhonePortraitViewport ? (
-                  <RotateCcwIcon className="size-3.5" aria-hidden="true" />
-                ) : null}
-                <span className={isPhonePortraitViewport ? "sr-only" : undefined}>Retry</span>
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="xs"
-              className={isPhonePortraitViewport ? "px-1.5" : undefined}
-              disabled={message.status === "sending" || sendingNowIds.includes(message.id)}
-              onClick={() => void sendHeldMessageNow(message.id)}
-              title="Interrupt current work and send queued messages in order. Earlier messages go first."
-            >
-              {isPhonePortraitViewport ? (
-                sendingNowIds.includes(message.id) ? (
-                  <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />
-                ) : (
-                  <SendHorizontalIcon className="size-3.5" aria-hidden="true" />
-                )
-              ) : null}
-              <span className={isPhonePortraitViewport ? "sr-only" : undefined}>
-                {sendingNowIds.includes(message.id) ? "Sending…" : "Send now"}
-              </span>
-            </Button>
-            <Button
-              variant="ghost"
-              size="xs"
-              className={isPhonePortraitViewport ? "px-1.5" : undefined}
-              disabled={message.status === "sending"}
-              onClick={() => void removeHeldMessage(message.id, true)}
-              title="Edit"
-            >
-              {isPhonePortraitViewport ? (
-                <PencilIcon className="size-3.5" aria-hidden="true" />
-              ) : null}
-              <span className={isPhonePortraitViewport ? "sr-only" : undefined}>Edit</span>
-            </Button>
-            <Button
-              variant="ghost"
-              size="xs"
-              className={isPhonePortraitViewport ? "px-1.5" : undefined}
-              disabled={message.status === "sending"}
-              onClick={() => void removeHeldMessage(message.id)}
-              title="Cancel"
-            >
-              {isPhonePortraitViewport ? <XIcon className="size-3.5" aria-hidden="true" /> : null}
-              <span className={isPhonePortraitViewport ? "sr-only" : undefined}>Cancel</span>
-            </Button>
-          </div>
-        ))}
-      </QueuedMessagesPanel>
+                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md bg-muted text-[10px] tabular-nums text-muted-foreground">
+                  {index + 1}
+                </span>
+                <span className="sr-only">
+                  {message.status === "sending"
+                    ? "Sending"
+                    : message.status === "failed"
+                      ? "Send failed"
+                      : usageGuardPaused
+                        ? "Queued · waiting for credits"
+                        : "Queued"}
+                </span>
+                <span
+                  className="min-w-0 flex-1 whitespace-pre-wrap break-words text-xs leading-relaxed line-clamp-3"
+                  title={message.error ?? message.text}
+                >
+                  {message.error ?? (message.text || "Attachment")}
+                </span>
+                {message.attachmentCount > 0 && (
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {message.attachmentCount} attachment{message.attachmentCount === 1 ? "" : "s"}
+                  </span>
+                )}
+                {message.status === "failed" && (
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className={isPhonePortraitViewport ? "px-1.5" : undefined}
+                    onClick={() => heldMessageQueue.retry(message.id)}
+                    title="Retry"
+                  >
+                    {isPhonePortraitViewport ? (
+                      <RotateCcwIcon className="size-3.5" aria-hidden="true" />
+                    ) : null}
+                    <span className={isPhonePortraitViewport ? "sr-only" : undefined}>Retry</span>
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className={isPhonePortraitViewport ? "px-1.5" : undefined}
+                  disabled={message.status === "sending" || sendingNowIds.includes(message.id)}
+                  onClick={() => void sendHeldMessageNow(message.id)}
+                  title="Interrupt current work and send queued messages in order. Earlier messages go first."
+                >
+                  {isPhonePortraitViewport ? (
+                    sendingNowIds.includes(message.id) ? (
+                      <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <SendHorizontalIcon className="size-3.5" aria-hidden="true" />
+                    )
+                  ) : null}
+                  <span className={isPhonePortraitViewport ? "sr-only" : undefined}>
+                    {sendingNowIds.includes(message.id) ? "Sending…" : "Send now"}
+                  </span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className={isPhonePortraitViewport ? "px-1.5" : undefined}
+                  disabled={message.status === "sending"}
+                  onClick={() => {
+                    // Edit moves the message into the composer, so the popup gets
+                    // out of the way of where it went.
+                    closeQueuedMessages();
+                    void removeHeldMessage(message.id, true);
+                  }}
+                  title="Edit"
+                >
+                  {isPhonePortraitViewport ? (
+                    <PencilIcon className="size-3.5" aria-hidden="true" />
+                  ) : null}
+                  <span className={isPhonePortraitViewport ? "sr-only" : undefined}>Edit</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className={isPhonePortraitViewport ? "px-1.5" : undefined}
+                  disabled={message.status === "sending"}
+                  onClick={() => void removeHeldMessage(message.id)}
+                  title="Cancel"
+                >
+                  {isPhonePortraitViewport ? (
+                    <XIcon className="size-3.5" aria-hidden="true" />
+                  ) : null}
+                  <span className={isPhonePortraitViewport ? "sr-only" : undefined}>Cancel</span>
+                </Button>
+              </div>
+            ))}
+          </>
+        )}
+      </QueuedMessagesChip>
     );
   const visibleAgentAutoResumePending = shouldAnnounceAgentAutoResume({
     pending: agentAutoResumePending && !usageGuardPaused,
@@ -10382,6 +10388,8 @@ function ChatViewContent(props: ChatViewProps) {
                     activeEnvironmentUnavailableState ||
                     activeSideChatActivity ||
                     activeTerminalActivity ||
+                    queuedMessagesChip ||
+                    providerTasksChip ||
                     outboxChipPhase !== "hidden" ? (
                       <>
                         {activeEnvironmentUnavailableState ? (
@@ -10417,7 +10425,10 @@ function ChatViewContent(props: ChatViewProps) {
                         {activeTerminalActivity ? (
                           <button
                             aria-label={`${activeTerminalActivity.count} ${activeTerminalActivity.count === 1 ? "terminal is" : "terminals are"} working. Open the terminal workspace.`}
-                            className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-gold-500/30 bg-background/95 px-2.5 py-1 text-xs font-medium text-gold-600  transition-colors hover:text-gold-500 dark:text-gold-400"
+                            className={cn(
+                              COMPOSER_STATUS_COUNT_CHIP_CLASS_NAME,
+                              COMPOSER_WORKING_CHIP_CLASS_NAME,
+                            )}
                             data-chat-composer-status-chip="terminals"
                             onClick={openWorkingTerminal}
                             title="Open a working terminal"
@@ -10432,7 +10443,10 @@ function ChatViewContent(props: ChatViewProps) {
                         {activeSideChatActivity ? (
                           <button
                             aria-label={`${activeSideChatActivity.count} side ${activeSideChatActivity.count === 1 ? "chat is" : "chats are"} working. Open the first working side chat.`}
-                            className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-gold-500/30 bg-background/95 px-2.5 py-1 text-xs font-medium text-gold-600  transition-colors hover:text-gold-500 dark:text-gold-400"
+                            className={cn(
+                              COMPOSER_STATUS_COUNT_CHIP_CLASS_NAME,
+                              COMPOSER_WORKING_CHIP_CLASS_NAME,
+                            )}
                             data-chat-composer-status-chip="side-chats"
                             onClick={openWorkingSideChat}
                             title="Open a working side chat"
@@ -10444,6 +10458,8 @@ function ChatViewContent(props: ChatViewProps) {
                             </span>
                           </button>
                         ) : null}
+                        {providerTasksChip}
+                        {queuedMessagesChip}
                       </>
                     ) : null
                   }
@@ -10646,8 +10662,6 @@ function ChatViewContent(props: ChatViewProps) {
                         </div>
                       </div>
                     </div>
-                    {heldSendPanel}
-                    {providerTaskPanel}
                     <div
                       aria-hidden
                       className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"
