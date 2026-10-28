@@ -62,7 +62,7 @@ If a provider rejects even a fresh session before it does any work, the thread s
 explanation instead of starting new sessions that fail the same way. The usual cause is a large
 instruction file or a very long message.
 
-When an agent consults a project by opening a new thread, that thread is marked with an agent icon. A shared-browser indicator appears on both the thread and browser toolbar.
+When an agent consults a project by opening a new thread, that thread is marked with an icon whose tooltip names the agent. Threads opened by an ordinary chat are marked the same way with that chat's title; see [Messages between chats](./cross-thread-messages.md). A shared-browser indicator appears on both the thread and browser toolbar.
 
 Every thread and agent in an environment shares one browser profile: the same cookies, logins, storage, and HTTP cache. Signing into a site once — in any thread, or in the agent's own panel — signs in everywhere in that environment, which is what lets an agent act on the sites you are already signed into. Profiles used to be per thread, so each conversation opened an empty cookie jar and an agent read a site as signed out while you were signed in one thread over. Separate environments still keep separate profiles. When another device connects to an environment, it displays and controls the environment-owning desktop's browser frame so cookies, login state, and the live page remain identical.
 
@@ -237,11 +237,12 @@ or result never stretches the surrounding app. New handoffs are requested natura
 than through a second composer.
 
 - A root agent can ask another named agent for help or create a short-lived ephemeral sub-agent.
+  The agent's side chats act as the agent here, so they can delegate too.
 - Incoming delegated tasks run in separate worker chats, including tasks addressed to a named agent.
   The named agent's main conversation keeps its own messages and active turn. Canceling or expiring
   a delegation stops its worker; it does not stop unrelated work in the main conversation.
-- Delegation is requested through the root chat, so normal tools and approval policy remain in
-  control. The UI does not create work behind the root agent's back.
+- Delegation is requested in the agent's chat or one of its side chats, so normal tools and
+  approval policy remain in control. The UI does not create work behind the root agent's back.
 - Questions from a worker appear as **Waiting for your answer**. Replies, delivery state, completed
   results, and cancellation are visible in the delegation detail.
 - Long briefs, questions, results, errors, and messages open on demand inside bounded readers. Reply
@@ -254,12 +255,28 @@ than through a second composer.
 Named collaborators and ephemeral workers are scoped to one environment. Cross-host delegation is
 not inferred from a matching name or handle.
 
+### Reaching an agent from any chat
+
+Delegation stays with agents, but every chat can talk to one. An ordinary chat, a terminal agent CLI
+or another agent finds the agent's chat (agent chats are marked in `workspace_consult`
+`list_threads`, and `agent_collaboration` `list_agents` lists them) and messages it with
+`workspace_consult` `ask`. The message arrives in the agent's chat under the sender's name, and
+the agent's reply comes back as the answer to `ask`, or later through `read_thread`. A turn that
+receives such a message asks you before any consequential action, even in Agent mode, and tasks it
+adds or changes wait for your approval. Loop and rate limits are in
+[Messages between chats](./cross-thread-messages.md#limits). A stopped agent's chat refuses messages
+until you start the agent.
+
+To be called by an agent from another chat, ask that chat to message the agent and have it use
+`call_user`; see [When an agent calls you](#when-an-agent-calls-you).
+
 ## Scheduling and approval
 
 A user-created task is approved immediately. A custom agent can use its `agent_workspace` tool to create or update tasks on the user's behalf:
 
 - One-off work can be activated by the agent.
 - Recurring work created or materially changed by the agent is always saved as a draft with **approval needed**. Select **Approve** in Scheduled work before it can run.
+- A task the agent adds, or whose title, prompt, criteria or schedule it changes, while answering another chat's message or doing delegated work is saved as a draft with **approval needed** too, even one-off work. Only you can approve work another chat asked for; see [Messages between chats](./cross-thread-messages.md#approvals).
 
 The server scheduler is independent of an open page. When work becomes due it:
 
@@ -285,6 +302,16 @@ The Agents list shows a numbered notification bubble for each agent's unread, un
 You can talk with an agent by voice, like a phone call. The call screen shows the agent's
 character, its name, a timer and its buttons: **Mute**, **Chat** and **End** on web and desktop,
 **Mute** and **End** in the phone app. A one-line caption shows the last thing said.
+
+Say goodbye to end a call by voice: once you say bye (or "that's all", "hang up") and the agent
+answers with its own goodbye, the call hangs up as soon as that goodbye finishes. A connected call
+ending, from either side, plays a short hang-up tone (off when sound cues are off in Settings).
+
+The small arrow on **Mute** chooses the microphone. **Default** follows your system's microphone
+and switches mid-call when it changes, such as when headphones connect. A microphone you pick is
+remembered on that device and used again when it reconnects. If the microphone in use is unplugged,
+the call moves to another one instead of ending. The same choice is in **Settings → Orchestrator →
+Microphone**, and the orchestrator's voice uses it too.
 
 Start a call from:
 
@@ -356,7 +383,9 @@ An agent can ring you when:
 - it reports a new **Waiting on you** request (a blocker),
 - its chat stops to ask you a question or to wait for an approval,
 - it asks to talk with you. Agents are told to do this only when a live conversation is really
-  needed. Reporting a blocker already rings, so an agent doesn't do both.
+  needed. Reporting a blocker already rings, so an agent doesn't do both. The agent's side chats
+  and delegated workers can ask for it as the agent, and any other chat can message the agent to
+  ask it to call you. Either way, the call talks in the agent's own chat.
 
 The incoming call shows the agent's character, "<agent> is calling", the reason, and **Answer**
 and **Decline**. A ringtone plays (it follows your sound settings), and the device vibrates where

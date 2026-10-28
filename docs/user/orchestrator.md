@@ -13,44 +13,62 @@ To watch every thread work as it happens, with the orchestrator a chat button aw
 ## Tools
 
 The orchestrator calls tools the same way any thread does, as often as it needs and several within
-one turn, rather than running a fixed script. Which tools it may call is decided by
+one turn, rather than running a fixed script. Which tools it may call by voice is decided by
 **Settings → Orchestrator → Authority**:
 
-| Tool                        | Authority     | What it does                                                        |
-| --------------------------- | ------------- | ------------------------------------------------------------------- |
-| `list_threads`              | Read only     | Every thread with its status, open terminals, and its model         |
-| `describe_thread`           | Read only     | One thread in detail: model, effort, access mode, and why it failed |
-| `read_thread`               | Read only     | The messages in a thread, grouped into numbered turns               |
-| `search_threads`            | Read only     | Searches what threads have said, and the errors they recorded       |
-| `get_orchestrator_settings` | Read only     | Its own live provider, model, voice, language and authority         |
-| `get_runtime_state`         | Read only     | Environments, reachability, and thread counts by state              |
-| `get_usage`                 | Read only     | Provider quota - the Providers tab figures - and its own voice cost |
-| `open_website`              | Read only     | Opens a named site in your browser, optionally on a search          |
-| `list_project_files`        | Read only     | A project's layout - folders and files                              |
-| `read_project_file`         | Read only     | Reads a text file from a project                                    |
-| `find_project_files`        | Read only     | Finds files by name or partial path                                 |
-| `search_project`            | Read only     | Searches file contents, with file and line numbers                  |
-| `run_command`               | Read only     | Runs a command on your computer and reads the output back           |
-| `list_terminals`            | Read only     | Terminals currently open, and which thread each belongs to          |
-| `read_terminal`             | Read only     | The current output of a terminal pane                               |
-| `send_to_thread`            | Send messages | Posts a message into one thread, as if you had typed it             |
-| `write_to_terminal`         | Send messages | Types into a live terminal, as if you had typed there               |
+| Tool                        | Authority     | What it does                                                                            |
+| --------------------------- | ------------- | --------------------------------------------------------------------------------------- |
+| `list_threads`              | Read only     | Every thread with its status, open terminals, and its model                             |
+| `describe_thread`           | Read only     | One thread in detail: model, effort, access mode, and why it failed                     |
+| `read_thread`               | Read only     | The messages in a thread, grouped into numbered turns                                   |
+| `search_threads`            | Read only     | Searches what threads have said, and the errors they recorded                           |
+| `get_orchestrator_settings` | Read only     | Its own live provider, model, voice, language and authority                             |
+| `get_runtime_state`         | Read only     | Environments, reachability, and thread counts by state                                  |
+| `get_usage`                 | Read only     | Provider quota - the Providers tab figures - and its own voice cost                     |
+| `open_website`              | Read only     | Opens a named site in your browser, optionally on a search                              |
+| `list_project_files`        | Read only     | A project's layout - folders and files                                                  |
+| `read_project_file`         | Read only     | Reads a text file from a project                                                        |
+| `find_project_files`        | Read only     | Finds files by name or partial path                                                     |
+| `search_project`            | Read only     | Searches file contents, with file and line numbers                                      |
+| `run_command`               | Read only     | Runs a command on your computer and reads the output back                               |
+| `list_terminals`            | Read only     | Terminals currently open, and which thread each belongs to                              |
+| `read_terminal`             | Read only     | The current output of a terminal pane                                                   |
+| `send_to_thread`            | Send messages | Posts a message into one thread, as if you had typed it                                 |
+| `write_to_terminal`         | Send messages | Types into a live terminal, as if you had typed there                                   |
+| `create_thread`             | Send messages | Starts a new thread for unrelated work and sends its first message                      |
+| `create_side_chat`          | Send messages | Opens a side chat off a running thread, sharing its context                             |
+| `rename_thread`             | Send messages | Gives a thread a clearer title                                                          |
+| `settle_thread`             | Send messages | Marks a thread finished; changes nothing else                                           |
+| `update_thread_settings`    | Full control  | Changes a thread's model, effort, access permissions or mode                            |
+| `interrupt_thread`          | Full control  | Stops a thread's in-flight turn                                                         |
+| `approve_proposed_plan`     | Full control  | Approves the plan a thread is waiting on, so it starts building                         |
+| `close_proposed_plan`       | Send messages | Closes the plan a thread is waiting on without building it; the plan card can reopen it |
+| `create_project`            | Full control  | Links a folder you already have as a project                                            |
+
+Every tool takes a `reason` - a short phrase saying why it was called. That reason is what makes the
+call log readable afterwards.
 
 Ordinary chats have the same three terminal actions on `thread_terminals`, so the
 main chat can list, read, and type into open panes without going through the
 orchestrator.
-| `create_thread` | Send messages | Starts a new thread for unrelated work and sends its first message |
-| `create_side_chat` | Send messages | Opens a side chat off a running thread, sharing its context |
-| `rename_thread` | Send messages | Gives a thread a clearer title |
-| `settle_thread` | Send messages | Marks a thread finished; changes nothing else |
-| `update_thread_settings` | Full control | Changes a thread's model, effort, access permissions or mode |
-| `interrupt_thread` | Full control | Stops a thread's in-flight turn |
-| `approve_proposed_plan` | Full control | Approves the plan a thread is waiting on, so it starts building |
-| `close_proposed_plan` | Send messages | Closes the plan a thread is waiting on without building it; the plan card can reopen it |
-| `create_project` | Full control | Links a folder you already have as a project |
 
-Every tool takes a `reason` - a short phrase saying why it was called. That reason is what makes the
-call log readable afterwards.
+## What stays with the orchestrator
+
+Typed turns in the orchestrator's thread use the `workspace_orchestration` MCP tool, which does not
+read **Authority**. Every chat can use its read actions: `list_threads`, `describe_thread`, `list_terminals` and `read_terminal`. `list_threads`
+leaves out the chat calling it and the orchestrator. Chats also message each other and custom agents
+with `workspace_consult`; see [Messages between chats](./cross-thread-messages.md).
+
+Posting into a thread as if you had typed it and interrupting its turn stay with the orchestrator:
+`workspace_orchestration` `send_to_thread` and `interrupt_thread`. The toolkit's own
+`write_to_terminal` is orchestrator-only too, but typing into terminals is not: any chat can list,
+read and type into live panes with `thread_terminals` (see [Terminals](#terminals)). The server
+checks the caller is the orchestrator's reserved thread. Another chat that tries one of these
+actions is told to message the thread with `workspace_consult` `ask` instead. The orchestrator can't
+interrupt its own thread.
+
+A message from the orchestrator counts as yours: a turn it starts in Agent mode still approves its
+own actions, and a chain of chats asking each other starts over from it.
 
 ## Reading and searching threads
 
@@ -239,6 +257,14 @@ touches the parent's provider session, an uncertain target is confirmed before a
 
 - though an unambiguous one is not.
 
+## Microphone
+
+**Settings → Orchestrator → Microphone** picks the microphone voice uses on this device.
+**Default** follows your system's microphone; with GPT-Live it switches mid-conversation when the
+system default changes, and a microphone that is unplugged hands over to another instead of ending
+the session. A chosen microphone that is missing falls back to the default until it is back. Agent
+calls use the same choice, and change it from the arrow on their **Mute** button.
+
 ## Interruptions
 
 Talking over the orchestrator cuts it off. Deciding _when_ that has really
@@ -307,6 +333,11 @@ needs a button, which is the point when the phone is in a pocket.
 A spoken goodbye is allowed to finish before the microphone closes - cutting it
 in half read as a crash - and counts as deliberate, so nothing reopens the
 session afterwards.
+
+GPT-Live has no tool to close itself with, so there the session ends when you say
+goodbye (or "that's all") and the orchestrator answers with its own goodbye. A
+goodbye from only one side keeps the session open, so "bye for now, but first
+check the deploy" still gets its answer.
 
 ## Coming back when work finishes
 

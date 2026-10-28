@@ -237,11 +237,31 @@ The custom agent's single output surface. It may be schedule, metrics, checklist
 or cards data, or an HTML/CSS web view rendered in the same opaque sandbox as a thread web artifact.
 It is not a thread artifact.
 
+#### Cross-chat message
+
+A message one chat sends into another chat or a custom agent's chat with `workspace_consult` `ask`,
+which every chat credential (including terminal agent CLIs) can call. The delivered message carries
+`senderThreadId` and `senderThreadTitle`, and the clients show it on the AI side with the sender's
+name; a thread opened by `ask` with a project records `createdByThreadId`, and the sidebar names that
+creator. Guards: no messages into the caller's own side-chat family, the orchestrator, Agent Builder
+or delegated worker threads, or a stopped agent's chat; no target already up the sender chain, and
+no chain past three hops (walked from the messages each turn received); 20 asks per chat per 10
+minutes; at most 10 non-archived threads created per chat. A question into a busy chat joins its
+running turn, except on providers without live steering (Kimi, Deep Code, Antigravity), where it
+stops that turn and runs next. In Agent mode, a turn that received another chat's message, and the
+continuations after it, ask the person before `request_action_approval` passes, and tasks they add
+or change wait as drafts, like delegated work. Only the orchestrator types into threads with
+`workspace_orchestration` `send_to_thread`. See
+[cross-thread-messages.md](../user/cross-thread-messages.md) and
+[custom-agent-workspaces.md](../architecture/custom-agent-workspaces.md#cross-chat-messages).
+
 #### Agent delegation
 
 A bounded collaboration work item whose persistent root asks a named same-environment agent or an
 ephemeral worker for help. It records source, target, limits, messages, human-approval state, and a
-completed result without turning the worker into another persistent root.
+completed result without turning the worker into another persistent root. Only agents delegate: the
+root is a custom agent, acting from its own chat or one of its side chats. Other chats reach an
+agent with a [cross-chat message](#cross-chat-message) instead.
 
 #### Ephemeral sub-agent
 
@@ -264,7 +284,9 @@ changes them with `vmAgent.call.place`, `vmAgent.call.decline` and `vmAgent.call
 `vmAgentEnvironment.calls`, `placeCall`, `declineCall` and `endCall` from
 [vmAgents.ts](../../packages/client-runtime/src/state/vmAgents.ts). Rings are gated by the
 `orchestrator.agentCalls` setting and a saved OpenAI key, with one open call per agent, a cooldown
-between automatic rings and an hourly cap on `call_user`.
+between automatic rings and an hourly cap on `call_user`. `call_user` works from the agent's chat,
+its side chats and its delegated workers, all as the agent; any other chat asks the agent with a
+[cross-chat message](#cross-chat-message).
 
 `vmAgent.call.end` takes `AgentCallEndInput`. A plain end settles a `ringing` or `active` call as
 `ended`. With `ifRinging: true` the host ends it only while it still rings, so a device that never
@@ -327,8 +349,11 @@ The orchestrator can speak through more than one realtime backend. These are **v
 
 The same orchestrator - voice tools on the client, and the reserved orchestrator thread via the
 `workspace_orchestration` MCP toolkit - can list, read, and type into thread terminals that are
-already open. It does not spawn a pane. See [orchestrator.md](../user/orchestrator.md#terminals)
-and [terminal-mode.md](../user/terminal-mode.md).
+already open. It does not spawn a pane. Any chat can list and read them through the same toolkit,
+and list, read and type into them with `thread_terminals`. Sending into threads and interrupting
+turns (`send_to_thread`, `interrupt_thread`) stay with the orchestrator, as does the toolkit's own
+`write_to_terminal`. See
+[orchestrator.md](../user/orchestrator.md#terminals) and [terminal-mode.md](../user/terminal-mode.md).
 
 #### OpenAI Realtime
 

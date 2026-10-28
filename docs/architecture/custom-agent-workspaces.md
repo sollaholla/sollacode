@@ -28,7 +28,7 @@ Running task completion is observed through the existing `projection_turns.pendi
 
 ## Agent authority
 
-The `agent_workspace` MCP tool is guarded by the `vm` invocation capability. It derives the caller from the credential-bound thread through `VmAgentStore.getByThreadId`; callers cannot supply another agent id. Agent-created recurrence requires user approval. Artifact input is decoded against the contract before persistence. An `html` dashboard is stored as markup and rendered in the same opaque iframe sandbox as a thread web artifact.
+The `agent_workspace` MCP tool is guarded by the `vm` invocation capability. It derives the agent from the credential-bound thread with `resolveOwningVmAgent` ([owningAgent.ts](../../apps/server/src/vm/owningAgent.ts)), which walks the side-chat chain, so the agent's side chats and its delegated workers act as that agent; callers cannot supply another agent id. `call_user` from any of them rings as the agent, and an answered call talks in the agent's main chat, because `AgentCallLive` pins the voice session to `agent.threadId`. Agent-created recurrence requires user approval. So does any task added, or whose title, prompt, criteria or schedule changes, in a turn that received another chat's message or delegated work, the rule `request_action_approval` follows (see [Cross-chat messages](#cross-chat-messages)). Artifact input is decoded against the contract before persistence. An `html` dashboard is stored as markup and rendered in the same opaque iframe sandbox as a thread web artifact.
 
 The hidden Agents project remains the organizational parent for agent chats, but it is not their
 shared execution directory. Every newly created named agent receives a readable, uniquely suffixed
@@ -51,5 +51,48 @@ entire history. Messages identify source agent, target agent, user, or system an
 pending/delivered state. Creation remains an agent/MCP action; clients observe, send bounded
 follow-ups, cancel, and route human approvals back to the root thread.
 
+`agent_collaboration` resolves its actor in order: a delegated worker thread is the worker (so it
+stays one generation deep), then `resolveOwningVmAgent` makes an agent's chat or side chat the
+agent. Any other chat has no actor: it may `list_agents`, and every other action is refused with a
+pointer to `workspace_consult`.
+
 Agent ids are always paired with an environment id in client routes. The server payload can omit the
 environment because the selected connection already determines its authority boundary.
+
+## Cross-chat messages
+
+`workspace_consult` ([consult/handlers.ts](../../apps/server/src/mcp/toolkits/consult/handlers.ts))
+is the one message door between chats, open to every credential with the default `collaboration`
+capability, including terminal agent CLIs. Delegation and `agent_builder` stay agent-only and
+builder-only. The sender is stamped on the delivered message as `senderThreadId` (always the real
+calling thread) and `senderThreadTitle` (the owning agent's name for an agent's chats, the
+orchestrator's title only for the orchestrator thread itself, otherwise the caller's title). A thread opened with `ask` and a `projectId` records `createdByThreadId` and
+inherits the caller's browser profile; clients name the creator from that id
+([threadProvenance.ts](../../packages/client-runtime/src/state/threadProvenance.ts)).
+
+The guards need no new storage:
+
+- Targets of `ask`, `list_threads` and `read_thread` exclude the caller's whole side-chat family
+  (from `resolveRelatedChats`, plus the owning agent's chat, since asking a parent or child
+  deadlocks), the orchestrator, Agent Builder threads and `delegation-worker:*` threads. Asking a
+  stopped (or stopping) agent's chat is refused.
+- `ProjectionSnapshotQuery` reads a turn's provenance: the `senderThreadId` and `delegationId` of
+  the messages a thread's active (or latest) turn received, including ones steered into it while it
+  ran, and for an agent-loop continuation, those of the last message that was not a continuation.
+  Before an `ask`, the handler walks those senders from the caller and refuses a target already in
+  the chain (a cycle) or a chain already three hops deep. A message from the orchestrator ends the
+  chain, as the person.
+- Each caller may `ask` 20 times in a sliding 10-minute window (in memory, on the Effect clock), and
+  may have at most 10 non-archived threads it created. An active delegated worker may not open new
+  threads.
+- `ask` waits on the target thread's domain events rather than polling, up to `waitMs` (a minute by
+  default, at most two; 0 only sends). Once the target's latest turn settles, the answer is that
+  turn's assistant reply written after the question, so a question steered into a running turn is
+  answered by that turn. A provider that declares `liveSteering: "unsupported"` (Kimi, Deep Code,
+  Antigravity) cannot take it mid-turn, so `ProviderCommandReactor` interrupts the running turn and
+  the question runs next, as it does for any message sent mid-turn.
+
+`request_action_approval` reads the same provenance: in Agent mode a turn approves itself only when
+no message it received has a `delegationId` or a sender other than the orchestrator, and an
+agent-loop continuation inherits the answer from the message before it. `agent_workspace` applies
+the same rule to tasks: one added or changed in such a turn is saved as a pending draft.
