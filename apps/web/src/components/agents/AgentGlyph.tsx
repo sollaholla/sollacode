@@ -1,4 +1,7 @@
-import { agentAvatarSvg } from "@t3tools/client-runtime/state/agent-appearance";
+import {
+  agentAvatarSvg,
+  type AgentAvatarMood,
+} from "@t3tools/client-runtime/state/agent-appearance";
 import {
   agentAvatarMotion,
   scheduleAgentAvatarMotion,
@@ -12,8 +15,11 @@ export const AgentGlyph = memo(function AgentGlyph(props: {
   readonly agentId: string;
   readonly online: boolean;
   readonly avatarColor?: number | null | undefined;
+  /** What the agent is doing; offline agents sleep whatever this says. */
+  readonly mood?: AgentAvatarMood | undefined;
   readonly className?: string;
 }) {
+  const mood = props.mood ?? "idle";
   const ref = useRef<HTMLImageElement>(null);
   const [blinking, setBlinking] = useState(false);
   useEffect(() => {
@@ -67,8 +73,8 @@ export const AgentGlyph = memo(function AgentGlyph(props: {
   }, [props.agentId, props.online]);
   const src = useMemo(
     () =>
-      `data:image/svg+xml,${encodeURIComponent(agentAvatarSvg(props.agentId, props.online, props.avatarColor, props.online && blinking))}`,
-    [props.agentId, props.online, props.avatarColor, blinking],
+      `data:image/svg+xml,${encodeURIComponent(agentAvatarSvg(props.agentId, props.online, props.avatarColor, props.online && blinking, mood))}`,
+    [props.agentId, props.online, props.avatarColor, blinking, mood],
   );
   return (
     <img
@@ -81,6 +87,7 @@ export const AgentGlyph = memo(function AgentGlyph(props: {
       height={80}
       data-agent-avatar={props.agentId}
       data-online={props.online}
+      data-mood={props.online ? mood : "sleeping"}
       data-blinking={props.online && blinking}
       style={{ transformOrigin: "50% 82%" }}
       className={cn("size-7 shrink-0 object-contain", props.className)}

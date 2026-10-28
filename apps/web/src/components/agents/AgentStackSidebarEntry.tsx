@@ -34,6 +34,7 @@ import { useThreadShell, useThreadShells } from "../../state/entities";
 import { deriveWorkingSideChatsByParent, sideChatParentActivityKey } from "../../sideChat";
 import { useStartupResumeStore } from "../../startupResumeStore";
 import {
+  agentRowAvatarMood,
   hasUnseenCompletion,
   promoteAgentRowStatus,
   resolveSidebarV2Status,
@@ -505,6 +506,11 @@ function AgentSidebarRow(props: {
           agentId={agent.vmAgentId}
           avatarColor={agent.avatarColor}
           online={presence.online}
+          mood={agentRowAvatarMood({
+            status,
+            done,
+            lastTurnFailed: threadShell?.latestTurn?.state === "error",
+          })}
         />
         <span className="flex-1 truncate text-left">{agent.name}</span>
         {/* Deliberately identical to the thread rows' working indicator, minus

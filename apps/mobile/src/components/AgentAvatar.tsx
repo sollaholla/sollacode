@@ -1,4 +1,7 @@
-import { agentAvatarSvg } from "@t3tools/client-runtime/state/agent-appearance";
+import {
+  agentAvatarSvg,
+  type AgentAvatarMood,
+} from "@t3tools/client-runtime/state/agent-appearance";
 import {
   agentAvatarMotion,
   scheduleAgentAvatarMotion,
@@ -12,8 +15,11 @@ export const AgentAvatar = memo(function AgentAvatar(props: {
   readonly agentId: string;
   readonly online: boolean;
   readonly avatarColor?: number | null | undefined;
+  /** What the agent is doing; offline agents sleep whatever this says. */
+  readonly mood?: AgentAvatarMood | undefined;
   readonly size: number;
 }) {
+  const mood = props.mood ?? "idle";
   const progress = useRef(new Animated.Value(0)).current;
   const motion = useMemo(() => agentAvatarMotion(props.agentId), [props.agentId]);
   const [blinking, setBlinking] = useState(false);
@@ -76,8 +82,15 @@ export const AgentAvatar = memo(function AgentAvatar(props: {
     };
   }, [props.agentId, props.online, motion, progress]);
   const xml = useMemo(
-    () => agentAvatarSvg(props.agentId, props.online, props.avatarColor, props.online && blinking),
-    [props.agentId, props.online, props.avatarColor, blinking],
+    () =>
+      agentAvatarSvg(
+        props.agentId,
+        props.online,
+        props.avatarColor,
+        props.online && blinking,
+        mood,
+      ),
+    [props.agentId, props.online, props.avatarColor, blinking, mood],
   );
   return (
     <Animated.View

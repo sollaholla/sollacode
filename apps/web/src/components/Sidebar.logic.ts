@@ -487,6 +487,23 @@ export function promoteAgentRowStatus<Status extends string>(input: {
   return promoted;
 }
 
+/**
+ * The face an agent's avatar wears for its row status: busy while working,
+ * looking up when it needs an answer, pleased with an unseen finish, worried
+ * after a failure. Offline agents sleep regardless (the glyph handles that).
+ */
+export function agentRowAvatarMood(input: {
+  readonly status: SidebarV2Status | null;
+  /** A finished turn the user hasn't opened yet. */
+  readonly done: boolean;
+  readonly lastTurnFailed: boolean;
+}): "idle" | "working" | "waiting" | "blocked" | "happy" {
+  if (input.status === "approval" || input.status === "input") return "waiting";
+  if (input.status === "working") return "working";
+  if (input.status === "failed" || input.lastTurnFailed) return "blocked";
+  return input.done ? "happy" : "idle";
+}
+
 export function resolveSidebarV2Status(
   thread: SidebarV2StatusInput,
   nowMs: number = Date.now(),

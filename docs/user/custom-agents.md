@@ -2,12 +2,17 @@
 
 Custom agents are the named agents in the **Agents** section. Each one owns one dedicated conversation. They are separate from ordinary coding threads and from the orchestrator.
 
-Each agent gets a round, softly shaded blob character with its own automatically assigned color
-and a subtly wavy outline. Its gentle ripples are fixed to its identity, so the shape stays the
-same while blinking, going offline, or moving between clients.
-The color follows its permanent agent identity across web, desktop and mobile, including
-renames and changes to its conversation or coding provider. Existing agents get the same
-characters without re-creation. Offline characters keep a muted version of their color.
+Each agent gets its own character: a vivid body shape (mochi, bell, acorn, lantern, sunburst,
+gumdrop, onion, capsule, pebble, dango or star), a face, and sometimes an ink accessory such as a
+cap, goggles, a scarf, a satchel strap or a monocle. Your first eleven agents each get a different
+shape, and your first fourteen each get a different color. The character follows the agent's
+permanent identity across web, desktop and mobile, including renames and changes to its
+conversation or coding provider.
+
+The face shows what the agent is doing: focused while it works, looking up when it is waiting
+for your approval or answer, worried after a failed turn, and smiling when it has finished work
+you haven't opened yet. Offline characters turn a muted grey and fall asleep. The phone shows
+the working and waiting faces.
 A green dot means the agent is running and this client is connected to its environment;
 a gray dot means it is stopped, starting, failed, or the environment is disconnected.
 Work-in-progress and unread-alert indicators remain separate from online status.

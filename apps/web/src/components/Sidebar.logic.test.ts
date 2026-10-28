@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  agentRowAvatarMood,
   archiveSelectedThreadEntries,
   buildSettleThreadsConfirmationMessage,
   buildMultiSelectThreadContextMenuItems,
@@ -1753,5 +1754,23 @@ describe("promoteAgentRowStatus", () => {
         environmentUnreachable: true,
       }),
     ).toBe("approval");
+  });
+});
+
+describe("agentRowAvatarMood", () => {
+  it("matches the avatar's face to what the agent is doing", () => {
+    const mood = (
+      status: Parameters<typeof agentRowAvatarMood>[0]["status"],
+      done = false,
+      lastTurnFailed = false,
+    ) => agentRowAvatarMood({ status, done, lastTurnFailed });
+    expect(mood("approval")).toBe("waiting");
+    expect(mood("input", true, true)).toBe("waiting");
+    expect(mood("working", true)).toBe("working");
+    expect(mood("failed")).toBe("blocked");
+    expect(mood("ready", true, true)).toBe("blocked");
+    expect(mood("ready", true)).toBe("happy");
+    expect(mood("ready")).toBe("idle");
+    expect(mood(null)).toBe("idle");
   });
 });

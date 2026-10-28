@@ -196,6 +196,13 @@ function AgentEnvironmentSection(props: {
                   agentId={agent.vmAgentId}
                   avatarColor={agent.avatarColor}
                   online={agentPresence(agent.status).online}
+                  mood={
+                    (agentAttention?.openBlockerCount ?? 0) > 0
+                      ? "waiting"
+                      : activeWork > 0
+                        ? "working"
+                        : "idle"
+                  }
                   size={40}
                 />
                 <View className="min-w-0 flex-1">
