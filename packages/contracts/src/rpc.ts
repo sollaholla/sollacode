@@ -229,6 +229,13 @@ import {
 } from "./remoteControl.ts";
 import { MediaChannelTicket } from "./mediaChannel.ts";
 import {
+  AgentCall,
+  AgentCallError,
+  AgentCallPlaceInput,
+  AgentCallRef,
+  AgentCallsSnapshot,
+} from "./agentCall.ts";
+import {
   DatabaseStorageError,
   DatabaseStorageStatus,
   StorageCleanupStartError,
@@ -417,6 +424,10 @@ export const WS_METHODS = {
   vmAgentNotificationMarkRead: "vmAgent.notification.markRead",
   vmAgentNotificationUpdate: "vmAgent.notification.update",
   vmAgentBlockerResolve: "vmAgent.blocker.resolve",
+  vmAgentCallsSubscribe: "vmAgent.calls.subscribe",
+  vmAgentCallPlace: "vmAgent.call.place",
+  vmAgentCallDecline: "vmAgent.call.decline",
+  vmAgentCallEnd: "vmAgent.call.end",
   vmAgentNotificationPreferencesUpdate: "vmAgent.notification.preferences.update",
   vmAgentCollaborationSubscribe: "vmAgent.collaboration.subscribe",
   vmAgentCollaborationGet: "vmAgent.collaboration.get",
@@ -1340,6 +1351,32 @@ export const WsVmAgentAttentionSubscribeRpc = Rpc.make(WS_METHODS.vmAgentAttenti
   stream: true,
 });
 
+/** Open and recently ended agent calls; a full snapshot on every change. */
+export const WsVmAgentCallsSubscribeRpc = Rpc.make(WS_METHODS.vmAgentCallsSubscribe, {
+  payload: Schema.Struct({}),
+  success: AgentCallsSnapshot,
+  error: Schema.Union([AgentCallError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+/** The person calls an agent. Rings only on the placing device until it opens voice. */
+export const WsVmAgentCallPlaceRpc = Rpc.make(WS_METHODS.vmAgentCallPlace, {
+  payload: AgentCallPlaceInput,
+  success: AgentCall,
+  error: Schema.Union([AgentCallError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentCallDeclineRpc = Rpc.make(WS_METHODS.vmAgentCallDecline, {
+  payload: AgentCallRef,
+  error: Schema.Union([AgentCallError, EnvironmentAuthorizationError]),
+});
+
+/** Hangs up an active call or cancels a ringing one. Idempotent. */
+export const WsVmAgentCallEndRpc = Rpc.make(WS_METHODS.vmAgentCallEnd, {
+  payload: AgentCallRef,
+  error: Schema.Union([AgentCallError, EnvironmentAuthorizationError]),
+});
+
 export const WsVmAgentBlockerResolveRpc = Rpc.make(WS_METHODS.vmAgentBlockerResolve, {
   payload: VmAgentBlockerResolveInput,
   error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
@@ -1803,6 +1840,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsVmAgentRulesGetRpc,
   WsVmAgentRulesUpdateRpc,
   WsVmAgentAttentionSubscribeRpc,
+  WsVmAgentCallsSubscribeRpc,
+  WsVmAgentCallPlaceRpc,
+  WsVmAgentCallDeclineRpc,
+  WsVmAgentCallEndRpc,
   WsVmAgentTaskCreateRpc,
   WsVmAgentTaskUpdateRpc,
   WsVmAgentTaskDeleteRpc,

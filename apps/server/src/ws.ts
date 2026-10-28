@@ -27,6 +27,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
+  AgentCallError,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AuthAccessStreamError,
   AuthOrchestrationOperateScope,
@@ -3613,6 +3614,14 @@ const makeWsRpcLayer = (
             vmAgentWorkspace.updateNotification(input),
             { "rpc.aggregate": "vm-workspace" },
           ),
+        // Placeholders until the AgentCalls service lands; they keep the RPC
+        // group complete. Replace with the real handlers.
+        [WS_METHODS.vmAgentCallsSubscribe]: () =>
+          Stream.make({ type: "snapshot" as const, calls: [] }),
+        [WS_METHODS.vmAgentCallPlace]: () =>
+          Effect.fail(new AgentCallError({ detail: "Agent calls are not available yet." })),
+        [WS_METHODS.vmAgentCallDecline]: () => Effect.void,
+        [WS_METHODS.vmAgentCallEnd]: () => Effect.void,
         [WS_METHODS.vmAgentBlockerResolve]: (input) =>
           observeRpcEffect(
             WS_METHODS.vmAgentBlockerResolve,

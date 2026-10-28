@@ -862,6 +862,12 @@ export const OrchestratorSettings = Schema.Struct({
    */
   voiceIsolation: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   spokenEvents: OrchestratorSpokenEvents,
+  /**
+   * Lets agents ring this host's devices when they raise a blocker, wait on a
+   * question or approval, or ask to talk. Calls use GPT-Live with the OpenAI
+   * key above, so nothing rings without one.
+   */
+  agentCalls: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type OrchestratorSettings = typeof OrchestratorSettings.Type;
 
@@ -1255,6 +1261,7 @@ const OrchestratorSettingsPatch = Schema.Struct({
   wakeOnAwaitedResult: Schema.optionalKey(Schema.Boolean),
   interruptWhileSpeaking: Schema.optionalKey(Schema.Boolean),
   voiceIsolation: Schema.optionalKey(Schema.Boolean),
+  agentCalls: Schema.optionalKey(Schema.Boolean),
   spokenEvents: Schema.optionalKey(
     Schema.Struct({
       threadFinished: Schema.optionalKey(Schema.Boolean),

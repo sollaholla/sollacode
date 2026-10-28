@@ -26,6 +26,7 @@ export * from "./orchestration.ts";
 export * from "./orchestrator.ts";
 export * from "./orchestratorVoice.ts";
 export * from "./orchestratorLive.ts";
+export * from "./agentCall.ts";
 export * from "./providerApiKeyAccounts.ts";
 export * from "./voice.ts";
 export * from "./t3ProjectFile.ts";
