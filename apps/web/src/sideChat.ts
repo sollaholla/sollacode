@@ -2,6 +2,10 @@ export function sideChatDisplayTitle(title: string): string {
   return title.replace(/ \(side chat\)$/i, "");
 }
 
+/** Asked before "Promote to thread" runs, because promotion cannot be undone. */
+export const SIDE_CHAT_PROMOTION_CONFIRMATION =
+  "Promote this side chat to its own thread? It moves to the project sidebar as a main chat and leaves this thread's side chats. This can't be undone.";
+
 interface SideChatActivityThread {
   readonly id: string;
   readonly environmentId: string;

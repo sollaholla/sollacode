@@ -35,6 +35,8 @@ A promoted thread is a main chat in every way: it opens its own side chats, and 
 on its next turn that the side-chat guidance no longer applies, so it edits files and runs commands
 like any other thread. Before 0.1.725 that agent was never told, and kept treating itself as a
 read-only helper of a conversation it no longer belonged to.
+Promotion cannot be undone, so **Promote to thread** asks for confirmation first. Cancelling, Escape,
+or clicking outside the dialog leaves the side chat where it was.
 Side chats belonging to custom agents stay attached to their agent and cannot be promoted.
 Previously promoted agent side chats are reattached to their original agent when the server starts,
 preserving the existing conversation.

@@ -396,6 +396,7 @@ import { useThreadActions } from "../hooks/useThreadActions";
 import {
   deriveWorkingSideChatsByParent,
   isSideChatActivelyWorking,
+  SIDE_CHAT_PROMOTION_CONFIRMATION,
   sideChatDisplayTitle,
   sideChatParentActivityKey,
 } from "../sideChat";
@@ -6281,7 +6282,7 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadRef],
   );
   const promoteSideChatSurface = useCallback(
-    (surface: Extract<RightPanelSurface, { kind: "side-chat" }>) => {
+    async (surface: Extract<RightPanelSurface, { kind: "side-chat" }>) => {
       if (
         !activeThreadRef ||
         !activeProject ||
@@ -6289,32 +6290,37 @@ function ChatViewContent(props: ChatViewProps) {
         promotingSideChatThreadId !== null
       )
         return;
+      // Promotion is one-way: a promoted thread cannot become a side chat
+      // again, so a misclick on the header button must not commit it.
+      const confirmed = await confirmInApp(SIDE_CHAT_PROMOTION_CONFIRMATION, {
+        confirmLabel: "Promote",
+      });
+      if (!confirmed) return;
       const sideChatThreadRef = scopeThreadRef(
         activeThreadRef.environmentId,
         ThreadId.make(surface.resourceId),
       );
       setPromotingSideChatThreadId(surface.resourceId);
-      void promoteSideChatAction(sideChatThreadRef).then((result) => {
-        setPromotingSideChatThreadId(null);
-        if (result._tag === "Failure") {
-          if (!isAtomCommandInterrupted(result)) {
-            const error = squashAtomCommandFailure(result);
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Failed to promote side chat",
-                description: error instanceof Error ? error.message : "An error occurred.",
-              }),
-            );
-          }
-          return;
+      const result = await promoteSideChatAction(sideChatThreadRef);
+      setPromotingSideChatThreadId(null);
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to promote side chat",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
         }
-        useRightPanelStore.getState().closeSurface(activeThreadRef, surface.id);
-        toastManager.add({ type: "success", title: "Side chat promoted to a thread" });
-        void navigate({
-          to: "/$environmentId/$threadId",
-          params: buildThreadRouteParams(sideChatThreadRef),
-        });
+        return;
+      }
+      useRightPanelStore.getState().closeSurface(activeThreadRef, surface.id);
+      toastManager.add({ type: "success", title: "Side chat promoted to a thread" });
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(sideChatThreadRef),
       });
     },
     [activeThreadRef, activeProject, navigate, promoteSideChatAction, promotingSideChatThreadId],
@@ -9848,7 +9854,7 @@ function ChatViewContent(props: ChatViewProps) {
               type="button"
               className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:cursor-wait disabled:opacity-50"
               disabled={promotingSideChatThreadId === activeRightPanelSurface.resourceId}
-              onClick={() => promoteSideChatSurface(activeRightPanelSurface)}
+              onClick={() => void promoteSideChatSurface(activeRightPanelSurface)}
             >
               <ArrowUpRightIcon className="size-3.5" />
               {promotingSideChatThreadId === activeRightPanelSurface.resourceId
