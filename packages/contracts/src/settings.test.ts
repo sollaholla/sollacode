@@ -438,10 +438,10 @@ describe("ServerSettingsPatch string normalization", () => {
 });
 
 describe("orchestrator voice provider", () => {
-  it("defaults to OpenAI so a settings file written before the field existed still works", () => {
+  it("defaults to OpenAI GPT-Live so a settings file written before the field existed still works", () => {
     const decoded = decodeOrchestratorSettings({});
     expect(decoded.provider).toBe("openai");
-    expect(decoded.model).toBe("gpt-realtime");
+    expect(decoded.model).toBe("gpt-live-1");
     expect(decoded.apiKeyConfigured).toBe(false);
     expect(decoded.openAiApiKeyConfigured).toBe(false);
     expect(decoded.xaiApiKeyConfigured).toBe(false);

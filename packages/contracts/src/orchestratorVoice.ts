@@ -112,7 +112,7 @@ export const ORCHESTRATOR_VOICE_PROVIDERS: Record<
     id: "openai",
     label: "OpenAI",
     description: "OpenAI GPT-Live and Realtime over WebRTC.",
-    defaultModel: "gpt-realtime",
+    defaultModel: OPENAI_LIVE_MODEL,
     defaultVoice: "marin",
     fallbackVoice: "alloy",
     models: OPENAI_REALTIME_MODELS,

@@ -3,6 +3,7 @@ import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { OPENAI_LIVE_MODEL } from "./orchestratorLive.ts";
 import { DEFAULT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
@@ -758,7 +759,8 @@ export const OrchestratorAuthority = Schema.Literals(["read-only", "send", "full
 export type OrchestratorAuthority = typeof OrchestratorAuthority.Type;
 export const DEFAULT_ORCHESTRATOR_AUTHORITY: OrchestratorAuthority = "full";
 
-export const DEFAULT_ORCHESTRATOR_REALTIME_MODEL = "gpt-realtime";
+/** GPT-Live is the OpenAI voice; Realtime models stay selectable. */
+export const DEFAULT_ORCHESTRATOR_REALTIME_MODEL = OPENAI_LIVE_MODEL;
 export const DEFAULT_ORCHESTRATOR_VOICE = "marin";
 export const DEFAULT_ORCHESTRATOR_WAKE_WORD = "hey solla";
 // ISO-639-1. Pinned in both the spoken instructions and the input-audio

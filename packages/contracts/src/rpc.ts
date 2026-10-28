@@ -232,6 +232,7 @@ import {
   AgentCall,
   AgentCallError,
   AgentCallPlaceInput,
+  AgentCallEndInput,
   AgentCallRef,
   AgentCallsSnapshot,
 } from "./agentCall.ts";
@@ -1373,7 +1374,7 @@ export const WsVmAgentCallDeclineRpc = Rpc.make(WS_METHODS.vmAgentCallDecline, {
 
 /** Hangs up an active call or cancels a ringing one. Idempotent. */
 export const WsVmAgentCallEndRpc = Rpc.make(WS_METHODS.vmAgentCallEnd, {
-  payload: AgentCallRef,
+  payload: AgentCallEndInput,
   error: Schema.Union([AgentCallError, EnvironmentAuthorizationError]),
 });
 

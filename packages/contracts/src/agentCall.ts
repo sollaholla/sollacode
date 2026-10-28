@@ -31,6 +31,33 @@ export const AGENT_CALL_SESSION_RELEASE_PATH = "/api/agents/call/session/release
  * is an `OrchestratorLiveDelegationInput`.
  */
 export const AGENT_CALL_DELEGATION_PATH = "/api/agents/call/delegation";
+/**
+ * Keeps an active call's lease: the device holding the call POSTs `{ sessionId }`
+ * every `AGENT_CALL_HEARTBEAT_SECONDS`. The host ends an active call whose lease
+ * lapses (`AGENT_CALL_LEASE_SECONDS`), so a crashed tab or killed app can't
+ * leave a call open. Delegation requests renew the lease too.
+ */
+export const AGENT_CALL_SESSION_HEARTBEAT_PATH = "/api/agents/call/session/heartbeat";
+export const AGENT_CALL_HEARTBEAT_SECONDS = 15;
+export const AGENT_CALL_LEASE_SECONDS = 50;
+
+/**
+ * Messages the call page posts to the phone app that hosts it in a WebView
+ * (`window.ReactNativeWebView.postMessage(JSON.stringify(message))`). The
+ * native screen trusts these, not touches, to know which calls this phone
+ * holds: `held` when the page places or answers a call, `connected` once the
+ * host accepted this page's claim (the call is live on this phone), `released`
+ * when it hangs up or the call ends, `failed` with the reason when voice
+ * couldn't start or dropped.
+ */
+export const AGENT_CALL_NATIVE_MESSAGE_TYPE = "solla-agent-call";
+export type AgentCallNativeMessage = {
+  readonly type: typeof AGENT_CALL_NATIVE_MESSAGE_TYPE;
+  readonly event: "held" | "connected" | "released" | "failed";
+  readonly callId: string;
+  readonly detail?: string;
+};
+
 /** Web route a notification or the phone app opens to answer or join a call. */
 export const agentCallRoutePath = (environmentId: string, callId: string) =>
   `/call/${encodeURIComponent(environmentId)}/${encodeURIComponent(callId)}`;
@@ -104,6 +131,17 @@ export type AgentCallPlaceInput = typeof AgentCallPlaceInput.Type;
 
 export const AgentCallRef = Schema.Struct({ callId: AgentCallId });
 export type AgentCallRef = typeof AgentCallRef.Type;
+
+/**
+ * Ends a call. With `ifRinging`, the host ends it only while it still rings,
+ * so a device that never connected can cancel its ring without hanging up a
+ * call another device answered.
+ */
+export const AgentCallEndInput = Schema.Struct({
+  callId: AgentCallId,
+  ifRinging: Schema.optionalKey(Schema.Boolean),
+});
+export type AgentCallEndInput = typeof AgentCallEndInput.Type;
 
 /** Body of `AGENT_CALL_SESSION_PATH`. The result is an `OrchestratorLiveStartResult`. */
 export const AgentCallSessionStartInput = Schema.Struct({
