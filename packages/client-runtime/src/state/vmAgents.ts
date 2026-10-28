@@ -372,6 +372,27 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       transform: (stream) =>
         resubscribeVmStreamOnApplicationActive(resubscribeOnTerminalResync(stream)),
     }),
+    /** Open and recently ended agent calls on this host; a snapshot per change. */
+    calls: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:vm-agents:calls",
+      tag: WS_METHODS.vmAgentCallsSubscribe,
+      transform: (stream) => resubscribeVmStreamOnApplicationActive(stream),
+    }),
+    placeCall: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:call-place",
+      tag: WS_METHODS.vmAgentCallPlace,
+      scheduler: lifecycleScheduler,
+    }),
+    declineCall: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:call-decline",
+      tag: WS_METHODS.vmAgentCallDecline,
+      scheduler: lifecycleScheduler,
+    }),
+    endCall: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:call-end",
+      tag: WS_METHODS.vmAgentCallEnd,
+      scheduler: lifecycleScheduler,
+    }),
     collaboration: (target: {
       readonly environmentId: Parameters<typeof collaboration>[0]["environmentId"];
       readonly input: Record<string, never>;

@@ -66,6 +66,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.vmAgentSubscribe
   | typeof WS_METHODS.vmAgentWorkspaceSubscribe
   | typeof WS_METHODS.vmAgentAttentionSubscribe
+  | typeof WS_METHODS.vmAgentCallsSubscribe
   | typeof WS_METHODS.vmAgentCollaborationSubscribe
   | typeof WS_METHODS.threadArtifactsSubscribe;
 
