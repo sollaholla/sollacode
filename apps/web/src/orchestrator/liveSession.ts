@@ -13,6 +13,7 @@ import type {
   VoiceSessionOptions,
   VoiceSessionState,
 } from "./realtimeSession";
+import { isAssistantGoodbye, isPersonGoodbye } from "./farewell";
 import {
   defaultMicrophoneKey,
   isMissingMicrophoneError,
@@ -77,6 +78,9 @@ export function createLiveVoiceSession(
   let lastAudible = 0;
   let mutedOutput = false;
   let endAfterAudio = false;
+  /** The person's last full utterance, to tell a goodbye from the assistant's own. */
+  let lastUserWords = "";
+  let endedByGoodbye = false;
   let muted = false;
   let meter: ReturnType<typeof setInterval> | null = null;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -127,7 +131,27 @@ export function createLiveVoiceSession(
     pending.timer = null;
     const text = pending.text.trim();
     pending.text = "";
-    if (text) callbacks.onTranscript?.({ role, text });
+    if (!text) return;
+    callbacks.onTranscript?.({ role, text });
+    if (role === "user") lastUserWords = text;
+    else endIfGoodbyeAgreed(text);
+  };
+  /**
+   * GPT-Live has no tool to hang up with, so a goodbye the person says and the
+   * assistant answers in kind ends the session once that goodbye is spoken.
+   * Words the person is still saying keep it open.
+   */
+  const endIfGoodbyeAgreed = (assistantWords: string) => {
+    if (!ready || closing || stopped || endedByGoodbye) return;
+    if (!isAssistantGoodbye(assistantWords)) return;
+    const stillSaying = transcripts.user.text.trim();
+    if (!isPersonGoodbye(stillSaying || lastUserWords)) return;
+    endedByGoodbye = true;
+    if (state === "speaking") endAfterAudio = true;
+    else {
+      callbacks.onEndedByVoice?.();
+      close();
+    }
   };
   const reportUsage = () => {
     if (sessionId) callbacks.onLiveUsage?.({ sessionId, seconds: usageSeconds, finalized });
@@ -818,6 +842,7 @@ export function createLiveVoiceSession(
         setState(speaking && !mutedOutput ? "speaking" : "listening");
         callbacks.onLevels?.({ mic: micLevel, assistant: mutedOutput ? 0 : assistantLevel });
         if (endAfterAudio && !speaking) {
+          if (endedByGoodbye) callbacks.onEndedByVoice?.();
           close();
           return;
         }

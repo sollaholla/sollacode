@@ -117,3 +117,44 @@ export function startRingtone(input: {
     },
   };
 }
+
+/** Three falling notes, the sound of a call ending. */
+const HANG_UP_NOTES_HZ = [784, 659.25, 523.25] as const;
+const HANG_UP_NOTE_SECONDS = 0.13;
+
+/**
+ * Plays the hang-up sound once a connected call ends, from either side.
+ * Best-effort like the ring: no audio is never a reason anything fails.
+ */
+export function playHangUpTone(volume: number): void {
+  if (typeof AudioContext === "undefined") return;
+  let context: AudioContext;
+  try {
+    context = new AudioContext();
+  } catch {
+    return;
+  }
+  try {
+    const start = context.currentTime + 0.02;
+    const peak = PEAK_GAIN * Math.min(Math.max(volume, 0), 1);
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sine";
+    gain.gain.setValueAtTime(0.0001, start);
+    HANG_UP_NOTES_HZ.forEach((frequency, index) => {
+      const at = start + index * HANG_UP_NOTE_SECONDS;
+      oscillator.frequency.setValueAtTime(frequency, at);
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.linearRampToValueAtTime(peak, at + 0.012);
+      gain.gain.linearRampToValueAtTime(0.0001, at + HANG_UP_NOTE_SECONDS * 0.9);
+    });
+    const end = start + HANG_UP_NOTES_HZ.length * HANG_UP_NOTE_SECONDS;
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(start);
+    oscillator.stop(end);
+    oscillator.addEventListener("ended", () => void context.close().catch(() => undefined));
+  } catch {
+    void context.close().catch(() => undefined);
+  }
+}

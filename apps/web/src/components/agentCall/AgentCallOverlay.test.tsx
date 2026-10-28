@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => {
     endCall: vi.fn(async (_request: unknown) => ({ _tag: "Success" as const, value: undefined })),
     createLiveVoiceSession: vi.fn((_options: unknown, _callbacks: unknown) => session),
     startRingtone: vi.fn((_input: unknown) => ({ stop: ringtoneStop })),
+    playHangUpTone: vi.fn((_volume: number) => undefined),
     navigate: vi.fn(),
     closeCallNotifications: vi.fn(),
     params: { environmentId: "host-1", callId: "call-1" },
@@ -98,7 +99,10 @@ vi.mock("~/orchestrator/liveSession", () => ({
   createLiveVoiceSession: mocks.createLiveVoiceSession,
 }));
 
-vi.mock("~/agentCall/ringtone", () => ({ startRingtone: mocks.startRingtone }));
+vi.mock("~/agentCall/ringtone", () => ({
+  startRingtone: mocks.startRingtone,
+  playHangUpTone: mocks.playHangUpTone,
+}));
 
 vi.mock("~/hooks/useSettings", () => ({
   getClientSettings: () => ({ soundCues: true, soundCueVolume: 80 }),
@@ -320,6 +324,30 @@ describe("incoming agent call", () => {
       button("End").click();
     });
     expect(endsSent()).toEqual([{ environmentId: "host-1", input: { callId: "call-1" } }]);
+  });
+});
+
+describe("hang-up sound", () => {
+  it("plays when a connected call ends, from either side, and not for a ring that never connected", async () => {
+    render();
+    await answer();
+    expect(mocks.playHangUpTone).not.toHaveBeenCalled();
+    await claimed();
+    await act(async () => {
+      mocks.session.state = "listening";
+      sessionCallbacks().onStateChange?.("listening");
+    });
+    await act(async () => {
+      button("End").click();
+    });
+    expect(mocks.playHangUpTone).toHaveBeenCalledOnce();
+  });
+
+  it("stays quiet when an answer fails before it connects", async () => {
+    render();
+    await answer();
+    await failSession("Microphone access was denied.");
+    expect(mocks.playHangUpTone).not.toHaveBeenCalled();
   });
 });
 

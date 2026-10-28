@@ -402,6 +402,60 @@ describe("GPT-Live routes and mute", () => {
     );
   });
 
+  it("hangs up after the person and the agent say goodbye", async () => {
+    const onEndedByVoice = vi.fn();
+    const f = fixture({ onEndedByVoice });
+    await f.ready();
+    f.event({
+      type: "session.input_transcript.delta",
+      delta: "Thanks, bye!",
+      start_ms: 0,
+      end_ms: 400,
+    });
+    await vi.advanceTimersByTimeAsync(800);
+    f.event({
+      type: "session.output_transcript.delta",
+      delta: "Bye, talk soon!",
+      start_ms: 500,
+      end_ms: 900,
+    });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(onEndedByVoice).toHaveBeenCalledOnce();
+    expect(f.channel.send).toHaveBeenCalledWith(JSON.stringify({ type: "session.close" }));
+  });
+
+  it("stays on the call when only one side says goodbye", async () => {
+    const onEndedByVoice = vi.fn();
+    const f = fixture({ onEndedByVoice });
+    await f.ready();
+    // The agent signs off on its own: the person may still have more to say.
+    f.event({
+      type: "session.output_transcript.delta",
+      delta: "Take care!",
+      start_ms: 0,
+      end_ms: 400,
+    });
+    await vi.advanceTimersByTimeAsync(800);
+    // The person says bye, then keeps going before the agent's goodbye lands.
+    f.event({ type: "session.input_transcript.delta", delta: "Bye", start_ms: 500, end_ms: 700 });
+    await vi.advanceTimersByTimeAsync(800);
+    f.event({
+      type: "session.input_transcript.delta",
+      delta: "oh wait, check staging",
+      start_ms: 800,
+      end_ms: 1200,
+    });
+    f.event({
+      type: "session.output_transcript.delta",
+      delta: "Bye!",
+      start_ms: 1300,
+      end_ms: 1500,
+    });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(onEndedByVoice).not.toHaveBeenCalled();
+    expect(f.session.state).not.toBe("idle");
+  });
+
   it("applies the answer with the final line break its trimmed result dropped", async () => {
     const f = fixture();
     await f.ready();

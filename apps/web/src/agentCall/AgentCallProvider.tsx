@@ -27,7 +27,10 @@ import {
 import { closeCallNotifications } from "../browser/webPush";
 import { useOrchestratorSessionContext } from "../orchestrator/OrchestratorSessionProvider";
 import { createLiveVoiceSession } from "../orchestrator/liveSession";
+import { getClientSettings } from "../hooks/useSettings";
 import { readPreferredMicrophone } from "../orchestrator/microphones";
+import { resolveVoiceCuePolicy } from "../orchestrator/voiceCues";
+import { playHangUpTone } from "./ringtone";
 import { useLiveUsageStore } from "../orchestrator/liveUsageStore";
 import type { VoiceSession, VoiceSessionState } from "../orchestrator/realtimeSession";
 import { createScreenWakeLock, findWakeLockRequester } from "../orchestrator/screenWakeLock";
@@ -304,6 +307,11 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       setMuted(false);
       mutedRef.current = false;
       commitActive({ ...current, phase: outcome.phase, error: outcome.error });
+      // A connected call ending, from either side, sounds like a phone hanging up.
+      if (current.phase === "live") {
+        const cues = resolveVoiceCuePolicy(getClientSettings());
+        if (cues.enabled) playHangUpTone(cues.volume);
+      }
       if (current.callId !== null) {
         postAgentCallNativeMessage(
           outcome.phase === "failed" ? "failed" : "released",

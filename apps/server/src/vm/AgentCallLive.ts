@@ -87,6 +87,7 @@ export function agentCallInstructions(input: {
     "Talk like a real phone call: warm, natural, brief turns, no lists or markdown, no reading out code or URLs verbatim.",
     "You can't do work or look things up yourself — your real work happens in your chat. Delegate every request that needs action, information, files, tools or a decision about work; the delegation carries what the person said to your chat. Keep talking naturally while it runs, but never invent progress, results or approvals. When results arrive, say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person and delegate their answer.",
     "Read back consequential actions before delegating them; hearing a transcript is not approval for an external action (approvals still happen in Solla).",
+    "When the person says goodbye or asks you to hang up, answer with a short goodbye that says bye; the call hangs up as soon as you finish it. Don't add a question after it.",
     `Speak ${languageName(input.language)}.`,
   ];
   if (input.direction === "incoming")
