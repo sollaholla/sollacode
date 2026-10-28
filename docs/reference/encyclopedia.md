@@ -248,6 +248,61 @@ completed result without turning the worker into another persistent root.
 A short-lived delegation target created for one bounded task. It is distinct from a named custom
 agent, which retains a dedicated chat after the delegation ends.
 
+#### Agent call
+
+A [GPT-Live](#gpt-live) voice call between the person and one custom agent. The `AgentCall` record
+([agentCall.ts](../../packages/contracts/src/agentCall.ts)) has a `direction`: `outgoing` when the
+person calls, `incoming` when the agent rings. Its `reason` is `user` for outgoing calls, and
+`blocker`, `question`, `approval` or `request` (agent_workspace `call_user`) for incoming ones. Its
+`status` goes `ringing` → `active` → `ended`, or ends as `declined`, `missed` (an incoming ring
+nobody answered within `AGENT_CALL_RING_SECONDS`), or `failed` (voice never started, including an
+outgoing call that never connected).
+
+Calls are server memory, not persisted ([AgentCalls.ts](../../apps/server/src/vm/AgentCalls.ts)).
+Every device follows them with `vmAgent.calls.subscribe` (open calls plus recently ended ones) and
+changes them with `vmAgent.call.place`, `vmAgent.call.decline` and `vmAgent.call.end`; clients use
+`vmAgentEnvironment.calls`, `placeCall`, `declineCall` and `endCall` from
+[vmAgents.ts](../../packages/client-runtime/src/state/vmAgents.ts). Rings are gated by the
+`orchestrator.agentCalls` setting and a saved OpenAI key, with one open call per agent, a cooldown
+between automatic rings and an hourly cap on `call_user`.
+
+`vmAgent.call.end` takes `AgentCallEndInput`. A plain end settles a `ringing` or `active` call as
+`ended`. With `ifRinging: true` the host ends it only while it still rings, so a device that never
+connected can cancel its ring without hanging up a call another device answered. The web client
+sends a plain end only for a call whose claim the host accepted, or for an explicit **End call** on
+a call held elsewhere; the phone's call screen decides from its page's messages (below).
+Deleting an agent ends its open calls.
+
+Answering is a compare-and-set claim: `POST /api/agents/call/session` (`AGENT_CALL_SESSION_PATH`)
+moves the call from `ringing` to `active` and creates the GPT-Live session with the agent's persona;
+a second device gets HTTP 409. `/api/agents/call/delegation` forwards what was said since the last
+delegation into the agent's own chat as a user message (or as the answer to the chat's pending
+question) and streams the chat's progress back as `OrchestratorLiveWorkEvent`s.
+`/api/agents/call/session/release` frees the session and ends the call; the web client also sends it
+when the page is hidden for good (`pagehide`).
+
+An `active` call holds a lease. The device on the call renews it with
+`/api/agents/call/session/heartbeat` (`AGENT_CALL_SESSION_HEARTBEAT_PATH`) every
+`AGENT_CALL_HEARTBEAT_SECONDS`, and delegations renew it too. A call whose lease lapses
+(`AGENT_CALL_LEASE_SECONDS`) ends, so a crashed tab or a killed app leaves nothing open; a 2-hour
+cap remains as a backstop. A heartbeat or delegation answered with 409 tells the client its call is
+gone.
+
+The web page `/call/$environmentId/$callId` (`agentCallRoutePath`) is where call push notifications
+and the phone app land; the phone hosts it with `?embedded=1` in a WebView
+([AgentCallRouteScreen.tsx](../../apps/mobile/src/features/agentCalls/AgentCallRouteScreen.tsx)).
+Inside the phone app the page posts `AgentCallNativeMessage`s (`held`, `connected`, `released`,
+`failed` with a detail) to `window.ReactNativeWebView`; the native screen trusts only these to know
+which calls the phone holds. `held` is posted as the page answers or joins, before its claim
+reaches the host; `connected` once the host accepted that claim. When the screen closes, it sends a
+plain end only for a `connected` call. A held call that hasn't connected, and a call the phone
+placed that the page doesn't hold, are only cancelled with `ifRinging` while they can still be
+ringing; a held incoming ring is left ringing on the other devices. The app's WebViews always
+install a message handler, so every page in them sees `window.ReactNativeWebView` and leaves
+incoming calls to the native observer instead of ringing itself.
+See [custom-agents.md](../user/custom-agents.md#calling-an-agent) and
+[web-push.md](../architecture/web-push.md).
+
 ### Thread artifacts
 
 #### Thread artifact
@@ -278,6 +333,17 @@ and [terminal-mode.md](../user/terminal-mode.md).
 #### OpenAI Realtime
 
 The original voice backend. The server mints an ephemeral client secret; the browser opens a WebRTC session to `api.openai.com`. See [OrchestratorCredentials.ts][25] and [realtimeSession.ts][26].
+
+#### GPT-Live
+
+OpenAI's continuous voice model (`gpt-live-1`, `OPENAI_LIVE_MODEL`) and the default OpenAI voice
+model. Unlike Realtime there is no ephemeral client key: the server creates each session at
+`POST https://api.openai.com/v1/live/sessions` with the saved OpenAI key and returns the WebRTC
+answer to the browser. The model hands work back to the client through delegations, which the
+server turns into agent work. Used by the orchestrator
+([OrchestratorLive.ts](../../apps/server/src/orchestrator/OrchestratorLive.ts)) and by
+[agent calls](#agent-call); the browser side is
+[liveSession.ts](../../apps/web/src/orchestrator/liveSession.ts).
 
 #### Grok Voice (xAI)
 

@@ -106,7 +106,8 @@ Terminal, and Side Chat sidebar stays one tap away. Tap the avatar to open the c
 choice is remembered for every agent on that device. Activity, Scheduled work, Rules, and Dashboard
 always show the card, since it holds the way back to Chat. Wider windows keep the full header.
 
-On mobile, tapping an agent opens Chat directly. The trailing details control opens agent identity
+On mobile, tapping an agent opens Chat directly. The phone button beside it
+[calls the agent](#calling-an-agent). The trailing details control opens agent identity
 and an on-demand **Delegated activity** section, so collaboration history is not subscribed or
 rendered until it is requested.
 
@@ -273,11 +274,136 @@ Claims and run identifiers survive a server restart. A missed repeating interval
 
 Agent policy independently controls completions, failures, and direct agent messages. Direct agent messages are limited to ten per hour. Task notification policy can be **always**, **failure**, or **never**.
 
-A **Waiting on you** request is already durable user attention, so it never also creates an inbox or desktop notification. Agent instructions reserve `notify_user` for independent informational updates that require no user action and explicitly forbid pairing it with `report_blocker`. Environments upgrading from an older build remove the obsolete `blocker:*` notification copies during migration.
+A **Waiting on you** request is already durable user attention, so it never also creates an inbox or desktop notification. It can ring you as a call, though; see [When an agent calls you](#when-an-agent-calls-you). Agent instructions reserve `notify_user` for independent informational updates that require no user action and explicitly forbid pairing it with `report_blocker`. Environments upgrading from an older build remove the obsolete `blocker:*` notification copies during migration.
 
 Native desktop delivery is a separate, per-device opt-in under **Settings → Agents → Desktop agent alerts**. Enabling it is the only path that requests operating-system or browser permission. An unfocused agent can send a native alert only when both that setting and the host permission are already granted; denied, undecided, and unsupported clients make no delivery attempt. The durable in-chat alert remains available either way.
 
 The Agents list shows a numbered notification bubble for each agent's unread, unarchived alerts. A raised-hand icon means that agent has at least one unresolved **Waiting on you** request. A spinning dashed circle means the agent's chat is mid-turn right now. These indicators are scoped to their owning environment and update without downloading every agent's message body.
+
+## Calling an agent
+
+You can talk with an agent by voice, like a phone call. The call screen shows the agent's
+character, its name, a timer and its buttons: **Mute**, **Chat** and **End** on web and desktop,
+**Mute** and **End** in the phone app. A one-line caption shows the last thing said.
+
+Start a call from:
+
+- **Call** (the phone icon) in the agent's header on web and desktop. It stays in the top bar when
+  the header is folded on a phone-width window.
+- **Call <agent>** in the command palette while an agent is open. **End call** appears there
+  while a call is live.
+- The phone app: **Call** on the agent's details screen, or the phone button on its row in the
+  Agents list.
+
+If the agent is already on a call with another of your devices, or is ringing you, **Call** opens
+that call instead of placing a new one. For a call on another device, the page says which device
+has it and offers **End call**, which hangs it up from here. This is also the way to end a call that
+a closed tab or a lost phone left open.
+
+Calls use OpenAI's GPT-Live voice model (`gpt-live-1`) with the OpenAI API key saved in
+**Settings → Orchestrator**. Without a key, **Call** is disabled on web, desktop, and the phone
+app's agent screen, with a note saying a key is needed; the phone button in the phone app's Agents
+list is hidden. OpenAI bills call time to that key. A ring that nobody answers costs nothing,
+because the voice session only starts when the call connects.
+
+During a call:
+
+- What you say goes into the agent's own chat as an ordinary message, starting with "From our
+  voice call". The agent then works with the same tools, rules and approval policy as for a typed
+  message.
+- If the agent is busy, your message joins the turn it is already working on. With a provider that
+  can't take new input mid-turn, Solla Code stops the current turn and starts a new one with your
+  message.
+- The agent keeps talking with you while its chat works. When the chat replies, the agent tells
+  you the result in a few sentences. A long reply is shortened, and the agent tells you the full
+  reply is in its chat.
+- If the chat asks a question, the agent asks you, and your spoken answer is sent as the answer to
+  that question. A question that can't take a spoken answer has to be answered in Solla Code; the
+  agent tells you so, and what you said still goes to the chat as a message.
+- If the chat needs an approval, the agent tells you. Approvals still happen in Solla Code. Saying
+  yes on the call does not approve anything.
+- **Chat** opens the agent's chat and shrinks the call to a small pill with the timer. Tap the pill
+  to go back to the call.
+- **End** hangs up. Closing or reloading the page also hangs up.
+
+The device you call from connects. While the call still rings, you can take it on another device
+instead: on web or desktop, **Call** for that agent opens the ringing call, and **Join** connects
+it there. The first device to connect takes the call, and the other one shows "Answered on
+<device>". Hanging up on a device that hasn't connected only cancels the ring; it never ends a call
+another device answered. To end that call from another device, use **End call** on its page. A
+device runs one call at a time, and starting a call stops a running orchestrator voice session.
+Deleting an agent ends its calls.
+
+A call only lasts while the device holding it is there. If that device disappears without hanging
+up (a crashed browser, a phone that lost its connection, an app that was killed), the call ends on
+its own about a minute later. If the call drops on your side, the call screen says "The call
+dropped." When a call doesn't end normally, the call screen says how it ended: declined, missed, or
+failed, with the reason when Solla Code knows it.
+
+In the phone app, the call screen is the web call page shown inside the app, the same way the
+orchestrator is. The microphone and audio are on the phone. Closing the call screen hangs up a call
+that this phone is on, and cancels a call this phone placed that is still ringing. It never hangs
+up a call answered on another device, even one that another device answered while this phone was
+still connecting: if another device takes a call this phone placed, the screen says so, and
+closing it leaves that call alone. When a call this phone was on ends, including one you hang up
+before it connects, the screen shows that it ended and then closes. If the call fails, the screen
+stays open with the reason until you close it.
+
+## When an agent calls you
+
+An agent can ring you when:
+
+- it reports a new **Waiting on you** request (a blocker),
+- its chat stops to ask you a question or to wait for an approval,
+- it asks to talk with you. Agents are told to do this only when a live conversation is really
+  needed. Reporting a blocker already rings, so an agent doesn't do both.
+
+The incoming call shows the agent's character, "<agent> is calling", the reason, and **Answer**
+and **Decline**. A ringtone plays (it follows your sound settings), and the device vibrates where
+the browser allows it. Every device connected to that computer rings, as described in
+[Where a call rings](#where-a-call-rings). The first device to answer takes the call and the others
+stop ringing. A device that answers too late shows "Answered on <device>". When you answer, the
+agent speaks first and says why it called.
+
+If nobody answers within 45 seconds, it becomes a missed call. The agent posts a "Missed call from
+<agent>" alert with the reason (its notification settings apply), and the blocker, question or
+approval card is still in its chat. If the request is dealt with before you answer, for example you
+answer the question in the chat, the ringing stops. Declined and missed calls add nothing else to
+the agent's chat.
+
+Limits that keep calls from becoming noise:
+
+- One call per agent at a time.
+- After ringing for a blocker, question or approval, the same agent waits about 10 minutes before
+  ringing again for another one.
+- An agent can ask to talk at most 3 times an hour. After that it is told to report a blocker
+  instead.
+- Requests from before the server started never ring.
+
+**Settings → Orchestrator → Agents can call me** turns incoming calls on or off for the whole
+computer. It is on by default, but nothing rings until an OpenAI key is saved. With it off,
+blockers, questions and approvals still show up as cards and push notifications, as before.
+
+### Where a call rings
+
+- **Web and desktop app, open:** the ringing screen appears in the app, with the ringtone. If the
+  window or tab is in the background, a system notification also appears where notifications are
+  allowed and this browser has no push subscription.
+- **Home Screen web app, or a browser with push notifications on:** a push notification. It reads
+  "<agent> is calling" with the reason when **Show notification details** is on, and "Incoming
+  call" without them. Tap it to open the call page, then tap **Answer**. Browsers need that tap
+  before they can use the microphone. On iPhone and iPad the notification plays the normal
+  notification sound once. A web app can't play a ringtone or open itself. When the call is
+  answered elsewhere or stops ringing, the notification is quietly replaced and then usually
+  cleared; a missed call leaves a missed-call notification. See
+  [Push notifications](./push-notifications.md#agent-calls).
+- **Phone app:** rings only while the app is open and in front. It shows the full-screen call
+  screen and vibrates in a ring pattern until the call is answered or its 45 seconds are up. It
+  can't ring while the app is in the background or the phone is locked, because that needs native
+  call support the app doesn't have. To get calls on a locked phone, add Solla Code to the Home
+  Screen from Safari and turn on push notifications there. While the orchestrator or another call
+  is open in the app, an incoming call waits until it closes, and rings then if it is still
+  ringing. The web pages shown inside the app never ring on their own; the app does.
 
 ## Artifact safety
 

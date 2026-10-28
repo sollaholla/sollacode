@@ -775,11 +775,22 @@ headphones - while the work happens on the Mac it is connected to.
 
 Open it from **Settings → Orchestrator → Open Orchestrator**.
 
+Calls with your agents use the same arrangement: the web call page shown inside the app. See
+[Calling an agent](./custom-agents.md#calling-an-agent). An agent's call never rings inside the
+orchestrator page. While the orchestrator is open on the phone, the call waits until you close it,
+and the app rings then if the call is still ringing.
+
 ## GPT-Live with Personal Assistant
 
-Choose **OpenAI > gpt-live-1** in **Settings > Orchestrator**, with an OpenAI API key that has access
-to GPT-Live. Existing Realtime configurations remain selectable. GPT-Live is a separate, continuous
-voice conversation: it listens while speaking and sends work through Solla's agent delegation system.
+GPT-Live (**OpenAI > gpt-live-1**) is the default OpenAI voice model. It needs an OpenAI API key
+with access to GPT-Live, saved in **Settings > Orchestrator**. If you were on the old default,
+`gpt-realtime`, the orchestrator now uses GPT-Live; choose a Realtime model under **Model** in
+**Settings > Orchestrator** to switch back. Any other model you picked stays as it was. GPT-Live is a
+separate, continuous voice conversation: it listens while speaking and sends work through Solla's
+agent delegation system.
+
+The same GPT-Live model and key are used for voice calls with your agents, in both directions. See
+[Calling an agent](./custom-agents.md#calling-an-agent).
 
 **GPT-Live delegation > Assistant agent** defaults to **Personal Assistant** in the primary environment.
 Its delegated worker inherits that agent's configured chat model, workspace, scope and rules. Changing
