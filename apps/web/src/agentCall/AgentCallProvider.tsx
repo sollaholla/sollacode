@@ -36,7 +36,8 @@ import type { VoiceSession, VoiceSessionState } from "../orchestrator/realtimeSe
 import { createScreenWakeLock, findWakeLockRequester } from "../orchestrator/screenWakeLock";
 import { fetchRecentThreadHistory } from "../orchestrator/useOrchestratorSession";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
-import { readPreparedConnection } from "../state/session";
+import type { PreparedConnection } from "@t3tools/client-runtime/connection/model";
+import { awaitPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { vmAgentEnvironment } from "../state/vmAgents";
 import {
@@ -184,6 +185,8 @@ const MAX_TRANSCRIPT_LINES = 6;
 const ENDED_LINGER_MS = 2_000;
 /** Opening history is best-effort and must never hold the call up. */
 const HISTORY_TIMEOUT_MS = 1_500;
+/** How long answering waits for the host's connection, e.g. a phone app just woken by the ring. */
+const HOST_CONNECTION_TIMEOUT_MS = 15_000;
 
 const commandFailureMessage = (cause: Cause.Cause<unknown>, fallback: string) => {
   const squashed = Cause.squash(cause);
@@ -334,18 +337,13 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
    * session is the current one, so a session that was hung up cannot touch
    * the call afterwards.
    */
-  const openSession = useCallback(
-    (call: HeldCall, startBody: () => Promise<Readonly<Record<string, unknown>>>) => {
+  const startSession = useCallback(
+    (
+      call: HeldCall,
+      prepared: PreparedConnection,
+      startBody: () => Promise<Readonly<Record<string, unknown>>>,
+    ) => {
       const { generation } = call;
-      const prepared = readPreparedConnection(call.environmentId);
-      if (prepared === null) {
-        finish(
-          generation,
-          { phase: "failed", error: "This host is not connected." },
-          failureRelease(false, call.placedHere),
-        );
-        return;
-      }
       let announced = false;
       const session: VoiceSession = createLiveVoiceSession(
         {
@@ -459,10 +457,35 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     [commitActive, finish, updateActive],
   );
 
+  /** Starts the call's voice once its host's connection is ready. */
+  const openSession = useCallback(
+    (call: HeldCall, startBody: () => Promise<Readonly<Record<string, unknown>>>) => {
+      const { generation } = call;
+      void awaitPreparedConnection(call.environmentId, HOST_CONNECTION_TIMEOUT_MS).then(
+        (prepared) => {
+          const current = activeRef.current;
+          // Hung up, or replaced by another call, while the host connected.
+          if (current?.generation !== generation || !isAgentCallPhaseOpen(current.phase)) return;
+          if (prepared === null) {
+            finish(
+              generation,
+              { phase: "failed", error: "This host is not connected." },
+              failureRelease(false, call.placedHere),
+            );
+            return;
+          }
+          startSession(call, prepared, startBody);
+        },
+      );
+    },
+    [finish, startSession],
+  );
+
   const readHistory = useCallback(
     async (environmentId: EnvironmentId, threadId: ThreadId | null) => {
-      const prepared = readPreparedConnection(environmentId);
-      if (threadId === null || prepared === null) return [];
+      if (threadId === null) return [];
+      const prepared = await awaitPreparedConnection(environmentId, HISTORY_TIMEOUT_MS);
+      if (prepared === null) return [];
       return fetchRecentThreadHistory(
         {
           httpBaseUrl: prepared.httpBaseUrl,

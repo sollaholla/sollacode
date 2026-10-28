@@ -52,6 +52,8 @@ const mocks = vi.hoisted(() => {
     params: { environmentId: "host-1", callId: "call-1" },
     search: {} as Record<string, unknown>,
     connected: true,
+    /** Settles when the host's connection is ready (or gives up). */
+    connecting: Promise.resolve() as Promise<void>,
   };
 });
 
@@ -83,8 +85,12 @@ vi.mock("~/state/environments", () => ({
 }));
 
 vi.mock("~/state/session", () => ({
-  readPreparedConnection: () =>
-    mocks.connected ? { httpBaseUrl: "https://host.example", httpAuthorization: null } : null,
+  awaitPreparedConnection: async () => {
+    await mocks.connecting;
+    return mocks.connected
+      ? { httpBaseUrl: "https://host.example", httpAuthorization: null }
+      : null;
+  },
 }));
 
 vi.mock("~/orchestrator/OrchestratorSessionProvider", () => ({
@@ -244,6 +250,7 @@ afterEach(() => {
   mocks.session.state = "idle";
   mocks.search = {};
   mocks.connected = true;
+  mocks.connecting = Promise.resolve();
   delete (window as { ReactNativeWebView?: unknown }).ReactNativeWebView;
 });
 
@@ -414,6 +421,21 @@ describe("who ends a call on the host", () => {
     expect(mocks.session.stop).toHaveBeenCalled();
     expect(mocks.endCall).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Answered on Mac");
+  });
+
+  it("waits for a host that is still connecting before opening voice", async () => {
+    let ready = () => {};
+    mocks.connecting = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    render();
+    await answer();
+    expect(mocks.createLiveVoiceSession).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("This host is not connected.");
+    await act(async () => {
+      ready();
+    });
+    expect(mocks.createLiveVoiceSession).toHaveBeenCalledOnce();
   });
 
   it("leaves an answer alone when this host is not connected", async () => {
