@@ -10,6 +10,7 @@ export interface WorkspaceEnvironment {
   readonly environmentLabel: string;
   readonly displayUrl: string;
   readonly isRelayManaged: boolean;
+  readonly sharedThrough: string | null;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
@@ -38,6 +39,7 @@ export function projectWorkspaceEnvironment(
     environmentLabel: environment.label,
     displayUrl: environment.displayUrl ?? "",
     isRelayManaged: environment.relayManaged,
+    sharedThrough: environment.sharedThrough,
     connectionState: environment.connection.phase,
     connectionError: environment.connection.error,
     connectionErrorTraceId: environment.connection.traceId,

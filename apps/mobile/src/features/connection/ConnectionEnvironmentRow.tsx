@@ -131,7 +131,11 @@ export function ConnectionEnvironmentRow(props: {
           exiting={FadeOut.duration(150)}
           className="gap-3 px-4 pb-4"
         >
-          {props.environment.isRelayManaged ? (
+          {props.environment.sharedThrough !== null ? (
+            <Text className="text-sm text-foreground-muted">
+              {`${props.environment.sharedThrough} shares this computer with you. Add or remove it in Solla Code on ${props.environment.sharedThrough}.`}
+            </Text>
+          ) : props.environment.isRelayManaged ? (
             <Text className="text-sm text-foreground-muted">
               This legacy cloud connection is no longer supported. Remove it and add the environment
               directly to keep using it.
@@ -170,7 +174,7 @@ export function ConnectionEnvironmentRow(props: {
           )}
 
           <View className="flex-row justify-end gap-2">
-            {props.environment.isRelayManaged ? null : (
+            {props.environment.isRelayManaged || props.environment.sharedThrough !== null ? null : (
               <Pressable
                 className="min-h-[42px] flex-1 flex-row items-center justify-center gap-1.5 rounded-[14px] bg-primary px-3.5 py-2.5 active:opacity-70"
                 onPress={handleSave}
@@ -182,7 +186,7 @@ export function ConnectionEnvironmentRow(props: {
               </Pressable>
             )}
 
-            {props.environment.isRelayManaged ? null : (
+            {props.environment.isRelayManaged || props.environment.sharedThrough !== null ? null : (
               <Pressable
                 className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-input-border bg-input active:opacity-70"
                 onPress={() => props.onReconnect(props.environment.environmentId)}
@@ -196,12 +200,14 @@ export function ConnectionEnvironmentRow(props: {
               </Pressable>
             )}
 
-            <Pressable
-              className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-danger-border bg-danger active:opacity-70"
-              onPress={() => props.onRemove(props.environment.environmentId)}
-            >
-              <SymbolView name="trash" size={14} tintColor={dangerFg} type="monochrome" />
-            </Pressable>
+            {props.environment.sharedThrough !== null ? null : (
+              <Pressable
+                className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-danger-border bg-danger active:opacity-70"
+                onPress={() => props.onRemove(props.environment.environmentId)}
+              >
+                <SymbolView name="trash" size={14} tintColor={dangerFg} type="monochrome" />
+              </Pressable>
+            )}
           </View>
         </Animated.View>
       ) : null}

@@ -1,6 +1,6 @@
 import * as Schedule from "effect/Schedule";
 import { deferredThreadCommandChanges } from "../operations/deferredThreadCommandState.ts";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, type RelayedEnvironment } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -26,11 +26,12 @@ import {
 import * as ConnectionCredentialStore from "./credentialStore.ts";
 import * as ConnectionProfileStore from "./profileStore.ts";
 import * as Connectivity from "./connectivity.ts";
-import type {
-  ConnectionAttemptError,
-  ConnectionTarget,
-  NetworkStatus,
-  SupervisorConnectionState,
+import {
+  RelayConnectionTarget,
+  type ConnectionAttemptError,
+  type ConnectionTarget,
+  type NetworkStatus,
+  type SupervisorConnectionState,
 } from "./model.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
@@ -62,6 +63,15 @@ export class PlatformEnvironmentRemovalError extends Schema.TaggedErrorClass<Pla
   }
 }
 
+/** A registered environment whose host shares other machines through its relay. */
+export interface RelayVia {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly httpBaseUrl: string;
+  /** Its bearer connection, or null for the primary environment. */
+  readonly connectionId: string | null;
+}
+
 export class EnvironmentRegistry extends Context.Service<
   EnvironmentRegistry,
   {
@@ -76,6 +86,15 @@ export class EnvironmentRegistry extends Context.Service<
     readonly registerPlatform: (registration: PrimaryConnectionRegistration) => Effect.Effect<void>;
     readonly reconcilePlatform: (
       registrations: ReadonlyArray<PlatformConnectionRegistration>,
+    ) => Effect.Effect<void>;
+    /**
+     * Matches the environments reached through `via`'s relay to what it
+     * shares now. A machine this device already reaches directly, or through
+     * another host first, is left alone.
+     */
+    readonly reconcileRelays: (
+      via: RelayVia,
+      relays: ReadonlyArray<RelayedEnvironment>,
     ) => Effect.Effect<void>;
     readonly remove: (
       environmentId: EnvironmentId,
@@ -158,6 +177,8 @@ export const make = Effect.gen(function* () {
     ReadonlyMap<EnvironmentId, EnvironmentServiceScope>
   >(new Map());
   const platformEnvironmentIds = yield* Ref.make<ReadonlySet<EnvironmentId>>(new Set());
+  /** Relayed environment → the environment whose relay reaches it. */
+  const relayVias = yield* Ref.make<ReadonlyMap<EnvironmentId, EnvironmentId>>(new Map());
   const persistedTargetsByEnvironment = yield* Ref.make<
     ReadonlyMap<EnvironmentId, ConnectionTarget>
   >(new Map(persistedTargets.map((target) => [target.environmentId, target])));
@@ -425,6 +446,12 @@ export const make = Effect.gen(function* () {
           next.set(environmentId, registration.target);
           return next;
         });
+        // A direct connection replaces the relayed one for good.
+        yield* Ref.update(relayVias, (current) => {
+          const next = new Map(current);
+          next.delete(environmentId);
+          return next;
+        });
         yield* installEntryLocked(entry);
       }),
     );
@@ -492,6 +519,40 @@ export const make = Effect.gen(function* () {
   // (e.g. the user turned the parallel WSL backend off). Platform environments
   // bypass the user-facing `remove` guard since they are reconciled from the
   // bootstrap rather than removed by hand.
+  /** Drops a managed environment's runtime, entry, and the data cached for it. */
+  const forgetEnvironmentLocked = Effect.fn("EnvironmentRegistry.forgetEnvironmentLocked")(
+    function* (environmentId: EnvironmentId) {
+      yield* closeServiceScope(environmentId);
+      yield* SubscriptionRef.update(entries, (current) => {
+        const next = new Map(current);
+        next.delete(environmentId);
+        return next;
+      });
+      yield* Effect.all(
+        [
+          cache.clear(environmentId).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("Could not clear cached environment data after removal.", {
+                environmentId,
+                error,
+              }),
+            ),
+          ),
+          ownedDataCleanup.clear(environmentId),
+          deferredThreadCommands.clear(environmentId).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("Could not clear deferred thread commands after removal.", {
+                environmentId,
+                error,
+              }),
+            ),
+          ),
+        ],
+        { concurrency: "unbounded", discard: true },
+      );
+    },
+  );
+
   const removePlatformEnvironment = Effect.fn("EnvironmentRegistry.removePlatformEnvironment")(
     function* (environmentId: EnvironmentId) {
       yield* withLeaseLock(
@@ -503,12 +564,7 @@ export const make = Effect.gen(function* () {
             next.delete(environmentId);
             return next;
           });
-          yield* closeServiceScope(environmentId);
-          yield* SubscriptionRef.update(entries, (current) => {
-            const next = new Map(current);
-            next.delete(environmentId);
-            return next;
-          });
+          yield* forgetEnvironmentLocked(environmentId);
           if (entry !== undefined && entry.target._tag === "BearerConnectionTarget") {
             yield* credentials.remove(entry.target.connectionId).pipe(
               Effect.catch((error) =>
@@ -519,28 +575,6 @@ export const make = Effect.gen(function* () {
               ),
             );
           }
-          yield* Effect.all(
-            [
-              cache.clear(environmentId).pipe(
-                Effect.catch((error) =>
-                  Effect.logWarning("Could not clear cached environment data after removal.", {
-                    environmentId,
-                    error,
-                  }),
-                ),
-              ),
-              ownedDataCleanup.clear(environmentId),
-              deferredThreadCommands.clear(environmentId).pipe(
-                Effect.catch((error) =>
-                  Effect.logWarning("Could not clear deferred thread commands after removal.", {
-                    environmentId,
-                    error,
-                  }),
-                ),
-              ),
-            ],
-            { concurrency: "unbounded", discard: true },
-          );
         }),
       );
     },
@@ -571,11 +605,76 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(platformRegistrations, installPlatformRegistration, { discard: true });
   });
 
+  const reconcileRelays = Effect.fn("EnvironmentRegistry.reconcileRelays")(function* (
+    via: RelayVia,
+    relays: ReadonlyArray<RelayedEnvironment>,
+  ) {
+    const desired = relays.filter((relay) => relay.environmentId !== via.environmentId);
+    const desiredIds = new Set(desired.map((relay) => relay.environmentId));
+
+    // Stop relaying what `via` no longer shares, unless something else took
+    // the environment over since.
+    for (const [environmentId, viaId] of yield* Ref.get(relayVias)) {
+      if (viaId !== via.environmentId || desiredIds.has(environmentId)) continue;
+      yield* withLeaseLock(
+        environmentId,
+        Effect.gen(function* () {
+          if ((yield* Ref.get(relayVias)).get(environmentId) !== via.environmentId) return;
+          yield* Ref.update(relayVias, (current) => {
+            const next = new Map(current);
+            next.delete(environmentId);
+            return next;
+          });
+          const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
+          if (entry?.target._tag === "RelayConnectionTarget") {
+            yield* forgetEnvironmentLocked(environmentId);
+          }
+        }),
+      );
+    }
+
+    yield* Effect.forEach(
+      desired,
+      (relay) =>
+        withLeaseLock(
+          relay.environmentId,
+          Effect.gen(function* () {
+            const owner = (yield* Ref.get(relayVias)).get(relay.environmentId);
+            if (owner !== undefined && owner !== via.environmentId) return;
+            const existing = (yield* SubscriptionRef.get(entries)).get(relay.environmentId);
+            if (existing !== undefined && existing.target._tag !== "RelayConnectionTarget") return;
+            yield* Ref.update(relayVias, (current) =>
+              new Map(current).set(relay.environmentId, via.environmentId),
+            );
+            yield* installEntryLocked(
+              {
+                target: new RelayConnectionTarget({
+                  environmentId: relay.environmentId,
+                  label: relay.label,
+                  viaEnvironmentId: via.environmentId,
+                  viaLabel: via.label,
+                  viaHttpBaseUrl: via.httpBaseUrl,
+                  viaConnectionId: via.connectionId,
+                }),
+                profile: Option.none(),
+              },
+              { retainEquivalentRuntime: true },
+            );
+          }),
+        ),
+      { discard: true },
+    );
+  });
+
   const remove = Effect.fn("EnvironmentRegistry.remove")(function* (environmentId: EnvironmentId) {
     return yield* withLeaseLock(
       environmentId,
       Effect.gen(function* () {
-        if ((yield* Ref.get(platformEnvironmentIds)).has(environmentId)) {
+        // Relayed environments follow their host: remove them there.
+        if (
+          (yield* Ref.get(platformEnvironmentIds)).has(environmentId) ||
+          (yield* Ref.get(relayVias)).has(environmentId)
+        ) {
           return yield* new PlatformEnvironmentRemovalError({
             environmentId,
           });
@@ -682,6 +781,7 @@ export const make = Effect.gen(function* () {
     register,
     registerPlatform,
     reconcilePlatform,
+    reconcileRelays,
     remove,
     retryNow,
     state,

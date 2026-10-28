@@ -101,6 +101,8 @@ export function connectionCatalogDisplayUrl(entry: ConnectionCatalogEntry): stri
       return Option.isSome(entry.profile) && entry.profile.value._tag === "SshConnectionProfile"
         ? `${entry.profile.value.target.username}@${entry.profile.value.target.hostname}`
         : null;
+    case "RelayConnectionTarget":
+      return entry.target.viaHttpBaseUrl;
   }
 }
 

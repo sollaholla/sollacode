@@ -7,7 +7,11 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import { environmentMismatchError, mapRemoteEnvironmentError } from "../connection/errors.ts";
 import type { ConnectionAttemptError, PreparedHttpAuthorization } from "../connection/model.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
-import { renewRemoteCredential, resolveRemoteWebSocketConnectionUrl } from "./remote.ts";
+import {
+  issueRelayedWebSocketTicket,
+  renewRemoteCredential,
+  resolveRemoteWebSocketConnectionUrl,
+} from "./remote.ts";
 
 export interface AuthorizedRemoteEnvironment {
   readonly environmentId: EnvironmentId;
@@ -15,6 +19,14 @@ export interface AuthorizedRemoteEnvironment {
   readonly httpBaseUrl: string;
   readonly socketUrl: string;
   readonly httpAuthorization: PreparedHttpAuthorization;
+}
+
+export interface AuthorizedRelayedEnvironment {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly httpBaseUrl: string;
+  readonly socketUrl: string;
+  readonly httpAuthorization: PreparedHttpAuthorization | null;
 }
 
 export class RemoteEnvironmentAuthorization extends Context.Service<
@@ -34,6 +46,18 @@ export class RemoteEnvironmentAuthorization extends Context.Service<
         credential: string,
       ) => Effect.Effect<void, ConnectionAttemptError>;
     }) => Effect.Effect<AuthorizedRemoteEnvironment, ConnectionAttemptError>;
+    /**
+     * An environment behind another host's relay. `bearerToken` is the
+     * credential for that host, or null where the host's cookie authenticates.
+     * The relay renews its own credential for the far environment, so there is
+     * nothing to renew here.
+     */
+    readonly authorizeRelayed: (input: {
+      readonly expectedEnvironmentId: EnvironmentId;
+      readonly httpBaseUrl: string;
+      readonly wsUrl: string;
+      readonly bearerToken: string | null;
+    }) => Effect.Effect<AuthorizedRelayedEnvironment, ConnectionAttemptError>;
   }
 >()("@t3tools/client-runtime/authorization/service/RemoteEnvironmentAuthorization") {}
 
@@ -116,7 +140,43 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return RemoteEnvironmentAuthorization.of({ authorizeBearer });
+  const authorizeRelayed = Effect.fn("clientRuntime.connection.remote.authorizeRelayed")(
+    function* (input: {
+      readonly expectedEnvironmentId: EnvironmentId;
+      readonly httpBaseUrl: string;
+      readonly wsUrl: string;
+      readonly bearerToken: string | null;
+    }) {
+      const descriptor = yield* fetchDescriptor(input.httpBaseUrl).pipe(
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+      );
+      if (descriptor.environmentId !== input.expectedEnvironmentId) {
+        return yield* environmentMismatchError({
+          expected: input.expectedEnvironmentId,
+          actual: descriptor.environmentId,
+        });
+      }
+      const issued = yield* issueRelayedWebSocketTicket({
+        httpBaseUrl: input.httpBaseUrl,
+        bearerToken: input.bearerToken,
+      }).pipe(
+        Effect.mapError(mapRemoteEnvironmentError),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+      );
+      const socketUrl = new URL(input.wsUrl);
+      socketUrl.searchParams.set("wsTicket", issued.ticket);
+      return {
+        environmentId: descriptor.environmentId,
+        label: descriptor.label,
+        httpBaseUrl: input.httpBaseUrl,
+        socketUrl: socketUrl.toString(),
+        httpAuthorization:
+          input.bearerToken === null ? null : { _tag: "Bearer" as const, token: input.bearerToken },
+      };
+    },
+  );
+
+  return RemoteEnvironmentAuthorization.of({ authorizeBearer, authorizeRelayed });
 });
 
 export const layer = Layer.effect(RemoteEnvironmentAuthorization, make);

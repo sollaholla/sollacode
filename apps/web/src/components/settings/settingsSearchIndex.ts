@@ -221,6 +221,10 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     },
     { title: "Administrative access", keywords: ["admin", "sessions", "devices", "revoke"] },
     { title: "Remote environments", keywords: ["ssh", "wsl", "windows", "servers", "hosts"] },
+    {
+      title: "Share with connected devices",
+      keywords: ["relay", "share", "other computers", "phone", "tailscale", "remote environments"],
+    },
     { title: "WSL backend", keywords: ["windows", "linux", "distro"] },
   ]),
   ...entries("/settings/projects", "Projects", "Projects", [

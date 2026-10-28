@@ -15,7 +15,18 @@ services:
 - `EnvironmentSupervisor` owns desired state, retry scheduling, and the active
   session scope.
 - `ConnectionBroker` prepares credentials and endpoints for primary, bearer,
-  relay, and SSH targets.
+  relay, and SSH targets. A relay target (`RelayConnectionTarget`) is an
+  environment reached through another registered host's
+  `/api/relay/<environment id>` route: the device authenticates as that host's
+  caller (its cookie or bearer), the host signs each request with its own
+  credential for the far environment, and the websocket carries a one-time
+  ticket the far environment issued through the relay. Relay targets are never
+  persisted. `followRelayedEnvironments` (`connection/relays.ts`) keeps them in
+  step with each directly connected host's `subscribeRelayedEnvironments`
+  stream; a direct registration for the same environment always wins. The
+  host's own desktop app publishes its saved bearer connections with
+  `relayedEnvironments.publish` (`SharesConnectionsWithHost`); the host keeps
+  them in memory only (`apps/server/src/relay/`).
 - `RpcSessionFactory` performs one transport attempt. It does not retry.
 - `EnvironmentRpc` exposes the active session without leaking the transport.
 - `EnvironmentProjectCommands` and `EnvironmentThreadCommands` construct

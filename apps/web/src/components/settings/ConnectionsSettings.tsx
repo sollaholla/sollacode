@@ -75,6 +75,7 @@ import { QRCodeSvg } from "../ui/qr-code";
 import { Spinner } from "../ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
@@ -1646,8 +1647,18 @@ function SavedBackendListRow({
     environment.entry.profile.value._tag === "BearerConnectionProfile"
       ? environment.entry.profile.value.httpBaseUrl
       : null;
+  // Reached through another computer's relay: it follows that computer's
+  // saved connections, so it is added and removed there, not here.
+  const relayHost =
+    environment.entry.target._tag === "RelayConnectionTarget"
+      ? environment.entry.target.viaLabel
+      : null;
   const metadataBits = [
-    sshTarget ? `SSH ${formatDesktopSshTarget(sshTarget)}` : bearerAddress,
+    sshTarget
+      ? `SSH ${formatDesktopSshTarget(sshTarget)}`
+      : relayHost
+        ? `Through ${relayHost}`
+        : bearerAddress,
   ].filter((value): value is string => value !== null);
 
   // The WSL backend is a desktop-managed local backend (it surfaces as a bearer
@@ -1727,6 +1738,27 @@ function SavedBackendListRow({
                 The WSL backend is managed by the WSL setting above — turn it on or off there.
               </TooltipPopup>
             </Tooltip>
+          ) : relayHost ? (
+            <>
+              {isConnected ? (
+                <Button size="xs" variant="outline" onClick={() => onRemoteControl(environment)}>
+                  <MonitorUpIcon className="size-3.5" />
+                  Control
+                </Button>
+              ) : null}
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button size="xs" variant="outline" disabled>
+                      Shared
+                    </Button>
+                  }
+                />
+                <TooltipPopup side="top" className="max-w-80 whitespace-pre-wrap leading-tight">
+                  {`${relayHost} shares this computer with you. Add or remove it in Solla Code on ${relayHost}.`}
+                </TooltipPopup>
+              </Tooltip>
+            </>
           ) : (
             <>
               {bearerAddress ? (
@@ -1977,6 +2009,8 @@ export function ConnectionsSettings() {
     (state) => state.setDefaultAdvertisedEndpointKey,
   );
   const canManageLocalBackend = currentSessionScopes?.includes(AuthAccessWriteScope) ?? false;
+  const primarySettings = usePrimarySettings();
+  const updatePrimarySettings = useUpdatePrimarySettings();
   const authAccessChanges = useEnvironmentQuery(
     canManageLocalBackend && primaryEnvironmentId !== null
       ? authEnvironment.accessChanges({
@@ -3627,6 +3661,21 @@ export function ConnectionsSettings() {
           </Dialog>
         }
       >
+        {canManageLocalBackend ? (
+          <SettingsRow
+            title="Share with connected devices"
+            description="Phones and browsers connected to this computer also see the remote environments its desktop app added, through this computer."
+            control={
+              <Switch
+                checked={primarySettings.shareConnectedComputers}
+                onCheckedChange={(checked) =>
+                  updatePrimarySettings({ shareConnectedComputers: Boolean(checked) })
+                }
+                aria-label="Share remote environments with connected devices"
+              />
+            }
+          />
+        ) : null}
         {savedEnvironments.map((environment) => (
           <SavedBackendListRow
             key={environment.environmentId}

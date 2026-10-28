@@ -20,6 +20,7 @@ import * as ConnectionCredentialStore from "./credentialStore.ts";
 import {
   BearerConnectionTarget,
   PrimaryConnectionTarget,
+  RelayConnectionTarget,
   SshConnectionTarget,
   type ConnectionTarget,
 } from "./model.ts";
@@ -49,6 +50,11 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
   readonly profiles?: ReadonlyArray<ConnectionProfile>;
   readonly credentials?: ReadonlyArray<readonly [string, ConnectionCredential]>;
   readonly authorizeBearer?: RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]["authorizeBearer"];
+  readonly relayCalls?: Array<
+    Parameters<
+      RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]["authorizeRelayed"]
+    >[0]
+  >;
   readonly primaryBearerToken?: string;
   readonly prepareSsh?: ClientCapabilities.SshEnvironmentGateway["Service"]["prepare"];
 }) => {
@@ -82,6 +88,17 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
             token: input.bearerToken,
           },
         })),
+    authorizeRelayed: (input) => {
+      options?.relayCalls?.push(input);
+      return Effect.succeed({
+        environmentId: input.expectedEnvironmentId,
+        label: "Relayed environment",
+        httpBaseUrl: input.httpBaseUrl,
+        socketUrl: `${input.wsUrl}?wsTicket=relayed`,
+        httpAuthorization:
+          input.bearerToken === null ? null : { _tag: "Bearer" as const, token: input.bearerToken },
+      });
+    },
   });
   const ssh = ClientCapabilities.SshEnvironmentGateway.of({
     provision: () => Effect.die("unused"),
@@ -117,6 +134,48 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
 });
 
 describe("ConnectionResolver", () => {
+  it.effect("reaches a relayed environment through the via host, as that host's caller", () =>
+    Effect.gen(function* () {
+      const relayCalls: Array<
+        Parameters<
+          RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]["authorizeRelayed"]
+        >[0]
+      > = [];
+      const brokerLayer = yield* makeDependencies({
+        credentials: [["mac-connection", new BearerConnectionCredential({ token: "mac-token" })]],
+        relayCalls,
+      });
+      const broker = yield* ConnectionResolver.ConnectionResolver.pipe(Effect.provide(brokerLayer));
+      const throughPrimary = new RelayConnectionTarget({
+        environmentId: ENVIRONMENT_ID,
+        label: "Windows",
+        viaEnvironmentId: EnvironmentId.make("mac"),
+        viaLabel: "Mac",
+        viaHttpBaseUrl: "https://mac.example.test/",
+        viaConnectionId: null,
+      });
+      const prepared = yield* broker.prepare(catalogEntry(throughPrimary));
+      expect(prepared.httpBaseUrl).toBe(`https://mac.example.test/api/relay/${ENVIRONMENT_ID}`);
+      expect(prepared.httpAuthorization).toBeNull();
+      expect(relayCalls[0]?.wsUrl).toBe(`wss://mac.example.test/api/relay/${ENVIRONMENT_ID}/ws`);
+
+      yield* broker.prepare(
+        catalogEntry(
+          new RelayConnectionTarget({
+            environmentId: ENVIRONMENT_ID,
+            label: "Windows",
+            viaEnvironmentId: EnvironmentId.make("mac"),
+            viaLabel: "Mac",
+            viaHttpBaseUrl: "http://10.0.0.2:3773/",
+            viaConnectionId: "mac-connection",
+          }),
+        ),
+      );
+      expect(relayCalls[1]?.bearerToken).toBe("mac-token");
+      expect(relayCalls[1]?.wsUrl).toBe(`ws://10.0.0.2:3773/api/relay/${ENVIRONMENT_ID}/ws`);
+    }),
+  );
+
   it.effect("prepares a primary environment without remote capabilities", () =>
     Effect.gen(function* () {
       const brokerLayer = yield* makeDependencies();

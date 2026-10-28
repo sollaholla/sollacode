@@ -50,6 +50,14 @@ export function assetThumbnailUrl(url: string): string {
 
 export function resolveAssetUrl(httpBaseUrl: string, relativeUrl: string): string | null {
   try {
+    // Asset links are host-relative ("/api/assets/…"). An environment reached
+    // through another host's relay lives under a path prefix, which a plain
+    // URL resolve would drop.
+    const base = new URL(httpBaseUrl);
+    const prefix = base.pathname.replace(/\/+$/u, "");
+    if (prefix.length > 0 && relativeUrl.startsWith("/") && !relativeUrl.startsWith("//")) {
+      return new URL(`${prefix}${relativeUrl}`, base.origin).toString();
+    }
     return new URL(relativeUrl, httpBaseUrl).toString();
   } catch {
     return null;

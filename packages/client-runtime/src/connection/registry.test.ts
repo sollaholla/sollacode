@@ -866,6 +866,83 @@ describe("EnvironmentRegistry", () => {
     }),
   );
 
+  it.effect("follows what a host shares, without overriding a direct connection", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([]);
+
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        yield* registry.registerPlatform(new PrimaryConnectionRegistration({ target: TARGET }));
+        const via = {
+          environmentId: TARGET.environmentId,
+          label: TARGET.label,
+          httpBaseUrl: TARGET.httpBaseUrl,
+          connectionId: null,
+        };
+        const windows = { environmentId: EnvironmentId.make("windows"), label: "Windows" };
+        // A host listing itself is ignored.
+        yield* registry.reconcileRelays(via, [
+          windows,
+          { environmentId: TARGET.environmentId, label: "Self" },
+        ]);
+        const entries = yield* SubscriptionRef.get(registry.entries);
+        expect(entries.get(windows.environmentId)?.target._tag).toBe("RelayConnectionTarget");
+        expect(entries.get(TARGET.environmentId)?.target).toEqual(TARGET);
+        // Never persisted, and removed only by the host.
+        expect((yield* Ref.get(harness.storedTargets)).has(windows.environmentId)).toBe(false);
+        expect((yield* Effect.flip(registry.remove(windows.environmentId)))._tag).toBe(
+          "PlatformEnvironmentRemovalError",
+        );
+
+        // Adding the machine directly replaces the relayed entry for good.
+        const directWindows = new BearerConnectionTarget({
+          environmentId: windows.environmentId,
+          label: "Windows",
+          connectionId: "windows-direct",
+        });
+        yield* registry.register(
+          new BearerConnectionRegistration({
+            target: directWindows,
+            profile: new BearerConnectionProfile({
+              connectionId: "windows-direct",
+              environmentId: windows.environmentId,
+              label: "Windows",
+              httpBaseUrl: "https://windows.example.test",
+              wsBaseUrl: "wss://windows.example.test",
+            }),
+            credential: BEARER_CREDENTIAL,
+          }),
+        );
+        yield* registry.reconcileRelays(via, []);
+        expect(
+          (yield* SubscriptionRef.get(registry.entries)).get(windows.environmentId)?.target,
+        ).toEqual(directWindows);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("drops a relayed machine once its host stops sharing it", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([]);
+
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const via = {
+          environmentId: TARGET.environmentId,
+          label: TARGET.label,
+          httpBaseUrl: TARGET.httpBaseUrl,
+          connectionId: null,
+        };
+        const windows = EnvironmentId.make("windows");
+        yield* registry.reconcileRelays(via, [{ environmentId: windows, label: "Windows" }]);
+        expect((yield* SubscriptionRef.get(registry.entries)).has(windows)).toBe(true);
+        yield* registry.reconcileRelays(via, []);
+        expect((yield* SubscriptionRef.get(registry.entries)).has(windows)).toBe(false);
+        expect(yield* Ref.get(harness.cacheClears)).toContain(windows);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
   it.effect("gives a primary platform registration precedence over persisted registrations", () =>
     Effect.gen(function* () {
       const shadowedTarget = new BearerConnectionTarget({

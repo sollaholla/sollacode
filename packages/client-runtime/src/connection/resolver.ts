@@ -14,11 +14,13 @@ import {
 } from "./catalog.ts";
 import * as ConnectionCredentialStore from "./credentialStore.ts";
 import { credentialMissingError, environmentMismatchError, profileMissingError } from "./errors.ts";
+import { relayedEnvironmentHttpBaseUrl, relayedEnvironmentWsUrl } from "../environment/endpoint.ts";
 import type {
   BearerConnectionTarget,
   ConnectionTarget,
   PreparedConnection,
   PrimaryConnectionTarget,
+  RelayConnectionTarget,
   SshConnectionTarget,
 } from "./model.ts";
 import { ConnectionBlockedError, type ConnectionAttemptError } from "./model.ts";
@@ -186,10 +188,55 @@ const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(funct
   });
 });
 
+/**
+ * An environment behind another one's relay authenticates as the caller of
+ * that `via` host: its cookie (a browser on the host's own origin) or the
+ * bearer credential this device holds for it.
+ */
+const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(function* () {
+  const primaryAuth = yield* ClientCapabilities.PrimaryEnvironmentAuth;
+  const credentials = yield* ConnectionCredentialStore.ConnectionCredentialStore;
+  const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+
+  const viaBearerToken = Effect.fn("clientRuntime.connection.broker.relay.viaBearerToken")(
+    function* (target: RelayConnectionTarget) {
+      if (target.viaConnectionId === null) {
+        return Option.getOrNull(yield* primaryAuth.bearerToken);
+      }
+      const connectionId = target.viaConnectionId;
+      const credential = yield* credentials.get(connectionId).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.fail(credentialMissingError(connectionId)),
+            onSome: Effect.succeed,
+          }),
+        ),
+      );
+      if (!isBearerCredential(credential)) {
+        return yield* credentialMissingError(connectionId);
+      }
+      return credential.token;
+    },
+  );
+
+  return Effect.fn("clientRuntime.connection.broker.relay")(function* (
+    target: RelayConnectionTarget,
+  ) {
+    const authorized = yield* remote.authorizeRelayed({
+      expectedEnvironmentId: target.environmentId,
+      httpBaseUrl: relayedEnvironmentHttpBaseUrl(target.viaHttpBaseUrl, target.environmentId),
+      wsUrl: relayedEnvironmentWsUrl(target.viaHttpBaseUrl, target.environmentId),
+      bearerToken: yield* viaBearerToken(target),
+    });
+    return { ...authorized, target } satisfies PreparedConnection;
+  });
+});
+
 export const make = Effect.gen(function* () {
   const primary = yield* makePrimaryBroker();
   const bearer = yield* makeBearerBroker();
   const ssh = yield* makeSshBroker();
+  const relay = yield* makeRelayBroker();
 
   const prepare = Effect.fn("clientRuntime.connection.broker.prepare")(function* (
     entry: ConnectionCatalogEntry,
@@ -206,6 +253,8 @@ export const make = Effect.gen(function* () {
         return yield* bearer({ ...entry, target });
       case "SshConnectionTarget":
         return yield* ssh({ ...entry, target });
+      case "RelayConnectionTarget":
+        return yield* relay(target);
     }
   });
 

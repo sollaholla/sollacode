@@ -1018,6 +1018,11 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   archivedThreadAutoDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Devices connected to this environment also reach the environments its
+   * desktop app added, through this environment's relay.
+   */
+  shareConnectedComputers: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   automaticStorageCleanupEnabled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
@@ -1270,6 +1275,7 @@ export const ServerSettingsPatch = Schema.Struct({
   threadModelPolicies: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, ModelAccessPolicy)),
   // Server settings
   archivedThreadAutoDelete: Schema.optionalKey(Schema.Boolean),
+  shareConnectedComputers: Schema.optionalKey(Schema.Boolean),
   automaticStorageCleanupEnabled: Schema.optionalKey(Schema.Boolean),
   attachmentRetentionHours: Schema.optionalKey(AttachmentRetentionHours),
   autoCompactionThresholdPercentage: Schema.optionalKey(AutoCompactionThresholdPercentage),

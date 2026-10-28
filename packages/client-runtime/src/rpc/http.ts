@@ -89,7 +89,8 @@ export const remoteHttpClientLayer = (
 
 const remoteApiBaseUrl = (httpBaseUrl: string): string => {
   const url = new URL(httpBaseUrl);
-  url.pathname = "/";
+  // Keep a relayed environment's path prefix; endpoints join onto it.
+  url.pathname = url.pathname.replace(/\/+$/u, "") || "/";
   url.search = "";
   url.hash = "";
   return url.toString();

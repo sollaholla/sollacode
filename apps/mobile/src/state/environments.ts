@@ -15,6 +15,8 @@ export interface EnvironmentPresentation extends BaseEnvironmentPresentation {
   readonly label: string;
   readonly displayUrl: string | null;
   readonly relayManaged: boolean;
+  /** The computer that shares this one through its relay, when it is reached that way. */
+  readonly sharedThrough: string | null;
 }
 
 export function projectEnvironmentPresentation(
@@ -27,6 +29,10 @@ export function projectEnvironmentPresentation(
     label: presentation.entry.target.label,
     displayUrl: connectionCatalogDisplayUrl(presentation.entry),
     relayManaged: false,
+    sharedThrough:
+      presentation.entry.target._tag === "RelayConnectionTarget"
+        ? presentation.entry.target.viaLabel
+        : null,
   };
 }
 

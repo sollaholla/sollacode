@@ -178,6 +178,7 @@ import * as ByteBoundedResyncBuffer from "./stream/ByteBoundedResyncBuffer.ts";
 import * as ProjectionLiveBuffer from "./stream/ProjectionLiveBuffer.ts";
 import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
 import * as DeviceManager from "./devices/DeviceManager.ts";
+import { RelayedEnvironments } from "./relay/RelayedEnvironments.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
 import * as LiveFeed from "./orchestration/LiveFeed.ts";
@@ -691,6 +692,7 @@ const makeWsRpcLayer = (
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const hostVitals = yield* HostVitalsMonitor.HostVitalsMonitor;
       const devices = yield* DeviceManager.DeviceManager;
+      const relayedEnvironments = yield* RelayedEnvironments;
       const projectFolderUsage = yield* ProjectFolderUsage.ProjectFolderUsage;
       const databaseStorage = yield* DatabaseCompaction.DatabaseStorage;
       const liveFeed = yield* LiveFeed.LiveFeed;
@@ -3869,6 +3871,16 @@ const makeWsRpcLayer = (
         [WS_METHODS.devicesView]: (input) =>
           observeRpcEffect(WS_METHODS.devicesView, devices.view(input), {
             "rpc.aggregate": "devices",
+          }),
+        [WS_METHODS.relayedEnvironmentsPublish]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.relayedEnvironmentsPublish,
+            relayedEnvironments.publish(input.environments),
+            { "rpc.aggregate": "relay" },
+          ),
+        [WS_METHODS.subscribeRelayedEnvironments]: (_input) =>
+          observeRpcStream(WS_METHODS.subscribeRelayedEnvironments, relayedEnvironments.list, {
+            "rpc.aggregate": "relay",
           }),
         [WS_METHODS.subscribeHostVitals]: (_input) =>
           observeRpcStream(WS_METHODS.subscribeHostVitals, hostVitals.stream, {

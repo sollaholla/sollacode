@@ -31,6 +31,23 @@ credentials retain their restrictions.
 Use Tailscale or another trusted HTTPS/private-network endpoint when the devices are not on the
 same LAN or when you need a stable address across networks.
 
+## Computers your host is connected to
+
+A device connected to one computer also sees the other computers that computer's desktop app has
+added. Open Solla Code on your phone through the Mac's Tailscale address, and the Windows machine
+the Mac is connected to appears beside the Mac, with its projects and chats, live. The phone does
+not pair with Windows and never needs to reach it: everything goes through the Mac, which signs
+each request with its own connection to Windows.
+
+- These computers appear under **Settings → Connections** marked **Through** the host, with a
+  **Shared** label instead of **Remove**. Add or remove them in Solla Code on the host.
+- A computer you have also added directly on the device uses that direct connection instead.
+- Only devices with standard access to the host can use them. Read-only connections cannot.
+- To stop sharing, turn off **Share with connected devices** under **Settings → Connections** on
+  the host. Devices then stop seeing those computers at once.
+- The host's desktop app shares its connections while it runs. After the host restarts, they come
+  back once its desktop app is open again.
+
 ## Push notifications
 
 For alerts while the page is closed, enable [push notifications](push-notifications.md) from

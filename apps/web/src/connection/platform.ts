@@ -3,6 +3,7 @@ import {
   EnvironmentOwnedDataCleanup,
   PlatformConnectionSource,
   PrimaryEnvironmentAuth,
+  SharesConnectionsWithHost,
   SshEnvironmentGateway,
 } from "@t3tools/client-runtime/platform";
 import {
@@ -239,6 +240,7 @@ const capabilitiesLayer = Layer.effectContext(
     return Context.make(PrimaryEnvironmentAuth, primaryAuth).pipe(
       Context.add(ClientPresentation, presentation),
       Context.add(SshEnvironmentGateway, ssh),
+      Context.add(SharesConnectionsWithHost, window.desktopBridge !== undefined),
     );
   }),
 );

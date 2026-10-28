@@ -29,6 +29,16 @@ export class ClientPresentation extends Context.Service<
   }
 >()("@t3tools/client-runtime/platform/capabilities/ClientPresentation") {}
 
+/**
+ * True for the host's own desktop app: it shares its saved connections with
+ * the host's server, which relays them to the host's other clients. One
+ * publisher per host, so browsers and phones never overwrite its list.
+ */
+export class SharesConnectionsWithHost extends Context.Reference<boolean>(
+  "@t3tools/client-runtime/platform/capabilities/SharesConnectionsWithHost",
+  { defaultValue: () => false },
+) {}
+
 export class PrimaryEnvironmentAuth extends Context.Service<
   PrimaryEnvironmentAuth,
   {

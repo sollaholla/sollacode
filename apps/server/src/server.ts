@@ -118,6 +118,8 @@ import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
 import * as DeviceManager from "./devices/DeviceManager.ts";
+import * as RelayedEnvironments from "./relay/RelayedEnvironments.ts";
+import { relayRouteLayer } from "./relay/relayRoute.ts";
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as LiveFeed from "./orchestration/LiveFeed.ts";
@@ -483,6 +485,7 @@ const RuntimeDependenciesLive = WebPushRuntimeLive.pipe(
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(HostVitalsMonitor.layer),
   Layer.provideMerge(DeviceManager.layer),
+  Layer.provideMerge(RelayedEnvironments.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
   Layer.provideMerge(ImageThumbnails.layer),
   Layer.provideMerge(ProjectFolderUsage.layer.pipe(Layer.provide(PersistenceLayerLive))),
   Layer.provideMerge(DatabaseCompaction.layer.pipe(Layer.provide(PersistenceLayerLive))),
@@ -514,6 +517,7 @@ export const makeRoutesLayer = Layer.mergeAll(
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
     mediaChannelRouteLayer,
+    relayRouteLayer,
   ),
   McpHttpServer.layer.pipe(
     Layer.provide(McpSessionRegistry.layer),

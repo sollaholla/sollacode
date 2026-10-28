@@ -172,6 +172,28 @@ export const issueRemoteWebSocketTicket = Effect.fn(
   );
 });
 
+/**
+ * A websocket ticket from an environment reached through another host's relay.
+ * The host checks the caller (its cookie, or the bearer it issued) and signs
+ * the request on; the ticket itself is the other environment's.
+ */
+export const issueRelayedWebSocketTicket = Effect.fn(
+  "clientRuntime.authorization.issueRelayedWebSocketTicket",
+)(function* (input: {
+  readonly httpBaseUrl: string;
+  readonly bearerToken: string | null;
+  readonly timeoutMs?: number;
+}) {
+  const client = yield* makeEnvironmentHttpApiClient(input.httpBaseUrl);
+  return yield* executeEnvironmentHttpRequest(
+    environmentEndpointUrl(input.httpBaseUrl, "/api/auth/websocket-ticket"),
+    input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+    client.auth.webSocketTicket({
+      headers: input.bearerToken === null ? {} : { authorization: `Bearer ${input.bearerToken}` },
+    }),
+  );
+});
+
 export const issueRemoteDpopWebSocketTicket = Effect.fn(
   "clientRuntime.authorization.issueRemoteDpopWebSocketTicket",
 )(function* (input: {

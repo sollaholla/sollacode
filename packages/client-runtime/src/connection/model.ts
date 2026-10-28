@@ -31,10 +31,29 @@ export class SshConnectionTarget extends Schema.TaggedClass<SshConnectionTarget>
   },
 ) {}
 
+/**
+ * An environment reached through another registered environment's relay: a
+ * phone connected to a Mac opens the Windows machine the Mac's desktop app
+ * added. Never persisted; it follows what the `via` environment shares.
+ */
+export class RelayConnectionTarget extends Schema.TaggedClass<RelayConnectionTarget>()(
+  "RelayConnectionTarget",
+  {
+    ...ConnectionTargetBase,
+    viaEnvironmentId: EnvironmentId,
+    viaLabel: Schema.String,
+    /** The `via` environment's own address; the relay lives under it. */
+    viaHttpBaseUrl: Schema.String,
+    /** The `via` bearer connection, or null for the cookie- or desktop-authenticated primary. */
+    viaConnectionId: Schema.NullOr(Schema.String),
+  },
+) {}
+
 export const ConnectionTarget = Schema.Union([
   PrimaryConnectionTarget,
   BearerConnectionTarget,
   SshConnectionTarget,
+  RelayConnectionTarget,
 ]);
 export type ConnectionTarget = typeof ConnectionTarget.Type;
 

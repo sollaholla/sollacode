@@ -273,6 +273,7 @@ import {
   DeviceSummary,
   DeviceViewResult,
 } from "./devices.ts";
+import { RelayedEnvironmentList, RelayedEnvironmentsPublishInput } from "./relayedEnvironments.ts";
 import {
   ResourceTelemetryHistory,
   ResourceTelemetryHistoryInput,
@@ -381,6 +382,7 @@ export const WS_METHODS = {
   devicesDelete: "devices.delete",
   devicesSetPower: "devices.setPower",
   devicesView: "devices.view",
+  relayedEnvironmentsPublish: "relayedEnvironments.publish",
   remoteControlHostConnect: "remoteControl.hostConnect",
   remoteControlHostRespond: "remoteControl.hostRespond",
   remoteControlHostPublishFrame: "remoteControl.hostPublishFrame",
@@ -477,6 +479,7 @@ export const WS_METHODS = {
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
   subscribeHostVitals: "subscribeHostVitals",
+  subscribeRelayedEnvironments: "subscribeRelayedEnvironments",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1188,6 +1191,19 @@ export const WsDevicesViewRpc = Rpc.make(WS_METHODS.devicesView, {
   error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
 });
 
+// The host's desktop app shares its saved connections with the host's clients.
+export const WsRelayedEnvironmentsPublishRpc = Rpc.make(WS_METHODS.relayedEnvironmentsPublish, {
+  payload: RelayedEnvironmentsPublishInput,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsSubscribeRelayedEnvironmentsRpc = Rpc.make(WS_METHODS.subscribeRelayedEnvironments, {
+  payload: Schema.Struct({}),
+  success: RelayedEnvironmentList,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 export const WsRemoteControlHostConnectRpc = Rpc.make(WS_METHODS.remoteControlHostConnect, {
   payload: RemoteControlHost,
   success: RemoteControlHostStreamEvent,
@@ -1761,6 +1777,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsDevicesDeleteRpc,
   WsDevicesSetPowerRpc,
   WsDevicesViewRpc,
+  WsRelayedEnvironmentsPublishRpc,
+  WsSubscribeRelayedEnvironmentsRpc,
   WsRemoteControlHostConnectRpc,
   WsRemoteControlHostRespondRpc,
   WsRemoteControlHostPublishFrameRpc,

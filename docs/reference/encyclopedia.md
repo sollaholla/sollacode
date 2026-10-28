@@ -283,6 +283,12 @@ The original voice backend. The server mints an ephemeral client secret; the bro
 
 xAI's Speech-to-Speech API. The server mints an ephemeral client secret at `POST /v1/realtime/client_secrets`; the browser opens `wss://api.x.ai/v1/realtime` with the `xai-client-secret.` subprotocol and streams PCM16. Catalog and capability flags live in [orchestratorVoice.ts][27]. Setup: [orchestrator-grok-voice.md][28].
 
+### Relayed environments
+
+#### Relayed environment
+
+An environment a device reaches through another environment it is connected to: a phone on the Mac's Tailscale address sees the Windows machine the Mac's desktop app added. The host's desktop app publishes its saved connections (`relayedEnvironments.publish`, held in memory by [RelayedEnvironments.ts](../../apps/server/src/relay/RelayedEnvironments.ts)); clients follow `subscribeRelayedEnvironments` and register a `RelayConnectionTarget`. Requests go through `/api/relay/<environment id>` ([relayRoute.ts](../../apps/server/src/relay/relayRoute.ts)), checked against the caller's session on the host and signed with the host's credential. The `shareConnectedComputers` server setting turns it off. See [remote-access.md](../user/remote-access.md).
+
 ### Checkpointing
 
 Checkpointing captures workspace state over time so the app can diff turns and restore earlier points. The main pieces are [CheckpointStore.ts][19], [CheckpointDiffQuery.ts][20], and [CheckpointReactor.ts][6].

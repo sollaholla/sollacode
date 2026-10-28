@@ -1,5 +1,6 @@
 import {
   AuthAccessReadScope,
+  AuthAccessWriteScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthReviewWriteScope,
@@ -189,6 +190,10 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,
   [WS_METHODS.subscribeBackgroundPolicy]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeHostVitals]: AuthOrchestrationReadScope,
+  // Publishing hands the host credentials for other machines, so only an
+  // administrative client (the host's own desktop app) may do it.
+  [WS_METHODS.relayedEnvironmentsPublish]: AuthAccessWriteScope,
+  [WS_METHODS.subscribeRelayedEnvironments]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 export function requiredScopeForRpcMethod(method: string): AuthEnvironmentScope {
