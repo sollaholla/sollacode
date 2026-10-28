@@ -167,16 +167,18 @@ export function getActiveColorTheme(): ColorThemeDefinition | null {
 }
 
 function applyColorThemeVariables(theme: ColorThemeDefinition | null) {
-  // Solla's own palette with nothing applied: the pre-paint script read the
-  // same empty storage, so there is nothing to remove.
-  if (!theme && appliedColorTheme === null) return;
   const root = document.documentElement;
+  // Solla's own palette with nothing applied and nothing pre-painted: there
+  // is nothing to remove. (Test documents may lack `dataset`.)
+  const prePainted = typeof root.dataset === "object" ? root.dataset.colorTheme : undefined;
+  if (!theme && appliedColorTheme === null && prePainted === undefined) return;
   // The pre-paint script in index.html may already have set a theme's
-  // variables before this module knew about them.
+  // variables before this module knew about them — including a theme this
+  // build no longer has, whose names only the cached paint still lists.
   const previous =
     appliedColorThemeVariables.length > 0
       ? appliedColorThemeVariables
-      : Object.keys(colorThemePaintFor(root.dataset.colorTheme)?.variables ?? {});
+      : Object.keys(colorThemePaintFor(prePainted)?.variables ?? readCachedPaintVariables() ?? {});
   for (const name of previous) root.style.removeProperty(name);
   if (!theme) {
     delete root.dataset.colorTheme;
@@ -192,6 +194,20 @@ function applyColorThemeVariables(theme: ColorThemeDefinition | null) {
   appliedColorTheme = theme;
   appliedColorThemeVariables = Object.keys(variables);
   refreshColorThemePaintCache(theme);
+}
+
+function readCachedPaintVariables(): Record<string, unknown> | null {
+  try {
+    const raw = window.localStorage.getItem(COLOR_THEME_PAINT_STORAGE_KEY);
+    const paint: unknown = raw ? JSON.parse(raw) : null;
+    if (typeof paint !== "object" || paint === null || !("variables" in paint)) return null;
+    const { variables } = paint;
+    return typeof variables === "object" && variables !== null
+      ? (variables as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Keeps the pre-paint cache in step when a release retunes a theme's palette. */

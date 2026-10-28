@@ -677,7 +677,7 @@ function accessoryMarkup(
       const y = geo.face[1] - 18;
       const lens = mix(bodyColor, INK, 0.3);
       const glare = mix(bodyColor, "#ffffff", 0.75);
-      const strap = `<rect x="${f(left - 4)}" y="${f(y - 3.2)}" width="${f(right - left + 8)}" height="6.4" fill="${INK}" clip-path="url(#b)"/>`;
+      const strap = `<rect x="${f(left - 4)}" y="${f(y - 3.2)}" width="${f(right - left + 8)}" height="6.4" fill="${INK}" clip-path="url(#b)" clip-rule="nonzero"/>`;
       const bridge = `<rect x="${f(geo.face[0] - 4)}" y="${f(y - 1.6)}" width="8" height="3.2" fill="${INK}"/>`;
       const rings = [geo.face[0] - 9.6, geo.face[0] + 9.6]
         .map((x) => {
@@ -797,7 +797,7 @@ function accessoryMarkup(
       const anchor: P2 = [bx + 2.5, by - 4];
       const k = (through[1] - (y0 - 8)) / (anchor[1] - through[1]);
       const top: P2 = [through[0] - (anchor[0] - through[0]) * k, y0 - 8];
-      const band = `<path d="M${pt(top)}L${pt(anchor)}" stroke="${INK}" stroke-width="4.6" clip-path="url(#b)"/>`;
+      const band = `<path d="M${pt(top)}L${pt(anchor)}" stroke="${INK}" stroke-width="4.6" clip-path="url(#b)" clip-rule="nonzero"/>`;
       const bag =
         `<rect x="${f(bx - 8)}" y="${f(by - 5.5)}" width="16" height="13" rx="3.4" fill="${INK}" ${RIM}/>` +
         sheen(`M${pt([bx - 5, by - 4.2])}H${f(bx + 5)}`, 1.2, 0.26) +
@@ -986,7 +986,7 @@ export function agentAvatarSvg(
     );
   };
   const shifted = (shape: string, clip: string, fill: string, k: number, opacity: string) =>
-    `<g fill="${fill}"${opacity} clip-path="url(#${clip})"><g transform="translate(${f(d * k * 0.5)} ${f(d * k)})">${shape}</g></g>`;
+    `<g fill="${fill}"${opacity} clip-path="url(#${clip})" clip-rule="nonzero"><g transform="translate(${f(d * k * 0.5)} ${f(d * k)})">${shape}</g></g>`;
   const paint = (
     shape: string,
     clip: string,
@@ -996,8 +996,8 @@ export function agentAvatarSvg(
     `<g fill="url(#${edge})">${shape}</g>` +
     shifted(shape, clip, fill, 0.5, ' opacity=".55"') +
     shifted(shape, clip, fill, 1, "") +
-    `<rect ${frame} fill="url(#${light})" clip-path="url(#${clip})"/>` +
-    `<rect ${frame} fill="url(#${under})" clip-path="url(#${clip})"/>`;
+    `<rect ${frame} fill="url(#${light})" clip-path="url(#${clip})" clip-rule="nonzero"/>` +
+    `<rect ${frame} fill="url(#${under})" clip-path="url(#${clip})" clip-rule="nonzero"/>`;
 
   const bodyIds = ["me", "mk", "mf"] as const;
   const aoColor = tone(bodyColor, -0.3, 0.7, COOL, 18);
@@ -1023,10 +1023,12 @@ export function agentAvatarSvg(
   ].join("");
 
   const ground = `<ellipse cx="${f(cx)}" cy="${f(by1)}" rx="${f(w * 0.44)}" ry="${f(Math.max(2.6, h * 0.05))}" fill="url(#mg)"/>`;
-  const occlusion = `<ellipse cx="${f(cx)}" cy="${f(by1 + h * 0.03)}" rx="${f(w * 0.42)}" ry="${f(h * 0.11)}" fill="url(#mo)" clip-path="url(#b)"/>`;
+  const occlusion = `<ellipse cx="${f(cx)}" cy="${f(by1 + h * 0.03)}" rx="${f(w * 0.42)}" ry="${f(h * 0.11)}" fill="url(#mo)" clip-path="url(#b)" clip-rule="nonzero"/>`;
   // Trim (a cap, a band) shades the body just beneath it.
   const trimShadow = geo.trim
-    ? `<g fill="${tone(trimColor, -0.12, 0.7, COOL, 10)}" clip-path="url(#mc)">${[0.7, 1.6, 2.8]
+    ? `<g fill="${tone(trimColor, -0.12, 0.7, COOL, 10)}" clip-path="url(#mc)" clip-rule="nonzero">${[
+        0.7, 1.6, 2.8,
+      ]
         .map((dy) => `<g opacity=".2" transform="translate(0 ${f(dy)})">${geo.trim}</g>`)
         .join("")}</g>`
     : "";

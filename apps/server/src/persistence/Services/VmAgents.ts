@@ -17,7 +17,8 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 export interface VmAgentStoreShape {
   /**
    * Insert a new agent row. The unique name/handle indexes reject duplicates.
-   * `avatarColor` is a preference: kept when free, else the next free index.
+   * `avatarColor` is a preference: kept when free, else the lowest free index,
+   * so a person's first agents keep distinct characters after an intro pick.
    */
   readonly insert: (agent: VmAgent) => Effect.Effect<void, ProjectionRepositoryError>;
 

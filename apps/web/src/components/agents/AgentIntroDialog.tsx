@@ -8,7 +8,7 @@ import {
   GlobeIcon,
   SparklesIcon,
 } from "lucide-react";
-import { useState, type CSSProperties } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 
 import { useAtomCommand } from "~/state/use-atom-command";
 import { vmAgentEnvironment } from "~/state/vmAgents";
@@ -93,8 +93,12 @@ export function AgentIntroDialog(props: {
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<VmAgent | null>(null);
   const createAgent = useAtomCommand(vmAgentEnvironment.create, { reportFailure: false });
+  // Bumped on every reset so a create that finishes after the dialog closed
+  // doesn't reopen it on the celebration step.
+  const visitRef = useRef(0);
 
   const reset = () => {
+    visitRef.current += 1;
     setStep("meet");
     setPicked(0);
     setHovered(null);
@@ -107,7 +111,10 @@ export function AgentIntroDialog(props: {
     setCreated(null);
   };
 
-  const close = () => props.onOpenChange(false);
+  const close = () => {
+    reset();
+    props.onOpenChange(false);
+  };
 
   const pick = (avatarColor: number) => {
     setPicked(avatarColor);
@@ -120,10 +127,12 @@ export function AgentIntroDialog(props: {
     if (!canCreate) return;
     setBusy(true);
     setError(null);
+    const visit = visitRef.current;
     const result = await createAgent({
       environmentId: props.environmentId,
       input: { name: name.trim(), purpose: purpose.trim(), avatarColor: picked },
     });
+    if (visit !== visitRef.current) return;
     setBusy(false);
     if (result._tag === "Success") {
       setCreated(result.value);
@@ -140,10 +149,11 @@ export function AgentIntroDialog(props: {
 
   const openCreated = () => {
     if (!created) return;
+    const agentId = created.vmAgentId;
     close();
     void router.navigate({
       to: "/agents/$environmentId/$agentId",
-      params: { environmentId: props.environmentId, agentId: created.vmAgentId },
+      params: { environmentId: props.environmentId, agentId },
     });
   };
 

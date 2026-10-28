@@ -281,4 +281,48 @@ describe("theme failure handling", () => {
     expect(properties.size).toBe(0);
     expect(getActiveColorTheme()).toBeNull();
   });
+
+  it("clears a pre-painted theme this build no longer has", async () => {
+    const storage = createStorage();
+    storage.setItem("t3code:color-theme", "retired-theme");
+    storage.setItem(
+      "t3code:color-theme-paint",
+      JSON.stringify({
+        id: "retired-theme",
+        kind: "dark",
+        variables: { "--background": "#123456", "--boot-foreground": "#fefefe" },
+      }),
+    );
+    const properties = new Map([
+      ["--background", "#123456"],
+      ["--boot-foreground", "#fefefe"],
+      ["--unrelated", "keep"],
+    ]);
+    const dataset: Record<string, string> = { colorTheme: "retired-theme" };
+    vi.stubGlobal("window", {
+      localStorage: storage,
+      matchMedia: () => ({ matches: false }),
+    });
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("getComputedStyle", () => ({ backgroundColor: "" }));
+    vi.stubGlobal("document", {
+      documentElement: {
+        classList: { toggle: vi.fn(), add: vi.fn(), remove: vi.fn() },
+        dataset,
+        style: {
+          setProperty: (name: string, value: string) => properties.set(name, value),
+          removeProperty: (name: string) => properties.delete(name),
+        },
+      },
+      body: {},
+      head: { append: () => undefined },
+      querySelector: () => null,
+      createElement: () => ({ setAttribute: () => undefined }),
+    });
+
+    await import("./useTheme");
+
+    expect(dataset.colorTheme).toBeUndefined();
+    expect([...properties.keys()]).toEqual(["--unrelated"]);
+  });
 });

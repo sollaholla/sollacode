@@ -60,7 +60,20 @@ const makeVmAgentStore = Effect.gen(function* () {
               SELECT 1 FROM vm_agents WHERE avatar_color_index = ${row.avatarColor ?? null}
             )
           ),
-          (SELECT COALESCE(MAX(avatar_color_index), -1) + 1 FROM vm_agents)
+          (
+            SELECT CASE
+              WHEN NOT EXISTS (SELECT 1 FROM vm_agents WHERE avatar_color_index = 0) THEN 0
+              ELSE (
+                SELECT MIN(taken.avatar_color_index) + 1
+                FROM vm_agents AS taken
+                WHERE taken.avatar_color_index IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM vm_agents AS next
+                    WHERE next.avatar_color_index = taken.avatar_color_index + 1
+                  )
+              )
+            END
+          )
         ),
         ${row.vmId},
         ${row.threadId},

@@ -70,9 +70,16 @@ managerLayer("VmManager", (it) => {
       }),
   );
 
-  it.effect("wears a requested character when it is free and the next free one when not", () =>
+  it.effect("wears a requested character when it is free and the lowest free one when not", () =>
     Effect.gen(function* () {
       const manager = yield* VmManager;
+      const store = yield* VmAgentStore;
+      const lowestFree = Effect.map(store.list(), (agents) => {
+        const taken = new Set(agents.map((agent) => agent.avatarColor));
+        let index = 0;
+        while (taken.has(index)) index += 1;
+        return index;
+      });
       const picked = yield* manager.create({
         name: "Lantern",
         purpose: "picked in the intro",
@@ -81,16 +88,19 @@ managerLayer("VmManager", (it) => {
       });
       assert.strictEqual(picked.avatarColor, 40);
 
+      const expectedClash = yield* lowestFree;
       const clash = yield* manager.create({
         name: "Also lantern",
         purpose: "same pick",
         threadId: null,
         avatarColor: 40,
       });
-      assert.strictEqual(clash.avatarColor, 41);
+      assert.strictEqual(clash.avatarColor, expectedClash);
 
+      const expectedAuto = yield* lowestFree;
       const auto = yield* manager.create({ name: "Auto", purpose: "no pick", threadId: null });
-      assert.strictEqual(auto.avatarColor, 42);
+      assert.strictEqual(auto.avatarColor, expectedAuto);
+      assert.isBelow(auto.avatarColor ?? Infinity, 40);
     }),
   );
 

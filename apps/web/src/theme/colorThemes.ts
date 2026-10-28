@@ -826,6 +826,10 @@ export function deriveColorThemeVariables(theme: ColorThemeDefinition): Record<s
     "--sidebar-row-selected": withAlpha(p.accent, dark ? 0.12 : 0.1),
     "--sidebar-border": p.line,
     "--sidebar-stage-fade": p.sidebar,
+    // index.html's body and boot shell read these before the bundle loads;
+    // owning them here keeps inherited text in step after a switch.
+    "--boot-background": p.page,
+    "--boot-foreground": p.text1,
     // What `[data-sidebar-version]` maps its own tokens onto.
     "--sidebar-scope-background": p.sidebar,
     "--sidebar-scope-card": p.sidebar,

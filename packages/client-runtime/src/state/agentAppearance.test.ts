@@ -68,6 +68,10 @@ describe("agent appearance", () => {
               expect(svg).toContain(`id="${id}"`);
             }
             expect(svg.length).toBeLessThan(9_000);
+            // react-native-svg defaults clipRule to evenodd on the referencing
+            // element, which punches holes where clip children overlap.
+            const clipped = svg.match(/<[^>]*clip-path="[^"]*"[^>]*>/gu) ?? [];
+            for (const element of clipped) expect(element).toContain('clip-rule="nonzero"');
           }
         }
       }
