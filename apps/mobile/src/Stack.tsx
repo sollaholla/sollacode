@@ -15,6 +15,7 @@ import { DynamicColorIOS, Platform, Pressable, ScrollView, StyleSheet } from "re
 import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "./components/AppText";
+import { IncomingAgentCallObserver } from "./features/agentCalls/IncomingAgentCallObserver";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import { HardwareKeyboardCommandProvider } from "./features/keyboard/HardwareKeyboardCommandProvider";
 import { HomeRouteScreen } from "./features/home/HomeRouteScreen";
@@ -139,6 +140,12 @@ const LiveInspectorRouteScreen = deferredScreen(
     (
       require("./features/orchestrator/OrchestratorRouteScreen") as typeof import("./features/orchestrator/OrchestratorRouteScreen")
     ).LiveInspectorRouteScreen,
+);
+const AgentCallRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/agentCalls/AgentCallRouteScreen") as typeof import("./features/agentCalls/AgentCallRouteScreen")
+    ).AgentCallRouteScreen,
 );
 const AgentsRouteScreen = deferredScreen(
   () =>
@@ -492,6 +499,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "NewTaskSheet",
   "Orchestrator",
   "LiveInspector",
+  "AgentCall",
   "SettingsLegal",
   "SettingsSheet",
   "ThreadReviewComment",
@@ -541,10 +549,16 @@ function RootStackLayout(props: {
   const path = getPathFromState(props.state, navigationPathConfig);
   const pathname = path.startsWith("/") ? path : `/${path}`;
   const workspacePathname = workspacePathFromState(props.state);
+  // An agent's call waits while a call screen or the orchestrator's voice view
+  // is open: each holds the microphone in its own WebView.
+  const voiceScreenOpen = props.state.routes.some(
+    (route) => route.name === "AgentCall" || route.name === "Orchestrator",
+  );
 
   return (
     <HardwareKeyboardCommandProvider pathname={pathname}>
       <ShowcaseCaptureCoordinator pathname={pathname} />
+      <IncomingAgentCallObserver voiceScreenOpen={voiceScreenOpen} />
       <AdaptiveWorkspaceLayout pathname={workspacePathname}>
         {props.children}
       </AdaptiveWorkspaceLayout>
@@ -732,6 +746,18 @@ export const RootStack = createNativeStackNavigator({
         ...SOLID_HEADER_OPTIONS,
         presentation: "fullScreenModal",
         title: "Live Inspector",
+      },
+    }),
+    // A voice call with an agent: the web call page, full screen like the
+    // orchestrator. The Call buttons open it, and so does an agent ringing
+    // while the app is open (IncomingAgentCallObserver).
+    AgentCall: createNativeStackScreen({
+      screen: AgentCallRouteScreen,
+      linking: "call/:environmentId/:callId",
+      options: {
+        ...SOLID_HEADER_OPTIONS,
+        presentation: "fullScreenModal",
+        title: "Call",
       },
     }),
     Agents: createNativeStackScreen({

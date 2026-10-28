@@ -30,6 +30,7 @@ import { vmAgentEnvironment } from "../../state/vmAgents";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { requestComposerFocus } from "../../state/composer-focus-requests";
 import { openMobileWaitingOnYouFollowUp } from "./mobileAgentAttentionFollowUp";
+import { useAgentCallBlockedReason, usePlaceAgentCall } from "../agentCalls/usePlaceAgentCall";
 import {
   boundedCollaborationPreview,
   delegationDirectionLabel,
@@ -134,8 +135,14 @@ function AgentEnvironmentSection(props: {
     [props.environmentId],
   );
   const attentionResult = useAtomValue(attentionAtom);
+  const callBlockedReason = useAgentCallBlockedReason(props.environmentId);
+  const agentCall = usePlaceAgentCall();
   const latest = Option.getOrNull(AsyncResult.value(result));
   const agents = latest?.type === "snapshot" ? latest.agents : [];
+  const callErrorAgentName =
+    agentCall.error === null
+      ? null
+      : (agents.find((agent) => agent.vmAgentId === agentCall.error?.vmAgentId)?.name ?? "agent");
   const collaborationItem = Option.getOrNull(AsyncResult.value(collaborationResult));
   const collaboration = collaborationItem?.type === "snapshot" ? collaborationItem : null;
   const attentionItem = Option.getOrNull(AsyncResult.value(attentionResult));
@@ -220,6 +227,18 @@ function AgentEnvironmentSection(props: {
                 {activeWork > 0 ? <StatusChip value={`${activeWork} active`} /> : null}
                 <AgentPresenceChip agent={agent} />
               </Pressable>
+              {callBlockedReason === null ? (
+                <Pressable
+                  accessibilityLabel={`Call ${agent.name}`}
+                  accessibilityRole="button"
+                  accessibilityState={{ busy: agentCall.placing === agent.vmAgentId }}
+                  className="min-h-14 w-12 shrink-0 items-center justify-center active:bg-subtle disabled:opacity-50"
+                  disabled={agentCall.placing !== null}
+                  onPress={() => void agentCall.place(props.environmentId, agent.vmAgentId)}
+                >
+                  <SymbolView name="phone.fill" size={19} tintColor="#16a34a" />
+                </Pressable>
+              ) : null}
               <Pressable
                 accessibilityLabel={`Open ${agent.name} details`}
                 accessibilityRole="button"
@@ -232,6 +251,11 @@ function AgentEnvironmentSection(props: {
           );
         })
       )}
+      {agentCall.error !== null ? (
+        <Text className="px-1 text-sm text-red-600 dark:text-red-300">
+          Couldn't call {callErrorAgentName}: {agentCall.error.message}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -1012,6 +1036,8 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
   const resolveBlocker = useAtomCommand(vmAgentEnvironment.resolveBlocker, {
     reportFailure: false,
   });
+  const callBlockedReason = useAgentCallBlockedReason(environmentId);
+  const agentCall = usePlaceAgentCall();
   const [activityOpen, setActivityOpen] = useState(false);
   const [busyBlockerId, setBusyBlockerId] = useState<string | null>(null);
   const [attentionError, setAttentionError] = useState<string | null>(null);
@@ -1158,6 +1184,24 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
             <Text className="font-t3-bold text-foreground">Rules</Text>
           </Pressable>
         </View>
+        <Pressable
+          accessibilityLabel={`Call ${agent.name}`}
+          accessibilityRole="button"
+          accessibilityState={{ busy: agentCall.placing !== null }}
+          className="min-h-11 flex-row items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 disabled:opacity-50"
+          disabled={callBlockedReason !== null || agentCall.placing !== null}
+          onPress={() => void agentCall.place(environmentId, vmAgentId)}
+        >
+          <SymbolView name="phone.fill" size={17} tintColor="#ffffff" />
+          <Text className="font-t3-bold text-white">
+            {agentCall.placing !== null ? "Calling…" : "Call"}
+          </Text>
+        </Pressable>
+        {callBlockedReason !== null ? (
+          <Text className="text-sm text-foreground-muted">{callBlockedReason}</Text>
+        ) : agentCall.error !== null ? (
+          <Text className="text-sm text-red-600 dark:text-red-300">{agentCall.error.message}</Text>
+        ) : null}
       </View>
       {openBlockers.length > 0 ? (
         <View className="min-w-0 gap-3">
