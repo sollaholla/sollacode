@@ -102,7 +102,7 @@ export function TerminalLaunchPad({
     >
       <div className="my-auto w-full max-w-md rounded-[14px] border border-[var(--line)] bg-[var(--card)] p-5">
         <div className="flex items-center gap-2.5">
-          <span className="flex size-8 items-center justify-center rounded-[10px] bg-gold-500 text-[#0b0b0b]">
+          <span className="flex size-8 items-center justify-center rounded-[10px] bg-gold-500 text-(--gold-500-foreground)">
             <TerminalSquare className="size-4" />
           </span>
           <div className="min-w-0">
@@ -143,7 +143,7 @@ export function TerminalLaunchPad({
                     className={cn(
                       "flex size-4 shrink-0 items-center justify-center rounded-[5px] border text-[10px]",
                       checked
-                        ? "border-gold-500 bg-gold-500 text-[#0b0b0b]"
+                        ? "border-gold-500 bg-gold-500 text-(--gold-500-foreground)"
                         : "border-[var(--line)] bg-transparent",
                     )}
                   >
@@ -216,7 +216,7 @@ export function TerminalLaunchPad({
           <button
             type="button"
             onClick={() => onLaunch(commands)}
-            className="flex h-9 flex-1 items-center justify-center rounded-[10px] bg-gold-500 text-[13px] font-semibold text-[#0b0b0b] transition-colors hover:bg-gold-400"
+            className="flex h-9 flex-1 items-center justify-center rounded-[10px] bg-gold-500 text-[13px] font-semibold text-(--gold-500-foreground) transition-colors hover:bg-gold-400"
           >
             Launch {count === 1 ? "terminal" : `${count} terminals`}
           </button>

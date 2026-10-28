@@ -289,6 +289,12 @@ xAI's Speech-to-Speech API. The server mints an ephemeral client secret at `POST
 
 An environment a device reaches through another environment it is connected to: a phone on the Mac's Tailscale address sees the Windows machine the Mac's desktop app added. The host's desktop app publishes its saved connections (`relayedEnvironments.publish`, held in memory by [RelayedEnvironments.ts](../../apps/server/src/relay/RelayedEnvironments.ts)); clients follow `subscribeRelayedEnvironments` and register a `RelayConnectionTarget`. Requests go through `/api/relay/<environment id>` ([relayRoute.ts](../../apps/server/src/relay/relayRoute.ts)), checked against the caller's session on the host and signed with the host's credential. The `shareConnectedComputers` server setting turns it off. See [remote-access.md](../user/remote-access.md).
 
+### Color themes
+
+#### Named color theme
+
+A VS Code–style palette (Dracula, Nord, Dark High Contrast, …) that replaces Solla Light or Solla Dark on web and desktop. Each entry in [colorThemes.ts](../../apps/web/src/theme/colorThemes.ts) declares a compact palette, a Shiki `syntaxTheme` and 16 ANSI colors; `deriveColorThemeVariables` expands the palette into every CSS variable, which [useTheme.ts](../../apps/web/src/hooks/useTheme.ts) applies inline on `<html>` with `data-color-theme`. The theme's `kind` drives the `.dark` class. A JSON paint cached under `t3code:color-theme-paint` lets the pre-paint script in `index.html` color the page before the bundle loads. Components read the syntax theme as `useTheme().diffThemeName`. See [appearance.md](../user/appearance.md).
+
 ### Checkpointing
 
 Checkpointing captures workspace state over time so the app can diff turns and restore earlier points. The main pieces are [CheckpointStore.ts][19], [CheckpointDiffQuery.ts][20], and [CheckpointReactor.ts][6].

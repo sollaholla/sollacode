@@ -84,6 +84,8 @@ describe("theme failure handling", () => {
     vi.stubGlobal("document", {
       documentElement: {
         classList: { toggle: vi.fn() },
+        dataset: {},
+        style: { removeProperty: vi.fn(), setProperty: vi.fn() },
       },
     });
 
@@ -189,5 +191,94 @@ describe("theme failure handling", () => {
       expect(attributes).not.toHaveProperty("cause");
       expect(JSON.stringify(attributes)).not.toContain(cause.message);
     }
+  });
+
+  it("applies a named color theme and returns to Solla's palette", async () => {
+    const storage = createStorage();
+    const properties = new Map<string, string>();
+    const classes = new Set<string>();
+    const dataset: Record<string, string> = {};
+    let readSnapshot: (() => unknown) | undefined;
+    vi.doMock("react", () => ({
+      useCallback: <A>(callback: A) => callback,
+      useEffect: () => undefined,
+      useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => {
+        readSnapshot = getSnapshot;
+        return getSnapshot();
+      },
+    }));
+    vi.stubGlobal("window", {
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      localStorage: storage,
+      matchMedia: () => ({
+        matches: false,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+    });
+    vi.stubGlobal("requestAnimationFrame", (callback: () => void) => {
+      callback();
+      return 0;
+    });
+    vi.stubGlobal("getComputedStyle", () => ({ backgroundColor: "" }));
+    vi.stubGlobal("document", {
+      documentElement: {
+        classList: {
+          add: (name: string) => classes.add(name),
+          remove: (name: string) => classes.delete(name),
+          toggle: (name: string, on: boolean) => (on ? classes.add(name) : classes.delete(name)),
+          contains: (name: string) => classes.has(name),
+        },
+        dataset,
+        offsetHeight: 0,
+        style: {
+          setProperty: (name: string, value: string) => properties.set(name, value),
+          removeProperty: (name: string) => properties.delete(name),
+        },
+      },
+      body: {},
+      head: { append: () => undefined },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement: () => ({ setAttribute: () => undefined }),
+    });
+
+    const { useTheme, getActiveColorTheme } = await import("./useTheme");
+    useTheme().setChoice("dracula");
+    readSnapshot?.();
+    const dracula = useTheme();
+
+    expect(dracula).toMatchObject({
+      choice: "dracula",
+      resolvedTheme: "dark",
+      diffThemeName: "dracula",
+    });
+    expect(storage.getItem("t3code:theme")).toBe("dark");
+    expect(storage.getItem("t3code:color-theme")).toBe("dracula");
+    expect(JSON.parse(storage.getItem("t3code:color-theme-paint") ?? "{}")).toMatchObject({
+      id: "dracula",
+      kind: "dark",
+    });
+    expect(classes.has("dark")).toBe(true);
+    expect(dataset.colorTheme).toBe("dracula");
+    expect(properties.get("--background")).toBe(dracula.colorTheme?.palette.page);
+    expect(getActiveColorTheme()?.id).toBe("dracula");
+
+    dracula.setChoice("solla-light");
+    const solla = useTheme();
+
+    expect(solla).toMatchObject({
+      choice: "solla-light",
+      resolvedTheme: "light",
+      colorTheme: null,
+      diffThemeName: "pierre-light",
+    });
+    expect(storage.getItem("t3code:color-theme")).toBeNull();
+    expect(storage.getItem("t3code:color-theme-paint")).toBeNull();
+    expect(classes.has("dark")).toBe(false);
+    expect(dataset.colorTheme).toBeUndefined();
+    expect(properties.size).toBe(0);
+    expect(getActiveColorTheme()).toBeNull();
   });
 });

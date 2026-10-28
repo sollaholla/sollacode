@@ -19,10 +19,24 @@ it("caches the recovered text highlighter for unsupported languages", async () =
       : Promise.reject(new Error("unsupported language")),
   );
 
-  const first = getSyntaxHighlighterPromise("unsupported-test-language");
+  const first = getSyntaxHighlighterPromise("unsupported-test-language", "pierre-dark");
   await expect(first).resolves.toBe(textHighlighter);
-  const second = getSyntaxHighlighterPromise("unsupported-test-language");
+  const second = getSyntaxHighlighterPromise("unsupported-test-language", "pierre-dark");
 
   expect(second).toBe(first);
   expect(getSharedHighlighter).toHaveBeenCalledTimes(2);
+});
+
+it("loads each syntax theme into its own highlighter promise", async () => {
+  getSharedHighlighter.mockReset();
+  getSharedHighlighter.mockImplementation(() => Promise.resolve({} as DiffsHighlighter));
+
+  const pierre = getSyntaxHighlighterPromise("typescript", "pierre-dark");
+  const dracula = getSyntaxHighlighterPromise("typescript", "dracula");
+
+  expect(dracula).not.toBe(pierre);
+  expect(getSyntaxHighlighterPromise("typescript", "dracula")).toBe(dracula);
+  expect(getSharedHighlighter).toHaveBeenLastCalledWith(
+    expect.objectContaining({ themes: ["dracula"], langs: ["typescript"] }),
+  );
 });

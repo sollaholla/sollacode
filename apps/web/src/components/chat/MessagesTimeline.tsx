@@ -66,8 +66,8 @@ import {
 import { type TurnDiffSummary } from "../../types";
 import {
   getRenderablePatch,
-  resolveDiffThemeName,
   resolveFileDiffPath,
+  type DiffThemeName,
 } from "../../lib/diffRendering";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -221,6 +221,8 @@ interface TimelineRowSharedState {
   threadRef: ScopedThreadRef | null;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
+  /** Shiki theme for inline diffs, from useTheme().diffThemeName. */
+  diffThemeName: DiffThemeName;
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   /** The provider's slash commands, so a message that opens with one shows it. */
@@ -317,6 +319,7 @@ interface MessagesTimelineProps {
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
+  diffThemeName: DiffThemeName;
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
@@ -385,6 +388,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeThreadEnvironmentId,
   markdownCwd,
   resolvedTheme,
+  diffThemeName,
   timestampFormat,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
@@ -1278,6 +1282,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       threadRef,
       markdownCwd,
       resolvedTheme,
+      diffThemeName,
       workspaceRoot,
       skills,
       slashCommands,
@@ -1314,6 +1319,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       threadRef,
       markdownCwd,
       resolvedTheme,
+      diffThemeName,
       workspaceRoot,
       skills,
       slashCommands,
@@ -3157,7 +3163,7 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
             options={{
               collapsed: false,
               diffStyle: "unified",
-              theme: resolveDiffThemeName(ctx.resolvedTheme),
+              theme: ctx.diffThemeName,
             }}
           />
         ))}

@@ -26,6 +26,8 @@ import {
   PRIMARY_LOCAL_ENVIRONMENT_ID,
 } from "@t3tools/contracts";
 import { useNavigate, useParams } from "@tanstack/react-router";
+import { useTheme } from "../hooks/useTheme";
+import { COLOR_THEMES, THEME_CHOICE_GROUPS, themeChoiceLabel } from "../theme/colorThemes";
 import * as Option from "effect/Option";
 import {
   ArrowLeftIcon,
@@ -40,6 +42,7 @@ import {
   LinkIcon,
   ServerIcon,
   MessageSquareIcon,
+  PaletteIcon,
   SettingsIcon,
   SquarePenIcon,
   TextSearchIcon,
@@ -579,6 +582,7 @@ function OpenCommandPaletteDialog(props: {
 }) {
   const navigate = useNavigate();
   const { clearOpenIntent, openIntent, openOverlayMode, setOpen } = props;
+  const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
@@ -1533,6 +1537,38 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
+
+  actionItems.push({
+    kind: "submenu",
+    value: "action:color-theme",
+    searchTerms: [
+      "theme",
+      "color theme",
+      "appearance",
+      "dark",
+      "light",
+      "high contrast",
+      ...COLOR_THEMES.map((theme) => theme.label.toLowerCase()),
+    ],
+    title: "Change theme...",
+    icon: <PaletteIcon className={ITEM_ICON_CLASS} />,
+    addonIcon: <PaletteIcon className={ADDON_ICON_CLASS} />,
+    groups: THEME_CHOICE_GROUPS.map((group) => ({
+      value: `theme-${group.label}`,
+      label: group.label,
+      items: group.choices.map((option) => ({
+        kind: "action" as const,
+        value: `theme:${option.value}`,
+        searchTerms: [option.label.toLowerCase(), themeChoiceLabel(option.value).toLowerCase()],
+        title: group.label === "Solla" ? themeChoiceLabel(option.value) : option.label,
+        ...(option.value === themeChoice ? { description: "Current theme" } : {}),
+        icon: <PaletteIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          setThemeChoice(option.value);
+        },
+      })),
+    })),
+  });
 
   actionItems.push({
     kind: "action",

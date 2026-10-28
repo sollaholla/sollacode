@@ -3,6 +3,8 @@ import { useArtifactLinkOpener } from "../hooks/useArtifactLinkOpener";
 import { isDesktopOwnedConnectionTarget } from "../connection/desktopLocal";
 import type { TerminalStreamCursor } from "@t3tools/client-runtime/state/terminal";
 import { useIsMobile } from "../hooks/useMediaQuery";
+import { getActiveColorTheme } from "../hooks/useTheme";
+import { colorThemeTerminalColors } from "../theme/colorThemes";
 import { useAtomValue } from "@effect/atom-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -887,6 +889,11 @@ function terminalThemeFromApp(mountElement?: HTMLElement | null): ITheme {
     drawerStyles.color,
     normalizeComputedColor(bodyStyles.color, fallbackForeground),
   );
+
+  const colorTheme = getActiveColorTheme();
+  if (colorTheme) {
+    return { background, foreground, ...colorThemeTerminalColors(colorTheme) };
+  }
 
   if (isDark) {
     return {
@@ -1989,7 +1996,7 @@ export function TerminalViewport({
     });
     themeObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["class", "style"],
+      attributeFilter: ["class", "style", "data-color-theme"],
     });
 
     layoutScheduler.schedule();

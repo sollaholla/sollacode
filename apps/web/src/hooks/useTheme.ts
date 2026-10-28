@@ -3,20 +3,37 @@ import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
+import { resolveDiffThemeName } from "../lib/diffRendering";
+import {
+  colorThemePaint,
+  findColorTheme,
+  type ColorThemeDefinition,
+  type NamedColorThemeId,
+  type ThemeChoice,
+} from "../theme/colorThemes";
+
 const ThemePreference = Schema.Literals(["light", "dark", "system"]);
 type Theme = typeof ThemePreference.Type;
 type ThemeSnapshot = {
   theme: Theme;
   systemDark: boolean;
+  /** A named color theme overrides the Solla palette; null means Solla. */
+  colorTheme: NamedColorThemeId | null;
 };
 
 type DesktopThemeBridge = Pick<DesktopBridge, "setTheme">;
 
 const STORAGE_KEY = "t3code:theme";
+/** The named color theme, if any. The light/dark mode above keeps the theme's
+ * kind, so a build that predates named themes still opens in the right mode. */
+const COLOR_THEME_STORAGE_KEY = "t3code:color-theme";
+/** Everything index.html needs to paint a named theme before the app loads. */
+const COLOR_THEME_PAINT_STORAGE_KEY = "t3code:color-theme-paint";
 const MEDIA_QUERY = "(prefers-color-scheme: dark)";
 const DEFAULT_THEME_SNAPSHOT: ThemeSnapshot = {
   theme: "system",
   systemDark: false,
+  colorTheme: null,
 };
 const THEME_COLOR_META_NAME = "theme-color";
 const DYNAMIC_THEME_COLOR_SELECTOR = `meta[name="${THEME_COLOR_META_NAME}"][data-dynamic-theme-color="true"]`;
@@ -55,6 +72,8 @@ let listeners: Array<() => void> = [];
 let lastSnapshot: ThemeSnapshot | null = null;
 let lastDesktopTheme: Theme | null = null;
 let lastAppliedTheme: ThemeSnapshot | null = null;
+let appliedColorTheme: ColorThemeDefinition | null = null;
+let appliedColorThemeVariables: readonly string[] = [];
 let themeStorageReadFailure: ThemeStorageError | null = null;
 
 function emitChange() {
@@ -98,6 +117,98 @@ export function writeThemePreference(theme: Theme): void {
       cause,
     });
   }
+}
+
+/** The stored named color theme, or null for Solla's own palette. */
+export function readColorThemeId(): NamedColorThemeId | null {
+  // A failed storage read latches until a storage event, like the mode does.
+  if (typeof window === "undefined" || themeStorageReadFailure !== null) return null;
+  try {
+    const theme = findColorTheme(window.localStorage.getItem(COLOR_THEME_STORAGE_KEY));
+    return theme ? (theme.id as NamedColorThemeId) : null;
+  } catch {
+    // An unreadable store already falls back to Solla through getStored().
+    return null;
+  }
+}
+
+function writeColorTheme(theme: ColorThemeDefinition | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (theme) {
+      window.localStorage.setItem(COLOR_THEME_STORAGE_KEY, theme.id);
+      window.localStorage.setItem(
+        COLOR_THEME_PAINT_STORAGE_KEY,
+        JSON.stringify(colorThemePaint(theme)),
+      );
+    } else {
+      window.localStorage.removeItem(COLOR_THEME_STORAGE_KEY);
+      window.localStorage.removeItem(COLOR_THEME_PAINT_STORAGE_KEY);
+    }
+  } catch (cause) {
+    throw new ThemeStorageError({
+      operation: "write",
+      storageKey: COLOR_THEME_STORAGE_KEY,
+      cause,
+    });
+  }
+}
+
+/** Maps the stored mode and named theme onto the one value pickers show. */
+export function themeChoiceFromState(theme: Theme, colorTheme: string | null): ThemeChoice {
+  const named = findColorTheme(colorTheme);
+  if (named) return named.id as NamedColorThemeId;
+  return theme === "system" ? "system" : theme === "dark" ? "solla-dark" : "solla-light";
+}
+
+/** The named theme currently painted, for code that is not a React component. */
+export function getActiveColorTheme(): ColorThemeDefinition | null {
+  return appliedColorTheme;
+}
+
+function applyColorThemeVariables(theme: ColorThemeDefinition | null) {
+  // Solla's own palette with nothing applied: the pre-paint script read the
+  // same empty storage, so there is nothing to remove.
+  if (!theme && appliedColorTheme === null) return;
+  const root = document.documentElement;
+  // The pre-paint script in index.html may already have set a theme's
+  // variables before this module knew about them.
+  const previous =
+    appliedColorThemeVariables.length > 0
+      ? appliedColorThemeVariables
+      : Object.keys(colorThemePaintFor(root.dataset.colorTheme)?.variables ?? {});
+  for (const name of previous) root.style.removeProperty(name);
+  if (!theme) {
+    delete root.dataset.colorTheme;
+    appliedColorTheme = null;
+    appliedColorThemeVariables = [];
+    return;
+  }
+  const { variables } = colorThemePaint(theme);
+  for (const [name, value] of Object.entries(variables)) {
+    root.style.setProperty(name, value);
+  }
+  root.dataset.colorTheme = theme.id;
+  appliedColorTheme = theme;
+  appliedColorThemeVariables = Object.keys(variables);
+  refreshColorThemePaintCache(theme);
+}
+
+/** Keeps the pre-paint cache in step when a release retunes a theme's palette. */
+function refreshColorThemePaintCache(theme: ColorThemeDefinition) {
+  try {
+    const paint = JSON.stringify(colorThemePaint(theme));
+    if (window.localStorage.getItem(COLOR_THEME_PAINT_STORAGE_KEY) !== paint) {
+      window.localStorage.setItem(COLOR_THEME_PAINT_STORAGE_KEY, paint);
+    }
+  } catch {
+    // The cache only saves a flash on the next launch.
+  }
+}
+
+function colorThemePaintFor(id: string | undefined) {
+  const theme = findColorTheme(id);
+  return theme ? colorThemePaint(theme) : null;
 }
 
 function getStored(): Theme {
@@ -175,8 +286,14 @@ export function syncBrowserChromeTheme() {
 
 function applyTheme(theme: Theme, suppressTransitions = false) {
   if (typeof document === "undefined" || typeof window === "undefined") return;
-  const systemDark = theme === "system" ? getSystemDark() : false;
-  if (lastAppliedTheme?.theme === theme && lastAppliedTheme.systemDark === systemDark) {
+  const colorTheme = readColorThemeId();
+  const named = findColorTheme(colorTheme);
+  const systemDark = theme === "system" && !named ? getSystemDark() : false;
+  if (
+    lastAppliedTheme?.theme === theme &&
+    lastAppliedTheme.systemDark === systemDark &&
+    lastAppliedTheme.colorTheme === colorTheme
+  ) {
     syncDesktopTheme(theme);
     return;
   }
@@ -184,9 +301,12 @@ function applyTheme(theme: Theme, suppressTransitions = false) {
   if (suppressTransitions) {
     document.documentElement.classList.add("no-transitions");
   }
-  const isDark = theme === "dark" || (theme === "system" && systemDark);
+  const isDark = named
+    ? named.kind === "dark"
+    : theme === "dark" || (theme === "system" && systemDark);
   document.documentElement.classList.toggle("dark", isDark);
-  lastAppliedTheme = { theme, systemDark };
+  applyColorThemeVariables(named);
+  lastAppliedTheme = { theme, systemDark, colorTheme };
   syncBrowserChromeTheme();
   syncDesktopTheme(theme);
   if (suppressTransitions) {
@@ -240,13 +360,19 @@ if (typeof document !== "undefined" && typeof window !== "undefined") {
 function getSnapshot(): ThemeSnapshot {
   if (typeof window === "undefined") return DEFAULT_THEME_SNAPSHOT;
   const theme = getStored();
-  const systemDark = theme === "system" ? getSystemDark() : false;
+  const colorTheme = readColorThemeId();
+  const systemDark = theme === "system" && !colorTheme ? getSystemDark() : false;
 
-  if (lastSnapshot && lastSnapshot.theme === theme && lastSnapshot.systemDark === systemDark) {
+  if (
+    lastSnapshot &&
+    lastSnapshot.theme === theme &&
+    lastSnapshot.systemDark === systemDark &&
+    lastSnapshot.colorTheme === colorTheme
+  ) {
     return lastSnapshot;
   }
 
-  lastSnapshot = { theme, systemDark };
+  lastSnapshot = { theme, systemDark, colorTheme };
   return lastSnapshot;
 }
 
@@ -261,14 +387,14 @@ function subscribe(listener: () => void): () => void {
   // Listen for system preference changes
   const mq = typeof window.matchMedia === "function" ? window.matchMedia(MEDIA_QUERY) : null;
   const handleChange = () => {
-    if (getStored() === "system") applyTheme("system", true);
+    if (getStored() === "system" && !readColorThemeId()) applyTheme("system", true);
     emitChange();
   };
   mq?.addEventListener("change", handleChange);
 
   // Listen for storage changes from other tabs
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY) {
+    if (e.key === STORAGE_KEY || e.key === COLOR_THEME_STORAGE_KEY) {
       themeStorageReadFailure = null;
       applyTheme(getStored(), true);
       emitChange();
@@ -286,14 +412,52 @@ function subscribe(listener: () => void): () => void {
 export function useTheme() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const theme = snapshot.theme;
+  const colorTheme = findColorTheme(snapshot.colorTheme);
+  const choice = themeChoiceFromState(theme, snapshot.colorTheme);
 
-  const resolvedTheme: "light" | "dark" =
-    theme === "system" ? (snapshot.systemDark ? "dark" : "light") : theme;
+  const resolvedTheme: "light" | "dark" = colorTheme
+    ? colorTheme.kind
+    : theme === "system"
+      ? snapshot.systemDark
+        ? "dark"
+        : "light"
+      : theme;
 
+  /** Picks Solla's System/Light/Dark or one named color theme. */
+  const setChoice = useCallback((next: ThemeChoice) => {
+    if (typeof window === "undefined") return;
+    const named = findColorTheme(next);
+    const mode: Theme = named
+      ? named.kind
+      : next === "system"
+        ? "system"
+        : next === "solla-dark"
+          ? "dark"
+          : "light";
+    try {
+      writeThemePreference(mode);
+      writeColorTheme(named);
+    } catch (cause) {
+      const error = isThemeStorageError(cause)
+        ? cause
+        : new ThemeStorageError({ operation: "write", storageKey: STORAGE_KEY, cause });
+      console.error(error.message, {
+        operation: error.operation,
+        storageKey: error.storageKey,
+        ...safeErrorLogAttributes(error),
+      });
+      return;
+    }
+    applyTheme(mode, true);
+    emitChange();
+  }, []);
+
+  /** Sets Solla's light/dark mode and leaves any named color theme. */
   const setTheme = useCallback((next: Theme) => {
     if (typeof window === "undefined") return;
     try {
       writeThemePreference(next);
+      writeColorTheme(null);
     } catch (cause) {
       const error = isThemeStorageError(cause)
         ? cause
@@ -318,7 +482,18 @@ export function useTheme() {
   // Keep DOM in sync on mount/change
   useEffect(() => {
     applyTheme(theme);
-  }, [theme]);
+  }, [theme, snapshot.colorTheme]);
 
-  return { theme, setTheme, resolvedTheme } as const;
+  /** Shiki theme for code blocks, diffs and search results. */
+  const diffThemeName = resolveDiffThemeName(resolvedTheme, colorTheme);
+
+  return {
+    theme,
+    setTheme,
+    resolvedTheme,
+    choice,
+    setChoice,
+    colorTheme,
+    diffThemeName,
+  } as const;
 }

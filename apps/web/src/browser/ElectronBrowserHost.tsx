@@ -143,7 +143,7 @@ export function ElectronBrowserHost() {
     const observer = new MutationObserver(syncTheme);
     observer.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["class", "style"],
+      attributeFilter: ["class", "style", "data-color-theme"],
     });
     const headObserver = new MutationObserver(syncTheme);
     headObserver.observe(document.head, {

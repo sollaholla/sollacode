@@ -33,6 +33,7 @@ Solla Code is an independent fork. Start with [fork identity and compatibility n
   - [Storage and conversation cleanup](./user/storage.md)
   - [Remote access](./user/remote-access.md)
   - [Keeping Solla Code in sync](./user/server-updates.md)
+  - [Color themes](./user/appearance.md)
   - [Keybindings](./user/keybindings.md)
   - [macOS permissions](./user/macos-permissions.md)
 - [Integrations](./integrations/source-control-providers.md)

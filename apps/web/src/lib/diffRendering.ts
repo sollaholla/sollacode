@@ -1,14 +1,26 @@
 import { parsePatchFiles } from "@pierre/diffs/utils/parsePatchFiles";
 import type { FileDiffMetadata } from "@pierre/diffs/types";
 
+import type { ColorThemeDefinition } from "../theme/colorThemes";
+
 export const DIFF_THEME_NAMES = {
   light: "pierre-light",
   dark: "pierre-dark",
 } as const;
 
-export type DiffThemeName = (typeof DIFF_THEME_NAMES)[keyof typeof DIFF_THEME_NAMES];
+/** A Shiki theme bundled with @pierre/diffs: Pierre's own, or a named color theme's. */
+export type DiffThemeName = string;
 
-export function resolveDiffThemeName(theme: "light" | "dark"): DiffThemeName {
+/**
+ * The syntax theme for code, diffs and search results. A named color theme
+ * (Dracula, Nord, ...) brings its own; Solla uses Pierre's light or dark.
+ * Components read the result as `diffThemeName` from useTheme().
+ */
+export function resolveDiffThemeName(
+  theme: "light" | "dark",
+  colorTheme?: ColorThemeDefinition | null,
+): DiffThemeName {
+  if (colorTheme && colorTheme.kind === theme) return colorTheme.syntaxTheme;
   return theme === "dark" ? DIFF_THEME_NAMES.dark : DIFF_THEME_NAMES.light;
 }
 

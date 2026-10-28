@@ -2,7 +2,7 @@ import { getFiletypeFromFileName } from "@pierre/diffs";
 import type { ProjectContentMatch } from "@t3tools/contracts";
 import { memo, Suspense, use, type CSSProperties } from "react";
 
-import { resolveDiffThemeName } from "~/lib/diffRendering";
+import type { DiffThemeName } from "~/lib/diffRendering";
 import { getSyntaxHighlighterPromise } from "~/lib/syntaxHighlighting";
 
 import { RenderErrorBoundary } from "../RenderErrorBoundary";
@@ -129,11 +129,10 @@ function firstLineTokens(
   highlighter: Awaited<ReturnType<typeof getSyntaxHighlighterPromise>>,
   line: string,
   language: string,
-  theme: "light" | "dark",
+  themeName: DiffThemeName,
 ) {
   try {
-    return highlighter.codeToTokens(line, { lang: language, theme: resolveDiffThemeName(theme) })
-      .tokens[0];
+    return highlighter.codeToTokens(line, { lang: language, theme: themeName }).tokens[0];
   } catch {
     return undefined;
   }
@@ -143,10 +142,10 @@ function SyntaxHighlightedTokens(props: {
   readonly line: string;
   readonly language: string;
   readonly ranges: ReadonlyArray<Range>;
-  readonly theme: "light" | "dark";
+  readonly themeName: DiffThemeName;
 }) {
-  const highlighter = use(getSyntaxHighlighterPromise(props.language));
-  const tokens = firstLineTokens(highlighter, props.line, props.language, props.theme);
+  const highlighter = use(getSyntaxHighlighterPromise(props.language, props.themeName));
+  const tokens = firstLineTokens(highlighter, props.line, props.language, props.themeName);
 
   return tokens ? (
     <HighlightedTokens line={props.line} ranges={props.ranges} tokens={tokens} />
@@ -162,7 +161,8 @@ function SyntaxHighlightedTokens(props: {
 export const HighlightedSearchLine = memo(function HighlightedSearchLine(props: {
   readonly match: ProjectContentMatch;
   readonly path: string;
-  readonly theme: "light" | "dark";
+  /** Shiki theme name, from useTheme().diffThemeName. */
+  readonly themeName: DiffThemeName;
 }) {
   const ranges = normalizeRanges(props.match);
   const fallback = (
@@ -180,7 +180,7 @@ export const HighlightedSearchLine = memo(function HighlightedSearchLine(props: 
           line={props.match.lineContent}
           language={getFiletypeFromFileName(props.path)}
           ranges={ranges}
-          theme={props.theme}
+          themeName={props.themeName}
         />
       </Suspense>
     </RenderErrorBoundary>

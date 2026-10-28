@@ -137,6 +137,7 @@ function buildProps(overrides: Record<string, unknown> = {}) {
     activeThreadEnvironmentId: EnvironmentId.make("environment-local"),
     markdownCwd: undefined,
     resolvedTheme: "light" as const,
+    diffThemeName: "pierre-light",
     timestampFormat: "locale" as const,
     workspaceRoot: undefined,
     followEnd: true,

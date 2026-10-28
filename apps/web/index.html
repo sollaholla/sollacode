@@ -24,9 +24,39 @@
               ? storedTheme
               : "system";
           const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-          const isDark = theme === "dark" || (theme === "system" && prefersDark);
+          let isDark = theme === "dark" || (theme === "system" && prefersDark);
+          let chromeColor = isDark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+          // A named color theme (Dracula, Nord, ...) caches its variables so
+          // the first frame already has its colors. Stale or malformed caches
+          // fall back to Solla's own palette.
+          const colorTheme = window.localStorage.getItem("t3code:color-theme");
+          const rawPaint = colorTheme
+            ? window.localStorage.getItem("t3code:color-theme-paint")
+            : null;
+          const paint = rawPaint ? JSON.parse(rawPaint) : null;
+          if (
+            paint &&
+            paint.id === colorTheme &&
+            (paint.kind === "light" || paint.kind === "dark") &&
+            paint.variables &&
+            typeof paint.variables === "object"
+          ) {
+            const root = document.documentElement;
+            for (const name of Object.keys(paint.variables)) {
+              const value = paint.variables[name];
+              if (name.startsWith("--") && typeof value === "string") {
+                root.style.setProperty(name, value);
+              }
+            }
+            root.dataset.colorTheme = paint.id;
+            isDark = paint.kind === "dark";
+            if (typeof paint.background === "string") chromeColor = paint.background;
+            if (typeof paint.foreground === "string") {
+              root.style.setProperty("--boot-foreground", paint.foreground);
+            }
+          }
           document.documentElement.classList.toggle("dark", isDark);
-          const chromeColor = isDark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+          document.documentElement.style.setProperty("--boot-background", chromeColor);
           document.documentElement.style.backgroundColor = chromeColor;
           themeColorMeta?.setAttribute("content", chromeColor);
         } catch {
@@ -46,8 +76,8 @@
       }
 
       body {
-        background: #fafafa;
-        color: #262626;
+        background: var(--boot-background, #fafafa);
+        color: var(--boot-foreground, #262626);
         font-family:
           "DM Sans Variable",
           "DM Sans",
@@ -59,8 +89,8 @@
       }
 
       html.dark body {
-        background: #050505;
-        color: #f4f4f5;
+        background: var(--boot-background, #050505);
+        color: var(--boot-foreground, #f4f4f5);
       }
 
       /* The startup splash sits over the app, not inside it, so the app can
@@ -72,14 +102,14 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        background: #fafafa;
-        color: #262626;
+        background: var(--boot-background, #fafafa);
+        color: var(--boot-foreground, #262626);
         transition: opacity 180ms ease-out;
       }
 
       html.dark #boot-shell {
-        background: #050505;
-        color: #f4f4f5;
+        background: var(--boot-background, #050505);
+        color: var(--boot-foreground, #f4f4f5);
       }
 
       #boot-shell.boot-shell-leaving {

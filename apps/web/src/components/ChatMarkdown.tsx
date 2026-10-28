@@ -63,7 +63,7 @@ import { ScrollArea } from "./ui/scroll-area";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { useOpenInPreferredEditor } from "../editorPreferences";
-import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
+import type { DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
@@ -901,7 +901,7 @@ function UncachedShikiCodeBlock({
   cacheKey,
   isStreaming,
 }: UncachedShikiCodeBlockProps) {
-  const highlighter = use(getSyntaxHighlighterPromise(language));
+  const highlighter = use(getSyntaxHighlighterPromise(language, themeName));
   const highlightedHtml = useMemo(() => {
     try {
       return highlighter.codeToHtml(code, { lang: language, theme: themeName });
@@ -1653,7 +1653,8 @@ function ChatMarkdown({
   const skills = useStableMarkdownSkills(skillsProp);
   const leadingSlashCommand = useStableLeadingSlashCommand(leadingSlashCommandProp);
   const lowContextWarningAction = useStableLowContextWarningAction(lowContextWarningActionProp);
-  const { resolvedTheme } = useTheme();
+  const themeState = useTheme();
+  const { resolvedTheme } = themeState;
   const expandedImagePreviewController = useExpandedImagePreviewController();
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
@@ -1694,7 +1695,7 @@ function ChatMarkdown({
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const availableEditors = useStableEditorList(serverConfig?.availableEditors);
   const openInPreferredEditor = useOpenInPreferredEditor(environmentId, availableEditors);
-  const diffThemeName = resolveDiffThemeName(resolvedTheme);
+  const { diffThemeName } = themeState;
   // Bare absolute paths in prose (`/Users/me/x.png` with no link or code
   // span) become chips once the host confirms they exist. The scan is one
   // regex pass per message text; the confirmation is cached per path across

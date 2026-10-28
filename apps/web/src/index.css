@@ -112,6 +112,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --gold-500: #d9a93a;
   --gold-600: #b98a26;
   --gold-700: #8c6718;
+  /* Text drawn on a gold-500 fill. Named themes swap the whole ramp, so this
+     follows their accent too. */
+  --gold-500-foreground: #0b0b0b;
   --gold-glow: rgb(185 138 38 / 30%);
   --gold-tint: rgb(185 138 38 / 9%);
   --gold-tint-strong: rgb(185 138 38 / 15%);
@@ -1104,6 +1107,20 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --sidebar-row-selected: var(--color-white);
   --sidebar-border: var(--border);
   --sidebar-stage-fade: var(--sidebar);
+  /* What the navigation ([data-sidebar-version]) maps its own surface
+     tokens onto. Named color themes set these inline on <html>. */
+  --sidebar-scope-background: var(--color-zinc-25);
+  --sidebar-scope-card: var(--color-white);
+  --sidebar-scope-accent: var(--color-zinc-100);
+  --sidebar-scope-muted: var(--color-zinc-50);
+  --sidebar-scope-muted-foreground: var(--color-zinc-500);
+  --sidebar-scope-border: var(--color-zinc-200);
+  --sidebar-scope-input: var(--color-zinc-300);
+  --sidebar-scope-surface: var(--color-zinc-50);
+  --sidebar-scope-control-surface: var(--color-zinc-100);
+  --sidebar-scope-row-hover: var(--color-zinc-25);
+  --sidebar-scope-row-active: var(--color-white);
+  --sidebar-scope-row-selected: var(--color-white);
 
   @variant dark {
     color-scheme: dark;
@@ -1147,63 +1164,48 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     --sidebar-row-selected: var(--gold-tint);
     --sidebar-border: var(--border);
     --sidebar-stage-fade: var(--sidebar);
+    /* The sidebar shares the workspace's ink scale one step up from the app
+       background, so the two never show a seam and selection reads as gold. */
+    --sidebar-scope-background: var(--surface-row);
+    --sidebar-scope-card: var(--surface-row);
+    --sidebar-scope-accent: var(--surface-hover);
+    --sidebar-scope-muted: var(--surface-tile);
+    --sidebar-scope-muted-foreground: var(--text-2);
+    --sidebar-scope-border: var(--line);
+    --sidebar-scope-input: var(--line-strong);
+    --sidebar-scope-surface: var(--surface-row);
+    --sidebar-scope-control-surface: var(--surface-tile);
+    --sidebar-scope-row-hover: rgb(255 255 255 / 5%);
+    --sidebar-scope-row-active: var(--gold-tint-strong);
+    --sidebar-scope-row-selected: var(--gold-tint);
   }
 }
 
-/* Keep both navigation implementations on the same quiet zinc hierarchy:
-   zinc-50 navigation, zinc-25 hover, and white selected/raised surfaces.
-   The version attribute remains useful for layout-specific styling without
-   changing the color system when the beta is toggled. */
+/* Both navigation implementations paint from the sidebar scope declared with
+   the semantic tokens above, so Solla Light, Solla Dark and every named color
+   theme style the navigation and settings rail the same way. Foreground
+   tokens are inherited unchanged. The stage-channel header art ramps to this
+   panel's surface (--sidebar-stage-fade), not the global chrome background,
+   or the fade shows a seam. */
 [data-sidebar-version="v1"],
 [data-sidebar-version="v2"] {
-  --background: var(--color-zinc-25);
-  --foreground: var(--color-zinc-800);
-  --card: var(--color-white);
-  --card-foreground: var(--color-zinc-800);
-  --accent: var(--color-zinc-100);
-  --accent-foreground: var(--color-zinc-900);
-  --muted: var(--color-zinc-50);
-  --muted-foreground: var(--color-zinc-500);
-  --border: var(--color-zinc-200);
-  --input: var(--color-zinc-300);
-  --sidebar: var(--color-zinc-50);
-  --sidebar-foreground: var(--color-zinc-800);
-  --sidebar-muted-foreground: var(--color-zinc-500);
-  --sidebar-control-surface: var(--color-zinc-100);
-  --sidebar-row-hover: var(--color-zinc-25);
-  --sidebar-row-active: var(--color-white);
-  --sidebar-row-selected: var(--color-white);
-  --sidebar-border: var(--color-zinc-200);
+  --background: var(--sidebar-scope-background);
+  --card: var(--sidebar-scope-card);
+  --accent: var(--sidebar-scope-accent);
+  --muted: var(--sidebar-scope-muted);
+  --muted-foreground: var(--sidebar-scope-muted-foreground);
+  --border: var(--sidebar-scope-border);
+  --input: var(--sidebar-scope-input);
+  --sidebar: var(--sidebar-scope-surface);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-muted-foreground: var(--sidebar-scope-muted-foreground);
+  --sidebar-control-surface: var(--sidebar-scope-control-surface);
+  --sidebar-row-hover: var(--sidebar-scope-row-hover);
+  --sidebar-row-active: var(--sidebar-scope-row-active);
+  --sidebar-row-selected: var(--sidebar-scope-row-selected);
+  --sidebar-border: var(--sidebar-scope-border);
   --sidebar-stage-fade: var(--sidebar);
   background-color: var(--sidebar);
-}
-
-.dark [data-sidebar-version="v1"],
-.dark [data-sidebar-version="v2"] {
-  /* The sidebar shares the workspace's ink scale one step up from the app
-     background, so the two never show a seam and selection reads as gold. */
-  --background: var(--surface-row);
-  --foreground: var(--text-1);
-  --card: var(--surface-row);
-  --card-foreground: var(--foreground);
-  --accent: var(--surface-hover);
-  --accent-foreground: var(--text-1);
-  --muted: var(--surface-tile);
-  --muted-foreground: var(--text-2);
-  --border: var(--line);
-  --input: var(--line-strong);
-  --sidebar: var(--surface-row);
-  --sidebar-foreground: var(--foreground);
-  --sidebar-muted-foreground: var(--muted-foreground);
-  --sidebar-control-surface: var(--surface-tile);
-  --sidebar-row-hover: rgb(255 255 255 / 5%);
-  --sidebar-row-active: var(--gold-tint-strong);
-  --sidebar-row-selected: var(--gold-tint);
-  --sidebar-border: var(--border);
-  /* The stage-channel header art must ramp to THIS panel's surface, not the
-     global chrome background, or the fade shows a seam (same rule as the
-     light palette above). */
-  --sidebar-stage-fade: var(--sidebar);
 }
 
 body {

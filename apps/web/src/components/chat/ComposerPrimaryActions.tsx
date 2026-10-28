@@ -601,7 +601,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           // square (a dark nightly sky in artwork mode), which read as a dead
           // control. Channel identity lives in the sidebar header instead.
           // Ready to send: a soft gold glow says "go" without moving anything.
-          "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-[10px] bg-gold-500 text-[#0b0b0b] transition-[background-color,box-shadow] duration-200 enabled:cursor-pointer enabled:shadow-[0_0_0_1px_rgba(217,169,58,0.35),0_0_18px_-2px_rgba(217,169,58,0.6)] enabled:hover:bg-gold-400 enabled:hover:shadow-[0_0_0_1px_rgba(217,169,58,0.5),0_0_24px_-2px_rgba(217,169,58,0.8)] disabled:pointer-events-none disabled:text-[#0b0b0b]/45 sm:h-8 sm:w-8",
+          "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-[10px] bg-gold-500 text-(--gold-500-foreground) transition-[background-color,box-shadow] duration-200 enabled:cursor-pointer enabled:shadow-[0_0_0_1px_rgba(217,169,58,0.35),0_0_18px_-2px_rgba(217,169,58,0.6)] enabled:hover:bg-gold-400 enabled:hover:shadow-[0_0_0_1px_rgba(217,169,58,0.5),0_0_24px_-2px_rgba(217,169,58,0.8)] disabled:pointer-events-none disabled:text-(--gold-500-foreground)/45 sm:h-8 sm:w-8",
         )}
         {...pointerFocusProps}
         // Reconnecting and disconnected deliberately do NOT disable this. A
