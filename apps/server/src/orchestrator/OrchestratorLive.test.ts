@@ -14,7 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { FetchHttpClient, HttpRouter } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpRouter } from "effect/unstable/http";
 import { EnvironmentAuth } from "../auth/EnvironmentAuth.ts";
 import { orchestratorLiveRouteLayer } from "../http.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -23,7 +23,9 @@ import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { VmAgentCollaboration } from "../vm/VmAgentCollaboration.ts";
 import { VmAgentTaskScheduler } from "../vm/VmAgentTaskScheduler.ts";
 import {
+  createGptLiveSession,
   liveDelegationTask,
+  withFinalLineBreak,
   makeOrchestratorLive,
   OrchestratorLiveLayer,
 } from "./OrchestratorLive.ts";
@@ -204,11 +206,52 @@ it.effect(
       expect(JSON.stringify(result)).not.toContain("secret-fixture");
       expect(f.requests[0]).toMatchObject({
         session: { model: "gpt-live-1", delegation: { type: "client" }, store: false },
-        transport: { type: "webrtc", sdp: "offer" },
+        transport: { type: "webrtc", sdp: "offer\r\n" },
       });
     }).pipe(Effect.provide(f.layer), Effect.provideService(FetchHttpClient.Fetch, f.fetch));
   },
 );
+
+it("gives the offer back the final line break its trimmed request dropped", () => {
+  // OpenAI fails an offer without it: "failed to unmarshal SDP: EOF".
+  expect(withFinalLineBreak("v=0\r\na=mid:1")).toBe("v=0\r\na=mid:1\r\n");
+  expect(withFinalLineBreak("v=0\r\na=mid:1\r\n")).toBe("v=0\r\na=mid:1\r\n");
+  expect(withFinalLineBreak("v=0\r\na=mid:1 \n")).toBe("v=0\r\na=mid:1\r\n");
+});
+
+it.effect("tells the person why OpenAI refused a GPT-Live session", () => {
+  const fetch: typeof globalThis.fetch = Object.assign(
+    async () =>
+      Response.json(
+        {
+          error: {
+            message: "Failed to parse offer: failed to unmarshal SDP: EOF",
+            type: "invalid_request_error",
+            code: "invalid_offer",
+          },
+        },
+        { status: 400 },
+      ),
+    { preconnect: () => undefined },
+  );
+  return Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    const refused = yield* createGptLiveSession(http, {
+      key: "sk-fixture",
+      instructions: "Test.",
+      voice: "marin",
+      history: [],
+      sdp: "offer",
+    }).pipe(Effect.flip);
+    expect(refused.status).toBe(502);
+    expect(refused.detail).toBe(
+      "OpenAI could not start GPT-Live: Failed to parse offer: failed to unmarshal SDP: EOF",
+    );
+  }).pipe(
+    Effect.provide(FetchHttpClient.layer),
+    Effect.provideService(FetchHttpClient.Fetch, fetch),
+  );
+});
 
 it.effect("deduplicates retries and sends corrections to the active inherited worker", () => {
   const f = fixture();

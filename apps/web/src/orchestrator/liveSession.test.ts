@@ -46,9 +46,9 @@ function fixture(
     createDataChannel: () => channel,
     createOffer: async () => ({ type: "offer", sdp: "offer" }),
     setLocalDescription: async () => undefined,
-    setRemoteDescription: async () => {
+    setRemoteDescription: vi.fn(async (_description: RTCSessionDescriptionInit) => {
       negotiated.resolve();
-    },
+    }),
   };
   const getUserMedia = vi.fn(async () => stream);
   vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
@@ -269,6 +269,12 @@ describe("GPT-Live transport", () => {
 });
 
 describe("GPT-Live routes and mute", () => {
+  it("applies the answer with the final line break its trimmed result dropped", async () => {
+    const f = fixture();
+    await f.ready();
+    expect(f.peer.setRemoteDescription).toHaveBeenCalledWith({ type: "answer", sdp: "answer\r\n" });
+  });
+
   it("keeps the orchestrator's routes and body when no alternate routes are given", async () => {
     const f = fixture({}, { recentHistory: [{ role: "user", text: "earlier" }] });
     await f.ready();

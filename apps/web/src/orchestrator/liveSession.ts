@@ -689,7 +689,9 @@ export function createLiveVoiceSession(
       );
       try {
         await Promise.all([
-          connection.setRemoteDescription({ type: "answer", sdp: result.sdp }),
+          // The start result's schema trims the answer, which drops the line
+          // break SDP ends with; give it back before the browser parses it.
+          connection.setRemoteDescription({ type: "answer", sdp: `${result.sdp.trimEnd()}\r\n` }),
           started,
         ]);
       } finally {

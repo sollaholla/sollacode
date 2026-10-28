@@ -20,7 +20,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http";
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { VmAgentCollaboration } from "../vm/VmAgentCollaboration.ts";
@@ -48,6 +48,24 @@ const terminalStatuses = new Set(["completed", "failed", "cancelled", "expired"]
 /** The configured voice when GPT-Live has it, otherwise its default. */
 export const liveVoiceFor = (voice: string): string =>
   (OPENAI_LIVE_VOICES as readonly string[]).includes(voice) ? voice : "marin";
+
+const GPT_LIVE_SESSIONS_URL = "https://api.openai.com/v1/live/sessions";
+
+/**
+ * An SDP body ends with a line break. Request schemas trim it away, and
+ * OpenAI's parser then fails the whole offer ("failed to unmarshal SDP: EOF").
+ */
+export const withFinalLineBreak = (sdp: string): string => `${sdp.replace(/\s+$/u, "")}\r\n`;
+
+const OpenAiErrorBody = Schema.Struct({ error: Schema.Struct({ message: Schema.String }) });
+
+/** OpenAI's own reason for a refused request, bounded; empty when it gave none. */
+const openAiErrorMessage = (response: HttpClientResponse.HttpClientResponse) =>
+  response.json.pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(OpenAiErrorBody)),
+    Effect.map(({ error }) => error.message.trim().slice(0, 300)),
+    Effect.orElseSucceed(() => ""),
+  );
 
 /**
  * Creates one GPT-Live WebRTC session with client delegation from the
@@ -77,7 +95,7 @@ export const createGptLiveSession = Effect.fn("createGptLiveSession")(function* 
       return true;
     })
     .toReversed();
-  const request = yield* HttpClientRequest.post("https://api.openai.com/v1/live/sessions").pipe(
+  const request = yield* HttpClientRequest.post(GPT_LIVE_SESSIONS_URL).pipe(
     HttpClientRequest.bearerToken(input.key),
     HttpClientRequest.bodyJson({
       session: {
@@ -94,7 +112,7 @@ export const createGptLiveSession = Effect.fn("createGptLiveSession")(function* 
           ],
         })),
       },
-      transport: { type: "webrtc", sdp: input.sdp },
+      transport: { type: "webrtc", sdp: withFinalLineBreak(input.sdp) },
     }),
     Effect.mapError(
       () =>
@@ -114,7 +132,9 @@ export const createGptLiveSession = Effect.fn("createGptLiveSession")(function* 
         }),
     ),
   );
-  if (response.status < 200 || response.status >= 300)
+  if (response.status < 200 || response.status >= 300) {
+    const reason = yield* openAiErrorMessage(response);
+    yield* Effect.logWarning("GPT-Live session refused", { status: response.status, reason });
     return yield* new OrchestratorLiveError({
       status:
         response.status === 401 || response.status === 403
@@ -127,8 +147,11 @@ export const createGptLiveSession = Effect.fn("createGptLiveSession")(function* 
           ? "The configured OpenAI key cannot start GPT-Live. Check its access in OpenAI."
           : response.status === 429
             ? "OpenAI declined the session because of a usage or rate limit. Check API billing and retry."
-            : "OpenAI could not start GPT-Live. Try again shortly.",
+            : reason
+              ? `OpenAI could not start GPT-Live: ${reason}`
+              : "OpenAI could not start GPT-Live. Try again shortly.",
     });
+  }
   const result = yield* response.json.pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(LiveResponse)),
     Effect.mapError(
