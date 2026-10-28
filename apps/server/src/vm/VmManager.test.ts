@@ -70,6 +70,30 @@ managerLayer("VmManager", (it) => {
       }),
   );
 
+  it.effect("wears a requested character when it is free and the next free one when not", () =>
+    Effect.gen(function* () {
+      const manager = yield* VmManager;
+      const picked = yield* manager.create({
+        name: "Lantern",
+        purpose: "picked in the intro",
+        threadId: null,
+        avatarColor: 40,
+      });
+      assert.strictEqual(picked.avatarColor, 40);
+
+      const clash = yield* manager.create({
+        name: "Also lantern",
+        purpose: "same pick",
+        threadId: null,
+        avatarColor: 40,
+      });
+      assert.strictEqual(clash.avatarColor, 41);
+
+      const auto = yield* manager.create({ name: "Auto", purpose: "no pick", threadId: null });
+      assert.strictEqual(auto.avatarColor, 42);
+    }),
+  );
+
   it.effect("stops and starts an agent, persisting the status and re-broadcasting", () =>
     Effect.gen(function* () {
       const manager = yield* VmManager;

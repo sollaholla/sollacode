@@ -39,6 +39,8 @@ export interface VmManagerShape {
     readonly icon?: VmAgentIcon | null | undefined;
     /** The agent's dedicated chat thread, created by the caller (or null). */
     readonly threadId: ThreadId | null;
+    /** A preferred character; the store falls back to the next free one. */
+    readonly avatarColor?: number | null | undefined;
   }) => Effect.Effect<VmAgent, VmAgentNameConflictError>;
 
   /** Removes the agent and returns its chat thread id so the caller can delete it. */
@@ -124,6 +126,8 @@ export const make = Effect.gen(function* () {
         handle,
         purpose: input.purpose,
         icon: input.icon ?? null,
+        // A preference only: insert keeps colors unique (see VmAgentStore).
+        avatarColor: input.avatarColor ?? null,
         // Vestigial identity column (NOT NULL UNIQUE) from the VM era.
         vmId: VmId.make(`vm-${NodeCrypto.randomUUID()}`),
         threadId: input.threadId,

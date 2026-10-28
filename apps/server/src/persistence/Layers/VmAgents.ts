@@ -53,7 +53,15 @@ const makeVmAgentStore = Effect.gen(function* () {
         ${row.handle},
         ${row.purpose},
         ${row.icon},
-        (SELECT COALESCE(MAX(avatar_color_index), -1) + 1 FROM vm_agents),
+        COALESCE(
+          (
+            SELECT ${row.avatarColor ?? null}
+            WHERE NOT EXISTS (
+              SELECT 1 FROM vm_agents WHERE avatar_color_index = ${row.avatarColor ?? null}
+            )
+          ),
+          (SELECT COALESCE(MAX(avatar_color_index), -1) + 1 FROM vm_agents)
+        ),
         ${row.vmId},
         ${row.threadId},
         ${row.status},

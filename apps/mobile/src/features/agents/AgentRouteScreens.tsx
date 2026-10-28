@@ -158,7 +158,10 @@ function AgentEnvironmentSection(props: {
         </View>
       ) : agents.length === 0 ? (
         <View className="rounded-2xl border border-border bg-sheet p-4">
-          <Text className="text-sm text-foreground-muted">No named agents on this host.</Text>
+          <Text className="text-sm text-foreground-muted">
+            No agents on this host yet. Create your first one in Solla Code on your computer: open
+            Meet your agents under Agents in the sidebar.
+          </Text>
         </View>
       ) : (
         agents.map((agent) => {

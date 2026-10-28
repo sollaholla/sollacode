@@ -221,6 +221,13 @@ export const VmAgentCreateInput = Schema.Struct({
   purpose: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
   /** Optional at creation; the agent's first run picks one when absent. */
   icon: Schema.optional(VmAgentIcon),
+  /**
+   * The character to wear, as an `avatarColor` index. Taken when no other
+   * agent wears it; otherwise the server assigns the next free one.
+   */
+  avatarColor: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(9_999)),
+  ),
 });
 export type VmAgentCreateInput = Schema.Codec.Encoded<typeof VmAgentCreateInput>;
 

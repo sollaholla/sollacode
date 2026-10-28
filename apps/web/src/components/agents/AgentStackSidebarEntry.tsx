@@ -49,6 +49,7 @@ import { useSidebarRowSwipe } from "../useSidebarRowSwipe";
 import type { SidebarSwipeDirection } from "../sidebarRowSwipe";
 import type { SidebarThreadSummary } from "../../types";
 import { AgentGlyph } from "./AgentGlyph";
+import { AgentIntroDialog } from "./AgentIntroDialog";
 import { agentPresence } from "@t3tools/client-runtime/state/agent-appearance";
 import {
   agentPowerActionLabel,
@@ -676,6 +677,36 @@ function AgentSidebarRow(props: {
   );
 }
 
+/** The empty Agents section: three of the cast and a way into the intro. */
+function MeetAgentsButton(props: { readonly onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      data-testid="agents-meet"
+      onClick={props.onClick}
+      className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+    >
+      <span className="flex shrink-0 -space-x-2" aria-hidden>
+        {[0, 4, 3].map((avatarColor) => (
+          <AgentGlyph
+            key={avatarColor}
+            agentId={`agent-intro-${avatarColor}`}
+            avatarColor={avatarColor}
+            online
+            className="size-6"
+          />
+        ))}
+      </span>
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate text-xs font-medium">Meet your agents</span>
+        <span className="truncate text-[11px] text-sidebar-muted-foreground/70">
+          Create your first one
+        </span>
+      </span>
+    </button>
+  );
+}
+
 function NewAgentButton(props: { readonly onClick: () => void }) {
   return (
     <Tooltip>
@@ -825,6 +856,12 @@ function AgentEnvironmentSection(props: {
     failureCause,
     connectionPhase: environment?.connection.phase ?? null,
   });
+  // A host's first agent gets the intro instead of the plain dialog. The
+  // choice is made while closed and held while open, so the new agent landing
+  // in the registry doesn't swap the intro out mid-celebration.
+  const noAgents = snapshot !== null && agents.length === 0;
+  const [createWithIntro, setCreateWithIntro] = useState(noAgents);
+  if (!props.createOpen && createWithIntro !== noAgents) setCreateWithIntro(noAgents);
 
   return (
     <div className="flex min-w-0 flex-col gap-0.5" data-agent-environment={props.environmentId}>
@@ -847,7 +884,9 @@ function AgentEnvironmentSection(props: {
         </div>
       ) : null}
 
-      {agents.length === 0 && notice !== null && notice !== "stale" ? (
+      {agents.length === 0 && notice === "empty" ? (
+        <MeetAgentsButton onClick={() => props.onCreateOpenChange(true)} />
+      ) : agents.length === 0 && notice !== null && notice !== "stale" ? (
         <p className="min-w-0 break-words px-2 py-1 text-xs leading-relaxed text-sidebar-muted-foreground/60">
           {agentRegistryNoticeCopy(notice)}
         </p>
@@ -887,11 +926,20 @@ function AgentEnvironmentSection(props: {
         })
       )}
 
-      <CreateAgentDialog
-        open={props.createOpen}
-        onOpenChange={props.onCreateOpenChange}
-        environmentId={props.environmentId}
-      />
+      {createWithIntro ? (
+        <AgentIntroDialog
+          open={props.createOpen}
+          onOpenChange={props.onCreateOpenChange}
+          environmentId={props.environmentId}
+          onBuildWithAi={props.onOpenBuilder}
+        />
+      ) : (
+        <CreateAgentDialog
+          open={props.createOpen}
+          onOpenChange={props.onCreateOpenChange}
+          environmentId={props.environmentId}
+        />
+      )}
 
       {pendingDelete ? (
         <DeleteAgentDialog

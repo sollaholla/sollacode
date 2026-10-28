@@ -2,6 +2,27 @@
 
 Custom agents are the named agents in the **Agents** section. Each one owns one dedicated conversation. They are separate from ordinary coding threads and from the orchestrator.
 
+## Creating your first agent
+
+While a computer has no agents, the sidebar's **Agents** section shows **Meet your agents**. It
+opens a short intro (the **New agent** button opens the same intro until the first agent exists):
+
+1. **Meet your agents** introduces what agents do: scheduled jobs, their own browser, and
+   checking in with you.
+2. **Pick a character** shows the whole cast. Each character looks up when you point at it and
+   smiles when chosen; the character's name ("Mochi", "Lantern", …) becomes the suggested agent
+   name.
+3. **What should it do?** takes a name and a purpose. Starter buttons fill in a purpose (Research
+   scout, Release watcher, PR babysitter, Daily digest), or you can write your own. The preview
+   character reacts while you type. **Build one with AI instead** opens the Agent Builder chat.
+4. The new agent cheers once, and **Say hello** opens its chat.
+
+The animations play once and are off when the device asks for reduced motion. Later agents use the
+plain **New agent** dialog, and the server gives each one the next free character. The phone app
+can't create agents yet; its empty Agents screen points to the computer.
+
+## Characters
+
 Each agent gets its own character: a vivid body shape (mochi, bell, acorn, lantern, sunburst,
 gumdrop, onion, capsule, pebble, dango or star), a face, and sometimes an ink accessory such as a
 cap, goggles, a scarf, a satchel strap or a monocle. Your first eleven agents each get a different
