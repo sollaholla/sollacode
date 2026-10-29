@@ -4,8 +4,10 @@ Custom agents are the named agents in the **Agents** section. Each one owns one 
 
 ## Creating your first agent
 
-While a computer has no agents, the sidebar's **Agents** section shows **Meet your agents**. It
-opens a short intro (the **New agent** button opens the same intro until the first agent exists):
+While the computer you are using Solla Code on has no agents, the sidebar's **Agents** section
+shows **Meet your agents**. It opens a short intro (the **New agent** button opens the same intro
+until the first agent exists). Another computer you are connected to shows nothing in its empty
+section, and its **New agent** button opens the plain dialog.
 
 1. **Meet your agents** introduces what agents do: scheduled jobs, their own browser, and
    checking in with you.
@@ -323,10 +325,12 @@ Each agent speaks with its own voice. Left on **Automatic**, an agent gets one f
 so agents sound different from each other without anyone choosing, and the voice stays the same
 from call to call. To choose one, open the menu on the agent's name and pick **Call voice**
 on web and desktop, or tap **Call voice** under **Call** on the agent's screen in the phone app.
-The list gives each voice's accent: Australian, British, Irish, North American, Filipino and
-Southern U.S. English voices, plus two Brazilian Portuguese ones. Agent Builder can set it too. A
-new voice applies from the agent's next call, and a transfer puts you through to the other agent's
-own voice. On a group call everyone is heard in the voice of the agent you called.
+The list has two groups. **GPT-Live** gives each voice's accent: Australian, British, Irish, North
+American, Filipino and Southern U.S. English voices, plus two Brazilian Portuguese ones. **Grok
+Voice** lists xAI's voices, such as Eve, Ara, Leo, Rex and Sal; picking one puts that agent's calls
+on Grok Voice instead of GPT-Live. Agent Builder can set the voice too. A new voice applies from
+the agent's next call, and a transfer puts you through to the other agent's own voice, on its own
+engine. On a group call everyone is heard in the voice of the agent you called.
 
 The small arrow on **Mute** chooses the microphone. **Default** follows your system's microphone
 and switches mid-call when it changes, such as when headphones connect. A microphone you pick is
@@ -349,10 +353,14 @@ has it and offers **End call**, which hangs it up from here. This is also the wa
 a closed tab or a lost phone left open.
 
 Calls use OpenAI's GPT-Live voice model (`gpt-live-1`) with the OpenAI API key saved in
-**Settings → Orchestrator**. Without a key, **Call** is disabled on web, desktop, and the phone
-app's agent screen, with a note saying a key is needed; the phone button in the phone app's Agents
-list is hidden. OpenAI bills call time to that key. A ring that nobody answers costs nothing,
-because the voice session only starts when the call connects.
+**Settings → Orchestrator**. An agent given a Grok voice is called on xAI's Grok Voice instead, with
+the xAI key saved there (or the `XAI_API_KEY` environment variable on the host). Without the key an
+agent's calls need, **Call** is disabled on web, desktop, and the phone app's agent screen, with a
+note saying which key is needed; the phone button in the phone app's Agents list is hidden. OpenAI
+or xAI bills call time to that key, and Grok calls are counted in the orchestrator's voice usage. A
+ring that nobody answers costs nothing, because the voice session only starts when the call
+connects. Grok calls follow the microphone chosen when the call starts; changing it mid-call
+applies from the next call.
 
 During a call:
 
@@ -545,7 +553,8 @@ Limits that keep calls from becoming noise:
 - Requests from before the server started never ring.
 
 **Settings → Orchestrator → Agents can call me** turns incoming calls on or off for the whole
-computer. It is on by default, but nothing rings until an OpenAI key is saved. With it off,
+computer. It is on by default, but an agent never rings without the key its calls need (OpenAI,
+or xAI for an agent with a Grok voice). With it off,
 blockers, questions and approvals still show up as cards and push notifications, as before.
 
 ### Where a call rings

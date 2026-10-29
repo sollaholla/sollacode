@@ -394,8 +394,10 @@ pausing while it speaks. [phoneLine.ts](../../apps/web/src/orchestrator/phoneLin
 
 The GPT-Live voice an agent speaks with on [agent calls](#agent-call): the one chosen for it
 (`VmAgent.voice`, set from the agent's **Call voice** menu, the phone app's agent screen, or Agent
-Builder's `set_voice`), else one from its character, so each agent sounds different.
-[agentCallVoice.ts](../../packages/shared/src/agentCallVoice.ts).
+Builder's `set_voice`), else one from its character, so each agent sounds different. A Grok
+voice puts the agent's calls on Grok Voice instead of GPT-Live.
+[agentCallVoice.ts](../../packages/shared/src/agentCallVoice.ts),
+[grokCallSession.ts](../../apps/web/src/agentCall/grokCallSession.ts).
 
 ### Thread artifacts
 

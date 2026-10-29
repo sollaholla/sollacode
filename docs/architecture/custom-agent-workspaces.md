@@ -311,3 +311,29 @@ without one) in an order that alternates accent and presentation, starting with 
 are unique, so the first eleven agents never share a voice. The orchestrator's own voice setting no
 longer decides a call's. The record's field is a plain string so a voice a client does not know
 never fails the agent list; the set request takes only `OPENAI_LIVE_VOICES`.
+
+## Grok Voice calls
+
+An agent whose voice is one of xAI's (`agentCallEngine` in
+[agentCallVoice.ts](../../packages/shared/src/agentCallVoice.ts): no voice name belongs to both
+engines) is called on Grok Voice. The device decides from the agent record (`AgentCallParty.engine`)
+and posts `{ callId, history }` to `AGENT_CALL_GROK_SESSION_PATH`. `AgentCallLive.startGrok` shares
+`claimFor` with the GPT-Live start (agent, the engine's key, session cap, claim, roster,
+`agentCallInstructions` with `engine: "grok"`) and `keepSession`, then mints a short-lived xAI
+client secret with `mintRealtimeToken` and returns it with the instructions; the session id is the
+host's own (`grok-call-…`). Whichever engine a device asks for, the host serves it in that engine's
+voice for the agent (`agentCallVoiceOn`), so a device that started before the voice changed still
+connects. Placing and ringing check the key the agent's engine needs (`AgentCalls.callKeyConfigured`).
+
+On the device, `createGrokCallSession`
+([grokCallSession.ts](../../apps/web/src/agentCall/grokCallSession.ts)) runs the orchestrator's
+realtime session over xAI's WebSocket with a `realtimeCall` start: the call's instructions and one
+tool, `ask_your_chat` (`AGENT_CALL_GROK_DELEGATE_TOOL`), in place of the orchestrator's, no state
+cues, and `toolReplyInstructions` so the voice says it passed the request on rather than inventing a
+result. A tool call starts a delegation exactly like GPT-Live's: finished transcripts become timed
+context fragments, the host's delegation route works out what is new, and audible work events
+(terminal, waiting on the person, an approval) are spoken with `announce`. Heartbeat, release (on
+stop, on the voice ending itself, and on `pagehide`), goodbye hang-up from both sides' transcripts,
+`instruct` (a `session.update` that grows the instructions), `setMuted` (the PCM send gate) and the
+phone line (`playbackDestination`) and desk follow the GPT-Live call's behaviour. Usage goes to the
+orchestrator's voice usage ledger (`appendUsage`). `setMicrophone` is not supported on this transport.
