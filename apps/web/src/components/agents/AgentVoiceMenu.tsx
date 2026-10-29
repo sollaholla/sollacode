@@ -10,6 +10,7 @@ import { AudioLinesIcon } from "lucide-react";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import {
+  MenuGroup,
   MenuGroupLabel,
   MenuRadioGroup,
   MenuRadioItem,
@@ -44,31 +45,36 @@ export function AgentVoiceMenu(props: {
         </span>
       </MenuSubTrigger>
       <MenuSubPopup className="max-h-[min(28rem,var(--available-height))] w-64 overflow-y-auto">
-        <MenuGroupLabel>{agent.name} speaks with</MenuGroupLabel>
-        <MenuRadioGroup
-          value={chosen ?? AUTOMATIC}
-          onValueChange={(value) => {
-            const voice = isAgentCallVoice(value) ? value : null;
-            if (voice === chosen) return;
-            void setVoice({
-              environmentId: props.environmentId,
-              input: { vmAgentId: agent.vmAgentId, voice },
-            });
-          }}
-        >
-          <MenuRadioItem value={AUTOMATIC}>
-            <span className="block">Automatic</span>
-            <span className="block text-xs text-muted-foreground">{automatic}, from its look</span>
-          </MenuRadioItem>
-          {OPENAI_LIVE_VOICES.map((voice) => (
-            <MenuRadioItem key={voice} value={voice}>
-              <span className="block">{AGENT_CALL_VOICE_DETAILS[voice].label}</span>
+        {/* Base UI throws (error #31) for a label outside its group. */}
+        <MenuGroup>
+          <MenuGroupLabel>{agent.name} speaks with</MenuGroupLabel>
+          <MenuRadioGroup
+            value={chosen ?? AUTOMATIC}
+            onValueChange={(value) => {
+              const voice = isAgentCallVoice(value) ? value : null;
+              if (voice === chosen) return;
+              void setVoice({
+                environmentId: props.environmentId,
+                input: { vmAgentId: agent.vmAgentId, voice },
+              });
+            }}
+          >
+            <MenuRadioItem value={AUTOMATIC}>
+              <span className="block">Automatic</span>
               <span className="block text-xs text-muted-foreground">
-                {AGENT_CALL_VOICE_DETAILS[voice].detail}
+                {automatic}, from its look
               </span>
             </MenuRadioItem>
-          ))}
-        </MenuRadioGroup>
+            {OPENAI_LIVE_VOICES.map((voice) => (
+              <MenuRadioItem key={voice} value={voice}>
+                <span className="block">{AGENT_CALL_VOICE_DETAILS[voice].label}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {AGENT_CALL_VOICE_DETAILS[voice].detail}
+                </span>
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
+        </MenuGroup>
       </MenuSubPopup>
     </MenuSub>
   );
