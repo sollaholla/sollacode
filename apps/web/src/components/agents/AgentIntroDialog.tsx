@@ -23,6 +23,7 @@ import {
   AGENT_INTRO_CAST,
   AGENT_INTRO_STARTERS,
   AGENT_INTRO_WELCOME_CAST,
+  agentIntroCastLayer,
   agentIntroDefaultName,
   agentIntroPreviewMood,
 } from "./agentIntro";
@@ -183,18 +184,21 @@ export function AgentIntroDialog(props: {
           {step === "meet" ? (
             <>
               <div
-                className="flex items-end justify-center gap-1 sm:gap-2"
+                className="isolate flex items-end justify-center gap-1 sm:gap-2"
                 data-testid="agent-intro-cast"
               >
                 {AGENT_INTRO_WELCOME_CAST.map((avatarColor, index) => (
                   <span
                     key={avatarColor}
                     className={cn(
-                      "agent-intro-pop inline-flex",
+                      "agent-intro-pop relative inline-flex",
                       // The middle of the line-up stands a little taller.
                       index === 3 ? "size-20 sm:size-24" : "size-12 sm:size-16",
                     )}
-                    style={popDelay(index)}
+                    // A fixed stacking order. Without one, whichever character
+                    // was mid-animation (a transform) painted over its
+                    // neighbours, so overlapping characters swapped places.
+                    style={{ ...popDelay(index), zIndex: agentIntroCastLayer(index) }}
                   >
                     <AgentGlyph
                       agentId={`agent-intro-${avatarColor}`}

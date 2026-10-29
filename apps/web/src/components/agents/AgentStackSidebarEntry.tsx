@@ -723,15 +723,18 @@ function MeetAgentsButton(props: { readonly onClick: () => void }) {
       onClick={props.onClick}
       className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
     >
-      <span className="flex shrink-0 -space-x-2" aria-hidden>
-        {[0, 4, 3].map((avatarColor) => (
-          <AgentGlyph
-            key={avatarColor}
-            agentId={`agent-intro-${avatarColor}`}
-            avatarColor={avatarColor}
-            online
-            className="size-6"
-          />
+      <span className="isolate flex shrink-0 -space-x-2" aria-hidden>
+        {[0, 4, 3].map((avatarColor, index) => (
+          // A fixed stacking order: an animating character (a transform)
+          // otherwise paints over its neighbours, so they swapped places.
+          <span key={avatarColor} className="relative inline-flex" style={{ zIndex: index + 1 }}>
+            <AgentGlyph
+              agentId={`agent-intro-${avatarColor}`}
+              avatarColor={avatarColor}
+              online
+              className="size-6"
+            />
+          </span>
         ))}
       </span>
       <span className="flex min-w-0 flex-col">
@@ -893,10 +896,12 @@ function AgentEnvironmentSection(props: {
     failureCause,
     connectionPhase: environment?.connection.phase ?? null,
   });
-  // A host's first agent gets the intro instead of the plain dialog. The
-  // choice is made while closed and held while open, so the new agent landing
-  // in the registry doesn't swap the intro out mid-celebration.
-  const noAgents = snapshot !== null && agents.length === 0;
+  // This device's own host's first agent gets the intro instead of the plain
+  // dialog; a remote computer with no agents gets neither the intro nor its
+  // invitation. The choice is made while closed and held while open, so the
+  // new agent landing in the registry doesn't swap the intro out mid-celebration.
+  const isLocalHost = props.environmentId === usePrimaryEnvironmentId();
+  const noAgents = isLocalHost && snapshot !== null && agents.length === 0;
   const [createWithIntro, setCreateWithIntro] = useState(noAgents);
   if (!props.createOpen && createWithIntro !== noAgents) setCreateWithIntro(noAgents);
 
@@ -922,7 +927,9 @@ function AgentEnvironmentSection(props: {
       ) : null}
 
       {agents.length === 0 && notice === "empty" ? (
-        <MeetAgentsButton onClick={() => props.onCreateOpenChange(true)} />
+        isLocalHost ? (
+          <MeetAgentsButton onClick={() => props.onCreateOpenChange(true)} />
+        ) : null
       ) : agents.length === 0 && notice !== null && notice !== "stale" ? (
         <p className="min-w-0 break-words px-2 py-1 text-xs leading-relaxed text-sidebar-muted-foreground/60">
           {agentRegistryNoticeCopy(notice)}

@@ -10,6 +10,16 @@ export const AGENT_INTRO_CAST: ReadonlyArray<number> = AGENT_AVATAR_SHAPES.map((
 /** Characters that pop in on the welcome step, in order. */
 export const AGENT_INTRO_WELCOME_CAST: ReadonlyArray<number> = [0, 4, 2, 3, 1, 5, 10];
 
+/**
+ * How far forward the welcome line-up's character at `index` stands: the
+ * tall one in the middle in front, each further step out one layer back, so
+ * neighbours always overlap the same way.
+ */
+export function agentIntroCastLayer(index: number): number {
+  const middle = Math.floor(AGENT_INTRO_WELCOME_CAST.length / 2);
+  return AGENT_INTRO_WELCOME_CAST.length - Math.abs(index - middle);
+}
+
 /** A character's suggested name: its shape, capitalized ("Mochi", "Lantern"). */
 export function agentIntroDefaultName(avatarColor: number): string {
   const shape = agentAvatarTraits("agent-intro", avatarColor).shape;

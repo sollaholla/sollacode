@@ -5,6 +5,7 @@ import {
   AGENT_INTRO_CAST,
   AGENT_INTRO_STARTERS,
   AGENT_INTRO_WELCOME_CAST,
+  agentIntroCastLayer,
   agentIntroDefaultName,
   agentIntroPreviewMood,
 } from "./agentIntro";
@@ -35,5 +36,16 @@ describe("agent intro", () => {
       "working",
     );
     expect(agentIntroPreviewMood({ ...base, failed: true })).toBe("blocked");
+  });
+});
+
+describe("agentIntroCastLayer", () => {
+  it("stands the middle character in front and every neighbour one layer apart", () => {
+    const layers = AGENT_INTRO_WELCOME_CAST.map((_, index) => agentIntroCastLayer(index));
+    const middle = Math.floor(AGENT_INTRO_WELCOME_CAST.length / 2);
+    expect(Math.max(...layers)).toBe(layers[middle]);
+    for (let index = 1; index < layers.length; index += 1)
+      expect(Math.abs(layers[index]! - layers[index - 1]!)).toBe(1);
+    expect(Math.min(...layers)).toBeGreaterThan(0);
   });
 });
