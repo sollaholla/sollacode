@@ -133,6 +133,20 @@ layer("OrchestrationEventStore", (it) => {
       ).pipe(Effect.map((chunk) => Array.from(chunk)));
       assert.equal(afterA2.length, 0);
 
+      // The captured head is inclusive. Persisted events beyond it belong to
+      // the live stream and must not be decoded or counted toward the cap.
+      const throughA1 = yield* Stream.runCollect(
+        eventStore.readThreadEventsFromSequence(threadA, 0, 100, a1.sequence),
+      );
+      assert.deepEqual(
+        Array.from(throughA1, (event) => event.eventId),
+        [a1.eventId],
+      );
+      const atHead = yield* Stream.runCollect(
+        eventStore.readThreadEventsFromSequence(threadA, a1.sequence, 100, a1.sequence),
+      );
+      assert.equal(atHead.length, 0);
+
       // The limit bounds the number of thread events returned.
       const limited = yield* Stream.runCollect(
         eventStore.readThreadEventsFromSequence(threadA, 0, 1),
@@ -299,6 +313,52 @@ layer("OrchestrationEventStore", (it) => {
           [null, null],
           [same, same],
         ],
+      );
+    }),
+  );
+  it.effect("keeps the captured replay head across pages and excludes later invalid payloads", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-replay-head");
+      const now = "2026-01-01T00:00:00.000Z";
+      const events = yield* Effect.forEach(
+        Array.from({ length: 502 }, (_, index) => index),
+        (index) =>
+          eventStore.append({
+            type: "thread.message-sent",
+            eventId: EventId.make(`evt-replay-head-${index}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: now,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            payload: {
+              threadId,
+              messageId: MessageId.make(`message-replay-head-${index}`),
+              role: "user",
+              text: `message ${index}`,
+              turnId: null,
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          }),
+      );
+      const head = events[500]!.sequence;
+      yield* sql`
+        UPDATE orchestration_events
+        SET payload_json = 'invalid json'
+        WHERE sequence = ${events[501]!.sequence}
+      `;
+      const replayed = yield* Stream.runCollect(
+        eventStore.readThreadEventsFromSequence(threadId, 0, 1_000, head),
+      );
+      assert.deepEqual(
+        Array.from(replayed, (event) => event.sequence),
+        events.slice(0, 501).map((event) => event.sequence),
       );
     }),
   );

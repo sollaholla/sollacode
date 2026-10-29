@@ -44,6 +44,7 @@ export interface OrchestrationEngineShape {
    * @param threadId - Thread aggregate stream to scan.
    * @param fromSequenceExclusive - Sequence cursor (exclusive).
    * @param limit - Maximum number of thread events to read.
+   * @param throughSequenceInclusive - Captured replay head; later events arrive on the live stream.
    * @returns Stream containing this thread's ordered events after the cursor.
    *
    * Unlike {@link readEvents}, this does not decode every intervening global
@@ -54,6 +55,7 @@ export interface OrchestrationEngineShape {
     threadId: ThreadId,
     fromSequenceExclusive: number,
     limit?: number,
+    throughSequenceInclusive?: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError, never>;
 
   /**

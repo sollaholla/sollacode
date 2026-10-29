@@ -1,4 +1,9 @@
 import {
+  THREAD_CACHE_SCHEMA_VERSION,
+  THREAD_CACHE_MAX_CHARS,
+  isCurrentThreadCachePayload,
+} from "@t3tools/client-runtime/platform/thread-cache-format";
+import {
   ConnectionCatalogDocument,
   type ConnectionCatalogDocument as ConnectionCatalogDocumentType,
   ConnectionPersistenceError,
@@ -56,11 +61,8 @@ const StoredShellSnapshot = Schema.Struct({
   snapshot: OrchestrationShellSnapshot,
 });
 const StoredShellSnapshotJson = Schema.fromJsonString(StoredShellSnapshot);
-// v2 stores the snapshot sequence alongside the thread so a warm cache can
-// resume via `afterSequence` instead of re-downloading the full thread body.
-// Older v1 entries (no sequence) fail to decode and are treated as a cold cache.
 const StoredThreadSnapshot = Schema.Struct({
-  schemaVersion: Schema.Literal(2),
+  schemaVersion: Schema.Literal(THREAD_CACHE_SCHEMA_VERSION),
   environmentId: EnvironmentId,
   threadId: ThreadId,
   snapshot: OrchestrationThreadDetailSnapshot,
@@ -532,38 +534,44 @@ export const connectionStorageLayer = Layer.effectContext(
           ),
         ),
       loadThread: (environmentId, threadId) =>
-        readDatabaseValue(
-          database,
-          THREAD_STORE_NAME,
-          threadCacheKey(environmentId, threadId),
-        ).pipe(
-          Effect.flatMap((raw) => {
-            if (typeof raw !== "string") {
-              return Effect.succeed(Option.none());
-            }
-            return decodeStoredThreadSnapshot(raw).pipe(
-              Effect.mapError((cause) => persistenceError("load-thread", cause)),
-              Effect.map((stored) =>
-                stored.environmentId === environmentId && stored.threadId === threadId
-                  ? Option.some(stored.snapshot)
-                  : Option.none(),
-              ),
-            );
-          }),
-          Effect.mapError((cause) =>
-            cause._tag === "ConnectionPersistenceError"
-              ? cause
-              : persistenceError("load-thread", cause),
-          ),
-        ),
+        Effect.gen(function* () {
+          const key = threadCacheKey(environmentId, threadId);
+          const raw = yield* readDatabaseValue(database, THREAD_STORE_NAME, key);
+          if (raw === undefined) return Option.none();
+          const discard = removeDatabaseValue(database, THREAD_STORE_NAME, key).pipe(
+            Effect.catch(() => Effect.void),
+            Effect.as(Option.none<OrchestrationThreadDetailSnapshot>()),
+          );
+          if (typeof raw !== "string" || !isCurrentThreadCachePayload(raw)) {
+            return yield* discard;
+          }
+          return yield* decodeStoredThreadSnapshot(raw).pipe(
+            Effect.flatMap((stored) =>
+              stored.environmentId === environmentId &&
+              stored.threadId === threadId &&
+              stored.snapshot.thread.id === threadId
+                ? Effect.succeed(Option.some(stored.snapshot))
+                : discard,
+            ),
+            Effect.catch(() => discard),
+          );
+        }).pipe(Effect.mapError((cause) => persistenceError("load-thread", cause))),
       saveThread: (environmentId, snapshot) =>
         Effect.gen(function* () {
           const encoded = yield* encodeStoredThreadSnapshot({
-            schemaVersion: 2,
+            schemaVersion: THREAD_CACHE_SCHEMA_VERSION,
             environmentId,
             threadId: snapshot.thread.id,
             snapshot,
           }).pipe(Effect.mapError((cause) => persistenceError("save-thread", cause)));
+          if (encoded.length > THREAD_CACHE_MAX_CHARS) {
+            yield* removeDatabaseValue(
+              database,
+              THREAD_STORE_NAME,
+              threadCacheKey(environmentId, snapshot.thread.id),
+            );
+            return;
+          }
           yield* writeDatabaseValue(
             database,
             THREAD_STORE_NAME,

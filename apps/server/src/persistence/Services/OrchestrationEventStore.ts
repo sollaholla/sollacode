@@ -52,6 +52,7 @@ export interface OrchestrationEventStoreShape {
    * @param threadId - Thread aggregate stream to scan.
    * @param sequenceExclusive - Sequence cursor (exclusive).
    * @param limit - Maximum number of events to emit.
+   * @param throughSequenceInclusive - Captured replay head; later events arrive on the live stream.
    * @returns Stream containing this thread's ordered events after the cursor.
    *
    * Uses the (aggregate_kind, stream_id, sequence) index so an idle thread
@@ -63,6 +64,7 @@ export interface OrchestrationEventStoreShape {
     threadId: ThreadId,
     sequenceExclusive: number,
     limit?: number,
+    throughSequenceInclusive?: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
 
   /**

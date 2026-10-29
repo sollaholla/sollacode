@@ -369,7 +369,14 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     threadId,
     fromSequenceExclusive,
     limit,
-  ) => eventStore.readThreadEventsFromSequence(threadId, fromSequenceExclusive, limit);
+    throughSequenceInclusive,
+  ) =>
+    eventStore.readThreadEventsFromSequence(
+      threadId,
+      fromSequenceExclusive,
+      limit,
+      throughSequenceInclusive,
+    );
 
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {

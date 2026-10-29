@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   EventId,
+  MessageId,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
@@ -142,6 +143,8 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   readonly httpSnapshot?: Option.Option<OrchestrationThreadDetailSnapshot>;
   readonly completionMarker?: boolean;
   readonly connected?: boolean;
+  readonly cachedHistory?: OrchestrationThreadDetailSnapshot["history"];
+  readonly failFirstSave?: boolean;
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
@@ -157,6 +160,8 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const lastRequestCompletionMarker = yield* Ref.make<boolean | undefined>(undefined);
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationThreadDetailSnapshot>>([]);
   const persisted = yield* Queue.unbounded<OrchestrationThreadDetailSnapshot>();
+  const saveAttempts = yield* Queue.unbounded<void>();
+  let saveFailed = false;
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
@@ -232,14 +237,23 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
           ? Option.some({
               snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
               thread: options.cached,
+              ...(options.cachedHistory === undefined ? {} : { history: options.cachedHistory }),
             })
           : Option.none(),
       ),
     saveThread: (_environmentId, thread) =>
-      Ref.update(savedThreads, (current) => [...current, thread]).pipe(
-        Effect.andThen(Queue.offer(persisted, thread)),
-        Effect.asVoid,
-      ),
+      Effect.gen(function* () {
+        yield* Queue.offer(saveAttempts, undefined);
+        if (options?.failFirstSave && !saveFailed) {
+          saveFailed = true;
+          return yield* new Persistence.ConnectionPersistenceError({
+            operation: "save-thread",
+            message: "Test cache write failed",
+          });
+        }
+        yield* Ref.update(savedThreads, (current) => [...current, thread]);
+        yield* Queue.offer(persisted, thread);
+      }),
     removeThread: (_environmentId, threadId) =>
       Ref.update(removedThreads, (current) => [...current, threadId]),
     loadServerConfig: () => Effect.succeed(Option.none()),
@@ -280,6 +294,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     supervisorSession,
     savedThreads,
     persisted,
+    saveAttempts,
     removedThreads,
     wakeups,
     replaceSession: SubscriptionRef.set(
@@ -429,26 +444,171 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("does not rewrite an unchanged warm cache on completion or teardown", () =>
+    Effect.gen(function* () {
+      const savedThreads = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness({
+            cached: BASE_THREAD,
+            completionMarker: true,
+            cachedHistory: {
+              totalMessages: 0,
+              totalActivities: 0,
+              messageCursor: null,
+              activityCursor: null,
+            },
+          });
+          yield* Queue.offer(harness.inputs, { kind: "synchronized" });
+          yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+          yield* TestClock.adjust("500 millis");
+          return harness.savedThreads;
+        }),
+      );
+      expect(yield* Ref.get(savedThreads)).toEqual([]);
+    }),
+  );
+
+  it.effect("does not repeat a successful debounced save during teardown", () =>
+    Effect.gen(function* () {
+      const savedThreads = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness({ cached: BASE_THREAD });
+          yield* Queue.offer(harness.inputs, titleUpdated("Updated", 8));
+          yield* awaitThreadState(
+            harness.observed,
+            (value) => Option.isSome(value.data) && value.data.value.title === "Updated",
+          );
+          yield* TestClock.adjust("500 millis");
+          yield* Queue.take(harness.persisted);
+          return harness.savedThreads;
+        }),
+      );
+      expect(yield* Ref.get(savedThreads)).toHaveLength(1);
+    }),
+  );
+
+  it.effect("flushes pending changes once when closing before the debounce", () =>
+    Effect.gen(function* () {
+      const savedThreads = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness({ cached: BASE_THREAD });
+          yield* Queue.offer(harness.inputs, titleUpdated("Pending change", 8));
+          yield* awaitThreadState(
+            harness.observed,
+            (value) => Option.isSome(value.data) && value.data.value.title === "Pending change",
+          );
+          return harness.savedThreads;
+        }),
+      );
+      const saved = yield* Ref.get(savedThreads);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]?.thread.title).toBe("Pending change");
+    }),
+  );
+
+  it.effect("retries a failed save during teardown", () =>
+    Effect.gen(function* () {
+      const savedThreads = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness({ cached: BASE_THREAD, failFirstSave: true });
+          yield* Queue.offer(harness.inputs, titleUpdated("Updated", 8));
+          yield* awaitThreadState(
+            harness.observed,
+            (value) => Option.isSome(value.data) && value.data.value.title === "Updated",
+          );
+          yield* TestClock.adjust("500 millis");
+          yield* Queue.take(harness.saveAttempts);
+          expect(yield* Ref.get(harness.savedThreads)).toHaveLength(0);
+          return harness.savedThreads;
+        }),
+      );
+      expect(yield* Ref.get(savedThreads)).toHaveLength(1);
+      expect((yield* Ref.get(savedThreads))[0]?.thread.title).toBe("Updated");
+    }),
+  );
+
+  it.effect("persists sequence-only and history-only changes with the same thread reference", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_THREAD, completionMarker: true });
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: { snapshotSequence: 8, thread: BASE_THREAD },
+      });
+      yield* Queue.offer(harness.inputs, { kind: "synchronized" });
+      yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+      yield* TestClock.adjust("500 millis");
+      expect((yield* Queue.take(harness.persisted)).snapshotSequence).toBe(8);
+      const history = {
+        totalMessages: 1000,
+        totalActivities: 2000,
+        messageCursor: { createdAt: BASE_THREAD.createdAt, messageId: MessageId.make("older") },
+        activityCursor: null,
+      };
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: { snapshotSequence: 8, thread: BASE_THREAD, history },
+      });
+      yield* awaitThreadState(harness.observed, (value) => value.history === history);
+      yield* TestClock.adjust("500 millis");
+      expect((yield* Queue.take(harness.persisted)).history).toBe(history);
+    }),
+  );
+
+  it.effect("bounds only persisted messages while leaving the active reader's history intact", () =>
+    Effect.gen(function* () {
+      const thread = {
+        ...BASE_THREAD,
+        messages: Array.from({ length: 5507 }, (_, index) => ({
+          id: MessageId.make(`message-${String(index).padStart(4, "0")}`),
+          role: "user" as const,
+          text: "Test message ".repeat(100),
+          turnId: null,
+          streaming: false,
+          createdAt: BASE_THREAD.createdAt,
+          updatedAt: BASE_THREAD.updatedAt,
+        })),
+      };
+      const harness = yield* makeHarness();
+      yield* Queue.offer(harness.inputs, snapshot(thread));
+      const current = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      yield* TestClock.adjust("500 millis");
+      const saved = yield* Queue.take(harness.persisted);
+      expect(Option.getOrThrow(current.data)).toBe(thread);
+      expect(saved.thread.messages).toHaveLength(100);
+      expect(saved.history?.messageCursor?.messageId).toBe("message-5407");
+      expect(saved.history?.totalMessages).toBe(5507);
+      expect(Option.getOrThrow((yield* Ref.get(harness.latest)).data).messages).toHaveLength(5507);
+    }),
+  );
+
   it.effect("retains and saves active work on disconnect, then reconciles the host snapshot", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: ACTIVE_THREAD, connected: true });
-      yield* Queue.offer(harness.inputs, snapshot(ACTIVE_THREAD));
-      yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+      const activeThread = { ...ACTIVE_THREAD, title: "Active work" };
+      yield* Queue.offer(harness.inputs, snapshot(activeThread));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" && Option.isSome(value.data) && value.data.value === activeThread,
+      );
       yield* SubscriptionRef.set(harness.supervisorSession, Option.none());
       yield* SubscriptionRef.set(harness.supervisorState, AVAILABLE_CONNECTION_STATE);
       const offline = yield* awaitThreadState(
         harness.observed,
         (value) => value.status === "cached",
       );
-      expect(Option.getOrThrow(offline.data)).toEqual(ACTIVE_THREAD);
+      expect(Option.getOrThrow(offline.data)).toEqual(activeThread);
       yield* TestClock.adjust("500 millis");
       const saved = yield* Queue.take(harness.persisted);
-      expect(saved.thread).toEqual(ACTIVE_THREAD);
+      expect(saved.thread).toEqual(activeThread);
       const restored = yield* makeHarness({ cached: saved.thread });
       const restoredState = yield* awaitThreadState(restored.observed, (value) =>
         Option.isSome(value.data),
       );
-      expect(Option.getOrThrow(restoredState.data)).toEqual(ACTIVE_THREAD);
+      expect(Option.getOrThrow(restoredState.data)).toEqual(activeThread);
       yield* harness.replaceSession;
       yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
       const refreshed = yield* awaitThreadState(

@@ -11,6 +11,7 @@ import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -31,6 +32,7 @@ import { subscribeDynamic } from "../rpc/client.ts";
 import { ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
+import { boundedThreadCacheSnapshot } from "./threadCache.ts";
 import { THREAD_STATE_IDLE_TTL_MS } from "./threadRetention.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import {
@@ -140,11 +142,21 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const synchronizationStartedAt = yield* Ref.make<number | null>(null);
   const consecutiveStalls = yield* Ref.make(0);
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
+  const lastPersisted = yield* Ref.make(Option.getOrNull(cached));
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
   ) {
-    yield* cache.saveThread(environmentId, snapshot).pipe(
+    const previous = yield* Ref.get(lastPersisted);
+    if (
+      previous?.thread === snapshot.thread &&
+      previous.snapshotSequence === snapshot.snapshotSequence &&
+      previous.history === snapshot.history
+    )
+      return;
+    if ((yield* SubscriptionRef.get(state)).status === "deleted") return;
+    yield* cache.saveThread(environmentId, boundedThreadCacheSnapshot(snapshot)).pipe(
+      Effect.andThen(Ref.set(lastPersisted, snapshot)),
       Effect.catch((error) =>
         Effect.logWarning("Could not persist the thread cache.").pipe(
           Effect.annotateLogs({
@@ -157,7 +169,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
-  yield* Stream.fromQueue(persistence).pipe(
+  const persistenceFiber = yield* Stream.fromQueue(persistence).pipe(
     Stream.debounce("500 millis"),
     Stream.runForEach(persist),
     Effect.forkScoped,
@@ -583,11 +595,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   );
 
   yield* Effect.addFinalizer(() =>
-    Effect.all([
-      SubscriptionRef.get(state),
-      SubscriptionRef.get(lastSequence),
-      Ref.get(historyWindow),
-    ]).pipe(
+    Fiber.interrupt(persistenceFiber).pipe(
+      Effect.andThen(
+        Effect.all([
+          SubscriptionRef.get(state),
+          SubscriptionRef.get(lastSequence),
+          Ref.get(historyWindow),
+        ]),
+      ),
       Effect.flatMap(([current, snapshotSequence, history]) =>
         Option.match(current.data, {
           onNone: () => Effect.void,

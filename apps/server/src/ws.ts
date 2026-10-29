@@ -465,7 +465,7 @@ const SHELL_RESUME_MAX_GAP = 1_000;
 // Only when this one thread has itself produced more than this many new events
 // is a fresh snapshot cheaper than an incremental replay. Reading one past the
 // cap lets us detect the overflow before committing to a replay.
-export const THREAD_RESUME_MAX_EVENTS = 2_000;
+export const THREAD_RESUME_MAX_EVENTS = 256;
 
 const THREAD_DETAIL_COALESCE_WINDOW = Duration.millis(50);
 const THREAD_DETAIL_COALESCE_MAX_CHUNK = 512;
@@ -2101,6 +2101,7 @@ const makeWsRpcLayer = (
                       input.threadId,
                       afterSequence,
                       THREAD_RESUME_MAX_EVENTS + 1,
+                      headSequence,
                     ),
                   ).pipe(
                     Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),

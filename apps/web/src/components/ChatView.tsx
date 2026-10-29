@@ -60,7 +60,11 @@ import {
   connectionStatusTitle,
   type EnvironmentConnectionPresentation,
 } from "@t3tools/client-runtime/connection";
-import { effectiveSettled, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  effectiveSettled,
+  effectiveSnoozed,
+  threadWokeAt,
+} from "@t3tools/client-runtime/state/thread-settled";
 import {
   scopedThreadKey,
   scopeProjectRef,
@@ -310,6 +314,7 @@ import {
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
 import { getClientSettings, useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useNowMinuteValue } from "../hooks/useNowMinute";
+import { useThreadVisitWatermark } from "../hooks/useThreadVisitWatermark";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import {
   resolveAppModelSelectionForInstance,
@@ -2389,12 +2394,8 @@ function ChatViewContent(props: ChatViewProps) {
     [routeServerThreadShell, threadDetailLoading],
   );
   const activeServerThread = serverThread ?? loadingServerThread;
-  const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const showProviderUsageBar = useUiStateStore((store) => store.showProviderUsageBar);
   const recordProviderUsage = useProviderUsageStore((store) => store.record);
-  const activeThreadLastVisitedAt = useUiStateStore(
-    (store) => store.threadLastVisitedAtById[routeThreadKey],
-  );
   const settings = useEnvironmentSettings(environmentId);
   // New-thread defaults live in the primary environment's settings.json (the
   // settings UI never writes to remote environments), so read them from the
@@ -3603,25 +3604,6 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [openOrReuseProjectDraftThread],
   );
-
-  useEffect(() => {
-    if (!serverThread?.id) return;
-    const threadUpdatedAt = Date.parse(serverThread.updatedAt);
-    if (Number.isNaN(threadUpdatedAt)) return;
-    const lastVisitedAt = activeThreadLastVisitedAt ? Date.parse(activeThreadLastVisitedAt) : NaN;
-    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= threadUpdatedAt) return;
-
-    markThreadVisited(
-      scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
-      serverThread.updatedAt,
-    );
-  }, [
-    activeThreadLastVisitedAt,
-    markThreadVisited,
-    serverThread?.environmentId,
-    serverThread?.id,
-    serverThread?.updatedAt,
-  ]);
 
   const selectedProviderByThreadId = composerActiveProvider ?? null;
   useLayoutEffect(() => {
@@ -6968,6 +6950,17 @@ function ChatViewContent(props: ChatViewProps) {
     );
     return () => window.clearTimeout(id);
   }, [activeThreadShell?.snoozedUntil, activeThreadSnoozed, snoozeWakeTick]);
+  useThreadVisitWatermark({
+    threadKey: serverThread
+      ? scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id))
+      : null,
+    updatedAt: serverThread?.updatedAt,
+    completedAt: serverThread?.latestTurn?.completedAt,
+    wokeAt:
+      serverThread && activeThreadShell && supportsSnooze
+        ? threadWokeAt(activeThreadShell, { now: new Date().toISOString() })
+        : null,
+  });
   // Read off the minute clock without re-rendering the whole view each
   // minute: only a change in the answer does.
   const activeThreadSettled = useNowMinuteValue((nowMinute) =>

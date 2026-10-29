@@ -1,4 +1,9 @@
 import {
+  THREAD_CACHE_SCHEMA_VERSION,
+  THREAD_CACHE_MAX_CHARS,
+  isCurrentThreadCachePayload,
+} from "@t3tools/client-runtime/platform/thread-cache-format";
+import {
   ConnectionPersistenceError,
   EnvironmentCacheStore,
 } from "@t3tools/client-runtime/platform";
@@ -17,7 +22,7 @@ import * as Schema from "effect/Schema";
 import * as MobileDatabase from "../persistence/mobile-database";
 
 const SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
-const THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION = 2;
+
 const SERVER_CONFIG_CACHE_SCHEMA_VERSION = 1;
 const VCS_REFS_CACHE_SCHEMA_VERSION = 1;
 
@@ -27,7 +32,7 @@ const StoredShellSnapshot = Schema.Struct({
   snapshot: OrchestrationShellSnapshot,
 });
 const StoredThreadSnapshot = Schema.Struct({
-  schemaVersion: Schema.Literal(THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION),
+  schemaVersion: Schema.Literal(THREAD_CACHE_SCHEMA_VERSION),
   environmentId: Schema.String,
   threadId: Schema.String,
   snapshot: OrchestrationThreadDetailSnapshot,
@@ -79,35 +84,43 @@ function loadDecodedCache<A, B>(input: {
   readonly cacheKey: string;
   readonly operation: CacheOperation;
   readonly decode: (raw: string) => Effect.Effect<A, unknown>;
+  readonly schemaVersion?: number;
+  readonly acceptRaw?: (raw: string) => boolean;
   readonly select: (value: A) => Option.Option<B>;
 }): Effect.Effect<Option.Option<B>, ConnectionPersistenceError> {
-  return input.database.loadCache(input.environmentId, input.kind, input.cacheKey).pipe(
-    Effect.mapError(mapDatabaseError(input.operation)),
-    Effect.flatMap(
-      Option.match({
-        onNone: () => Effect.succeed(Option.none<B>()),
-        onSome: (raw) =>
-          input.decode(raw).pipe(
-            Effect.map(input.select),
-            Effect.catch((cause) =>
-              Effect.logWarning("Discarding corrupt mobile client cache record.", {
-                environmentId: input.environmentId,
-                kind: input.kind,
-                cacheKey: input.cacheKey,
-                cause: String(cause),
-              }).pipe(
-                Effect.andThen(
-                  input.database
-                    .removeCache(input.environmentId, input.kind, input.cacheKey)
-                    .pipe(Effect.catch(() => Effect.void)),
-                ),
+  return input.database
+    .loadCache(input.environmentId, input.kind, input.cacheKey, input.schemaVersion)
+    .pipe(
+      Effect.mapError(mapDatabaseError(input.operation)),
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.succeed(Option.none<B>()),
+          onSome: (raw) => {
+            const discard = input.database
+              .removeCache(input.environmentId, input.kind, input.cacheKey)
+              .pipe(
+                Effect.catch(() => Effect.void),
                 Effect.as(Option.none<B>()),
+              );
+            if (input.acceptRaw !== undefined && !input.acceptRaw(raw)) return discard;
+            return input.decode(raw).pipe(
+              Effect.flatMap((value) => {
+                const selected = input.select(value);
+                return Option.isSome(selected) ? Effect.succeed(selected) : discard;
+              }),
+              Effect.catch((cause) =>
+                Effect.logWarning("Discarding corrupt mobile client cache record.", {
+                  environmentId: input.environmentId,
+                  kind: input.kind,
+                  cacheKey: input.cacheKey,
+                  cause: String(cause),
+                }).pipe(Effect.andThen(discard)),
               ),
-            ),
-          ),
-      }),
-    ),
-  );
+            );
+          },
+        }),
+      ),
+    );
 }
 
 export const make = Effect.fn("MobileEnvironmentCacheStore.make")(function* () {
@@ -143,8 +156,12 @@ export const make = Effect.fn("MobileEnvironmentCacheStore.make")(function* () {
         cacheKey: threadId,
         operation: "load-thread",
         decode: decodeStoredThreadSnapshot,
+        schemaVersion: THREAD_CACHE_SCHEMA_VERSION,
+        acceptRaw: isCurrentThreadCachePayload,
         select: (stored) =>
-          stored.environmentId === environmentId && stored.threadId === threadId
+          stored.environmentId === environmentId &&
+          stored.threadId === threadId &&
+          stored.snapshot.thread.id === threadId
             ? Option.some(stored.snapshot)
             : Option.none(),
       }),
@@ -152,13 +169,19 @@ export const make = Effect.fn("MobileEnvironmentCacheStore.make")(function* () {
     saveThread: Effect.fn("MobileEnvironmentCache.saveThread")(function* (environmentId, snapshot) {
       const threadId = snapshot.thread.id;
       const payload = yield* encodeStoredThreadSnapshot({
-        schemaVersion: THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION,
+        schemaVersion: THREAD_CACHE_SCHEMA_VERSION,
         environmentId,
         threadId,
         snapshot,
       }).pipe(Effect.mapError((cause) => persistenceError("save-thread", cause)));
+      if (payload.length > THREAD_CACHE_MAX_CHARS) {
+        yield* database
+          .removeCache(environmentId, "thread", threadId)
+          .pipe(Effect.mapError(mapDatabaseError("save-thread")));
+        return;
+      }
       yield* database
-        .saveCache(environmentId, "thread", threadId, THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION, payload)
+        .saveCache(environmentId, "thread", threadId, THREAD_CACHE_SCHEMA_VERSION, payload)
         .pipe(Effect.mapError(mapDatabaseError("save-thread")));
     }),
     removeThread: Effect.fn("MobileEnvironmentCache.removeThread")((environmentId, threadId) =>

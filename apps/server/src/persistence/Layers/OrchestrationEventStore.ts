@@ -67,6 +67,7 @@ const ReadFromSequenceRequestSchema = Schema.Struct({
 const ReadThreadFromSequenceRequestSchema = Schema.Struct({
   streamId: ThreadId,
   sequenceExclusive: NonNegativeInt,
+  throughSequenceInclusive: NonNegativeInt,
   limit: Schema.Number,
 });
 const DEFAULT_READ_FROM_SEQUENCE_LIMIT = 1_000;
@@ -222,6 +223,7 @@ const makeEventStore = Effect.gen(function* () {
         WHERE aggregate_kind = 'thread'
           AND stream_id = ${request.streamId}
           AND sequence > ${request.sequenceExclusive}
+          AND sequence <= ${request.throughSequenceInclusive}
         ORDER BY sequence ASC
         LIMIT ${request.limit}
       `,
@@ -307,7 +309,12 @@ const makeEventStore = Effect.gen(function* () {
   };
 
   const readThreadEventsFromSequence: OrchestrationEventStoreShape["readThreadEventsFromSequence"] =
-    (streamId, sequenceExclusive, limit = DEFAULT_READ_FROM_SEQUENCE_LIMIT) => {
+    (
+      streamId,
+      sequenceExclusive,
+      limit = DEFAULT_READ_FROM_SEQUENCE_LIMIT,
+      throughSequenceInclusive = Number.MAX_SAFE_INTEGER,
+    ) => {
       const normalizedLimit = Math.max(0, Math.floor(limit));
       if (normalizedLimit === 0) {
         return Stream.empty;
@@ -320,6 +327,7 @@ const makeEventStore = Effect.gen(function* () {
           readThreadEventRowsFromSequence({
             streamId,
             sequenceExclusive: cursor,
+            throughSequenceInclusive,
             limit: Math.min(remaining, READ_PAGE_SIZE),
           }).pipe(
             Effect.mapError(

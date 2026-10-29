@@ -94,6 +94,18 @@ Finite requests, durable subscriptions, and commands are separate APIs:
 - Shell and thread snapshots are available while offline.
 - Thread detail snapshots carry a bounded recent transcript plus total counts and keyset cursors;
   web and mobile request older pages over HTTP only when the user approaches them.
+- Persisted thread snapshots retain the newest 100 messages and 200 activities, plus pending
+  messages and the lifecycle rows needed for task, plan, and delivery state. Trimming only affects
+  the saved copy. History cursors follow the contiguous recent window, not older pinned rows.
+  Unchanged thread references, sequences, and history windows skip persistence, including on
+  scope disposal. Plans and checkpoints retain their server-provided state.
+- Thread cache format v3 rejects old versions and payloads above 4 Mi characters before JSON
+  decoding. Invalid records are evicted; a snapshot exceeding that size is not cached. Web and
+  desktop use IndexedDB; mobile also filters the schema version in SQLite before reading payloads.
+  This invalidates client copies only, not the owning environment's durable conversation history.
+- Resuming a thread replays at most 256 events through the captured server head. Above that limit,
+  the server sends a recent snapshot. A live subscription attached before replay delivers events
+  beyond the captured head, and clients deduplicate overlapping sequences.
 - A connected transport may have `empty`, `cached`, `synchronizing`, `live`, or
   failed shell and thread data independently.
 - Cached shell and thread projections are never allowed to overwrite newer live

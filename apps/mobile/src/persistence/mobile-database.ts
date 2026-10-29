@@ -197,6 +197,7 @@ export class MobileDatabase extends Context.Service<
       environmentId: EnvironmentId,
       kind: ClientCacheKind,
       cacheKey: string,
+      schemaVersion?: number,
     ) => Effect.Effect<Option.Option<string>, MobileDatabaseError>;
     readonly saveCache: (
       environmentId: EnvironmentId,
@@ -284,19 +285,33 @@ const makeAvailable = Effect.gen(function* () {
   });
 
   return MobileDatabase.of({
-    loadCache: Effect.fn("MobileDatabase.loadCache")((environmentId, kind, cacheKey) =>
-      Effect.tryPromise({
-        try: () =>
-          database.getFirstAsync<{ readonly payload: string }>(
-            `SELECT payload
-                     FROM client_cache
-                     WHERE environment_id = ? AND kind = ? AND cache_key = ?`,
-            environmentId,
-            kind,
-            cacheKey,
-          ),
-        catch: databaseError("load-cache"),
-      }).pipe(Effect.map((row) => Option.fromNullishOr(row?.payload))),
+    loadCache: Effect.fn("MobileDatabase.loadCache")(
+      (environmentId, kind, cacheKey, schemaVersion) =>
+        Effect.tryPromise({
+          try: async () => {
+            if (schemaVersion !== undefined) {
+              await database.runAsync(
+                `DELETE FROM client_cache
+               WHERE environment_id = ? AND kind = ? AND cache_key = ? AND schema_version != ?`,
+                environmentId,
+                kind,
+                cacheKey,
+                schemaVersion,
+              );
+            }
+            return database.getFirstAsync<{ readonly payload: string }>(
+              `SELECT payload
+             FROM client_cache
+             WHERE environment_id = ? AND kind = ? AND cache_key = ?
+             ${schemaVersion === undefined ? "" : "AND schema_version = ?"}`,
+              environmentId,
+              kind,
+              cacheKey,
+              ...(schemaVersion === undefined ? [] : [schemaVersion]),
+            );
+          },
+          catch: databaseError("load-cache"),
+        }).pipe(Effect.map((row) => Option.fromNullishOr(row?.payload))),
     ),
     saveCache: Effect.fn("MobileDatabase.saveCache")(
       (environmentId, kind, cacheKey, schemaVersion, payload) =>

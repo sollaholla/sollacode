@@ -1,4 +1,13 @@
-import { EnvironmentId, type VcsListRefsResult } from "@t3tools/contracts";
+import { THREAD_CACHE_MAX_CHARS } from "@t3tools/client-runtime/platform/thread-cache-format";
+import { afterEach, vi } from "vite-plus/test";
+import {
+  EnvironmentId,
+  ThreadId,
+  ProjectId,
+  ProviderInstanceId,
+  type OrchestrationThreadDetailSnapshot,
+  type VcsListRefsResult,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -128,6 +137,102 @@ describe("mobile SQLite environment cache store", () => {
 
       expect(yield* store.loadVcsRefs(ENVIRONMENT_ID, "/repo")).toEqual(Option.none());
       expect(yield* store.loadVcsRefs(otherEnvironmentId, "/repo")).toEqual(Option.some(REFS));
+    }),
+  );
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("mobile thread cache format", () => {
+  for (const [name, raw] of [
+    ["old version", '{"schemaVersion":2,"snapshot":' + " ".repeat(100_000)],
+    [
+      "oversized current version",
+      '{"schemaVersion":3,"snapshot":' + " ".repeat(THREAD_CACHE_MAX_CHARS),
+    ],
+  ] as const) {
+    it.effect(`evicts ${name} without parsing the JSON`, () =>
+      Effect.gen(function* () {
+        const memory = makeDatabase();
+        const store = yield* make().pipe(Effect.provideService(MobileDatabase, memory.database));
+        const threadId = ThreadId.make("thread-1");
+        const id = cacheId(ENVIRONMENT_ID, "thread", threadId);
+        memory.values.set(id, raw);
+        const parse = vi.spyOn(JSON, "parse");
+        expect(yield* store.loadThread(ENVIRONMENT_ID, threadId)).toEqual(Option.none());
+        expect(parse.mock.calls.some(([input]) => input === raw)).toBe(false);
+        expect(memory.removed).toEqual([id]);
+      }),
+    );
+  }
+
+  it.effect("evicts malformed current thread records", () =>
+    Effect.gen(function* () {
+      const memory = makeDatabase();
+      const store = yield* make().pipe(Effect.provideService(MobileDatabase, memory.database));
+      const threadId = ThreadId.make("thread-1");
+      const id = cacheId(ENVIRONMENT_ID, "thread", threadId);
+      memory.values.set(id, '{"schemaVersion":3,"snapshot":broken}');
+      expect(yield* store.loadThread(ENVIRONMENT_ID, threadId)).toEqual(Option.none());
+      expect(memory.removed).toEqual([id]);
+    }),
+  );
+});
+
+const threadSnapshot: OrchestrationThreadDetailSnapshot = {
+  snapshotSequence: 7,
+  thread: {
+    id: ThreadId.make("thread-1"),
+    projectId: ProjectId.make("project-1"),
+    title: "Cached thread",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    latestTurn: null,
+    createdAt: "2026-04-01T00:00:00.000Z",
+    updatedAt: "2026-04-01T00:00:00.000Z",
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    deletedAt: null,
+    messages: [],
+    proposedPlans: [],
+    activities: [],
+    checkpoints: [],
+    session: null,
+  },
+};
+
+describe("mobile thread cache writes", () => {
+  it.effect("round-trips version 3 snapshots with the resume sequence", () =>
+    Effect.gen(function* () {
+      const memory = makeDatabase();
+      const store = yield* make().pipe(Effect.provideService(MobileDatabase, memory.database));
+      yield* store.saveThread(ENVIRONMENT_ID, threadSnapshot);
+      expect(
+        memory.values.get(cacheId(ENVIRONMENT_ID, "thread", threadSnapshot.thread.id)),
+      ).toMatch(/^\{"schemaVersion":3,/);
+      expect(yield* store.loadThread(ENVIRONMENT_ID, threadSnapshot.thread.id)).toMatchObject(
+        Option.some(threadSnapshot),
+      );
+    }),
+  );
+
+  it.effect("removes the previous cache when its replacement exceeds the decode budget", () =>
+    Effect.gen(function* () {
+      const memory = makeDatabase();
+      const store = yield* make().pipe(Effect.provideService(MobileDatabase, memory.database));
+      yield* store.saveThread(ENVIRONMENT_ID, threadSnapshot);
+      yield* store.saveThread(ENVIRONMENT_ID, {
+        ...threadSnapshot,
+        thread: { ...threadSnapshot.thread, title: "x".repeat(THREAD_CACHE_MAX_CHARS) },
+      });
+      expect(yield* store.loadThread(ENVIRONMENT_ID, threadSnapshot.thread.id)).toEqual(
+        Option.none(),
+      );
+      expect(memory.removed).toEqual([cacheId(ENVIRONMENT_ID, "thread", threadSnapshot.thread.id)]);
     }),
   );
 });

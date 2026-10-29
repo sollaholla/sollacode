@@ -55,6 +55,10 @@
       "types": "./src/platform/index.ts",
       "default": "./src/platform/index.ts"
     },
+    "./platform/thread-cache-format": {
+      "types": "./src/platform/threadCacheFormat.ts",
+      "default": "./src/platform/threadCacheFormat.ts"
+    },
     "./platform/storage-document": {
       "types": "./src/platform/storageDocument.ts",
       "default": "./src/platform/storageDocument.ts"

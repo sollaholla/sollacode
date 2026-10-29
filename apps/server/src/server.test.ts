@@ -5639,6 +5639,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
       let globalReadEventsCalls = 0;
       let readThreadAfterSequence: number | undefined;
       let readThreadLimit: number | undefined;
+      let readThreadThroughSequence: number | undefined;
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
       const now = "2026-01-01T00:00:00.000Z";
       const threadMessageEvent = {
@@ -5677,7 +5678,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
                 globalReadEventsCalls += 1;
                 return {} as OrchestrationEvent;
               }),
-            readThreadEvents: (_threadId, afterSequence, limit) => {
+            readThreadEvents: (_threadId, afterSequence, limit, throughSequence) => {
+              readThreadThroughSequence = throughSequence;
               readThreadAfterSequence = afterSequence;
               readThreadLimit = limit;
               return Stream.make(threadMessageEvent);
@@ -5717,6 +5719,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
       // the overflow cap (cap + 1 to detect "too many").
       assert.equal(readThreadAfterSequence, 5);
       assert.equal(readThreadLimit, THREAD_RESUME_MAX_EVENTS + 1);
+      assert.equal(readThreadThroughSequence, 2_000_000);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -5808,11 +5811,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("subscribeThread bounds catch-up replay to the thread-scoped read", () =>
+  it.effect("subscribeThread replays 256 events then continues live", () =>
     Effect.gen(function* () {
       let replayThreadId: ThreadId | undefined;
       let replayAfterSequence: number | undefined;
       let replayLimit: number | undefined;
+      let replayThroughSequence: number | undefined;
+      let snapshotCalls = 0;
+      const nextLiveEvent = yield* Deferred.make<OrchestrationEvent>();
       const now = "2026-01-01T00:00:00.000Z";
       const messageEvent = {
         sequence: 3,
@@ -5837,16 +5843,37 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
         },
       } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
 
+      const replayEvents = Array.from({ length: 256 }, (_, index) => ({
+        ...messageEvent,
+        sequence: index + 1,
+        eventId: EventId.make(`event-replay-${index}`),
+        payload: {
+          ...messageEvent.payload,
+          messageId: MessageId.make(`message-replay-${index}`),
+        },
+      }));
+
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
-            latestSequence: Effect.succeed(50),
-            readThreadEvents: (threadId, afterSequence, limit) => {
+            latestSequence: Effect.succeed(256),
+            streamDomainEvents: Stream.fromEffect(Deferred.await(nextLiveEvent)),
+            readThreadEvents: (threadId, afterSequence, limit, throughSequence) => {
+              replayThroughSequence = throughSequence;
               replayThreadId = threadId;
               replayAfterSequence = afterSequence;
               replayLimit = limit;
-              return Stream.make(messageEvent);
+              return Stream.fromEffect(
+                Deferred.succeed(nextLiveEvent, { ...messageEvent, sequence: 257 }),
+              ).pipe(Stream.flatMap(() => Stream.fromIterable(replayEvents)));
             },
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.sync(() => {
+                snapshotCalls += 1;
+                return Option.none();
+              }),
           },
         },
       });
@@ -5858,20 +5885,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
             threadId: defaultThreadId,
             afterSequence: 0,
             requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
+          }).pipe(Stream.take(258), Stream.runCollect),
         ),
       );
 
-      const [first, second] = Array.from(items);
-      assert.equal(first?.kind, "event");
-      assert.equal(first?.kind === "event" ? first.event.sequence : null, 3);
-      assert.equal(second?.kind, "synchronized");
+      assert.equal(snapshotCalls, 0);
+      assert.deepEqual(
+        Array.from(items).flatMap((item) => (item.kind === "event" ? [item.event.sequence] : [])),
+        [...replayEvents.map((event) => event.sequence), 257],
+      );
+      assert.equal(Array.from(items).filter((item) => item.kind === "synchronized").length, 1);
       // The read is scoped to this thread, starts at the client's cursor, and
       // is bounded by the overflow cap (not Number.MAX_SAFE_INTEGER).
       assert.equal(replayThreadId, defaultThreadId);
       assert.equal(replayAfterSequence, 0);
-      assert.equal(replayLimit, THREAD_RESUME_MAX_EVENTS + 1);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+      assert.equal(replayLimit, 257);
+      assert.equal(replayThroughSequence, 256);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
   it.effect("subscribeShell sends a fresh snapshot instead of replaying a large gap", () =>
