@@ -320,8 +320,8 @@ Phone-line calls**; the change applies from the next call. The phone app plays c
 call page, so it gets the same sound, at the default settings.
 
 Each agent speaks with its own voice. Left on **Automatic**, an agent gets one from its character,
-so agents sound different from each other without anyone choosing; the first agent keeps the
-GPT-Live default, Marin. To choose one, open the menu on the agent's name and pick **Call voice**
+so agents sound different from each other without anyone choosing, and the voice stays the same
+from call to call. To choose one, open the menu on the agent's name and pick **Call voice**
 on web and desktop, or tap **Call voice** under **Call** on the agent's screen in the phone app.
 The list gives each voice's accent: Australian, British, Irish, North American, Filipino and
 Southern U.S. English voices, plus two Brazilian Portuguese ones. Agent Builder can set it too. A

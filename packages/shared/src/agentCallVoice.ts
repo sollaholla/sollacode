@@ -28,8 +28,7 @@ export const AGENT_CALL_VOICE_DETAILS: Readonly<
 /**
  * The English voices an agent without a chosen voice is given, ordered so
  * that agents created one after another alternate in accent and
- * presentation. The first is the GPT-Live default, so the first agent keeps
- * the voice every agent had before voices were per agent.
+ * presentation, starting with the GPT-Live default.
  */
 const AUTOMATIC_VOICES: ReadonlyArray<AgentCallVoice> = [
   "marin",
