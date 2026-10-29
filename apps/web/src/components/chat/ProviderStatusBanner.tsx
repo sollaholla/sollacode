@@ -5,17 +5,26 @@ import { cn } from "~/lib/utils";
 import { formatProviderDriverKindLabel } from "../../providerModels";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
-const TRANSIENT_CODEX_STATUS_MESSAGES = new Set([
-  "Codex provider status has not been checked in this session yet.",
-  "Codex can still be used, but its status check timed out. The next provider refresh will try again.",
-]);
+/**
+ * What providers say when their status check has not run yet, is still
+ * running, or could not finish. None of it says anything about the provider
+ * itself; a provider that really is broken fails the turn that uses it. As a
+ * banner it nagged: a busy machine timed out Claude's check, the banner
+ * showed, the next good check cleared it along with its dismissal, and the
+ * next timeout showed it again.
+ */
+const UNFINISHED_STATUS_CHECK_MESSAGES = [
+  /provider status has not been checked in this session yet\.$/u,
+  /^Checking .+ availability\.\.\.$/u,
+  /^Could not verify .+ authentication status/u,
+  /\btimed out\b/u,
+];
 
 export function isTransientProviderStatusCheck(status: ServerProvider | null): boolean {
   return (
-    (status?.driver === "codex" &&
-      status.status === "warning" &&
+    (status?.status === "warning" &&
       status.auth.status === "unknown" &&
-      TRANSIENT_CODEX_STATUS_MESSAGES.has(status.message ?? "")) ||
+      UNFINISHED_STATUS_CHECK_MESSAGES.some((pattern) => pattern.test(status.message ?? ""))) ||
     (status?.status === "warning" &&
       status.auth.status === "authenticated" &&
       status.message?.startsWith("Reconnecting to ") === true)

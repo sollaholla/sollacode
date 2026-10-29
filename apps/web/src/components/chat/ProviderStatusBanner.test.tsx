@@ -80,6 +80,56 @@ describe("ProviderStatusBanner", () => {
     expect(shouldShowProviderStatusBanner(status, null)).toBe(false);
   });
 
+  it("hides every provider's unfinished status check, not just Codex's", () => {
+    const unknown = (driver: string, message: string): ServerProvider => ({
+      ...warningProvider(),
+      instanceId: ProviderInstanceId.make(driver),
+      driver: ProviderDriverKind.make(driver),
+      auth: { status: "unknown" },
+      message,
+    });
+    for (const status of [
+      unknown(
+        "claudeAgent",
+        "Could not verify Claude authentication status from initialization result.",
+      ),
+      unknown("claudeAgent", "Claude provider status has not been checked in this session yet."),
+      unknown("cursor", "Could not verify Cursor Agent authentication status."),
+      unknown("cursor", "Checking Cursor Agent availability..."),
+      unknown(
+        "grok",
+        "Grok CLI is installed. ACP handshake timed out after 8000ms; using built-in models.",
+      ),
+      unknown(
+        "kimi",
+        "Kimi Code CLI is installed, but its ACP sign-in check timed out after 8000ms.",
+      ),
+    ]) {
+      expect(shouldShowProviderStatusBanner(status, null)).toBe(false);
+    }
+    // A warning that asks something of the person still shows.
+    expect(
+      shouldShowProviderStatusBanner(
+        unknown(
+          "cursor",
+          "The `agent about` command is unavailable in this version of the Cursor Agent CLI.",
+        ),
+        null,
+      ),
+    ).toBe(true);
+    // So does a known sign-out, which is an error, not an unfinished check.
+    expect(
+      shouldShowProviderStatusBanner(
+        {
+          ...unknown("claudeAgent", "Could not verify Claude authentication status."),
+          status: "error",
+          auth: { status: "unauthenticated" },
+        },
+        null,
+      ),
+    ).toBe(true);
+  });
+
   it("keeps a reconnect retry subtle while the last authenticated state is retained", () => {
     const status = {
       ...warningProvider(),
