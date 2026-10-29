@@ -20,14 +20,7 @@ export const AGENT_AVATAR_SHAPES = [
   "dango",
   "star",
 ] as const;
-export const AGENT_AVATAR_ACCESSORIES = [
-  "none",
-  "goggles",
-  "scarf",
-  "strap",
-  "monocle",
-  "cap",
-] as const;
+export const AGENT_AVATAR_ACCESSORIES = ["none", "goggles", "scarf", "monocle"] as const;
 export const AGENT_AVATAR_EYES = ["glint", "pill", "beads", "visor"] as const;
 
 export type AgentAvatarShape = (typeof AGENT_AVATAR_SHAPES)[number];
@@ -76,20 +69,20 @@ interface CastMember {
 }
 
 /** A person's first agents are a designed cast; later ones remix it. */
-// Accessories alternate so neighbours in a list never match, and over the
-// first fourteen agents each one appears about twice (round two shifts each
-// accessory by two, so mochi→scarf, bell→goggles, acorn→none).
+// Accessories alternate so neighbours in a list never wear the same one. Later
+// rounds move each worn accessory on by one and leave a bare character bare
+// (acorn→goggles, sunburst→scarf, pebble→monocle).
 const CAST: readonly CastMember[] = [
   { shape: "mochi", color: 0, eyes: "glint", accessory: "none", glance: [-2.5, -1.5] },
-  { shape: "bell", color: 1, eyes: "pill", accessory: "cap", glance: [2, 0] },
+  { shape: "bell", color: 1, eyes: "pill", accessory: "none", glance: [2, 0] },
   { shape: "acorn", color: 2, eyes: "beads", accessory: "monocle", glance: [0, -1] },
   { shape: "lantern", color: 3, eyes: "visor", accessory: "none", glance: [2.5, 0] },
   { shape: "sunburst", color: 7, eyes: "glint", accessory: "goggles", glance: [-2, 0] },
-  { shape: "gumdrop", color: 8, eyes: "beads", accessory: "strap", glance: [2, -1] },
+  { shape: "gumdrop", color: 8, eyes: "beads", accessory: "none", glance: [2, -1] },
   { shape: "onion", color: 9, eyes: "glint", accessory: "monocle", glance: [-1.5, -1] },
-  { shape: "capsule", color: 10, eyes: "pill", accessory: "cap", glance: [2.5, -1] },
+  { shape: "capsule", color: 10, eyes: "pill", accessory: "none", glance: [2.5, -1] },
   { shape: "pebble", color: 11, eyes: "glint", accessory: "scarf", glance: [-2, -1] },
-  { shape: "dango", color: 12, eyes: "beads", accessory: "strap", glance: [1.5, 0] },
+  { shape: "dango", color: 12, eyes: "beads", accessory: "none", glance: [1.5, 0] },
   { shape: "star", color: 13, eyes: "glint", accessory: "none", glance: [0, -1.5] },
 ];
 
@@ -157,6 +150,8 @@ function hueOf(hex: string): number {
   return h * 60;
 }
 
+const WORN_ACCESSORIES = AGENT_AVATAR_ACCESSORIES.filter((accessory) => accessory !== "none");
+
 export function agentAvatarTraits(agentId: string, avatarColor?: number | null): AgentAvatarTraits {
   const persisted = avatarColor != null && Number.isSafeInteger(avatarColor) && avatarColor >= 0;
   const index = persisted ? avatarColor : agentIdentitySeed(agentId);
@@ -164,11 +159,10 @@ export function agentAvatarTraits(agentId: string, avatarColor?: number | null):
   const round = Math.floor(index / CAST.length);
   const color = PALETTE[(base.color + round * 4) % PALETTE.length]!;
   const accessory =
-    round === 0
+    round === 0 || base.accessory === "none"
       ? base.accessory
-      : AGENT_AVATAR_ACCESSORIES[
-          (AGENT_AVATAR_ACCESSORIES.indexOf(base.accessory) + round * 2) %
-            AGENT_AVATAR_ACCESSORIES.length
+      : WORN_ACCESSORIES[
+          (WORN_ACCESSORIES.indexOf(base.accessory) + round) % WORN_ACCESSORIES.length
         ]!;
   const flip = round % 2 === 1 ? -1 : 1;
   return {
@@ -199,13 +193,11 @@ interface Geo {
   readonly face: P2;
   readonly gap: number;
   readonly sides: readonly [number, number];
-  /** Top of the head, where hats sit. */
+  /** Top of the head. */
   readonly crown: P2;
   readonly chin: P2;
   /** Scarf line: its top y, and the body's left and right edges there. */
   readonly neck: readonly [number, number, number];
-  /** Cap seat: the y its rim sits on, and the head's half-width there. */
-  readonly hat: readonly [number, number];
   readonly eyeScale?: number;
 }
 
@@ -259,7 +251,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [40, 13],
     chin: [40, 64],
     neck: [56, 7.5, 72.4],
-    hat: [19, 24],
   },
   gumdrop: {
     body: `<path d="M8 69C6 45 18 10 40 10C62 10 74 45 72 69Q72 74 67 74H13Q8 74 8 69Z"/>`,
@@ -270,7 +261,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [40, 10],
     chin: [40, 66],
     neck: [58, 8, 72],
-    hat: [20, 18.6],
   },
   bell: {
     body: `<path d="M40 9C56 9 64 22 64 38V51C64 57 67 61 71 65Q75 71 69 72H11Q5 71 9 65C13 61 16 57 16 51V38C16 22 24 9 40 9Z"/>`,
@@ -281,7 +271,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [40, 9],
     chin: [40, 60],
     neck: [54, 15.7, 64.2],
-    hat: [18, 18.4],
   },
   acorn: {
     body: `<path d="M40 75C24 75 13 63 13 47V37H67V47C67 63 56 75 40 75Z"/>`,
@@ -293,7 +282,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [40, 15],
     chin: [40, 70],
     neck: [61.5, 16.3, 63.7],
-    hat: [22, 26],
   },
   lantern: {
     body: `<rect x="13" y="19" width="54" height="50" rx="19"/>`,
@@ -305,7 +293,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [40, 12],
     chin: [40, 62],
     neck: [55.5, 13.8, 66.2],
-    hat: [15, 18],
   },
   sunburst: {
     // Nine sharp-tipped rays over soft valleys: a sun, not a bottle cap.
@@ -317,7 +304,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [40, 7],
     chin: [40, 63],
     neck: [54, 11.5, 68.5],
-    hat: [18, 21],
   },
   pebble: {
     // A wide river stone, tipped up to the right: never mistaken for mochi.
@@ -329,7 +315,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [44, 20],
     chin: [40, 66],
     neck: [56, 6, 72.2],
-    hat: [27, 22],
   },
   onion: {
     // The sprout leans and curls, so it is not a plain drop.
@@ -341,7 +326,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [44, 4],
     chin: [40, 69],
     neck: [60.5, 10.8, 69.2],
-    hat: [20, 16],
   },
   capsule: {
     body: `<rect x="15" y="7" width="50" height="68" rx="25"/>`,
@@ -352,7 +336,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [40, 7],
     chin: [40, 58],
     neck: [48, 15, 65],
-    hat: [16, 19.4],
   },
   dango: {
     body: `${circle(40, 52, 24)}${circle(40, 21, 13)}`,
@@ -363,7 +346,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [40, 8],
     chin: [40, 70],
     neck: [61, 17.8, 62.2],
-    hat: [16, 12],
   },
   star: {
     body: `<path d="${roundedPolygonPath(starPoints(5, 40, 44, 37, 21, -Math.PI / 2), 9)}"/>`,
@@ -374,7 +356,6 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     crown: [40, 9],
     chin: [40, 60],
     neck: [53.5, 19, 61],
-    hat: [21, 9],
     eyeScale: 0.9,
   },
 };
@@ -787,24 +768,6 @@ function accessoryMarkup(
         box: [l - 1.4, ny - 0.6, Math.max(r + 1.4, kx + 17.5), ky + drop + 3.2],
       };
     }
-    case "strap": {
-      // A satchel at the hip; its strap runs up and off the right shoulder,
-      // passing below and outside the right eye so it never touches the face.
-      const [x0, y0, x1, y1] = geo.box;
-      const bx = x0 + (x1 - x0) * 0.74;
-      const by = Math.max(y1 - (y1 - y0) * 0.19, geo.neck[0] + 7.5);
-      const through: P2 = [geo.face[0] + geo.gap + 12.5, geo.face[1] + 1];
-      const anchor: P2 = [bx + 2.5, by - 4];
-      const k = (through[1] - (y0 - 8)) / (anchor[1] - through[1]);
-      const top: P2 = [through[0] - (anchor[0] - through[0]) * k, y0 - 8];
-      const band = `<path d="M${pt(top)}L${pt(anchor)}" stroke="${INK}" stroke-width="4.6" clip-path="url(#b)" clip-rule="nonzero"/>`;
-      const bag =
-        `<rect x="${f(bx - 8)}" y="${f(by - 5.5)}" width="16" height="13" rx="3.4" fill="${INK}" ${RIM}/>` +
-        sheen(`M${pt([bx - 5, by - 4.2])}H${f(bx + 5)}`, 1.2, 0.26) +
-        `<path d="M${pt([bx - 6.6, by + 0.6])}Q${pt([bx, by + 4.4])} ${pt([bx + 6.6, by + 0.6])}" stroke="#fff" stroke-opacity=".2" stroke-width="1" fill="none"/>` +
-        `<rect x="${f(bx - 2.1)}" y="${f(by + 1.3)}" width="4.2" height="3.2" rx="1" fill="${gold}"/>`;
-      return { front: band + bag, box: null };
-    }
     case "monocle": {
       const c = centers[1];
       const radius = 9.4;
@@ -819,28 +782,6 @@ function accessoryMarkup(
         `<path d="M${pt(hang)}Q${pt([hang[0] + 1, end[1] + 1])} ${pt(end)}" stroke="${gold}" stroke-width="1.4" stroke-linecap="round" fill="none"/>` +
         `<circle cx="${f(end[0])}" cy="${f(end[1])}" r="1.6" fill="${gold}"/>`;
       return { front: glass + ring + chain, box: null };
-    }
-    case "cap": {
-      // A ball cap seated on the head, bill to the left, gold button on top.
-      const [cx, cy] = geo.crown;
-      const [hy, hw] = geo.hat;
-      const x0 = cx - hw - 1.5;
-      const x1 = cx + hw + 1.5;
-      const lift = cy - 6;
-      const peak = hy + 1 + 0.75 * (lift - hy - 1);
-      const dome = `<path d="M${pt([x0, hy + 1])}C${pt([x0, lift])} ${pt([x1, lift])} ${pt([x1, hy + 1])}Q${pt([cx, hy + 4.5])} ${pt([x0, hy + 1])}Z" fill="${INK}" ${RIM}/>`;
-      const bill = `<path d="M${pt([cx - hw * 0.3, hy + 1.6])}C${pt([x0 - 6, hy - 0.5])} ${pt([x0 - 12, hy + 1.5])} ${pt([x0 - 11, hy + 4.4])}C${pt([x0 - 7, hy + 6.6])} ${pt([cx - hw * 0.5, hy + 6.2])} ${pt([cx - hw * 0.1, hy + 4.4])}Z" fill="${INK}" ${RIM}/>`;
-      const seam = `<path d="M${pt([cx, peak + 2])}Q${pt([cx - hw * 0.12, (peak + hy) / 2 + 2])} ${pt([cx - hw * 0.05, hy + 3])}" stroke="#fff" stroke-opacity=".14" stroke-width=".9" fill="none"/>`;
-      const shine = sheen(
-        `M${pt([x0 + 3.5, hy - 1])}Q${pt([x0 + 4.5, peak + 3])} ${pt([cx - hw * 0.25, peak + 1.4])}`,
-        1.4,
-        0.24,
-      );
-      const button = `<circle cx="${f(cx)}" cy="${f(peak + 0.4)}" r="2.1" fill="${gold}"/>`;
-      return {
-        front: bill + dome + seam + shine + button,
-        box: [x0 - 12.5, peak - 2, x1 + 1, hy + 7],
-      };
     }
     default:
       return { front: "", box: null };

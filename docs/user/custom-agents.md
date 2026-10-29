@@ -24,8 +24,8 @@ can't create agents yet; its empty Agents screen points to the computer.
 ## Characters
 
 Each agent gets its own character: a vivid body shape (mochi, bell, acorn, lantern, sunburst,
-gumdrop, onion, capsule, pebble, dango or star), a face, and sometimes an ink accessory such as a
-cap, goggles, a scarf, a satchel strap or a monocle. Your first eleven agents each get a different
+gumdrop, onion, capsule, pebble, dango or star), a face, and sometimes an ink accessory: goggles,
+a scarf or a monocle. Your first eleven agents each get a different
 shape, and your first fourteen each get a different color. The character follows the agent's
 permanent identity across web, desktop and mobile, including renames and changes to its
 conversation or coding provider.
