@@ -19,6 +19,7 @@ import Migration0081 from "./Migrations/081_ProjectionThreadBackgroundTasks.ts";
 import Migration0082 from "./Migrations/082_ProjectionThreadStorage.ts";
 import Migration0083 from "./Migrations/083_ProjectionThreadStorageCleanup.ts";
 import Migration0084 from "./Migrations/084_DropRedundantIndexes.ts";
+import Migration0085 from "./Migrations/085_VmAgentVoice.ts";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -194,6 +195,7 @@ export const migrationEntries = [
   [82, "ProjectionThreadStorage", Migration0082],
   [83, "ProjectionThreadStorageCleanup", Migration0083],
   [84, "DropRedundantIndexes", Migration0084],
+  [85, "VmAgentVoice", Migration0085],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

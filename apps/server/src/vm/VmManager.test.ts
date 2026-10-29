@@ -17,6 +17,24 @@ const managerLayer = it.layer(
 );
 
 managerLayer("VmManager", (it) => {
+  it.effect("keeps the voice chosen for an agent's calls, and clears it back to automatic", () =>
+    Effect.gen(function* () {
+      const manager = yield* VmManager;
+      const store = yield* VmAgentStore;
+      const agent = yield* manager.create({ name: "Voice Test", purpose: "talk", threadId: null });
+      assert.isNull(Option.getOrThrow(yield* store.getById(agent.vmAgentId)).voice);
+
+      const voiced = yield* manager.setVoice(agent.vmAgentId, "willow");
+      assert.strictEqual(voiced.voice, "willow");
+      assert.strictEqual(Option.getOrThrow(yield* store.getById(agent.vmAgentId)).voice, "willow");
+      const listed = (yield* store.list()).find((row) => row.vmAgentId === agent.vmAgentId);
+      assert.strictEqual(listed?.voice, "willow");
+
+      yield* manager.setVoice(agent.vmAgentId, null);
+      assert.isNull(Option.getOrThrow(yield* store.getById(agent.vmAgentId)).voice);
+    }),
+  );
+
   it.effect("creates a named agent that is immediately ready", () =>
     Effect.gen(function* () {
       const manager = yield* VmManager;

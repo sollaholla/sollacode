@@ -78,6 +78,8 @@ const agent: VmAgent = {
   status: "running",
   controlMode: "agent",
   icon: null,
+  avatarColor: 0,
+  voice: null,
   guestIp: null,
   lastError: null,
   createdAt: at(0),
@@ -274,6 +276,7 @@ it("builds the call persona from the agent and why it called", () => {
   assert.include(outgoing, "Your job: Triage.\n");
   assert.include(outgoing, "Speak French.");
   assert.notInclude(outgoing, "You called the person");
+  assert.include(outgoing, "The person called you. Pick up");
   assert.notInclude(outgoing, "transfer");
   assert.notInclude(outgoing, "bring people onto this call");
 });
@@ -289,7 +292,8 @@ it("leaves who the voice can transfer to or add to the device holding the call",
   });
   assert.notInclude(instructions, "Transferring you to");
   assert.notInclude(instructions, "to the call.");
-  assert.match(instructions, /Speak English\.$/u);
+  // Nothing follows the language but how to pick up.
+  assert.match(instructions, /Speak English\.\nThe person called you\. Pick up[^\n]*$/u);
 });
 
 it("merges the replies of several chats on a call, each read out as soon as it lands", () => {
@@ -883,7 +887,9 @@ const gregg: VmAgent = {
   threadId: greggThreadId,
 };
 
-function fixture(options: { readonly liveStatus?: number } = {}) {
+function fixture(
+  options: { readonly liveStatus?: number; readonly voice?: VmAgent["voice"] } = {},
+) {
   const requests: Array<{ session: { instructions: string; audio: unknown } }> = [];
   const dispatched: OrchestrationCommand[] = [];
   /** When set, every dispatch signals `entered` and waits for `release`. */
@@ -952,7 +958,7 @@ function fixture(options: { readonly liveStatus?: number } = {}) {
         ),
     }),
     Layer.mock(VmAgentStore)({
-      getById: () => Effect.succeed(Option.some(agent)),
+      getById: () => Effect.succeed(Option.some({ ...agent, voice: options.voice ?? null })),
       list: () => Effect.succeed([agent, gregg]),
       getByThreadId: (id) =>
         Effect.succeed(Option.fromUndefinedOr([agent, gregg].find((row) => row.threadId === id))),
@@ -1083,6 +1089,34 @@ const sessionSet = {
   aggregateKind: "thread",
   aggregateId: threadId,
 } as never;
+
+it.effect("each agent speaks with its own voice, chosen or from its character", () =>
+  Effect.gen(function* () {
+    for (const [voice, expected] of [
+      [null, "marin"],
+      ["willow", "willow"],
+      ["a-voice-gpt-live-dropped", "marin"],
+    ] as const) {
+      const f = fixture({ voice });
+      const events = yield* PubSub.unbounded<OrchestrationEvent>();
+      yield* Effect.gen(function* () {
+        const calls = yield* AgentCalls;
+        const live = yield* makeAgentCallLive;
+        const rung = yield* calls.ring({
+          vmAgentId,
+          reason: "blocker",
+          topic: "Sign in to Google.",
+          key: `voice:${String(voice)}`,
+        });
+        if (rung.status !== "ringing") return assert.fail(rung.status);
+        const result = yield* live.start({ callId: rung.call.callId, ...offer }, "Sol's iPhone");
+        assert.strictEqual(result.voice, expected);
+        // The orchestrator's own voice ("alloy" here) no longer decides a call's.
+        assert.deepStrictEqual(f.requests[0]?.session.audio, { output: { voice: expected } });
+      }).pipe(Effect.provide(f.layer(events)));
+    }
+  }).pipe(Effect.scoped),
+);
 
 it.effect("answering claims the call once and opens GPT-Live as the agent", () => {
   const f = fixture();

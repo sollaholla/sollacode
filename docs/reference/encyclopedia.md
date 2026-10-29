@@ -386,9 +386,16 @@ it. A `/call` page showing the old call moves to the new one. Participants stay 
 
 How an [agent call](#agent-call) sounds on a device with **Phone-line calls** on (the
 `callPhoneLine` client setting, default on): the agent's voice is filtered to a handset's 300 Hz to
-3.4 kHz band with light compression, and while the agent works in its chat its desk (typing,
-clicks) plays down the same line at the sound-cue volume, pausing while it speaks.
-[phoneLine.ts](../../apps/web/src/orchestrator/phoneLine.ts).
+3.4 kHz band with light compression, and while the agent works in its chat its desk (bursts of a
+couple of seconds of typing, pauses, clicks) plays down the same line at the sound-cue volume,
+pausing while it speaks. [phoneLine.ts](../../apps/web/src/orchestrator/phoneLine.ts).
+
+#### Call voice
+
+The GPT-Live voice an agent speaks with on [agent calls](#agent-call): the one chosen for it
+(`VmAgent.voice`, set from the agent's **Call voice** menu, the phone app's agent screen, or Agent
+Builder's `set_voice`), else one from its character, so each agent sounds different.
+[agentCallVoice.ts](../../packages/shared/src/agentCallVoice.ts).
 
 ### Thread artifacts
 

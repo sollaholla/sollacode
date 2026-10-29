@@ -30,6 +30,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
+import { agentCallVoice } from "@t3tools/shared/agentCallVoice";
 
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
 import { activeTurnWorkSourceId } from "../orchestration/agentModeContinuation.ts";
@@ -37,11 +38,7 @@ import { isStaleRequestFailureDetail } from "../orchestration/decider.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { resolveOrchestratorApiKey } from "../orchestrator/OrchestratorCredentials.ts";
-import {
-  createGptLiveSession,
-  liveVoiceFor,
-  OrchestratorLiveError,
-} from "../orchestrator/OrchestratorLive.ts";
+import { createGptLiveSession, OrchestratorLiveError } from "../orchestrator/OrchestratorLive.ts";
 import {
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
   ThreadWorkObligationRepository,
@@ -114,12 +111,13 @@ export function agentCallInstructions(input: {
     "When the person says goodbye or asks you to hang up, answer with a short goodbye that says bye; the call hangs up as soon as you finish it. Don't add a question after it.",
     `Speak ${languageName(input.language)}.`,
   ];
-  if (input.direction === "incoming")
-    lines.push(
-      input.topic
+  lines.push(
+    input.direction === "incoming"
+      ? input.topic
         ? `You called the person because: ${asSentence(input.topic)} Open by greeting them, saying who you are and why you called.`
-        : "You called the person. Open by greeting them, saying who you are and asking how they'd like to proceed.",
-    );
+        : "You called the person. Open by greeting them, saying who you are and asking how they'd like to proceed."
+      : "The person called you. Pick up the way you would answer a friend's call: one short, casual hello such as \"Hey, what's up?\", then let them talk.",
+  );
   return lines.join("\n");
 }
 
@@ -928,7 +926,8 @@ export const makeAgentCallLive = Effect.gen(function* () {
       .claim(input.callId, deviceLabel)
       .pipe(Effect.mapError((error) => ended(error.detail)));
     const roster = yield* readRoster(agent.value);
-    const voice = liveVoiceFor(settings.voice);
+    // Each agent speaks with its own voice, chosen or from its character.
+    const voice = agentCallVoice(agent.value);
     const created = yield* createGptLiveSession(http, {
       key: key.value,
       instructions: agentCallInstructions({

@@ -18,6 +18,12 @@ const UpdateIconRequest = Schema.Struct({
   updatedAt: Schema.String,
 });
 
+const UpdateVoiceRequest = Schema.Struct({
+  vmAgentId: VmAgentId,
+  voice: Schema.NullOr(Schema.String),
+  updatedAt: Schema.String,
+});
+
 const UpdateStatusRequest = Schema.Struct({
   vmAgentId: VmAgentId,
   status: VmAgentStatus,
@@ -38,6 +44,7 @@ const makeVmAgentStore = Effect.gen(function* () {
         purpose,
         icon,
         avatar_color_index,
+        voice,
         vm_id,
         thread_id,
         status,
@@ -75,6 +82,7 @@ const makeVmAgentStore = Effect.gen(function* () {
             END
           )
         ),
+        ${row.voice ?? null},
         ${row.vmId},
         ${row.threadId},
         ${row.status},
@@ -98,6 +106,7 @@ const makeVmAgentStore = Effect.gen(function* () {
         purpose,
         icon,
         avatar_color_index AS "avatarColor",
+        voice,
         vm_id AS "vmId",
         thread_id AS "threadId",
         status,
@@ -122,6 +131,7 @@ const makeVmAgentStore = Effect.gen(function* () {
         purpose,
         icon,
         avatar_color_index AS "avatarColor",
+        voice,
         vm_id AS "vmId",
         thread_id AS "threadId",
         status,
@@ -146,6 +156,7 @@ const makeVmAgentStore = Effect.gen(function* () {
         purpose,
         icon,
         avatar_color_index AS "avatarColor",
+        voice,
         vm_id AS "vmId",
         thread_id AS "threadId",
         status,
@@ -170,6 +181,7 @@ const makeVmAgentStore = Effect.gen(function* () {
         purpose,
         icon,
         avatar_color_index AS "avatarColor",
+        voice,
         vm_id AS "vmId",
         thread_id AS "threadId",
         status,
@@ -194,6 +206,7 @@ const makeVmAgentStore = Effect.gen(function* () {
         purpose,
         icon,
         avatar_color_index AS "avatarColor",
+        voice,
         vm_id AS "vmId",
         thread_id AS "threadId",
         status,
@@ -217,6 +230,15 @@ const makeVmAgentStore = Effect.gen(function* () {
     execute: ({ vmAgentId, icon, updatedAt }) => sql`
       UPDATE vm_agents
       SET icon = ${icon}, updated_at = ${updatedAt}
+      WHERE vm_agent_id = ${vmAgentId}
+    `,
+  });
+
+  const updateVoiceRow = SqlSchema.void({
+    Request: UpdateVoiceRequest,
+    execute: ({ vmAgentId, voice, updatedAt }) => sql`
+      UPDATE vm_agents
+      SET voice = ${voice}, updated_at = ${updatedAt}
       WHERE vm_agent_id = ${vmAgentId}
     `,
   });
@@ -266,6 +288,11 @@ const makeVmAgentStore = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("VmAgentStore.updateIcon:query")),
     );
 
+  const updateVoice: VmAgentStoreShape["updateVoice"] = (input) =>
+    updateVoiceRow(input).pipe(
+      Effect.mapError(toPersistenceSqlError("VmAgentStore.updateVoice:query")),
+    );
+
   const updateStatus: VmAgentStoreShape["updateStatus"] = (input) =>
     updateStatusRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("VmAgentStore.updateStatus:query")),
@@ -280,6 +307,7 @@ const makeVmAgentStore = Effect.gen(function* () {
     getByThreadId,
     deleteById,
     updateIcon,
+    updateVoice,
     updateStatus,
   } satisfies VmAgentStoreShape;
 });

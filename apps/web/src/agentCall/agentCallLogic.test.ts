@@ -18,7 +18,9 @@ import {
   formatCallDuration,
   hostSettledCallOutcome,
   incomingCallOpening,
+  isRingingOut,
   latestCaption,
+  outgoingCallGreeting,
   nextRingBurstDelay,
   nextRingExpiry,
   openAgentCallElsewhere,
@@ -281,6 +283,26 @@ describe("incomingCallOpening", () => {
     );
     expect(incomingCallOpening({ agentName: "Nova", topic: null })).toContain(
       "calling because: you need the person's input.",
+    );
+  });
+});
+
+describe("isRingingOut", () => {
+  it("rings out on a call the person placed, until the agent picks up", () => {
+    expect(isRingingOut({ direction: "outgoing", phase: "placing" })).toBe(true);
+    expect(isRingingOut({ direction: "outgoing", phase: "connecting" })).toBe(true);
+    expect(isRingingOut({ direction: "outgoing", phase: "live" })).toBe(false);
+    expect(isRingingOut({ direction: "outgoing", phase: "failed" })).toBe(false);
+    // An agent's call already rang here; answering it connects without ringback.
+    expect(isRingingOut({ direction: "incoming", phase: "connecting" })).toBe(false);
+    expect(isRingingOut(null)).toBe(false);
+  });
+});
+
+describe("outgoingCallGreeting", () => {
+  it("picks up a call the person placed with a short hello", () => {
+    expect(outgoingCallGreeting({ agentName: "Gregg" })).toBe(
+      'Pick up the call as Gregg: one short, casual hello such as "Hey, what\'s up?", then let the person talk.',
     );
   });
 });

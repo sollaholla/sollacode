@@ -31,6 +31,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { requestComposerFocus } from "../../state/composer-focus-requests";
 import { openMobileWaitingOnYouFollowUp } from "./mobileAgentAttentionFollowUp";
 import { useAgentCallBlockedReason, usePlaceAgentCall } from "../agentCalls/usePlaceAgentCall";
+import { AgentVoiceRow } from "./AgentVoiceRow";
 import {
   boundedCollaborationPreview,
   delegationDirectionLabel,
@@ -1202,6 +1203,7 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
         ) : agentCall.error !== null ? (
           <Text className="text-sm text-red-600 dark:text-red-300">{agentCall.error.message}</Text>
         ) : null}
+        <AgentVoiceRow environmentId={environmentId} agent={agent} />
       </View>
       {openBlockers.length > 0 ? (
         <View className="min-w-0 gap-3">

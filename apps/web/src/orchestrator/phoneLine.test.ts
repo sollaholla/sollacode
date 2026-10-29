@@ -17,6 +17,9 @@ function seeded(seed: number): () => number {
   };
 }
 
+/** Longer than any gap between keys, typos included: the gaps that are pauses. */
+const PAUSE_SECONDS = 0.6;
+
 function take(count: number, random: () => number): DeskBeat[] {
   const beats = deskBeats(random);
   return Array.from({ length: count }, () => beats.next().value);
@@ -76,19 +79,54 @@ describe("desk beats", () => {
     }
   });
 
-  it("types at a human pace with pauses to read", () => {
+  it("types at a human pace", () => {
     const beats = take(2_000, seeded(42));
     const keyGaps = beats
       .filter((beat) => beat.sound === "key" || beat.sound === "space")
       .map((beat) => beat.gap)
+      .filter((gap) => gap < PAUSE_SECONDS)
       .sort((a, b) => a - b);
     const median = keyGaps[Math.floor(keyGaps.length / 2)]!;
     expect(median).toBeGreaterThan(0.09);
     expect(median).toBeLessThan(0.2);
-    // Pauses to read exist, and none is so long the desk sounds abandoned.
-    const longest = Math.max(...beats.map((beat) => beat.gap));
-    expect(beats.filter((beat) => beat.gap > 0.8).length).toBeGreaterThan(10);
-    expect(longest).toBeLessThan(4);
+  });
+
+  it("types in bursts of about two seconds, with a pause of random length after each", () => {
+    const beats = take(4_000, seeded(42));
+    const bursts: number[] = [];
+    const pauses: number[] = [];
+    let burst = 0;
+    for (const beat of beats.slice(1)) {
+      if (beat.gap >= PAUSE_SECONDS) {
+        if (burst > 0) bursts.push(burst);
+        pauses.push(beat.gap);
+        burst = 0;
+      } else if (beat.sound !== "click") {
+        burst += beat.gap;
+      }
+    }
+    expect(bursts.length).toBeGreaterThan(50);
+    const mean = bursts.reduce((sum, value) => sum + value, 0) / bursts.length;
+    expect(mean).toBeGreaterThan(1.6);
+    expect(mean).toBeLessThan(3.2);
+    // A burst runs past its length only to finish the word it is in.
+    expect(Math.max(...bursts)).toBeLessThan(5.5);
+    // Pauses vary rather than repeating one length, and none abandons the desk.
+    expect(new Set(pauses.map((pause) => pause.toFixed(1))).size).toBeGreaterThan(10);
+    expect(Math.max(...pauses)).toBeLessThan(4.6);
+  });
+
+  it("leaves a clear gap either side of every click", () => {
+    const beats = take(4_000, seeded(9));
+    beats.forEach((beat, index) => {
+      if (index === 0 || beat.sound !== "click") return;
+      const previous = beats[index - 1]!;
+      // The second click of a double-click follows the first at once.
+      if (previous.sound !== "click") expect(beat.gap).toBeGreaterThanOrEqual(0.6);
+      const next = beats[index + 1];
+      if (next && next.sound !== "click") expect(next.gap).toBeGreaterThanOrEqual(0.8);
+    });
+    expect(beats.filter((beat) => beat.sound === "click").length).toBeGreaterThan(20);
   });
 
   it("is the same sequence for the same randomness", () => {

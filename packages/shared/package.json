@@ -63,6 +63,10 @@
       "types": "./src/agentCallBridge.ts",
       "import": "./src/agentCallBridge.ts"
     },
+    "./agentCallVoice": {
+      "types": "./src/agentCallVoice.ts",
+      "import": "./src/agentCallVoice.ts"
+    },
     "./agentAttentionFollowUp": {
       "types": "./src/agentAttentionFollowUp.ts",
       "import": "./src/agentAttentionFollowUp.ts"

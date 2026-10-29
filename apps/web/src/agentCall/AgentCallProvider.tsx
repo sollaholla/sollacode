@@ -33,7 +33,7 @@ import { createLiveVoiceSession } from "../orchestrator/liveSession";
 import { getClientSettings } from "../hooks/useSettings";
 import { readPreferredMicrophone } from "../orchestrator/microphones";
 import { resolveVoiceCuePolicy } from "../orchestrator/voiceCues";
-import { playHangUpTone } from "./ringtone";
+import { playHangUpTone, startRingback } from "./ringtone";
 import { useLiveUsageStore } from "../orchestrator/liveUsageStore";
 import type { VoiceSession, VoiceSessionState } from "../orchestrator/realtimeSession";
 import { createScreenWakeLock, findWakeLockRequester } from "../orchestrator/screenWakeLock";
@@ -49,8 +49,10 @@ import {
   hostSettledCallOutcome,
   incomingCallOpening,
   isAgentCallPhaseOpen,
+  isRingingOut,
   isTerminalAgentCallStatus,
   nextRingExpiry,
+  outgoingCallGreeting,
   ringingCallForDevice,
   sameCallParticipants,
   trackRingingCalls,
@@ -599,11 +601,14 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
                   ? current
                   : { ...current, phase: "live", startedAt: current.startedAt ?? Date.now() },
               );
-              // The agent rang, so the agent speaks first.
-              if (!announced && call.direction === "incoming") {
+              // Whoever placed the call, the agent speaks first: why it rang,
+              // or a hello when the person called it.
+              if (!announced) {
                 announced = true;
                 session.announce(
-                  incomingCallOpening({ agentName: call.agent.name, topic: call.topic }),
+                  call.direction === "incoming"
+                    ? incomingCallOpening({ agentName: call.agent.name, topic: call.topic })
+                    : outgoingCallGreeting({ agentName: call.agent.name }),
                 );
               }
               return;
@@ -871,6 +876,16 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
   useEffect(() => {
     completeTransferRef.current = completeTransfer;
   }, [completeTransfer]);
+
+  // A call the person placed rings out until the agent picks up.
+  const ringingOut = isRingingOut(active);
+  useEffect(() => {
+    if (!ringingOut || !resolveVoiceCuePolicy(getClientSettings()).enabled) return;
+    const ringback = startRingback({
+      volume: () => resolveVoiceCuePolicy(getClientSettings()).volume,
+    });
+    return () => ringback.stop();
+  }, [ringingOut]);
 
   const answer = useCallback(
     (environmentId: EnvironmentId, call: AgentCall, agent: VmAgent | null) => {

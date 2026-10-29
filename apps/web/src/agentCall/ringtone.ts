@@ -158,3 +158,74 @@ export function playHangUpTone(volume: number): void {
     void context.close().catch(() => undefined);
   }
 }
+
+/** North American ringback: two tones together, two seconds on, four off. */
+const RINGBACK_HZ = [440, 480] as const;
+const RINGBACK_ON_SECONDS = 2;
+const RINGBACK_PERIOD_MS = 6_000;
+/** Quieter than a ringtone: it plays at the ear, as a handset's does. */
+const RINGBACK_GAIN = 0.06;
+
+/**
+ * Rings out while a call the person placed waits for the agent to pick up,
+ * from the first moment: two seconds of the paired tones, four of silence.
+ * `volume` is read at every ring. Stopping fades out, never clicks.
+ * Best-effort like the ringtone.
+ */
+export function startRingback(input: { readonly volume: () => number }): Ringtone {
+  if (typeof AudioContext === "undefined") return { stop: () => undefined };
+  let context: AudioContext;
+  try {
+    context = new AudioContext();
+  } catch {
+    return { stop: () => undefined };
+  }
+  void context.resume().catch(() => undefined);
+  const output = context.createGain();
+  output.connect(context.destination);
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const ring = () => {
+    timer = null;
+    if (stopped) return;
+    try {
+      const start = context.currentTime + 0.02;
+      const end = start + RINGBACK_ON_SECONDS;
+      const peak = RINGBACK_GAIN * Math.min(Math.max(input.volume(), 0), 1);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.linearRampToValueAtTime(peak, start + 0.02);
+      gain.gain.setValueAtTime(peak, end - 0.03);
+      gain.gain.linearRampToValueAtTime(0.0001, end);
+      gain.connect(output);
+      for (const frequency of RINGBACK_HZ) {
+        const oscillator = context.createOscillator();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(frequency, start);
+        oscillator.connect(gain);
+        oscillator.start(start);
+        oscillator.stop(end + 0.02);
+      }
+    } catch {
+      /* A ring is never worth failing over. */
+    }
+    timer = setTimeout(ring, RINGBACK_PERIOD_MS);
+  };
+  ring();
+  return {
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      try {
+        const now = context.currentTime;
+        output.gain.setValueAtTime(output.gain.value, now);
+        output.gain.linearRampToValueAtTime(0, now + 0.03);
+      } catch {
+        /* Closing below silences it anyway. */
+      }
+      setTimeout(() => void context.close().catch(() => undefined), 80);
+    },
+  };
+}

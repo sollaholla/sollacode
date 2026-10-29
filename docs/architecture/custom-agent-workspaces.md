@@ -288,8 +288,26 @@ muted, because Chrome only feeds a remote WebRTC track to Web Audio while an ele
 mutes the line's output gain instead of the element. A line that fails to build leaves the element
 playing as before.
 
-`createDeskSounds` plays `deskBeats` (typing in words, typos backed out, pauses with clicks) into the
-same line while delegated work runs and the voice is quiet, at the cue policy's volume (none when
-cues are off). The session's 100 ms level meter pumps it, scheduling 0.35 s ahead on the context
-clock, so there is no extra timer; each sound is filtered noise from one shared buffer. The phone
-app's call page is the web page in a WebView, so it plays the same.
+`createDeskSounds` plays `deskBeats` into the same line while delegated work runs and the voice is
+quiet, at the cue policy's volume (none when cues are off): bursts of 1.2 to 3.2 s of typing that end
+on a whole word (typos backed out now and then), each followed by a 1 to 4 s pause, or by a click or
+double-click with 0.6 s or more before it and 0.8 s or more before typing resumes. The session's
+100 ms level meter pumps it, scheduling 0.35 s ahead on the context clock, so there is no extra
+timer; each sound is filtered noise from one shared buffer. The phone app's call page is the web
+page in a WebView, so it plays the same.
+
+A call the person placed rings out (`startRingback` in
+[ringtone.ts](../../apps/web/src/agentCall/ringtone.ts), 440 + 480 Hz, two seconds on and four
+off) from `placing` until the voice connects (`isRingingOut`), and the voice is then told to pick up
+with a short hello (`outgoingCallGreeting`), as `agentCallInstructions` also says for outgoing
+calls; an incoming call's voice opens with why it rang.
+
+**Voices.** `VmAgent.voice` (the `vm_agents.voice` column, migration 085) holds a voice chosen with
+`vmAgent.voice.set` (`AuthVmOperateScope`) or Agent Builder's `set_voice`; null is automatic.
+`agentCallVoice` ([agentCallVoice.ts](../../packages/shared/src/agentCallVoice.ts)) resolves it on
+the host when a call's GPT-Live session is created, and in the web and phone pickers: a chosen voice
+GPT-Live still lists, else the English voice at the agent's `avatarColor` (an id hash for agents
+without one) in an order that alternates accent and presentation, starting with `marin`. Characters
+are unique, so the first eleven agents never share a voice. The orchestrator's own voice setting no
+longer decides a call's. The record's field is a plain string so a voice a client does not know
+never fails the agent list; the set request takes only `OPENAI_LIVE_VOICES`.

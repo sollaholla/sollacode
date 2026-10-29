@@ -463,6 +463,12 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       scheduler: lifecycleScheduler,
       concurrency: perAgentSerial,
     }),
+    setVoice: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:voice-set",
+      tag: WS_METHODS.vmAgentVoiceSet,
+      scheduler: lifecycleScheduler,
+      concurrency: perAgentSerial,
+    }),
     createTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vm-agents:task-create",
       tag: WS_METHODS.vmAgentTaskCreate,

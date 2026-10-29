@@ -340,6 +340,29 @@ export function incomingCallOpening(input: {
   return `Open the call: greet the person, say you're ${input.agentName}, and that you're calling because: ${topic}. Then ask how they'd like to proceed.`;
 }
 
+/**
+ * Whether the person hears ringback: a call they placed, until the agent
+ * picks up. A transfer's new call rings out the same way.
+ */
+export function isRingingOut(
+  call: { readonly direction: AgentCallDirection; readonly phase: AgentCallPhase } | null,
+): boolean {
+  return (
+    call !== null &&
+    call.direction === "outgoing" &&
+    (call.phase === "placing" || call.phase === "connecting")
+  );
+}
+
+/**
+ * What the voice is told once a call the person placed connects: pick up
+ * with a short hello, the way anyone answers a phone, instead of waiting in
+ * silence for the person to speak first.
+ */
+export function outgoingCallGreeting(input: { readonly agentName: string }): string {
+  return `Pick up the call as ${input.agentName}: one short, casual hello such as "Hey, what's up?", then let the person talk.`;
+}
+
 /** Whether two snapshots list the same participants, so an unchanged one changes nothing. */
 export function sameCallParticipants(
   a: ReadonlyArray<AgentCallParticipant>,

@@ -127,52 +127,71 @@ function count(random: () => number, min: number, max: number): number {
   return min + Math.floor(random() * (max - min + 1));
 }
 
+/** Seconds of typing in one burst: about two, never the same twice. */
+const BURST_SECONDS = { min: 1.2, max: 3.2 } as const;
+/** Seconds of quiet between bursts, to read or think. */
+const REST_SECONDS = { min: 1, max: 4 } as const;
+/** The hand moving to the mouse, and back to the keys, after and before typing. */
+const REACH_SECONDS = { min: 0.6, max: 1.2 } as const;
+const RETURN_SECONDS = { min: 0.8, max: 1.4 } as const;
+
+const between = (random: () => number, range: { readonly min: number; readonly max: number }) =>
+  range.min + random() * (range.max - range.min);
+
 /**
- * Someone working at a desk, without end: a click into the window, words
- * typed in bursts with a space after each, now and then a typo backed out and
- * retyped, and pauses to read with a click or a double-click in them.
+ * Someone working at a desk, without end: a click into the window, then
+ * bursts of about two seconds of typing (whole words, now and then a typo
+ * backed out and retyped), each followed by a pause of random length. Some
+ * pauses have a click or a double-click in them, with the hand's trip to the
+ * mouse and back as clear gaps either side.
  */
 export function* deskBeats(random: () => number = Math.random): Generator<DeskBeat, never> {
   yield { gap: 0.2 + random() * 0.3, sound: "click" };
-  let pause = 0.35 + random() * 0.4;
+  let pause = between(random, RETURN_SECONDS);
   for (;;) {
-    const words = count(random, 2, 8);
-    for (let word = 0; word < words; word += 1) {
+    const burst = between(random, BURST_SECONDS);
+    // A word is never cut off: the burst ends at the first space past its length.
+    for (let typed = 0; typed < burst; ) {
       const letters = count(random, 2, 8);
       for (let letter = 0; letter < letters; letter += 1) {
-        yield { gap: pause + keyGap(random), sound: "key" };
+        const gap = keyGap(random);
+        yield { gap: pause + gap, sound: "key" };
+        typed += gap;
         pause = 0;
       }
       if (random() < 0.1) {
         const typo = count(random, 1, 3);
         // Noticing it takes a moment; holding backspace does not.
-        yield { gap: 0.25 + random() * 0.3, sound: "backspace" };
-        for (let key = 1; key < typo; key += 1)
-          yield { gap: 0.08 + random() * 0.04, sound: "backspace" };
-        for (let key = 0; key < typo; key += 1) yield { gap: keyGap(random), sound: "key" };
+        const notice = 0.25 + random() * 0.3;
+        yield { gap: notice, sound: "backspace" };
+        typed += notice;
+        for (let key = 1; key < typo; key += 1) {
+          const gap = 0.08 + random() * 0.04;
+          yield { gap, sound: "backspace" };
+          typed += gap;
+        }
+        for (let key = 0; key < typo; key += 1) {
+          const gap = keyGap(random);
+          yield { gap, sound: "key" };
+          typed += gap;
+        }
       }
-      yield { gap: keyGap(random), sound: "space" };
+      const gap = keyGap(random);
+      yield { gap, sound: "space" };
+      typed += gap;
     }
-    // Reading what came back, or reaching for the mouse.
-    const rest = 0.8 + random() * 2.6;
-    if (random() < 0.5) {
-      const reach = rest * (0.3 + random() * 0.4);
-      yield { gap: reach, sound: "click" };
-      let after = rest - reach;
-      if (random() < 0.3) {
-        const second = 0.13 + random() * 0.06;
-        yield { gap: second, sound: "click" };
-        after = Math.max(after - second, 0.2);
-      }
-      pause = after;
+    if (random() < 0.4) {
+      yield { gap: between(random, REACH_SECONDS), sound: "click" };
+      if (random() < 0.3) yield { gap: 0.13 + random() * 0.06, sound: "click" };
+      pause = between(random, RETURN_SECONDS);
     } else {
-      pause = rest;
+      pause = between(random, REST_SECONDS);
     }
   }
 }
 
 /** Overall level of the desk at full cue volume: background, under the voice. */
-const DESK_GAIN = 0.12;
+const DESK_GAIN = 0.085;
 /** How far ahead of the context clock desk sounds are scheduled, in seconds. */
 const DESK_LOOKAHEAD_SECONDS = 0.35;
 const NOISE_SECONDS = 0.25;

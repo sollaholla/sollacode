@@ -3352,6 +3352,12 @@ const makeWsRpcLayer = (
               .pipe(Effect.tap(() => vmAgentTaskScheduler.interruptAgent(input.vmAgentId))),
             { "rpc.aggregate": "vm" },
           ),
+        [WS_METHODS.vmAgentVoiceSet]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentVoiceSet,
+            vmManager.setVoice(input.vmAgentId, input.voice),
+            { "rpc.aggregate": "vm" },
+          ),
         [WS_METHODS.vmAgentSubscribe]: (_input) =>
           observeRpcStream(
             WS_METHODS.vmAgentSubscribe,

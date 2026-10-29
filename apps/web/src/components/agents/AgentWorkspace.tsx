@@ -34,6 +34,7 @@ import { AgentCallButton } from "../agentCall/AgentCallButton";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { AgentGlyph } from "./AgentGlyph";
 import { AgentPowerToggle } from "./AgentPowerToggle";
+import { AgentVoiceMenu } from "./AgentVoiceMenu";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { AgentRulesPanel } from "./AgentRulesPanel";
 import { AgentAttentionStack } from "./AgentAttentionStack";
@@ -342,6 +343,7 @@ function AgentWorkspaceResolved(props: {
                         <LayoutDashboardIcon /> Dashboard
                       </MenuItem>
                     ) : null}
+                    <AgentVoiceMenu environmentId={environmentId} agent={agent} />
                     {foldEnabled && view === "chat" ? (
                       <MenuItem onClick={headerFold.fold}>
                         <PanelTopCloseIcon /> Collapse to top bar

@@ -53,6 +53,13 @@ export interface VmAgentStoreShape {
     readonly updatedAt: string;
   }) => Effect.Effect<void, ProjectionRepositoryError>;
 
+  /** Choose (or, with null, clear) the agent's call voice and bump `updated_at`. */
+  readonly updateVoice: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly voice: string | null;
+    readonly updatedAt: string;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
+
   /** Switch the agent's lifecycle status (start/stop) and bump `updated_at`. */
   readonly updateStatus: (input: {
     readonly vmAgentId: VmAgentId;

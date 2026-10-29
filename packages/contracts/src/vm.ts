@@ -10,6 +10,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { OPENAI_LIVE_VOICES } from "./orchestratorLive.ts";
 
 /**
  * Reserved project that owns every agent's dedicated chat thread. Like the
@@ -198,6 +199,12 @@ export const VmAgent = Schema.Struct({
   icon: Schema.NullOr(VmAgentIcon),
   /** Stable automatic character color. Optional for older environments. */
   avatarColor: Schema.optional(Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)))),
+  /**
+   * The GPT-Live voice chosen for the agent's calls; null (or absent, from
+   * older environments) gives it one from its character. A plain string, so a
+   * voice this client does not know never fails the agent list.
+   */
+  voice: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(64)))),
   vmId: VmId,
   /** The agent's dedicated single chat thread (null only if creation failed). */
   threadId: Schema.NullOr(ThreadId),
@@ -235,6 +242,13 @@ export const VmAgentRef = Schema.Struct({
   vmAgentId: VmAgentId,
 });
 export type VmAgentRef = Schema.Codec.Encoded<typeof VmAgentRef>;
+
+/** Chooses the voice an agent speaks with on calls; null goes back to automatic. */
+export const VmAgentVoiceSetInput = Schema.Struct({
+  vmAgentId: VmAgentId,
+  voice: Schema.NullOr(Schema.Literals(OPENAI_LIVE_VOICES)),
+});
+export type VmAgentVoiceSetInput = Schema.Codec.Encoded<typeof VmAgentVoiceSetInput>;
 
 /** The editable root instructions for one agent; CLAUDE.md imports this file. */
 export const VmAgentRules = Schema.Struct({

@@ -1,5 +1,6 @@
 import {
   ModelSelection,
+  OPENAI_LIVE_VOICES,
   ProviderInteractionMode,
   RuntimeMode,
   ThreadId,
@@ -31,6 +32,7 @@ export const AgentBuilderInput = Schema.Struct({
     "define_artifact",
     "start_agent",
     "stop_agent",
+    "set_voice",
     "delete_agent",
   ]).annotate({
     description:
@@ -51,6 +53,10 @@ export const AgentBuilderInput = Schema.Struct({
   icon: Schema.optional(VmAgentIcon).annotate({
     description:
       "create_agent: the agent's outlined glyph — an uncoloured, emoji-like icon that identifies it in the sidebar and header. Always choose one that fits the purpose; if omitted, the agent picks its own on its first run.",
+  }),
+  voice: Schema.optional(Schema.NullOr(Schema.Literals(OPENAI_LIVE_VOICES))).annotate({
+    description:
+      "create_agent/set_voice: the GPT-Live voice the agent speaks with on calls. English: marin (the default), quartz and ripple (Australian), vesper (British), willow and stone (Irish), gleam and meridian (North American), beacon (Filipino), delta and cinder (Southern U.S.); bossa and tempo are Brazilian Portuguese. Omitted at creation, or null with set_voice, gives the agent one from its character, different from its neighbours'.",
   }),
   modelSelection: Schema.optional(ModelSelection).annotate({
     description: "create_agent/configure_agent_chat: the model the agent's own chat runs on.",

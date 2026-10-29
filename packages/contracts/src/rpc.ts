@@ -152,6 +152,7 @@ import {
   VmAgentNotificationUpdateInput,
   VmAgentRef,
   VmAgentRules,
+  VmAgentVoiceSetInput,
   VmAgentRulesUpdateInput,
   VmAgentStreamItem,
   VmAgentTask,
@@ -414,6 +415,7 @@ export const WS_METHODS = {
   vmAgentDelete: "vmAgent.delete",
   vmAgentStart: "vmAgent.start",
   vmAgentStop: "vmAgent.stop",
+  vmAgentVoiceSet: "vmAgent.voice.set",
   vmAgentSubscribe: "vmAgent.subscribe",
   vmAgentWorkspaceSubscribe: "vmAgent.workspace.subscribe",
   vmAgentRulesGet: "vmAgent.rules.get",
@@ -1285,6 +1287,13 @@ export const WsVmAgentStopRpc = Rpc.make(WS_METHODS.vmAgentStop, {
   error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
 });
 
+/** Chooses the voice an agent speaks with on calls, from its next call. */
+export const WsVmAgentVoiceSetRpc = Rpc.make(WS_METHODS.vmAgentVoiceSet, {
+  payload: VmAgentVoiceSetInput,
+  success: VmAgent,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
 export const WsVmAgentSubscribeRpc = Rpc.make(WS_METHODS.vmAgentSubscribe, {
   payload: Schema.Struct({}),
   success: VmAgentStreamItem,
@@ -1862,6 +1871,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVmAgentDeleteRpc,
   WsVmAgentStartRpc,
   WsVmAgentStopRpc,
+  WsVmAgentVoiceSetRpc,
   WsVmAgentSubscribeRpc,
   WsVmAgentWorkspaceSubscribeRpc,
   WsVmAgentRulesGetRpc,

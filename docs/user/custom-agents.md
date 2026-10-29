@@ -310,12 +310,23 @@ Say goodbye to end a call by voice: once you say bye (or "that's all", "hang up"
 answers with its own goodbye, the call hangs up as soon as that goodbye finishes. A connected call
 ending, from either side, plays a short hang-up tone (off when sound cues are off in Settings).
 
-A call sounds like a phone call. The agent's voice comes down a phone line, cut to the range a
-handset carries, and while the agent works in its chat you hear it typing and clicking in the
-background. It stops typing whenever it speaks. The typing follows the sound cue switch and volume.
-Turn both off on a device with **Settings → Appearance → Sound → Phone-line calls**; the change
-applies from the next call. The phone app plays calls through the web call page, so it gets the
-same sound, at the default settings.
+A call sounds like a phone call. Calling an agent rings out until it picks up, and it answers
+with a short hello such as "Hey, what's up?"; an agent that calls you opens with why it called. The
+agent's voice comes down a phone line, cut to the range a handset carries, and while the agent works
+in its chat you hear it typing in bursts of a couple of seconds, with pauses and the odd mouse click
+in between. It stops typing whenever it speaks. The ringing and typing follow the sound cue switch
+and volume. Turn the phone line and typing off on a device with **Settings → Appearance → Sound →
+Phone-line calls**; the change applies from the next call. The phone app plays calls through the web
+call page, so it gets the same sound, at the default settings.
+
+Each agent speaks with its own voice. Left on **Automatic**, an agent gets one from its character,
+so agents sound different from each other without anyone choosing; the first agent keeps the
+GPT-Live default, Marin. To choose one, open the menu on the agent's name and pick **Call voice**
+on web and desktop, or tap **Call voice** under **Call** on the agent's screen in the phone app.
+The list gives each voice's accent: Australian, British, Irish, North American, Filipino and
+Southern U.S. English voices, plus two Brazilian Portuguese ones. Agent Builder can set it too. A
+new voice applies from the agent's next call, and a transfer puts you through to the other agent's
+own voice. On a group call everyone is heard in the voice of the agent you called.
 
 The small arrow on **Mute** chooses the microphone. **Default** follows your system's microphone
 and switches mid-call when it changes, such as when headphones connect. A microphone you pick is

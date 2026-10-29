@@ -43,11 +43,13 @@ const mocks = vi.hoisted(() => {
     state: "idle" as string,
   };
   const ringtoneStop = vi.fn();
+  const ringbackStop = vi.fn();
   const roster = { entries: [] as Array<unknown> };
   return {
     tokens,
     session,
     ringtoneStop,
+    ringbackStop,
     roster,
     calls: [] as Array<unknown>,
     agent: null as unknown,
@@ -65,6 +67,7 @@ const mocks = vi.hoisted(() => {
     ),
     createLiveVoiceSession: vi.fn((_options: unknown, _callbacks: unknown) => session),
     startRingtone: vi.fn((_input: unknown) => ({ stop: ringtoneStop })),
+    startRingback: vi.fn((_input: unknown) => ({ stop: ringbackStop })),
     playHangUpTone: vi.fn((_volume: number) => undefined),
     navigate: vi.fn(),
     closeCallNotifications: vi.fn(),
@@ -134,6 +137,7 @@ vi.mock("~/orchestrator/liveSession", () => ({
 
 vi.mock("~/agentCall/ringtone", () => ({
   startRingtone: mocks.startRingtone,
+  startRingback: mocks.startRingback,
   playHangUpTone: mocks.playHangUpTone,
 }));
 
@@ -515,6 +519,44 @@ describe("who ends a call on the host", () => {
     });
     expect(mocks.endCall).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Answered on iPhone");
+  });
+});
+
+describe("calling an agent", () => {
+  it("rings out until the agent picks up, then the agent says hello", async () => {
+    const ended: AgentCall = { ...activeCall, status: "ended", endedAt: new Date().toISOString() };
+    const placed: AgentCall = {
+      ...ringingCall,
+      callId: AgentCallId.make("call-9"),
+      direction: "outgoing",
+      reason: "user",
+    };
+    mocks.calls = [ended];
+    mocks.placeCall.mockResolvedValueOnce({ _tag: "Success", value: placed } as never);
+    render({ route: true });
+    await act(async () => {
+      button("Call back").click();
+    });
+    expect(mocks.startRingback).toHaveBeenCalledOnce();
+    expect(mocks.ringbackStop).not.toHaveBeenCalled();
+    const options = mocks.createLiveVoiceSession.mock.calls.at(-1)![0] as VoiceSessionOptions;
+    await act(async () => {
+      await options.live?.startBody?.();
+    });
+    await act(async () => {
+      mocks.session.state = "listening";
+      sessionCallbacks().onStateChange?.("listening");
+    });
+    expect(mocks.ringbackStop).toHaveBeenCalledOnce();
+    expect(mocks.session.announce).toHaveBeenCalledWith(
+      expect.stringContaining('one short, casual hello such as "Hey, what\'s up?"'),
+    );
+    expect(mocks.startRingback).toHaveBeenCalledOnce();
+  });
+
+  it("never rings out for a call the agent placed", async () => {
+    await goLive();
+    expect(mocks.startRingback).not.toHaveBeenCalled();
   });
 });
 

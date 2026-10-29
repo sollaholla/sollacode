@@ -54,6 +54,12 @@ export interface VmManagerShape {
     icon: VmAgentIcon | null,
   ) => Effect.Effect<VmAgent, VmAgentNotFoundError>;
 
+  /** Choose the agent's call voice, or with null give it its automatic one; re-broadcasts. */
+  readonly setVoice: (
+    vmAgentId: VmAgentId,
+    voice: string | null,
+  ) => Effect.Effect<VmAgent, VmAgentNotFoundError>;
+
   /**
    * Switch the agent on (`running`) or off (`stopped`); the registry stream
    * re-broadcasts. Callers own the side effects: interrupting a running turn
@@ -164,6 +170,16 @@ export const make = Effect.gen(function* () {
       return { ...agent, icon, updatedAt };
     });
 
+  const setVoice: VmManagerShape["setVoice"] = (vmAgentId, voice) =>
+    Effect.gen(function* () {
+      const agent = yield* requireAgent(vmAgentId);
+      if ((agent.voice ?? null) === voice) return agent;
+      const updatedAt = yield* nowIso;
+      yield* store.updateVoice({ vmAgentId, voice, updatedAt }).pipe(Effect.orDie);
+      yield* publishAgents();
+      return { ...agent, voice, updatedAt };
+    });
+
   const setStatus: VmManagerShape["setStatus"] = (vmAgentId, status) =>
     Effect.gen(function* () {
       const agent = yield* requireAgent(vmAgentId);
@@ -221,6 +237,7 @@ export const make = Effect.gen(function* () {
     create,
     deleteAgent,
     setIcon,
+    setVoice,
     setStatus,
     subscribeAgents,
   } satisfies VmManagerShape;

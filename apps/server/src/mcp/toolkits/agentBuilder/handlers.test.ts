@@ -60,6 +60,7 @@ const makeHarness = (existingAgents: ReadonlyArray<VmAgent> = [agent]) => {
   const createdTasks: CreateWorkspaceTaskInput[] = [];
   const deletedAgents: string[] = [];
   const endedCallsFor: string[] = [];
+  const voices: Array<{ vmAgentId: string; voice: string | null }> = [];
   let wakeCount = 0;
 
   const engineLayer = Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
@@ -82,6 +83,11 @@ const makeHarness = (existingAgents: ReadonlyArray<VmAgent> = [agent]) => {
       Effect.sync(() => {
         deletedAgents.push(vmAgentId);
         return agentThreadId;
+      }),
+    setVoice: (vmAgentId, voice) =>
+      Effect.sync(() => {
+        voices.push({ vmAgentId, voice });
+        return { ...agent, avatarColor: 2, voice };
       }),
   });
   const workspaceLayer = Layer.mock(VmAgentWorkspace)({
@@ -120,6 +126,7 @@ const makeHarness = (existingAgents: ReadonlyArray<VmAgent> = [agent]) => {
     createdTasks,
     deletedAgents,
     endedCallsFor,
+    voices,
     wakeCount: () => wakeCount,
     layer: Layer.mergeAll(
       engineLayer,
@@ -190,6 +197,51 @@ it.effect("create_agent makes the chat thread, the agent, and applies chat confi
     assert.include(types, "thread.create");
     assert.include(types, "thread.meta.update");
     assert.include(result.status, "Lighthouse");
+  }),
+);
+
+it.effect("set_voice chooses the agent's call voice, and null gives it back its own", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    const chosen = yield* run(
+      handleAgentBuilder({ action: "set_voice", agentName: "Scout", voice: "vesper" }),
+      harness.layer,
+    );
+    assert.strictEqual(chosen.agent?.voice, "vesper");
+    assert.strictEqual(chosen.status, 'Agent "Scout" speaks with Vesper from its next call.');
+    const automatic = yield* run(
+      handleAgentBuilder({ action: "set_voice", agentName: "Scout", voice: null }),
+      harness.layer,
+    );
+    assert.strictEqual(
+      automatic.status,
+      'Agent "Scout" speaks with its automatic voice, Willow, from its next call.',
+    );
+    const missing = yield* Effect.flip(
+      run(handleAgentBuilder({ action: "set_voice", agentName: "Scout" }), harness.layer),
+    );
+    assert.strictEqual(missing._tag, "AgentBuilderInvalidInputError");
+    assert.deepStrictEqual(harness.voices, [
+      { vmAgentId: agent.vmAgentId, voice: "vesper" },
+      { vmAgentId: agent.vmAgentId, voice: null },
+    ]);
+  }),
+);
+
+it.effect("create_agent takes the voice to give the new agent", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness([]);
+    const result = yield* run(
+      handleAgentBuilder({
+        action: "create_agent",
+        name: "Lighthouse",
+        purpose: "Watch the fleet.",
+        voice: "cinder",
+      }),
+      harness.layer,
+    );
+    assert.strictEqual(result.agent?.voice, "cinder");
+    assert.deepStrictEqual(harness.voices, [{ vmAgentId: agent.vmAgentId, voice: "cinder" }]);
   }),
 );
 

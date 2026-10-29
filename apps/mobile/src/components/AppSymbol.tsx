@@ -58,6 +58,8 @@ import {
   IconPlayerPlay,
   IconPlayerStopFilled,
   IconPlus,
+  IconSelector,
+  IconWaveSine,
   IconQrcode,
   IconRefresh,
   IconSearch,
@@ -108,6 +110,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "chevron.left.forwardslash.chevron.right": IconCode,
   "chevron.right": IconChevronRight,
   "chevron.up": IconChevronUp,
+  "chevron.up.chevron.down": IconSelector,
   desktopcomputer: IconDeviceDesktop,
   "doc.on.doc": IconCopy,
   "doc.text": IconFileText,
@@ -156,6 +159,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "wifi.slash": IconWifiOff,
   xmark: IconX,
   "xmark.circle.fill": IconCircleXFilled,
+  waveform: IconWaveSine,
 };
 
 // Callers can pass `{ ios, android }` names where `android` is a Material

@@ -2,6 +2,7 @@ import { CommandId, VmAgentTaskId, type VmAgent } from "@t3tools/contracts";
 import * as NodeCrypto from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { AGENT_CALL_VOICE_DETAILS, agentCallVoice } from "@t3tools/shared/agentCallVoice";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -145,10 +146,16 @@ export const handleAgentBuilder = Effect.fn("AgentBuilder.handle")(function* (
       if (input.modelSelection !== undefined || input.runtimeMode !== undefined) {
         yield* configureChat(agent);
       }
+      const voiced =
+        input.voice == null
+          ? agent
+          : yield* manager
+              .setVoice(agent.vmAgentId, input.voice)
+              .pipe(Effect.mapError(mapFailure("choosing the agent's voice")));
       return {
         action: input.action,
         status: `Agent "${agent.name}" created and ready. Mention it anywhere as @${agent.handle}.`,
-        agent,
+        agent: voiced,
       };
     }
     case "configure_agent_chat": {
@@ -284,6 +291,24 @@ export const handleAgentBuilder = Effect.fn("AgentBuilder.handle")(function* (
         action: input.action,
         status: `Agent "${agent.name}" started. Scheduled tasks resume.`,
         agent: started,
+      };
+    }
+    case "set_voice": {
+      const agent = yield* resolveAgent;
+      if (input.voice === undefined) {
+        return yield* new AgentBuilderInvalidInputError({ action: input.action, missing: "voice" });
+      }
+      const voiced = yield* manager
+        .setVoice(agent.vmAgentId, input.voice)
+        .pipe(Effect.mapError(mapFailure("choosing the agent's voice")));
+      const spoken = AGENT_CALL_VOICE_DETAILS[agentCallVoice(voiced)].label;
+      return {
+        action: input.action,
+        status:
+          input.voice === null
+            ? `Agent "${agent.name}" speaks with its automatic voice, ${spoken}, from its next call.`
+            : `Agent "${agent.name}" speaks with ${spoken} from its next call.`,
+        agent: voiced,
       };
     }
     case "stop_agent": {
