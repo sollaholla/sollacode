@@ -295,6 +295,12 @@ export interface VoiceSessionOptions {
    * request carries. Omitted means the orchestrator's own routes.
    */
   readonly live?: LiveSessionRoutes;
+  /**
+   * GPT-Live only, for agent calls: the voice plays down a phone line, and
+   * while delegated work runs and the voice is quiet, desk sounds (typing,
+   * clicks) play down the same line at the cue volume (`cuePolicy`).
+   */
+  readonly phoneLine?: boolean;
 }
 
 /** Where a GPT-Live session is created, released and delegates work. */

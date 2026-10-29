@@ -310,6 +310,13 @@ Say goodbye to end a call by voice: once you say bye (or "that's all", "hang up"
 answers with its own goodbye, the call hangs up as soon as that goodbye finishes. A connected call
 ending, from either side, plays a short hang-up tone (off when sound cues are off in Settings).
 
+A call sounds like a phone call. The agent's voice comes down a phone line, cut to the range a
+handset carries, and while the agent works in its chat you hear it typing and clicking in the
+background. It stops typing whenever it speaks. The typing follows the sound cue switch and volume.
+Turn both off on a device with **Settings → Appearance → Sound → Phone-line calls**; the change
+applies from the next call. The phone app plays calls through the web call page, so it gets the
+same sound, at the default settings.
+
 The small arrow on **Mute** chooses the microphone. **Default** follows your system's microphone
 and switches mid-call when it changes, such as when headphones connect. A microphone you pick is
 remembered on that device and used again when it reconnects. If the microphone in use is unplugged,

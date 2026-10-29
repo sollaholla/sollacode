@@ -142,6 +142,10 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     { title: "Sound cues", keywords: ["audio", "tones", "voice", "microphone", "beep"] },
     { title: "Cue volume", keywords: ["audio", "loudness", "sound"] },
     {
+      title: "Phone-line calls",
+      keywords: ["agent call", "phone", "voice filter", "typing", "keyboard", "realism"],
+    },
+    {
       title: "Mute system audio while listening",
       keywords: ["audio", "microphone", "push to talk", "macos"],
     },

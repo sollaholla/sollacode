@@ -1153,6 +1153,18 @@ export function AppearanceSettingsPanel() {
           />
         ) : null}
 
+        <SettingsRow
+          title="Phone-line calls"
+          description="Agent calls sound like a phone call: the agent's voice comes down a phone line, and while it works in its chat you hear it typing and clicking. The typing follows the cue switch and volume above. Changes apply from the next call."
+          control={
+            <Switch
+              checked={settings.callPhoneLine}
+              onCheckedChange={(checked) => updateSettings({ callPhoneLine: Boolean(checked) })}
+              aria-label="Phone-line calls"
+            />
+          }
+        />
+
         {isElectron ? (
           <SettingsRow
             title="Mute system audio while listening"

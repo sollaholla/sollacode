@@ -276,3 +276,20 @@ reply out, no question read out), ends quietly when none are left, and with no e
 A participant whose chat is gone, when the words are sent or later while its reply is awaited, is
 removed from the call and reads "<Name> couldn't answer: My chat is no longer available, so I've
 left the call." Only the called agent's chat being gone when words are sent fails the call.
+
+## Call sound
+
+An agent call's voice session (`createLiveVoiceSession` with `phoneLine`, from the per-device
+`callPhoneLine` client setting) plays the remote track through `createPhoneLine`
+([phoneLine.ts](../../apps/web/src/orchestrator/phoneLine.ts)) on the session's own AudioContext:
+two high-pass and two low-pass biquads (300 Hz to 3.4 kHz), a presence bump, a compressor, make-up
+gain and a `tanh` soft clip bounded at full scale. The `<audio>` element keeps playing the track,
+muted, because Chrome only feeds a remote WebRTC track to Web Audio while an element plays it; hush
+mutes the line's output gain instead of the element. A line that fails to build leaves the element
+playing as before.
+
+`createDeskSounds` plays `deskBeats` (typing in words, typos backed out, pauses with clicks) into the
+same line while delegated work runs and the voice is quiet, at the cue policy's volume (none when
+cues are off). The session's 100 ms level meter pumps it, scheduling 0.35 s ahead on the context
+clock, so there is no extra timer; each sound is filtered noise from one shared buffer. The phone
+app's call page is the web page in a WebView, so it plays the same.

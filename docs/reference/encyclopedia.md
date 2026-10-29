@@ -382,6 +382,14 @@ agent it is moving to (`agentCallTransferDetail` in
 `failed` against the old one with the reason), and the native call screen waits for it and follows
 it. A `/call` page showing the old call moves to the new one. Participants stay behind.
 
+#### Phone line
+
+How an [agent call](#agent-call) sounds on a device with **Phone-line calls** on (the
+`callPhoneLine` client setting, default on): the agent's voice is filtered to a handset's 300 Hz to
+3.4 kHz band with light compression, and while the agent works in its chat its desk (typing,
+clicks) plays down the same line at the sound-cue volume, pausing while it speaks.
+[phoneLine.ts](../../apps/web/src/orchestrator/phoneLine.ts).
+
 ### Thread artifacts
 
 #### Thread artifact

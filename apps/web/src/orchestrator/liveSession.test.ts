@@ -12,6 +12,7 @@ import {
   trimLiveHistory,
 } from "./liveProtocol";
 import { mergeLiveVoiceUsage } from "./liveUsageStore";
+import { createFakeAudioGraph } from "./testing/fakeAudioGraph";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -1002,5 +1003,151 @@ describe("Live transcript and usage protocol", () => {
     expect(replay).toEqual([
       { sessionId: "one", seconds: 15, finalized: true, date: now.toISOString() },
     ]);
+  });
+});
+
+describe("GPT-Live phone line", () => {
+  /**
+   * The fixture's session on a recording audio graph, with the remote voice
+   * arriving as GPT-Live's track does.
+   */
+  async function onTheLine(options: Partial<VoiceSessionOptions>) {
+    const working = vi.fn();
+    const f = fixture({ onWorkingChange: working }, options);
+    const graph = createFakeAudioGraph(() => Date.now() / 1_000);
+    const sources: Array<{ connect: ReturnType<typeof vi.fn> }> = [];
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        destination = graph.destination;
+        sampleRate = 48_000;
+        get currentTime() {
+          return graph.context.currentTime;
+        }
+        resume = async () => undefined;
+        close = async () => undefined;
+        createAnalyser = () => ({
+          fftSize: 256,
+          getByteTimeDomainData: (array: Uint8Array) => array.fill(128),
+        });
+        createMediaStreamSource = () => {
+          const source = { connect: vi.fn(), disconnect: vi.fn() };
+          sources.push(source);
+          return source;
+        };
+        createBiquadFilter = () => graph.context.createBiquadFilter();
+        createDynamicsCompressor = () => graph.context.createDynamicsCompressor();
+        createGain = () => graph.context.createGain();
+        createWaveShaper = () => graph.context.createWaveShaper();
+        createBufferSource = () => graph.context.createBufferSource();
+        createBuffer = (channels: number, frames: number, rate: number) =>
+          graph.context.createBuffer(channels, frames, rate);
+      },
+    );
+    const elements: Array<{ muted?: boolean }> = [];
+    vi.stubGlobal(
+      "Audio",
+      class {
+        autoplay = false;
+        muted = false;
+        pause = vi.fn();
+        play = async () => undefined;
+        srcObject: unknown = null;
+        constructor() {
+          elements.push(this);
+        }
+      },
+    );
+    await f.ready();
+    const onTrack = f.peer.addEventListener.mock.calls.find(
+      ([name]) => (name as unknown as string) === "track",
+    )?.[1] as unknown as (event: { streams: unknown[]; track: unknown }) => void;
+    onTrack({ streams: [{ id: "remote" }], track: {} });
+    // The second source is the remote voice; the first is the microphone's meter.
+    const remote = sources[1]!;
+    return { f, graph, element: elements[0]!, remote, working };
+  }
+
+  it("plays the agent's voice through the line, muting the element that feeds it", async () => {
+    const { f, graph, element, remote } = await onTheLine({ phoneLine: true });
+    const line = graph.ofKind("biquad")[0]!;
+    expect(line.type).toBe("highpass");
+    expect(remote.connect).toHaveBeenCalledWith(line);
+    expect(element.muted).toBe(true);
+    // Talking over the agent hushes the line, not the element.
+    f.session.hush?.();
+    const output = graph.nodes.find((node) => node.connections.includes(graph.destination))!;
+    expect(output.gain.calls.at(-1)).toMatchObject({ method: "set", value: 0 });
+    expect(element.muted).toBe(true);
+    // It comes back once the agent has stopped.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(output.gain.calls.at(-1)).toMatchObject({ method: "set", value: 1 });
+    expect(element.muted).toBe(true);
+    f.session.stop();
+    f.event({ type: "session.closed", usage: { seconds: 2 } });
+    expect(
+      graph.nodes.filter((node) => node.kind !== "source").every((node) => node.disconnected),
+    ).toBe(true);
+  });
+
+  it("plays the voice as it was without the line", async () => {
+    const { f, graph, element } = await onTheLine({});
+    expect(graph.nodes).toHaveLength(0);
+    expect(element.muted).toBe(false);
+    f.session.hush?.();
+    expect(element.muted).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(element.muted).toBe(false);
+    f.session.stop();
+  });
+
+  it("types at the desk while delegated work runs, and stops when it is done", async () => {
+    const { f, graph, working } = await onTheLine({ phoneLine: true });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(graph.ofKind("source")).toHaveLength(0);
+    f.event({
+      type: "session.input_transcript.delta",
+      delta: "Check my appointments",
+      start_ms: 0,
+      end_ms: 800,
+    });
+    await vi.advanceTimersByTimeAsync(900);
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(350);
+    expect(working).toHaveBeenLastCalledWith(true);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const typed = graph.ofKind("source").length;
+    expect(typed).toBeGreaterThan(20);
+    const controller = await f.workController.promise;
+    controller.enqueue(
+      new TextEncoder().encode(
+        JSON.stringify({ delegationId: "work", status: "completed", text: "Two today." }) + "\n",
+      ),
+    );
+    controller.close();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(working).toHaveBeenLastCalledWith(false);
+    const settled = graph.ofKind("source").length;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(graph.ofKind("source")).toHaveLength(settled);
+    f.session.stop();
+  });
+
+  it("keeps the desk quiet when cues are off", async () => {
+    const { f, graph } = await onTheLine({
+      phoneLine: true,
+      cuePolicy: () => ({ enabled: false, volume: 1 }),
+    });
+    f.event({
+      type: "session.input_transcript.delta",
+      delta: "Check my appointments",
+      start_ms: 0,
+      end_ms: 800,
+    });
+    await vi.advanceTimersByTimeAsync(900);
+    f.event({ type: "session.delegation.created", delegation: { target: "client", id: "d1" } });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(graph.ofKind("source")).toHaveLength(0);
+    f.session.stop();
   });
 });

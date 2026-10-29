@@ -17,6 +17,7 @@ const clientSettings: ClientSettings = {
   agentStackEnabled: true,
   autoOpenPlanSidebar: false,
   autoSendVoiceTranscription: false,
+  callPhoneLine: true,
   voiceTranscriptionCorrectionEnabled: false,
   voiceTranscriptionCorrectionModelSelection: null,
   confirmThreadArchive: true,

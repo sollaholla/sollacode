@@ -186,6 +186,11 @@ export const ClientSettingsSchema = Schema.Struct({
   soundCueVolume: SoundCueVolume.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SOUND_CUE_VOLUME)),
   ),
+  // Agent calls sound like phone calls: the voice comes down a band-limited
+  // line, and the agent's desk (typing, clicks) plays behind it while it
+  // works. Per-device like the cues, because it is about how this device
+  // plays the call.
+  callPhoneLine: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
@@ -1401,6 +1406,7 @@ export const ClientSettingsPatch = Schema.Struct({
   showResumeThreadsOnStartup: Schema.optionalKey(Schema.Boolean),
   soundCues: Schema.optionalKey(Schema.Boolean),
   soundCueVolume: Schema.optionalKey(SoundCueVolume),
+  callPhoneLine: Schema.optionalKey(Schema.Boolean),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });

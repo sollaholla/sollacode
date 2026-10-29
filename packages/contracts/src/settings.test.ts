@@ -137,10 +137,12 @@ describe("ClientSettings sound cues", () => {
     expect(settings.soundCues).toBe(true);
     expect(settings.soundCueVolume).toBe(100);
     expect(settings.pushToTalkMutesSystemAudio).toBe(true);
+    expect(settings.callPhoneLine).toBe(true);
   });
 
   it("accepts opting each one out", () => {
     expect(decodeClientSettingsPatch({ soundCues: false }).soundCues).toBe(false);
+    expect(decodeClientSettingsPatch({ callPhoneLine: false }).callPhoneLine).toBe(false);
     expect(decodeClientSettingsPatch({ soundCueVolume: 0 }).soundCueVolume).toBe(0);
     expect(
       decodeClientSettingsPatch({ pushToTalkMutesSystemAudio: false }).pushToTalkMutesSystemAudio,

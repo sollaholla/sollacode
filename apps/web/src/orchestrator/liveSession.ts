@@ -20,6 +20,8 @@ import {
   microphoneConstraintsFor,
 } from "./microphones";
 import { applyVoiceIsolation } from "./voiceIsolation";
+import { DEFAULT_VOICE_CUE_POLICY } from "./voiceCues";
+import { createDeskSounds, createPhoneLine, type DeskSounds, type PhoneLine } from "./phoneLine";
 import {
   createLiveTranscriptContext,
   liveAppendChunks,
@@ -65,6 +67,11 @@ export function createLiveVoiceSession(
   let switching: Promise<void> = Promise.resolve();
   let audio: HTMLAudioElement | null = null;
   let audioContext: AudioContext | null = null;
+  /** The phone line the voice plays through on an agent call, and the desk behind it. */
+  let phoneLine: PhoneLine | null = null;
+  let desk: DeskSounds | null = null;
+  /** Whether delegated work is running, as last reported to `onWorkingChange`. */
+  let working = false;
   let releaseIsolation: (() => void) | null = null;
   let sessionId: string | null = null;
   let ready = false;
@@ -124,6 +131,16 @@ export function createLiveVoiceSession(
       state = next;
       callbacks.onStateChange?.(next);
     }
+  };
+  const setWorking = (next: boolean) => {
+    working = next;
+    callbacks.onWorkingChange?.(next);
+  };
+  /** Silences the voice (talking over it) and brings it back, wherever it plays. */
+  const muteOutput = (next: boolean) => {
+    mutedOutput = next;
+    if (phoneLine) phoneLine.setMuted(next);
+    else if (audio) audio.muted = next;
   };
   const flush = (role: "user" | "assistant") => {
     const pending = transcripts[role];
@@ -208,11 +225,15 @@ export function createLiveVoiceSession(
       audio.srcObject = null;
       audio = null;
     }
+    desk?.dispose();
+    desk = null;
+    phoneLine?.disconnect();
+    phoneLine = null;
     void audioContext?.close().catch(() => undefined);
     audioContext = null;
     reportUsage();
     releaseSession();
-    callbacks.onWorkingChange?.(false);
+    setWorking(false);
     callbacks.onLevels?.({ mic: 0, assistant: 0 });
     setState("idle");
   };
@@ -338,7 +359,7 @@ export function createLiveVoiceSession(
     }
     const abort = new AbortController();
     workStreams.add(abort);
-    callbacks.onWorkingChange?.(true);
+    setWorking(true);
     let terminal = false;
     const heard = userFragments;
     try {
@@ -388,7 +409,7 @@ export function createLiveVoiceSession(
             if (!line.trim()) continue;
             const event = decodeWork(JSON.parse(line));
             terminal = terminalWork.has(event.status);
-            callbacks.onWorkingChange?.(
+            setWorking(
               !terminal && event.status !== "waiting-input" && event.status !== "pending-approval",
             );
             if (lastText !== event.text) {
@@ -441,7 +462,7 @@ export function createLiveVoiceSession(
           cause instanceof Error
             ? cause.message
             : "Delegated work could not be confirmed. Check agent activity.";
-        callbacks.onWorkingChange?.(false);
+        setWorking(false);
         callbacks.onError?.(message);
         append("session.commentary.append", message, delegationId);
       }
@@ -649,6 +670,40 @@ export function createLiveVoiceSession(
       if (wanted) await switchMicrophone();
     })().catch(() => undefined);
   };
+  /**
+   * Plays the agent's voice down a phone line, with its desk behind it. The
+   * element keeps playing the track, muted: Chrome only feeds a remote WebRTC
+   * track to Web Audio while a media element plays it. A line that cannot be
+   * built leaves the voice playing as it was.
+   */
+  const playThroughLine = (
+    context: AudioContext,
+    element: HTMLAudioElement,
+    remote: MediaStreamAudioSourceNode,
+  ) => {
+    try {
+      if (!phoneLine) {
+        phoneLine = createPhoneLine(context);
+        phoneLine.setMuted(mutedOutput);
+        desk = createDeskSounds({
+          context,
+          destination: phoneLine.input,
+          volume: () => {
+            const cues = options.cuePolicy?.() ?? DEFAULT_VOICE_CUE_POLICY;
+            return cues.enabled ? cues.volume : 0;
+          },
+        });
+      }
+      remote.connect(phoneLine.input);
+      element.muted = true;
+    } catch {
+      desk?.dispose();
+      desk = null;
+      phoneLine?.disconnect();
+      phoneLine = null;
+      element.muted = mutedOutput;
+    }
+  };
   const start = async () => {
     if (stopped || state !== "idle") return;
     setState("connecting");
@@ -704,7 +759,9 @@ export function createLiveVoiceSession(
         audio.srcObject = stream;
         remoteAnalyser = audioContext.createAnalyser();
         remoteAnalyser.fftSize = 256;
-        audioContext.createMediaStreamSource(stream).connect(remoteAnalyser);
+        const remote = audioContext.createMediaStreamSource(stream);
+        remote.connect(remoteAnalyser);
+        if (options.phoneLine) playThroughLine(audioContext, audio, remote);
         void audio.play().catch(() => {
           if (!stopped) {
             callbacks.onError?.(
@@ -835,10 +892,10 @@ export function createLiveVoiceSession(
         }
         if (micLevel > 0.035) lastActivity = now;
         const speaking = lastAudible > 0 && now - lastAudible < 600;
-        if (mutedOutput && !speaking && audio) {
-          audio.muted = false;
-          mutedOutput = false;
-        }
+        if (mutedOutput && !speaking) muteOutput(false);
+        // The agent stops typing to talk.
+        desk?.setActive(working && !speaking);
+        desk?.pump();
         setState(speaking && !mutedOutput ? "speaking" : "listening");
         callbacks.onLevels?.({ mic: micLevel, assistant: mutedOutput ? 0 : assistantLevel });
         if (endAfterAudio && !speaking) {
@@ -872,8 +929,7 @@ export function createLiveVoiceSession(
     },
     hush: () => {
       if (audio && ready) {
-        audio.muted = true;
-        mutedOutput = true;
+        muteOutput(true);
         append("session.instructions.append", "Stop speaking and listen to the user.", null);
         setState("listening");
       }

@@ -573,6 +573,9 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
           confirmDestructiveActions: true,
           language: "en",
           microphoneId: readPreferredMicrophone(),
+          // Read as the call starts: a change lands on the next call.
+          phoneLine: getClientSettings().callPhoneLine,
+          cuePolicy: () => resolveVoiceCuePolicy(getClientSettings()),
           live: {
             sessionPath: AGENT_CALL_SESSION_PATH,
             releasePath: AGENT_CALL_SESSION_RELEASE_PATH,
