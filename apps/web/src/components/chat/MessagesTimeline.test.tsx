@@ -802,6 +802,8 @@ describe("MessagesTimeline", () => {
       resolveTimelineMinimapIndexFromPointer,
       resolveTimelineMinimapInteractiveWidth,
       resolveTimelineMinimapTopPercent,
+      TIMELINE_MINIMAP_EDGE_PADDING,
+      TIMELINE_MINIMAP_ITEM_SPACING,
     } = await import("./MessagesTimeline.logic");
 
     expect(resolveTimelineIsAtEnd({ isNearEnd: true, isAtEnd: false })).toBe(true);
@@ -835,6 +837,26 @@ describe("MessagesTimeline", () => {
         pointerY: 999,
       }),
     ).toBe(100);
+    // The rail is padded past its end ticks and measured from the ticks
+    // themselves, so the hover room above the first chapter and below the
+    // last belongs to them; before, it was off the rail and nothing showed.
+    expect(TIMELINE_MINIMAP_EDGE_PADDING).toBeGreaterThanOrEqual(TIMELINE_MINIMAP_ITEM_SPACING);
+    expect(
+      resolveTimelineMinimapIndexFromPointer({
+        itemCount: 31,
+        railTop: 100,
+        railHeight: 240,
+        pointerY: 100 - TIMELINE_MINIMAP_EDGE_PADDING,
+      }),
+    ).toBe(0);
+    expect(
+      resolveTimelineMinimapIndexFromPointer({
+        itemCount: 31,
+        railTop: 100,
+        railHeight: 240,
+        pointerY: 340 + TIMELINE_MINIMAP_EDGE_PADDING,
+      }),
+    ).toBe(30);
     expect(resolveTimelineMinimapHasPersistentGutter(832)).toBe(false);
     expect(resolveTimelineMinimapHasPersistentGutter(863)).toBe(false);
     expect(resolveTimelineMinimapHasPersistentGutter(864)).toBe(true);

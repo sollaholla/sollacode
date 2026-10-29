@@ -27,6 +27,13 @@ import {
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
 export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
+/**
+ * Hover room above the first tick and below the last. The ticks span the rail
+ * end to end, so without it the first and last chapters each owned only the
+ * half slot inside the rail, as little as 2px on a long thread, and the pointer
+ * was off the rail just above or below them.
+ */
+export const TIMELINE_MINIMAP_EDGE_PADDING = 8;
 export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "min(240px, max(32px, calc(100dvh - 18rem)))";
 export const TIMELINE_CONTENT_MAX_WIDTH = 768;
 export const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;

@@ -132,6 +132,7 @@ import {
   sameTurnFileReferences,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
+  TIMELINE_MINIMAP_EDGE_PADDING,
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
   type TimelineMinimapItem,
@@ -1540,6 +1541,9 @@ function TimelineMinimap({
   onSelect: (item: TimelineMinimapItem) => void;
 }) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  // The ticks' own span, inside the rail's edge padding; a pointer in the
+  // padding clamps to the first or last chapter.
+  const trackRef = useRef<HTMLDivElement>(null);
 
   const resolvedActiveIndex =
     activeIndex !== null && activeIndex < items.length ? activeIndex : null;
@@ -1559,7 +1563,7 @@ function TimelineMinimap({
 
   const resolveActiveIndexFromPointer = useCallback(
     (event: MouseEvent<HTMLElement>) => {
-      const rect = event.currentTarget.getBoundingClientRect();
+      const rect = (trackRef.current ?? event.currentTarget).getBoundingClientRect();
       return resolveTimelineMinimapIndexFromPointer({
         itemCount: items.length,
         railTop: rect.top,
@@ -1610,7 +1614,9 @@ function TimelineMinimap({
         <button
           aria-label={`Jump to message: ${activeItem?.userText ?? "User message"}`}
           className={cn(
-            "absolute top-1/2 left-3 -translate-y-1/2 cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
+            // Content-box, so the edge padding adds hover room past the end
+            // ticks instead of squeezing them together.
+            "absolute top-1/2 left-3 box-content -translate-y-1/2 cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
             // The strip is width-capped to the side gutter so it never overlays
             // the centered content column; with no usable gutter it goes inert.
             hitStripWidth > 0 ? "pointer-events-auto" : "pointer-events-none",
@@ -1653,75 +1659,82 @@ function TimelineMinimap({
           style={{
             height: resolveTimelineMinimapHeightStyle(items.length),
             width: resolveTimelineMinimapInteractiveWidth(hitStripWidth),
+            paddingBlock: TIMELINE_MINIMAP_EDGE_PADDING,
           }}
           type="button"
         >
-          <div className="absolute top-0 left-3 h-full w-px bg-border/15" />
-          {items.map((item, index) => {
-            const top = `${resolveTimelineMinimapTopPercent(index, items.length)}%`;
-            const activeDistance =
-              resolvedActiveIndex === null ? null : Math.abs(index - resolvedActiveIndex);
-            return (
+          <div
+            ref={trackRef}
+            className="pointer-events-none absolute inset-x-0"
+            style={{ top: TIMELINE_MINIMAP_EDGE_PADDING, bottom: TIMELINE_MINIMAP_EDGE_PADDING }}
+          >
+            <div className="absolute top-0 left-3 h-full w-px bg-border/15" />
+            {items.map((item, index) => {
+              const top = `${resolveTimelineMinimapTopPercent(index, items.length)}%`;
+              const activeDistance =
+                resolvedActiveIndex === null ? null : Math.abs(index - resolvedActiveIndex);
+              return (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "pointer-events-none absolute left-0 h-0.5 -translate-y-1/2 rounded-full bg-muted-foreground/35 transition-[background-color,width] duration-150 data-[in-view=true]:bg-foreground/90",
+                    activeDistance === 0
+                      ? "w-6 bg-muted-foreground/75"
+                      : activeDistance === 1
+                        ? "w-4"
+                        : activeDistance === 2
+                          ? "w-2.5"
+                          : "w-2",
+                  )}
+                  data-in-view="false"
+                  data-minimap-strip
+                  key={item.id}
+                  ref={(node) => {
+                    if (node) {
+                      stripMap.set(item.id, node);
+                    } else {
+                      stripMap.delete(item.id);
+                    }
+                  }}
+                  style={{ top }}
+                />
+              );
+            })}
+            {activeItem ? (
               <span
-                aria-hidden="true"
-                className={cn(
-                  "pointer-events-none absolute left-0 h-0.5 -translate-y-1/2 rounded-full bg-muted-foreground/35 transition-[background-color,width] duration-150 data-[in-view=true]:bg-foreground/90",
-                  activeDistance === 0
-                    ? "w-6 bg-muted-foreground/75"
-                    : activeDistance === 1
-                      ? "w-4"
-                      : activeDistance === 2
-                        ? "w-2.5"
-                        : "w-2",
-                )}
-                data-in-view="false"
-                data-minimap-strip
-                key={item.id}
-                ref={(node) => {
-                  if (node) {
-                    stripMap.set(item.id, node);
-                  } else {
-                    stripMap.delete(item.id);
-                  }
+                // Non-interactive on purpose. While this accepted pointer events
+                // the strip had to widen to reach it, which put a 22rem block over
+                // the conversation that ate clicks and held the preview open until
+                // the pointer left the whole block. Ignoring the pointer means the
+                // card closes the moment you leave the tick row, and never blocks
+                // anything underneath.
+                className="pointer-events-none absolute left-8 w-80"
+                data-minimap-preview
+                style={{
+                  top: `${activeTopPercent}%`,
+                  transform: `translateY(${activeTooltipTranslate})`,
                 }}
-                style={{ top }}
-              />
-            );
-          })}
-          {activeItem ? (
-            <span
-              // Non-interactive on purpose. While this accepted pointer events
-              // the strip had to widen to reach it, which put a 22rem block over
-              // the conversation that ate clicks and held the preview open until
-              // the pointer left the whole block. Ignoring the pointer means the
-              // card closes the moment you leave the tick row, and never blocks
-              // anything underneath.
-              className="pointer-events-none absolute left-8 w-80"
-              data-minimap-preview
-              style={{
-                top: `${activeTopPercent}%`,
-                transform: `translateY(${activeTooltipTranslate})`,
-              }}
-            >
-              <span className="dropdown-glass block rounded-xl p-3 text-left text-popover-foreground shadow-xl shadow-black/25">
-                <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium leading-5">
-                  {activeItem.userText ?? "User message"}
-                </span>
-                {activeItem.assistantText ? (
-                  <span
-                    className="mt-1 max-h-[3.75rem] overflow-hidden text-muted-foreground text-sm leading-5"
-                    style={{
-                      display: "-webkit-box",
-                      WebkitBoxOrient: "vertical",
-                      WebkitLineClamp: 3,
-                    }}
-                  >
-                    {activeItem.assistantText}
+              >
+                <span className="dropdown-glass block rounded-xl p-3 text-left text-popover-foreground shadow-xl shadow-black/25">
+                  <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium leading-5">
+                    {activeItem.userText ?? "User message"}
                   </span>
-                ) : null}
+                  {activeItem.assistantText ? (
+                    <span
+                      className="mt-1 max-h-[3.75rem] overflow-hidden text-muted-foreground text-sm leading-5"
+                      style={{
+                        display: "-webkit-box",
+                        WebkitBoxOrient: "vertical",
+                        WebkitLineClamp: 3,
+                      }}
+                    >
+                      {activeItem.assistantText}
+                    </span>
+                  ) : null}
+                </span>
               </span>
-            </span>
-          ) : null}
+            ) : null}
+          </div>
         </button>
       </div>
     </div>
