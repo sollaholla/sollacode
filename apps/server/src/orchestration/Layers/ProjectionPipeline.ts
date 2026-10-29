@@ -1830,13 +1830,68 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             messageId,
           });
-          if (Option.isNone(pending)) return;
 
           const obligation = yield* threadWorkObligationRepository.getByKey({
             threadId: event.payload.threadId,
             sourceTurnId: activeTurnWorkSourceId(messageId),
             kind: "active-turn-recovery",
           });
+          const confirmsSteer =
+            Option.isSome(obligation) &&
+            obligation.value.state === "completed" &&
+            obligation.value.blockedReason === ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON;
+          // A concrete delivery receipt identifies the input more precisely
+          // than FIFO. Send now can withdraw its pending placeholder while the
+          // provider is accepting it; adopting the next placeholder then binds
+          // a different, still-unsent message to this running turn.
+          if (
+            !confirmsSteer &&
+            activity.turnId != null &&
+            (Option.isSome(pending) || Option.isSome(obligation))
+          ) {
+            const existing = yield* projectionTurnRepository.getByTurnId({
+              threadId: event.payload.threadId,
+              turnId: activity.turnId,
+            });
+            if (Option.isSome(existing)) {
+              // Follow-up/steer receipts may name the same host turn. They
+              // never replace its original input, even if recovery could not
+              // recover that input and left the host turn unbound.
+              return;
+            } else {
+              const sourceWasStopped =
+                Option.isSome(obligation) &&
+                (obligation.value.state === "cancelled" || obligation.value.state === "completed");
+              yield* projectionTurnRepository.upsertByTurnId({
+                threadId: event.payload.threadId,
+                turnId: activity.turnId,
+                pendingMessageId: messageId,
+                sourceProposedPlanThreadId: Option.isSome(pending)
+                  ? pending.value.sourceProposedPlanThreadId
+                  : null,
+                sourceProposedPlanId: Option.isSome(pending)
+                  ? pending.value.sourceProposedPlanId
+                  : null,
+                assistantMessageId: null,
+                // A late receipt identifies the source, but only a subsequent
+                // running-session event can revive work that was already stopped.
+                state: sourceWasStopped ? "incomplete" : "running",
+                requestedAt: Option.isSome(pending)
+                  ? pending.value.requestedAt
+                  : Option.isSome(obligation)
+                    ? obligation.value.createdAt
+                    : activity.createdAt,
+                startedAt: activity.createdAt,
+                completedAt: sourceWasStopped ? activity.createdAt : null,
+                checkpointTurnCount: null,
+                checkpointRef: null,
+                checkpointStatus: null,
+                checkpointFiles: [],
+              });
+            }
+            return;
+          }
+          if (Option.isNone(pending)) return;
           // The same receipt kind is emitted for ordinary turn/start delivery
           // and for a steer into an already-running turn. Only the latter can
           // consume the null-turn placeholder here: a normal start still needs

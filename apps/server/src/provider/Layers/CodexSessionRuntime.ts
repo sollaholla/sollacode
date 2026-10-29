@@ -1,5 +1,6 @@
 import {
   CODEX_BACKGROUND_TASK_METHOD,
+  codexBackgroundTaskId,
   codexBackgroundStopTarget,
   routeCodexBackgroundNotification,
   updateCodexBackgroundTaskMetadata,
@@ -364,6 +365,90 @@ export class CodexBackgroundTaskNotRunningError extends Schema.TaggedErrorClass<
     return `Codex background task '${this.taskId}' has no observed running child turn to stop.`;
   }
 }
+
+type CodexTaskThread = Pick<
+  EffectCodexSchema.V2ThreadReadResponse["thread"],
+  "id" | "source" | "status" | "turns"
+>;
+
+/** Resolve a retained task after its owner runtime was replaced, without interrupting foreign work. */
+export const stopCodexBackgroundTask = Effect.fn("stopCodexBackgroundTask")(function* <E>(input: {
+  readonly taskId: string;
+  readonly rootProviderThreadId: string;
+  readonly tasks: ReadonlyMap<string, CodexBackgroundTask>;
+  readonly readThread: (
+    threadId: string,
+    includeTurns: boolean,
+  ) => Effect.Effect<{ readonly thread: CodexTaskThread }, E>;
+  readonly interrupt: (target: {
+    readonly threadId: string;
+    readonly turnId: string;
+  }) => Effect.Effect<unknown, E>;
+}) {
+  const observedTarget = codexBackgroundStopTarget(
+    input.tasks,
+    input.taskId,
+    input.rootProviderThreadId,
+  );
+  if (observedTarget) {
+    yield* input.interrupt(observedTarget);
+    return;
+  }
+
+  const prefix = codexBackgroundTaskId("");
+  const childId = input.taskId.startsWith(prefix) ? input.taskId.slice(prefix.length) : "";
+  if (!childId || childId === input.rootProviderThreadId) {
+    return yield* new CodexBackgroundTaskNotRunningError({ taskId: input.taskId });
+  }
+  const { thread: child } = yield* input.readThread(childId, true);
+  if (child.id !== childId) {
+    return yield* new CodexBackgroundTaskNotRunningError({ taskId: input.taskId });
+  }
+
+  // Nested subagents have their immediate parent's ID, so follow only native
+  // subagent ancestry. A fork or an unrelated thread is not owned by this root.
+  let ancestor = child;
+  const seen = new Set([childId]);
+  let owned = false;
+  for (let depth = 0; depth < 32; depth += 1) {
+    const source = ancestor.source;
+    if (typeof source !== "object" || !("subAgent" in source)) break;
+    const subAgent = source.subAgent;
+    if (typeof subAgent !== "object" || !("thread_spawn" in subAgent)) break;
+    const parentId = subAgent.thread_spawn.parent_thread_id;
+    if (parentId === input.rootProviderThreadId) {
+      owned = true;
+      break;
+    }
+    if (!parentId || seen.has(parentId)) break;
+    seen.add(parentId);
+    const parent = yield* input.readThread(parentId, false);
+    if (parent.thread.id !== parentId) break;
+    ancestor = parent.thread;
+  }
+  if (!owned) return yield* new CodexBackgroundTaskNotRunningError({ taskId: input.taskId });
+
+  // Native history ordering is not part of the read contract. Accept only an
+  // unambiguous active turn or a history whose turns are all terminal.
+  const activeTurns = child.turns.filter((turn) => turn.status === "inProgress");
+  const activeTurn = activeTurns[0];
+  if (child.status.type === "active" && activeTurns.length === 1 && activeTurn) {
+    yield* input.interrupt({ threadId: child.id, turnId: activeTurn.id });
+    return;
+  }
+  if (
+    child.turns.length > 0 &&
+    activeTurns.length === 0 &&
+    (child.status.type === "idle" || child.status.type === "notLoaded")
+  ) {
+    // The caller records a durable task completion. This also handles children
+    // whose terminal notification was lost when the old owner process closed.
+    return;
+  }
+  // An unloaded in-progress turn may simply be an incomplete persisted tail;
+  // neither that nor a missing turn proves this child stopped.
+  return yield* new CodexBackgroundTaskNotRunningError({ taskId: input.taskId });
+});
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -1705,9 +1790,14 @@ export const makeCodexSessionRuntime = (
       stopTask: (taskId) =>
         Effect.gen(function* () {
           const rootProviderThreadId = yield* readProviderThreadId;
-          const target = codexBackgroundStopTarget(backgroundTasks, taskId, rootProviderThreadId);
-          if (!target) return yield* new CodexBackgroundTaskNotRunningError({ taskId });
-          yield* client.request("turn/interrupt", target);
+          yield* stopCodexBackgroundTask({
+            taskId,
+            rootProviderThreadId,
+            tasks: backgroundTasks,
+            readThread: (threadId, includeTurns) =>
+              client.request("thread/read", { threadId, includeTurns }),
+            interrupt: (target) => client.request("turn/interrupt", target),
+          });
         }).pipe(closeIfWedged),
       interruptTurn: (turnId) =>
         Effect.gen(function* () {

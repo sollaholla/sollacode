@@ -223,6 +223,10 @@ actions.
 
 Solla first requests a provider interrupt, then closes the provider session. Late provider status events cannot restart the chat, and startup recovery must respect an explicit Stop. Send a new message when you want work to resume. If the provider cannot be stopped, Solla reports that failure in the conversation rather than silently claiming the process exited.
 
+Once a Codex provider session has stopped, its subagents leave the active task list and no longer hold up queued work. Unsent messages remain parked after **Stop**; use **Send now** to send them deliberately. Replacing a provider session preserves the normal queue behavior. A delivery receipt identifies the exact message accepted by the provider, so an interrupted send cannot consume the next queued message by mistake.
+
+For Codex, a task's own stop button also works after its provider session has been replaced. Solla checks the native child thread's ownership and current status, then interrupts that child if it is running or clears its stale active entry if it already ended. Failed checks remain visible as errors.
+
 ## Queued sends and provider startup
 
 Choosing a different provider instance or model selects **High** reasoning immediately when that

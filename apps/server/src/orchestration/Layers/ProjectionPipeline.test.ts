@@ -4216,18 +4216,21 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-
       }),
     );
 
-    it.effect("retires the exact pending placeholder when a delivery receipt proves a steer", () =>
-      Effect.gen(function* () {
-        const projectionPipeline = yield* OrchestrationProjectionPipeline;
-        const eventStore = yield* OrchestrationEventStore;
-        const sql = yield* SqlClient.SqlClient;
-        const threadId = ThreadId.make("thread-delivered-steer");
-        const hostTurnId = TurnId.make("turn-delivered-steer-host");
-        const hostMessageId = MessageId.make("message-delivered-steer-host");
-        const steeredMessageId = MessageId.make("message-delivered-steer-pending");
-        const requestedAt = "2026-02-26T15:00:00.000Z";
+    for (const withHostTurn of [false, true]) {
+      it.effect(`retires a delivered steer placeholder (host turn supplied: ${withHostTurn})`, () =>
+        Effect.gen(function* () {
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const eventStore = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
+          const threadId = ThreadId.make(`thread-delivered-steer-${withHostTurn}`);
+          const hostTurnId = TurnId.make(`turn-delivered-steer-host-${withHostTurn}`);
+          const hostMessageId = MessageId.make(`message-delivered-steer-host-${withHostTurn}`);
+          const steeredMessageId = MessageId.make(
+            `message-delivered-steer-pending-${withHostTurn}`,
+          );
+          const requestedAt = "2026-02-26T15:00:00.000Z";
 
-        yield* sql`
+          yield* sql`
           INSERT INTO projection_turns (
             thread_id, turn_id, pending_message_id, assistant_message_id, state,
             requested_at, started_at, completed_at, checkpoint_files_json
@@ -4241,67 +4244,202 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-
               ${requestedAt}, NULL, NULL, '[]'
             )
         `;
-        yield* sql`
+          yield* sql`
           INSERT INTO thread_work_obligations (
             obligation_id, thread_id, source_turn_id, kind, state,
             provider_instance_id, attempt, next_attempt_at, claimed_at,
             lease_expires_at, blocked_reason, created_at, updated_at
           ) VALUES (
-            'work-delivered-steer', ${threadId}, ${`turn-start:${steeredMessageId}`},
+            ${`work-delivered-steer-${withHostTurn}`}, ${threadId}, ${`turn-start:${steeredMessageId}`},
             'active-turn-recovery', 'completed', 'codex', 0, NULL, NULL, NULL,
             ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}, ${requestedAt}, ${requestedAt}
           )
         `;
-        yield* eventStore.append({
-          type: "thread.activity-appended",
-          eventId: EventId.make("evt-delivered-steer"),
-          aggregateKind: "thread",
-          aggregateId: threadId,
-          occurredAt: "2026-02-26T15:00:00.100Z",
-          commandId: CommandId.make("cmd-delivered-steer"),
-          causationEventId: null,
-          correlationId: CorrelationId.make("cmd-delivered-steer"),
-          metadata: {},
-          payload: {
-            threadId,
-            activity: {
-              id: EventId.make("activity-delivered-steer"),
-              tone: "info",
-              kind: "message.delivered",
-              summary: "Message delivered to the provider",
-              payload: { messageId: steeredMessageId },
-              // Claude's prompt-stream delivery receipt intentionally has no
-              // provider turn id; the exact pre-claim marker is authoritative.
-              turnId: null,
-              createdAt: "2026-02-26T15:00:00.100Z",
+          yield* eventStore.append({
+            type: "thread.activity-appended",
+            eventId: EventId.make(`evt-delivered-steer-${withHostTurn}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: "2026-02-26T15:00:00.100Z",
+            commandId: CommandId.make(`cmd-delivered-steer-${withHostTurn}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-delivered-steer-${withHostTurn}`),
+            metadata: {},
+            payload: {
+              threadId,
+              activity: {
+                id: EventId.make(`activity-delivered-steer-${withHostTurn}`),
+                tone: "info",
+                kind: "message.delivered",
+                summary: "Message delivered to the provider",
+                payload: { messageId: steeredMessageId },
+                // The pre-claim marker is authoritative with either receipt shape.
+                turnId: withHostTurn ? hostTurnId : null,
+                createdAt: "2026-02-26T15:00:00.100Z",
+              },
             },
-          },
-        });
+          });
 
-        yield* projectionPipeline.bootstrap;
-        yield* projectionPipeline.bootstrap;
+          yield* projectionPipeline.bootstrap;
+          yield* projectionPipeline.bootstrap;
 
-        const turns = yield* sql<{
-          readonly turnId: string | null;
-          readonly pendingMessageId: string | null;
-        }>`
+          const turns = yield* sql<{
+            readonly turnId: string | null;
+            readonly pendingMessageId: string | null;
+          }>`
           SELECT turn_id AS "turnId", pending_message_id AS "pendingMessageId"
           FROM projection_turns
           WHERE thread_id = ${threadId}
           ORDER BY row_id ASC
         `;
-        assert.deepEqual(turns, [{ turnId: hostTurnId, pendingMessageId: hostMessageId }]);
+          assert.deepEqual(turns, [{ turnId: hostTurnId, pendingMessageId: hostMessageId }]);
 
-        const obligations = yield* sql<{
-          readonly state: string;
-          readonly blockedReason: string | null;
-        }>`
+          const obligations = yield* sql<{
+            readonly state: string;
+            readonly blockedReason: string | null;
+          }>`
           SELECT state, blocked_reason AS "blockedReason"
           FROM thread_work_obligations
           WHERE thread_id = ${threadId}
         `;
-        assert.deepEqual(obligations, [{ state: "completed", blockedReason: null }]);
-      }),
+          assert.deepEqual(obligations, [{ state: "completed", blockedReason: null }]);
+        }),
+      );
+    }
+
+    it.effect(
+      "binds a delivered turn to its input after Send now removes that input's placeholder",
+      () =>
+        Effect.gen(function* () {
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const eventStore = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
+          const threadId = ThreadId.make("thread-send-now-receipt-race");
+          const deliveredId = MessageId.make("message-being-accepted");
+          const queuedId = MessageId.make("held-user-message:still-waiting");
+          const turnId = TurnId.make("turn-being-accepted");
+          const requestedAt = "2026-02-26T15:04:00.000Z";
+          const acceptedAt = "2026-02-26T15:04:02.000Z";
+
+          // The first request has lost its placeholder during interrupt/recovery.
+          // Its durable owner and the next queued request still exist.
+          yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state,
+            provider_instance_id, attempt, blocked_reason, created_at, updated_at
+          ) VALUES
+            ('work-being-accepted', ${threadId}, ${`turn-start:${deliveredId}`},
+             'active-turn-recovery', 'cancelled', 'codex', 1,
+             'provider session interrupted', ${requestedAt}, ${acceptedAt}),
+            ('work-still-waiting', ${threadId}, ${`turn-start:${queuedId}`},
+             'active-turn-recovery', 'pending', 'codex', 0,
+             NULL, ${requestedAt}, ${requestedAt})
+        `;
+          yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, state, requested_at, checkpoint_files_json
+          ) VALUES (${threadId}, NULL, ${queuedId}, 'pending', ${requestedAt}, '[]')
+        `;
+          const base = {
+            aggregateKind: "thread" as const,
+            aggregateId: threadId,
+            occurredAt: acceptedAt,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+          };
+          yield* eventStore.append({
+            ...base,
+            type: "thread.activity-appended",
+            eventId: EventId.make("evt-exact-delivery"),
+            payload: {
+              threadId,
+              activity: {
+                id: EventId.make("activity-exact-delivery"),
+                tone: "info",
+                kind: "message.delivered",
+                summary: "Message delivered to the provider",
+                payload: { messageId: deliveredId },
+                turnId,
+                createdAt: acceptedAt,
+              },
+            },
+          });
+          yield* projectionPipeline.bootstrap;
+          const stoppedTurns = yield* sql<{ readonly state: string }>`
+            SELECT state FROM projection_turns
+            WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+          `;
+          assert.deepEqual(stoppedTurns, [{ state: "incomplete" }]);
+          yield* eventStore.append({
+            ...base,
+            type: "thread.session-set",
+            eventId: EventId.make("evt-exact-delivery-running"),
+            payload: {
+              threadId,
+              session: {
+                threadId,
+                status: "running",
+                providerName: "codex",
+                runtimeMode: "full-access",
+                activeTurnId: turnId,
+                lastError: null,
+                updatedAt: acceptedAt,
+              },
+            },
+          });
+          yield* projectionPipeline.bootstrap;
+          yield* projectionPipeline.bootstrap;
+
+          const turns = yield* sql<{ readonly turnId: string | null; readonly messageId: string }>`
+          SELECT turn_id AS "turnId", pending_message_id AS "messageId"
+          FROM projection_turns WHERE thread_id = ${threadId} ORDER BY row_id
+        `;
+          assert.deepEqual(turns, [
+            { turnId: null, messageId: queuedId },
+            { turnId, messageId: deliveredId },
+          ]);
+          const queued = yield* sql<{ readonly state: string }>`
+          SELECT state FROM thread_work_obligations WHERE obligation_id = 'work-still-waiting'
+        `;
+          assert.deepEqual(queued, [{ state: "pending" }]);
+          const runningTurns = yield* sql<{ readonly state: string }>`
+            SELECT state FROM projection_turns
+            WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+          `;
+          assert.deepEqual(runningTurns, [{ state: "running" }]);
+          yield* sql`
+            UPDATE projection_turns SET state = 'completed', completed_at = ${acceptedAt}
+            WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+          `;
+          yield* eventStore.append({
+            ...base,
+            type: "thread.activity-appended",
+            eventId: EventId.make("evt-late-delivery"),
+            payload: {
+              threadId,
+              activity: {
+                id: EventId.make("activity-late-delivery"),
+                tone: "info",
+                kind: "message.delivered",
+                summary: "Message delivered to the provider",
+                payload: { messageId: queuedId },
+                turnId,
+                createdAt: acceptedAt,
+              },
+            },
+          });
+          yield* projectionPipeline.bootstrap;
+          const completedTurns = yield* sql<{
+            readonly state: string;
+            readonly messageId: string;
+          }>`
+            SELECT state, pending_message_id AS "messageId" FROM projection_turns
+            WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+          `;
+          assert.deepEqual(completedTurns, [{ state: "completed", messageId: deliveredId }]);
+        }),
     );
 
     it.effect("keeps an ordinary delivery placeholder until the concrete turn adopts it", () =>

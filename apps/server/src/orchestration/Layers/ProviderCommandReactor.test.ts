@@ -106,6 +106,7 @@ import { ThreadWorkScheduler, type ThreadWorkHandler } from "../Services/ThreadW
 import { makeThreadWorkSchedulerLive } from "./ThreadWorkScheduler.ts";
 import {
   activeTurnWorkSourceId,
+  agentContinuationShouldAwaitBackgroundTask,
   BLOCKER_RESOLUTION_MESSAGE_ID_PREFIX,
   agentAutoResumeIds,
   startupAutoResumeIds,
@@ -11817,6 +11818,93 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it.each(["replaced", "failed"] as const)(
+    "settles background tasks after an atomic provider replacement only when it succeeds (%s)",
+    async (outcome) => {
+      const now = "2026-01-01T00:00:00.000Z";
+      const replacedAt = "2026-01-01T00:01:00.000Z";
+      const threadId = ThreadId.make("thread-1");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const harness = await createHarness({
+        startSessionEffect: (session, sessions) =>
+          outcome === "failed"
+            ? Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: "codex",
+                  method: "startSession",
+                  detail: "Replacement could not be prepared",
+                }),
+              )
+            : Effect.sync(() => {
+                sessions.length = 0;
+                return { ...session, createdAt: replacedAt, updatedAt: replacedAt };
+              }),
+      });
+      harness.runtimeSessions.push({
+        threadId,
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId,
+        status: "ready",
+        runtimeMode: "full-access",
+        cwd: "/tmp/provider-project",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await harness.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("replacement-owner-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+      await harness.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("replacement-owner-child"),
+        threadId,
+        activity: {
+          id: EventId.make("replacement-owner-child"),
+          kind: "task.started",
+          summary: "Codex subagent",
+          tone: "info",
+          payload: { taskId: "codex-subagent:owned", taskType: "subagent" },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      });
+      await harness.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("replace-owner-mode"),
+        threadId,
+        runtimeMode: "approval-required",
+        createdAt: replacedAt,
+      });
+      await harness.drain();
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+      expect(harness.stopSession).not.toHaveBeenCalled();
+      const thread = (await harness.readModel()).threads.find((row) => row.id === threadId)!;
+      const terminal = thread.activities.filter((activity) => activity.kind === "task.completed");
+      expect(terminal).toHaveLength(outcome === "replaced" ? 1 : 0);
+      if (outcome === "replaced") {
+        expect(terminal[0]?.payload).toMatchObject({
+          taskId: "codex-subagent:owned",
+          status: "stopped",
+        });
+      } else {
+        expect(harness.runtimeSessions[0]?.createdAt).toBe(now);
+      }
+    },
+  );
+
   it("does not stop the active session when restart fails before rebind", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -13114,6 +13202,149 @@ describe("ProviderCommandReactor", () => {
       thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.failed"),
     ).toBe(true);
   });
+
+  it.each([
+    "stopped",
+    "failed",
+    "replacement remains",
+    "task revived",
+    "task failed",
+    "foreign provider",
+    "foreign task",
+    "no owner",
+  ] as const)(
+    "settles owned background tasks only after confirmed provider teardown (%s)",
+    async (outcome) => {
+      const harness = await createHarness();
+      const threadId = ThreadId.make("thread-1");
+      const now = DateTime.formatIso(DateTime.nowUnsafe());
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const taskId = outcome === "foreign task" ? "external:delegate" : "codex-subagent:owned";
+      if (outcome !== "no owner") {
+        harness.runtimeSessions.push({
+          threadId,
+          provider: ProviderDriverKind.make(outcome === "foreign provider" ? "opencode" : "codex"),
+          providerInstanceId,
+          status: "running",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("owner-turn"),
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      await harness.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("task-owner-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("owner-turn"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+      await harness.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("owner-child-start"),
+        threadId,
+        activity: {
+          id: EventId.make("owner-child-start"),
+          kind: "task.started",
+          summary: "Codex subagent",
+          tone: "info",
+          payload: { taskId, taskType: "subagent" },
+          turnId: asTurnId("owner-turn"),
+          createdAt: now,
+        },
+        createdAt: now,
+      });
+      expect(
+        agentContinuationShouldAwaitBackgroundTask({
+          activities: (await harness.readModel()).threads.find((row) => row.id === threadId)!
+            .activities,
+          nowEpochMs: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+        }),
+      ).toMatchObject({ taskId });
+      if (outcome === "task revived" || outcome === "task failed") {
+        harness.stopSession.mockImplementation(() =>
+          harness.engine
+            .dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.make("owner-child-revived"),
+              threadId,
+              activity: {
+                id: EventId.make("owner-child-revived"),
+                kind: outcome === "task revived" ? "task.started" : "task.completed",
+                summary: outcome === "task revived" ? "Codex subagent resumed" : "Subagent failed",
+                tone: "info",
+                payload: {
+                  taskId,
+                  taskType: "subagent",
+                  ...(outcome === "task failed" ? { status: "failed" } : {}),
+                },
+                turnId: asTurnId("replacement-turn"),
+                createdAt: DateTime.formatIso(
+                  DateTime.add(DateTime.makeUnsafe(now), { milliseconds: 1 }),
+                ),
+              },
+              createdAt: now,
+            })
+            .pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  harness.runtimeSessions.length = 0;
+                }),
+              ),
+              Effect.orDie,
+            ),
+        );
+      } else if (outcome === "failed") {
+        harness.stopSession.mockImplementation(() => Effect.die("shutdown failed"));
+      } else if (outcome === "replacement remains") {
+        // A stop guarded by an old generation may be a successful no-op.
+        harness.stopSession.mockImplementation(() => Effect.void);
+      }
+      await harness.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("owner-stop"),
+        threadId,
+        createdAt: now,
+      });
+      await harness.drain();
+      const thread = (await harness.readModel()).threads.find((row) => row.id === threadId)!;
+      const terminal = thread.activities.filter(
+        (activity) =>
+          activity.kind === "task.completed" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          "taskId" in activity.payload &&
+          activity.payload.taskId === taskId,
+      );
+      expect(terminal).toHaveLength(outcome === "stopped" || outcome === "task failed" ? 1 : 0);
+      if (outcome === "task failed") {
+        expect(terminal[0]?.payload).toMatchObject({ status: "failed" });
+      }
+      if (outcome === "stopped") {
+        expect(terminal[0]?.payload).toMatchObject({ status: "stopped" });
+        expect(
+          agentContinuationShouldAwaitBackgroundTask({
+            activities: thread.activities,
+            nowEpochMs: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+          }),
+        ).toBeNull();
+      }
+      if (outcome === "failed") {
+        expect(
+          thread.activities.some((activity) => activity.kind === "provider.turn.interrupt.failed"),
+        ).toBe(true);
+      }
+    },
+  );
 
   it("stops a live CLI even when the chat incorrectly projects an already-stopped session", async () => {
     const harness = await createHarness();

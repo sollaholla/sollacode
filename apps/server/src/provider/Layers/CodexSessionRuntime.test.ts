@@ -25,6 +25,7 @@ import {
   mcpFormElicitationContent,
   mcpFormElicitationQuestions,
   openCodexThread,
+  stopCodexBackgroundTask,
   resolveCodexAutoCompactionTokenLimit,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
@@ -779,6 +780,254 @@ describe("Codex child metadata hydration", () => {
         }),
         null,
       );
+    }),
+  );
+});
+
+describe("Codex retained background task stops", () => {
+  const rootId = "native-root";
+  type ChildThread = Pick<
+    EffectCodexSchema.V2ThreadReadResponse["thread"],
+    "id" | "source" | "status" | "turns"
+  >;
+  const childThread = (
+    id: string,
+    parentId: string,
+    status: ChildThread["status"] = { type: "notLoaded" },
+    turnStatus: ChildThread["turns"][number]["status"] = "interrupted",
+  ): ChildThread => ({
+    id,
+    source: { subAgent: { thread_spawn: { parent_thread_id: parentId, depth: 1 } } },
+    status,
+    turns: [{ id: `${id}-turn`, status: turnStatus, items: [] }],
+  });
+  const harness = (threads: ReadonlyArray<ChildThread>) => {
+    const reads: Array<{ threadId: string; includeTurns: boolean }> = [];
+    const interrupts: Array<{ threadId: string; turnId: string }> = [];
+    const stop = (taskId = "codex-subagent:child") =>
+      stopCodexBackgroundTask({
+        taskId,
+        rootProviderThreadId: rootId,
+        tasks: new Map(),
+        readThread: (threadId, includeTurns) =>
+          Effect.sync(() => {
+            reads.push({ threadId, includeTurns });
+            const thread = threads.find((entry) => entry.id === threadId);
+            NodeAssert.ok(thread, `Unexpected read of ${threadId}`);
+            return { thread };
+          }),
+        interrupt: (target) => Effect.sync(() => interrupts.push(target)),
+      });
+    return { stop, reads, interrupts };
+  };
+
+  it.effect(
+    "reconciles the incident's stopped native child after the observed map was replaced",
+    () =>
+      Effect.gen(function* () {
+        for (const status of ["interrupted", "completed", "failed"] as const) {
+          const { stop, reads, interrupts } = harness([
+            childThread("child", rootId, { type: "notLoaded" }, status),
+          ]);
+          yield* stop();
+          NodeAssert.deepStrictEqual(reads, [{ threadId: "child", includeTurns: true }]);
+          NodeAssert.deepStrictEqual(interrupts, []);
+        }
+      }),
+  );
+
+  it.effect("interrupts only the recovered child's active native turn", () =>
+    Effect.gen(function* () {
+      const { stop, interrupts } = harness([
+        childThread("child", rootId, { type: "active", activeFlags: [] }, "inProgress"),
+      ]);
+      yield* stop();
+      NodeAssert.deepStrictEqual(interrupts, [{ threadId: "child", turnId: "child-turn" }]);
+    }),
+  );
+
+  it.effect("finds the sole active turn independently of native history order", () =>
+    Effect.gen(function* () {
+      for (const activeIndex of [0, 1, 2]) {
+        const child = childThread("child", rootId, { type: "active", activeFlags: [] });
+        const turns: ChildThread["turns"] = [
+          { id: "completed-turn", status: "completed", items: [] },
+          { id: "failed-turn", status: "failed", items: [] },
+        ];
+        const orderedTurns = turns.toSpliced(activeIndex, 0, {
+          id: "active-turn",
+          status: "inProgress",
+          items: [],
+        });
+        const { stop, interrupts } = harness([{ ...child, turns: orderedTurns }]);
+        yield* stop();
+        NodeAssert.deepStrictEqual(interrupts, [{ threadId: "child", turnId: "active-turn" }]);
+      }
+    }),
+  );
+
+  it.effect("reconciles loaded and unloaded histories when every turn is terminal", () =>
+    Effect.gen(function* () {
+      for (const type of ["idle", "notLoaded"] as const) {
+        const child = childThread("child", rootId, { type });
+        const turns: ChildThread["turns"] = [
+          { id: "interrupted-turn", status: "interrupted", items: [] },
+          { id: "completed-turn", status: "completed", items: [] },
+          { id: "failed-turn", status: "failed", items: [] },
+        ];
+        for (const orderedTurns of [turns, turns.toReversed()]) {
+          const { stop, interrupts } = harness([{ ...child, turns: orderedTurns }]);
+          yield* stop();
+          NodeAssert.deepStrictEqual(interrupts, []);
+        }
+      }
+    }),
+  );
+
+  it.effect("rejects multiple active turns and inactive histories containing a live turn", () =>
+    Effect.gen(function* () {
+      const activeTurn = { id: "active-turn", status: "inProgress" as const, items: [] };
+      const completedTurn = { id: "completed-turn", status: "completed" as const, items: [] };
+      const cases: Array<ChildThread> = [
+        {
+          ...childThread("child", rootId, { type: "active", activeFlags: [] }),
+          turns: [activeTurn, { ...activeTurn, id: "second-active-turn" }, completedTurn],
+        },
+      ];
+      for (const type of ["idle", "notLoaded"] as const) {
+        for (const turns of [
+          [activeTurn, completedTurn],
+          [completedTurn, activeTurn],
+        ]) {
+          cases.push({ ...childThread("child", rootId, { type }), turns });
+        }
+      }
+      for (const child of cases) {
+        const { stop, interrupts } = harness([child]);
+        const error = yield* Effect.flip(stop());
+        NodeAssert.equal(error._tag, "CodexBackgroundTaskNotRunningError");
+        NodeAssert.deepStrictEqual(interrupts, []);
+      }
+    }),
+  );
+
+  it.effect("verifies nested ancestry without loading ancestor transcripts", () =>
+    Effect.gen(function* () {
+      const { stop, reads, interrupts } = harness([
+        childThread("child", "parent"),
+        childThread("parent", rootId),
+      ]);
+      yield* stop();
+      NodeAssert.deepStrictEqual(reads, [
+        { threadId: "child", includeTurns: true },
+        { threadId: "parent", includeTurns: false },
+      ]);
+      NodeAssert.deepStrictEqual(interrupts, []);
+    }),
+  );
+
+  it.effect("rejects root, unrecognized, unrelated, and cyclic tasks", () =>
+    Effect.gen(function* () {
+      const invalid = harness([]);
+      for (const id of ["codex-subagent:native-root", "codex-subagent:", "unknown"]) {
+        const error = yield* Effect.flip(invalid.stop(id));
+        NodeAssert.equal(error._tag, "CodexBackgroundTaskNotRunningError");
+      }
+      NodeAssert.deepStrictEqual(invalid.reads, []);
+      const cases = [
+        [{ ...childThread("child", rootId), source: "cli" as const }],
+        [
+          childThread("child", "foreign"),
+          { ...childThread("foreign", rootId), source: "cli" as const },
+        ],
+        [childThread("child", "parent"), childThread("parent", "child")],
+      ];
+      for (const threads of cases) {
+        const current = harness(threads);
+        const error = yield* Effect.flip(current.stop());
+        NodeAssert.equal(error._tag, "CodexBackgroundTaskNotRunningError");
+        NodeAssert.deepStrictEqual(current.interrupts, []);
+      }
+    }),
+  );
+
+  it.effect("does not infer success from missing turns or an unloaded active tail", () =>
+    Effect.gen(function* () {
+      const cases = [
+        { ...childThread("child", rootId), turns: [] },
+        childThread("child", rootId, { type: "notLoaded" }, "inProgress"),
+        childThread("child", rootId, { type: "active", activeFlags: [] }, "completed"),
+        childThread("child", rootId, { type: "systemError" }, "failed"),
+      ];
+      for (const child of cases) {
+        const { stop, interrupts } = harness([child]);
+        const error = yield* Effect.flip(stop());
+        NodeAssert.equal(error._tag, "CodexBackgroundTaskNotRunningError");
+        NodeAssert.deepStrictEqual(interrupts, []);
+      }
+    }),
+  );
+
+  it.effect("keeps observed child stops targeted without adding a history read", () =>
+    Effect.gen(function* () {
+      const interrupts: Array<{ threadId: string; turnId: string }> = [];
+      yield* stopCodexBackgroundTask({
+        taskId: "codex-subagent:child",
+        rootProviderThreadId: rootId,
+        tasks: new Map([
+          [
+            "child",
+            {
+              providerThreadId: "child",
+              nativeTurnId: "live-child-turn",
+              title: "Child",
+              status: "running" as const,
+            },
+          ],
+        ]),
+        readThread: () => Effect.die("Observed child stop should not read history"),
+        interrupt: (target) => Effect.sync(() => interrupts.push(target)),
+      });
+      NodeAssert.deepStrictEqual(interrupts, [{ threadId: "child", turnId: "live-child-turn" }]);
+    }),
+  );
+
+  it.effect("bounds ancestry reads when a native chain never reaches the owner", () =>
+    Effect.gen(function* () {
+      const children = Array.from({ length: 40 }, (_, index) =>
+        childThread(index === 0 ? "child" : `ancestor-${index}`, `ancestor-${index + 1}`),
+      );
+      const { stop, reads, interrupts } = harness(children);
+      const error = yield* Effect.flip(stop());
+      NodeAssert.equal(error._tag, "CodexBackgroundTaskNotRunningError");
+      NodeAssert.ok(reads.length <= 33);
+      NodeAssert.deepStrictEqual(interrupts, []);
+    }),
+  );
+
+  it.effect("rejects a mismatched native read and propagates unavailable history", () =>
+    Effect.gen(function* () {
+      const input = {
+        taskId: "codex-subagent:child",
+        rootProviderThreadId: rootId,
+        tasks: new Map<string, import("./CodexSubagentRouting.ts").CodexBackgroundTask>(),
+        interrupt: () => Effect.die("Unverified child must not be interrupted"),
+      };
+      const mismatch = yield* Effect.flip(
+        stopCodexBackgroundTask({
+          ...input,
+          readThread: () => Effect.succeed({ thread: childThread("other-child", rootId) }),
+        }),
+      );
+      NodeAssert.equal(mismatch._tag, "CodexBackgroundTaskNotRunningError");
+      const readError = CodexErrors.CodexAppServerRequestError.methodNotFound("thread/read");
+      const unavailable = yield* Effect.flip(
+        stopCodexBackgroundTask({
+          ...input,
+          readThread: () => Effect.fail(readError),
+        }),
+      );
+      NodeAssert.strictEqual(unavailable, readError);
     }),
   );
 });

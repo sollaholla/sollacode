@@ -153,6 +153,7 @@ import {
   activeTurnWorkSourceId,
   agentAutoResumeIds,
   agentContinuationShouldAwaitBackgroundTask,
+  outstandingBackgroundTasks,
   isAgentAutoResumeMessageId,
   isAwaitingPersonDecision,
   isControlOnlyAgentTurn,
@@ -1398,7 +1399,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               });
             }),
           );
-        yield* providerService.stopSession({ threadId }).pipe(
+        yield* stopProviderSession({ threadId }).pipe(
           Effect.timeout("10 seconds"),
           Effect.catchCause((cause) => {
             if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
@@ -1524,7 +1525,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         // another turn. Reusing it is why dismissing the banner is futile —
         // the next send hits the same breaker. Kill it so startSession below
         // is a real restart.
-        yield* providerService.stopSession({ threadId }).pipe(Effect.ignore);
+        yield* stopProviderSession({ threadId }).pipe(Effect.ignore);
       }
       if (existingSessionThreadId) {
         const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
@@ -1582,6 +1583,20 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const restartedSession = yield* startProviderSessionWithResumeFallback(
           resumeCursor !== undefined ? { resumeCursor } : undefined,
         );
+        if (
+          activeSession?.provider === "codex" &&
+          (restartedSession.createdAt !== activeSession.createdAt ||
+            restartedSession.providerInstanceId !== activeSession.providerInstanceId)
+        ) {
+          // startSession preserves the old owner when preparing its replacement
+          // fails. Only the successful, different generation ends its children.
+          yield* settleOwnedBackgroundTasks(
+            threadId,
+            outstandingBackgroundTasks(thread.activities).filter((task) =>
+              task.taskId.startsWith("codex-subagent:"),
+            ),
+          );
+        }
         yield* Effect.logInfo("provider command reactor restarted provider session", {
           threadId,
           previousSessionId: existingSessionThreadId,
@@ -2879,7 +2894,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         yield* (
           liveProviderSession === undefined
             ? Effect.void
-            : providerService.stopSession({
+            : stopProviderSession({
                 threadId: event.payload.threadId,
                 expectedSession: {
                   providerInstanceId: currentProviderInstanceId,
@@ -3220,6 +3235,66 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         ),
       );
 
+    /** Ends Codex child projections only after their owning process has stopped. */
+    const stopProviderSession = Effect.fn("stopProviderSession")(function* (
+      input: Parameters<typeof providerService.stopSession>[0],
+    ) {
+      const before = yield* resolveThread(input.threadId);
+      const tasks = outstandingBackgroundTasks(before?.activities ?? []).filter((task) =>
+        task.taskId.startsWith("codex-subagent:"),
+      );
+      // Other providers can own remote or detached work. Their adapters must
+      // report task completion themselves; closing a local handle is no proof.
+      const owner =
+        tasks.length === 0
+          ? undefined
+          : (yield* providerService.listSessions().pipe(Effect.orElseSucceed(() => []))).find(
+              (session) =>
+                session.threadId === input.threadId &&
+                session.provider === "codex" &&
+                session.status !== "closed" &&
+                (input.expectedSession === undefined ||
+                  (session.providerInstanceId === input.expectedSession.providerInstanceId &&
+                    session.createdAt === input.expectedSession.createdAt)),
+            );
+      yield* providerService.stopSession(input);
+      if (owner === undefined) return;
+      // A conditional stop can succeed without stopping anything when a newer
+      // session took ownership. Never close that replacement's task rows.
+      const remaining = yield* providerService.listSessions();
+      if (
+        remaining.some(
+          (session) => session.threadId === input.threadId && session.status !== "closed",
+        )
+      ) {
+        return;
+      }
+      yield* settleOwnedBackgroundTasks(input.threadId, tasks);
+    });
+
+    const settleOwnedBackgroundTasks = Effect.fn("settleOwnedBackgroundTasks")(function* (
+      threadId: ThreadId,
+      tasks: ReturnType<typeof outstandingBackgroundTasks>,
+    ) {
+      if (tasks.length === 0) return;
+      const after = yield* resolveThread(threadId);
+      const stillOpen = new Map(
+        outstandingBackgroundTasks(after?.activities ?? []).map((task) => [task.taskId, task]),
+      );
+      const createdAt = yield* nowIso;
+      for (const task of tasks) {
+        // A task id can be reused by a resumed child. Only settle the lifecycle
+        // observed before shutdown, and leave already completed rows alone.
+        if (stillOpen.get(task.taskId)?.startedAt !== task.startedAt) continue;
+        yield* appendTaskStoppedActivity({
+          threadId,
+          taskId: RuntimeTaskId.make(task.taskId),
+          createdAt,
+          detail: "The provider runtime that owned this task stopped.",
+        });
+      }
+    });
+
     /**
      * Kill one background task or sub-agent, leaving the turn running.
      *
@@ -3305,14 +3380,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       if (!thread) {
         return;
       }
-      // Nothing is announced as cancelled here any more. Stop used to discard
-      // every queued message on the thread, and this told the clients so; it
-      // no longer does — an undelivered message goes back to `pending` and
-      // sends once the thread is free (see `releaseUndeliveredQueuedDeliveries`).
-      // Announcing it now would be the worse of the two failures: the ids in
-      // this activity feed `removedHeldMessageIds`, so every client would hide
-      // a message that is still queued and about to go out, and the person
-      // would watch their own words disappear and assume they were lost.
+      // Explicit Stop parks undelivered queued messages rather than hiding or
+      // resending them. Send now can release that parked work deliberately;
+      // provider handoff uses turn-interrupt mode and returns it to pending.
       const session = thread.session;
       const liveSession = (yield* providerService
         .listSessions()
@@ -3373,13 +3443,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         // unbounded stop would strand the whole interrupt and never reach the
         // terminalization below, which is precisely the state Stop exists to
         // escape. Bound it, and treat the timeout as a provider failure.
-        const stopFailure = yield* providerService
-          .stopSession({ threadId: event.payload.threadId })
-          .pipe(
-            Effect.timeout("10 seconds"),
-            Effect.as(null),
-            Effect.catchCause((cause) => Effect.succeed(formatFailureDetail(cause))),
-          );
+        const stopFailure = yield* stopProviderSession({ threadId: event.payload.threadId }).pipe(
+          Effect.timeout("10 seconds"),
+          Effect.as(null),
+          Effect.catchCause((cause) => Effect.succeed(formatFailureDetail(cause))),
+        );
         if (stopFailure !== null) {
           yield* appendProviderFailureActivity({
             threadId: event.payload.threadId,
@@ -3860,9 +3928,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       // Best-effort: the point is to release the thread, so a provider that
       // cannot be stopped (already gone — the usual case here) must not stop
       // the projection update that actually unblocks the user.
-      yield* providerService
-        .stopSession({ threadId: input.threadId })
-        .pipe(Effect.catchCause(() => Effect.void));
+      yield* stopProviderSession({ threadId: input.threadId }).pipe(
+        Effect.catchCause(() => Effect.void),
+      );
 
       yield* setThreadSession({
         threadId: input.threadId,
@@ -4248,7 +4316,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       // a session—not its projected status—is the signal that the provider
       // process still needs the requested stop side effect.
       if (thread.session) {
-        yield* providerService.stopSession({ threadId: thread.id }).pipe(
+        yield* stopProviderSession({ threadId: thread.id }).pipe(
           // A provider stop is best-effort from this reactor: the projection
           // has already made the session locally stopped. Never let a provider
           // that ignores cancellation pin this thread's control lane forever.
@@ -4429,7 +4497,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         },
         createdAt: input.createdAt,
       });
-      yield* providerService.stopSession({ threadId: input.thread.id }).pipe(
+      yield* stopProviderSession({ threadId: input.thread.id }).pipe(
         Effect.catchCause((cause) =>
           Effect.logDebug("provider auth pause found no live session to stop", {
             threadId: input.thread.id,
@@ -5189,7 +5257,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               turnId: input.turnId,
               silentForMs,
             });
-            yield* providerService.stopSession({ threadId: input.threadId }).pipe(Effect.ignore);
+            yield* stopProviderSession({ threadId: input.threadId }).pipe(Effect.ignore);
             return yield* retryWorkAfter15Seconds(
               "provider went silent mid-turn; restarting the session",
             );
