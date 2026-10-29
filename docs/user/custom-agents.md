@@ -215,7 +215,10 @@ the desktop host that owns the browser process.
 Websites that need a local file use the built-in `preview_upload` action. The agent supplies a known
 absolute path and targets the page's file input; Solla Code validates the file and attaches it through
 the collaborative browser without opening the operating-system picker or taking over the desktop.
-The agent then submits the page and verifies the visible upload result in the same tab.
+The agent then submits the page and verifies the visible upload result in the same tab. When the
+agent clicks a site's own upload button, the file picker the page asks for is held for that
+`preview_upload` rather than opening over your window. Your own click or key press in that tab
+hands pickers back to you, so uploading something yourself shows the usual picker.
 
 The browser tools also make tab ownership explicit. Before opening another page on a domain that is
 already present, the agent receives the matching tab IDs and must either select one to reuse or

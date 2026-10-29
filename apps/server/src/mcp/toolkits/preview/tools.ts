@@ -197,7 +197,7 @@ export const PreviewFillCredentialTool = browserTool(
 export const PreviewUploadTool = browserTool(
   Tool.make("preview_upload", {
     description:
-      "Attach one or more existing local files directly to an input[type=file] in the collaborative browser without opening the operating-system file picker. Supply absolute paths from this environment and preferably a snapshot-derived locator; when locator and selector are omitted, the first file input is used. Use this instead of computer control for Drive uploads and other web file forms, then click the page's upload/submit control and verify the result.",
+      "Attach one or more existing local files directly to an input[type=file] in the collaborative browser without opening the operating-system file picker. Supply absolute paths from this environment and preferably a snapshot-derived locator. When a click of yours made the page open its file picker, the picker is held for you instead of appearing on the user's screen; omit locator and selector to fill exactly that picker. Otherwise, with both omitted, the first file input is used. Use this instead of computer control for Drive uploads and other web file forms, then click the page's upload/submit control and verify the result.",
     parameters: PreviewAutomationUploadInput,
     success: PreviewAutomationUploadResult,
     failure: PreviewAutomationError,

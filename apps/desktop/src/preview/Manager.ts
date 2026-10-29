@@ -464,6 +464,8 @@ const APP_FOCUS_MARKER_ATTRIBUTE = "data-t3-last-user-focus";
  * events, a drag's interpolated moves — plus the guest's dispatch latency.
  */
 const AGENT_INPUT_WINDOW_MS = 1_500;
+/** How long a picker a page opened for the agent stays fillable without a locator. */
+const HELD_FILE_CHOOSER_TTL_MS = 5 * 60_000;
 
 /**
  * How long after the user clicks into a guest a `visible-surface` release is
@@ -1361,6 +1363,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * A window covers every event an action emits, however many that is.
    */
   const agentInputWindows = new Map<string, number>();
+  /**
+   * Guests whose page file pickers Chromium hands to us instead of showing.
+   * An agent's click or key turns this on, since an agent can never work a
+   * native picker and one left open sits over the person's window; the
+   * person's own click or key turns it off before the page sees it, so they
+   * get the real picker.
+   */
+  const agentFileChooserWebContentsIds = new Set<number>();
+  /** The picker a page opened for the agent, per tab, for `preview_upload` to fill. */
+  const pendingFileChoosers = new Map<
+    string,
+    { readonly webContentsId: number; readonly backendNodeId: number; readonly openedAt: number }
+  >();
   /** Tabs whose guest-side annotation editor currently holds focus. */
   const guestEditorFocusedTabs = new Set<string>();
   /**
@@ -2255,6 +2270,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 }
               }
             }
+            if (method === "Page.fileChooserOpened") {
+              const tabId = yield* tabIdForWebContents(wc.id);
+              const backendNodeId = params["backendNodeId"];
+              // Only an <input type=file> picker names its node; it is what
+              // preview_upload fills, even when the page never attached it.
+              if (tabId && typeof backendNodeId === "number") {
+                pendingFileChoosers.set(tabId, {
+                  webContentsId: wc.id,
+                  backendNodeId,
+                  openedAt: yield* currentMillis,
+                });
+              }
+            }
             yield* captureDiagnosticMessage(wc.id, method, params);
           });
           const onMessage: BrowserControlSession["onMessage"] = (_event, method, params) => {
@@ -2271,6 +2299,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           };
           const onDetach: BrowserControlSession["onDetach"] = (_event, reason) => {
             control.debuggerAttachedByManager = false;
+            agentFileChooserWebContentsIds.delete(wc.id);
             if (control.detachRequested) return;
             const remote = remoteFrameSessions.get(tabId);
             if (remote?.webContentsId === wc.id) {
@@ -2358,6 +2387,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             Effect.try({
               try: () => {
                 control.detachRequested = true;
+                agentFileChooserWebContentsIds.delete(wc.id);
                 debuggerApi.off("message", onMessage);
                 debuggerApi.off("detach", onDetach);
                 if (control.debuggerAttachedByManager && debuggerApi.isAttached()) {
@@ -2604,6 +2634,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             );
           },
         );
+        // Best effort: without it a picker simply opens natively, as before.
+        if (inputAction) yield* holdFileChoosersForAgent(tabId, wc, send).pipe(Effect.ignore);
         return yield* use(send, sendCleanup);
       });
       return yield* whileWebContentsAvailable(tabId, wc, control.semaphore.withPermit(execute()));
@@ -3358,6 +3390,43 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const isAgentOriginatedKey = (tabId: string, input: Electron.Input): boolean =>
     isSynchronousAgentKey(tabId, input);
 
+  /**
+   * The person pressed or clicked in this guest, so its next file picker is
+   * theirs to see. Synchronous on purpose: the debugger applies the change
+   * before the press that may open a picker reaches the page.
+   */
+  const returnFileChoosersToPerson = (wc: Electron.WebContents): void => {
+    if (!agentFileChooserWebContentsIds.delete(wc.id)) return;
+    try {
+      wc.debugger
+        .sendCommand("Page.setInterceptFileChooserDialog", { enabled: false })
+        .catch(() => undefined);
+    } catch {
+      // The debugger already detached, and nothing intercepts without it.
+    }
+  };
+
+  /** An agent is about to press or click: a picker the page opens is held for it. */
+  const holdFileChoosersForAgent = Effect.fn("PreviewManager.holdFileChoosersForAgent")(function* (
+    tabId: string,
+    wc: Electron.WebContents,
+    send: SendCommand,
+  ) {
+    if (agentFileChooserWebContentsIds.has(wc.id)) return;
+    // Chromium only reports a held picker on a session with Page enabled;
+    // without it the picker opens natively even while interception is on.
+    yield* send("Page.enable");
+    yield* attemptPromise(
+      { operation: "holdFileChoosersForAgent", tabId, webContentsId: wc.id },
+      () => {
+        // Marked in the same turn as the dispatch, so a person's press that
+        // lands after it always sees the mark and turns interception back off.
+        agentFileChooserWebContentsIds.add(wc.id);
+        return wc.debugger.sendCommand("Page.setInterceptFileChooserDialog", { enabled: true });
+      },
+    ).pipe(Effect.tapError(() => Effect.sync(() => agentFileChooserWebContentsIds.delete(wc.id))));
+  });
+
   // Chrome's right-click menu, rebuilt for the embedded browser. The guest is a
   // <webview> living inside the main window, so the menu pops against that
   // window; and every item drives this WebContents by hand rather than using
@@ -3767,6 +3836,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // Claim the guest synchronously, before before-input-event can redirect
       // the user's first key. Agent clicks keep their exact-input exemption.
       claimGuestForUserClick(tabId, now);
+      returnFileChoosersToPerson(wc);
       noteUserInput(`guest-mouse:${tabId}`, now);
       runFork(handleHumanInput(signal));
     };
@@ -3910,6 +3980,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
       if (!listenersActive) return;
       if (!isAgentOriginatedKey(tabId, input) && input.type === "keyDown") {
+        returnFileChoosersToPerson(wc);
         // Known automation is excluded by the dispatch-origin check above.
         // Repeats and event rate cannot establish whether input is human.
         if (
@@ -3980,6 +4051,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       scope,
       attempt({ operation: "detachListeners", tabId, webContentsId }, () => {
         listenersActive = false;
+        if (pendingFileChoosers.get(tabId)?.webContentsId === webContentsId) {
+          pendingFileChoosers.delete(tabId);
+        }
         if (wc.isDestroyed()) return;
         wc.off("did-navigate", navigationCommitted);
         wc.off("did-navigate-in-page", inPageNavigationCommitted);
@@ -7867,6 +7941,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const performAutomationUpload = Effect.fn("PreviewManager.performAutomationUpload")(function* (
     tabId: string,
+    webContentsId: number,
     input: PreviewAutomationUploadInput,
     send: SendCommand,
   ) {
@@ -7903,7 +7978,25 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { concurrency: 4 },
     );
 
+    const uploaded = {
+      fileCount: files.length,
+      fileNames: files.map((filePath) => path.basename(filePath)),
+    } satisfies PreviewAutomationUploadResult;
     const locator = automationLocator(input);
+    // Without a target, fill the picker the page just opened for the agent:
+    // that is the input it meant, and it may never have been in the document.
+    const held = locator ? undefined : pendingFileChoosers.get(tabId);
+    if (held) {
+      pendingFileChoosers.delete(tabId);
+      const now = yield* currentMillis;
+      if (held.webContentsId === webContentsId && now - held.openedAt <= HELD_FILE_CHOOSER_TTL_MS) {
+        const filled = yield* Effect.exit(
+          send("DOM.setFileInputFiles", { files, backendNodeId: held.backendNodeId }),
+        );
+        if (Exit.isSuccess(filled)) return uploaded;
+        // The page has dropped that input since; use its first file input.
+      }
+    }
     const executionContextId = locator ? yield* ensurePlaywrightInjected(tabId, send) : undefined;
     const locatorJson = locator
       ? yield* encodeJson({ operation: "automationUpload.encodeLocator", tabId }, locator)
@@ -7976,10 +8069,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       files,
       objectId: rawTarget.result.objectId,
     });
-    return {
-      fileCount: files.length,
-      fileNames: files.map((filePath) => path.basename(filePath)),
-    } satisfies PreviewAutomationUploadResult;
+    // Whatever picker was held is answered now; a later upload without a
+    // target must not land on it.
+    pendingFileChoosers.delete(tabId);
+    return uploaded;
   });
 
   const automationUpload = Effect.fn("PreviewManager.automationUpload")(function* (
@@ -7988,7 +8081,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const wc = yield* requireWebContents(tabId);
     return yield* withControlSession(tabId, wc, "upload", (send) =>
-      performAutomationUpload(tabId, input, send),
+      performAutomationUpload(tabId, wc.id, input, send),
     );
   });
 

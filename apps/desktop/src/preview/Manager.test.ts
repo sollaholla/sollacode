@@ -8177,6 +8177,125 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect(
+    "holds the picker an agent's click opens, fills it on upload, and gives the next to the person",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let beforeMouse:
+            | ((
+                event: unknown,
+                input: { type: string; x: number; y: number; button?: string },
+              ) => void)
+            | undefined;
+          let debuggerMessage:
+            | ((event: unknown, method: string, params: Record<string, unknown>) => void)
+            | undefined;
+          const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+            if (method === "Runtime.evaluate")
+              return { result: { value: { width: 800, height: 600 } } };
+            if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") {
+              // The agent's own press crosses the guest's input observer, then
+              // the page answers it by opening a picker for a detached input.
+              beforeMouse?.({}, { type: "mouseDown", x: 120, y: 80, button: "left" });
+              debuggerMessage?.({}, "Page.fileChooserOpened", {
+                backendNodeId: 9,
+                frameId: "main-frame",
+                mode: "selectSingle",
+              });
+            }
+            return undefined;
+          });
+          fromId.mockReturnValue({
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://drive.google.com",
+            getTitle: () => "Drive",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            on: vi.fn((event: string, listener: unknown) => {
+              if (event === "before-mouse-event") beforeMouse = listener as typeof beforeMouse;
+            }),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand,
+              on: vi.fn((event: string, listener: unknown) => {
+                if (event === "message") debuggerMessage = listener as typeof debuggerMessage;
+              }),
+              off: vi.fn(),
+            },
+          } as never);
+          const interceptions = () =>
+            sendCommand.mock.calls
+              .filter(([method]) => method === "Page.setInterceptFileChooserDialog")
+              .map(([, params]) => params?.["enabled"]);
+          const agentClick = Effect.gen(function* () {
+            const click = yield* manager
+              .automationClick("tab_picker", { x: 120, y: 80 })
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* TestClock.adjust(200);
+            yield* Fiber.join(click);
+          });
+
+          yield* manager.createTab("tab_picker");
+          yield* manager.registerWebview("tab_picker", 42);
+          // An emulated scheme keeps the control session attached between
+          // actions, as a connected agent's fleet lease does.
+          yield* manager.setColorScheme("tab_picker", "dark");
+          yield* agentClick;
+          // Chromium only reports a held picker with Page enabled.
+          expect(sendCommand).toHaveBeenCalledWith("Page.enable", undefined);
+          expect(interceptions()).toEqual([true]);
+
+          const uploaded = yield* manager.automationUpload("tab_picker", {
+            paths: ["/tmp/report.pdf"],
+          });
+          expect(uploaded).toEqual({ fileCount: 1, fileNames: ["report.pdf"] });
+          expect(sendCommand).toHaveBeenCalledWith("DOM.setFileInputFiles", {
+            files: ["/tmp/report.pdf"],
+            backendNodeId: 9,
+          });
+          // The held input was the target; the document was never searched.
+          expect(
+            sendCommand.mock.calls.some(([, params]) =>
+              String(params?.["expression"] ?? "").includes('input[type="file"]'),
+            ),
+          ).toBe(false);
+
+          // The person's own click hands pickers back before the page sees it.
+          yield* TestClock.adjust(2_000);
+          beforeMouse?.({}, { type: "mouseDown", x: 400, y: 300, button: "left" });
+          beforeMouse?.({}, { type: "mouseDown", x: 410, y: 310, button: "left" });
+          expect(interceptions()).toEqual([true, false]);
+
+          // A held picker is filled once; the next locator-less upload looks
+          // for the document's file input again.
+          const searched = yield* manager
+            .automationUpload("tab_picker", { paths: ["/tmp/report.pdf"] })
+            .pipe(Effect.exit);
+          expect(Exit.isFailure(searched)).toBe(true);
+          expect(
+            sendCommand.mock.calls.some(([, params]) =>
+              String(params?.["expression"] ?? "").includes('input[type="file"]'),
+            ),
+          ).toBe(true);
+
+          yield* TestClock.adjust(PreviewManager.USER_INPUT_DEFERRAL_MS + 1);
+          yield* agentClick;
+          expect(interceptions()).toEqual([true, false, true]);
+        }),
+      ),
+  );
+
   effectIt.effect("still interrupts agent control for a different human pointer event", () =>
     withManager((manager) =>
       Effect.gen(function* () {
