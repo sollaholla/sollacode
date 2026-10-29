@@ -228,7 +228,7 @@ function AgentEnvironmentSection(props: {
                 {activeWork > 0 ? <StatusChip value={`${activeWork} active`} /> : null}
                 <AgentPresenceChip agent={agent} />
               </Pressable>
-              {callBlockedReason === null ? (
+              {callBlockedReason(agent) === null ? (
                 <Pressable
                   accessibilityLabel={`Call ${agent.name}`}
                   accessibilityRole="button"
@@ -1190,7 +1190,7 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
           accessibilityRole="button"
           accessibilityState={{ busy: agentCall.placing !== null }}
           className="min-h-11 flex-row items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 disabled:opacity-50"
-          disabled={callBlockedReason !== null || agentCall.placing !== null}
+          disabled={callBlockedReason(agent) !== null || agentCall.placing !== null}
           onPress={() => void agentCall.place(environmentId, vmAgentId)}
         >
           <SymbolView name="phone.fill" size={17} tintColor="#ffffff" />
@@ -1198,8 +1198,8 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
             {agentCall.placing !== null ? "Calling…" : "Call"}
           </Text>
         </Pressable>
-        {callBlockedReason !== null ? (
-          <Text className="text-sm text-foreground-muted">{callBlockedReason}</Text>
+        {callBlockedReason(agent) !== null ? (
+          <Text className="text-sm text-foreground-muted">{callBlockedReason(agent)}</Text>
         ) : agentCall.error !== null ? (
           <Text className="text-sm text-red-600 dark:text-red-300">{agentCall.error.message}</Text>
         ) : null}

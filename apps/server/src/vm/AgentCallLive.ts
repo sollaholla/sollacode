@@ -1,13 +1,17 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 import {
+  AGENT_CALL_GROK_DELEGATE_TOOL,
   AGENT_CALL_MAX_PARTICIPANTS,
   AgentCallError,
   ApprovalRequestId,
   CommandId,
+  DEFAULT_XAI_REALTIME_MODEL,
   MessageId,
   OPENAI_LIVE_MODEL,
   type AgentCallDirection,
+  type AgentCallGrokSessionStartInput,
+  type AgentCallGrokSessionStartResult,
   type AgentCallId,
   type AgentCallParticipantInput,
   type AgentCallRoster,
@@ -30,14 +34,20 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
-import { agentCallVoice } from "@t3tools/shared/agentCallVoice";
+import { agentCallVoiceOn, type AgentCallEngine } from "@t3tools/shared/agentCallVoice";
 
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
 import { activeTurnWorkSourceId } from "../orchestration/agentModeContinuation.ts";
 import { isStaleRequestFailureDetail } from "../orchestration/decider.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { resolveOrchestratorApiKey } from "../orchestrator/OrchestratorCredentials.ts";
+import {
+  describeMintFailure,
+  isQuotaExhausted,
+  mintRealtimeToken,
+  quotaExhaustedMessage,
+  resolveOrchestratorApiKey,
+} from "../orchestrator/OrchestratorCredentials.ts";
 import { createGptLiveSession, OrchestratorLiveError } from "../orchestrator/OrchestratorLive.ts";
 import {
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
@@ -46,7 +56,7 @@ import {
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { KIMI_DRIVER_KIND } from "../provider/acp/KimiAcpSupport.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { AgentCalls } from "./AgentCalls.ts";
+import { AgentCalls, agentCallKeyMissingMessage } from "./AgentCalls.ts";
 import {
   callAddressing,
   callParticipantFor,
@@ -102,11 +112,15 @@ export function agentCallInstructions(input: {
   readonly language: string;
   readonly direction: AgentCallDirection;
   readonly topic: string | null;
+  /** GPT-Live delegates by itself; Grok Voice delegates through the `ask_your_chat` tool. */
+  readonly engine?: AgentCallEngine;
 }): string {
   const lines = [
     `You are ${input.name}, one of the person's Solla Code agents, on a live phone call with them. Your job: ${asSentence(input.purpose)}`,
     "Talk like a real phone call: warm, natural, brief turns, no lists or markdown, no reading out code or URLs verbatim.",
-    "You can't do work or look things up yourself — your real work happens in your chat. Delegate every request that needs action, information, files, tools or a decision about work; the delegation carries what the person said to your chat. Keep talking naturally while it runs, but never invent progress, results or approvals. When results arrive, say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person and delegate their answer.",
+    input.engine === "grok"
+      ? `You can't do work or look things up yourself — your real work happens in your chat. Call ${AGENT_CALL_GROK_DELEGATE_TOOL} for every request that needs action, information, files, tools or a decision about work; it passes what the person said to your chat and returns at once. Say one short line that you're on it, then keep talking naturally while it runs, but never invent progress, results or approvals. Your chat's replies reach you as updates: say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person, then call ${AGENT_CALL_GROK_DELEGATE_TOOL} again once they answer.`
+      : "You can't do work or look things up yourself — your real work happens in your chat. Delegate every request that needs action, information, files, tools or a decision about work; the delegation carries what the person said to your chat. Keep talking naturally while it runs, but never invent progress, results or approvals. When results arrive, say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person and delegate their answer.",
     "Read back consequential actions before delegating them; hearing a transcript is not approval for an external action (approvals still happen in Solla).",
     "When the person says goodbye or asks you to hang up, answer with a short goodbye that says bye; the call hangs up as soon as you finish it. Don't add a question after it.",
     `Speak ${languageName(input.language)}.`,
@@ -890,26 +904,31 @@ export const makeAgentCallLive = Effect.gen(function* () {
       Effect.orElseSucceed((): AgentCallRoster => ({ entries: [] })),
     );
 
-  /** Claims the call for `deviceLabel` and opens GPT-Live as the agent. */
-  const start = Effect.fn("AgentCallLive.start")(function* (
-    input: AgentCallSessionStartInput,
+  /**
+   * Checks the call can open voice on `engine` and claims it for
+   * `deviceLabel`: the agent, the engine's key, the session cap. A call that
+   * can never connect is failed, so it stops ringing everywhere.
+   */
+  const claimFor = Effect.fnUntraced(function* (
+    callId: AgentCallId,
     deviceLabel: string,
+    engine: AgentCallEngine,
   ) {
-    const call = yield* calls.get(input.callId);
+    const call = yield* calls.get(callId);
     if (Option.isNone(call)) return yield* ended();
     const agent = yield* agents
       .getById(call.value.vmAgentId)
       .pipe(Effect.orElseSucceed(() => Option.none()));
     if (Option.isNone(agent) || agent.value.threadId === null) {
-      yield* calls.fail(input.callId);
+      yield* calls.fail(callId);
       return yield* ended("That agent has no chat to call.");
     }
-    const key = yield* resolveOrchestratorApiKey("openai").pipe(
+    const key = yield* resolveOrchestratorApiKey(engine === "grok" ? "xai" : "openai").pipe(
       Effect.provideService(ServerSecretStore, secrets),
     );
     if (Option.isNone(key)) {
-      yield* calls.fail(input.callId);
-      return yield* ended("Add an OpenAI key in Settings → Orchestrator to call agents.");
+      yield* calls.fail(callId);
+      return yield* ended(agentCallKeyMissingMessage(engine));
     }
     const { orchestrator: settings } = yield* settingsService.getSettings.pipe(
       Effect.mapError(
@@ -923,29 +942,45 @@ export const makeAgentCallLive = Effect.gen(function* () {
         detail: "Too many live calls. End another call first.",
       });
     const claimed = yield* calls
-      .claim(input.callId, deviceLabel)
+      .claim(callId, deviceLabel)
       .pipe(Effect.mapError((error) => ended(error.detail)));
     const roster = yield* readRoster(agent.value);
-    // Each agent speaks with its own voice, chosen or from its character.
-    const voice = agentCallVoice(agent.value);
-    const created = yield* createGptLiveSession(http, {
+    const threadId = agent.value.threadId;
+    return {
+      agent: agent.value,
+      threadId,
       key: key.value,
+      settings,
+      claimed,
+      roster,
+      // Each agent speaks with its own voice, chosen or from its character.
+      voice: agentCallVoiceOn(agent.value, engine),
       instructions: agentCallInstructions({
         name: agent.value.name,
         purpose: agent.value.purpose,
         language: settings.language,
         direction: claimed.direction,
         topic: claimed.topic,
+        engine,
       }),
-      voice,
-      history: input.history,
-      sdp: input.sdp,
-    }).pipe(Effect.onError(() => calls.fail(input.callId)));
-    sessions.set(created.sessionId, {
-      callId: input.callId,
-      threadId: agent.value.threadId,
-      agentName: agent.value.name,
-      roster,
+    };
+  });
+
+  /** Holds a started voice session's call state; delegations and heartbeats find it by id. */
+  const keepSession = Effect.fnUntraced(function* (
+    sessionId: string,
+    callId: AgentCallId,
+    opened: {
+      readonly threadId: ThreadId;
+      readonly agent: VmAgent;
+      readonly roster: AgentCallRoster;
+    },
+  ) {
+    sessions.set(sessionId, {
+      callId,
+      threadId: opened.threadId,
+      agentName: opened.agent.name,
+      roster: opened.roster,
       createdAt: yield* nowMs,
       forwardedFragments: new Set(),
       answeredRequestIds: new Set(),
@@ -956,19 +991,92 @@ export const makeAgentCallLive = Effect.gen(function* () {
       awaitingWords: new Set(),
       requests: new Map(),
     });
+  });
+
+  /** Claims the call for `deviceLabel` and opens GPT-Live as the agent. */
+  const start = Effect.fn("AgentCallLive.start")(function* (
+    input: AgentCallSessionStartInput,
+    deviceLabel: string,
+  ) {
+    const opened = yield* claimFor(input.callId, deviceLabel, "gpt-live");
+    const created = yield* createGptLiveSession(http, {
+      key: opened.key,
+      instructions: opened.instructions,
+      voice: opened.voice,
+      history: input.history,
+      sdp: input.sdp,
+    }).pipe(Effect.onError(() => calls.fail(input.callId)));
+    yield* keepSession(created.sessionId, input.callId, opened);
     yield* Effect.logInfo("agent call GPT-Live session created", {
       model: OPENAI_LIVE_MODEL,
-      voice,
-      agentId: agent.value.vmAgentId,
-      direction: claimed.direction,
-      rosterSize: roster.entries.length,
+      voice: opened.voice,
+      agentId: opened.agent.vmAgentId,
+      direction: opened.claimed.direction,
+      rosterSize: opened.roster.entries.length,
     });
     return {
       sessionId: created.sessionId,
       sdp: created.sdp,
       model: OPENAI_LIVE_MODEL,
-      voice,
-      agentName: agent.value.name,
+      voice: opened.voice,
+      agentName: opened.agent.name,
+    };
+  });
+
+  /**
+   * Claims the call for `deviceLabel` and mints a short-lived xAI client
+   * secret for the device's Grok Voice WebSocket. The device sends the
+   * returned instructions itself; everything after that (delegation,
+   * heartbeat, release) is the same as a GPT-Live call's.
+   */
+  const startGrok = Effect.fn("AgentCallLive.startGrok")(function* (
+    input: AgentCallGrokSessionStartInput,
+    deviceLabel: string,
+  ): Effect.fn.Return<AgentCallGrokSessionStartResult, OrchestratorLiveError> {
+    const opened = yield* claimFor(input.callId, deviceLabel, "grok");
+    const model = DEFAULT_XAI_REALTIME_MODEL;
+    const token = yield* mintRealtimeToken({ provider: "xai", model, voice: opened.voice }).pipe(
+      Effect.provideService(ServerSecretStore, secrets),
+      Effect.provideService(HttpClient.HttpClient, http),
+      Effect.mapError((error) => {
+        const detail = error._tag === "OrchestratorTokenMintError" ? (error.detail ?? "") : "";
+        const status = error._tag === "OrchestratorTokenMintError" ? error.status : undefined;
+        return new OrchestratorLiveError({
+          status: 502,
+          detail: isQuotaExhausted(status, detail)
+            ? quotaExhaustedMessage("xai")
+            : (describeMintFailure(detail) ?? "Grok Voice could not start the call."),
+        });
+      }),
+      Effect.onError(() => calls.fail(input.callId)),
+    );
+    const sessionId = `grok-call-${NodeCrypto.randomUUID()}`;
+    yield* keepSession(sessionId, input.callId, opened);
+    yield* Effect.logInfo("agent call Grok Voice session created", {
+      model,
+      voice: opened.voice,
+      agentId: opened.agent.vmAgentId,
+      direction: opened.claimed.direction,
+      rosterSize: opened.roster.entries.length,
+    });
+    return {
+      sessionId,
+      clientSecret: token.value,
+      model,
+      voice: opened.voice,
+      agentName: opened.agent.name,
+      instructions: [
+        opened.instructions,
+        // GPT-Live takes the start history as conversation items; here it is context.
+        ...(input.history.length > 0
+          ? [
+              "Recent messages in your chat, for context:",
+              ...input.history
+                .slice(-12)
+                .map((entry) => `${entry.role}: ${entry.text.slice(0, 600)}`),
+            ]
+          : []),
+      ].join("\n"),
     };
   });
 
@@ -1562,6 +1670,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
 
   return {
     start,
+    startGrok,
     delegate,
     roster,
     addParticipant,

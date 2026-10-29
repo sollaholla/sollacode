@@ -2,6 +2,7 @@ import {
   AGENT_CALL_DELEGATION_PATH,
   AGENT_CALL_HEARTBEAT_SECONDS,
   AGENT_CALL_SESSION_HEARTBEAT_PATH,
+  AGENT_CALL_GROK_SESSION_PATH,
   AGENT_CALL_SESSION_PATH,
   AGENT_CALL_SESSION_RELEASE_PATH,
   type AgentCall,
@@ -15,6 +16,7 @@ import {
   type VmAgentId,
 } from "@t3tools/contracts";
 import { agentCallTransferDetail } from "@t3tools/shared/agentCallBridge";
+import { agentCallEngineFor, type AgentCallEngine } from "@t3tools/shared/agentCallVoice";
 import * as Cause from "effect/Cause";
 import {
   createContext,
@@ -33,8 +35,10 @@ import { createLiveVoiceSession } from "../orchestrator/liveSession";
 import { getClientSettings } from "../hooks/useSettings";
 import { readPreferredMicrophone } from "../orchestrator/microphones";
 import { resolveVoiceCuePolicy } from "../orchestrator/voiceCues";
+import { createGrokCallSession } from "./grokCallSession";
 import { playHangUpTone, startRingback } from "./ringtone";
 import { useLiveUsageStore } from "../orchestrator/liveUsageStore";
+import { appendUsage } from "../orchestrator/usageStore";
 import type { VoiceSession, VoiceSessionState } from "../orchestrator/realtimeSession";
 import { createScreenWakeLock, findWakeLockRequester } from "../orchestrator/screenWakeLock";
 import { fetchRecentThreadHistory } from "../orchestrator/useOrchestratorSession";
@@ -76,6 +80,8 @@ export interface AgentCallParty {
   readonly name: string;
   readonly avatarColor: number | null;
   readonly threadId: ThreadId | null;
+  /** What the call runs on, from the agent's voice: GPT-Live unless it was given a Grok voice. */
+  readonly engine: AgentCallEngine;
 }
 
 /** The call this device is on, or just finished. */
@@ -239,6 +245,7 @@ const partyFor = (agent: VmAgent | null, vmAgentId: VmAgentId): AgentCallParty =
   name: agent?.name ?? "Agent",
   avatarColor: agent?.avatarColor ?? null,
   threadId: agent?.threadId ?? null,
+  engine: agent === null ? "gpt-live" : agentCallEngineFor(agent),
 });
 
 /** A spoken transfer waiting for the voice to finish saying so. */
@@ -508,6 +515,8 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
             name: target.name,
             avatarColor: null,
             threadId: target.threadId,
+            // The host's record, read when the transfer goes through, says if it is Grok.
+            engine: "gpt-live",
           },
         };
         updateActive(generation, { transferringTo: target.name });
@@ -563,7 +572,16 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     ) => {
       const { generation } = call;
       let announced = false;
-      const session: VoiceSession = createLiveVoiceSession(
+      /** The model the Grok session opened with, to price its usage. */
+      let grokModel: string | null = null;
+      const grok = call.agent.engine === "grok";
+      const markClaimed = () => {
+        if (sessionRef.current !== session || claimedRef.current) return;
+        claimedRef.current = true;
+        const callId = activeRef.current?.callId;
+        if (callId) postAgentCallNativeMessage("connected", callId);
+      };
+      const session: VoiceSession = (grok ? createGrokCallSession : createLiveVoiceSession)(
         {
           httpBaseUrl: prepared.httpBaseUrl,
           // Sent exactly as the orchestrator's GPT-Live requests are: bearer
@@ -579,7 +597,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
           phoneLine: getClientSettings().callPhoneLine,
           cuePolicy: () => resolveVoiceCuePolicy(getClientSettings()),
           live: {
-            sessionPath: AGENT_CALL_SESSION_PATH,
+            sessionPath: grok ? AGENT_CALL_GROK_SESSION_PATH : AGENT_CALL_SESSION_PATH,
             releasePath: AGENT_CALL_SESSION_RELEASE_PATH,
             delegationPath: AGENT_CALL_DELEGATION_PATH,
             startBody,
@@ -648,10 +666,16 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
             // Bills the same OpenAI key as the orchestrator, so it lands in the
             // same usage ledger. A report also means the host accepted the claim.
             useLiveUsageStore.getState().record(usage);
-            if (sessionRef.current !== session || claimedRef.current) return;
-            claimedRef.current = true;
-            const callId = activeRef.current?.callId;
-            if (callId) postAgentCallNativeMessage("connected", callId);
+            markClaimed();
+          },
+          // Grok: the session opens only once the host accepted the claim.
+          onSessionReady: (ready) => {
+            grokModel = ready.model;
+            markClaimed();
+          },
+          // Grok bills the xAI key the orchestrator's Grok voice uses: same ledger.
+          onUsage: (usage) => {
+            if (grokModel !== null) appendUsage({ model: grokModel, usage, now: new Date() });
           },
           // No reconnect: the dropped session's release has already hung
           // the call up on the host, which never re-admits an answered call.

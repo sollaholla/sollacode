@@ -1,6 +1,7 @@
 import { RegistryContext } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import type { EnvironmentId, VmAgentId } from "@t3tools/contracts";
+import type { EnvironmentId, VmAgent, VmAgentId } from "@t3tools/contracts";
+import { agentCallEngineFor } from "@t3tools/shared/agentCallVoice";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -17,12 +18,19 @@ import {
   presentedIncomingCalls,
 } from "./agentCallModel";
 
-/** Whether agents on a host can be called, from its settings. */
-export function useAgentCallBlockedReason(environmentId: EnvironmentId): string | null {
-  const configs = useServerConfigs();
-  return agentCallBlockedReason(
-    configs.get(environmentId)?.settings.orchestrator.openAiApiKeyConfigured,
-  );
+/** Why an agent on a host can't be called, from the host's settings and the agent's voice. */
+export function useAgentCallBlockedReason(
+  environmentId: EnvironmentId,
+): (agent: Pick<VmAgent, "vmAgentId" | "avatarColor" | "voice">) => string | null {
+  const orchestrator = useServerConfigs().get(environmentId)?.settings.orchestrator;
+  return (agent) =>
+    agentCallBlockedReason(
+      {
+        openAiApiKeyConfigured: orchestrator?.openAiApiKeyConfigured,
+        xaiApiKeyConfigured: orchestrator?.xaiApiKeyConfigured,
+      },
+      agentCallEngineFor(agent),
+    );
 }
 
 /**

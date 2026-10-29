@@ -5,15 +5,17 @@ import { OrchestratorLiveHistoryEntry } from "./orchestratorLive.ts";
 import { VmAgentId } from "./vm.ts";
 
 /**
- * Agent calls: a GPT-Live voice call between a person and one custom agent.
+ * Agent calls: a voice call between a person and one custom agent, on GPT-Live
+ * or, for an agent given a Grok voice, on Grok Voice.
  *
  * Either side can start one. The person places a call from the agent's
  * workspace (`outgoing`); an agent rings the person when it raises a blocker,
  * waits on a question or approval, or asks to talk (`incoming`). A call is an
  * ephemeral server record broadcast to every device of the host, so whichever
- * device answers first takes it and the others stop ringing. Voice runs on
- * OpenAI GPT-Live; the server creates each session with the OpenAI key from
- * Settings → Orchestrator, so browsers never hold a credential. What the person
+ * device answers first takes it and the others stop ringing. On GPT-Live the
+ * server creates each session with the OpenAI key from Settings → Orchestrator,
+ * so browsers never hold a credential; on Grok Voice it mints a short-lived
+ * xAI client secret for the device's WebSocket. What the person
  * says is forwarded into the agent's own chat as real messages, and the
  * agent's replies are spoken back.
  */
@@ -22,6 +24,19 @@ import { VmAgentId } from "./vm.ts";
 export const AGENT_CALL_RING_SECONDS = 45;
 /** Answer or start: claims the call and returns the GPT-Live SDP answer. */
 export const AGENT_CALL_SESSION_PATH = "/api/agents/call/session";
+/**
+ * Answer or start a call on Grok Voice: claims the call and returns a
+ * short-lived xAI client secret plus the voice's instructions. Body
+ * `AgentCallGrokSessionStartInput`; result `AgentCallGrokSessionStartResult`.
+ * Delegation, heartbeat and release are the same as GPT-Live's.
+ */
+export const AGENT_CALL_GROK_SESSION_PATH = "/api/agents/call/session/grok";
+/**
+ * The function tool a Grok Voice call delegates through: GPT-Live delegates
+ * on its own, Grok calls this. It returns at once; the chat's replies are
+ * spoken as they arrive.
+ */
+export const AGENT_CALL_GROK_DELEGATE_TOOL = "ask_your_chat";
 /** `${AGENT_CALL_SESSION_PATH}/release` frees the server session; body `{ sessionId }`. */
 export const AGENT_CALL_SESSION_RELEASE_PATH = "/api/agents/call/session/release";
 /**
@@ -200,6 +215,26 @@ export const AgentCallSessionStartInput = Schema.Struct({
   history: Schema.Array(OrchestratorLiveHistoryEntry).check(Schema.isMaxLength(24)),
 });
 export type AgentCallSessionStartInput = typeof AgentCallSessionStartInput.Type;
+
+/** Body of `AGENT_CALL_GROK_SESSION_PATH`. */
+export const AgentCallGrokSessionStartInput = Schema.Struct({
+  callId: AgentCallId,
+  history: Schema.Array(OrchestratorLiveHistoryEntry).check(Schema.isMaxLength(24)),
+});
+export type AgentCallGrokSessionStartInput = typeof AgentCallGrokSessionStartInput.Type;
+
+/** What a device needs to open a call's Grok Voice WebSocket. */
+export const AgentCallGrokSessionStartResult = Schema.Struct({
+  sessionId: TrimmedNonEmptyString,
+  /** Short-lived xAI client secret for the WebSocket; never the API key. */
+  clientSecret: TrimmedNonEmptyString,
+  model: TrimmedNonEmptyString,
+  voice: TrimmedNonEmptyString,
+  agentName: TrimmedNonEmptyString,
+  /** The voice's instructions, sent in the session's first `session.update`. */
+  instructions: TrimmedNonEmptyString,
+});
+export type AgentCallGrokSessionStartResult = typeof AgentCallGrokSessionStartResult.Type;
 
 export class AgentCallError extends Schema.TaggedErrorClass<AgentCallError>()("AgentCallError", {
   detail: Schema.String,

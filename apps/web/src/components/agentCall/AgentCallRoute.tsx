@@ -8,7 +8,7 @@ import { endedAgentCallTitle, isAgentCallPhaseOpen } from "../../agentCall/agent
 import { useAgentCallContext } from "../../agentCall/AgentCallProvider";
 import { AgentGlyph } from "../agents/AgentGlyph";
 import { Button } from "../ui/button";
-import { AGENT_CALL_NEEDS_KEY_HINT, useAgentCallsAvailable } from "./AgentCallButton";
+import { agentCallNeedsKeyHint, useAgentCallsAvailable } from "./AgentCallButton";
 import { CallRoundButton } from "./AgentCallScreen";
 import { IncomingCallSheet } from "./IncomingCallSheet";
 
@@ -34,7 +34,7 @@ export function AgentCallRoute() {
   const calls = useEnvironmentAgentCalls(environmentId);
   const call = calls?.find((candidate) => candidate.callId === callId) ?? null;
   const agent = useAgentRecord(environmentId, call?.vmAgentId ?? null);
-  const available = useAgentCallsAvailable(environmentId);
+  const available = useAgentCallsAvailable(environmentId, agent);
   const navigate = useNavigate();
   const router = useRouter();
   const canGoBack = useCanGoBack();
@@ -174,7 +174,9 @@ export function AgentCallRoute() {
               onClick={() => api.place(environmentId, agent)}
             />
             {!available ? (
-              <p className="max-w-xs text-xs text-muted-foreground">{AGENT_CALL_NEEDS_KEY_HINT}</p>
+              <p className="max-w-xs text-xs text-muted-foreground">
+                {agentCallNeedsKeyHint(agent)}
+              </p>
             ) : null}
           </div>
         ) : null}

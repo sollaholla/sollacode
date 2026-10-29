@@ -1,9 +1,15 @@
-import { OPENAI_LIVE_VOICES, type EnvironmentId, type VmAgent } from "@t3tools/contracts";
+import {
+  OPENAI_LIVE_VOICES,
+  XAI_REALTIME_VOICES,
+  type EnvironmentId,
+  type VmAgent,
+} from "@t3tools/contracts";
 import {
   AGENT_CALL_VOICE_DETAILS,
   agentCallVoice,
   automaticAgentCallVoice,
   isAgentCallVoice,
+  type AgentCallVoice,
 } from "@t3tools/shared/agentCallVoice";
 import { AudioLinesIcon } from "lucide-react";
 
@@ -25,7 +31,8 @@ const AUTOMATIC = "automatic";
 /**
  * The agent menu's **Call voice** submenu: the voice the agent speaks with on
  * calls, from its next call. Automatic follows its character, so each agent
- * sounds different without anyone choosing.
+ * sounds different without anyone choosing. A Grok voice puts the agent's
+ * calls on Grok Voice.
  */
 export function AgentVoiceMenu(props: {
   readonly environmentId: EnvironmentId;
@@ -65,17 +72,27 @@ export function AgentVoiceMenu(props: {
                 {automatic}, from its look
               </span>
             </MenuRadioItem>
+            <MenuGroupLabel>GPT-Live</MenuGroupLabel>
             {OPENAI_LIVE_VOICES.map((voice) => (
-              <MenuRadioItem key={voice} value={voice}>
-                <span className="block">{AGENT_CALL_VOICE_DETAILS[voice].label}</span>
-                <span className="block text-xs text-muted-foreground">
-                  {AGENT_CALL_VOICE_DETAILS[voice].detail}
-                </span>
-              </MenuRadioItem>
+              <VoiceItem key={voice} voice={voice} />
+            ))}
+            <MenuGroupLabel>Grok Voice</MenuGroupLabel>
+            {XAI_REALTIME_VOICES.map((voice) => (
+              <VoiceItem key={voice} voice={voice} />
             ))}
           </MenuRadioGroup>
         </MenuGroup>
       </MenuSubPopup>
     </MenuSub>
+  );
+}
+
+function VoiceItem(props: { readonly voice: AgentCallVoice }) {
+  const details = AGENT_CALL_VOICE_DETAILS[props.voice];
+  return (
+    <MenuRadioItem value={props.voice}>
+      <span className="block">{details.label}</span>
+      <span className="block text-xs text-muted-foreground">{details.detail}</span>
+    </MenuRadioItem>
   );
 }

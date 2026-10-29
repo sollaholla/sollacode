@@ -12,6 +12,7 @@ import {
   VmAgentTaskNotificationPolicy,
   VmAgentTaskSchedule,
   VmAgentWorkspaceSnapshot,
+  XAI_REALTIME_VOICES,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -54,9 +55,11 @@ export const AgentBuilderInput = Schema.Struct({
     description:
       "create_agent: the agent's outlined glyph — an uncoloured, emoji-like icon that identifies it in the sidebar and header. Always choose one that fits the purpose; if omitted, the agent picks its own on its first run.",
   }),
-  voice: Schema.optional(Schema.NullOr(Schema.Literals(OPENAI_LIVE_VOICES))).annotate({
+  voice: Schema.optional(
+    Schema.NullOr(Schema.Literals([...OPENAI_LIVE_VOICES, ...XAI_REALTIME_VOICES])),
+  ).annotate({
     description:
-      "create_agent/set_voice: the GPT-Live voice the agent speaks with on calls. English: marin (the default), quartz and ripple (Australian), vesper (British), willow and stone (Irish), gleam and meridian (North American), beacon (Filipino), delta and cinder (Southern U.S.); bossa and tempo are Brazilian Portuguese. Omitted at creation, or null with set_voice, gives the agent one from its character, different from its neighbours'.",
+      "create_agent/set_voice: the voice the agent speaks with on calls. GPT-Live voices: marin (the default), quartz and ripple (Australian), vesper (British), willow and stone (Irish), gleam and meridian (North American), beacon (Filipino), delta and cinder (Southern U.S.); bossa and tempo are Brazilian Portuguese. Grok voices (the call then runs on Grok Voice, with the xAI key): eve (Grok's default), ara (warm), leo (confident), rex (energetic), sal, and more such as luna, orion and carina. Omitted at creation, or null with set_voice, gives the agent a GPT-Live voice from its character, different from its neighbours'.",
   }),
   modelSelection: Schema.optional(ModelSelection).annotate({
     description: "create_agent/configure_agent_chat: the model the agent's own chat runs on.",

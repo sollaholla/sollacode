@@ -17,7 +17,7 @@ import {
   type CommandPaletteActionItem,
   type CommandPaletteSubmenuItem,
 } from "../CommandPalette.logic";
-import { AGENT_CALL_NEEDS_KEY_HINT, useAgentCallsAvailable } from "./AgentCallButton";
+import { agentCallNeedsKeyHint, useAgentCallsAvailable } from "./AgentCallButton";
 
 /**
  * Command palette actions for calls: "Call <agent>" on an agent's page, and
@@ -46,7 +46,7 @@ export function useAgentCallPaletteItems(): ReadonlyArray<
         ? EnvironmentId.make(routeEnvironmentId)
         : primaryEnvironmentId;
   const agent = useAgentRecord(environmentId, routeAgentId);
-  const available = useAgentCallsAvailable(environmentId);
+  const available = useAgentCallsAvailable(environmentId, agent);
   const hostCalls = useEnvironmentAgentCalls(environmentId);
   if (calls === null) return [];
 
@@ -144,9 +144,9 @@ export function useAgentCallPaletteItems(): ReadonlyArray<
     {
       kind: "action",
       value: "action:agent-call-place",
-      searchTerms: ["call", "voice call", "phone", "talk", "gpt-live", agent.name],
+      searchTerms: ["call", "voice call", "phone", "talk", "gpt-live", "grok", agent.name],
       title: `Call ${agent.name}`,
-      description: available ? "Talk with this agent by voice" : AGENT_CALL_NEEDS_KEY_HINT,
+      description: available ? "Talk with this agent by voice" : agentCallNeedsKeyHint(agent),
       icon: <PhoneIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         if (available) calls.place(environmentId, agent);

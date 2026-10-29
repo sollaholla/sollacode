@@ -1,9 +1,15 @@
-import { OPENAI_LIVE_VOICES, type EnvironmentId, type VmAgent } from "@t3tools/contracts";
+import {
+  OPENAI_LIVE_VOICES,
+  XAI_REALTIME_VOICES,
+  type EnvironmentId,
+  type VmAgent,
+} from "@t3tools/contracts";
 import {
   AGENT_CALL_VOICE_DETAILS,
   agentCallVoice,
   automaticAgentCallVoice,
   isAgentCallVoice,
+  type AgentCallVoice,
 } from "@t3tools/shared/agentCallVoice";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -19,7 +25,8 @@ const AUTOMATIC = "automatic";
 /**
  * The agent screen's **Call voice** row: the voice the agent speaks with on
  * calls, from its next call, chosen from a native menu. Automatic follows the
- * agent's character, the same rule the web picker and the host use.
+ * agent's character, the same rule the web picker and the host use; a Grok
+ * voice puts the agent's calls on Grok Voice.
  */
 export function AgentVoiceRow(props: {
   readonly environmentId: EnvironmentId;
@@ -30,6 +37,12 @@ export function AgentVoiceRow(props: {
   const [error, setError] = useState<string | null>(null);
   const chosen = isAgentCallVoice(agent.voice) ? agent.voice : null;
   const current = AGENT_CALL_VOICE_DETAILS[agentCallVoice(agent)];
+  const voiceAction = (voice: AgentCallVoice) => ({
+    id: voice,
+    title: AGENT_CALL_VOICE_DETAILS[voice].label,
+    subtitle: AGENT_CALL_VOICE_DETAILS[voice].detail,
+    state: chosen === voice ? ("on" as const) : ("off" as const),
+  });
   const actions = [
     {
       id: AUTOMATIC,
@@ -37,12 +50,16 @@ export function AgentVoiceRow(props: {
       subtitle: `${AGENT_CALL_VOICE_DETAILS[automaticAgentCallVoice(agent)].label}, from its look`,
       state: chosen === null ? ("on" as const) : ("off" as const),
     },
-    ...OPENAI_LIVE_VOICES.map((voice) => ({
-      id: voice,
-      title: AGENT_CALL_VOICE_DETAILS[voice].label,
-      subtitle: AGENT_CALL_VOICE_DETAILS[voice].detail,
-      state: chosen === voice ? ("on" as const) : ("off" as const),
-    })),
+    {
+      id: "gpt-live",
+      title: "GPT-Live",
+      subactions: OPENAI_LIVE_VOICES.map(voiceAction),
+    },
+    {
+      id: "grok",
+      title: "Grok Voice",
+      subactions: XAI_REALTIME_VOICES.map(voiceAction),
+    },
   ];
   return (
     <View className="min-w-0 gap-1">

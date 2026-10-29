@@ -1,9 +1,12 @@
-import { OPENAI_LIVE_VOICES } from "@t3tools/contracts";
+import { OPENAI_LIVE_VOICES, XAI_REALTIME_VOICES } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   AGENT_CALL_VOICE_DETAILS,
+  agentCallEngine,
+  agentCallEngineFor,
   agentCallVoice,
+  agentCallVoiceOn,
   automaticAgentCallVoice,
   isAgentCallVoice,
 } from "./agentCallVoice.ts";
@@ -39,9 +42,32 @@ describe("agentCallVoice", () => {
     expect(agentCallVoice({ vmAgentId: "a", avatarColor: 2, voice: null })).toBe("willow");
   });
 
-  it("describes every voice GPT-Live offers", () => {
-    for (const voice of OPENAI_LIVE_VOICES) {
+  it("describes every voice either engine offers", () => {
+    for (const voice of [...OPENAI_LIVE_VOICES, ...XAI_REALTIME_VOICES]) {
       expect(AGENT_CALL_VOICE_DETAILS[voice].label.toLowerCase()).toBe(voice);
+      expect(AGENT_CALL_VOICE_DETAILS[voice].detail.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("agentCallEngine", () => {
+  it("runs a Grok voice on Grok Voice and every other voice on GPT-Live", () => {
+    expect(agentCallEngine("eve")).toBe("grok");
+    expect(agentCallEngine("luna")).toBe("grok");
+    expect(agentCallEngine("willow")).toBe("gpt-live");
+    // No voice name belongs to both engines.
+    for (const voice of OPENAI_LIVE_VOICES) expect(agentCallEngine(voice)).toBe("gpt-live");
+    for (const voice of XAI_REALTIME_VOICES) expect(agentCallEngine(voice)).toBe("grok");
+    expect(agentCallEngineFor({ vmAgentId: "a", avatarColor: 0, voice: "ara" })).toBe("grok");
+    expect(agentCallEngineFor({ vmAgentId: "a", avatarColor: 0, voice: null })).toBe("gpt-live");
+  });
+
+  it("serves the engine a device started with, in that engine's voice", () => {
+    const grokAgent = { vmAgentId: "a", avatarColor: 2, voice: "leo" };
+    expect(agentCallVoiceOn(grokAgent, "grok")).toBe("leo");
+    expect(agentCallVoiceOn(grokAgent, "gpt-live")).toBe("willow");
+    const liveAgent = { vmAgentId: "a", avatarColor: 2, voice: "cinder" };
+    expect(agentCallVoiceOn(liveAgent, "gpt-live")).toBe("cinder");
+    expect(agentCallVoiceOn(liveAgent, "grok")).toBe("eve");
   });
 });

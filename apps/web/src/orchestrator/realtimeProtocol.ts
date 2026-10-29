@@ -214,6 +214,14 @@ function trimRecentHistory(
   return kept;
 }
 
+/** A function tool as the realtime APIs take it. */
+export interface RealtimeFunctionTool {
+  readonly type: "function";
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+}
+
 export interface RealtimeSessionConfig {
   readonly type: "session.update";
   readonly session: Record<string, unknown>;
@@ -289,14 +297,19 @@ export function buildSessionUpdate(input: {
   /** Applied on Grok `session.update`. OpenAI binds voice at mint time. */
   readonly voice?: string;
   readonly recentHistory?: ReadonlyArray<RecentConversationEntry>;
+  /** An agent call's own instructions and tools, in place of the orchestrator's. */
+  readonly call?: {
+    readonly instructions: string;
+    readonly tools: ReadonlyArray<RealtimeFunctionTool>;
+  };
 }): RealtimeSessionConfig {
   const reasoningCapable = input.model !== undefined && supportsReasoningEffort(input.model);
   if (input.provider === "xai") {
     return {
       type: "session.update",
       session: {
-        instructions: buildInstructions(input),
-        tools: toolsForAuthority(input.authority),
+        instructions: input.call?.instructions ?? buildInstructions(input),
+        tools: input.call?.tools ?? toolsForAuthority(input.authority),
         tool_choice: "auto",
         ...(input.voice !== undefined && input.voice.length > 0 ? { voice: input.voice } : {}),
         ...(reasoningCapable ? { reasoning: { effort: REALTIME_REASONING_EFFORT } } : {}),

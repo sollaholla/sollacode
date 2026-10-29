@@ -24,12 +24,19 @@ import * as PubSub from "effect/PubSub";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import { agentCallEngineFor, type AgentCallEngine } from "@t3tools/shared/agentCallVoice";
 
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
 import type * as SessionStore from "../auth/SessionStore.ts";
 import { resolveOrchestratorApiKey } from "../orchestrator/OrchestratorCredentials.ts";
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+
+/** Why a call can't run: the key its engine needs is missing. */
+export const agentCallKeyMissingMessage = (engine: AgentCallEngine) =>
+  engine === "grok"
+    ? "Add an xAI key in Settings → Orchestrator to call agents with a Grok voice."
+    : "Add an OpenAI key in Settings → Orchestrator to call agents.";
 
 /** An outgoing call that never opens voice stops "ringing" on its device. */
 export const AGENT_CALL_OUTGOING_RING_SECONDS = 30;
@@ -202,15 +209,30 @@ export const make = Effect.gen(function* () {
   const snapshotRef = yield* SubscriptionRef.make(toSnapshot());
   const transitions = yield* PubSub.unbounded<AgentCallTransition>();
   const nowMs = Effect.map(DateTime.now, DateTime.toEpochMillis);
-  const openAiKeyConfigured = resolveOrchestratorApiKey("openai").pipe(
-    Effect.provideService(ServerSecretStore, secrets),
-    Effect.map(Option.isSome),
-  );
+  /**
+   * Whether the key the agent's calls need is saved: OpenAI for GPT-Live,
+   * xAI for an agent given a Grok voice. An agent that can't be read counts
+   * as GPT-Live.
+   */
+  const callKeyConfigured = (vmAgentId: VmAgentId) =>
+    agents.getById(vmAgentId).pipe(
+      Effect.map((agent) =>
+        Option.isSome(agent) ? agentCallEngineFor(agent.value) : ("gpt-live" as const),
+      ),
+      Effect.orElseSucceed(() => "gpt-live" as const),
+      Effect.flatMap((engine) =>
+        resolveOrchestratorApiKey(engine === "grok" ? "xai" : "openai").pipe(
+          Effect.provideService(ServerSecretStore, secrets),
+          Effect.map((key) => ({ engine, configured: Option.isSome(key) })),
+        ),
+      ),
+    );
   // Fails closed: unreadable settings ring nobody.
-  const ringingAllowed = Effect.gen(function* () {
-    const settings = yield* settingsService.getSettings;
-    return settings.orchestrator.agentCalls && (yield* openAiKeyConfigured);
-  }).pipe(Effect.orElseSucceed(() => false));
+  const ringingAllowed = (vmAgentId: VmAgentId) =>
+    Effect.gen(function* () {
+      const settings = yield* settingsService.getSettings;
+      return settings.orchestrator.agentCalls && (yield* callKeyConfigured(vmAgentId)).configured;
+    }).pipe(Effect.orElseSucceed(() => false));
 
   const after = (delayMs: number, effect: Effect.Effect<void>) =>
     Effect.sleep(Duration.millis(Math.max(0, delayMs))).pipe(
@@ -317,10 +339,11 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.mapError(() => new AgentCallError({ detail: "Could not look up that agent." })));
     if (Option.isNone(agent) || agent.value.threadId === null)
       return yield* new AgentCallError({ detail: "That agent has no chat to call." });
-    if (!(yield* openAiKeyConfigured.pipe(Effect.orElseSucceed(() => false))))
-      return yield* new AgentCallError({
-        detail: "Add an OpenAI key in Settings → Orchestrator to call agents.",
-      });
+    const key = yield* callKeyConfigured(input.vmAgentId).pipe(
+      Effect.orElseSucceed(() => ({ engine: "gpt-live" as const, configured: false })),
+    );
+    if (!key.configured)
+      return yield* new AgentCallError({ detail: agentCallKeyMissingMessage(key.engine) });
     return yield* lock.withPermits(1)(
       Effect.gen(function* () {
         const open = openCallFor(input.vmAgentId);
@@ -357,7 +380,7 @@ export const make = Effect.gen(function* () {
   });
 
   const ring: AgentCallsShape["ring"] = Effect.fn("AgentCalls.ring")(function* (input) {
-    if (!(yield* ringingAllowed)) return { status: "disabled" } as const;
+    if (!(yield* ringingAllowed(input.vmAgentId))) return { status: "disabled" } as const;
     return yield* lock.withPermits(1)(
       Effect.gen(function* (): Effect.fn.Return<AgentCallRingOutcome> {
         const now = yield* nowMs;

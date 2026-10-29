@@ -31,6 +31,7 @@ import {
   isLikelyHallucinatedTranscript,
   parseRealtimeEvent,
   parseToolArguments,
+  type RealtimeFunctionTool,
   type RecentConversationEntry,
 } from "./realtimeProtocol";
 import { BARGE_IN_SUSTAIN_MS, createBargeInWindow, type BargeInWindow } from "./bargeIn";
@@ -296,6 +297,22 @@ export interface VoiceSessionOptions {
    */
   readonly live?: LiveSessionRoutes;
   /**
+   * Grok Voice agent calls: the session starts from the call's host instead of
+   * the orchestrator's token route and runs the call's own instructions and
+   * tools. A rejected start fails the session with its message.
+   */
+  readonly realtimeCall?: {
+    readonly start: () => Promise<RealtimeCallStart>;
+    /** Where the voice plays (the phone line); the speakers when omitted. */
+    readonly playbackDestination?: (context: AudioContext) => AudioNode;
+    /**
+     * What the voice is told when it answers after a tool call, in place of
+     * the orchestrator's "you already have the result" (a call's tool only
+     * hands words to its chat).
+     */
+    readonly toolReplyInstructions?: string;
+  };
+  /**
    * GPT-Live only, for agent calls: the voice plays down a phone line, and
    * while delegated work runs and the voice is quiet, desk sounds (typing,
    * clicks) play down the same line at the cue volume (`cuePolicy`).
@@ -368,6 +385,16 @@ export interface VoiceSession {
    */
   instruct?(text: string): void;
   readonly state: VoiceSessionState;
+}
+
+/** What an agent call's host hands its Grok Voice session. */
+export interface RealtimeCallStart {
+  /** Short-lived xAI client secret. */
+  readonly value: string;
+  readonly model: string;
+  readonly voice: string;
+  readonly instructions: string;
+  readonly tools: ReadonlyArray<RealtimeFunctionTool>;
 }
 
 interface RealtimeTokenResponse {
@@ -457,6 +484,11 @@ export function createVoiceSession(
    * withhold audio here instead of muting the track.
    */
   let sendMicrophoneAudio = false;
+  /** The person muted themselves (an agent call's Mute): nothing is sent. */
+  let userMuted = false;
+  /** An agent call's instructions, and what it was told since (see `instruct`). */
+  let callInstructions: { base: string; notes: string[] } | null = null;
+  let callTools: ReadonlyArray<RealtimeFunctionTool> = [];
   let playbackGain: GainNode | null = null;
   let nextPlayTime = 0;
   const playbackSources: AudioBufferSourceNode[] = [];
@@ -679,7 +711,9 @@ export function createVoiceSession(
       void audioContext.resume();
       playbackGain ??= (() => {
         const gain = audioContext!.createGain();
-        gain.connect(audioContext!.destination);
+        gain.connect(
+          options.realtimeCall?.playbackDestination?.(audioContext!) ?? audioContext!.destination,
+        );
         if (callbacks.onLevels !== undefined) {
           const dest = audioContext!.createMediaStreamDestination();
           gain.connect(dest);
@@ -731,7 +765,7 @@ export function createVoiceSession(
       REALTIME_PCM_SAMPLE_RATE,
     );
     captureProcessor.onaudioprocess = (event) => {
-      if (stopped || !configured || !sendMicrophoneAudio) return;
+      if (stopped || !configured || !sendMicrophoneAudio || userMuted) return;
       let samples = event.inputBuffer.getChannelData(0);
       if (audioContext !== null && audioContext.sampleRate !== REALTIME_PCM_SAMPLE_RATE) {
         samples = captureResampler?.process(samples) ?? samples;
@@ -936,7 +970,9 @@ export function createVoiceSession(
     // Instructed, not bare. Left to itself this response opened with the same
     // acknowledgement the model had just said before the tool call — audible
     // twice, even though the transcript deduplicated the second copy.
-    sendResponseRequest(buildToolReplyInstructions());
+    sendResponseRequest(
+      options.realtimeCall?.toolReplyInstructions ?? buildToolReplyInstructions(),
+    );
   };
 
   /**
@@ -1005,7 +1041,9 @@ export function createVoiceSession(
     // events are merged into one utterance instead of talking over each other.
     if (pendingReplyRequested) {
       pendingReplyRequested = false;
-      sendResponseRequest(buildToolReplyInstructions());
+      sendResponseRequest(
+        options.realtimeCall?.toolReplyInstructions ?? buildToolReplyInstructions(),
+      );
       return;
     }
     if (pendingAnnouncements.length > 0) {
@@ -1306,11 +1344,11 @@ export function createVoiceSession(
     // `enabled: true`, which is a different thing to anything reading track
     // state, and would break the moment the graph changed.
     for (const track of micStream?.getAudioTracks() ?? []) {
-      track.enabled = enabled;
+      track.enabled = enabled && !userMuted;
     }
     if (sentStream !== null && sentStream !== micStream) {
       for (const track of sentStream.getAudioTracks()) {
-        track.enabled = enabled;
+        track.enabled = enabled && !userMuted;
       }
     }
   };
@@ -1564,6 +1602,27 @@ export function createVoiceSession(
     }
 
     return (await response.json()) as RealtimeTokenResponse;
+  };
+
+  const callInstructionsText = () =>
+    callInstructions === null
+      ? ""
+      : [callInstructions.base, ...callInstructions.notes].join("\n").slice(0, 24_000);
+
+  /** An agent call's start: Grok Voice over a WebSocket, with the call's own instructions. */
+  const startCall = async (
+    call: NonNullable<VoiceSessionOptions["realtimeCall"]>,
+  ): Promise<RealtimeTokenResponse> => {
+    const started = await call.start();
+    callInstructions = { base: started.instructions, notes: [] };
+    callTools = started.tools;
+    return {
+      value: started.value,
+      model: started.model,
+      voice: started.voice,
+      provider: "xai",
+      transport: "websocket",
+    };
   };
 
   const handleToolCall = async (callId: string, name: string, argumentsJson: string) => {
@@ -1877,6 +1936,9 @@ export function createVoiceSession(
             ...(options.recentHistory !== undefined
               ? { recentHistory: options.recentHistory }
               : {}),
+            ...(callInstructions !== null
+              ? { call: { instructions: callInstructionsText(), tools: callTools } }
+              : {}),
           }) as unknown as Record<string, unknown>,
         );
         configureTimer = setTimeout(openMicrophone, SESSION_CONFIGURE_TIMEOUT_MS);
@@ -1910,7 +1972,9 @@ export function createVoiceSession(
     setState("connecting");
 
     try {
-      const token = await fetchToken();
+      const token = options.realtimeCall
+        ? await startCall(options.realtimeCall)
+        : await fetchToken();
       if (stopped) return;
       voiceProvider = token.provider ?? (token.transport === "websocket" ? "xai" : "openai");
       callbacks.onSessionReady?.({ model: token.model, voice: token.voice });
@@ -2266,6 +2330,19 @@ export function createVoiceSession(
       // Cancelling clears the output buffer, which may not emit a stop event.
       if (isHalfDuplex() && configured) setMicrophoneEnabled(true);
       if (state !== "error") setState("listening");
+    },
+    setMuted: (next: boolean) => {
+      if (userMuted === next) return;
+      userMuted = next;
+      // Grok's PCM path is gated in `startPcmCapture`; WebRTC mutes its tracks.
+      if (voiceProvider !== "xai") setMicrophoneEnabled(sendMicrophoneAudio);
+    },
+    // Agent calls only: the session's instructions grow by the note, so the
+    // voice knows it from now on without saying anything.
+    instruct: (text: string) => {
+      if (callInstructions === null || !configured) return;
+      callInstructions.notes = [...callInstructions.notes, text.trim()].slice(-20);
+      send({ type: "session.update", session: { instructions: callInstructionsText() } });
     },
     // Returns whether the text was actually accepted. Callers used to treat
     // this as fire-and-forget, then mark the announcement delivered — and the

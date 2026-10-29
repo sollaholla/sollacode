@@ -291,6 +291,27 @@ describe("reasoning effort", () => {
 });
 
 describe("buildSessionUpdate", () => {
+  it("runs an agent call's own instructions and tools on Grok, not the orchestrator's", () => {
+    const tool = {
+      type: "function" as const,
+      name: "ask_your_chat",
+      description: "Hand it to your chat.",
+      parameters: { type: "object", properties: {} },
+    };
+    const update = buildSessionUpdate({
+      authority: "full",
+      confirmDestructiveActions: true,
+      language: "en",
+      model: "grok-voice-latest",
+      provider: "xai",
+      voice: "eve",
+      call: { instructions: "You are Gregg.", tools: [tool] },
+    });
+    expect(update.session.instructions).toBe("You are Gregg.");
+    expect(update.session.tools).toEqual([tool]);
+    expect(update.session.voice).toBe("eve");
+  });
+
   it("carries the tools and instructions for the authority", () => {
     const update = buildSessionUpdate({
       authority: "send",

@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ServerSettings, VmAgent } from "@t3tools/contracts";
+import { agentCallEngineFor } from "@t3tools/shared/agentCallVoice";
 import { Atom } from "effect/unstable/reactivity";
 import { useNavigate } from "@tanstack/react-router";
 import { PhoneIcon } from "lucide-react";
@@ -15,18 +16,30 @@ import { serverEnvironment } from "../../state/server";
 import { cn } from "../../lib/utils";
 import { ToolbarControl } from "../ui/toolbar-control";
 
-export const AGENT_CALL_NEEDS_KEY_HINT =
-  "Add an OpenAI key in Settings → Orchestrator to call agents";
+/** What to add before `agent` can be called: the key its voice's engine runs on. */
+export function agentCallNeedsKeyHint(
+  agent: Pick<VmAgent, "vmAgentId" | "avatarColor" | "voice"> | null,
+): string {
+  return agent !== null && agentCallEngineFor(agent) === "grok"
+    ? "Add an xAI key in Settings → Orchestrator to call agents with a Grok voice"
+    : "Add an OpenAI key in Settings → Orchestrator to call agents";
+}
 
 /**
- * Whether this host can run calls: they use GPT-Live with the OpenAI key from
- * Settings → Orchestrator.
+ * Whether this host can call `agent`: on GPT-Live with the OpenAI key from
+ * Settings → Orchestrator, or, for an agent given a Grok voice, on Grok Voice
+ * with the xAI key.
  */
-export function useAgentCallsAvailable(environmentId: EnvironmentId | null): boolean {
+export function useAgentCallsAvailable(
+  environmentId: EnvironmentId | null,
+  agent: Pick<VmAgent, "vmAgentId" | "avatarColor" | "voice"> | null,
+): boolean {
   const settings = useAtomValue(
     environmentId === null ? NO_SETTINGS_ATOM : serverEnvironment.settingsValueAtom(environmentId),
   );
-  return settings?.orchestrator.openAiApiKeyConfigured === true;
+  return agent !== null && agentCallEngineFor(agent) === "grok"
+    ? settings?.orchestrator.xaiApiKeyConfigured === true
+    : settings?.orchestrator.openAiApiKeyConfigured === true;
 }
 
 const NO_SETTINGS_ATOM = Atom.make<ServerSettings | null>(null);
@@ -43,7 +56,7 @@ export function AgentCallButton(props: {
 }) {
   const { agent, environmentId } = props;
   const calls = useAgentCallContext();
-  const available = useAgentCallsAvailable(environmentId);
+  const available = useAgentCallsAvailable(environmentId, agent);
   const hostCalls = useEnvironmentAgentCalls(environmentId);
   const navigate = useNavigate();
   if (calls === null) return null;
@@ -64,7 +77,7 @@ export function AgentCallButton(props: {
       ? describeAgentCallElsewhere(elsewhere, agent.name)
       : onThisCall || available
         ? label
-        : AGENT_CALL_NEEDS_KEY_HINT;
+        : agentCallNeedsKeyHint(agent);
   return (
     <ToolbarControl
       type="button"

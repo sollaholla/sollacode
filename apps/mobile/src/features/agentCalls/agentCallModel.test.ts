@@ -722,10 +722,19 @@ describe("createAgentCallKeySet", () => {
 });
 
 describe("agentCallBlockedReason", () => {
+  const keys = (openAi: boolean | undefined, xai: boolean | undefined) => ({
+    openAiApiKeyConfigured: openAi,
+    xaiApiKeyConfigured: xai,
+  });
   it("explains a missing OpenAI key, and does not block while settings are unknown", () => {
-    expect(agentCallBlockedReason(false)).toContain("OpenAI key");
-    expect(agentCallBlockedReason(true)).toBeNull();
-    expect(agentCallBlockedReason(undefined)).toBeNull();
+    expect(agentCallBlockedReason(keys(false, true), "gpt-live")).toContain("OpenAI key");
+    expect(agentCallBlockedReason(keys(true, false), "gpt-live")).toBeNull();
+    expect(agentCallBlockedReason(keys(undefined, undefined), "gpt-live")).toBeNull();
+  });
+
+  it("asks for the xAI key for an agent with a Grok voice", () => {
+    expect(agentCallBlockedReason(keys(true, false), "grok")).toContain("xAI key");
+    expect(agentCallBlockedReason(keys(false, true), "grok")).toBeNull();
   });
 });
 

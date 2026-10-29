@@ -11,6 +11,7 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { OPENAI_LIVE_VOICES } from "./orchestratorLive.ts";
+import { XAI_REALTIME_VOICES } from "./orchestratorVoice.ts";
 
 /**
  * Reserved project that owns every agent's dedicated chat thread. Like the
@@ -243,10 +244,13 @@ export const VmAgentRef = Schema.Struct({
 });
 export type VmAgentRef = Schema.Codec.Encoded<typeof VmAgentRef>;
 
-/** Chooses the voice an agent speaks with on calls; null goes back to automatic. */
+/**
+ * Chooses the voice an agent speaks with on calls; null goes back to
+ * automatic. A Grok voice puts its calls on Grok Voice.
+ */
 export const VmAgentVoiceSetInput = Schema.Struct({
   vmAgentId: VmAgentId,
-  voice: Schema.NullOr(Schema.Literals(OPENAI_LIVE_VOICES)),
+  voice: Schema.NullOr(Schema.Literals([...OPENAI_LIVE_VOICES, ...XAI_REALTIME_VOICES])),
 });
 export type VmAgentVoiceSetInput = Schema.Codec.Encoded<typeof VmAgentVoiceSetInput>;
 

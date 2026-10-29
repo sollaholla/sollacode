@@ -2,8 +2,10 @@ import Mime from "@effect/platform-node/Mime";
 import {
   AGENT_CALL_DELEGATION_PATH,
   AGENT_CALL_SESSION_HEARTBEAT_PATH,
+  AGENT_CALL_GROK_SESSION_PATH,
   AGENT_CALL_SESSION_PATH,
   AGENT_CALL_SESSION_RELEASE_PATH,
+  AgentCallGrokSessionStartInput,
   AgentCallSessionStartInput,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -541,6 +543,32 @@ export const agentCallRouteLayer = Layer.mergeAll(
       );
       return yield* service
         .start(input, deviceLabel)
+        .pipe(
+          Effect.map((result) =>
+            HttpServerResponse.jsonUnsafe(result, { headers: { "cache-control": "no-store" } }),
+          ),
+        );
+    }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
+  ),
+  HttpRouter.add(
+    "POST",
+    AGENT_CALL_GROK_SESSION_PATH,
+    Effect.gen(function* () {
+      const session = yield* authenticateRawRouteWithScope(AuthVmOperateScope);
+      const service = yield* AgentCallLive;
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const input = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(AgentCallGrokSessionStartInput)),
+        Effect.mapError(
+          () => new OrchestratorLiveError({ status: 400, detail: "A valid call is required." }),
+        ),
+      );
+      const deviceLabel = yield* sessionDeviceLabel(
+        yield* SessionStore.SessionStore,
+        session.sessionId,
+      );
+      return yield* service
+        .startGrok(input, deviceLabel)
         .pipe(
           Effect.map((result) =>
             HttpServerResponse.jsonUnsafe(result, { headers: { "cache-control": "no-store" } }),

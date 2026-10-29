@@ -16,6 +16,7 @@ import {
   type AgentCallNativeMessage,
   type AgentCallStatus,
 } from "@t3tools/contracts";
+import type { AgentCallEngine } from "@t3tools/shared/agentCallVoice";
 import { agentCallTransferTarget } from "@t3tools/shared/agentCallBridge";
 
 /** How long "Call ended" stays on screen after a call this phone held ends. */
@@ -508,12 +509,23 @@ export function startRingingHaptics(
 }
 
 /**
- * Why the phone can't call agents on a host, or null when it can (or can't
+ * Why the phone can't call an agent on a host, or null when it can (or can't
  * tell yet; the host then answers for itself). Calls run on GPT-Live with the
- * OpenAI key saved on the host.
+ * OpenAI key saved on the host, or, for an agent given a Grok voice, on Grok
+ * Voice with the xAI key.
  */
-export function agentCallBlockedReason(openAiApiKeyConfigured: boolean | undefined): string | null {
-  return openAiApiKeyConfigured === false
+export function agentCallBlockedReason(
+  keys: {
+    readonly openAiApiKeyConfigured: boolean | undefined;
+    readonly xaiApiKeyConfigured: boolean | undefined;
+  },
+  engine: AgentCallEngine,
+): string | null {
+  if (engine === "grok")
+    return keys.xaiApiKeyConfigured === false
+      ? "Add an xAI key in Settings → Orchestrator on your computer to call agents with a Grok voice."
+      : null;
+  return keys.openAiApiKeyConfigured === false
     ? "Add an OpenAI key in Settings → Orchestrator on your computer to call agents."
     : null;
 }

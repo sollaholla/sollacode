@@ -169,7 +169,7 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("~/components/agentCall/AgentCallButton", () => ({
-  AGENT_CALL_NEEDS_KEY_HINT: "Add an OpenAI key",
+  agentCallNeedsKeyHint: () => "Add an OpenAI key",
   useAgentCallsAvailable: () => true,
 }));
 

@@ -27,6 +27,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -888,8 +889,15 @@ const gregg: VmAgent = {
 };
 
 function fixture(
-  options: { readonly liveStatus?: number; readonly voice?: VmAgent["voice"] } = {},
+  options: {
+    readonly liveStatus?: number;
+    readonly voice?: VmAgent["voice"];
+    /** Whether an xAI key is saved, for Grok calls. */
+    readonly xaiKey?: boolean;
+  } = {},
 ) {
+  /** Every upstream URL called, in order. */
+  const urls: string[] = [];
   const requests: Array<{ session: { instructions: string; audio: unknown } }> = [];
   const dispatched: OrchestrationCommand[] = [];
   /** When set, every dispatch signals `entered` and waits for `release`. */
@@ -936,7 +944,10 @@ function fixture(
     orchestrator: { ...DEFAULT_SERVER_SETTINGS.orchestrator, voice: "alloy" },
   };
   const fetch: typeof globalThis.fetch = Object.assign(
-    async (_url: string | URL | Request, init?: RequestInit) => {
+    async (url: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(url));
+      if (String(url).startsWith("https://api.x.ai/"))
+        return Response.json({ value: "xai-ephemeral", expires_at: 1_800_000_000 });
       requests.push(await decodeFetchBody(init));
       return options.liveStatus
         ? new Response("upstream", { status: options.liveStatus })
@@ -954,7 +965,9 @@ function fixture(
         Effect.succeed(
           name === "orchestrator-openai-api-key"
             ? Option.some(new TextEncoder().encode("sk-fixture"))
-            : Option.none(),
+            : name === "orchestrator-xai-api-key" && options.xaiKey
+              ? Option.some(new TextEncoder().encode("xai-fixture"))
+              : Option.none(),
         ),
     }),
     Layer.mock(VmAgentStore)({
@@ -966,6 +979,7 @@ function fixture(
   );
   return {
     requests,
+    urls,
     dispatched,
     setThread: (next: Partial<AgentCallThreadView["thread"]>) => {
       thread = { ...thread, ...next };
@@ -1096,8 +1110,11 @@ it.effect("each agent speaks with its own voice, chosen or from its character", 
       [null, "marin"],
       ["willow", "willow"],
       ["a-voice-gpt-live-dropped", "marin"],
+      // A device that started GPT-Live before the agent got a Grok voice.
+      ["eve", "marin"],
     ] as const) {
-      const f = fixture({ voice });
+      // An xAI key is saved, so the Grok-voiced agent still rings.
+      const f = fixture({ voice, xaiKey: true });
       const events = yield* PubSub.unbounded<OrchestrationEvent>();
       yield* Effect.gen(function* () {
         const calls = yield* AgentCalls;
@@ -1117,6 +1134,82 @@ it.effect("each agent speaks with its own voice, chosen or from its character", 
     }
   }).pipe(Effect.scoped),
 );
+
+it.effect("a Grok-voiced agent's call opens on Grok Voice with a short-lived xAI secret", () => {
+  const f = fixture({ voice: "eve", xaiKey: true });
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const rung = yield* calls.ring({
+        vmAgentId,
+        reason: "blocker",
+        topic: "Sign in to Google.",
+        key: "grok:one",
+      });
+      if (rung.status !== "ringing") return assert.fail(rung.status);
+      const result = yield* live.startGrok(
+        { callId: rung.call.callId, history: [{ role: "user", text: "Earlier." }] },
+        "Sol's iPhone",
+      );
+      assert.match(result.sessionId, /^grok-call-/u);
+      assert.strictEqual(result.clientSecret, "xai-ephemeral");
+      assert.strictEqual(result.voice, "eve");
+      assert.strictEqual(result.model, "grok-voice-latest");
+      assert.strictEqual(result.agentName, "Scout");
+      assert.include(result.instructions, "You are Scout");
+      assert.include(result.instructions, "Call ask_your_chat for every request");
+      assert.include(result.instructions, "because: Sign in to Google.");
+      assert.include(result.instructions, "user: Earlier.");
+      // Only the ephemeral secret leaves the host; GPT-Live was never asked.
+      assert.notInclude(JSON.stringify(result), "xai-fixture");
+      assert.deepStrictEqual(f.urls, ["https://api.x.ai/v1/realtime/client_secrets"]);
+      const answered = Option.getOrUndefined(yield* calls.get(rung.call.callId));
+      assert.strictEqual(answered?.status, "active");
+      assert.strictEqual(answered?.answeredBy, "Sol's iPhone");
+      // The rest of the call is the same as GPT-Live's: the lease, then release.
+      yield* live.heartbeat(result.sessionId);
+      yield* live.release(result.sessionId);
+      assert.strictEqual(
+        Option.getOrUndefined(yield* calls.get(rung.call.callId))?.status,
+        "ended",
+      );
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("a Grok call without an xAI key fails the call and says which key", () => {
+  const f = fixture({ voice: "eve" });
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const placed = yield* calls
+        .place({ vmAgentId, deviceLabel: "Sol's iPhone" })
+        .pipe(Effect.flip);
+      assert.include(placed.detail, "xAI key");
+      const rung = yield* calls.ring({
+        vmAgentId,
+        reason: "blocker",
+        topic: null,
+        key: "grok:nokey",
+      });
+      // Nothing rings for a call that could never connect.
+      assert.strictEqual(rung.status, "disabled");
+      const error = yield* Effect.flip(
+        live.startGrok({ callId: AgentCallId.make("missing"), history: [] }, "Sol's iPhone"),
+      );
+      assert.strictEqual(error.status, 409);
+      assert.deepStrictEqual(f.urls, []);
+    }).pipe(
+      Effect.provide(f.layer(events)),
+      // No XAI_API_KEY from whoever runs the tests.
+      Effect.provideService(HostProcessEnvironment, {}),
+    );
+  }).pipe(Effect.scoped);
+});
 
 it.effect("answering claims the call once and opens GPT-Live as the agent", () => {
   const f = fixture();
