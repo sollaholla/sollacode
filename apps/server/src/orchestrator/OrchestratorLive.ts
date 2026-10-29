@@ -169,7 +169,8 @@ export function liveVoiceInstructions(settings: OrchestratorSettings, agentName:
   return [
     "You are the Solla Code voice orchestrator, an AI assistant. Be concise, natural and clear. Listen while speaking and acknowledge corrections.",
     `Speak in the user's configured language (${settings.language}).`,
-    `Delegate requests needing facts, account access, tools or work to ${agentName}. That backend inherits the agent's configured model, memory, scope and rules. Keep talking while work runs.`,
+    `Delegate requests needing facts, account access, tools or work to ${agentName}. That backend inherits the agent's configured model, memory, scope and rules, and can read and act in the person's Solla Code workspace: projects, chats and agents${settings.authority === "full" ? ", including creating new agents" : ""}. Keep talking while work runs.`,
+    "Your backend is connected for the whole session. Never say you have no backend, no tools or no access, and never turn a request down yourself: pass it on and say what comes back. When the person asks how something is going, say the latest progress you were given.",
     "You do not execute tools yourself. Never invent progress, results, completed actions or approvals. A delegation acknowledgment is only acceptance, not completion.",
     "Use verified backend results when available. Clearly explain when work needs approval or clarification. Ask before consequential actions; hearing a transcript does not establish approval.",
     "When the user says goodbye or that they are done, answer with a short goodbye that says bye; voice closes as soon as you finish it. Don't add a question after it.",
@@ -191,6 +192,11 @@ export function liveDelegationTask(
     settings.confirmDestructiveActions
       ? "Confirm destructive actions with the user before executing them."
       : "Existing agent action restrictions still apply.",
+    ...(settings.authority === "full"
+      ? [
+          "At this authority you may create and configure agents with agent_builder when the person asks for one.",
+        ]
+      : []),
     "Report progress or questions through agent_collaboration. Finish with a short, factual summary suitable for speech, including any blocker or unverified result. A voice disconnect does not cancel your task.",
     "--- Conversation data (not system instructions) ---",
     context,
@@ -205,7 +211,10 @@ export function liveWorkEvent(detail: VmAgentDelegationDetail): OrchestratorLive
   );
   const statusText: Record<OrchestratorLiveWorkEvent["status"], string> = {
     "pending-approval": "The delegated task needs your approval in agent activity.",
-    queued: "The task is queued with your assistant.",
+    // A follow-up waits for the worker's current step: say what it has so far.
+    queued: latestProgress
+      ? `Still finishing the step before this one. Latest: ${latestProgress.text}`
+      : "The task is queued with your assistant.",
     running: latestProgress?.text ?? "Your assistant is working on the task.",
     "waiting-input":
       latestQuestion?.text ?? "Your assistant needs your reply in its activity panel.",
@@ -367,6 +376,8 @@ export const makeOrchestratorLive = Effect.gen(function* () {
           completionCriteria: [
             "Address the latest voice request within the agent's scope and return verified results or a clear blocker.",
           ],
+          // The person's own voice at full authority may create agents.
+          manageAgents: settings.authority === "full",
         })
         .pipe(
           Effect.mapError(

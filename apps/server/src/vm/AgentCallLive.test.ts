@@ -52,6 +52,7 @@ import {
 import { ServerSettingsService } from "../serverSettings.ts";
 import {
   agentCallInstructions,
+  agentCallRole,
   agentCallWorkEvent,
   extractCallDelta,
   forwardedCallMessage,
@@ -260,7 +261,7 @@ it("builds the call persona from the agent and why it called", () => {
     topic: "The deploy is blocked on a login",
   });
   assert.include(incoming, "You are Scout, one of the person's Solla Code agents");
-  assert.include(incoming, "Your job: Watch the deploy dashboards.");
+  assert.include(incoming, "Your role: Watch the deploy dashboards.");
   assert.include(incoming, "Speak English.");
   assert.include(incoming, "hearing a transcript is not approval");
   assert.include(
@@ -274,12 +275,57 @@ it("builds the call persona from the agent and why it called", () => {
     direction: "outgoing",
     topic: null,
   });
-  assert.include(outgoing, "Your job: Triage.\n");
+  assert.include(outgoing, "Your role: Triage.\n");
   assert.include(outgoing, "Speak French.");
   assert.notInclude(outgoing, "You called the person");
   assert.include(outgoing, "The person called you. Pick up");
   assert.notInclude(outgoing, "transfer");
   assert.notInclude(outgoing, "bring people onto this call");
+});
+
+it("gives the voice the agent's role, not the rules its chat works by", () => {
+  // The Personal Assistant's purpose shape: a role, then its operating rules.
+  // With the rules, its voice turned an app request down itself and said it
+  // had no chat to use, instead of delegating.
+  const purpose = [
+    "A personal chief of staff. Runs personal life: triages email, tracks commitments.",
+    "SCOPE: personal and administrative life only. Not engineering (@engineer).",
+    "READ FREELY, ACT ONLY WITH APPROVAL. Every outward action first requires request_action_approval.",
+  ].join("\n\n");
+  assert.strictEqual(
+    agentCallRole(purpose),
+    "A personal chief of staff. Runs personal life: triages email, tracks commitments.",
+  );
+  const instructions = agentCallInstructions({
+    name: "Personal Assistant",
+    purpose,
+    language: "en",
+    direction: "outgoing",
+    topic: null,
+  });
+  assert.notInclude(instructions, "SCOPE");
+  assert.notInclude(instructions, "request_action_approval");
+  assert.include(instructions, "Never say you have no chat, no tools or no access");
+  assert.include(instructions, "never turn a request down yourself");
+  assert.include(instructions, "including requests that seem outside your role");
+  const grok = agentCallInstructions({
+    name: "Personal Assistant",
+    purpose,
+    language: "en",
+    direction: "outgoing",
+    topic: null,
+    engine: "grok",
+  });
+  assert.include(grok, "Never say you have no chat, no tools or no access");
+  assert.include(grok, "including requests that seem outside your role");
+
+  // A long opening paragraph ends on a whole sentence within the bound.
+  const long = `${"Keeps the books. ".repeat(40)}Then more.`;
+  const role = agentCallRole(long);
+  assert.isAtMost(role.length, 400);
+  assert.match(role, /books\.$/u);
+  // One unbroken run of words still ends on a whole word.
+  assert.match(agentCallRole("word ".repeat(200)), /word…$/u);
 });
 
 it("leaves who the voice can transfer to or add to the device holding the call", () => {
@@ -1159,7 +1205,7 @@ it.effect("a Grok-voiced agent's call opens on Grok Voice with a short-lived xAI
       assert.strictEqual(result.model, "grok-voice-latest");
       assert.strictEqual(result.agentName, "Scout");
       assert.include(result.instructions, "You are Scout");
-      assert.include(result.instructions, "Call ask_your_chat for every request");
+      assert.include(result.instructions, "Call ask_your_chat for everything but small talk");
       assert.include(result.instructions, "because: Sign in to Google.");
       assert.include(result.instructions, "user: Earlier.");
       // Only the ephemeral secret leaves the host; GPT-Live was never asked.

@@ -53,6 +53,13 @@ export type CollaborationActor =
   | { readonly kind: "agent"; readonly vmAgentId: VmAgentId }
   | { readonly kind: "worker"; readonly delegationId: VmAgentDelegationId };
 
+/**
+ * The worker may create and configure agents (the agent_builder tool). Only
+ * the server grants it, for the orchestrator's voice at full authority:
+ * agents can never request it through agent_collaboration.
+ */
+export const VM_AGENT_MANAGE_AGENTS_CAPABILITY = "agents.manage";
+
 export interface DelegateVmAgentWorkInput {
   readonly target: VmAgentDelegation["target"];
   readonly title: string;
@@ -60,6 +67,8 @@ export interface DelegateVmAgentWorkInput {
   readonly completionCriteria?: ReadonlyArray<string> | undefined;
   readonly requestedCapabilities?: ReadonlyArray<string> | undefined;
   readonly idempotencyKey: string;
+  /** Server-only: grants the worker {@link VM_AGENT_MANAGE_AGENTS_CAPABILITY}. */
+  readonly manageAgents?: boolean | undefined;
 }
 
 export interface SendVmAgentCollaborationMessageInput {
@@ -697,7 +706,10 @@ export const make = Effect.gen(function* () {
       title: input.title,
       task: input.task,
       completionCriteria: input.completionCriteria ?? [],
-      requestedCapabilities: input.requestedCapabilities ?? [],
+      requestedCapabilities: [
+        ...(input.requestedCapabilities ?? []),
+        ...(input.manageAgents === true ? [VM_AGENT_MANAGE_AGENTS_CAPABILITY] : []),
+      ],
       status: "queued",
       followupCount: 0,
       messageCount: 1,

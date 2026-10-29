@@ -311,6 +311,11 @@ said. The agent can put you through to another agent, and you can bring other ag
 onto the call; see [Transferring a call](#transferring-a-call) and
 [Adding others to a call](#adding-others-to-a-call).
 
+The voice on the call is a go-between: what you ask goes to the agent's chat, which does the work
+with its tools and rules and decides what is in its role, and the voice says what the chat answers.
+The voice only knows the agent's role (the opening paragraph of its purpose), not the rest of its
+rules, so it never turns a request down by itself.
+
 Say goodbye to end a call by voice: once you say bye (or "that's all", "hang up") and the agent
 answers with its own goodbye, the call hangs up as soon as that goodbye finishes. A connected call
 ending, from either side, plays a short hang-up tone (off when sound cues are off in Settings).

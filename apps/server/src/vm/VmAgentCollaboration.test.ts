@@ -6,6 +6,7 @@ import {
   type VmAgentCollaborationAgentSummary,
   type VmAgentDelegation,
   type VmAgentLegacyDelegationSummary,
+  VmAgent,
   VmAgentDelegationId,
   VmAgentDelegationListItem,
   VmAgentId,
@@ -37,6 +38,7 @@ import {
   delegationListItem,
   delegationSummary,
   VM_AGENT_COLLABORATION_SNAPSHOT_MAX_BYTES,
+  VM_AGENT_MANAGE_AGENTS_CAPABILITY,
 } from "./VmAgentCollaboration.ts";
 
 const iso = "2026-08-24T16:00:00.000Z";
@@ -151,6 +153,66 @@ for (const status of ["queued", "pending-approval"] as const) {
     }).pipe(Effect.provide(VmAgentCollaborationLive.pipe(Layer.provide(dependencies))));
   });
 }
+
+const decodeVmAgent = Schema.decodeUnknownSync(VmAgent);
+
+it.effect("grants agent management only when the server asks for it", () => {
+  const source = decodeVmAgent({
+    vmAgentId: "voice-backend",
+    name: "Personal Assistant",
+    handle: "personal-assistant",
+    purpose: "Personal administration",
+    icon: null,
+    vmId: "vm-host",
+    threadId: null,
+    status: "running",
+    controlMode: "agent",
+    guestIp: null,
+    lastError: null,
+    createdAt: iso,
+    updatedAt: iso,
+  });
+  const created: VmAgentDelegation[] = [];
+  const dependencies = Layer.mergeAll(
+    Layer.mock(VmAgentStore)({ getById: () => Effect.succeed(Option.some(source)) }),
+    Layer.mock(ProjectionSnapshotQuery)({}),
+    Layer.mock(OrchestrationEngineService)({}),
+    Layer.mock(VmAgentCollaborationStore)({
+      getByIdempotencyKey: () => Effect.succeed(Option.none()),
+      countActiveForRoot: () => Effect.succeed(0),
+      create: (input) =>
+        Effect.sync(() => {
+          created.push(input.delegation);
+          return input.delegation;
+        }),
+    }),
+  );
+  const request = (overrides: { manageAgents?: boolean; requestedCapabilities?: string[] }) => ({
+    target: { kind: "ephemeral" as const, label: "GPT-Live assistant" },
+    title: "GPT-Live voice request",
+    task: "Make me an agent",
+    idempotencyKey: `voice:${created.length}`,
+    ...overrides,
+  });
+  return Effect.gen(function* () {
+    const service = yield* VmAgentCollaboration;
+    yield* service.delegate(source.vmAgentId, request({ manageAgents: true }));
+    yield* service.delegate(source.vmAgentId, request({}));
+    assert.deepStrictEqual(
+      created.map((delegation) => delegation.requestedCapabilities),
+      [[VM_AGENT_MANAGE_AGENTS_CAPABILITY], []],
+    );
+    // An agent asking through agent_collaboration is refused.
+    const asked = yield* service
+      .delegate(
+        source.vmAgentId,
+        request({ requestedCapabilities: [VM_AGENT_MANAGE_AGENTS_CAPABILITY] }),
+      )
+      .pipe(Effect.result);
+    assert.strictEqual(asked._tag, "Failure");
+    assert.strictEqual(created.length, 2);
+  }).pipe(Effect.provide(VmAgentCollaborationLive.pipe(Layer.provide(dependencies))));
+});
 
 it("bounds delegation snapshot fields and omits full work payloads", () => {
   const delegation = makeDelegation();

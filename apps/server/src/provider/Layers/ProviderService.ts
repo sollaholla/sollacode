@@ -84,6 +84,9 @@ import { withPromotedChatContext, withSideChatAgentContext } from "../sideChatCo
 import { withVmAgentContext } from "../vmAgentContext.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../../persistence/Services/VmAgents.ts";
+import { VmAgentCollaborationStore } from "../../persistence/Services/VmAgentCollaborations.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import { VM_AGENT_MANAGE_AGENTS_CAPABILITY } from "../../vm/VmAgentCollaboration.ts";
 import { resolveOwningVmAgent } from "../../vm/owningAgent.ts";
 import { boundVmAgentClaudeRules, resolveVmAgentRulesPath } from "../../vm/VmAgentRules.ts";
 const isModelSelection = Schema.is(ModelSelection);
@@ -444,6 +447,28 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       ),
     );
 
+  /**
+   * Whether `threadId` is a delegated worker granted agent management, while
+   * the orchestrator still has full authority (lowering it takes the tool
+   * from workers already started).
+   */
+  const isAgentManagingWorker = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      if (!threadId.startsWith("delegation-worker:")) return false;
+      const [store, settings] = yield* Effect.all([
+        Effect.serviceOption(VmAgentCollaborationStore),
+        Effect.serviceOption(ServerSettingsService),
+      ]);
+      if (Option.isNone(store) || Option.isNone(settings)) return false;
+      const { orchestrator } = yield* settings.value.getSettings;
+      if (orchestrator.authority !== "full") return false;
+      const delegation = yield* store.value.getByWorkerThreadId(threadId);
+      return (
+        Option.isSome(delegation) &&
+        delegation.value.requestedCapabilities.includes(VM_AGENT_MANAGE_AGENTS_CAPABILITY)
+      );
+    }).pipe(Effect.orElseSucceed(() => false));
+
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
       const previous = McpProviderSession.readMcpProviderSession(threadId);
@@ -475,12 +500,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             Effect.orElseSucceed(() => false),
           ),
       });
-      // Agent Builder chats are identified by their thread-id prefix; only they
-      // get the agent-builder capability, so the tool that creates and deletes
-      // whole agents is unreachable from every other chat.
+      // Agent Builder chats are identified by their thread-id prefix; they get
+      // the agent-builder capability, so the tool that creates and deletes
+      // whole agents is unreachable from other chats. The one exception is a
+      // worker the orchestrator's voice started at full authority: the person
+      // asked it, by voice, for an agent.
+      const managesAgents =
+        isAgentBuilderThreadId(threadId) || (yield* isAgentManagingWorker(threadId));
       const extraCapabilities = [
         ...(isVmAgent ? ["vm" as const] : []),
-        ...(isAgentBuilderThreadId(threadId) ? ["agent-builder" as const] : []),
+        ...(managesAgents ? ["agent-builder" as const] : []),
       ];
       const credential = yield* McpSessionRegistry.issueActiveMcpCredential({
         threadId,

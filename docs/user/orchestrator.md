@@ -833,6 +833,9 @@ worker, repeated network requests are deduplicated, and results come from durabl
 Progress is kept separate from completion. Consequential external actions still require approval in
 Solla; speaking a request or receiving an acknowledgment does not bypass those approvals.
 At **Read only** authority, GPT-Live can converse but cannot create delegated tasks.
+At **Full** authority, the worker can also create and configure agents, so "make me an agent that
+…" by voice works; at **Send** it cannot. While a follow-up waits for the worker to finish its
+current step, GPT-Live is told the worker's latest progress rather than only that it is queued.
 
 Stopping voice immediately disables the microphone. The connection briefly remains open to receive
 OpenAI's final usage receipt. Delegated work survives a voice disconnect and remains visible in agent

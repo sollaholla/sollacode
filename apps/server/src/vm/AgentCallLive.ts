@@ -100,6 +100,29 @@ const asSentence = (text: string) => {
   return /[.!?]$/u.test(trimmed) ? trimmed : `${trimmed}.`;
 };
 
+/** The longest role the voice is given; the rest of a purpose is the chat's rules. */
+const ROLE_SUMMARY_MAX_CHARS = 400;
+
+/**
+ * Who the agent is, for the voice: the purpose's opening paragraph, bounded.
+ * The rest of a purpose is how the agent works (scope, approvals, what it
+ * must not touch). Those rules are for its chat, which applies them with its
+ * tools; given to the voice, they made it refuse requests itself, saying it
+ * had no chat to use, instead of passing them on.
+ */
+export function agentCallRole(purpose: string): string {
+  const opening =
+    purpose
+      .trim()
+      .split(/\n\s*\n/u)[0]
+      ?.replace(/\s+/gu, " ")
+      .trim() ?? "";
+  if (opening.length <= ROLE_SUMMARY_MAX_CHARS) return opening;
+  const cut = opening.slice(0, ROLE_SUMMARY_MAX_CHARS);
+  const sentenceEnd = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+  return sentenceEnd > 0 ? cut.slice(0, sentenceEnd + 1) : `${cut.slice(0, cut.lastIndexOf(" "))}…`;
+}
+
 /**
  * GPT-Live `instructions` for a call with one agent. Immutable once the call
  * starts. Who the voice can transfer to or add, and the phrases that do it,
@@ -116,11 +139,12 @@ export function agentCallInstructions(input: {
   readonly engine?: AgentCallEngine;
 }): string {
   const lines = [
-    `You are ${input.name}, one of the person's Solla Code agents, on a live phone call with them. Your job: ${asSentence(input.purpose)}`,
+    `You are ${input.name}, one of the person's Solla Code agents, on a live phone call with them. Your role: ${asSentence(agentCallRole(input.purpose))}`,
     "Talk like a real phone call: warm, natural, brief turns, no lists or markdown, no reading out code or URLs verbatim.",
+    "Your chat is you at work: your tools, your memory, and access to the person's Solla Code workspace, including their projects, chats and agents. It is connected for the whole call. Never say you have no chat, no tools or no access, and never turn a request down yourself: whether something is yours to do is your chat's call, so pass it on and say what it answers.",
     input.engine === "grok"
-      ? `You can't do work or look things up yourself — your real work happens in your chat. Call ${AGENT_CALL_GROK_DELEGATE_TOOL} for every request that needs action, information, files, tools or a decision about work; it passes what the person said to your chat and returns at once. Say one short line that you're on it, then keep talking naturally while it runs, but never invent progress, results or approvals. Your chat's replies reach you as updates: say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person, then call ${AGENT_CALL_GROK_DELEGATE_TOOL} again once they answer.`
-      : "You can't do work or look things up yourself — your real work happens in your chat. Delegate every request that needs action, information, files, tools or a decision about work; the delegation carries what the person said to your chat. Keep talking naturally while it runs, but never invent progress, results or approvals. When results arrive, say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person and delegate their answer.",
+      ? `You can't do work or look things up yourself; your real work happens in your chat. Call ${AGENT_CALL_GROK_DELEGATE_TOOL} for everything but small talk: any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role. It passes what the person said to your chat and returns at once. Say one short line that you're on it, then keep talking naturally while it runs, but never invent progress, results or approvals. Your chat's replies reach you as updates: say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person, then call ${AGENT_CALL_GROK_DELEGATE_TOOL} again once they answer.`
+      : "You can't do work or look things up yourself; your real work happens in your chat. Delegate everything but small talk: any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role. The delegation carries what the person said to your chat. Keep talking naturally while it runs, but never invent progress, results or approvals. When results arrive, say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person and delegate their answer.",
     "Read back consequential actions before delegating them; hearing a transcript is not approval for an external action (approvals still happen in Solla).",
     "When the person says goodbye or asks you to hang up, answer with a short goodbye that says bye; the call hangs up as soon as you finish it. Don't add a question after it.",
     `Speak ${languageName(input.language)}.`,

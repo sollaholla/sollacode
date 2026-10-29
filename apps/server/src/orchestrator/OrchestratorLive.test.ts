@@ -25,6 +25,8 @@ import { VmAgentTaskScheduler } from "../vm/VmAgentTaskScheduler.ts";
 import {
   createGptLiveSession,
   liveDelegationTask,
+  liveVoiceInstructions,
+  liveWorkEvent,
   withFinalLineBreak,
   makeOrchestratorLive,
   OrchestratorLiveLayer,
@@ -102,6 +104,7 @@ function fixture() {
   let delegates = 0;
   let messages = 0;
   let capturedTask = "";
+  let capturedManageAgents: boolean | undefined;
   const requests: unknown[] = [];
   const receipt = (): VmAgentCollaborationReceipt => ({
     operation: "delegate",
@@ -127,6 +130,7 @@ function fixture() {
           expect(input.target.kind).toBe("ephemeral");
           delegates++;
           capturedTask = input.task;
+          capturedManageAgents = input.manageAgents;
           return { receipt: receipt(), delegation: current.delegation };
         }),
       getDetail: () => Effect.sync(() => current),
@@ -161,6 +165,15 @@ function fixture() {
     },
     get task() {
       return capturedTask;
+    },
+    get manageAgents() {
+      return capturedManageAgents;
+    },
+    sendOnly: () => {
+      settings = {
+        ...settings,
+        orchestrator: { ...settings.orchestrator, authority: "send" },
+      };
     },
     readonly: () => {
       settings = {
@@ -288,6 +301,85 @@ it.effect("deduplicates retries and sends corrections to the active inherited wo
     expect(released._tag).toBe("Failure");
     expect(f.delegates).toBe(1);
   }).pipe(Effect.provide(f.layer), Effect.provideService(FetchHttpClient.Fetch, f.fetch));
+});
+
+it.effect("lets the voice's worker create agents only at full authority", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const service = yield* makeOrchestratorLive;
+    yield* service.start({ sdp: "offer", history: [] });
+    yield* service.delegate({
+      sessionId: "live-opaque",
+      delegationId: "make-an-agent",
+      sequence: 1,
+      context: "user: Make me an agent that builds a mileage app",
+    });
+    expect(f.manageAgents).toBe(true);
+    expect(f.task).toContain("agent_builder");
+
+    const lower = fixture();
+    lower.sendOnly();
+    yield* Effect.gen(function* () {
+      const sendOnly = yield* makeOrchestratorLive;
+      yield* sendOnly.start({ sdp: "offer", history: [] });
+      yield* sendOnly.delegate({
+        sessionId: "live-opaque",
+        delegationId: "make-an-agent",
+        sequence: 1,
+        context: "user: Make me an agent",
+      });
+    }).pipe(Effect.provide(lower.layer), Effect.provideService(FetchHttpClient.Fetch, lower.fetch));
+    expect(lower.manageAgents).toBe(false);
+    expect(lower.task).not.toContain("agent_builder");
+  }).pipe(Effect.provide(f.layer), Effect.provideService(FetchHttpClient.Fetch, f.fetch));
+});
+
+it("tells the voice its backend is always there, and what it can reach", () => {
+  const settings = {
+    ...DEFAULT_SERVER_SETTINGS.orchestrator,
+    enabled: true,
+    model: "gpt-live-1",
+  };
+  const full = liveVoiceInstructions(settings, "Personal Assistant");
+  expect(full).toContain("Never say you have no backend, no tools or no access");
+  expect(full).toContain("never turn a request down yourself");
+  expect(full).toContain("including creating new agents");
+  expect(full).toContain("say the latest progress you were given");
+  expect(
+    liveVoiceInstructions({ ...settings, authority: "send" }, "Personal Assistant"),
+  ).not.toContain("creating new agents");
+});
+
+const encodeDetail = Schema.encodeSync(VmAgentDelegationDetail);
+
+it("says how far queued work got instead of only that it is queued", () => {
+  const encoded = encodeDetail(detail());
+  const queued = (messages: ReadonlyArray<Record<string, unknown>>) =>
+    liveWorkEvent(
+      decodeDetail({
+        ...encoded,
+        delegation: { ...encoded.delegation, status: "queued" },
+        messages,
+      }),
+    );
+  expect(queued([]).text).toBe("The task is queued with your assistant.");
+  const progressed = queued([
+    {
+      messageId: "m1",
+      delegationId: "work-one",
+      sequence: 1,
+      sender: "target-agent",
+      senderVmAgentId: null,
+      kind: "note",
+      delivery: "delivered",
+      text: "Found the simulator thread; it is mid-run.",
+      createdAt: now,
+    },
+  ]);
+  expect(progressed.status).toBe("queued");
+  expect(progressed.text).toBe(
+    "Still finishing the step before this one. Latest: Found the simulator thread; it is mid-run.",
+  );
 });
 
 it.effect("ignores an older delegation arriving after a newer voice request", () => {
