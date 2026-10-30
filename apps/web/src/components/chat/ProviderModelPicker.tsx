@@ -21,7 +21,6 @@ import type { ProviderInstanceEntry } from "../../providerInstances";
 import { ComposerControl, ComposerControlChevron } from "./ComposerControl";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { Dialog, DialogPopup, DialogTitle, DialogTrigger } from "../ui/dialog";
-import { Button } from "../ui/button";
 import { shouldUseFullScreenModelPicker } from "./modelPickerPresentation";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
@@ -212,43 +211,28 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   );
 
   const content = (
-    <div
-      className={cn("flex min-h-0 flex-col", useFullScreenModal && "h-full")}
-      data-model-picker-content="true"
-    >
-      {props.onManageModelRestrictions && (
-        <Button
-          type="button"
-          variant="ghost"
-          className="shrink-0 rounded-none border-b border-border bg-popover"
-          onClick={() => {
-            setIsMenuOpen(false);
-            props.onManageModelRestrictions?.();
-          }}
-        >
-          Model restrictions…
-        </Button>
-      )}
-      <ModelPickerContent
-        activeInstanceId={activeInstanceId}
-        model={props.model}
-        lockedProvider={props.lockedProvider}
-        lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
-        instanceEntries={props.instanceEntries}
-        {...(props.keybindings ? { keybindings: props.keybindings } : {})}
-        modelOptionsByInstance={props.modelOptionsByInstance}
-        terminalOpen={props.terminalOpen ?? false}
-        fullScreen={useFullScreenModal}
-        onRequestClose={() => setIsMenuOpen(false)}
-        {...(props.getModelDisabledReason
-          ? { getModelDisabledReason: props.getModelDisabledReason }
-          : {})}
-        onInstanceModelChange={handleInstanceModelChange}
-        {...(props.onSwitchProviderAccount
-          ? { onSwitchProviderAccount: props.onSwitchProviderAccount }
-          : {})}
-      />
-    </div>
+    <ModelPickerContent
+      activeInstanceId={activeInstanceId}
+      model={props.model}
+      lockedProvider={props.lockedProvider}
+      lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
+      instanceEntries={props.instanceEntries}
+      {...(props.keybindings ? { keybindings: props.keybindings } : {})}
+      modelOptionsByInstance={props.modelOptionsByInstance}
+      terminalOpen={props.terminalOpen ?? false}
+      fullScreen={useFullScreenModal}
+      onRequestClose={() => setIsMenuOpen(false)}
+      {...(props.getModelDisabledReason
+        ? { getModelDisabledReason: props.getModelDisabledReason }
+        : {})}
+      onInstanceModelChange={handleInstanceModelChange}
+      {...(props.onSwitchProviderAccount
+        ? { onSwitchProviderAccount: props.onSwitchProviderAccount }
+        : {})}
+      {...(props.onManageModelRestrictions
+        ? { onManageModelRestrictions: props.onManageModelRestrictions }
+        : {})}
+    />
   );
 
   if (useFullScreenModal) {
@@ -271,17 +255,16 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           data-model-picker-phone-portrait="true"
         >
           <div className="relative flex h-full min-h-0 flex-col overscroll-contain">
-            <div className="flex h-14 shrink-0 items-center justify-between border-b border-border px-3 pt-[env(safe-area-inset-top)]">
-              <DialogTitle className="text-base">Choose model</DialogTitle>
-              <Button
-                size="icon-xl"
-                variant="ghost"
-                className="touch-manipulation"
+            <div className="flex shrink-0 items-center justify-between px-4 pt-[calc(env(safe-area-inset-top)+0.75rem)] pb-2">
+              <DialogTitle className="font-semibold text-lg">Model</DialogTitle>
+              <button
+                type="button"
+                className="-mr-1 inline-flex size-9 cursor-pointer touch-manipulation items-center justify-center rounded-full bg-foreground/[0.07] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 active:bg-foreground/[0.12]"
                 aria-label="Close model picker"
                 onClick={() => setIsMenuOpen(false)}
               >
-                <XIcon aria-hidden />
-              </Button>
+                <XIcon aria-hidden className="size-4.5" />
+              </button>
             </div>
             <div className="min-h-0 flex-1 overflow-hidden overscroll-contain">{content}</div>
           </div>
@@ -305,7 +288,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       <PopoverPopup
         align="start"
         className="border-0 bg-transparent p-0 shadow-none before:hidden [-webkit-backdrop-filter:none]! [--viewport-inline-padding:0] [backdrop-filter:none]!"
-        viewportClassName="rounded-lg !overflow-hidden p-0"
+        viewportClassName="rounded-xl !overflow-hidden p-0"
       >
         {content}
       </PopoverPopup>
