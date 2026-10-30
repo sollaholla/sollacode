@@ -34,29 +34,32 @@ const MAX_WIRE_EVENT_CHARS = 100_000;
 const TRAILING_TRANSCRIPT_MS = 1_500;
 /** The host refuses a delegation sequence past this (`OrchestratorLiveDelegationInput`). */
 const MAX_DELEGATIONS = 256;
+/** Spoken if the update stream drops; a retry looks for this prefix. */
+const UPDATES_DISCONNECTED = "I lost track of that work for a moment.";
 
-/** The one tool a Grok call's voice has: hand what the person said to its chat. */
+/** The one tool a Grok call's voice has: start the agent's work on what the person said. */
 export const GROK_CALL_TOOLS: ReadonlyArray<RealtimeFunctionTool> = [
   {
     type: "function",
     name: AGENT_CALL_GROK_DELEGATE_TOOL,
     description:
-      "Pass what the person just said to your chat, which does your real work: anything that needs action, information, files, tools or a decision about work, and the person's answers to your chat's questions. Returns at once; your chat's reply reaches you later as an update.",
+      "Start your work on what the person just said: anything that needs action, information, files, tools or a decision about work, and the person's answers to questions your work asked. Returns at once; what you find reaches you later as an update.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
 ];
 
-/** Told to the voice when it answers right after handing words to its chat. */
+/** Told to the voice when it answers right after starting the work. */
 export const GROK_CALL_TOOL_REPLY =
-  "Your chat has it and is working on it. Say one short line that you've passed it on. Don't guess at the result, and don't say it is done.";
+  "You're working on it now. Say one short first-person line that you're on it. Don't guess at the result, and don't say it is done.";
 
-/** What the voice is told to say when its chat replies. */
-export const grokCallReply = (text: string) => `Your chat replied: ${text}`;
+/** What the voice is told to say when its work reports back: its own words, not a relay. */
+export const grokCallReply = (text: string) =>
+  `Your work is back. Tell the person in the first person, as yourself: ${text}`;
 
 /**
  * An agent call on Grok Voice: the orchestrator's realtime session over xAI's
  * WebSocket, started from the call's host with the agent's instructions and
- * one tool, `ask_your_chat`. Everything around it is the call's, as for
+ * one tool, `start_work`. Everything around it is the call's, as for
  * GPT-Live (`liveSession.ts`): the host's lease (heartbeat, release), the
  * transcript context each delegation carries, the chat's replies spoken back
  * as they stream in, goodbye hang-up, and the phone line with the agent's desk
@@ -326,9 +329,7 @@ export function createGrokCallSession(
         return;
       }
       if (!response.ok)
-        throw new Error(
-          (await response.text()).slice(0, 500) || "Your chat could not take the request.",
-        );
+        throw new Error((await response.text()).slice(0, 500) || "I couldn't get started on that.");
       if (latestDelegationId !== delegationId || stopped) {
         await response.body?.cancel();
         return;
@@ -347,7 +348,7 @@ export function createGrokCallSession(
           if (stopped || latestDelegationId !== delegationId) break;
           pending += decoder.decode(chunk.value, { stream: !chunk.done });
           if (pending.length > MAX_WIRE_EVENT_CHARS)
-            throw new Error("Your chat returned an oversized update.");
+            throw new Error("My update was too long to read out. It's in Solla Code.");
           const lines = pending.split("\n");
           pending = lines.pop() ?? "";
           for (const line of lines) {
@@ -372,7 +373,7 @@ export function createGrokCallSession(
         reader.releaseLock();
       }
       if (!terminal && !stopped && latestDelegationId === delegationId)
-        throw new Error("Updates from your chat disconnected. The work may still be running.");
+        throw new Error(`${UPDATES_DISCONNECTED} The work may still be running.`);
       // Nothing new reached the chat: the person's words may still be coming.
       if (terminal && !spoke && !rerun && !stopped && latestDelegationId === delegationId)
         rerunAfterTranscript(delegationId, at, heard);
@@ -381,7 +382,7 @@ export function createGrokCallSession(
       if (
         attempt < 2 &&
         (cause instanceof TypeError ||
-          (cause instanceof Error && cause.message.startsWith("Updates from your chat")))
+          (cause instanceof Error && cause.message.startsWith(UPDATES_DISCONNECTED)))
       ) {
         const timer = setTimeout(
           () => {
@@ -394,7 +395,9 @@ export function createGrokCallSession(
         return;
       }
       const message =
-        cause instanceof Error ? cause.message : "Your chat could not be reached. Check its chat.";
+        cause instanceof Error
+          ? cause.message
+          : "I couldn't get to that. Check Solla Code for what happened.";
       setWorking(false);
       callbacks.onError?.(message);
       inner.announce(message);
@@ -405,12 +408,13 @@ export function createGrokCallSession(
 
   const delegate = () => {
     if (stopped || !sessionId) return { error: "The call has ended." };
-    if (sequence >= MAX_DELEGATIONS) return { error: "This call can't hand over anything more." };
+    if (sequence >= MAX_DELEGATIONS)
+      return { error: "I can't take on anything more on this call." };
     sequence += 1;
     const delegationId = `${sessionId}:${sequence}`;
     latestDelegationId = delegationId;
     void runDelegation(delegationId, sequence);
-    return { status: "Your chat has it and is working on it." };
+    return { status: "You're working on it now." };
   };
 
   // The call's own engine, never GPT-Live: no model, routes or line of GPT-Live's.

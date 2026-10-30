@@ -437,8 +437,7 @@ export function createLiveVoiceSession(
       // A silent ending: nothing new reached the chat. Ask again once the
       // person's words arrive; a second one closes the delegation quietly.
       if (terminal && !spoke && !closing && !stopped && latestDelegationId === delegationId) {
-        if (rerun)
-          append("session.thinking.append", "Nothing new reached my chat for that.", delegationId);
+        if (rerun) append("session.thinking.append", "Nothing new to work on there.", delegationId);
         else rerunAfterTranscript(delegationId, sequence, heard);
       }
     } catch (cause) {

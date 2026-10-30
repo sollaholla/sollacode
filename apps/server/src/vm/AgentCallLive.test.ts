@@ -305,7 +305,7 @@ it("gives the voice the agent's role, not the rules its chat works by", () => {
   });
   assert.notInclude(instructions, "SCOPE");
   assert.notInclude(instructions, "request_action_approval");
-  assert.include(instructions, "Never say you have no chat, no tools or no access");
+  assert.include(instructions, "Never say you have no tools or no access");
   assert.include(instructions, "never turn a request down yourself");
   assert.include(instructions, "including requests that seem outside your role");
   const grok = agentCallInstructions({
@@ -316,7 +316,7 @@ it("gives the voice the agent's role, not the rules its chat works by", () => {
     topic: null,
     engine: "grok",
   });
-  assert.include(grok, "Never say you have no chat, no tools or no access");
+  assert.include(grok, "Never say you have no tools or no access");
   assert.include(grok, "including requests that seem outside your role");
 
   // A long opening paragraph ends on a whole sentence within the bound.
@@ -326,6 +326,30 @@ it("gives the voice the agent's role, not the rules its chat works by", () => {
   assert.match(role, /books\.$/u);
   // One unbroken run of words still ends on a whole word.
   assert.match(agentCallRole("word ".repeat(200)), /word…$/u);
+});
+
+it("speaks as the agent doing the work, never as a relay to its chat", () => {
+  // The person heard "let me check with my chat" when the voice was told its
+  // work happened in a separate chat.
+  for (const engine of ["gpt-live", "grok"] as const) {
+    const instructions = agentCallInstructions({
+      name: "Scout",
+      purpose: "Triage.",
+      language: "en",
+      direction: "outgoing",
+      topic: null,
+      engine,
+    });
+    assert.include(instructions, "The person hears one agent: you.");
+    assert.include(instructions, "Never talk about your own chat or thread");
+    assert.include(instructions, "say them conversationally as yours");
+    assert.notMatch(instructions, /\byour chat\b/iu);
+  }
+  assert.notMatch(spokenReply(`${"The deploy is green. ".repeat(120)}`), /\bmy chat\b/iu);
+  assert.include(
+    spokenReply("Here:\n```ts\nconst a = 1;\n```\nDone."),
+    "(the code is in Solla Code)",
+  );
 });
 
 it("leaves who the voice can transfer to or add to the device holding the call", () => {
@@ -374,7 +398,7 @@ it("merges the replies of several chats on a call, each read out as soon as it l
       {
         delegationId: "d",
         status: "running",
-        text: "Scout is done.\nGregg: Passing that to my chat.",
+        text: "Scout is done.\nGregg: On it.",
       },
     ],
     reported: [0],
@@ -384,13 +408,13 @@ it("merges the replies of several chats on a call, each read out as soon as it l
   assert.deepStrictEqual(
     merge([
       { name: "Scout", event: work("completed", "All green."), reported: true },
-      { name: "Gregg", event: work("running", "Working on it in my chat.") },
+      { name: "Gregg", event: work("running", "Working on it.") },
     ]).events,
     [
       {
         delegationId: "d",
         status: "running",
-        text: "Scout is done.\nGregg: Working on it in my chat.",
+        text: "Scout is done.\nGregg: Working on it.",
       },
     ],
   );
@@ -404,15 +428,15 @@ it("merges the replies of several chats on a call, each read out as soon as it l
   // A question surfaces at once, by name; an approval outranks it.
   assert.deepStrictEqual(
     merge([
-      { name: "Scout", event: work("running", "Working on it in my chat.") },
-      { name: "Gregg", event: work("waiting-input", "My chat is asking you: Which account?") },
+      { name: "Scout", event: work("running", "Working on it.") },
+      { name: "Gregg", event: work("waiting-input", "I need to ask you: Which account?") },
     ]),
     {
       events: [
         {
           delegationId: "d",
           status: "waiting-input",
-          text: "Gregg: My chat is asking you: Which account?",
+          text: "Gregg: I need to ask you: Which account?",
         },
       ],
       reported: [],
@@ -444,8 +468,8 @@ it("merges the replies of several chats on a call, each read out as soon as it l
       { name: "Scout", event: work("completed", "Production is green."), reported: true },
       {
         name: "Gregg",
-        event: work("waiting-input", "My chat is asking you: Which?"),
-        heardRequest: "My chat is asking you: Which?",
+        event: work("waiting-input", "I need to ask you: Which?"),
+        heardRequest: "I need to ask you: Which?",
       },
     ]).events.map((event) => [event.status, event.text]),
     [["waiting-input", ""]],
@@ -453,13 +477,13 @@ it("merges the replies of several chats on a call, each read out as soon as it l
   // A request is read out as its watch framed it, never cut like a reply.
   const approval = `I need your approval for ${"a long email draft ".repeat(60)}— please approve or decline it in Solla Code; a spoken yes can't approve it.`;
   const asked = merge([
-    { name: "Scout", event: work("running", "Working on it in my chat.") },
+    { name: "Scout", event: work("running", "Working on it.") },
     { name: "Gregg", event: work("pending-approval", approval) },
   ]).events.at(-1);
   assert.strictEqual(asked?.text, `Gregg: ${approval}`);
   assert.deepStrictEqual(
     merge([
-      { name: "Scout", event: work("running", "Working on it in my chat.") },
+      { name: "Scout", event: work("running", "Working on it.") },
       {
         name: "Gregg",
         event: work("pending-approval", "I need your approval."),
@@ -471,7 +495,7 @@ it("merges the replies of several chats on a call, each read out as soon as it l
   assert.strictEqual(
     last([
       { name: "Scout", event: work("pending-approval", "I need your approval.") },
-      { name: "Gregg", event: work("waiting-input", "My chat is asking you: Which?") },
+      { name: "Gregg", event: work("waiting-input", "I need to ask you: Which?") },
     ])?.status,
     "pending-approval",
   );
@@ -479,14 +503,14 @@ it("merges the replies of several chats on a call, each read out as soon as it l
   assert.deepStrictEqual(
     merge([
       { name: "Scout", event: work("completed", "Production is green.") },
-      { name: "Gregg", event: work("waiting-input", "My chat is asking you: Which account?") },
+      { name: "Gregg", event: work("waiting-input", "I need to ask you: Which account?") },
     ]),
     {
       events: [
         {
           delegationId: "d",
           status: "waiting-input",
-          text: "Scout: Production is green.\n\nGregg: My chat is asking you: Which account?",
+          text: "Scout: Production is green.\n\nGregg: I need to ask you: Which account?",
         },
       ],
       reported: [0],
@@ -497,12 +521,12 @@ it("merges the replies of several chats on a call, each read out as soon as it l
   assert.deepStrictEqual(
     last([
       { name: "Scout", event: work("completed", "Production is green.") },
-      { name: "Gregg", event: work("failed", "My chat ran into an error.") },
+      { name: "Gregg", event: work("failed", "I ran into an error.") },
     ]),
     {
       delegationId: "d",
       status: "completed",
-      text: "Scout: Production is green.\n\nGregg couldn't answer: My chat ran into an error.",
+      text: "Scout: Production is green.\n\nGregg couldn't answer: I ran into an error.",
     },
   );
   assert.deepStrictEqual(
@@ -514,8 +538,8 @@ it("merges the replies of several chats on a call, each read out as soon as it l
   );
   assert.strictEqual(
     last([
-      { name: "Scout", event: work("failed", "My chat stopped before it got to that.") },
-      { name: "Gregg", event: work("failed", "My chat ran into an error.") },
+      { name: "Scout", event: work("failed", "I stopped before I got to that.") },
+      { name: "Gregg", event: work("failed", "I ran into an error.") },
     ])?.status,
     "failed",
   );
@@ -534,12 +558,12 @@ it("merges the replies of several chats on a call, each read out as soon as it l
 it("speaks short replies whole and long ones up to a sentence", () => {
   assert.strictEqual(
     spokenReply("Done.\n\n```ts\nconst x = 1;\n```"),
-    "Done. (code is in my chat)",
+    "Done. (the code is in Solla Code)",
   );
   const long = `${"The deploy is green. ".repeat(100)}`;
   const spoken = spokenReply(long, 200);
   assert.isAtMost(spoken.length, 230);
-  assert.match(spoken, /green\. The full reply is in my chat\.$/u);
+  assert.match(spoken, /green\. The rest is written up in Solla Code\.$/u);
 });
 
 it("speaks a long reply from its end: the final message, then earlier ones while they fit", () => {
@@ -558,12 +582,12 @@ it("speaks a long reply from its end: the final message, then earlier ones while
     summary,
   ]);
   assert.match(spoken, /^Now the metrics\. Every service/u);
-  assert.match(spoken, /The deploy is green\. The full reply is in my chat\.$/u);
+  assert.match(spoken, /The deploy is green\. The rest is written up in Solla Code\.$/u);
   assert.notInclude(spoken, "I'll check the dashboard.");
   // A final message too long on its own is cut at a sentence.
   const alone = spokenReplies(["Checking.", "The deploy is green. ".repeat(100)]);
   assert.match(alone, /^The deploy is green\./u);
-  assert.match(alone, /The full reply is in my chat\.$/u);
+  assert.match(alone, /The rest is written up in Solla Code\.$/u);
   assert.isAtMost(alone.length, 1_550);
 });
 
@@ -581,7 +605,7 @@ it("follows the chat's work on what the call passed it", () => {
   assert.deepStrictEqual(event(view({})), {
     delegationId: "delegation",
     status: "running",
-    text: "Passing that to my chat.",
+    text: "On it.",
   });
   // The previous turn finished before the words arrived: not a reply yet.
   assert.strictEqual(
@@ -596,7 +620,7 @@ it("follows the chat's work on what the call passed it", () => {
   );
   assert.strictEqual(
     event(view({ session: session("running"), latestTurn: turn("running", null) })).text,
-    "Working on it in my chat.",
+    "Working on it.",
   );
   // The reply is what was written since; the forwarded message itself need
   // not be in the newest-messages window.
@@ -701,7 +725,7 @@ it("follows the chat's work on what the call passed it", () => {
     view({ ...finished, activities: [question("ask", 12)] }, { hasPendingUserInput: true }),
   );
   assert.strictEqual(waiting.status, "waiting-input");
-  assert.include(waiting.text, "My chat is asking you: Which account should I use?");
+  assert.include(waiting.text, "I need to ask you: Which account should I use?");
 
   const notByVoice = event(
     view(
@@ -831,7 +855,7 @@ it("credits a turn the words were steered into before the shell showed it runnin
       target,
       view: { ...steered, delivery: "unconfirmed" },
     }),
-    { delegationId: "delegation", status: "running", text: "Working on it in my chat." },
+    { delegationId: "delegation", status: "running", text: "Working on it." },
   );
   // Steered into the turn the call saw running, an unconfirmed steer is being
   // worked on, not waiting behind that turn the way a queued message is.
@@ -851,7 +875,7 @@ it("credits a turn the words were steered into before the shell showed it runnin
   assert.deepStrictEqual(busy("unconfirmed"), {
     delegationId: "delegation",
     status: "running",
-    text: "Working on it in my chat.",
+    text: "Working on it.",
   });
   assert.strictEqual(busy("pending").status, "queued");
 });
@@ -878,7 +902,7 @@ it("reads an earlier turn's leftover question as over", () => {
       },
       view: orphaned,
     }),
-    { delegationId: "delegation", status: "running", text: "Working on it in my chat." },
+    { delegationId: "delegation", status: "running", text: "Working on it." },
   );
 });
 
@@ -913,7 +937,7 @@ it("answers by voice only questions whose provider keeps free text", () => {
   assert.deepStrictEqual(kimiEvent([question()]), {
     delegationId: "delegation",
     status: "running",
-    text: "Working on it in my chat.",
+    text: "Working on it.",
   });
   // A question the chat asks after that has to be answered in the app.
   const waiting = kimiEvent([question(), question("ask-2", 12)]);
@@ -1205,7 +1229,7 @@ it.effect("a Grok-voiced agent's call opens on Grok Voice with a short-lived xAI
       assert.strictEqual(result.model, "grok-voice-latest");
       assert.strictEqual(result.agentName, "Scout");
       assert.include(result.instructions, "You are Scout");
-      assert.include(result.instructions, "Call ask_your_chat for everything but small talk");
+      assert.include(result.instructions, "which only start_work reaches");
       assert.include(result.instructions, "because: Sign in to Google.");
       assert.include(result.instructions, "user: Earlier.");
       // Only the ephemeral secret leaves the host; GPT-Live was never asked.
@@ -1558,7 +1582,7 @@ it.effect("a question its turn left behind, or its provider forgot, gets a messa
       assert.deepStrictEqual((yield* Stream.runHead(updates)).pipe(Option.getOrUndefined), {
         delegationId: "d1",
         status: "running",
-        text: "Working on it in my chat.",
+        text: "Working on it.",
       });
 
       // A respond failure that marks the question stale settles it too.
@@ -1650,7 +1674,7 @@ it.effect("a steer the provider has not confirmed is not the reply yet", () => {
       assert.deepStrictEqual(
         [...(yield* Fiber.join(fiber))],
         [
-          { delegationId: "d1", status: "running", text: "Working on it in my chat." },
+          { delegationId: "d1", status: "running", text: "Working on it." },
           { delegationId: "d1", status: "completed", text: "Staging is green." },
         ],
       );
@@ -1710,7 +1734,7 @@ it.effect(
           [...(yield* Fiber.join(fiber))],
           [
             // Steered into the running turn: working on it, not queued behind it.
-            { delegationId: "d1", status: "running", text: "Working on it in my chat." },
+            { delegationId: "d1", status: "running", text: "Working on it." },
             { delegationId: "d1", status: "completed", text: "Staging is green." },
           ],
         );
@@ -2206,7 +2230,7 @@ it.effect(
           ),
         );
         assert.include(heard, "Scout: Production is green.");
-        assert.include(heard, "Gregg: My chat is asking you: Which account should I use?");
+        assert.include(heard, "Gregg: I need to ask you: Which account should I use?");
 
         // The person answers Gregg; Scout's reply, already heard, is not followed again.
         yield* TestClock.adjust("5 seconds");
@@ -2350,7 +2374,7 @@ it.effect("a chat on the call that goes away leaves it, and the call goes on", (
           {
             delegationId: "d1",
             status: "failed",
-            text: "Gregg couldn't answer: My chat is no longer available, so I've left the call.",
+            text: "Gregg couldn't answer: I'm no longer available, so I've left the call.",
           },
         ],
       );
@@ -2403,7 +2427,7 @@ it("cuts a merged call's request to its share but keeps what the person must do"
     cut.text,
     / … — please approve or decline it in Solla Code; a spoken yes can't approve it\.$/u,
   );
-  assert.notInclude(cut.text, "The full reply is in my chat.");
+  assert.notInclude(cut.text, "The rest is written up in Solla Code.");
   assert.isAtMost(cut.text.length, 400);
   // A question only Solla Code takes keeps saying so.
   const kimi = agentCallWorkEvent({
@@ -2430,7 +2454,7 @@ it("cuts a merged call's request to its share but keeps what the person must do"
   });
   assert.match(
     kimi.text,
-    /that has to be answered in Solla Code; I can't answer it from this call\.$/u,
+    /it has to be answered in Solla Code; it can't be answered on this call\.$/u,
   );
   // A call with one chat reads it whole, as before.
   assert.include(asking([approval]).text, draft.trim());

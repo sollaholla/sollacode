@@ -330,7 +330,9 @@ onto the call; see [Transferring a call](#transferring-a-call) and
 The voice on the call is a go-between: what you ask goes to the agent's chat, which does the work
 with its tools and rules and decides what is in its role, and the voice says what the chat answers.
 The voice only knows the agent's role (the opening paragraph of its purpose), not the rest of its
-rules, so it never turns a request down by itself.
+rules, so it never turns a request down by itself. You hear one agent, though: the voice talks about
+that work as its own ("Let me check", "Here's what I found") and never says it is checking with its
+chat. Before 0.1.774 it often did.
 
 Say goodbye to end a call by voice: once you say bye (or "that's all", "hang up") and the agent
 answers with its own goodbye, the call hangs up as soon as that goodbye finishes. A connected call

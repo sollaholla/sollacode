@@ -36,7 +36,7 @@ export const AGENT_CALL_GROK_SESSION_PATH = "/api/agents/call/session/grok";
  * on its own, Grok calls this. It returns at once; the chat's replies are
  * spoken as they arrive.
  */
-export const AGENT_CALL_GROK_DELEGATE_TOOL = "ask_your_chat";
+export const AGENT_CALL_GROK_DELEGATE_TOOL = "start_work";
 /** `${AGENT_CALL_SESSION_PATH}/release` frees the server session; body `{ sessionId }`. */
 export const AGENT_CALL_SESSION_RELEASE_PATH = "/api/agents/call/session/release";
 /**

@@ -294,7 +294,7 @@ describe("buildSessionUpdate", () => {
   it("runs an agent call's own instructions and tools on Grok, not the orchestrator's", () => {
     const tool = {
       type: "function" as const,
-      name: "ask_your_chat",
+      name: "start_work",
       description: "Hand it to your chat.",
       parameters: { type: "object", properties: {} },
     };

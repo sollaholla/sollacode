@@ -135,7 +135,7 @@ describe("Grok call session", () => {
       instructions: "You are Gregg.",
       tools: GROK_CALL_TOOLS,
     });
-    expect(GROK_CALL_TOOLS.map((tool) => tool.name)).toEqual(["ask_your_chat"]);
+    expect(GROK_CALL_TOOLS.map((tool) => tool.name)).toEqual(["start_work"]);
     await vi.advanceTimersByTimeAsync(15_000);
     expect(f.calls.at(-1)).toEqual({
       path: AGENT_CALL_SESSION_HEARTBEAT_PATH,
@@ -151,8 +151,8 @@ describe("Grok call session", () => {
       role: "user",
       text: "Is the deploy green?",
     });
-    const output = await f.created.callbacks.onToolCall({ name: "ask_your_chat", args: {} });
-    expect(output).toEqual({ status: "Your chat has it and is working on it." });
+    const output = await f.created.callbacks.onToolCall({ name: "start_work", args: {} });
+    expect(output).toEqual({ status: "You're working on it now." });
     await vi.advanceTimersByTimeAsync(0);
     const delegation = f.calls.find((call) => call.path === AGENT_CALL_DELEGATION_PATH)!;
     expect(delegation.body).toMatchObject({

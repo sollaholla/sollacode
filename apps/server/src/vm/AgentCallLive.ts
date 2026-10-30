@@ -135,16 +135,17 @@ export function agentCallInstructions(input: {
   readonly language: string;
   readonly direction: AgentCallDirection;
   readonly topic: string | null;
-  /** GPT-Live delegates by itself; Grok Voice delegates through the `ask_your_chat` tool. */
+  /** GPT-Live delegates by itself; Grok Voice delegates through the `start_work` tool. */
   readonly engine?: AgentCallEngine;
 }): string {
   const lines = [
     `You are ${input.name}, one of the person's Solla Code agents, on a live phone call with them. Your role: ${asSentence(agentCallRole(input.purpose))}`,
     "Talk like a real phone call: warm, natural, brief turns, no lists or markdown, no reading out code or URLs verbatim.",
-    "Your chat is you at work: your tools, your memory, and access to the person's Solla Code workspace, including their projects, chats and agents. It is connected for the whole call. Never say you have no chat, no tools or no access, and never turn a request down yourself: whether something is yours to do is your chat's call, so pass it on and say what it answers.",
+    "Your work and your voice are one agent: you have your tools, your memory and access to the person's Solla Code workspace, including their projects, chats and agents, for the whole call. Never say you have no tools or no access, and never turn a request down yourself: take it on and say how it turned out.",
+    'The person hears one agent: you. Never talk about your own chat or thread, delegating, handing off, a back end or anyone else doing your work, and never say you are checking with or waiting on someone to do it. Talk about your work in the first person, as the one doing it: "Let me check", "I\'m on it", "Here\'s what I found".',
     input.engine === "grok"
-      ? `You can't do work or look things up yourself; your real work happens in your chat. Call ${AGENT_CALL_GROK_DELEGATE_TOOL} for everything but small talk: any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role. It passes what the person said to your chat and returns at once. Say one short line that you're on it, then keep talking naturally while it runs, but never invent progress, results or approvals. Your chat's replies reach you as updates: say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person, then call ${AGENT_CALL_GROK_DELEGATE_TOOL} again once they answer.`
-      : "You can't do work or look things up yourself; your real work happens in your chat. Delegate everything but small talk: any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role. The delegation carries what the person said to your chat. Keep talking naturally while it runs, but never invent progress, results or approvals. When results arrive, say them conversationally, summarising long or technical parts. If your chat asks a question, ask the person and delegate their answer.",
+      ? `Anything beyond small talk needs your workspace, which only ${AGENT_CALL_GROK_DELEGATE_TOOL} reaches. Call it for any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role. It starts the work with what the person said and returns at once. Say one short line that you're on it, then keep talking naturally while it runs, but never invent progress, results or approvals. Results reach you as updates; they are your own work, so say them conversationally as yours, summarising long or technical parts. If an update asks a question, ask the person, then call ${AGENT_CALL_GROK_DELEGATE_TOOL} again once they answer.`
+      : "Anything beyond small talk needs your workspace, which you reach by delegating. Delegate any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role; the delegation carries what the person said. Keep talking naturally while it runs, but never invent progress, results or approvals. Results are your own work: say them conversationally as yours, summarising long or technical parts. If a result asks a question, ask the person and delegate their answer.",
     "Read back consequential actions before delegating them; hearing a transcript is not approval for an external action (approvals still happen in Solla).",
     "When the person says goodbye or asks you to hang up, answer with a short goodbye that says bye; the call hangs up as soon as you finish it. Don't add a question after it.",
     `Speak ${languageName(input.language)}.`,
@@ -242,12 +243,12 @@ export function forwardedCallMessage(delta: CallConversationDelta, voiceName?: s
   ].join("\n");
 }
 
-const FULL_REPLY_IN_CHAT = "The full reply is in my chat.";
+const FULL_REPLY_IN_CHAT = "The rest is written up in Solla Code.";
 
 /** Chat text as one spoken line: code left in the chat, whitespace collapsed. */
 const plainSpoken = (text: string) =>
   text
-    .replace(/```[\s\S]*?```/gu, " (code is in my chat) ")
+    .replace(/```[\s\S]*?```/gu, " (the code is in Solla Code) ")
     .replace(/\s+/gu, " ")
     .trim();
 
@@ -471,7 +472,7 @@ const approvalText = (open: CallThreadActivity | undefined, maxChars?: number) =
   framedRequest(
     (request) =>
       `I need your approval for ${request} — please approve or decline it in Solla Code; a spoken yes can't approve it.`,
-    open ? requestText(open) : "a step in my chat",
+    open ? requestText(open) : "a step I want to take",
     maxChars,
   );
 
@@ -512,10 +513,9 @@ export function agentCallWorkEvent(input: {
   )
     return event(
       "failed",
-      "My chat couldn't take that answer. Please answer its question in Solla Code.",
+      "I couldn't take that answer on the call. Please answer the question in Solla Code.",
     );
-  if (view.delivery === "cancelled")
-    return event("failed", "My chat stopped before it got to that.");
+  if (view.delivery === "cancelled") return event("failed", "I stopped before I got to that.");
 
   const turn = thread.latestTurn;
   const inBusyTurn =
@@ -578,15 +578,15 @@ export function agentCallWorkEvent(input: {
     !raisedSince(openApproval)
   ) {
     if (handling.state === "error")
-      return event("failed", thread.session?.lastError ?? "My chat ran into an error.");
+      return event("failed", thread.session?.lastError ?? "I ran into an error.");
     const reply = spokenReplies(
       replies.map((message) => message.text),
       input.maxChars,
     );
     if (reply) return event("completed", reply);
     if (handling.state === "interrupted")
-      return event("failed", "The work in my chat was stopped before it replied.");
-    return event("completed", "My chat finished without writing a reply.");
+      return event("failed", "My work on that was stopped before I could answer.");
+    return event("completed", "I finished without writing anything back.");
   }
 
   if (openInput !== undefined) {
@@ -596,9 +596,9 @@ export function agentCallWorkEvent(input: {
       "waiting-input",
       framedRequest(
         voiceAnswerableRequest(openInput, thread.session?.providerName ?? null) !== null
-          ? (request) => `My chat is asking you: ${request}`
+          ? (request) => `I need to ask you: ${request}`
           : (request) =>
-              `My chat is asking: ${request} — that has to be answered in Solla Code; I can't answer it from this call.`,
+              `I need an answer to this: ${request} — it has to be answered in Solla Code; it can't be answered on this call.`,
         requestText(openInput),
         input.maxChars,
       ),
@@ -607,22 +607,17 @@ export function agentCallWorkEvent(input: {
   // The flag can trail an answer the call just gave or an earlier turn's
   // leftover question; anything else is a request outside the window.
   if (view.hasPendingUserInput && target.answeredRequestId === null && !orphanedInput)
-    return event("waiting-input", "My chat is waiting for an answer in Solla Code.");
+    return event("waiting-input", "I'm waiting on an answer from you in Solla Code.");
   if (view.hasPendingApprovals)
     return event("pending-approval", approvalText(openApproval, input.maxChars));
 
   if (!working && thread.session?.status === "error" && thread.session.updatedAt >= target.sentAt)
-    return event("failed", thread.session.lastError ?? "My chat ran into an error.");
+    return event("failed", thread.session.lastError ?? "I ran into an error.");
   if (inBusyTurn && view.delivery === "pending")
-    return event("queued", "Your request is waiting in my chat behind earlier work.");
+    return event("queued", "I'll get to that as soon as I finish what I'm on.");
   // An unconfirmed steer is already in the running turn's hands, even when that
   // turn looks finished before the provider's acceptance lands.
-  return event(
-    "running",
-    working || view.delivery === "unconfirmed"
-      ? "Working on it in my chat."
-      : "Passing that to my chat.",
-  );
+  return event("running", working || view.delivery === "unconfirmed" ? "Working on it." : "On it.");
 }
 
 /** Thread events that can change what a call is waiting on; streaming text is not one. */
@@ -656,7 +651,7 @@ const FAILED_WORK = new Set<OrchestratorLiveWorkEvent["status"]>([
 /** What one part of a merged reply adds besides its text: "<Name> couldn't answer: " and a blank line. */
 const MERGED_PART_OVERHEAD = 20;
 /** What a chat added to the call says once its thread is gone; the call drops it. */
-const PARTICIPANT_GONE = "My chat is no longer available, so I've left the call.";
+const PARTICIPANT_GONE = "I'm no longer available, so I've left the call.";
 
 const failedWork = (delegationId: string, text: string): OrchestratorLiveWorkEvent => ({
   delegationId,
@@ -796,7 +791,7 @@ export function mergeCallWorkEvents(input: {
             targets
               .map(({ name, event: current }) =>
                 current === null
-                  ? `${name}: Passing that to my chat.`
+                  ? `${name}: On it.`
                   : done(current)
                     ? `${name} is done.`
                     : `${name}: ${current.text}`,
@@ -1094,7 +1089,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
         // GPT-Live takes the start history as conversation items; here it is context.
         ...(input.history.length > 0
           ? [
-              "Recent messages in your chat, for context:",
+              "Your recent conversation with the person, for context:",
               ...input.history
                 .slice(-12)
                 .map((entry) => `${entry.role}: ${entry.text.slice(0, 600)}`),
@@ -1166,7 +1161,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
     maxChars?: number,
   ): OrchestratorLiveWorkEvent =>
     view === null
-      ? failedWork(delegationId, "My chat is no longer available.")
+      ? failedWork(delegationId, "I'm no longer available.")
       : agentCallWorkEvent({ delegationId, target, view, maxChars });
 
   /**
@@ -1587,7 +1582,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
           () =>
             new OrchestratorLiveError({
               status: 502,
-              detail: "I couldn't pass that to my chat. Try again.",
+              detail: "I couldn't get started on that. Try again.",
             }),
         ),
       );
@@ -1597,7 +1592,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
         undelivered += 1;
         return {
           ...target,
-          work: failedWork(input.delegationId, "My chat didn't get that."),
+          work: failedWork(input.delegationId, "I didn't catch that request."),
           reported: null,
           heardRequest: null,
         };
@@ -1632,7 +1627,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
     if (undelivered > 0 && !delivered.some((target) => "sentAt" in target.work))
       return yield* new OrchestratorLiveError({
         status: 502,
-        detail: "I couldn't pass that to my chat. Try again.",
+        detail: "I couldn't get started on that. Try again.",
       });
     // Chats still on the call whose reply to earlier words has not gone
     // out stay followed: the client drops an older delegation's stream once

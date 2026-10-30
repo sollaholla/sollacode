@@ -120,6 +120,15 @@ without a second card and uses the approval up, checked after the Agent-mode rul
 reusing an open card; a later repeat, new work, corrections, cancellations and a server restart ask
 again.
 
+## One voice, one agent
+
+On a call the voice and the agent's work are one agent. `agentCallInstructions` tells the voice
+that the person hears only it, that it never mentions its own chat or thread, delegating or handing
+off, and that results are its own work to say in the first person ("Let me check", "Here's what I
+found"). The status lines a delegation reads out follow the same rule ("On it.", "I need to ask you:
+…", "The rest is written up in Solla Code."). Other chats on a merged call are still named, because
+they are separate.
+
 ## Call transfer and merged calls
 
 An [agent call](../reference/encyclopedia.md#agent-call) is one GPT-Live voice pinned to the called
@@ -239,7 +248,7 @@ you're on a call with the person and …)"), and a participant's quotes the voic
 <Agent> replied: …)" rather than "I replied", since the voice isn't its own. Message and command ids
 hash the session and delegation, plus the thread for a participant, so with no participants ids and
 text are as before. A retried delegation id reattaches to the chats it first followed. A target
-that refuses the dispatch reads "<Name> couldn't answer: My chat didn't get that."; the delegation
+that refuses the dispatch reads "<Name> couldn't answer: I didn't catch that request."; the delegation
 fails with 502 only when no target got the words.
 
 **Replies.** A delegation that follows only the called agent streams that chat's events unchanged.
@@ -274,7 +283,7 @@ reply out, no question read out), ends quietly when none are left, and with no e
 "I didn't catch a new request."
 
 A participant whose chat is gone, when the words are sent or later while its reply is awaited, is
-removed from the call and reads "<Name> couldn't answer: My chat is no longer available, so I've
+removed from the call and reads "<Name> couldn't answer: I'm no longer available, so I've
 left the call." Only the called agent's chat being gone when words are sent fails the call.
 
 ## Call sound
@@ -328,9 +337,8 @@ connects. Placing and ringing check the key the agent's engine needs (`AgentCall
 On the device, `createGrokCallSession`
 ([grokCallSession.ts](../../apps/web/src/agentCall/grokCallSession.ts)) runs the orchestrator's
 realtime session over xAI's WebSocket with a `realtimeCall` start: the call's instructions and one
-tool, `ask_your_chat` (`AGENT_CALL_GROK_DELEGATE_TOOL`), in place of the orchestrator's, no state
-cues, and `toolReplyInstructions` so the voice says it passed the request on rather than inventing a
-result. A tool call starts a delegation exactly like GPT-Live's: finished transcripts become timed
+tool, `start_work` (`AGENT_CALL_GROK_DELEGATE_TOOL`), in place of the orchestrator's, no state
+cues, and `toolReplyInstructions` so the voice says it is on it rather than inventing a result. A tool call starts a delegation exactly like GPT-Live's: finished transcripts become timed
 context fragments, the host's delegation route works out what is new, and audible work events
 (terminal, waiting on the person, an approval) are spoken with `announce`. Heartbeat, release (on
 stop, on the voice ending itself, and on `pagehide`), goodbye hang-up from both sides' transcripts,

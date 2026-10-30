@@ -882,7 +882,7 @@ describe("delegations that find nothing new", () => {
       type: "session.thinking.append",
       event_id: expect.any(String),
       delegation_id: "d1",
-      content: "Nothing new reached my chat for that.",
+      content: "Nothing new to work on there.",
     });
     expect(sent(f).some((event) => event.type === "session.commentary.append")).toBe(false);
     // Once only.
