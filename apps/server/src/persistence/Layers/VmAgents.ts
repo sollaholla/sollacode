@@ -12,6 +12,12 @@ const ByIdRequest = Schema.Struct({ vmAgentId: VmAgentId });
 const ByHandleRequest = Schema.Struct({ handle: Schema.String });
 const ByNameLowerRequest = Schema.Struct({ nameLower: Schema.String });
 const ByThreadIdRequest = Schema.Struct({ threadId: Schema.String });
+const RenameRequest = Schema.Struct({
+  vmAgentId: VmAgentId,
+  name: Schema.String,
+  updatedAt: Schema.String,
+});
+const RenameResult = Schema.Struct({ vmAgentId: VmAgentId });
 const UpdateIconRequest = Schema.Struct({
   vmAgentId: VmAgentId,
   icon: Schema.NullOr(VmAgentIcon),
@@ -225,6 +231,21 @@ const makeVmAgentStore = Effect.gen(function* () {
     execute: ({ vmAgentId }) => sql`DELETE FROM vm_agents WHERE vm_agent_id = ${vmAgentId}`,
   });
 
+  const renameRows = SqlSchema.findAll({
+    Request: RenameRequest,
+    Result: RenameResult,
+    execute: ({ vmAgentId, name, updatedAt }) => sql`
+      UPDATE vm_agents
+      SET name = ${name}, name_lower = ${name.toLowerCase()}, updated_at = ${updatedAt}
+      WHERE vm_agent_id = ${vmAgentId}
+        AND NOT EXISTS (
+          SELECT 1 FROM vm_agents AS other
+          WHERE other.name_lower = ${name.toLowerCase()} AND other.vm_agent_id <> ${vmAgentId}
+        )
+      RETURNING vm_agent_id AS "vmAgentId"
+    `,
+  });
+
   const updateIconRow = SqlSchema.void({
     Request: UpdateIconRequest,
     execute: ({ vmAgentId, icon, updatedAt }) => sql`
@@ -283,6 +304,12 @@ const makeVmAgentStore = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("VmAgentStore.deleteById:query")),
     );
 
+  const rename: VmAgentStoreShape["rename"] = (input) =>
+    renameRows(input).pipe(
+      Effect.map((rows) => rows.length > 0),
+      Effect.mapError(toPersistenceSqlError("VmAgentStore.rename:query")),
+    );
+
   const updateIcon: VmAgentStoreShape["updateIcon"] = (input) =>
     updateIconRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("VmAgentStore.updateIcon:query")),
@@ -306,6 +333,7 @@ const makeVmAgentStore = Effect.gen(function* () {
     getByNameLower,
     getByThreadId,
     deleteById,
+    rename,
     updateIcon,
     updateVoice,
     updateStatus,

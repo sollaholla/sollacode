@@ -125,6 +125,8 @@ import {
 import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
+import { RenameAgentDialog, type AgentRenameTarget } from "./agents/RenameAgentDialog";
+import { useAgentRenamePaletteItems } from "./agents/useAgentRenamePaletteItems";
 import { useAgentCallPaletteItems } from "./agentCall/useAgentCallPaletteItems";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
@@ -373,6 +375,7 @@ function overlayModeForCommand(command: string | null): SearchOverlayMode | null
 }
 
 export function CommandPalette({ children }: { children: ReactNode }) {
+  const [renameTarget, setRenameTarget] = useState<AgentRenameTarget | null>(null);
   const [state, dispatch] = useReducer(reduceCommandPaletteUiState, {
     open: false,
     mode: "command",
@@ -471,6 +474,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
       >
         {children}
         <CommandPaletteDialog
+          onRenameAgent={setRenameTarget}
           open={state.open}
           mode={state.mode}
           openIntent={state.openIntent}
@@ -479,6 +483,9 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           clearOpenIntent={clearOpenIntent}
         />
       </CommandDialog>
+      {renameTarget ? (
+        <RenameAgentDialog {...renameTarget} onClose={() => setRenameTarget(null)} />
+      ) : null}
     </ComposerHandleContext>
   );
 }
@@ -491,31 +498,39 @@ export function CommandPaletteOverlay(props: {
   readonly toggleMode: (mode: SearchOverlayMode) => void;
   readonly clearOpenIntent: () => void;
 }) {
+  const [renameTarget, setRenameTarget] = useState<AgentRenameTarget | null>(null);
   return (
-    <CommandDialog
-      open={props.open}
-      onOpenChange={(open, eventDetails) => {
-        if (!open && eventDetails.reason === "escape-key" && props.mode !== "command") {
-          eventDetails.cancel();
-          props.toggleMode("command");
-          return;
-        }
-        props.setOpen(open);
-      }}
-    >
-      <CommandPaletteDialog
+    <>
+      <CommandDialog
         open={props.open}
-        mode={props.mode}
-        openIntent={props.openIntent}
-        setOpen={props.setOpen}
-        openOverlayMode={props.toggleMode}
-        clearOpenIntent={props.clearOpenIntent}
-      />
-    </CommandDialog>
+        onOpenChange={(open, eventDetails) => {
+          if (!open && eventDetails.reason === "escape-key" && props.mode !== "command") {
+            eventDetails.cancel();
+            props.toggleMode("command");
+            return;
+          }
+          props.setOpen(open);
+        }}
+      >
+        <CommandPaletteDialog
+          onRenameAgent={setRenameTarget}
+          open={props.open}
+          mode={props.mode}
+          openIntent={props.openIntent}
+          setOpen={props.setOpen}
+          openOverlayMode={props.toggleMode}
+          clearOpenIntent={props.clearOpenIntent}
+        />
+      </CommandDialog>
+      {renameTarget ? (
+        <RenameAgentDialog {...renameTarget} onClose={() => setRenameTarget(null)} />
+      ) : null}
+    </>
   );
 }
 
 function CommandPaletteDialog(props: {
+  readonly onRenameAgent: (target: AgentRenameTarget) => void;
   readonly open: boolean;
   readonly mode: SearchOverlayMode;
   readonly openIntent: CommandPaletteOpenIntent | null;
@@ -565,6 +580,7 @@ function CommandPaletteDialog(props: {
         <ProjectContentSearchDialog onOpenChange={props.setOpen} />
       ) : (
         <OpenCommandPaletteDialog
+          onRenameAgent={props.onRenameAgent}
           openIntent={props.openIntent}
           setOpen={props.setOpen}
           openOverlayMode={props.openOverlayMode}
@@ -576,6 +592,7 @@ function CommandPaletteDialog(props: {
 }
 
 function OpenCommandPaletteDialog(props: {
+  readonly onRenameAgent: (target: AgentRenameTarget) => void;
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
   readonly openOverlayMode: (mode: SearchOverlayMode) => void;
@@ -583,6 +600,7 @@ function OpenCommandPaletteDialog(props: {
 }) {
   const navigate = useNavigate();
   const agentCallItems = useAgentCallPaletteItems();
+  const agentRenameItems = useAgentRenamePaletteItems(props.onRenameAgent);
   const { clearOpenIntent, openIntent, openOverlayMode, setOpen } = props;
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const [query, setQuery] = useState("");
@@ -1431,6 +1449,7 @@ function OpenCommandPaletteDialog(props: {
   // A live call's "End call" leads, ahead of everything else.
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [
     ...agentCallItems,
+    ...agentRenameItems,
   ];
 
   if (projects.length > 0) {

@@ -166,6 +166,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.vmAgentStart]: AuthVmOperateScope,
   [WS_METHODS.vmAgentStop]: AuthVmOperateScope,
   [WS_METHODS.vmAgentVoiceSet]: AuthVmOperateScope,
+  [WS_METHODS.vmAgentRename]: AuthVmOperateScope,
   [WS_METHODS.vmAgentSubscribe]: AuthVmOperateScope,
   [WS_METHODS.vmAgentWorkspaceSubscribe]: AuthVmOperateScope,
   [WS_METHODS.vmAgentRulesGet]: AuthVmOperateScope,

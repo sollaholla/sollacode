@@ -469,6 +469,12 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       scheduler: lifecycleScheduler,
       concurrency: perAgentSerial,
     }),
+    rename: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:rename",
+      tag: WS_METHODS.vmAgentRename,
+      scheduler: lifecycleScheduler,
+      concurrency: perAgentSerial,
+    }),
     createTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vm-agents:task-create",
       tag: WS_METHODS.vmAgentTaskCreate,

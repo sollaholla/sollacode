@@ -153,6 +153,7 @@ import {
   VmAgentRef,
   VmAgentRules,
   VmAgentVoiceSetInput,
+  VmAgentRenameInput,
   VmAgentRulesUpdateInput,
   VmAgentStreamItem,
   VmAgentTask,
@@ -416,6 +417,7 @@ export const WS_METHODS = {
   vmAgentStart: "vmAgent.start",
   vmAgentStop: "vmAgent.stop",
   vmAgentVoiceSet: "vmAgent.voice.set",
+  vmAgentRename: "vmAgent.rename",
   vmAgentSubscribe: "vmAgent.subscribe",
   vmAgentWorkspaceSubscribe: "vmAgent.workspace.subscribe",
   vmAgentRulesGet: "vmAgent.rules.get",
@@ -1287,6 +1289,12 @@ export const WsVmAgentStopRpc = Rpc.make(WS_METHODS.vmAgentStop, {
   error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
 });
 
+export const WsVmAgentRenameRpc = Rpc.make(WS_METHODS.vmAgentRename, {
+  payload: VmAgentRenameInput,
+  success: VmAgent,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
 /** Chooses the voice an agent speaks with on calls, from its next call. */
 export const WsVmAgentVoiceSetRpc = Rpc.make(WS_METHODS.vmAgentVoiceSet, {
   payload: VmAgentVoiceSetInput,
@@ -1872,6 +1880,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVmAgentStartRpc,
   WsVmAgentStopRpc,
   WsVmAgentVoiceSetRpc,
+  WsVmAgentRenameRpc,
   WsVmAgentSubscribeRpc,
   WsVmAgentWorkspaceSubscribeRpc,
   WsVmAgentRulesGetRpc,

@@ -1,3 +1,4 @@
+import { readLocalApi } from "../../localApi";
 import { isBrowserPushEnabled } from "../../browser/webPush";
 import { useAtomValue } from "@effect/atom-react";
 import { useParams, useRouter } from "@tanstack/react-router";
@@ -15,6 +16,7 @@ import {
   HandIcon,
   MessageSquareDotIcon,
   PhoneIcon,
+  PencilIcon,
   PlusIcon,
   PowerIcon,
   ShieldAlertIcon,
@@ -59,6 +61,7 @@ import {
   useAgentPowerToggle,
 } from "./AgentPowerToggle";
 import { CreateAgentDialog } from "./CreateAgentDialog";
+import { RenameAgentDialog } from "./RenameAgentDialog";
 import { DeleteAgentDialog } from "./DeleteAgentDialog";
 import {
   agentRegistryNoticeCopy,
@@ -393,6 +396,7 @@ function AgentSidebarRow(props: {
   readonly isActive: boolean;
   readonly onOpen: () => void;
   readonly onRequestDelete: () => void;
+  readonly onRequestRename: () => void;
   readonly onTogglePower: () => void;
   readonly powerBusy: boolean;
 }) {
@@ -502,6 +506,26 @@ function AgentSidebarRow(props: {
         type="button"
         isActive={props.isActive}
         onClick={handleOpen}
+        onKeyDown={(event) => {
+          if (event.key === "F2" && event.target === event.currentTarget) {
+            event.preventDefault();
+            props.onRequestRename();
+          }
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          const api = readLocalApi();
+          if (!api) return;
+          void api.contextMenu
+            .show([{ id: "rename", label: "Rename agent…" }], {
+              x: event.clientX,
+              y: event.clientY,
+            })
+            .then((selected) => {
+              if (selected === "rename") props.onRequestRename();
+            })
+            .catch(() => undefined);
+        }}
         aria-label={`Open ${agent.name} on ${props.environmentLabel}, ${presence.description}${onCall ? ", on a call" : ""}${needsApproval ? ", waiting for your approval" : needsInput ? ", waiting for your input" : ""}${props.unreadNotifications > 0 ? `, ${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "alert" : "alerts"}` : ""}`}
         data-testid="agent-sidebar-entry"
         className={cn(
@@ -674,6 +698,32 @@ function AgentSidebarRow(props: {
             <PowerIcon className="size-3.5" />
           </span>
         ) : null}
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label={`Rename ${agent.name}`}
+          title={`Rename ${agent.name}`}
+          className={cn(
+            "-mr-0.5 size-5 shrink-0 cursor-pointer items-center justify-center rounded text-sidebar-muted-foreground/70 hover:bg-foreground/10 hover:text-foreground",
+            usesTouch
+              ? "sr-only"
+              : "hidden group-hover/agent-row:inline-flex group-focus-within/agent-row:inline-flex",
+          )}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            props.onRequestRename();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            event.stopPropagation();
+            props.onRequestRename();
+          }}
+        >
+          <PencilIcon className="size-3.5" />
+        </span>
         {/* Collapsed out of layout while hidden, not made transparent: a
             reserved-but-invisible box left the status dot sitting beside a
             hole at the row's edge. When the X appears the dot simply yields
@@ -858,6 +908,7 @@ function AgentEnvironmentSection(props: {
   // Held as the agent rather than an id so the dialog can name it even if the
   // row disappears from the list mid-confirmation.
   const [pendingDelete, setPendingDelete] = useState<VmAgent | null>(null);
+  const [pendingRename, setPendingRename] = useState<VmAgent | null>(null);
   const activeAgentId = useParams({
     strict: false,
     select: (params) => (params as { agentId?: string }).agentId ?? null,
@@ -963,6 +1014,7 @@ function AgentEnvironmentSection(props: {
                 })
               }
               onRequestDelete={() => setPendingDelete(agent)}
+              onRequestRename={() => setPendingRename(agent)}
               onTogglePower={() => void power.toggle(agent)}
               powerBusy={power.busyAgentId === agent.vmAgentId}
             />
@@ -985,6 +1037,13 @@ function AgentEnvironmentSection(props: {
         />
       )}
 
+      {pendingRename ? (
+        <RenameAgentDialog
+          environmentId={props.environmentId}
+          agent={pendingRename}
+          onClose={() => setPendingRename(null)}
+        />
+      ) : null}
       {pendingDelete ? (
         <DeleteAgentDialog
           open

@@ -7,6 +7,7 @@ import {
   VmAgentCollaborationSubscribeInput,
   VmAgentCollaborationWireStreamItem,
   VmAgentDelegationId,
+  VmAgentRenameInput,
   VmAgentDelegationRef,
   VmAgentLegacyDelegationSummary,
 } from "./vm.ts";
@@ -140,5 +141,15 @@ describe("VM agent collaboration rolling upgrades", () => {
         delegations: [legacySummary],
       }),
     ).toMatchObject({ type: "snapshot", delegations: [legacySummary] });
+  });
+});
+
+describe("VmAgentRenameInput", () => {
+  it("trims display names and rejects blank or oversized values", () => {
+    const decode = Schema.decodeUnknownSync(VmAgentRenameInput);
+    expect(decode({ vmAgentId: "agent-to-rename", name: "  New name  " }).name).toBe("New name");
+    expect(() => decode({ vmAgentId: "agent-to-rename", name: "  " })).toThrow();
+    expect(() => decode({ vmAgentId: "agent-to-rename", name: "x".repeat(65) })).toThrow();
+    expect(decode({ vmAgentId: "agent-to-rename", name: "x".repeat(64) }).name).toHaveLength(64);
   });
 });

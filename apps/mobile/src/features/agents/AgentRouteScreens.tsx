@@ -22,6 +22,7 @@ import { Alert, Pressable, ScrollView, View } from "react-native";
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import { EmptyState } from "../../components/EmptyState";
+import { ControlPillMenu } from "../../components/ControlPill";
 import { useEnvironments } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -32,6 +33,7 @@ import { requestComposerFocus } from "../../state/composer-focus-requests";
 import { openMobileWaitingOnYouFollowUp } from "./mobileAgentAttentionFollowUp";
 import { useAgentCallBlockedReason, usePlaceAgentCall } from "../agentCalls/usePlaceAgentCall";
 import { AgentVoiceRow } from "./AgentVoiceRow";
+import { RenameAgentModal } from "./RenameAgentModal";
 import {
   boundedCollaborationPreview,
   delegationDirectionLabel,
@@ -136,10 +138,12 @@ function AgentEnvironmentSection(props: {
     [props.environmentId],
   );
   const attentionResult = useAtomValue(attentionAtom);
+  const [renameAgentId, setRenameAgentId] = useState<VmAgentId | null>(null);
   const callBlockedReason = useAgentCallBlockedReason(props.environmentId);
   const agentCall = usePlaceAgentCall();
   const latest = Option.getOrNull(AsyncResult.value(result));
   const agents = latest?.type === "snapshot" ? latest.agents : [];
+  const renameAgent = agents.find((agent) => agent.vmAgentId === renameAgentId) ?? null;
   const callErrorAgentName =
     agentCall.error === null
       ? null
@@ -240,18 +244,37 @@ function AgentEnvironmentSection(props: {
                   <SymbolView name="phone.fill" size={19} tintColor="#16a34a" />
                 </Pressable>
               ) : null}
-              <Pressable
-                accessibilityLabel={`Open ${agent.name} details`}
-                accessibilityRole="button"
-                className="min-h-14 w-12 shrink-0 items-center justify-center rounded-r-2xl active:bg-subtle"
-                onPress={openDetails}
+              <ControlPillMenu
+                title={agent.name}
+                actions={[
+                  { id: "details", title: "Agent details" },
+                  { id: "rename", title: "Rename agent" },
+                ]}
+                onPressAction={({ nativeEvent }) => {
+                  if (nativeEvent.event === "rename") setRenameAgentId(agent.vmAgentId);
+                  else if (nativeEvent.event === "details") openDetails();
+                }}
               >
-                <SymbolView name="ellipsis" size={20} tintColor="#737373" />
-              </Pressable>
+                <Pressable
+                  accessibilityLabel={`Options for ${agent.name}`}
+                  accessibilityRole="button"
+                  className="min-h-14 w-12 shrink-0 items-center justify-center rounded-r-2xl active:bg-subtle"
+                >
+                  <SymbolView name="ellipsis" size={20} tintColor="#737373" />
+                </Pressable>
+              </ControlPillMenu>
             </View>
           );
         })
       )}
+      {renameAgent !== null ? (
+        <RenameAgentModal
+          key={`${props.environmentId}:${renameAgent.vmAgentId}`}
+          environmentId={props.environmentId}
+          agent={renameAgent}
+          onClose={() => setRenameAgentId(null)}
+        />
+      ) : null}
       {agentCall.error !== null ? (
         <Text className="px-1 text-sm text-red-600 dark:text-red-300">
           Couldn't call {callErrorAgentName}: {agentCall.error.message}
@@ -1040,6 +1063,7 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
   const callBlockedReason = useAgentCallBlockedReason(environmentId);
   const agentCall = usePlaceAgentCall();
   const [activityOpen, setActivityOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const [busyBlockerId, setBusyBlockerId] = useState<string | null>(null);
   const [attentionError, setAttentionError] = useState<string | null>(null);
   const latest = Option.getOrNull(AsyncResult.value(result));
@@ -1202,6 +1226,23 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
           <Text className="text-sm text-foreground-muted">{callBlockedReason(agent)}</Text>
         ) : agentCall.error !== null ? (
           <Text className="text-sm text-red-600 dark:text-red-300">{agentCall.error.message}</Text>
+        ) : null}
+        <Pressable
+          accessibilityLabel={`Rename ${agent.name}`}
+          accessibilityRole="button"
+          className="min-h-11 flex-row items-center gap-3 rounded-xl border border-border px-4"
+          onPress={() => setRenaming(true)}
+        >
+          <SymbolView name="pencil" size={17} tintColor="#737373" />
+          <Text className="font-t3-bold text-foreground">Rename agent</Text>
+        </Pressable>
+        {renaming ? (
+          <RenameAgentModal
+            key={`${environmentId}:${agent.vmAgentId}`}
+            environmentId={environmentId}
+            agent={agent}
+            onClose={() => setRenaming(false)}
+          />
         ) : null}
         <AgentVoiceRow environmentId={environmentId} agent={agent} />
       </View>

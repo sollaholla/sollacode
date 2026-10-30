@@ -34,6 +34,7 @@ export const AgentBuilderInput = Schema.Struct({
     "start_agent",
     "stop_agent",
     "set_voice",
+    "rename_agent",
     "delete_agent",
   ]).annotate({
     description:
@@ -46,7 +47,8 @@ export const AgentBuilderInput = Schema.Struct({
     description: "Target agent's id, as an alternative to agentName.",
   }),
   name: Schema.optional(VmAgent.fields.name).annotate({
-    description: "create_agent: the agent's name. Doubles as its @mention handle; must be unique.",
+    description:
+      "create_agent/rename_agent: the unique display name. Creation derives an @mention handle; renaming keeps that handle unchanged.",
   }),
   purpose: Schema.optional(VmAgent.fields.purpose).annotate({
     description: "create_agent: what this agent is for, in a sentence or two.",

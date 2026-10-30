@@ -72,8 +72,8 @@ export const VmAgentName = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
 export type VmAgentName = typeof VmAgentName.Type;
 
 /**
- * Mention handle: a normalized, lowercase, `@`-friendly form of the name used
- * to route `@handle` deliveries in chat threads. Letters, digits, hyphen only.
+ * Mention handle: derived from the initial name and stable across display-name
+ * changes. Routes `@handle` deliveries in chat threads. Letters, digits, hyphen only.
  */
 export const VmAgentHandle = TrimmedNonEmptyString.check(Schema.isMaxLength(64)).check(
   Schema.isPattern(/^[a-z0-9][a-z0-9-]*$/),
@@ -243,6 +243,13 @@ export const VmAgentRef = Schema.Struct({
   vmAgentId: VmAgentId,
 });
 export type VmAgentRef = Schema.Codec.Encoded<typeof VmAgentRef>;
+
+/** Changes the display name while retaining the agent's stable mention handle. */
+export const VmAgentRenameInput = Schema.Struct({
+  vmAgentId: VmAgentId,
+  name: VmAgentName,
+});
+export type VmAgentRenameInput = Schema.Codec.Encoded<typeof VmAgentRenameInput>;
 
 /**
  * Chooses the voice an agent speaks with on calls; null goes back to
@@ -1144,7 +1151,16 @@ export class VmAgentNameConflictError extends Schema.TaggedErrorClass<VmAgentNam
   },
 ) {
   override get message() {
-    return `An agent named "${this.name}" (@${this.handle}) already exists`;
+    return `Agent name "${this.name}" or mention handle @${this.handle} is already in use`;
+  }
+}
+
+export class VmAgentInvalidNameError extends Schema.TaggedErrorClass<VmAgentInvalidNameError>()(
+  "VmAgentInvalidNameError",
+  { name: Schema.String },
+) {
+  override get message() {
+    return "Agent names must contain 1–64 characters after trimming spaces.";
   }
 }
 
@@ -1159,7 +1175,11 @@ export class VmAgentNotFoundError extends Schema.TaggedErrorClass<VmAgentNotFoun
   }
 }
 
-export const VmAgentError = Schema.Union([VmAgentNameConflictError, VmAgentNotFoundError]);
+export const VmAgentError = Schema.Union([
+  VmAgentNameConflictError,
+  VmAgentInvalidNameError,
+  VmAgentNotFoundError,
+]);
 export type VmAgentError = typeof VmAgentError.Type;
 
 export const VmAgentWorkspaceError = Schema.Union([

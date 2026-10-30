@@ -158,6 +158,18 @@ export const handleAgentBuilder = Effect.fn("AgentBuilder.handle")(function* (
         agent: voiced,
       };
     }
+    case "rename_agent": {
+      const agent = yield* resolveAgent;
+      const name = yield* requireField(input, "name");
+      const renamed = yield* manager
+        .rename(agent.vmAgentId, name)
+        .pipe(Effect.mapError(mapFailure("renaming the agent")));
+      return {
+        action: input.action,
+        status: `Agent "${agent.name}" is now "${renamed.name}". Its mention handle remains @${renamed.handle}.`,
+        agent: renamed,
+      };
+    }
     case "configure_agent_chat": {
       const agent = yield* resolveAgent;
       if (

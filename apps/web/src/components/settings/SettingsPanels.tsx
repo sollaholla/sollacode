@@ -1,3 +1,4 @@
+import { AgentNameSettings } from "../agents/AgentNameSettings";
 import { WebPushSettings } from "./WebPushSettings";
 import { ModelPolicyEditor, useSaveModelPolicy } from "./ModelPolicyEditor";
 import {
@@ -3042,6 +3043,9 @@ export function AgentsSettingsPanel() {
   return (
     <SettingsPageContainer>
       {!window.desktopBridge && <WebPushSettings />}
+      <SettingsSection title="Agent names">
+        <AgentNameSettings />
+      </SettingsSection>
       <SettingsSection title="Agent Stack">
         <SettingsRow
           title="Enable Agent Stack"

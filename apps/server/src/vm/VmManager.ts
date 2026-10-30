@@ -15,6 +15,8 @@ import {
   type VmAgentStatus,
   VmAgentId,
   VmAgentNameConflictError,
+  VmAgentInvalidNameError,
+  VmAgentName,
   VmAgentNotFoundError,
   VmAgentStreamEvent,
   VmId,
@@ -26,6 +28,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 
@@ -47,6 +50,15 @@ export interface VmManagerShape {
   readonly deleteAgent: (
     vmAgentId: VmAgentId,
   ) => Effect.Effect<ThreadId | null, VmAgentNotFoundError>;
+
+  /** Rename the display identity without changing mention routing or the workspace. */
+  readonly rename: (
+    vmAgentId: VmAgentId,
+    name: string,
+  ) => Effect.Effect<
+    VmAgent,
+    VmAgentNameConflictError | VmAgentInvalidNameError | VmAgentNotFoundError
+  >;
 
   /** Set or clear the agent's glyph; the registry stream re-broadcasts. */
   readonly setIcon: (
@@ -75,6 +87,8 @@ export interface VmManagerShape {
 }
 
 export class VmManager extends Context.Service<VmManager, VmManagerShape>()("t3/vm/VmManager") {}
+
+const decodeAgentName = Schema.decodeUnknownEffect(VmAgentName);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -146,7 +160,19 @@ export const make = Effect.gen(function* () {
         updatedAt: createdAt,
       };
 
-      yield* store.insert(agent).pipe(Effect.orDie);
+      yield* store.insert(agent).pipe(
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            // A concurrent create or rename may claim the name after preflight.
+            const currentName = yield* store.getByNameLower(nameLower).pipe(Effect.orDie);
+            const currentHandle = yield* store.getByHandle(handle).pipe(Effect.orDie);
+            if (Option.isSome(currentName) || Option.isSome(currentHandle)) {
+              return yield* new VmAgentNameConflictError({ name: input.name, handle });
+            }
+            return yield* Effect.die(error);
+          }),
+        ),
+      );
       yield* publishAgents();
 
       return yield* requireAgent(vmAgentId).pipe(Effect.orDie);
@@ -160,6 +186,28 @@ export const make = Effect.gen(function* () {
       // The caller (ws handler) deletes the chat thread; it owns orchestration.
       return agent.threadId;
     });
+
+  const rename: VmManagerShape["rename"] = Effect.fn("VmManager.rename")(
+    function* (vmAgentId, inputName) {
+      const name = yield* decodeAgentName(inputName).pipe(
+        Effect.mapError(() => new VmAgentInvalidNameError({ name: inputName })),
+      );
+      const agent = yield* requireAgent(vmAgentId);
+      if (agent.name === name) return agent;
+      const updatedAt = yield* nowIso;
+      const changed = yield* store.rename({ vmAgentId, name, updatedAt }).pipe(Effect.orDie);
+      if (!changed) {
+        yield* requireAgent(vmAgentId);
+        const conflict = yield* store.getByNameLower(name.toLowerCase()).pipe(Effect.orDie);
+        return yield* new VmAgentNameConflictError({
+          name,
+          handle: Option.isSome(conflict) ? conflict.value.handle : agent.handle,
+        });
+      }
+      yield* publishAgents();
+      return yield* requireAgent(vmAgentId);
+    },
+  );
 
   const setIcon: VmManagerShape["setIcon"] = (vmAgentId, icon) =>
     Effect.gen(function* () {
@@ -236,6 +284,7 @@ export const make = Effect.gen(function* () {
   return {
     create,
     deleteAgent,
+    rename,
     setIcon,
     setVoice,
     setStatus,

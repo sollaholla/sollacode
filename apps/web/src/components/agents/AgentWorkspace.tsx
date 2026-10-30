@@ -10,6 +10,7 @@ import {
   ListTodoIcon,
   PanelRightIcon,
   PanelTopCloseIcon,
+  PencilIcon,
   ScrollTextIcon,
 } from "lucide-react";
 import * as Option from "effect/Option";
@@ -34,6 +35,7 @@ import { AgentCallButton } from "../agentCall/AgentCallButton";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { AgentGlyph } from "./AgentGlyph";
 import { AgentPowerToggle } from "./AgentPowerToggle";
+import { RenameAgentDialog } from "./RenameAgentDialog";
 import { AgentVoiceMenu } from "./AgentVoiceMenu";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { AgentRulesPanel } from "./AgentRulesPanel";
@@ -78,6 +80,7 @@ function AgentWorkspaceResolved(props: {
 }) {
   const { environmentId } = props;
   const [view, setView] = useState<AgentWorkspaceView>("chat");
+  const [renameTarget, setRenameTarget] = useState<VmAgent | null>(null);
   const [projectScriptsPortalTarget, setProjectScriptsPortalTarget] =
     useState<HTMLDivElement | null>(null);
 
@@ -343,6 +346,9 @@ function AgentWorkspaceResolved(props: {
                         <LayoutDashboardIcon /> Dashboard
                       </MenuItem>
                     ) : null}
+                    <MenuItem onClick={() => setRenameTarget(agent)}>
+                      <PencilIcon /> Rename agent
+                    </MenuItem>
                     <AgentVoiceMenu environmentId={environmentId} agent={agent} />
                     {foldEnabled && view === "chat" ? (
                       <MenuItem onClick={headerFold.fold}>
@@ -351,6 +357,13 @@ function AgentWorkspaceResolved(props: {
                     ) : null}
                   </MenuPopup>
                 </Menu>
+                {renameTarget ? (
+                  <RenameAgentDialog
+                    environmentId={environmentId}
+                    agent={renameTarget}
+                    onClose={() => setRenameTarget(null)}
+                  />
+                ) : null}
                 {/* Not selectable: it is one line of chrome in a drag region, and
                 a click-drag across it selected the text instead of moving the
                 window. */}

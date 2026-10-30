@@ -60,6 +60,7 @@ const makeHarness = (existingAgents: ReadonlyArray<VmAgent> = [agent]) => {
   const createdTasks: CreateWorkspaceTaskInput[] = [];
   const deletedAgents: string[] = [];
   const endedCallsFor: string[] = [];
+  const renames: Array<{ vmAgentId: string; name: string }> = [];
   const voices: Array<{ vmAgentId: string; voice: string | null }> = [];
   let wakeCount = 0;
 
@@ -83,6 +84,11 @@ const makeHarness = (existingAgents: ReadonlyArray<VmAgent> = [agent]) => {
       Effect.sync(() => {
         deletedAgents.push(vmAgentId);
         return agentThreadId;
+      }),
+    rename: (vmAgentId, name) =>
+      Effect.sync(() => {
+        renames.push({ vmAgentId, name });
+        return { ...agent, vmAgentId, name };
       }),
     setVoice: (vmAgentId, voice) =>
       Effect.sync(() => {
@@ -127,6 +133,7 @@ const makeHarness = (existingAgents: ReadonlyArray<VmAgent> = [agent]) => {
     deletedAgents,
     endedCallsFor,
     voices,
+    renames,
     wakeCount: () => wakeCount,
     layer: Layer.mergeAll(
       engineLayer,
@@ -330,5 +337,28 @@ it.effect("delete_agent demands the exact name before destroying anything", () =
       harness.dispatched.map((command) => command.type),
       "thread.delete",
     );
+  }),
+);
+
+it.effect("rename_agent updates the selected agent without replacing its workspace or chat", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    const result = yield* run(
+      handleAgentBuilder({ action: "rename_agent", agentId: agent.vmAgentId, name: "Navigator" }),
+      harness.layer,
+    );
+    assert.deepStrictEqual(harness.renames, [{ vmAgentId: agent.vmAgentId, name: "Navigator" }]);
+    assert.strictEqual(result.agent?.name, "Navigator");
+    assert.strictEqual(result.agent?.handle, agent.handle);
+    assert.strictEqual(result.agent?.threadId, agent.threadId);
+    assert.include(result.status, `@${agent.handle}`);
+    assert.deepStrictEqual(harness.dispatched, []);
+    assert.deepStrictEqual(harness.createdAgents, []);
+    assert.deepStrictEqual(harness.deletedAgents, []);
+    const missing = yield* Effect.flip(
+      run(handleAgentBuilder({ action: "rename_agent", agentName: agent.name }), harness.layer),
+    );
+    assert.strictEqual(missing._tag, "AgentBuilderInvalidInputError");
+    assert.strictEqual(harness.renames.length, 1);
   }),
 );

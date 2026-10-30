@@ -23,6 +23,22 @@ The animations play once and are off when the device asks for reduced motion. La
 plain **New agent** dialog, and the server gives each one the next free character. The phone app
 can't create agents yet; its empty Agents screen points to the computer.
 
+## Renaming an agent
+
+Choose **Rename agent** from the agent's controls, enter the new name, and save. The name can be
+up to 64 characters and must be unique on that agent's host, ignoring capitalization. You can
+cancel without changing it, or rename it again later.
+
+On web and desktop, use the agent tools menu, right-click its sidebar entry, or open
+**Settings → Agents → Agent names**. With the sidebar entry focused, **F2** opens the same editor;
+the command palette also offers renaming while that agent is open. On mobile, use the agent's
+list menu or its details screen. You can also ask Agent Builder to rename an agent.
+
+Renaming changes the display name across connected clients. The agent keeps its original
+`@handle`, character, conversation, files, instructions, scheduled work, and collaboration history.
+Existing mentions continue to work. The agent receives its current display name in the context
+for its next turn; renaming does not interrupt work already running.
+
 ## Characters
 
 Each agent gets its own character: a vivid body shape (mochi, bell, acorn, lantern, sunburst,

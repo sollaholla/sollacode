@@ -1,4 +1,4 @@
-import { type VmAgentStreamEvent } from "@t3tools/contracts";
+import { ThreadId, VmAgentId, type VmAgentStreamEvent } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -32,6 +32,141 @@ managerLayer("VmManager", (it) => {
 
       yield* manager.setVoice(agent.vmAgentId, null);
       assert.isNull(Option.getOrThrow(yield* store.getById(agent.vmAgentId)).voice);
+    }),
+  );
+
+  it.effect(
+    "renames persistently and broadcasts while preserving routing, history and character",
+    () =>
+      Effect.gen(function* () {
+        const manager = yield* VmManager;
+        const store = yield* VmAgentStore;
+        const original = yield* manager.create({
+          name: "Rename Original",
+          purpose: "keep this",
+          threadId: ThreadId.make("rename-chat"),
+        });
+        const voiced = yield* manager.setVoice(original.vmAgentId, "willow");
+        const agent = yield* manager.setStatus(voiced.vmAgentId, "stopped");
+        const snapshots: VmAgentStreamEvent[] = [];
+        const unsubscribe = yield* manager.subscribeAgents((event) =>
+          Effect.sync(() => {
+            snapshots.push(event);
+          }),
+        );
+        const renamed = yield* manager.rename(agent.vmAgentId, "  New Identity  ");
+        assert.deepStrictEqual(renamed, {
+          ...agent,
+          name: "New Identity",
+          updatedAt: renamed.updatedAt,
+        });
+        assert.deepStrictEqual(Option.getOrThrow(yield* store.getById(agent.vmAgentId)), renamed);
+        assert.deepStrictEqual(Option.getOrThrow(yield* store.getByHandle(agent.handle)), renamed);
+        assert.isTrue(Option.isNone(yield* store.getByNameLower("rename original")));
+        assert.deepStrictEqual(
+          Option.getOrThrow(yield* store.getByNameLower("new identity")),
+          renamed,
+        );
+        const snapshot = snapshots.at(-1);
+        assert.strictEqual(snapshot?.type, "snapshot");
+        if (snapshot?.type === "snapshot")
+          assert.deepStrictEqual(
+            snapshot.agents.find((a) => a.vmAgentId === agent.vmAgentId),
+            renamed,
+          );
+        const afterRename = snapshots.length;
+        assert.deepStrictEqual(yield* manager.rename(agent.vmAgentId, " New Identity "), renamed);
+        assert.strictEqual(snapshots.length, afterRename);
+        const casing = yield* manager.rename(agent.vmAgentId, "NEW IDENTITY");
+        assert.strictEqual(casing.name, "NEW IDENTITY");
+        assert.strictEqual(casing.handle, agent.handle);
+        unsubscribe();
+      }),
+  );
+
+  it.effect("rejects missing agents and invalid display names without mutation", () =>
+    Effect.gen(function* () {
+      const manager = yield* VmManager;
+      const store = yield* VmAgentStore;
+      const agent = yield* manager.create({
+        name: "Valid Before Rename",
+        purpose: "persist",
+        threadId: null,
+      });
+      for (const name of ["", "  ", "x".repeat(65)]) {
+        const failure = yield* Effect.flip(manager.rename(agent.vmAgentId, name));
+        assert.strictEqual(failure._tag, "VmAgentInvalidNameError");
+      }
+      assert.deepStrictEqual(Option.getOrThrow(yield* store.getById(agent.vmAgentId)), agent);
+      const missing = yield* Effect.flip(
+        manager.rename(VmAgentId.make("missing-rename-id"), "Valid"),
+      );
+      assert.strictEqual(missing._tag, "VmAgentNotFoundError");
+    }),
+  );
+
+  it.effect("rejects case-insensitive conflicts, including concurrent rename requests", () =>
+    Effect.gen(function* () {
+      const manager = yield* VmManager;
+      const store = yield* VmAgentStore;
+      const first = yield* manager.create({ name: "Race One", purpose: "race", threadId: null });
+      const second = yield* manager.create({ name: "Race Two", purpose: "race", threadId: null });
+      const failure = yield* Effect.flip(manager.rename(first.vmAgentId, "rACE tWO"));
+      assert.strictEqual(failure._tag, "VmAgentNameConflictError");
+      assert.deepStrictEqual(Option.getOrThrow(yield* store.getById(first.vmAgentId)), first);
+      const results = yield* Effect.all(
+        [
+          manager.rename(first.vmAgentId, "Race Winner"),
+          manager.rename(second.vmAgentId, "RACE WINNER"),
+        ].map((effect) =>
+          effect.pipe(
+            Effect.map((agent) => ({ kind: "renamed" as const, agent })),
+            Effect.catch((error) => Effect.succeed({ kind: "rejected" as const, error })),
+          ),
+        ),
+        { concurrency: "unbounded" },
+      );
+      assert.strictEqual(results.filter((result) => result.kind === "renamed").length, 1);
+      assert.strictEqual(results.filter((result) => result.kind === "rejected").length, 1);
+      const rejected = results.find((result) => result.kind === "rejected");
+      assert.strictEqual(rejected?.error._tag, "VmAgentNameConflictError");
+      const winner = Option.getOrThrow(yield* store.getByNameLower("race winner"));
+      assert.include([first.vmAgentId, second.vmAgentId], winner.vmAgentId);
+    }),
+  );
+
+  it.effect("keeps create-versus-rename name races typed and preserves the original handle", () =>
+    Effect.gen(function* () {
+      const manager = yield* VmManager;
+      const store = yield* VmAgentStore;
+      const agent = yield* manager.create({
+        name: "Original Mention",
+        purpose: "route",
+        threadId: null,
+      });
+      yield* manager.rename(agent.vmAgentId, "Updated Mention");
+      const occupiedHandle = yield* Effect.flip(
+        manager.create({ name: "Original Mention", purpose: "reuse", threadId: null }),
+      );
+      assert.strictEqual(occupiedHandle._tag, "VmAgentNameConflictError");
+      assert.include(occupiedHandle.message, "mention handle @original-mention");
+      const results = yield* Effect.all(
+        [
+          manager.create({ name: "Contested Identity", purpose: "race", threadId: null }),
+          manager.rename(agent.vmAgentId, "Contested Identity"),
+        ].map((effect) =>
+          effect.pipe(
+            Effect.map(() => "saved"),
+            Effect.catch((error) => Effect.succeed(error._tag)),
+          ),
+        ),
+        { concurrency: "unbounded" },
+      );
+      assert.deepStrictEqual([...results].sort(), ["VmAgentNameConflictError", "saved"]);
+      assert.strictEqual(
+        Option.getOrThrow(yield* store.getById(agent.vmAgentId)).handle,
+        agent.handle,
+      );
     }),
   );
 

@@ -46,6 +46,13 @@ export interface VmAgentStoreShape {
 
   readonly deleteById: (vmAgentId: VmAgentId) => Effect.Effect<void, ProjectionRepositoryError>;
 
+  /** Atomically updates a unique name; false means a duplicate or a missing agent. */
+  readonly rename: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly name: string;
+    readonly updatedAt: string;
+  }) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
   /** Set (or clear) the agent's outlined glyph and bump `updated_at`. */
   readonly updateIcon: (input: {
     readonly vmAgentId: VmAgentId;
