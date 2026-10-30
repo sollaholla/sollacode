@@ -6,6 +6,39 @@ export function sideChatDisplayTitle(title: string): string {
 export const SIDE_CHAT_PROMOTION_CONFIRMATION =
   "Promote this side chat to its own thread? It moves to the project sidebar as a main chat and leaves this thread's side chats. This can't be undone.";
 
+/**
+ * The main chat a side chat belongs to, or null for a main chat. A promoted
+ * side chat is a main chat: promotion clears both the flag and the parent.
+ */
+export function sideChatParentThreadIdOf(thread: {
+  readonly id: string;
+  readonly isSideChat?: boolean;
+  readonly sideChatParentThreadId?: string | null;
+}): string | null {
+  const parentThreadId = thread.sideChatParentThreadId;
+  if (thread.isSideChat !== true || !parentThreadId || parentThreadId === thread.id) {
+    return null;
+  }
+  return parentThreadId;
+}
+
+const promotedHere = new Set<string>();
+
+/**
+ * Remembers a side chat this client just promoted. The promote request
+ * resolves before the shell update arrives, so for a moment the shell still
+ * calls the chat a side chat; without this, opening the promoted chat would
+ * bounce it back into its old parent's panel. Promotion is one-way, so the
+ * entry never goes stale.
+ */
+export function markSideChatPromoted(environmentId: string, threadId: string): void {
+  promotedHere.add(`${environmentId}:${threadId}`);
+}
+
+export function wasSideChatPromotedHere(environmentId: string, threadId: string): boolean {
+  return promotedHere.has(`${environmentId}:${threadId}`);
+}
+
 interface SideChatActivityThread {
   readonly id: string;
   readonly environmentId: string;

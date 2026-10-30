@@ -44,7 +44,7 @@ import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useClientSettings } from "./useSettings";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useRightPanelStore } from "../rightPanelStore";
-import { sideChatDisplayTitle } from "../sideChat";
+import { markSideChatPromoted, sideChatDisplayTitle } from "../sideChat";
 
 function notifyDeferredThreadAction(action: string) {
   toastManager.add({
@@ -353,7 +353,7 @@ export function useThreadActions() {
       }
       const resolved = resolveThreadTarget(target);
       const title = resolved?.thread.title.replace(/ \(side chat\)$/i, "");
-      return updateThreadMetadataMutation({
+      const result = await updateThreadMetadataMutation({
         environmentId: target.environmentId,
         input: {
           threadId: target.threadId,
@@ -361,6 +361,10 @@ export function useThreadActions() {
           ...(title && title !== resolved?.thread.title ? { title } : {}),
         },
       });
+      if (result._tag === "Success") {
+        markSideChatPromoted(target.environmentId, target.threadId);
+      }
+      return result;
     },
     [resolveThreadTarget, updateThreadMetadataMutation],
   );

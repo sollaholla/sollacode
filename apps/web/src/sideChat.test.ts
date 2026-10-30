@@ -3,8 +3,11 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveWorkingSideChatsByParent,
   isSideChatActivelyWorking,
+  markSideChatPromoted,
   sideChatDisplayTitle,
   sideChatParentActivityKey,
+  sideChatParentThreadIdOf,
+  wasSideChatPromotedHere,
 } from "./sideChat";
 
 describe("sideChatDisplayTitle", () => {
@@ -119,5 +122,41 @@ describe("side-chat activity", () => {
         ]).size,
       ).toBe(0);
     }
+  });
+});
+
+describe("sideChatParentThreadIdOf", () => {
+  it("names the main chat a side chat opens in", () => {
+    expect(
+      sideChatParentThreadIdOf({ id: "child", isSideChat: true, sideChatParentThreadId: "main" }),
+    ).toBe("main");
+  });
+
+  it("treats promoted side chats and plain threads as main chats", () => {
+    // Promotion clears both the flag and the parent.
+    expect(
+      sideChatParentThreadIdOf({ id: "promoted", isSideChat: false, sideChatParentThreadId: null }),
+    ).toBeNull();
+    expect(sideChatParentThreadIdOf({ id: "main" })).toBeNull();
+    // A stale parent without the flag is not a side chat either.
+    expect(
+      sideChatParentThreadIdOf({ id: "odd", isSideChat: false, sideChatParentThreadId: "main" }),
+    ).toBeNull();
+  });
+
+  it("refuses a missing or self-referencing parent", () => {
+    expect(sideChatParentThreadIdOf({ id: "child", isSideChat: true })).toBeNull();
+    expect(
+      sideChatParentThreadIdOf({ id: "child", isSideChat: true, sideChatParentThreadId: "child" }),
+    ).toBeNull();
+  });
+});
+
+describe("side chats promoted on this client", () => {
+  it("are remembered per environment until the shell catches up", () => {
+    expect(wasSideChatPromotedHere("env-a", "thread-promoted")).toBe(false);
+    markSideChatPromoted("env-a", "thread-promoted");
+    expect(wasSideChatPromotedHere("env-a", "thread-promoted")).toBe(true);
+    expect(wasSideChatPromotedHere("env-b", "thread-promoted")).toBe(false);
   });
 });

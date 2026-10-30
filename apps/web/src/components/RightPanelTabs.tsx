@@ -52,6 +52,7 @@ import type { DesktopPreviewOverlay } from "~/previewStateStore";
 import { AgentCursorGlyph } from "~/components/preview/AgentCursorGlyph";
 import { resolvePreviewTabAgentIndicator } from "~/components/preview/previewTabAgentIndicator";
 import { cn } from "~/lib/utils";
+import { rightPanelSheetContentInsetClassName } from "../rightPanelLayout";
 import { readLocalApi } from "~/localApi";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import {
@@ -1176,7 +1177,15 @@ function RightPanelTabsContent(props: RightPanelTabsProps & { onExitComplete: ()
         </ScrollArea>
         {props.layoutControls}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col",
+          props.mode === "sheet" &&
+            rightPanelSheetContentInsetClassName(
+              props.surfaces.find((surface) => surface.id === props.activeSurfaceId)?.kind ?? null,
+            ),
+        )}
+      >
         {props.activeSurfaceId === null ? (
           <RightPanelEmptyState
             onAddBrowser={props.onAddBrowser}

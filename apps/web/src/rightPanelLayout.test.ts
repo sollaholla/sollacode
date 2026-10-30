@@ -1,7 +1,10 @@
 import * as NodeAssert from "node:assert/strict";
 import { describe, it } from "vite-plus/test";
 
-import { RIGHT_PANEL_SHEET_CLASS_NAME } from "./rightPanelLayout.ts";
+import {
+  RIGHT_PANEL_SHEET_CLASS_NAME,
+  rightPanelSheetContentInsetClassName,
+} from "./rightPanelLayout.ts";
 
 describe("responsive right panel layout", () => {
   it("fills the viewport instead of leaving the conversation visible beside it", () => {
@@ -15,5 +18,12 @@ describe("responsive right panel layout", () => {
       [...classes].some((className) => className.includes("88vw")),
       false,
     );
+  });
+
+  it("pads the home indicator area once, leaving side chats to their composer", () => {
+    NodeAssert.equal(RIGHT_PANEL_SHEET_CLASS_NAME.includes("safe-area-inset-bottom"), false);
+    NodeAssert.equal(rightPanelSheetContentInsetClassName("side-chat"), "");
+    NodeAssert.equal(rightPanelSheetContentInsetClassName("preview"), "pb-safe");
+    NodeAssert.equal(rightPanelSheetContentInsetClassName(null), "pb-safe");
   });
 });

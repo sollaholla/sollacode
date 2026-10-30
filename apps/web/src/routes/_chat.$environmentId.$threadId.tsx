@@ -1,5 +1,7 @@
 import { createFileRoute, useLocation, useNavigate } from "@tanstack/react-router";
-import { Suspense, useEffect } from "react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { ThreadId } from "@t3tools/contracts";
+import { Suspense, useEffect, useMemo } from "react";
 
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
 import {
@@ -21,6 +23,12 @@ import { environmentShell } from "../state/shell";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { LazyChatView } from "../lazyChatView";
 import { PaneLoadingState } from "../components/PaneLoadingState";
+import { useRightPanelStore } from "../rightPanelStore";
+import {
+  sideChatDisplayTitle,
+  sideChatParentThreadIdOf,
+  wasSideChatPromotedHere,
+} from "../sideChat";
 
 function ChatThreadRouteView() {
   const navigate = useNavigate();
@@ -75,6 +83,27 @@ function ChatThreadRouteView() {
     status: serverThreadStatus,
   });
   const serverThreadExists = serverThreadDetail !== null || serverThreadShell !== null;
+  // A side chat lives in its main chat's panel. Links from the Live Inspector,
+  // notifications or anywhere else name the side chat itself, so open the
+  // parent with that side chat's tab instead of showing it as a main chat.
+  const sideChatParentThreadId =
+    threadRef !== null &&
+    serverThreadShell !== null &&
+    serverThreadShell.archivedAt === null &&
+    !wasSideChatPromotedHere(threadRef.environmentId, threadRef.threadId)
+      ? sideChatParentThreadIdOf(serverThreadShell)
+      : null;
+  const sideChatParentRef = useMemo(
+    () =>
+      threadRef !== null && sideChatParentThreadId !== null
+        ? scopeThreadRef(threadRef.environmentId, ThreadId.make(sideChatParentThreadId))
+        : null,
+    [sideChatParentThreadId, threadRef],
+  );
+  const sideChatParentShell = useThreadShell(sideChatParentRef);
+  // Without the parent there is no panel to open, and the panel drops archived
+  // side chats, so those show on their own rather than leading nowhere.
+  const redirectToSideChatParent = sideChatParentRef !== null && sideChatParentShell !== null;
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
 
   useEffect(() => {
@@ -86,6 +115,22 @@ function ChatThreadRouteView() {
       replace: true,
     });
   }, [artifact, navigate, routeNeedsCanonicalEnvironment, threadRef]);
+
+  useEffect(() => {
+    if (!redirectToSideChatParent || !sideChatParentRef || !threadRef || !serverThreadShell) return;
+    useRightPanelStore
+      .getState()
+      .openSideChat(
+        sideChatParentRef,
+        threadRef.threadId,
+        sideChatDisplayTitle(serverThreadShell.title),
+      );
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(sideChatParentRef),
+      replace: true,
+    });
+  }, [navigate, redirectToSideChatParent, serverThreadShell, sideChatParentRef, threadRef]);
 
   useEffect(() => {
     if (!threadRef || !bootstrapComplete) {
@@ -106,6 +151,14 @@ function ChatThreadRouteView() {
 
   if (!threadRef) {
     return null;
+  }
+
+  if (redirectToSideChatParent) {
+    return (
+      <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
+        <PaneLoadingState label="Opening side chat…" />
+      </SidebarInset>
+    );
   }
 
   return (

@@ -21,10 +21,16 @@ Side-chat agents receive private concurrency guidance. They know they are workin
 conversation and avoid workspace changes that could interfere with it unless the user explicitly
 asks for those changes in the side chat. The guidance exists because a side chat shares the main
 thread's workspace while both run. For the same reason, a side chat opened from a side chat joins
-the same main thread's panel instead of nesting under it. That works from the **Side Chat** button
-in a side chat you have open full-screen: Solla opens the new one beside it in the main thread.
-Before 0.1.726 that button was disabled in a side chat, although the side chat's agent could open
-one.
+the same main thread's panel instead of nesting under it.
+
+Opening a side chat from anywhere else, such as the Live Inspector, a notification or a link, opens
+its main thread with the side chat's tab selected. Before 0.1.774 those links opened the side chat
+full-screen as if it were a main thread. A promoted side chat is a main chat, so its links open it
+on its own. Archived side chats, and side chats whose main thread is gone, also open on their own.
+
+On a phone, the side chat's composer sits the same distance from the bottom of the screen as the main
+chat's. Before 0.1.774 the home-indicator space was added twice, leaving an empty band and a lighter
+strip under the composer.
 
 Closing a side chat always asks for confirmation. Confirming closes its panel tab and archives the
 backing conversation instead of deleting it, so it can be restored later from Archived. Cancelling
