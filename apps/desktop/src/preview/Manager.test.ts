@@ -87,6 +87,54 @@ describe("interpolateDragMoves", () => {
   });
 });
 
+describe("blank windows a page fills in later", () => {
+  const request = {
+    url: "",
+    openerUrl: "https://portal.example-leasing.test/my-unit",
+    disposition: "foreground-tab",
+    features: "",
+    frameName: "",
+    hasPostBody: false,
+    requestedDirectTab: false,
+  };
+
+  it("hand off a featureless blank open, but not a sized or named one", () => {
+    // The resident app's renewal card: window.open() now, location set once
+    // the signed link arrives. It floated over Solla as its own window.
+    expect(PreviewManager.guestWindowOpenTarget(request)).toBe("blank-handoff");
+    expect(PreviewManager.guestWindowOpenTarget({ ...request, url: "about:blank" })).toBe(
+      "blank-handoff",
+    );
+    expect(PreviewManager.guestWindowOpenTarget({ ...request, frameName: "_blank" })).toBe(
+      "blank-handoff",
+    );
+    expect(
+      PreviewManager.guestWindowOpenTarget({ ...request, features: "width=500,height=600" }),
+    ).toBe("child-window");
+    expect(PreviewManager.guestWindowOpenTarget({ ...request, frameName: "oauth" })).toBe(
+      "child-window",
+    );
+  });
+
+  it("send web pages to a tab and keep sign-in pages as windows", () => {
+    expect(
+      PreviewManager.blankPopupDestination(
+        "https://renewals.example-leasing.test/?token=eyJhbGciOiJIUzI1NiJ9.e30.sig",
+      ),
+    ).toBe("preview-tab");
+    expect(
+      PreviewManager.blankPopupDestination(
+        "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&redirect_uri=y",
+      ),
+    ).toBe("window");
+    expect(PreviewManager.blankPopupDestination("https://example.com/login")).toBe("window");
+    expect(PreviewManager.blankPopupDestination("https://pay.example.com/?client_id=7")).toBe(
+      "window",
+    );
+    expect(PreviewManager.blankPopupDestination("data:text/html,<p>hi</p>")).toBe("window");
+  });
+});
+
 describe("guestWindowOpenTarget", () => {
   const request = {
     url: "https://publisher.example.com/packages/7/edit",
@@ -122,9 +170,6 @@ describe("guestWindowOpenTarget", () => {
     expect(
       PreviewManager.guestWindowOpenTarget({ ...request, url: "https://accounts.example.net/o" }),
     ).toBe("child-window");
-    expect(PreviewManager.guestWindowOpenTarget({ ...request, url: "about:blank" })).toBe(
-      "child-window",
-    );
     expect(PreviewManager.guestWindowOpenTarget({ ...request, frameName: "oauth-login" })).toBe(
       "child-window",
     );
@@ -3900,6 +3945,189 @@ describe("PreviewManager", () => {
           yield* Fiber.interrupt(snapshot);
           expect(popupWindow.setParentWindow).toHaveBeenCalledWith(null);
           expect(popupWindow.showInactive).toHaveBeenCalledTimes(2);
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "turns a blank window a page fills in later into a preview tab, or shows it for sign-in",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          // 2026-10-31: a resident portal's renewal card ran window.open(), then set
+          // the window's location to a signed link. The blank open stayed a real
+          // child window, so the renewal page floated over Solla.
+          let didCreateWindow:
+            | ((
+                window: Electron.BrowserWindow,
+                details: { options: Electron.BrowserWindowConstructorOptions },
+              ) => void)
+            | undefined;
+          let openHandler:
+            | ((details: {
+                url: string;
+                disposition: string;
+                features: string;
+                frameName: string;
+              }) => unknown)
+            | undefined;
+          const mainWebContents = {
+            isDestroyed: () => false,
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+          };
+          const source = {
+            id: 62,
+            hostWebContents: mainWebContents,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://portal.example-leasing.test/my-unit",
+            getTitle: () => "Resident portal",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            executeJavaScript: vi.fn(async () => ({ width: 1280, height: 800 })),
+            on: vi.fn((event: string, listener: never) => {
+              if (event === "did-create-window") didCreateWindow = listener;
+            }),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn((handler: typeof openHandler) => {
+              openHandler = handler;
+            }),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              detach: vi.fn(),
+              sendCommand: vi.fn(async () => undefined),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never;
+          const makePopup = (id: number) => {
+            const listeners = new Map<string, (...args: never[]) => void>();
+            const webContents = {
+              id,
+              isDestroyed: () => false,
+              getType: () => "window",
+              getURL: () => "about:blank",
+              getTitle: () => "",
+              isLoading: () => false,
+              isDevToolsOpened: () => false,
+              stop: vi.fn(),
+              on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+                listeners.set(event, listener);
+              }),
+              off: vi.fn(),
+              ipc: { on: vi.fn(), off: vi.fn() },
+              debugger: {
+                isAttached: () => false,
+                attach: vi.fn(),
+                detach: vi.fn(),
+                sendCommand: vi.fn(async () => undefined),
+                on: vi.fn(),
+                off: vi.fn(),
+              },
+            };
+            const window = {
+              webContents,
+              isDestroyed: () => false,
+              isMinimized: () => false,
+              isVisible: () => false,
+              getParentWindow: () => null,
+              setParentWindow: vi.fn(),
+              show: vi.fn(),
+              showInactive: vi.fn(),
+              on: vi.fn(),
+              off: vi.fn(),
+              close: vi.fn(),
+            };
+            const navigate = (url: string) => {
+              const event = { isMainFrame: true, url, preventDefault: vi.fn() };
+              (listeners.get("will-navigate") as ((event: never) => void) | undefined)?.(
+                event as never,
+              );
+              return event;
+            };
+            return { webContents, window, navigate };
+          };
+          const renewal = makePopup(63);
+          const signIn = makePopup(64);
+          const slow = makePopup(65);
+          fromId.mockImplementation((id) =>
+            id === 62
+              ? source
+              : id === 63
+                ? (renewal.webContents as never)
+                : id === 64
+                  ? (signIn.webContents as never)
+                  : id === 65
+                    ? (slow.webContents as never)
+                    : null,
+          );
+          yield* manager.setMainWindow({
+            isDestroyed: () => false,
+            isFocused: () => false,
+            isVisible: () => true,
+            isMinimized: () => false,
+            once: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            webContents: mainWebContents,
+          } as never);
+          const requests: Array<{ readonly sourceTabId: string; readonly url: string }> = [];
+          yield* manager.subscribeNewTabRequests((request) =>
+            Effect.sync(() => {
+              requests.push(request);
+            }),
+          );
+          yield* manager.createTab("runtime-blank-handoff");
+          yield* manager.registerWebview("runtime-blank-handoff", 62);
+
+          // The page gets a real window to hold, opened hidden.
+          const decision = openHandler?.({
+            url: "about:blank",
+            disposition: "foreground-tab",
+            features: "",
+            frameName: "",
+          }) as { action: string; overrideBrowserWindowOptions?: { show?: boolean } };
+          expect(decision.action).toBe("allow");
+          expect(decision.overrideBrowserWindowOptions?.show).toBe(false);
+
+          // Sent to a web page: cancelled before loading, closed, opened as a tab.
+          didCreateWindow?.(renewal.window as never, { options: { show: false } });
+          yield* Effect.yieldNow;
+          expect(renewal.window.showInactive).not.toHaveBeenCalled();
+          const renewalUrl = "https://renewals.example-leasing.test/?token=signed";
+          const handedOff = renewal.navigate(renewalUrl);
+          yield* Effect.yieldNow;
+          expect(handedOff.preventDefault).toHaveBeenCalledOnce();
+          expect(renewal.window.close).toHaveBeenCalledOnce();
+          expect(renewal.window.show).not.toHaveBeenCalled();
+          expect(requests).toEqual([{ sourceTabId: "runtime-blank-handoff", url: renewalUrl }]);
+
+          // Sent to a sign-in page: shown as the real window the SDK expects.
+          didCreateWindow?.(signIn.window as never, { options: { show: false } });
+          yield* Effect.yieldNow;
+          const signingIn = signIn.navigate(
+            "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&redirect_uri=y",
+          );
+          yield* Effect.yieldNow;
+          expect(signingIn.preventDefault).not.toHaveBeenCalled();
+          expect(signIn.window.close).not.toHaveBeenCalled();
+          expect(signIn.window.showInactive).toHaveBeenCalledOnce();
+
+          // Never sent anywhere (the page writes into it): shown after a wait.
+          didCreateWindow?.(slow.window as never, { options: { show: false } });
+          yield* Effect.yieldNow;
+          expect(slow.window.showInactive).not.toHaveBeenCalled();
+          yield* TestClock.adjust(PreviewManager.BLANK_POPUP_REVEAL_MS);
+          expect(slow.window.showInactive).toHaveBeenCalledOnce();
+          expect(requests).toHaveLength(1);
         }),
       ),
   );

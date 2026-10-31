@@ -159,7 +159,11 @@ Links that explicitly target a new browser tab open as a sibling Solla Code brow
 thread. The original page stays in place, and the new tab is persisted and selected like one opened
 with the Browser `+` control. The same applies to pages that open another page of their own site
 from script, such as a list opening a record "in a new tab", and to any `noopener` window, which
-gives the page no handle to keep. OAuth-style popup windows (sized or named windows, form posts,
+gives the page no handle to keep. A page that opens a blank window and sends it somewhere afterwards,
+such as a portal that fetches a signed link first, also gets a tab: the window opens hidden, and its
+first web page opens as a tab instead before it loads. A blank window sent to a sign-in page, or
+filled in directly by its page, is shown as a window. Before 0.1.775 those blank windows floated
+over Solla Code. OAuth-style popup windows (sized or named windows, form posts,
 another site's page, or a sign-in path on the same site) remain real child windows so sign-in flows
 can communicate with and return to their opener; popup permission is present when Electron creates
 the guest rather than being added after its first navigation. The child stays above its Solla Code

@@ -279,6 +279,11 @@ const windowFeatureIsOn = (value: string | undefined): boolean => {
  *
  * Sized or named windows, POST bodies, `new-window` dispositions, and
  * featureless opens of another origin (an OAuth provider) stay real children.
+ *
+ * A featureless open of a blank page is a `blank-handoff`: the page keeps the
+ * handle to fill in later, usually `window.open()` and then setting its
+ * location once a signed link arrives. It gets a real but hidden window, and
+ * the address it is sent to decides the rest (see `blankPopupDestination`).
  */
 export function guestWindowOpenTarget(request: {
   readonly url: string;
@@ -288,7 +293,7 @@ export function guestWindowOpenTarget(request: {
   readonly frameName: string;
   readonly hasPostBody: boolean;
   readonly requestedDirectTab: boolean;
-}): "child-window" | "preview-tab" {
+}): "child-window" | "preview-tab" | "blank-handoff" {
   // The renderer's asynchronous tab path cannot replay a POST body.
   if (request.hasPostBody) return "child-window";
   const features = request.features
@@ -315,6 +320,8 @@ export function guestWindowOpenTarget(request: {
   ) {
     return "child-window";
   }
+  const url = request.url.trim();
+  if (url === "" || url === "about:blank") return "blank-handoff";
   if (request.disposition !== "foreground-tab") return "preview-tab";
   try {
     const opener = new URL(request.openerUrl);
@@ -327,6 +334,33 @@ export function guestWindowOpenTarget(request: {
     return samePageOrigin && !startsSignIn ? "preview-tab" : "child-window";
   } catch {
     return "child-window";
+  }
+}
+
+/** How long a hidden blank window may wait for an address before it is shown as it is. */
+export const BLANK_POPUP_REVEAL_MS = 8_000;
+
+/**
+ * Where a hidden blank window goes once its page sends it somewhere. A web
+ * page becomes a preview tab, so it stays in the panel instead of floating
+ * over the app. A sign-in page, or anything that is not a web address, is
+ * revealed as a real window: sign-in SDKs message and close it through the
+ * handle the page kept.
+ */
+export function blankPopupDestination(url: string): "preview-tab" | "window" {
+  try {
+    const next = new URL(url);
+    if (next.protocol !== "https:" && next.protocol !== "http:") return "window";
+    const startsSignIn = next.pathname
+      .split("/")
+      .some((segment) => SIGN_IN_PATH_SEGMENT.test(segment));
+    const oauthRequest =
+      next.searchParams.has("redirect_uri") ||
+      next.searchParams.has("response_type") ||
+      next.searchParams.has("client_id");
+    return startsSignIn || oauthRequest ? "window" : "preview-tab";
+  } catch {
+    return "window";
   }
 }
 
@@ -1307,6 +1341,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    */
   const popupWindowsByTab = new Map<string, ReadonlyArray<PopupWindowSession>>();
   const popupTabByWebContentsId = new Map<number, string>();
+  /** Hidden blank windows still waiting for an address; agents keep driving their opener. */
+  const pendingBlankPopupIds = new Set<number>();
   const listenersRef = yield* Ref.make<ReadonlySet<Listener>>(new Set());
   const videoSourceListenersRef = yield* Ref.make<ReadonlySet<VideoSourceListener>>(new Set());
   const videoSelections = new Map<
@@ -1777,7 +1813,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (!sessions) return null;
     for (let index = sessions.length - 1; index >= 0; index -= 1) {
       const session = sessions[index];
-      if (session && !session.window.isDestroyed() && !session.webContents.isDestroyed()) {
+      if (
+        session &&
+        !session.window.isDestroyed() &&
+        !session.webContents.isDestroyed() &&
+        !pendingBlankPopupIds.has(session.webContents.id)
+      ) {
         return session;
       }
     }
@@ -2896,6 +2937,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
     sourceWebContentsId: number,
     window: BrowserWindow,
+    blankHandoff = false,
   ) {
     const popupWebContents = window.webContents;
     if (window.isDestroyed() || popupWebContents.isDestroyed()) return;
@@ -2921,6 +2963,52 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     let active = true;
     let humanInputGeneration = 0;
     let oauthCallbackPrepared = false;
+    // A blank window opens hidden (see guestWindowOpenTarget) and its page's
+    // first navigation decides what it becomes. A web page turns into a
+    // preview tab, and the hidden window closes before its request goes out,
+    // so a one-use signed link is only ever loaded once. A sign-in page,
+    // content written straight into the window, or a long wait shows it.
+    let blankHandoffPending = blankHandoff;
+    const settleBlankHandoff = (): void => {
+      blankHandoffPending = false;
+      pendingBlankPopupIds.delete(popupWebContents.id);
+    };
+    const revealBlankPopup = (): void => {
+      if (!blankHandoffPending) return;
+      settleBlankHandoff();
+      if (!active || window.isDestroyed()) return;
+      if (mainWindowFocused) window.show();
+      else window.showInactive();
+      runFork(update(tabId, {}));
+    };
+    const handOffBlankPopup = (url: string, cancel: () => void): boolean => {
+      if (!blankHandoffPending || !active) return false;
+      if (blankPopupDestination(url) === "window") {
+        revealBlankPopup();
+        return false;
+      }
+      settleBlankHandoff();
+      cancel();
+      runFork(emitNewTabRequest({ sourceTabId: tabId, url }));
+      if (!window.isDestroyed()) window.close();
+      return true;
+    };
+    const blankNavigationStarted = (
+      details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
+    ): void => {
+      if (!blankHandoffPending || details.isSameDocument) return;
+      // A frame loading inside the blank window means the page wrote content
+      // into it (an iframe preview); that window is the content, so show it.
+      if (!details.isMainFrame) {
+        revealBlankPopup();
+        return;
+      }
+      // `will-navigate` normally takes this first; stop a navigation it missed.
+      if (/^https?:/iu.test(details.url)) {
+        handOffBlankPopup(details.url, () => popupWebContents.stop());
+      }
+    };
+    const blankTitleUpdated = (): void => revealBlankPopup();
     const closed = (): void => {
       if (active) {
         runFork(detachPopupWindow(tabId, popupWebContents.id));
@@ -2978,6 +3066,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const willNavigate = (
       event: Electron.Event & { readonly isMainFrame: boolean; readonly url: string },
     ): void => {
+      if (event.isMainFrame && handOffBlankPopup(event.url, () => event.preventDefault())) return;
       if (
         !active ||
         oauthCallbackPrepared ||
@@ -3049,6 +3138,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         { operation: "detachPopupWindowListeners", tabId, webContentsId: popupWebContents.id },
         () => {
           active = false;
+          blankHandoffPending = false;
+          pendingBlankPopupIds.delete(popupWebContents.id);
           window.off("closed", closed);
           window.off("resize", videoSourceChanged);
           popupWebContents.off("zoom-changed", videoSourceChanged);
@@ -3056,6 +3147,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           if (!popupWebContents.isDestroyed()) {
             popupWebContents.off("destroyed", closed);
             popupWebContents.off("will-navigate", willNavigate);
+            popupWebContents.off("did-start-navigation", blankNavigationStarted);
+            popupWebContents.off("page-title-updated", blankTitleUpdated);
             popupWebContents.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
           }
         },
@@ -3071,8 +3164,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         popupWebContents.on("destroyed", closed);
         popupWebContents.on("will-navigate", willNavigate);
         popupWebContents.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
+        if (blankHandoff) {
+          pendingBlankPopupIds.add(popupWebContents.id);
+          popupWebContents.on("did-start-navigation", blankNavigationStarted);
+          popupWebContents.on("page-title-updated", blankTitleUpdated);
+        }
       },
     ).pipe(Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)));
+    if (blankHandoff) {
+      runFork(
+        Effect.sleep(BLANK_POPUP_REVEAL_MS).pipe(Effect.andThen(Effect.sync(revealBlankPopup))),
+      );
+    }
 
     const sessions = popupWindowsByTab.get(tabId) ?? [];
     popupWindowsByTab.set(tabId, [
@@ -4042,9 +4145,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
       runFork(showGuestContextMenu(tabId, wc, params));
     };
-    const didCreateWindow = (window: BrowserWindow): void => {
-      raisePopupWindow(window);
-      if (listenersActive) runFork(attachPopupWindow(tabId, wc.id, window));
+    const didCreateWindow = (
+      window: BrowserWindow,
+      details?: { readonly options?: Electron.BrowserWindowConstructorOptions },
+    ): void => {
+      const blankHandoff = details?.options?.show === false;
+      if (!blankHandoff) raisePopupWindow(window);
+      if (listenersActive) runFork(attachPopupWindow(tabId, wc.id, window, blankHandoff));
     };
     yield* Scope.addFinalizer(scope, Deferred.succeed(unavailable, undefined).pipe(Effect.asVoid));
     yield* Scope.addFinalizer(
@@ -4106,22 +4213,22 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           directNewTabIntent = null;
           directNewTabIntentGeneration += 1;
           const hasWindowFeatures = features.trim().length > 0;
-          const isChildWindow =
-            guestWindowOpenTarget({
-              url,
-              openerUrl: wc.getURL(),
-              disposition,
-              features,
-              frameName,
-              hasPostBody: postBody !== undefined,
-              requestedDirectTab,
-            }) === "child-window";
+          const target = guestWindowOpenTarget({
+            url,
+            openerUrl: wc.getURL(),
+            disposition,
+            features,
+            frameName,
+            hasPostBody: postBody !== undefined,
+            requestedDirectTab,
+          });
+          const isChildWindow = target !== "preview-tab";
           runFork(
             Effect.logInfo("Desktop preview handled a guest window-open request.", {
               tabId,
               webContentsId: wc.id,
               disposition,
-              decision: isChildWindow ? "child-window" : "preview-tab",
+              decision: target,
               requestedDirectTab,
               hasPostBody: postBody !== undefined,
               hasFeatures: hasWindowFeatures,
@@ -4154,6 +4261,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               overrideBrowserWindowOptions: {
                 autoHideMenuBar: true,
                 center: true,
+                // A blank window opens hidden until its page says where it
+                // goes; `did-create-window` reads this to hand it off.
+                ...(target === "blank-handoff" ? { show: false } : {}),
                 ...(parent ? { parent, modal: false } : {}),
                 webPreferences: PREVIEW_POPUP_WEB_PREFERENCES,
               },
