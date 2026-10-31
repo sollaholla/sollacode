@@ -2981,6 +2981,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       else window.showInactive();
       runFork(update(tabId, {}));
     };
+    // A real timer tick (sleep(0) only yields), so the navigation callback
+    // that asked for it has returned to Chromium first.
+    const afterNavigationCallback = (action: () => void) =>
+      runFork(Effect.sleep("1 millis").pipe(Effect.andThen(Effect.sync(action))));
     const handOffBlankPopup = (url: string, cancel: () => void): boolean => {
       if (!blankHandoffPending || !active) return false;
       if (blankPopupDestination(url) === "window") {
@@ -2990,7 +2994,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       settleBlankHandoff();
       cancel();
       runFork(emitNewTabRequest({ sourceTabId: tabId, url }));
-      if (!window.isDestroyed()) window.close();
+      // Never destroy the window from inside its own navigation callback:
+      // Chromium keeps using it after the listener returns, and closing it
+      // there crashed the app (0.1.775). Close it on a later task instead.
+      afterNavigationCallback(() => {
+        if (!window.isDestroyed()) window.close();
+      });
       return true;
     };
     const blankNavigationStarted = (
@@ -3005,7 +3014,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
       // `will-navigate` normally takes this first; stop a navigation it missed.
       if (/^https?:/iu.test(details.url)) {
-        handOffBlankPopup(details.url, () => popupWebContents.stop());
+        handOffBlankPopup(details.url, () =>
+          afterNavigationCallback(() => {
+            if (!popupWebContents.isDestroyed()) popupWebContents.stop();
+          }),
+        );
       }
     };
     const blankTitleUpdated = (): void => revealBlankPopup();

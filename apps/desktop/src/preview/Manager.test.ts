@@ -4104,8 +4104,11 @@ describe("PreviewManager", () => {
           expect(renewal.window.showInactive).not.toHaveBeenCalled();
           const renewalUrl = "https://renewals.example-leasing.test/?token=signed";
           const handedOff = renewal.navigate(renewalUrl);
-          yield* Effect.yieldNow;
+          // Closing a window inside its own will-navigate crashed Solla: the
+          // close waits for the next task.
           expect(handedOff.preventDefault).toHaveBeenCalledOnce();
+          expect(renewal.window.close).not.toHaveBeenCalled();
+          yield* TestClock.adjust("1 millis");
           expect(renewal.window.close).toHaveBeenCalledOnce();
           expect(renewal.window.show).not.toHaveBeenCalled();
           expect(requests).toEqual([{ sourceTabId: "runtime-blank-handoff", url: renewalUrl }]);
