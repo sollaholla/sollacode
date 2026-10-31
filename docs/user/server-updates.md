@@ -55,7 +55,9 @@ The tool is available only from a desktop-managed server on macOS or Windows. Ve
 installer-launch failures leave the running installation unchanged. On macOS, if the new app's
 server does not answer within about two minutes, the installer stops that launch and the backend
 it started, then restores and relaunches the previous app, so only one copy is left running.
-Installation diagnostics are written to `desktop-app-update.log` in the server logs directory.
+The health check asks the new launch's own server on whatever port it opened, so an app that was
+running on a fallback port (for example after a crash) still updates. Before 0.1.777 it asked only
+the old app's address and could roll back a healthy update. Installation diagnostics are written to `desktop-app-update.log` in the server logs directory.
 
 The relaunch carries a `--solla-update-launch=<id>` marker on macOS and Windows. A database
 compaction scheduled in Settings → Storage waits while that marker is present, so the health check

@@ -245,17 +245,48 @@ try {
   $launchedPid = Start-DetachedProcess -Path $Target -Arguments "--auto-resume $launchMarker"
   Write-Output "Started detached Solla Code process $launchedPid."
 
-  $healthy = $false
-  for ($attempt = 0; $attempt -lt 120; $attempt += 1) {
+  # URLs to health-check this launch on: one per TCP port its backend listens
+  # on, or the requesting app's URL until a listener shows up. The update need
+  # not reuse the requesting app's port: after a crash the previous backend can
+  # hold the preferred port for a moment, so the relaunched app runs on the next
+  # one and passes that URL, and the update then opens the freed preferred port.
+  function Get-LaunchHealthUrls {
+    $urls = @()
     try {
-      $response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2
-      if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
-        $healthy = $true
-        break
+      $backends = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $launchedPid" -ErrorAction Stop |
+          Where-Object { $_.CommandLine -like "*apps?server?dist?bin.mjs*" })
+      foreach ($backend in $backends) {
+        foreach ($listener in @(Get-NetTCPConnection -State Listen -OwningProcess $backend.ProcessId -ErrorAction SilentlyContinue)) {
+          $urls += "http://127.0.0.1:$($listener.LocalPort)/"
+        }
       }
     }
     catch {
-      # The listener is expected to be absent while Electron and the backend start.
+      # Discovery is best effort; the requesting app's URL still applies.
+    }
+    if ($urls.Count -eq 0) {
+      return @($HealthUrl)
+    }
+    return @($urls | Select-Object -Unique)
+  }
+
+  $healthy = $false
+  for ($attempt = 0; $attempt -lt 120; $attempt += 1) {
+    foreach ($url in @(Get-LaunchHealthUrls)) {
+      try {
+        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 2
+        if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
+          $healthy = $true
+          $HealthUrl = $url
+          break
+        }
+      }
+      catch {
+        # The listener is expected to be absent while Electron and the backend start.
+      }
+    }
+    if ($healthy) {
+      break
     }
     Start-Sleep -Seconds 1
   }

@@ -311,6 +311,30 @@ backend_pids_of() {
   done
 }
 
+# URLs to health-check this launch on: one per TCP port its backends listen on,
+# or the requesting app's URL until a listener shows up. The update need not
+# reuse the requesting app's port. After a crash the previous backend can hold
+# the preferred port for a moment, so the relaunched app runs on the next one
+# and passes that URL; the update then opens the freed preferred port, and
+# polling the passed URL alone rolled back a healthy install (0.1.776).
+launch_health_urls() {
+  local -a desktops backends urls
+  local pid line port
+  desktops=(${(f)"$(marked_desktop_pids)"})
+  if (( ${#desktops} )); then
+    backends=(${(f)"$(backend_pids_of "${desktops[@]}")"})
+    for pid in "${backends[@]}"; do
+      for line in ${(f)"$(/usr/sbin/lsof -nP -a -p "$pid" -iTCP -sTCP:LISTEN -Fn 2>/dev/null)"}; do
+        [[ "$line" == n* ]] || continue
+        port="${line##*:}"
+        [[ "$port" == <-> ]] && urls+=("http://127.0.0.1:$port/")
+      done
+    done
+  fi
+  (( ${#urls} )) || urls=("$health_url")
+  print -rl -- "${(u)urls[@]}"
+}
+
 # A launch that failed its health check can still be running and restarting its
 # backend. Left alone it fights the restored app for the listener forever, so
 # stop it, then any backend it left behind, before the previous app starts.
@@ -363,10 +387,13 @@ fi
 
 healthy=0
 for _ in {1..120}; do
-  if /usr/bin/curl --fail --silent --show-error --max-time 2 "$health_url" >/dev/null 2>&1; then
-    healthy=1
-    break
-  fi
+  for url in ${(f)"$(launch_health_urls)"}; do
+    if /usr/bin/curl --fail --silent --show-error --max-time 2 "$url" >/dev/null 2>&1; then
+      healthy=1
+      health_url="$url"
+      break 2
+    fi
+  done
   /bin/sleep 1
 done
 if [[ "$healthy" -ne 1 ]]; then

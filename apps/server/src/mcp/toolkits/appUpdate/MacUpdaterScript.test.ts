@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
@@ -139,6 +140,100 @@ it.effect("rolls back by stopping only the launch carrying this invocation's mar
         expect(report.slice(1)).toEqual([
           "stopped gone gone gone gone",
           "kept alive alive alive alive",
+        ]);
+      } finally {
+        await NodeFSP.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+  }),
+);
+
+// A backend that listens like the real one. Ports come from the test.
+const LISTENING_DESKTOP = `
+( exec -a "$APP_EXE" /bin/zsh "$DIR/listening-backend.zsh" "$2" --max-old-space-size=8192 /app.asar/apps/server/dist/bin.mjs --bootstrap-fd 3 ) &
+backend=$!
+trap 'kill -TERM $backend; exit 0' TERM
+while true; do sleep 0.1; done
+`;
+const LISTENING_BACKEND = `
+zmodload zsh/net/tcp
+ztcp -l "$1" || exit 3
+: > "$DIR/running/$$"
+trap 'exit 0' TERM
+while true; do sleep 0.1; done
+`;
+const HEALTH_URL_HARNESS = `
+set -eu
+export DIR="$1" APP_EXE="$1/Solla Code.app/Contents/MacOS/Solla Code"
+expected_executable="$APP_EXE"
+launch_marker="--solla-update-launch=$(/usr/bin/uuidgen)"
+health_url="http://127.0.0.1:$4/"
+source "$DIR/functions.zsh"
+print "before $(launch_health_urls)"
+desktops=()
+trap 'for pid in "\${desktops[@]}"; do /bin/kill -TERM "$pid" 2>/dev/null || true; done' EXIT
+start() { desktops+=($( ( exec -a "$APP_EXE" /bin/zsh "$DIR/desktop.zsh" "$@" ) >/dev/null 2>&1 & print $! )) }
+start --auto-resume "$2" "$launch_marker"
+start --auto-resume "$3" "--solla-update-launch=$(/usr/bin/uuidgen)"
+for _ in {1..100}; do
+  ready=("$DIR"/running/*(N))
+  (( \${#ready} == 2 )) && break
+  sleep 0.1
+done
+print "after $(launch_health_urls)"
+`;
+
+it.effect("health-checks the ports the launch listens on, not only the requesting app's", () =>
+  Effect.gen(function* () {
+    const platform = yield* HostProcessPlatform;
+    if (platform !== "darwin") return;
+
+    yield* Effect.promise(async () => {
+      const script = await NodeFSP.readFile(updaterScriptPath, "utf8");
+      const start = script.indexOf("marked_desktop_pids() {");
+      const end = script.indexOf("\n}\n", script.indexOf("launch_health_urls() {")) + 3;
+      const freePort = () =>
+        new Promise<number>((resolve, reject) => {
+          const server = NodeNet.createServer();
+          server.once("error", reject);
+          server.listen(0, "127.0.0.1", () => {
+            const address = server.address();
+            server.close(() => resolve(typeof address === "object" && address ? address.port : 0));
+          });
+        });
+      const [launchPort, otherPort, requestedPort] = [
+        await freePort(),
+        await freePort(),
+        await freePort(),
+      ];
+      const baseDir = await NodeFSP.mkdtemp(
+        NodePath.join(NodeOS.tmpdir(), "solla-updater-health-"),
+      );
+      try {
+        await NodeFSP.writeFile(NodePath.join(baseDir, "functions.zsh"), script.slice(start, end));
+        await NodeFSP.writeFile(NodePath.join(baseDir, "desktop.zsh"), LISTENING_DESKTOP);
+        await NodeFSP.writeFile(NodePath.join(baseDir, "listening-backend.zsh"), LISTENING_BACKEND);
+        await NodeFSP.mkdir(NodePath.join(baseDir, "running"));
+        const result = NodeChildProcess.spawnSync(
+          "/bin/zsh",
+          [
+            "-c",
+            HEALTH_URL_HARNESS,
+            "harness",
+            baseDir,
+            String(launchPort),
+            String(otherPort),
+            String(requestedPort),
+          ],
+          { encoding: "utf8", timeout: 30_000 },
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+        // Before the launch listens: the requesting app's URL. After: only the
+        // port this launch opened, even though it differs from the request.
+        expect(result.stdout.trim().split("\n")).toEqual([
+          `before http://127.0.0.1:${requestedPort}/`,
+          `after http://127.0.0.1:${launchPort}/`,
         ]);
       } finally {
         await NodeFSP.rm(baseDir, { recursive: true, force: true });
