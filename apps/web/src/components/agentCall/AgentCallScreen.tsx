@@ -12,6 +12,7 @@ import {
   AGENT_CALL_MAX_PARTICIPANTS,
   type AgentCallParticipant,
   type AgentCallRosterEntry,
+  type EnvironmentId,
   type ThreadId,
 } from "@t3tools/contracts";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
@@ -30,6 +31,7 @@ import type {
   AgentCallApi,
   AgentCallLive,
 } from "../../agentCall/AgentCallProvider";
+import { useAgentRecord } from "../../agentCall/agentCallData";
 import { cn } from "../../lib/utils";
 import { AgentGlyph } from "../agents/AgentGlyph";
 import {
@@ -184,8 +186,25 @@ function AddParticipantMenu(props: {
   );
 }
 
+/** A participant's face, from the agent's own record so it matches everywhere else. */
+function ParticipantAgentGlyph(props: {
+  readonly environmentId: EnvironmentId;
+  readonly vmAgentId: string;
+}) {
+  const record = useAgentRecord(props.environmentId, props.vmAgentId);
+  return (
+    <AgentGlyph
+      agentId={props.vmAgentId}
+      avatarColor={record?.avatarColor ?? null}
+      online
+      className="size-6 shrink-0"
+    />
+  );
+}
+
 /** Who else is on the call, each with a way to take them off while it runs. */
 function CallParticipants(props: {
+  readonly environmentId: EnvironmentId;
   readonly participants: ReadonlyArray<AgentCallParticipant>;
   readonly onRemove: ((threadId: ThreadId) => void) | null;
 }) {
@@ -201,7 +220,10 @@ function CallParticipants(props: {
           )}
         >
           {participant.vmAgentId !== null ? (
-            <AgentGlyph agentId={participant.vmAgentId} online className="size-6 shrink-0" />
+            <ParticipantAgentGlyph
+              environmentId={props.environmentId}
+              vmAgentId={participant.vmAgentId}
+            />
           ) : (
             <span
               aria-hidden
@@ -317,6 +339,7 @@ export function AgentCallScreen(props: {
         </div>
         <h1 className="max-w-full truncate text-3xl font-semibold">{agent.name}</h1>
         <CallParticipants
+          environmentId={call.environmentId}
           participants={call.participants}
           onRemove={open ? api.removeParticipant : null}
         />
