@@ -522,6 +522,9 @@ function moodAccent(
     .join("");
 }
 
+const HEART =
+  "M66 25.2C58 19.4 54.2 15 54.2 10.4C54.2 3.4 62.8 1.6 66 7.6C69.2 1.6 77.8 3.4 77.8 10.4C77.8 15 74 19.4 66 25.2Z";
+
 /**
  * The status mark. It stays in the same corner of the frame, upright, whatever
  * the character does, and each state has its own shape and color, so a list of
@@ -537,13 +540,14 @@ function moodBadge(mood: AgentAvatarMood): string {
     }
     case "waiting":
       return (
-        `<circle cx="66" cy="14" r="12.6" fill="#ffc53d" ${keyline}/>` +
-        stroke("M61.4 11C61.4 5.8 70.8 5.8 70.8 11C70.8 14.6 66 14.2 66 17.6M66 22h.01", 3.4)
+        `<circle cx="65" cy="15" r="14" fill="#ffc53d" ${keyline}/>` +
+        stroke("M59.6 11.4C59.6 4.8 70.6 4.8 70.6 11.2C70.6 15.2 65 14.8 65 19M65 24h.01", 4.4)
       );
     case "blocked":
       return `<path d="M66 1.6C72.6 10 76.4 14.2 76.4 19A10.4 10.4 0 0 1 55.6 19C55.6 14.2 59.4 10 66 1.6Z" fill="#bfe9ff" ${keyline}/>`;
     case "happy":
-      return `<path d="M66 25.2C58 19.4 54.2 15 54.2 10.4C54.2 3.4 62.8 1.6 66 7.6C69.2 1.6 77.8 3.4 77.8 10.4C77.8 15 74 19.4 66 25.2Z" fill="#ff6f9f" ${keyline}/>`;
+      // A red heart with a white edge, which holds on the pink and coral bodies too.
+      return `<path d="${HEART}" fill="none" stroke="${INK}" stroke-width="4.8"/><path d="${HEART}" fill="#ff2f55" stroke="#fff" stroke-width="2.2"/>`;
     case "sleeping": {
       const z = "M57 5H73L57 21H73";
       return stroke(z, 7.2) + stroke(z, 3.8, "#fff");

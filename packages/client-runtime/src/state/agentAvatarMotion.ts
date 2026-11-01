@@ -57,21 +57,6 @@ function body(
   return { name, duration, origin, root };
 }
 
-/** The spin's timing, shared by the body and the eyes that counter-turn inside it. */
-function spinFrames(angle: (turn: number) => number, eyes = false) {
-  const at = (y: number, turn: number, scaleX: number, scaleY: number) =>
-    eyes ? pose(0, angle(turn)) : pose(y, angle(turn), scaleX, scaleY);
-  return frames(
-    [0, at(0, 0, 1, 1), OUT],
-    [0.18, at(0, -12, 1.12, 0.84), IN],
-    [0.3, at(-14, 60, 0.96, 1.06), "linear"],
-    [0.5, at(-18, 372, 0.96, 1.06), IN],
-    [0.62, at(0, 360, 1.16, 0.82), OUT],
-    [0.8, at(-2, 360, 0.97, 1.05), IN_OUT],
-    [1, at(0, 360, 1, 1)],
-  );
-}
-
 /** Squash, leap, land, recover: the anticipation and overshoot are what sell it. */
 const hop = body(
   "hop",
@@ -145,15 +130,22 @@ const SHAPE_GESTURES: Record<AgentAvatarShape, AgentAvatarGesture> = {
     ),
     [0.5, 0.5],
   ),
-  // A leap and one fast turn in the air, with a squashed landing. The eyes stay
-  // level while the body turns around them, so the face is never upside down.
-  sunburst: {
-    name: "spin",
-    duration: 820,
-    origin: [0.5, 0.6],
-    root: spinFrames((turn) => turn),
-    eyes: spinFrames((turn) => -turn, true),
-  },
+  // Leaps, rocks hard one way and then the other, and lands squashed. It never
+  // turns over, because an upside-down face reads as a glitch at this size.
+  sunburst: body(
+    "rock-out",
+    860,
+    frames(
+      [0, pose(), OUT],
+      [0.16, pose(0, -10, 1.12, 0.84), IN_OUT],
+      [0.36, pose(-16, 34, 0.96, 1.06), IN_OUT],
+      [0.56, pose(-12, -26, 0.96, 1.06), IN],
+      [0.7, pose(0, 0, 1.16, 0.82), OUT],
+      [0.86, pose(-2, 0, 0.97, 1.05), IN_OUT],
+      [1, pose()],
+    ),
+    [0.5, 0.6],
+  ),
   gumdrop: body(
     "perk",
     760,
