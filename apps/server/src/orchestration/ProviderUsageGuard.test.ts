@@ -22,6 +22,7 @@ import {
   recordBackgroundAdmission,
   recordTokensIntoState,
   recordWindowsIntoState,
+  usageReportListsAccountWindows,
   resolveUsageGuardProviderConfig,
   USAGE_GUARD_RECHECK_MS,
   usageGuardWakeAtMs,
@@ -1579,5 +1580,45 @@ describe("providerReportsExhausted", () => {
         state(undefined),
       ),
     ).toBe(false);
+  });
+});
+
+describe("recordWindowsIntoState with a full account listing", () => {
+  const sample = (key: string, scope: "account" | "model-family"): UsageWindowSample => ({
+    key,
+    label: key,
+    usedPercent: 90,
+    resetsAtMs: null,
+    windowDurationMs: null,
+    scope,
+    family: scope === "account" ? null : "fable",
+  });
+
+  it("forgets an account-wide limit the listing omits and keeps model limits", () => {
+    const seeded = recordWindowsIntoState(
+      emptyUsageGuardInstanceState("claudeAgent"),
+      [
+        sample("five_hour", "account"),
+        sample("seven_day", "account"),
+        sample("fable", "model-family"),
+      ],
+      1_000,
+    );
+
+    const listed = recordWindowsIntoState(seeded, [sample("seven_day", "account")], 2_000, {
+      listsAccountWindows: true,
+    });
+    expect(Object.keys(listed.windows).toSorted()).toEqual(["fable", "seven_day"]);
+
+    const partial = recordWindowsIntoState(seeded, [sample("seven_day", "account")], 2_000);
+    expect(Object.keys(partial.windows)).toContain("five_hour");
+  });
+
+  it("recognises Claude's listing shapes and nothing else", () => {
+    expect(
+      usageReportListsAccountWindows("claudeAgent", { rate_limit_info: { unifiedWindows: {} } }),
+    ).toBe(true);
+    expect(usageReportListsAccountWindows("claudeAgent", { rate_limit_info: {} })).toBe(false);
+    expect(usageReportListsAccountWindows("codex", { rate_limits: {} })).toBe(false);
   });
 });

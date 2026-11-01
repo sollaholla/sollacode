@@ -628,6 +628,41 @@ function claudeWindowLabel(key: string): string {
   return key.replaceAll("_", " ");
 }
 
+/** Live events list every account-wide window Claude has right now. */
+function claudeUnifiedWindows(info: Record<string, unknown> | null): ProviderUsageWindow[] {
+  const unified = asRecord(info?.unifiedWindows);
+  if (!unified) return [];
+  return Object.entries(unified).flatMap(([rawKey, rawWindow]) => {
+    const window = asRecord(rawWindow);
+    const utilization = finiteNumber(window?.utilization);
+    if (!window || utilization === null) return [];
+    const key = normalizeClaudeWindowKey(rawKey);
+    return [
+      {
+        key,
+        label: claudeWindowLabel(key),
+        usedPercent: clampPercentage(utilization <= 1 ? utilization * 100 : utilization),
+        resetAt: epochMilliseconds(window.resetsAt ?? window.resets_at),
+        windowDurationMs: CLAUDE_WINDOW_DURATIONS_MS[key] ?? null,
+      },
+    ];
+  });
+}
+
+/**
+ * Whether this report is Claude's full list of account-wide windows, so anything
+ * it leaves out is gone. A refused request (`rate_limits: { error }`) lists nothing
+ * and proves nothing.
+ */
+function claudeReportListsAccountWindows(raw: unknown, windows: ReadonlyArray<unknown>): boolean {
+  if (windows.length === 0) return false;
+  const envelope = asRecord(raw);
+  return (
+    asRecord(envelope?.rate_limits) !== null ||
+    asRecord(asRecord(envelope?.rate_limit_info)?.unifiedWindows) !== null
+  );
+}
+
 function claudeWindows(raw: unknown): ProviderUsageWindow[] {
   const envelope = asRecord(raw);
   const structuredRateLimits = asRecord(envelope?.rate_limits);
@@ -694,6 +729,8 @@ function claudeWindows(raw: unknown): ProviderUsageWindow[] {
     return windows;
   }
   const info = asRecord(envelope?.rate_limit_info);
+  const unified = claudeUnifiedWindows(info);
+  if (unified.length > 0) return unified;
   const key =
     typeof info?.rateLimitType === "string" ? normalizeClaudeWindowKey(info.rateLimitType) : null;
   const utilization = finiteNumber(info?.utilization);
@@ -932,6 +969,9 @@ export function deriveProviderUsageReports(
       windows,
       reportedAt,
       ...(reportsResets ? { resetCredits } : {}),
+      ...(provider.driver === "claudeAgent" && claudeReportListsAccountWindows(raw, windows)
+        ? { accountWindowsListedAt: reportedAt }
+        : {}),
     });
   };
 
@@ -1142,11 +1182,14 @@ export function compactProviderUsageMetric(
   }
 
   if (summary.provider.driver === "claudeAgent") {
-    const [currentSession, weekly, fable] = claudePopupWindows(summary.windows);
+    const popupWindows = claudePopupWindows(summary.windows);
+    const currentSession = popupWindows.find((window) => window.key === "current_session");
+    const weekly = popupWindows.find((window) => window.key === "seven_day");
+    const fable = popupWindows.find((window) => window.key === "fable");
     const fableSelected =
       selectedModelSelection?.instanceId === summary.provider.instanceId &&
       isClaudeFableModel(selectedModelSelection.model);
-    // Current-session and weekly limits apply to every Claude model. Fable
+    // Account-wide limits apply to every Claude model, whichever Claude reports. Fable
     // adds a model-scoped limit; it never replaces the account-wide weekly
     // limit. Show whichever applicable quota is closest to exhaustion.
     const highestAccountWindow = maxReportedUsageWindow(currentSession ?? null, weekly ?? null);
@@ -1154,7 +1197,7 @@ export function compactProviderUsageMetric(
       ? maxReportedUsageWindow(highestAccountWindow, fable ?? null)
       : highestAccountWindow;
     return {
-      label: highestClaudeWindow?.label ?? "Current session",
+      label: highestClaudeWindow?.label ?? "Weekly",
       window: highestClaudeWindow,
     };
   }
@@ -1206,13 +1249,9 @@ export function claudePopupWindows(
     (window) => window.key === "fable" || window.label.trim().toLowerCase() === "fable",
   );
   return [
-    currentSession ?? {
-      key: "current_session",
-      label: "Current session",
-      usedPercent: null,
-      resetAt: null,
-      detail: "Not reported",
-    },
+    // Only a limit Claude reports gets a row. The short session limit came and
+    // went without notice, so its absence is an answer, not a missing value.
+    ...(currentSession ? [currentSession] : []),
     weekly ?? {
       key: "seven_day",
       label: "Weekly",

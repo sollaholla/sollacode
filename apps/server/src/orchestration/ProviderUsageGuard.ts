@@ -513,6 +513,16 @@ function grokWindows(raw: unknown): UsageWindowSample[] {
   ];
 }
 
+/** Whether this usage report is the provider's full list of account-wide windows. */
+export function usageReportListsAccountWindows(driver: string, rateLimits: unknown): boolean {
+  if (driver !== "claudeAgent") return false;
+  const envelope = asRecord(rateLimits);
+  return (
+    asRecord(envelope?.rate_limits) !== null ||
+    asRecord(asRecord(envelope?.rate_limit_info)?.unifiedWindows) !== null
+  );
+}
+
 /**
  * Every metered window a provider's account-usage payload describes, with
  * used percent and reset time. Empty for drivers that report no usage, which
@@ -835,9 +845,21 @@ export function recordWindowsIntoState(
   state: UsageGuardInstanceState,
   samples: ReadonlyArray<UsageWindowSample>,
   nowMs: number,
+  options?: {
+    /** The report lists every account-wide window, so one it omits no longer exists. */
+    readonly listsAccountWindows?: boolean;
+  },
 ): UsageGuardInstanceState {
   if (samples.length === 0) return state;
-  const windows: Record<string, UsageGuardWindowState> = { ...state.windows };
+  const reportedKeys = new Set(samples.map((sample) => sample.key));
+  const windows: Record<string, UsageGuardWindowState> = Object.fromEntries(
+    Object.entries(state.windows).filter(
+      ([key, window]) =>
+        options?.listsAccountWindows !== true ||
+        window.scope !== "account" ||
+        reportedKeys.has(key),
+    ),
+  );
   for (const sample of samples) {
     const previous = windows[sample.key];
     let burn = previous?.burnPercentPerHour ?? null;

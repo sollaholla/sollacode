@@ -134,6 +134,18 @@ export interface PersistedProviderUsageEntry {
   readonly reportedAt: string;
   readonly resetCredits?: PersistedProviderUsageResetCredits | null;
   readonly dismissedResetCreditKeys?: readonly string[];
+  /**
+   * When the provider last listed every account-wide window it currently has.
+   * An account-wide window missing from that list no longer exists: this is how
+   * a retired limit leaves the UI, and how a new one arrives, with no rule naming
+   * either. Model-scoped windows are reported elsewhere and keep the weekly prune.
+   */
+  readonly accountWindowsListedAt?: string;
+}
+
+/** Windows that apply to one model family, which an account listing does not cover. */
+function isModelScopedUsageWindow(key: string): boolean {
+  return /fable|opus|sonnet|model/.test(key);
 }
 
 const CODEX_RESET_TIME_JITTER_MS = 60_000;
@@ -397,9 +409,22 @@ export function mergeProviderUsageEntry(
       (window) => [window.key, window] as const,
     ),
   );
+  const accountWindowsListedAt = [previous?.accountWindowsListedAt, entry.accountWindowsListedAt]
+    .filter((listedAt) => listedAt !== undefined)
+    .toSorted()
+    .at(-1);
   const seenKeys = new Set<string>();
   for (const window of entry.windows) {
     seenKeys.add(window.key);
+    // A late report from before the latest listing cannot bring back a window
+    // that listing left out.
+    const retired =
+      entryIsOlder &&
+      !windowsByKey.has(window.key) &&
+      accountWindowsListedAt !== undefined &&
+      entry.reportedAt < accountWindowsListedAt &&
+      !isModelScopedUsageWindow(window.key);
+    if (retired) continue;
     if (!entryIsOlder || !windowsByKey.has(window.key)) {
       windowsByKey.set(window.key, {
         ...mergeUsageWindow(entry.driver, windowsByKey.get(window.key), window, entry.reportedAt),
@@ -415,6 +440,15 @@ export function mergeProviderUsageEntry(
         entry.reportedAt,
         previous?.reportedAt,
       );
+  const listedWindows =
+    accountWindowsListedAt === undefined
+      ? survivingWindows
+      : survivingWindows.filter(
+          (window) =>
+            seenKeys.has(window.key) ||
+            isModelScopedUsageWindow(window.key) ||
+            (window.lastSeenAt ?? previous?.reportedAt ?? "") >= accountWindowsListedAt,
+        );
   const dismissedResetCreditKeys = Array.from(
     new Set([
       ...(previous?.dismissedResetCreditKeys ?? []),
@@ -433,7 +467,8 @@ export function mergeProviderUsageEntry(
       );
   const merged = {
     ...entry,
-    windows: survivingWindows,
+    windows: listedWindows,
+    ...(accountWindowsListedAt === undefined ? {} : { accountWindowsListedAt }),
     resetCredits,
     dismissedResetCreditKeys,
     reportedAt:

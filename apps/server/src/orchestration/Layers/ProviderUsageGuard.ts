@@ -45,6 +45,7 @@ import {
   providerModelOptionDescriptors,
   recordTokensIntoState,
   recordWindowsIntoState,
+  usageReportListsAccountWindows,
   recordUsageGuardCredits,
   resolveUsageGuardEvaluationModel,
   resolveUsageGuardProviderConfig,
@@ -536,7 +537,12 @@ const make = Effect.gen(function* () {
           ? previous
           : { ...previous, driver: String(input.driver) };
       const updated = recordUsageGuardCredits(
-        recordWindowsIntoState(base, windows, at),
+        recordWindowsIntoState(base, windows, at, {
+          listsAccountWindows: usageReportListsAccountWindows(
+            String(input.driver),
+            input.rateLimits,
+          ),
+        }),
         input.rateLimits,
       );
       for (const window of Object.values(updated.windows)) {

@@ -27,6 +27,12 @@ instance switches its chip to the Claude and GPT pool; switching away returns it
 Both pools remain visible in the details popup and Providers settings. A missing reading shows
 as not reported rather than substituting the other pool's usage.
 
+Claude's bars follow the limits Claude reports. Each live report lists every account-wide limit on
+the account, so a limit it stops listing leaves the card and the chip right away, and one it starts
+listing appears without an update to Solla Code. Accounts or older Claude versions that still have a
+**Current session** limit keep that row. A usage check Claude refuses changes nothing, because it
+says nothing about which limits exist.
+
 Codex readings are stabilized before display. Account-wide quota and model-specific quota buckets
 remain separate, so selecting a model with an unused quota cannot replace the account's Weekly row
 with 0%. Usage within one reset cycle cannot move backward from a single report: Solla Code accepts

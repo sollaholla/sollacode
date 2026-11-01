@@ -75,6 +75,159 @@ const usageActivity = (
   createdAt,
 });
 
+describe("Claude limits follow what Claude reports", () => {
+  const claude = () => ({
+    ...makeProvider("claudeAgent", "claudeAgent", "claude@example.com"),
+  });
+  const unified = (windows: Record<string, number>) => ({
+    type: "rate_limit_event",
+    rate_limit_info: {
+      status: "allowed",
+      rateLimitType: "seven_day",
+      unifiedWindows: Object.fromEntries(
+        Object.entries(windows).map(([key, utilization]) => [
+          key,
+          { utilization, resetsAt: 1_793_959_200, status: "allowed" },
+        ]),
+      ),
+    },
+  });
+  const now = Date.parse("2026-11-01T22:00:00.000Z");
+  const keysFor = (activities: ReadonlyArray<OrchestrationThreadActivity>) =>
+    deriveProviderUsageSummaries([claude()], activities, {}, now)[0]!.windows.map(
+      (window) => window.key,
+    );
+  const report = (id: string, windows: Record<string, number>, at: string) =>
+    usageActivity(id, "claudeAgent", "claudeAgent", unified(windows), at);
+
+  it("reads live unified windows, which carry the only utilization now", () => {
+    const summary = deriveProviderUsageSummaries(
+      [claude()],
+      [report("a", { seven_day: 0.37 }, "2026-11-01T21:40:00.000Z")],
+      {},
+      now,
+    )[0]!;
+
+    expect(summary.windows).toEqual([
+      expect.objectContaining({ key: "seven_day", label: "Weekly", usedPercent: 37 }),
+    ]);
+  });
+
+  it("retires a limit Claude stops listing, with no row left behind", () => {
+    const summary = deriveProviderUsageSummaries(
+      [claude()],
+      [
+        report("old", { five_hour: 0.9, seven_day: 0.3 }, "2026-10-30T18:00:00.000Z"),
+        report("new", { seven_day: 0.37 }, "2026-11-01T21:40:00.000Z"),
+      ],
+      {},
+      now,
+    )[0]!;
+
+    expect(summary.windows.map((window) => window.key)).toEqual(["seven_day"]);
+    expect(claudePopupWindows(summary.windows).map((window) => window.label)).toEqual([
+      "Weekly",
+      "Fable",
+    ]);
+  });
+
+  it("keeps the session limit for anyone Claude still reports it for", () => {
+    expect(
+      keysFor([report("both", { five_hour: 0.2, seven_day: 0.3 }, "2026-11-01T21:40:00.000Z")]),
+    ).toEqual(["current_session", "seven_day"]);
+  });
+
+  it("brings a limit back when Claude lists it again", () => {
+    expect(
+      keysFor([
+        report("gone", { seven_day: 0.3 }, "2026-11-01T20:00:00.000Z"),
+        report("back", { five_hour: 0.1, seven_day: 0.31 }, "2026-11-01T21:00:00.000Z"),
+      ]),
+    ).toEqual(expect.arrayContaining(["current_session", "seven_day"]));
+  });
+
+  it("does not let an older report or saved value resurrect a retired limit", () => {
+    const listed = deriveProviderUsageReports(
+      [claude()],
+      [report("new", { seven_day: 0.37 }, "2026-11-01T21:40:00.000Z")],
+    );
+    const accountKey = Object.keys(listed)[0]!;
+    const saved = {
+      [accountKey]: {
+        accountKey,
+        driver: claude().driver,
+        reportedAt: "2026-10-30T18:00:00.000Z",
+        windows: [
+          {
+            key: "current_session",
+            label: "Current session",
+            usedPercent: 90,
+            resetAt: null,
+            lastSeenAt: "2026-10-30T18:00:00.000Z",
+          },
+        ],
+      },
+    };
+
+    const summary = deriveProviderUsageSummaries(
+      [claude()],
+      [report("new", { seven_day: 0.37 }, "2026-11-01T21:40:00.000Z")],
+      saved,
+      now,
+    )[0]!;
+    expect(summary.windows.map((window) => window.key)).toEqual(["seven_day"]);
+
+    const late = mergeProviderUsageEntry(listed, {
+      accountKey,
+      driver: claude().driver,
+      reportedAt: "2026-10-30T18:00:00.000Z",
+      windows: [
+        { key: "current_session", label: "Current session", usedPercent: 90, resetAt: null },
+      ],
+    });
+    expect(late[accountKey]!.windows.map((window) => window.key)).toEqual(["seven_day"]);
+  });
+
+  it("treats a refused usage check as saying nothing about which limits exist", () => {
+    const provider = {
+      ...claude(),
+      accountUsage: { rate_limits: { error: { type: "rate_limit_error" } } },
+      accountUsageReportedAt: "2026-11-01T21:50:00.000Z",
+    } satisfies ServerProvider;
+
+    const summary = deriveProviderUsageSummaries(
+      [provider],
+      [report("both", { five_hour: 0.2, seven_day: 0.3 }, "2026-11-01T21:40:00.000Z")],
+      {},
+      now,
+    )[0]!;
+    expect(summary.windows.map((window) => window.key)).toEqual(["current_session", "seven_day"]);
+  });
+
+  it("keeps a model-scoped limit that the account listing does not cover", () => {
+    const provider = {
+      ...claude(),
+      accountUsage: {
+        rate_limits: {
+          seven_day: { utilization: 30, resets_at: "2026-11-05T00:00:00.000Z" },
+          model_scoped: [{ display_name: "Fable", utilization: 40, resets_at: null }],
+        },
+      },
+      accountUsageReportedAt: "2026-11-01T21:00:00.000Z",
+    } satisfies ServerProvider;
+
+    const summary = deriveProviderUsageSummaries(
+      [provider],
+      [report("live", { seven_day: 0.31 }, "2026-11-01T21:40:00.000Z")],
+      {},
+      now,
+    )[0]!;
+    expect(summary.windows.map((window) => window.key)).toEqual(
+      expect.arrayContaining(["seven_day", "fable"]),
+    );
+  });
+});
+
 describe("provider usage summaries", () => {
   it("shows OpenCode session cost for free models without requiring account authentication or a quota", () => {
     const provider = { ...makeProvider("opencode"), auth: { status: "unauthenticated" as const } };
