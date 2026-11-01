@@ -23,13 +23,18 @@ export const AgentAvatar = memo(function AgentAvatar(props: {
   const progress = useRef(new Animated.Value(0)).current;
   const motion = useMemo(() => agentAvatarMotion(props.agentId), [props.agentId]);
   const [blinking, setBlinking] = useState(false);
+  const moodRef = useRef(mood);
+  moodRef.current = mood;
   useEffect(() => {
     if (!props.online) return;
     let active = AppState.currentState === "active";
     let reduced = true;
     let disposed = false;
     let cancel: (() => void) | undefined;
+    let blinkTimer: ReturnType<typeof setTimeout> | undefined;
     const rest = () => {
+      if (blinkTimer !== undefined) clearTimeout(blinkTimer);
+      setBlinking(false);
       progress.stopAnimation();
       progress.setValue(0);
     };
@@ -41,19 +46,28 @@ export const AgentAvatar = memo(function AgentAvatar(props: {
         return;
       }
       if (cancel) return;
-      cancel = scheduleAgentAvatarMotion(props.agentId, {
-        blink: setBlinking,
-        rest,
-        move: () => {
-          rest();
-          Animated.timing(progress, {
-            toValue: 1,
-            duration: motion.duration,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          }).start();
+      cancel = scheduleAgentAvatarMotion(
+        props.agentId,
+        {
+          rest,
+          play: (gesture) => {
+            // One drawing here, so a blink swaps it and any other gesture moves it whole.
+            if (gesture.root === undefined) {
+              setBlinking(true);
+              blinkTimer = setTimeout(() => setBlinking(false), gesture.duration);
+              return;
+            }
+            rest();
+            Animated.timing(progress, {
+              toValue: 1,
+              duration: motion.duration,
+              easing: Easing.inOut(Easing.ease),
+              useNativeDriver: true,
+            }).start();
+          },
         },
-      });
+        { avatarColor: props.avatarColor, mood: () => moodRef.current },
+      );
     };
     const stateSubscription = AppState.addEventListener("change", (state) => {
       active = state === "active";
@@ -80,7 +94,7 @@ export const AgentAvatar = memo(function AgentAvatar(props: {
       cancel?.();
       rest();
     };
-  }, [props.agentId, props.online, motion, progress]);
+  }, [props.agentId, props.avatarColor, props.online, motion, progress]);
   const xml = useMemo(
     () =>
       agentAvatarSvg(

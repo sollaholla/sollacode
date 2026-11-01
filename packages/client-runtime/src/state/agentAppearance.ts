@@ -453,9 +453,13 @@ function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lea
     return `<path d="M${pt([x - w, top])}H${f(x + w)}Q${pt([x + w, top + 4.8 * s])} ${pt([x, top + 4.8 * s])}Q${pt([x - w, top + 4.8 * s])} ${pt([x - w, top])}Z" fill="${INK}" stroke="${INK}" stroke-width="1" stroke-linejoin="round"/>`;
   }
   if (mood === "working") {
-    // Concentrating: a short level line, drawn a little toward the work.
-    const w = 2.1 * s;
-    return stroke(`M${pt([x - w + lean * 0.6, y])}H${f(x + w + lean * 0.6)}`, line);
+    // Concentrating: a short line with the tip of the tongue poking out.
+    const w = 2.6 * s;
+    const mx = x + lean * 0.6;
+    return (
+      dot(mx + lean * 1.2, y + 1.5 * s, 1.75 * s, "#ff8fa8") +
+      stroke(`M${pt([mx - w, y])}H${f(mx + w)}`, line)
+    );
   }
   return "";
 }
@@ -487,20 +491,26 @@ function moodAccent(
   if (mood === "sleeping" && online) {
     const x = Math.min(right[0] + 3 * s, geo.sides[1] - 9);
     const y = Math.max(right[1] - 13 * s, geo.crown[1] + 5);
-    const k = 3.6 * (s / FACE_SCALE);
-    return stroke(`M${pt([x, y])}H${f(x + k * 1.5)}L${pt([x, y + k * 1.5])}H${f(x + k * 1.5)}`, 1.9, mix(bodyColor, "#ffffff", 0.78));
+    const k = 5.4 * (s / FACE_SCALE);
+    return stroke(`M${pt([x, y])}H${f(x + k * 1.5)}L${pt([x, y + k * 1.5])}H${f(x + k * 1.5)}`, 2.5, mix(bodyColor, "#ffffff", 0.82));
   }
   return "";
 }
 
-function eyesMarkup(
+/** Eyes are separate from the rest of the face so a client can move them alone. */
+interface FaceParts {
+  readonly features: string;
+  readonly eyes: string;
+}
+
+function faceParts(
   geo: Geo,
   traits: AgentAvatarTraits,
   mood: AgentAvatarMood,
   blinking: boolean,
   bodyColor: string,
   online: boolean,
-): string {
+): FaceParts {
   const s = (geo.eyeScale ?? 1) * FACE_SCALE;
   const centers = eyeCenters(geo, traits, mood);
   const closed = mood === "sleeping" || (blinking && mood !== "happy");
@@ -541,12 +551,13 @@ function eyesMarkup(
       const cy = mood === "working" ? c[1] + 1 : c[1];
       return `<path d="${pillPath([c[0], cy], 7.4, h, lid)}" fill="${light}"/>`;
     };
-    return (
-      band +
-      centers.map(cell).join("") +
-      mouthMarkup(midX, y + 11 * s, mood, s, lean) +
-      moodAccent(geo, centers, mood, s, bodyColor, online)
-    );
+    return {
+      features:
+        band +
+        mouthMarkup(midX, y + 11 * s, mood, s, lean) +
+        moodAccent(geo, centers, mood, s, bodyColor, online),
+      eyes: centers.map(cell).join(""),
+    };
   }
 
   const mouth =
@@ -573,13 +584,8 @@ function eyesMarkup(
         line,
       );
     }
-    // Working: a heavy level lid resting on the flat top of each eye.
-    if (mood === "working") {
-      const half = (traits.eyes === "pill" ? 3.9 : traits.eyes === "beads" ? 4.4 : 4.7) * s;
-      const lidY =
-        traits.eyes === "pill" ? c[1] - 1.6 * s : traits.eyes === "beads" ? c[1] - 1.1 * s : c[1] - 1.7 * s;
-      return stroke(`M${pt([c[0] - half, lidY])}H${f(c[0] + half)}`, line * 1.15);
-    }
+    // Working has no brow: a level one over a lowered lid reads as a scowl.
+    if (mood === "working") return "";
     if (traits.eyes !== "beads") return "";
     if (closed)
       return stroke(
@@ -603,7 +609,7 @@ function eyesMarkup(
         EYE_LINE * s,
       );
     };
-    return brows + centers.map(eye).join("") + mouth;
+    return { features: brows + mouth, eyes: centers.map(eye).join("") };
   }
   if (closed) {
     const eye = (c: P2) => {
@@ -615,7 +621,7 @@ function eyesMarkup(
         (mood === "sleeping" ? EYE_LINE : EYE_LINE * 0.8) * s,
       );
     };
-    return brows + centers.map(eye).join("") + mouth;
+    return { features: brows + mouth, eyes: centers.map(eye).join("") };
   }
 
   // Open eyes. working: lids drop and the eyes look down at the work.
@@ -653,7 +659,7 @@ function eyesMarkup(
     const glint = dot(c[0] - rx * 0.3, top + (lid ? big + 0.8 * s : ry * 0.55), big, "#fff");
     return shape + glint;
   };
-  return brows + centers.map(eye).join("") + mouth;
+  return { features: brows + mouth, eyes: centers.map(eye).join("") };
 }
 
 // ---------------------------------------------------------------------------
@@ -886,17 +892,41 @@ const COOL = 250;
 // ---------------------------------------------------------------------------
 
 /**
- * One small, static drawing for web image documents and native SvgXml. Ids are
- * scoped to each SVG root; no filters, text, images or animation. Only computed
- * numbers and colors enter the markup — never names or ids.
+ * How each mood holds the whole body. This is what separates moods at 20px, where
+ * a brow is one pixel, and because it is in the drawing it costs nothing to keep.
  */
-export function agentAvatarSvg(
+const MOOD_LEAN: Record<AgentAvatarMood, number> = {
+  idle: 0,
+  working: 3,
+  waiting: 6,
+  blocked: -5,
+  happy: 0,
+  sleeping: 11,
+};
+
+function moodPose(mood: AgentAvatarMood): string {
+  const lean = MOOD_LEAN[mood];
+  if (lean === 0) return "";
+  // Shrinks just enough that a tilted corner stays inside the frame.
+  const k = 1 - Math.abs(lean) * 0.0075;
+  return `rotate(${lean} 40 44) translate(${f(40 * (1 - k))} ${f(44 * (1 - k))}) scale(${f(k)}) `;
+}
+
+function svgRoot(transform: string, content: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80">
+<g transform="${transform}">
+${content}
+</g>
+</svg>`;
+}
+
+function avatarParts(
   agentId: string,
   online: boolean,
-  avatarColor?: number | null,
-  blinking = false,
-  mood: AgentAvatarMood = "idle",
-): string {
+  avatarColor: number | null | undefined,
+  blinking: boolean,
+  mood: AgentAvatarMood,
+) {
   const traits = agentAvatarTraits(agentId, avatarColor);
   const face: AgentAvatarMood = online ? mood : "sleeping";
   const geo = SHAPES[traits.shape];
@@ -912,12 +942,11 @@ export function agentAvatarSvg(
   const worn = accessoryMarkup(traits.accessory, geo, centers, bodyColor, !online);
 
   let [x0, y0, x1, y1] = geo.box;
-  for (const box of [worn.box]) {
-    if (!box) continue;
-    x0 = Math.min(x0, box[0]);
-    y0 = Math.min(y0, box[1]);
-    x1 = Math.max(x1, box[2]);
-    y1 = Math.max(y1, box[3]);
+  if (worn.box) {
+    x0 = Math.min(x0, worn.box[0]);
+    y0 = Math.min(y0, worn.box[1]);
+    x1 = Math.max(x1, worn.box[2]);
+    y1 = Math.max(y1, worn.box[3]);
   }
   const scale = Math.min(76 / (x1 - x0), 76 / (y1 - y0));
   const tx = 40 - (scale * (x0 + x1)) / 2;
@@ -930,15 +959,58 @@ export function agentAvatarSvg(
   const shaded = (shape: string, clip: string, color: string) =>
     `<g fill="${tone(color, -0.14, 0.86, COOL, 14)}">${shape}</g>` +
     `<g fill="${color}" clip-path="url(#${clip})" clip-rule="nonzero"><g transform="translate(${f(-span * 0.025)} ${f(-span * 0.042)})">${shape}</g></g>`;
-  const defs = `<clipPath id="b">${geo.body}</clipPath>${geo.trim ? `<clipPath id="t">${geo.trim}</clipPath>` : ""}`;
-  const material = shaded(geo.body, "b", bodyColor) + (geo.trim ? shaded(geo.trim, "t", trimColor) : "");
+  const defs = `<defs><clipPath id="b">${geo.body}</clipPath>${geo.trim ? `<clipPath id="t">${geo.trim}</clipPath>` : ""}</defs>`;
+  const material =
+    shaded(geo.body, "b", bodyColor) + (geo.trim ? shaded(geo.trim, "t", trimColor) : "");
+  const parts = faceParts(geo, traits, face, blinking, bodyColor, online);
+  return {
+    transform: `${online ? moodPose(face) : ""}matrix(${f(scale)} 0 0 ${f(scale)} ${f(tx)} ${f(ty)})`,
+    body: `${defs}${material}\n${worn.front}\n${parts.features}`,
+    eyes: parts.eyes,
+    eyeCenter: [
+      (tx + scale * ((centers[0][0] + centers[1][0]) / 2)) / 80,
+      (ty + scale * centers[0][1]) / 80,
+    ] as const,
+  };
+}
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80">
-<defs>${defs}</defs>
-<g transform="matrix(${f(scale)} 0 0 ${f(scale)} ${f(tx)} ${f(ty)})">
-${material}
-${worn.front}
-${eyesMarkup(geo, traits, face, blinking, bodyColor, online)}
-</g>
-</svg>`;
+/**
+ * One small, static drawing for web image documents and native SvgXml. Ids are
+ * scoped to each SVG root; no filters, text, images or animation. Only computed
+ * numbers and colors enter the markup — never names or ids.
+ */
+export function agentAvatarSvg(
+  agentId: string,
+  online: boolean,
+  avatarColor?: number | null,
+  blinking = false,
+  mood: AgentAvatarMood = "idle",
+): string {
+  const parts = avatarParts(agentId, online, avatarColor, blinking, mood);
+  return svgRoot(parts.transform, `${parts.body}\n${parts.eyes}`);
+}
+
+export interface AgentAvatarLayers {
+  readonly body: string;
+  readonly eyes: string;
+  /** Between the eyes, as fractions of the frame: where they blink from. */
+  readonly eyeCenter: readonly [number, number];
+}
+
+/**
+ * The same drawing in two images, so a client can blink and glance by moving the
+ * eyes alone on the compositor, with nothing re-rendered or repainted.
+ */
+export function agentAvatarLayers(
+  agentId: string,
+  online: boolean,
+  avatarColor?: number | null,
+  mood: AgentAvatarMood = "idle",
+): AgentAvatarLayers {
+  const parts = avatarParts(agentId, online, avatarColor, false, mood);
+  return {
+    body: svgRoot(parts.transform, parts.body),
+    eyes: svgRoot(parts.transform, parts.eyes),
+    eyeCenter: parts.eyeCenter,
+  };
 }
