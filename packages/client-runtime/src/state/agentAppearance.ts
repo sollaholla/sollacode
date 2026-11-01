@@ -374,6 +374,9 @@ const stroke = (d: string, width: number, color = INK) =>
 /** Two face weights: closed eyes at eye weight, brows, lids and mouths at detail weight. */
 const EYE_LINE = 3.6;
 const DETAIL_LINE = 2.5;
+/** Faces carry the character at 20px, so they are drawn large for the body. */
+const FACE_SCALE = 1.4;
+const EYE_SPREAD = 1.2;
 
 function eyeCenters(geo: Geo, traits: AgentAvatarTraits, mood: AgentAvatarMood): [P2, P2] {
   const [gx, gy] = traits.glance;
@@ -388,8 +391,8 @@ function eyeCenters(geo: Geo, traits: AgentAvatarTraits, mood: AgentAvatarMood):
             ? [gx, gy]
             : [0, mood === "sleeping" ? 1.5 : 0];
   return [
-    [geo.face[0] - geo.gap + shift[0], geo.face[1] + shift[1]],
-    [geo.face[0] + geo.gap + shift[0], geo.face[1] + shift[1]],
+    [geo.face[0] - geo.gap * EYE_SPREAD + shift[0], geo.face[1] + shift[1]],
+    [geo.face[0] + geo.gap * EYE_SPREAD + shift[0], geo.face[1] + shift[1]],
   ];
 }
 
@@ -415,14 +418,6 @@ function pillPath(c: P2, w: number, h: number, lid?: readonly [number, number]):
   }
   const clamp = (y: number) => c[1] + Math.max(-limit, Math.min(limit, y));
   return `M${pt([c[0] - r, clamp(lid[0] - lid[1] * r)])}L${pt([c[0] + r, clamp(lid[0] + lid[1] * r)])}${bottom}Z`;
-}
-
-/** A thin crescent of bounced body light along the bottom of an open eye. */
-function bounce(c: P2, rx: number, ry: number, color: string): string {
-  const a = (28 * Math.PI) / 180;
-  const right: P2 = [c[0] + rx * Math.cos(a), c[1] + ry * Math.sin(a)];
-  const left: P2 = [c[0] - rx * Math.cos(a), c[1] + ry * Math.sin(a)];
-  return `<path d="M${pt(right)}A${f(rx)} ${f(ry)} 0 0 1 ${pt(left)}Q${pt([c[0], c[1] + ry * 1.12])} ${pt(right)}Z" fill="${color}" fill-opacity=".38"/>`;
 }
 
 const dot = (x: number, y: number, r: number, fill: string, opacity = 1) =>
@@ -459,7 +454,7 @@ function eyesMarkup(
   blinking: boolean,
   bodyColor: string,
 ): string {
-  const s = geo.eyeScale ?? 1;
+  const s = (geo.eyeScale ?? 1) * FACE_SCALE;
   const centers = eyeCenters(geo, traits, mood);
   const closed = mood === "sleeping" || (blinking && mood !== "happy");
   const midX = (centers[0][0] + centers[1][0]) / 2;
@@ -469,27 +464,25 @@ function eyesMarkup(
   if (traits.eyes === "visor") {
     // One rounded band across the face; the eyes are lit cells inside it.
     const y = centers[0][1];
-    const x0 = centers[0][0] - 9 * s;
-    const x1 = centers[1][0] + 9 * s;
-    const band = `<rect x="${f(x0)}" y="${f(y - 8 * s)}" width="${f(x1 - x0)}" height="${f(16 * s)}" rx="${f(8 * s)}" fill="${INK}"/>`;
-    const sheen = `<path d="M${pt([x0 + 6 * s, y - 5.7 * s])}H${f(x1 - 6 * s)}" stroke="#fff" stroke-opacity=".16" stroke-width="${f(1.1 * s)}" stroke-linecap="round"/>`;
+    const x0 = centers[0][0] - 7.5 * s;
+    const x1 = centers[1][0] + 7.5 * s;
+    const band = `<rect x="${f(x0)}" y="${f(y - 7 * s)}" width="${f(x1 - x0)}" height="${f(14 * s)}" rx="${f(7 * s)}" fill="${INK}"/>`;
     const light = mix(bodyColor, mood === "blocked" ? "#ffc8b8" : "#ffffff", 0.74);
-    const core = "#ffffff";
     const cell = (c: P2, index: number) => {
       if (mood === "happy")
         return stroke(
-          `M${pt([c[0] - 4, c[1] + 1.6])}Q${pt([c[0], c[1] - 4])} ${pt([c[0] + 4, c[1] + 1.6])}`,
-          2.8,
+          `M${pt([c[0] - 5, c[1] + 2])}Q${pt([c[0], c[1] - 5])} ${pt([c[0] + 5, c[1] + 2])}`,
+          3.6,
           light,
         );
       if (closed)
         return stroke(
-          `M${pt([c[0] - 4, c[1] + 0.5])}H${f(c[0] + 4)}`,
-          2.4,
+          `M${pt([c[0] - 5, c[1] + 0.5])}H${f(c[0] + 5)}`,
+          3.2,
           mix(bodyColor, INK, 0.3),
         );
       if (mood === "waiting") {
-        return dot(c[0], c[1], 4.2, light) + dot(c[0] - 0.9, c[1] - 0.9, 1.6, core, 0.9);
+        return dot(c[0], c[1], 5.6, light);
       }
       const lid: readonly [number, number] | undefined =
         mood === "working"
@@ -497,15 +490,12 @@ function eyesMarkup(
           : mood === "blocked"
             ? [-0.8, -0.5 * side(index)]
             : undefined;
-      const h = mood === "working" ? 6.4 : 7.4;
+      const h = mood === "working" ? 8 : 10;
       const cy = mood === "working" ? c[1] + 1 : c[1];
-      return (
-        `<path d="${pillPath([c[0], cy], 5.6, h, lid)}" fill="${light}"/>` +
-        `<rect x="${f(c[0] - 1.6)}" y="${f(cy - (lid ? 0 : 2.2))}" width="1.6" height="${f(lid ? 1.6 : 2.6)}" rx=".8" fill="${core}" fill-opacity=".9"/>`
-      );
+      return `<path d="${pillPath([c[0], cy], 7.4, h, lid)}" fill="${light}"/>`;
     };
     return (
-      band + sheen + centers.map(cell).join("") + mouthMarkup(midX, y + 12.5 * s, mood, s, lean)
+      band + centers.map(cell).join("") + mouthMarkup(midX, y + 11 * s, mood, s, lean)
     );
   }
 
@@ -574,7 +564,6 @@ function eyesMarkup(
 
   // Open eyes. working: lids drop and the eyes look down at the work.
   // blocked: lids slope down outward. waiting: wide and lifted, looking at you.
-  const rim = mix(bodyColor, "#ffffff", 0.25);
   const eye = (c: P2, index: number) => {
     const inward = side(index);
     const lid: readonly [number, number] | null =
@@ -593,7 +582,7 @@ function eyesMarkup(
       const k = lid ? lid[0] * r * (mood === "working" ? 0.6 : 1) : 0;
       const shape = lid
         ? `<path d="${lidEllipse(c, r, r, k, lid[1])}" fill="${INK}"/>`
-        : dot(c[0], c[1], r, INK) + bounce(c, r, r, rim);
+        : dot(c[0], c[1], r, INK);
       const top = lid ? c[1] + k : c[1] - r;
       return shape + dot(c[0] - r * 0.32, top + (lid ? 1.3 * s : r * 0.62), 1.05 * s, "#fff");
     }
@@ -602,13 +591,11 @@ function eyesMarkup(
     const ry = (mood === "waiting" ? 6.5 : 5.7) * s;
     const shape = lid
       ? `<path d="${lidEllipse(c, rx, ry, lid[0] * ry, lid[1])}" fill="${INK}"/>`
-      : `<ellipse cx="${f(c[0])}" cy="${f(c[1])}" rx="${f(rx)}" ry="${f(ry)}" fill="${INK}"/>` +
-        bounce(c, rx, ry, rim);
+      : `<ellipse cx="${f(c[0])}" cy="${f(c[1])}" rx="${f(rx)}" ry="${f(ry)}" fill="${INK}"/>`;
     const top = lid ? c[1] + lid[0] * ry : c[1] - ry;
     const big = (mood === "waiting" ? 1.9 : 1.6) * s;
     const glint = dot(c[0] - rx * 0.3, top + (lid ? big + 0.8 * s : ry * 0.55), big, "#fff");
-    const small = lid ? "" : dot(c[0] + rx * 0.36, c[1] - ry * 0.02, 0.8 * s, "#fff", 0.9);
-    return shape + glint + small;
+    return shape + glint;
   };
   return brows + centers.map(eye).join("") + mouth;
 }
@@ -770,7 +757,7 @@ function accessoryMarkup(
     }
     case "monocle": {
       const c = centers[1];
-      const radius = 9.4;
+      const radius = 12.2;
       const glass = `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="#fff" fill-opacity=".16"/>`;
       const ring =
         `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${INK}" stroke-width="3.2"/>` +
@@ -838,17 +825,7 @@ function tone(hex: string, dl: number, sat: number, toward: number, turn: number
   return fromHsl(h + step, s * sat, l + dl);
 }
 
-const WARM = 48;
 const COOL = 250;
-
-function stops(list: ReadonlyArray<readonly [number, string, number]>): string {
-  return list
-    .map(
-      ([offset, color, opacity]) =>
-        `<stop${offset ? ` offset="${f(offset)}"` : ""} stop-color="${color}"${opacity < 1 ? ` stop-opacity="${f(opacity)}"` : ""}/>`,
-    )
-    .join("");
-}
 
 // ---------------------------------------------------------------------------
 
@@ -890,98 +867,20 @@ export function agentAvatarSvg(
   const tx = 40 - (scale * (x0 + x1)) / 2;
   const ty = 40 - (scale * (y0 + y1)) / 2;
   const [bx0, by0, bx1, by1] = geo.box;
-  const cx = (bx0 + bx1) / 2;
-  const w = bx1 - bx0;
-  const h = by1 - by0;
-  const span = Math.max(w, h);
+  const span = Math.max(bx1 - bx0, by1 - by0);
 
-  // The edge the light lands on: each part sits on a lifted copy of itself,
-  // stepped twice so the edge softens instead of reading as an outline.
-  const d = Math.max(0.9, span * 0.024);
-  const frame = `x="${f(bx0 - 2)}" y="${f(by0 - 2)}" width="${f(w + 4)}" height="${f(h + 4)}"`;
-  const edgeAxis = `x1="${f(bx0 + w * 0.1)}" y1="${f(by0)}" x2="${f(cx + w * 0.1)}" y2="${f(by0 + h * 0.6)}"`;
-  const key = `cx="${f(cx - w * 0.2)}" cy="${f(by0 + h * 0.2)}" r="${f(span * 0.95)}"`;
-  const floor = `x1="0" y1="${f(by0 + h * 0.8)}" x2="0" y2="${f(by1)}"`;
-
-  /** Gradients for one part: lit edge, key light with form shadow, floor bounce. */
-  const lighting = (color: string, [edge, light, under]: readonly [string, string, string]) => {
-    const lift = online ? tone(color, 0.12, 0.95, WARM, 8) : tone(color, 0.06, 1, WARM, 0);
-    const shade = tone(color, -0.18, 0.72, COOL, 14);
-    const bounce = online ? tone(color, 0.1, 1, WARM, 12) : tone(color, 0.04, 1, WARM, 0);
-    return (
-      `<linearGradient id="${edge}" gradientUnits="userSpaceOnUse" ${edgeAxis}>${stops([
-        [0, lift, 1],
-        [1, color, 1],
-      ])}</linearGradient>` +
-      `<radialGradient id="${light}" gradientUnits="userSpaceOnUse" ${key}>${stops([
-        [0, lift, online ? 0.5 : 0.3],
-        [0.34, lift, 0],
-        [0.56, shade, 0],
-        [0.88, shade, 0.5],
-        [1, shade, 0.62],
-      ])}</radialGradient>` +
-      `<linearGradient id="${under}" gradientUnits="userSpaceOnUse" ${floor}>${stops([
-        [0, bounce, 0],
-        [1, bounce, 0.5],
-      ])}</linearGradient>`
-    );
-  };
-  const shifted = (shape: string, clip: string, fill: string, k: number, opacity: string) =>
-    `<g fill="${fill}"${opacity} clip-path="url(#${clip})" clip-rule="nonzero"><g transform="translate(${f(d * k * 0.5)} ${f(d * k)})">${shape}</g></g>`;
-  const paint = (
-    shape: string,
-    clip: string,
-    fill: string,
-    [edge, light, under]: readonly [string, string, string],
-  ) =>
-    `<g fill="url(#${edge})">${shape}</g>` +
-    shifted(shape, clip, fill, 0.5, ' opacity=".55"') +
-    shifted(shape, clip, fill, 1, "") +
-    `<rect ${frame} fill="url(#${light})" clip-path="url(#${clip})" clip-rule="nonzero"/>` +
-    `<rect ${frame} fill="url(#${under})" clip-path="url(#${clip})" clip-rule="nonzero"/>`;
-
-  const bodyIds = ["me", "mk", "mf"] as const;
-  const aoColor = tone(bodyColor, -0.3, 0.7, COOL, 18);
-  const trimIds = ["te", "tk", "tf"] as const;
-  const defs = [
-    `<clipPath id="b">${geo.body}${geo.trim ?? ""}</clipPath>`,
-    geo.trim
-      ? `<clipPath id="mc">${geo.body}</clipPath><clipPath id="mt">${geo.trim}</clipPath>`
-      : "",
-    lighting(bodyColor, bodyIds),
-    geo.trim ? lighting(trimColor, trimIds) : "",
-    // Soft contact shadow; it only shows where the body meets the floor.
-    `<radialGradient id="mg">${stops([
-      [0, "#0a0806", 0.34],
-      [0.5, "#0a0806", 0.14],
-      [1, "#0a0806", 0],
-    ])}</radialGradient>`,
-    // Occlusion where the body presses into the floor.
-    `<radialGradient id="mo">${stops([
-      [0, aoColor, 0.26],
-      [1, aoColor, 0],
-    ])}</radialGradient>`,
-  ].join("");
-
-  const ground = `<ellipse cx="${f(cx)}" cy="${f(by1)}" rx="${f(w * 0.44)}" ry="${f(Math.max(2.6, h * 0.05))}" fill="url(#mg)"/>`;
-  const occlusion = `<ellipse cx="${f(cx)}" cy="${f(by1 + h * 0.03)}" rx="${f(w * 0.42)}" ry="${f(h * 0.11)}" fill="url(#mo)" clip-path="url(#b)" clip-rule="nonzero"/>`;
-  // Trim (a cap, a band) shades the body just beneath it.
-  const trimShadow = geo.trim
-    ? `<g fill="${tone(trimColor, -0.12, 0.7, COOL, 10)}" clip-path="url(#mc)" clip-rule="nonzero">${[
-        0.7, 1.6, 2.8,
-      ]
-        .map((dy) => `<g opacity=".2" transform="translate(0 ${f(dy)})">${geo.trim}</g>`)
-        .join("")}</g>`
-    : "";
-  const material =
-    paint(geo.body, geo.trim ? "mc" : "b", bodyColor, bodyIds) +
-    (geo.trim ? trimShadow + paint(geo.trim, "mt", trimColor, trimIds) : "");
+  // One flat color and one soft-edged form shadow: a copy of the part in the
+  // main color, nudged toward the light, over the part in its shade.
+  const shaded = (shape: string, clip: string, color: string) =>
+    `<g fill="${tone(color, -0.14, 0.86, COOL, 14)}">${shape}</g>` +
+    `<g fill="${color}" clip-path="url(#${clip})" clip-rule="nonzero"><g transform="translate(${f(-span * 0.025)} ${f(-span * 0.042)})">${shape}</g></g>`;
+  const defs = `<clipPath id="b">${geo.body}</clipPath>${geo.trim ? `<clipPath id="t">${geo.trim}</clipPath>` : ""}`;
+  const material = shaded(geo.body, "b", bodyColor) + (geo.trim ? shaded(geo.trim, "t", trimColor) : "");
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80">
 <defs>${defs}</defs>
 <g transform="matrix(${f(scale)} 0 0 ${f(scale)} ${f(tx)} ${f(ty)})">
-${ground}
-${material}${occlusion}
+${material}
 ${eyesMarkup(geo, traits, face, blinking, bodyColor)}
 ${worn.front}
 </g>
