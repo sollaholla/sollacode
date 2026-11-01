@@ -180,6 +180,8 @@ const ProjectionThreadSearchRow = Schema.Struct({
   source: OrchestrationThreadSearchSource,
   matchText: Schema.String,
   messageCreatedAt: Schema.NullOr(IsoDateTime),
+  threadTitle: Schema.String,
+  archived: Schema.Number,
 });
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
@@ -1284,6 +1286,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           SELECT
             threads.thread_id AS thread_id,
             threads.project_id AS project_id,
+            threads.title AS thread_title,
+            threads.archived_at IS NOT NULL AS archived,
             CASE messages.role
               WHEN 'user' THEN 'user'
               ELSE 'assistant'
@@ -1311,7 +1315,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           INNER JOIN projection_projects AS projects
             ON projects.project_id = threads.project_id
           WHERE threads.deleted_at IS NULL
-            AND threads.archived_at IS NULL
             AND projects.deleted_at IS NULL
             AND messages.is_streaming = 0
             AND (
@@ -1332,10 +1335,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           source,
           match_text AS "matchText",
-          message_created_at AS "messageCreatedAt"
+          message_created_at AS "messageCreatedAt",
+          thread_title AS "threadTitle",
+          archived
         FROM ranked
         WHERE thread_match_rank = 1
         ORDER BY
+          archived ASC,
           match_rank ASC,
           thread_updated_at DESC,
           thread_id ASC
@@ -3341,6 +3347,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         source: row.source,
         snippet: buildSearchSnippet(row.matchText, input.query),
         messageCreatedAt: row.messageCreatedAt,
+        threadTitle: row.threadTitle,
+        archived: row.archived !== 0,
       })),
     };
   });

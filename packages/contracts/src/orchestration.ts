@@ -1916,6 +1916,9 @@ export const OrchestrationThreadSearchMatch = Schema.Struct({
   source: OrchestrationThreadSearchSource,
   snippet: Schema.String.check(Schema.isMaxLength(240)),
   messageCreatedAt: Schema.NullOr(IsoDateTime),
+  /** Lets a client list a match whose thread is not in its sidebar, such as an archived chat. */
+  threadTitle: Schema.optionalKey(Schema.String),
+  archived: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationThreadSearchMatch = typeof OrchestrationThreadSearchMatch.Type;
 

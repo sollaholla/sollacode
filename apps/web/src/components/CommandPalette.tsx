@@ -44,6 +44,7 @@ import {
   MessageSquareIcon,
   PaletteIcon,
   SettingsIcon,
+  ArchiveIcon,
   SquarePenIcon,
   TextSearchIcon,
 } from "lucide-react";
@@ -76,6 +77,7 @@ import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useListedProjects, useThreadShells } from "../state/entities";
 import { useThreadSearch } from "../state/queries";
+import { searchSettings } from "./settings/settingsSearchIndex";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
   appendBrowsePathSegment,
@@ -1108,6 +1110,60 @@ function OpenCommandPaletteDialog(props: {
     ],
   );
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
+  // Archived chats are not in the sidebar's list, so the match itself names them.
+  const archivedThreadSearchItems = useMemo(
+    () =>
+      threadSearch.matches.flatMap((match): CommandPaletteActionItem[] =>
+        match.archived === true && (match.source === "user" || match.source === "assistant")
+          ? [
+              {
+                kind: "action",
+                value: `archived-thread:${threadSearchMatchKey(match)}`,
+                // The server already matched the query, which may be in a message
+                // the snippet trims. Keep it for the palette's local filter.
+                searchTerms: [match.threadTitle ?? "", match.snippet, threadSearchQuery],
+                title: match.threadTitle ?? "Archived chat",
+                description: "Archived",
+                icon: <ArchiveIcon className={ITEM_ICON_CLASS} />,
+                threadContentMatch: {
+                  source: match.source,
+                  snippet: match.snippet,
+                  query: threadSearchQuery,
+                },
+                run: async () => {
+                  await navigate({
+                    to: "/$environmentId/$threadId",
+                    params: buildThreadRouteParams(
+                      scopeThreadRef(match.environmentId, match.threadId),
+                    ),
+                  });
+                },
+              },
+            ]
+          : [],
+      ),
+    [navigate, threadSearch.matches, threadSearchQuery],
+  );
+  const settingsSearchItems = useMemo(
+    () =>
+      searchSettings(threadSearchQuery, undefined, {
+        includeDesktopOnly: window.desktopBridge?.permissions !== undefined,
+      }).map(
+        (result): CommandPaletteActionItem => ({
+          kind: "action",
+          value: `setting:${result.tab}#${result.anchorId}`,
+          // Every query word already matched the title, section or keywords.
+          searchTerms: [result.title, result.section, result.tabLabel, threadSearchQuery],
+          title: result.title,
+          description: `Settings · ${result.tabLabel}`,
+          icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+          run: async () => {
+            await navigate({ to: result.tab, hash: result.anchorId });
+          },
+        }),
+      ),
+    [navigate, threadSearchQuery],
+  );
 
   const pushPaletteView = useCallback(
     (view: CommandPaletteView): void => {
@@ -1709,6 +1765,8 @@ function OpenCommandPaletteDialog(props: {
     isInSubmenu: currentView !== null,
     projectSearchItems: projectSearchItems,
     threadSearchItems: allThreadItems,
+    archivedThreadSearchItems,
+    settingsSearchItems,
   });
 
   const handleAddProjectForEnvironment = useCallback(
@@ -2533,7 +2591,7 @@ function OpenCommandPaletteDialog(props: {
                     emptyStateMessage: "Press Enter to create this folder and add it as a project.",
                   }
                 : threadSearch.isPending
-                  ? { emptyStateMessage: "Searching thread messages…" }
+                  ? { emptyStateMessage: "Searching your chats…" }
                   : {})}
       />
     </CommandPaletteContent>

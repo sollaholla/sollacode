@@ -2413,7 +2413,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
-  it.effect("searches active user messages and canonical assistant outputs", () =>
+  it.effect("searches user messages and canonical assistant outputs, archived chats last", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
@@ -2651,8 +2651,16 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const deduped = yield* snapshotQuery.searchThreads({ query: "needle" });
       assert.deepStrictEqual(
         deduped.matches.map((match) => [match.threadId, match.source]),
-        [[ThreadId.make("thread-active"), "user"]],
+        [
+          [ThreadId.make("thread-active"), "user"],
+          [ThreadId.make("thread-hidden"), "user"],
+        ],
       );
+      assert.equal(deduped.matches[0]?.archived, false);
+      // Archived chats are still previous conversations: searchable, listed last,
+      // and named by the match because they are not in the client's sidebar.
+      assert.equal(deduped.matches[1]?.archived, true);
+      assert.equal(deduped.matches[1]?.threadTitle, "Archived search");
 
       assert.deepStrictEqual(
         (yield* snapshotQuery.searchThreads({ query: "interim needle" })).matches,
@@ -2663,8 +2671,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         [],
       );
       assert.deepStrictEqual(
-        (yield* snapshotQuery.searchThreads({ query: "hidden needle" })).matches,
-        [],
+        (yield* snapshotQuery.searchThreads({ query: "hidden needle" })).matches.map(
+          (match) => match.threadId,
+        ),
+        [ThreadId.make("thread-hidden")],
       );
       yield* sql`
         UPDATE projection_threads
