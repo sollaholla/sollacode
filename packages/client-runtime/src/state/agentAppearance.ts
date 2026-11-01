@@ -304,8 +304,8 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     neck: [55.5, 13.8, 66.2],
   },
   sunburst: {
-    // Nine sharp-tipped rays over soft valleys: a sun, not a bottle cap.
-    body: `<path d="${roundedPolygonPath(starPoints(9, 40, 42, 36, 27.5, -Math.PI / 2), 2.8, 5.5)}"/>`,
+    // Eight sharp-tipped rays over soft valleys: a sun, not a bottle cap.
+    body: `<path d="${roundedPolygonPath(starPoints(8, 40, 42, 36, 26.5, -Math.PI / 2), 2.8, 5.5)}"/>`,
     box: [5.5, 7, 74.5, 75],
     face: [40, 43],
     gap: 10,
@@ -506,54 +506,48 @@ function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lea
   return "";
 }
 
-/** A floating glyph: white over an ink outline, so it holds on every body color. */
-const mark = (d: string) => stroke(d, 4.8) + stroke(d, 2.5, "#fff");
-
-/** The one extra mark a mood gets: a typing bubble, a sweat drop, blushing cheeks, a floating z. */
+/** Happy shows on the face itself: blushing cheeks under the smile. */
 function moodAccent(
-  geo: Geo,
   centers: readonly [P2, P2],
   mood: AgentAvatarMood,
   s: number,
   bodyColor: string,
-  online: boolean,
 ): string {
-  const [, right] = centers;
-  if (mood === "working" && online) {
-    const cx = Math.min(right[0] + 5 * s, geo.sides[1] - 8);
-    const cy = Math.max(right[1] - 11 * s, geo.crown[1] + 2);
-    const dots = [-6.2, 0, 6.2].map((dx) => dot(cx + dx, cy, 2.1, INK)).join("");
-    return `<rect x="${f(cx - 12)}" y="${f(cy - 6.5)}" width="24" height="13" rx="6.5" fill="#fff" stroke="${INK}" stroke-width="1.4"/>${dots}`;
+  if (mood !== "happy") return "";
+  const blush = mix(bodyColor, "#ff2f6e", 0.42);
+  return centers
+    .map((c, index) =>
+      dot(c[0] + (index === 0 ? -5.2 : 5.2) * s, c[1] + 5 * s, 2.4 * s, blush, 0.85),
+    )
+    .join("");
+}
+
+/**
+ * The status mark. It stays in the same corner of the frame, upright, whatever
+ * the character does, and each state has its own shape and color, so a list of
+ * 20 px avatars can be read by the corner alone.
+ */
+function moodBadge(mood: AgentAvatarMood): string {
+  const keyline = `stroke="${INK}" stroke-width="1.8"`;
+  switch (mood) {
+    case "working": {
+      const dots = [52.4, 62, 71.6].map((x) => dot(x, 11, 2.5, INK)).join("");
+      return `<rect x="45" y="2" width="34" height="18" rx="9" fill="#fff" ${keyline}/>${dots}`;
+    }
+    case "waiting":
+      return (
+        `<circle cx="66" cy="14" r="12.6" fill="#ffc53d" ${keyline}/>` +
+        stroke("M61.4 11C61.4 5.8 70.8 5.8 70.8 11C70.8 14.6 66 14.2 66 17.6M66 22h.01", 3.4)
+      );
+    case "blocked":
+      return `<path d="M66 1.6C72.6 10 76.4 14.2 76.4 19A10.4 10.4 0 0 1 55.6 19C55.6 14.2 59.4 10 66 1.6Z" fill="#bfe9ff" ${keyline}/>`;
+    case "sleeping": {
+      const z = "M57 5H73L57 21H73";
+      return stroke(z, 7.2) + stroke(z, 3.8, "#fff");
+    }
+    default:
+      return "";
   }
-  if (mood === "blocked") {
-    const x = Math.min(right[0] + 8.5 * s, geo.sides[1] - 5);
-    const y = right[1] - 8 * s;
-    const k = 1.3 * s;
-    return `<path d="M${pt([x, y - 4.6 * k])}C${pt([x + 3.4 * k, y - 0.4 * k])} ${pt([x + 3 * k, y + 3.4 * k])} ${pt([x, y + 3.4 * k])}C${pt([x - 3 * k, y + 3.4 * k])} ${pt([x - 3.4 * k, y - 0.4 * k])} ${pt([x, y - 4.6 * k])}Z" fill="#d8f2ff" stroke="${INK}" stroke-width="1.1"/>`;
-  }
-  if (mood === "waiting" && online) {
-    const x = Math.min(right[0] + 3 * s, geo.sides[1] - 9);
-    const y = Math.max(right[1] - 14 * s, geo.crown[1] + 3);
-    const k = 4.6 * (s / FACE_SCALE);
-    return mark(
-      `M${pt([x, y + 0.5 * k])}C${pt([x, y - 0.4 * k])} ${pt([x + 1.7 * k, y - 0.4 * k])} ${pt([x + 1.7 * k, y + 0.6 * k])}C${pt([x + 1.7 * k, y + 1.2 * k])} ${pt([x + 0.85 * k, y + 1.1 * k])} ${pt([x + 0.85 * k, y + 1.8 * k])}M${pt([x + 0.85 * k, y + 2.75 * k])}h.01`,
-    );
-  }
-  if (mood === "happy") {
-    const blush = mix(bodyColor, "#ff2f6e", 0.42);
-    return centers
-      .map((c, index) =>
-        dot(c[0] + (index === 0 ? -5.2 : 5.2) * s, c[1] + 5 * s, 2.4 * s, blush, 0.85),
-      )
-      .join("");
-  }
-  if (mood === "sleeping" && online) {
-    const x = Math.min(right[0] + 3 * s, geo.sides[1] - 9);
-    const y = Math.max(right[1] - 13 * s, geo.crown[1] + 5);
-    const k = 5.4 * (s / FACE_SCALE);
-    return mark(`M${pt([x, y])}H${f(x + k * 1.5)}L${pt([x, y + k * 1.5])}H${f(x + k * 1.5)}`);
-  }
-  return "";
 }
 
 /** Eyes are separate from the rest of the face so a client can move them alone. */
@@ -614,14 +608,14 @@ function faceParts(
       features:
         band +
         mouthMarkup(midX, y + 11 * s, mood, s, lean) +
-        moodAccent(geo, centers, mood, s, bodyColor, online),
+        moodAccent(centers, mood, s, bodyColor),
       eyes: centers.map(cell).join(""),
     };
   }
 
   const mouth =
     mouthMarkup(midX, geo.face[1] + 9.5 * s, mood, s, lean) +
-    moodAccent(geo, centers, mood, s, bodyColor, online);
+    moodAccent(centers, mood, s, bodyColor);
 
   // Brows: beads always wear them; the others show them to focus, ask or worry.
   const brow = (c: P2, index: number) => {
@@ -827,21 +821,14 @@ function accessoryMarkup(
       const [, by0, , by1] = geo.box;
       const spare = Math.max(0, geo.box[2] - geo.box[0] - (by1 - by0));
       const drop = Math.min(19, Math.max(11, by1 + spare - ky - 1));
-      const swing = tail(
-        [kx + 1.5, ky + 1],
-        [kx + 7.5, ky + 4.5],
-        [kx + 12.5, ky + drop - 4.5],
-        5.6,
-        7,
-      );
-      const hang = tail([kx - 1, ky + 1], [kx - 3, ky + drop / 2], [kx + 0.5, ky + drop], 6, 7.6);
+      const hang = tail([kx - 1, ky + 1], [kx - 3, ky + drop / 2], [kx + 0.5, ky + drop], 8, 10);
       // A soft square knot, not a ball.
       const knotAt = (dx: number, dy: number): P2 => [kx + dx, ky - 0.5 + dy];
       const knot =
         `<path d="${roundedPolygonPath([knotAt(-4.8, -3.6), knotAt(4.2, -4.3), knotAt(4.9, 3.7), knotAt(-4.1, 4.3)], 2.6)}" fill="${INK}" ${RIM}/>`;
       return {
-        front: wrap + swing + hang + knot,
-        box: [l - 1.4, ny - 0.6, Math.max(r + 1.4, kx + 17.5), ky + drop + 3.2],
+        front: wrap + hang + knot,
+        box: [l - 1.4, ny - 0.6, Math.max(r + 1.4, kx + 7), ky + drop + 1],
       };
     }
     case "monocle": {
@@ -855,8 +842,7 @@ function accessoryMarkup(
       const hang: P2 = [c[0] + radius * 0.62, c[1] + radius * 0.78];
       const end: P2 = [Math.min(right - 1.5, c[0] + 15), c[1] + 19];
       const chain =
-        `<path d="M${pt(hang)}Q${pt([hang[0] + 1, end[1] + 1])} ${pt(end)}" stroke="${gold}" stroke-width="1.4" stroke-linecap="round" fill="none"/>` +
-        `<circle cx="${f(end[0])}" cy="${f(end[1])}" r="1.6" fill="${gold}"/>`;
+        `<path d="M${pt(hang)}Q${pt([hang[0] + 1, end[1] + 1])} ${pt(end)}" stroke="${gold}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
       return { front: glass + ring + chain, box: null };
     }
     case "bowtie": {
@@ -866,14 +852,14 @@ function accessoryMarkup(
         `<path d="${roundedPolygonPath(
           [
             [cx + dir * 2, cy - 2.4],
-            [cx + dir * 14, cy - 7.4],
-            [cx + dir * 14, cy + 7.4],
+            [cx + dir * 16, cy - 8.6],
+            [cx + dir * 16, cy + 8.6],
             [cx + dir * 2, cy + 2.4],
           ],
           2,
         )}" fill="${INK}" ${RIM}/>`;
       return {
-        front: wing(-1) + wing(1) + dot(cx, cy, 3.7, gold),
+        front: wing(-1) + wing(1) + dot(cx, cy, 4.3, gold),
         box: null,
       };
     }
@@ -960,12 +946,12 @@ function moodPose(mood: AgentAvatarMood): string {
   return `rotate(${lean} 40 44) translate(${f(40 * (1 - k))} ${f(y)}) scale(${f(k)} ${f(k * slump)}) `;
 }
 
-function svgRoot(transform: string, content: string): string {
+function svgRoot(transform: string, content: string, badge = ""): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80">
 <g transform="${transform}">
 ${content}
 </g>
-</svg>`;
+${badge}</svg>`;
 }
 
 function avatarParts(
@@ -1015,6 +1001,7 @@ function avatarParts(
     transform: `${online ? moodPose(face) : ""}matrix(${f(scale)} 0 0 ${f(scale)} ${f(tx)} ${f(ty)})`,
     body: `${defs}${material}\n${worn.front}\n${parts.features}`,
     eyes: parts.eyes,
+    badge: online ? moodBadge(face) : "",
     eyeCenter: [
       (tx + scale * ((centers[0][0] + centers[1][0]) / 2)) / 80,
       (ty + scale * centers[0][1]) / 80,
@@ -1035,7 +1022,7 @@ export function agentAvatarSvg(
   mood: AgentAvatarMood = "idle",
 ): string {
   const parts = avatarParts(agentId, online, avatarColor, blinking, mood);
-  return svgRoot(parts.transform, `${parts.body}\n${parts.eyes}`);
+  return svgRoot(parts.transform, `${parts.body}\n${parts.eyes}`, parts.badge);
 }
 
 export interface AgentAvatarLayers {
@@ -1057,7 +1044,7 @@ export function agentAvatarLayers(
 ): AgentAvatarLayers {
   const parts = avatarParts(agentId, online, avatarColor, false, mood);
   return {
-    body: svgRoot(parts.transform, parts.body),
+    body: svgRoot(parts.transform, parts.body, parts.badge),
     eyes: svgRoot(parts.transform, parts.eyes),
     eyeCenter: parts.eyeCenter,
   };

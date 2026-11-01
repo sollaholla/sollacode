@@ -101,7 +101,7 @@ describe("agent appearance", () => {
       for (const mood of MOODS) {
         const flat = agentAvatarSvg("agent", true, color, false, mood);
         const layers = agentAvatarLayers("agent", true, color, mood);
-        const inner = (svg: string) => svg.match(/<g transform="[^"]+">\n([\s\S]*)\n<\/g>\n<\/svg>$/u)![1]!;
+        const inner = (svg: string) => svg.match(/<g transform="[^"]+">\n([\s\S]*)\n<\/g>\n[\s\S]*<\/svg>$/u)![1]!;
         expect(`${inner(layers.body)}\n${inner(layers.eyes)}`).toBe(inner(flat));
         expect(layers.eyes).not.toContain("clip-path");
         for (const fraction of layers.eyeCenter) {

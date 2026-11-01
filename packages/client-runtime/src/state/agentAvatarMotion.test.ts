@@ -35,7 +35,7 @@ describe("agent avatar gestures", () => {
         expect(track[0]!.offset).toBe(0);
         expect(track.at(-1)!.offset).toBe(1);
         // A full turn is the same pose as no turn.
-        const rest = track.at(-1)!.transform.replace("rotate(360deg)", "rotate(0deg)");
+        const rest = track.at(-1)!.transform.replace(/rotate\(-?360deg\)/u, "rotate(0deg)");
         expect(rest).toBe(track[0]!.transform);
         for (const frame of track) {
           expect(Object.keys(frame).toSorted().join()).toMatch(/^(easing,)?offset,transform$/u);

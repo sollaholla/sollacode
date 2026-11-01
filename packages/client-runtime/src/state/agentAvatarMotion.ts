@@ -50,6 +50,21 @@ function body(
   return { name, duration, origin, root };
 }
 
+/** The spin's timing, shared by the body and the eyes that counter-turn inside it. */
+function spinFrames(angle: (turn: number) => number, eyes = false) {
+  const at = (y: number, turn: number, scaleX: number, scaleY: number) =>
+    eyes ? pose(0, angle(turn)) : pose(y, angle(turn), scaleX, scaleY);
+  return frames(
+    [0, at(0, 0, 1, 1), OUT],
+    [0.18, at(0, -12, 1.12, 0.84), IN],
+    [0.3, at(-14, 60, 0.96, 1.06), "linear"],
+    [0.5, at(-18, 372, 0.96, 1.06), IN],
+    [0.62, at(0, 360, 1.16, 0.82), OUT],
+    [0.8, at(-2, 360, 0.97, 1.05), IN_OUT],
+    [1, at(0, 360, 1, 1)],
+  );
+}
+
 /** Squash, leap, land, recover: the anticipation and overshoot are what sell it. */
 const hop = body(
   "hop",
@@ -123,22 +138,15 @@ const SHAPE_GESTURES: Record<AgentAvatarShape, AgentAvatarGesture> = {
     ),
     [0.5, 0.5],
   ),
-  // A leap with one fast turn in the air, so the face is only upside down for a
-  // blink, and a squashed landing that sells the weight.
-  sunburst: body(
-    "spin",
-    820,
-    frames(
-      [0, pose(0, 0), OUT],
-      [0.18, pose(0, -12, 1.12, 0.84), IN],
-      [0.3, pose(-14, 60, 0.96, 1.06), "linear"],
-      [0.5, pose(-18, 372, 0.96, 1.06), IN],
-      [0.62, pose(0, 360, 1.16, 0.82), OUT],
-      [0.8, pose(-2, 360, 0.97, 1.05), IN_OUT],
-      [1, pose(0, 360)],
-    ),
-    [0.5, 0.6],
-  ),
+  // A leap and one fast turn in the air, with a squashed landing. The eyes stay
+  // level while the body turns around them, so the face is never upside down.
+  sunburst: {
+    name: "spin",
+    duration: 820,
+    origin: [0.5, 0.6],
+    root: spinFrames((turn) => turn),
+    eyes: spinFrames((turn) => -turn, true),
+  },
   gumdrop: body(
     "perk",
     760,
@@ -189,9 +197,10 @@ const SHAPE_GESTURES: Record<AgentAvatarShape, AgentAvatarGesture> = {
     1000,
     frames(
       [0, pose(), IN_OUT],
-      [0.28, pose(0, -9), IN_OUT],
-      [0.6, pose(0, 7), IN_OUT],
-      [0.84, pose(0, -2.5), IN_OUT],
+      [0.12, pose(0, 0, 1.05, 0.94), IN_OUT],
+      [0.36, pose(0, -15), IN_OUT],
+      [0.64, pose(0, 11), IN_OUT],
+      [0.86, pose(0, -4), IN_OUT],
       [1, pose()],
     ),
   ),
@@ -262,8 +271,9 @@ function glance(direction: number): AgentAvatarGesture {
     root: frames(
       [0, pose(), IN_OUT],
       [0.08, pose(), IN_OUT],
-      [0.3, pose(0, direction * 8, 1, 1, direction * 4), IN_OUT],
-      [0.8, pose(0, direction * 8, 1, 1, direction * 4), IN_OUT],
+      [0.3, pose(0, direction * 14, 1, 1, direction * 6), IN_OUT],
+      [0.42, pose(0, direction * 11, 1, 1, direction * 5), IN_OUT],
+      [0.8, pose(0, direction * 11, 1, 1, direction * 5), IN_OUT],
       [1, pose()],
     ),
     eyes: frames(
@@ -329,8 +339,9 @@ const MOOD_ENTRANCES: Partial<Record<AgentAvatarMood, AgentAvatarGesture>> = {
     frames(
       [0, pose(), OUT],
       [0.12, pose(0, 0, 1.05, 0.93), OUT],
-      [0.34, pose(-9, 13, 0.97, 1.05), IN_OUT],
-      [0.78, pose(-7, 11), IN_OUT],
+      [0.32, pose(-11, 20, 0.97, 1.05), IN_OUT],
+      [0.5, pose(-6, 12), IN_OUT],
+      [0.78, pose(-7, 13), IN_OUT],
       [1, pose()],
     ),
   ),
