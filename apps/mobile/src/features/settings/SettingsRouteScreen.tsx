@@ -8,8 +8,16 @@ import { useNavigation } from "@react-navigation/native";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { SymbolView } from "../../components/AppSymbol";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, View } from "react-native";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  TextInput,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -24,6 +32,7 @@ import { AppText as Text } from "../../components/AppText";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
 import { useThemeColor } from "../../lib/useThemeColor";
+import { settingsBlockMatches } from "./settingsBlockMatches";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -69,36 +78,69 @@ export function SettingsRouteScreen() {
   );
 }
 
+const SETTINGS_CATEGORIES = ["App", "AI", "Workspace", "Access", "System"] as const;
+
+interface SettingsBlock {
+  readonly id: string;
+  readonly category: (typeof SETTINGS_CATEGORIES)[number];
+  /** The words someone would look for this by. Every word typed has to hit one. */
+  readonly terms: ReadonlyArray<string>;
+  readonly content: ReactNode;
+}
+
 function LocalSettingsRouteScreen() {
   const insets = useSafeAreaInsets();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const environmentCount = Object.keys(savedConnectionsById).length;
   const configs = useServerConfigs();
   const [policyEnvironment, setPolicyEnvironment] = useState<EnvironmentId | null>(null);
+  const [query, setQuery] = useState("");
+  const mutedColor = useThemeColor("--color-foreground-muted");
 
-  return (
-    <View collapsable={false} className="flex-1 bg-sheet">
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        showsVerticalScrollIndicator={false}
-        className="flex-1"
-        contentContainerClassName="gap-6 px-5 pt-4"
-        contentContainerStyle={{
-          paddingBottom: Math.max(insets.bottom, 18) + 18,
-        }}
-      >
-        <SettingsSection title="Configuration">
-          <SettingsRow
-            icon="desktopcomputer"
-            label="Environments"
-            value={`${environmentCount}`}
-            target="SettingsEnvironments"
-          />
-          <SettingsRow icon="folder" label="Projects" target="SettingsProjects" />
-          <SettingsRow icon="person.2" label="Agents" fullScreenTarget="Agents" />
-          <SettingsRow icon="key" label="Credentials" target="SettingsCredentials" />
+  const blocks: ReadonlyArray<SettingsBlock> = [
+    {
+      id: "general",
+      category: "App",
+      terms: ["general", "project grouping", "folders"],
+      content: <GeneralSettingsSection />,
+    },
+    {
+      id: "appearance",
+      category: "App",
+      terms: ["appearance", "theme", "dark", "light", "text size"],
+      content: (
+        <SettingsSection title="Appearance">
+          <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
         </SettingsSection>
-
+      ),
+    },
+    {
+      id: "beta",
+      category: "App",
+      terms: ["beta", "experimental", "preview features"],
+      content: <BetaSettingsSection />,
+    },
+    {
+      id: "agents",
+      category: "AI",
+      terms: ["agents", "assistant", "tasks"],
+      content: (
+        <SettingsSection title="Agents">
+          <SettingsRow icon="person.2" label="Agents" fullScreenTarget="Agents" />
+        </SettingsSection>
+      ),
+    },
+    {
+      id: "orchestrator",
+      category: "AI",
+      terms: ["orchestrator", "voice", "microphone", "talk"],
+      content: <OrchestratorSettingsSection />,
+    },
+    {
+      id: "fallback-models",
+      category: "AI",
+      terms: ["automatic fallback models", "model restrictions", "failover", "allowlist", "block"],
+      content: (
         <SettingsSection title="Automatic fallback models">
           {[...configs.entries()].map(([environmentId, config]) => (
             <Pressable
@@ -114,15 +156,45 @@ function LocalSettingsRouteScreen() {
             <Text className="p-4">Connect an environment to manage its fallback models.</Text>
           )}
         </SettingsSection>
-        {policyEnvironment && (
-          <ModelPolicyModal
-            environmentId={policyEnvironment}
-            visible
-            onClose={() => setPolicyEnvironment(null)}
+      ),
+    },
+    {
+      id: "projects",
+      category: "Workspace",
+      terms: ["projects", "folders", "repositories", "statistics"],
+      content: (
+        <SettingsSection title="Projects">
+          <SettingsRow icon="folder" label="Projects" target="SettingsProjects" />
+        </SettingsSection>
+      ),
+    },
+    {
+      id: "archive",
+      category: "Workspace",
+      terms: ["archive", "archived", "old chats", "threads", "delete"],
+      content: <ArchivedThreadsSettingsSection />,
+    },
+    {
+      id: "access",
+      category: "Access",
+      terms: ["environments", "computers", "connections", "credentials", "passwords", "logins"],
+      content: (
+        <SettingsSection title="Computers and logins">
+          <SettingsRow
+            icon="desktopcomputer"
+            label="Environments"
+            value={`${environmentCount}`}
+            target="SettingsEnvironments"
           />
-        )}
-        <GeneralSettingsSection />
-
+          <SettingsRow icon="key" label="Credentials" target="SettingsCredentials" />
+        </SettingsSection>
+      ),
+    },
+    {
+      id: "storage-cleanup",
+      category: "System",
+      terms: ["automatic storage cleanup", "disk", "space", "cache"],
+      content: (
         <SettingsSection title="Automatic storage cleanup">
           {[...configs.keys()].map((environmentId) => (
             <StorageCleanupRow
@@ -136,25 +208,83 @@ function LocalSettingsRouteScreen() {
             Cookies, logins, site data, chats, and projects are kept.
           </Text>
         </SettingsSection>
-
+      ),
+    },
+    {
+      id: "database",
+      category: "System",
+      terms: ["database", "storage", "compact", "size"],
+      content: (
         <DatabaseStorageSection
           configs={configs}
           labelFor={(environmentId) =>
             savedConnectionsById[environmentId]?.environmentLabel ?? "Connected computer"
           }
         />
+      ),
+    },
+    {
+      id: "about",
+      category: "System",
+      terms: ["about", "version", "update", "legal", "client storage"],
+      content: <AppSettingsSection />,
+    },
+  ];
+  const visibleBlocks = blocks.filter((block) => settingsBlockMatches(block, query));
 
-        <OrchestratorSettingsSection />
+  return (
+    <View collapsable={false} className="flex-1 bg-sheet">
+      <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+        className="flex-1"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{
+          paddingBottom: Math.max(insets.bottom, 18) + 18,
+        }}
+      >
+        <View className="flex-row items-center gap-2 rounded-[14px] border-continuous bg-card px-3 py-2">
+          <SymbolView name="magnifyingglass" size={15} tintColor={mutedColor} type="monochrome" />
+          <TextInput
+            accessibilityLabel="Search settings"
+            autoCapitalize="none"
+            autoCorrect={false}
+            className="flex-1 text-[16px] text-foreground"
+            onChangeText={setQuery}
+            placeholder="Search settings"
+            placeholderTextColorClassName="accent-placeholder"
+            returnKeyType="search"
+            value={query}
+          />
+        </View>
 
-        <SettingsSection title="Appearance">
-          <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
-        </SettingsSection>
+        {visibleBlocks.length === 0 ? (
+          <Text className="px-2 text-sm text-foreground-muted">
+            No settings match “{query.trim()}”.
+          </Text>
+        ) : null}
 
-        <BetaSettingsSection />
-
-        <ArchivedThreadsSettingsSection />
-
-        <AppSettingsSection />
+        {SETTINGS_CATEGORIES.map((category) => {
+          const blocks = visibleBlocks.filter((block) => block.category === category);
+          if (blocks.length === 0) return null;
+          return (
+            <View key={category} className="gap-4">
+              <Text className="px-2 text-[13px] font-t3-bold uppercase tracking-wide text-foreground-muted">
+                {category}
+              </Text>
+              {blocks.map((block) => (
+                <View key={block.id}>{block.content}</View>
+              ))}
+            </View>
+          );
+        })}
+        {policyEnvironment && (
+          <ModelPolicyModal
+            environmentId={policyEnvironment}
+            visible
+            onClose={() => setPolicyEnvironment(null)}
+          />
+        )}
       </ScrollView>
     </View>
   );
