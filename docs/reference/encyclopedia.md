@@ -127,7 +127,7 @@ The backend agent runtime that actually performs work. Built-in drivers currentl
 
 #### First-run setup
 
-The two-step screen a new environment shows on its landing page: choose which providers to turn on, then install or sign in to each. Finishing or skipping stores `providerSetupVersion` in server settings, so it opens once per environment, not per device. See [ProviderSetup.tsx](../../apps/web/src/components/onboarding/ProviderSetup.tsx) and [first-run-setup.md](../user/first-run-setup.md).
+The full-window screens a new environment with no projects shows on its landing page: choose which providers to turn on, install or sign in to each, set a few preferences, then a six-step welcome tour. Finishing or skipping stores `providerSetupVersion` and `welcomeTourVersion` in server settings, so each opens once per environment, not per device; only the tour's resume position is per device. See [ProviderSetup.tsx](../../apps/web/src/components/onboarding/ProviderSetup.tsx), [WelcomeFlow.tsx](../../apps/web/src/components/onboarding/WelcomeFlow.tsx), and [first-run-setup.md](../user/first-run-setup.md).
 
 #### Devices
 

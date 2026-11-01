@@ -142,6 +142,7 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
   ...entries("/settings/general", "General", "About", [
     { title: "Version", anchor: "setting-version", keywords: ["update track", "release", "about"] },
     { title: "Update track", keywords: ["nightly", "stable", "release channel"] },
+    { title: "Welcome tour", keywords: ["tutorial", "help", "how to use", "getting started"] },
     { title: "Diagnostics", keywords: ["tracing", "otlp", "logs", "performance", "spans"] },
   ]),
   ...entries("/settings/appearance", "Appearance", "Appearance", [

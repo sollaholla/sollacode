@@ -1,5 +1,6 @@
 import { AgentNameSettings } from "../agents/AgentNameSettings";
 import { WebPushSettings } from "./WebPushSettings";
+import { openWelcomeTourReplay } from "../onboarding/welcomeTourStore";
 import { ModelPolicyEditor, useSaveModelPolicy } from "./ModelPolicyEditor";
 import {
   ArchiveIcon,
@@ -1924,6 +1925,15 @@ function GeneralSettingsSections({
             description="Current version of the application."
           />
         )}
+        <SettingsRow
+          title="Welcome tour"
+          description="A short walk through the basics."
+          control={
+            <Button size="xs" variant="outline" onClick={openWelcomeTourReplay}>
+              Replay
+            </Button>
+          }
+        />
         <SettingsRow
           title="Diagnostics"
           description={diagnosticsDescription}

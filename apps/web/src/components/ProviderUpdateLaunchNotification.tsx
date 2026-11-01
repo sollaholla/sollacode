@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { DownloadIcon } from "lucide-react";
+import { useFirstRunActiveStore } from "./onboarding/welcomeTourStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useEnvironments } from "~/state/environments";
@@ -105,7 +106,17 @@ function ProviderUpdateEnvironmentsNotification() {
     const timer = setTimeout(() => setSettleGraceElapsed(true), SETTLING_GRACE_MS);
     return () => clearTimeout(timer);
   }, [isAnySettling]);
-  const isGated = isAnySettling && !settleGraceElapsed;
+  const firstRunActive = useFirstRunActiveStore((state) => state.active);
+  const isGated = (isAnySettling && !settleGraceElapsed) || firstRunActive;
+
+  // First-run took over after this prompt appeared: put it back for afterwards.
+  useEffect(() => {
+    const active = activeToastRef.current;
+    if (!firstRunActive || !active || hasInteractedRef.current) return;
+    toastManager.close(active.toastId);
+    activeToastRef.current = null;
+    seenProviderUpdateNotificationKeys.delete(active.key);
+  }, [firstRunActive]);
 
   const openProviderSettings = useCallback(() => {
     const active = activeToastRef.current;

@@ -1,0 +1,193 @@
+/*
+ * Everything here moves with transform and opacity only, plays once, and lives
+ * inside the current step, so nothing runs off-screen and nothing repaints
+ * forever. Each element's own style is its final state: with motion reduced the
+ * animations are simply absent and the finished picture shows.
+ */
+.wt-root {
+  --wt-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wt-in,
+.wt-pop,
+.wt-word,
+.wt-flash,
+.wt-out,
+.wt-press,
+.wt-from {
+  animation-delay: var(--wt-d, 0ms);
+  animation-timing-function: var(--wt-ease);
+}
+
+.wt-in {
+  animation-name: wt-in;
+  animation-duration: 520ms;
+  animation-fill-mode: backwards;
+}
+.wt-pop {
+  animation-name: wt-pop;
+  animation-duration: 560ms;
+  animation-fill-mode: backwards;
+}
+.wt-word {
+  display: inline-block;
+  animation-name: wt-in;
+  animation-duration: 300ms;
+  animation-fill-mode: backwards;
+}
+/* Appears, holds, leaves. The final state is gone. */
+.wt-flash {
+  opacity: 0;
+  animation-name: wt-flash;
+  animation-duration: var(--wt-t, 1400ms);
+  animation-timing-function: linear;
+  animation-fill-mode: backwards;
+}
+.wt-out {
+  opacity: 0;
+  transform: translate3d(var(--wt-x, 0), var(--wt-y, 0), 0);
+  animation-name: wt-out;
+  animation-duration: 420ms;
+  animation-fill-mode: backwards;
+}
+.wt-press {
+  animation-name: wt-press;
+  animation-duration: 320ms;
+}
+/* Starts offset by --wt-x/--wt-y and glides to its own place. */
+.wt-from {
+  animation-name: wt-from;
+  animation-duration: 560ms;
+  animation-fill-mode: backwards;
+}
+
+@keyframes wt-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+}
+@keyframes wt-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+@keyframes wt-flash {
+  0% {
+    opacity: 0;
+  }
+  12%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes wt-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes wt-press {
+  50% {
+    transform: scale(0.84);
+  }
+}
+@keyframes wt-from {
+  from {
+    transform: translate3d(var(--wt-x, 0), var(--wt-y, 0), 0);
+  }
+}
+
+/* Moving between steps: the old one leaves the way the new one came from. */
+/* The new step waits for the old one's words to clear, so text never overlaps. */
+.wt-panel-enter-forward {
+  animation: wt-panel-enter-forward 460ms var(--wt-ease) 130ms backwards;
+}
+.wt-panel-enter-back {
+  animation: wt-panel-enter-back 460ms var(--wt-ease) 130ms backwards;
+}
+.wt-panel-exit-forward {
+  opacity: 0;
+  animation: wt-panel-exit-forward 170ms ease-in backwards;
+}
+.wt-panel-exit-back {
+  opacity: 0;
+  animation: wt-panel-exit-back 170ms ease-in backwards;
+}
+@keyframes wt-panel-enter-forward {
+  from {
+    opacity: 0;
+    transform: translate3d(40px, 0, 0);
+  }
+}
+@keyframes wt-panel-enter-back {
+  from {
+    opacity: 0;
+    transform: translate3d(-40px, 0, 0);
+  }
+}
+@keyframes wt-panel-exit-forward {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(-40px, 0, 0);
+  }
+}
+@keyframes wt-panel-exit-back {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(40px, 0, 0);
+  }
+}
+
+/* Fades to its own opacity; only the fading runs through opacity. */
+.wt-dim {
+  opacity: 0.6;
+  animation-name: wt-dim;
+  animation-duration: 560ms;
+  animation-delay: var(--wt-d, 0ms);
+  animation-timing-function: var(--wt-ease);
+  animation-fill-mode: backwards;
+}
+@keyframes wt-dim {
+  from {
+    opacity: 1;
+  }
+}
+
+/* With no motion there is nothing to play again. */
+@media (prefers-reduced-motion: reduce) {
+  .wt-replay {
+    display: none;
+  }
+}
+
+.wt-progress-fill {
+  transform-origin: left center;
+  transition: transform 420ms var(--wt-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wt-root *,
+  .wt-root {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Crossfade between whole first-run screens. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 260ms;
+}

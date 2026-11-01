@@ -86,19 +86,19 @@ export function ProviderSetup({ onDone }: { readonly onDone: () => void }) {
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col px-5 pt-10 sm:px-8 sm:pt-16">
       <p className="text-xs font-medium tracking-wide text-muted-foreground">
-        SET UP · STEP {step === "choose" ? 1 : 2} OF 2
+        STEP {step === "choose" ? 1 : 2} OF 2
       </p>
       {step === "choose" ? (
         <>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
-            Choose your AI providers
+            Which AI do you use?
           </h1>
           <p className="mt-4 max-w-lg text-sm leading-relaxed text-muted-foreground">
-            Solla Code runs the coding agents you already use. Turn on the ones you want. You can
-            change this anytime in Settings → Providers.
+            Solla Code works with these AI tools. Turn on the ones you want. You can change this
+            anytime in Settings.
           </p>
           <ul
-            aria-label="AI providers"
+            aria-label="AI tools"
             className="mt-8 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card/30"
           >
             {options.map((option) => (
@@ -116,7 +116,7 @@ export function ProviderSetup({ onDone }: { readonly onDone: () => void }) {
             </Button>
             <div className="flex items-center gap-3">
               {selection.size === 0 ? (
-                <span className="text-xs text-muted-foreground">Choose at least one provider</span>
+                <span className="text-xs text-muted-foreground">Choose at least one</span>
               ) : null}
               <Button disabled={selection.size === 0} onClick={continueToSignIn}>
                 Continue <ArrowRightIcon aria-hidden className="size-4" />

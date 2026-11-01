@@ -1018,9 +1018,20 @@ export const DEFAULT_MODEL_ACCESS_POLICY: ModelAccessPolicy = { mode: "all", mod
  */
 export const PROVIDER_SETUP_VERSION = 1;
 
+/**
+ * Bump to show the first-run preferences and welcome tour again. It only ever
+ * opens by itself on an environment with no projects, so people already working
+ * are not interrupted; anyone can replay it from Settings or the command palette.
+ */
+export const WELCOME_TOUR_VERSION = 1;
+
 export const ServerSettings = Schema.Struct({
   /** First-run provider setup this environment finished or skipped. */
   providerSetupVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(0)),
+  ),
+  /** First-run preferences and tour this environment finished or skipped. */
+  welcomeTourVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
     Schema.withDecodingDefault(Effect.succeed(0)),
   ),
   fallbackModelPolicy: ModelAccessPolicy.pipe(
@@ -1284,6 +1295,7 @@ export type OrchestratorSettingsPatch = typeof OrchestratorSettingsPatch.Type;
 
 export const ServerSettingsPatch = Schema.Struct({
   providerSetupVersion: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  welcomeTourVersion: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   fallbackModelPolicy: Schema.optionalKey(ModelAccessPolicy),
   // Merge individual thread entries, replacing each entire policy atomically.
   threadModelPolicies: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, ModelAccessPolicy)),

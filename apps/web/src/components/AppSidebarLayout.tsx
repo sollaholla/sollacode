@@ -36,6 +36,7 @@ import {
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "./threadSidebarWidth";
 import { MobileTopBar } from "./mobile/MobileTopBar";
+import { useFirstRunActiveStore } from "./onboarding/welcomeTourStore";
 import {
   Sidebar,
   SidebarInsetChromeProvider,
@@ -193,6 +194,7 @@ function SidebarControl() {
     environmentIdentificationMode === "artwork",
   );
   const shortcutLabel = shortcutLabelForCommand(keybindings, "sidebar.toggle");
+  const firstRunActive = useFirstRunActiveStore((state) => state.active);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -214,6 +216,9 @@ function SidebarControl() {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [keybindings, toggleSidebar]);
+
+  // First-run covers the whole app, so this would toggle a sidebar nobody can see.
+  if (firstRunActive) return null;
 
   return (
     <div
