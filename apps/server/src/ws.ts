@@ -2688,6 +2688,7 @@ const makeWsRpcLayer = (
                           ? messageAuthorizesExternalImagePath(
                               sourceMessage,
                               workspaceResource.path,
+                              NodeOS.homedir(),
                             )
                           : false;
                       }),

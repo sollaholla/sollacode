@@ -374,3 +374,14 @@ describe("directory paths with a trailing separator", () => {
     expect(meta?.basename).not.toBe("");
   });
 });
+
+describe("workspace-relative paths by host", () => {
+  it("compares without case only on Windows", () => {
+    expect(resolveMarkdownFileLinkMeta("C:/Proj/src/a.ts", "c:\\proj")?.workspaceRelativePath).toBe(
+      "src/a.ts",
+    );
+    expect(
+      resolveMarkdownFileLinkMeta("/home/me/Proj/a.ts", "/home/me/proj")?.workspaceRelativePath,
+    ).toBeNull();
+  });
+});

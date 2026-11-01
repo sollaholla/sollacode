@@ -391,8 +391,12 @@ function workspaceRelativePath(path: string, workspaceRoot: string | undefined):
   const normalizedRoot = normalizeWindowsDrivePath(
     normalizeEmbeddedWindowsAbsolutePath(workspaceRoot).replaceAll("\\", "/"),
   ).replace(/\/+$/, "");
-  const pathForCompare = normalizedPath.toLowerCase();
-  const rootForCompare = normalizedRoot.toLowerCase();
+  // Only Windows paths compare without case. On a case-sensitive host a path that
+  // differs only in case is another file, and treating it as this one reads a
+  // workspace-relative path that does not exist.
+  const ignoreCase = WINDOWS_DRIVE_PATH_PATTERN.test(normalizedRoot);
+  const pathForCompare = ignoreCase ? normalizedPath.toLowerCase() : normalizedPath;
+  const rootForCompare = ignoreCase ? normalizedRoot.toLowerCase() : normalizedRoot;
   if (!pathForCompare.startsWith(`${rootForCompare}/`)) return null;
   return normalizedPath.slice(normalizedRoot.length + 1);
 }

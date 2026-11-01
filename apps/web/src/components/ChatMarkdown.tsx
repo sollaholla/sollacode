@@ -116,6 +116,7 @@ import {
   shouldOpenImageReferenceInFullScreen,
 } from "./chat/mobileImageViewer";
 import {
+  canOpenFileViewerTab,
   resolveLinkedFilePrimaryAction,
   resolveLocalFileFallback,
 } from "./chat/linkedFileBehavior";
@@ -1565,6 +1566,11 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
                 canRevealOnThisDevice,
                 canOpenInDefaultApp:
                   canRevealOnThisDevice && Boolean(window.desktopBridge?.openPath),
+                canOpenViewerTab: canOpenFileViewerTab({
+                  viewHref: href,
+                  pageOrigin: window.location.origin,
+                  isDesktopRuntime: window.desktopBridge !== undefined,
+                }),
               });
               switch (action) {
                 case "image":
@@ -1581,6 +1587,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
                   return;
                 case "default-app":
                   handleOpenInDefaultApp();
+                  return;
+                case "viewer":
+                  window.open(href, "_blank", "noopener");
                   return;
                 case "preview":
                   handleOpenInFilePreview();
@@ -1941,11 +1950,29 @@ function ChatMarkdown({
           `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
         );
       }
+      // Reached only by a browser following the link on its own (long-press
+      // preview, open in new tab), and by a tap with nothing better to open.
+      const viewHref = fileViewHref(
+        preparedConnection._tag === "Some" ? preparedConnection.value.httpBaseUrl : null,
+        fileLinkMeta.filePath,
+      );
       const imageAssetPath = resolveImageReferenceAssetPath({
         filePath: fileLinkMeta.filePath,
         workspaceRelativePath: fileLinkMeta.workspaceRelativePath,
         isRemoteThread,
-        hasSourceMessage: sourceMessageId !== undefined,
+        // The host only signs an outside-the-workspace image a message links or
+        // puts in inline code. A path stated in prose would be refused, so where the
+        // viewer can open it, the tap goes there instead of ending in an error.
+        hasSourceMessage:
+          sourceMessageId !== undefined &&
+          !(
+            verifiedBareFilePaths.has(fileLinkMeta.filePath) &&
+            canOpenFileViewerTab({
+              viewHref,
+              pageOrigin: window.location.origin,
+              isDesktopRuntime: window.desktopBridge !== undefined,
+            })
+          ),
       });
       const onOpenImage = shouldOpenImageReferenceInFullScreen({
         isThinPortraitMobile: expandedImagePreviewController?.fullScreenMobile ?? false,
@@ -1957,13 +1984,6 @@ function ChatMarkdown({
       })
         ? () => openMarkdownImageInFullScreen(fileLinkMeta, imageAssetPath!)
         : undefined;
-
-      // Reached only by a browser following the link on its own (long-press
-      // preview, open in new tab); the click itself stays in-app.
-      const viewHref = fileViewHref(
-        preparedConnection._tag === "Some" ? preparedConnection.value.httpBaseUrl : null,
-        fileLinkMeta.filePath,
-      );
 
       return (
         <MarkdownFileLink

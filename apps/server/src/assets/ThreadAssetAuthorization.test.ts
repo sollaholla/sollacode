@@ -218,6 +218,32 @@ describe("messageAuthorizesExternalImagePath", () => {
     ).toBe(true);
   });
 
+  it("authorizes a linked file name with parentheses, as Windows names copies", () => {
+    expect(
+      messageAuthorizesExternalImagePath(
+        makeAssistantMessage(String.raw`[shot](C:\Temp\Screenshot(3).png)`),
+        String.raw`C:\Temp\Screenshot(3).png`,
+      ),
+    ).toBe(true);
+    expect(
+      messageAuthorizesExternalImagePath(
+        makeAssistantMessage("[shot](/tmp/Screenshot(3).png)"),
+        "/tmp/Screenshot(3.png",
+      ),
+    ).toBe(false);
+  });
+
+  it("reads a home-relative destination as the path clients resolve it to", () => {
+    const message = makeAssistantMessage("Saved to `~/Desktop/shot.png`.");
+    expect(
+      messageAuthorizesExternalImagePath(message, "/Users/me/Desktop/shot.png", "/Users/me"),
+    ).toBe(true);
+    expect(
+      messageAuthorizesExternalImagePath(message, "/Users/me/Desktop/other.png", "/Users/me"),
+    ).toBe(false);
+    expect(messageAuthorizesExternalImagePath(message, "/Users/me/Desktop/shot.png")).toBe(false);
+  });
+
   it("rejects unlinked plain-text paths", () => {
     expect(
       messageAuthorizesExternalImagePath(

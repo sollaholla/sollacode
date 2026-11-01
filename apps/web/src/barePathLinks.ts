@@ -5,7 +5,8 @@
  * no markdown link, no code span — and the renderer used to leave it inert.
  * This finds those mentions so they can become the same clickable file chips
  * a `[report.png](/Users/me/project/report.png)` link gets. Detection is
- * deliberately narrow: an absolute path (POSIX or Windows drive) whose last
+ * deliberately narrow: an absolute path (POSIX or Windows drive, with either
+ * slash, since agents on Windows write both) whose last
  * segment ends in a real extension, optionally followed by `:line[:col]`.
  * Version numbers (`/v1.2`), URLs (`https://host/a.png`), and extensionless
  * paths never match. Whether a match is *real* is not decided here: the
@@ -29,7 +30,7 @@ export interface BareFilePathMatch {
 const POSIX_BARE_PATH_PATTERN =
   /(?<![\w./\\:@~-])\/(?:[^\s/\\`'"<>()[\]{}|:*?,;]+\/)*[^\s/\\`'"<>()[\]{}|:*?,;]+\.(?=[A-Za-z0-9]{0,7}[A-Za-z])[A-Za-z0-9]{1,8}(:\d+(?::\d+)?)?(?![\w/])/g;
 const WINDOWS_BARE_PATH_PATTERN =
-  /(?<![\w\\/:.-])[A-Za-z]:\\(?:[^\s\\/`'"<>()[\]{}|:*?,;]+\\)*[^\s\\/`'"<>()[\]{}|:*?,;]+\.(?=[A-Za-z0-9]{0,7}[A-Za-z])[A-Za-z0-9]{1,8}(:\d+(?::\d+)?)?(?![\w\\/])/g;
+  /(?<![\w\\/:.-])[A-Za-z]:[\\/](?:[^\s\\/`'"<>()[\]{}|:*?,;]+[\\/])*[^\s\\/`'"<>()[\]{}|:*?,;]+\.(?=[A-Za-z0-9]{0,7}[A-Za-z])[A-Za-z0-9]{1,8}(:\d+(?::\d+)?)?(?![\w\\/])/g;
 
 const POSITION_SUFFIX_PATTERN = /:\d+(?::\d+)?$/;
 

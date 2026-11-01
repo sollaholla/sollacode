@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   resolveLinkedFileAbsolutePath,
+  canOpenFileViewerTab,
   resolveLinkedFilePrimaryAction,
   resolveLocalFileFallback,
   shouldRevealLinkedFileByDefault,
@@ -230,5 +231,42 @@ describe("resolveLinkedFileAbsolutePath", () => {
         canOpenInDefaultApp: false,
       }),
     ).toBe("preview");
+  });
+});
+
+describe("a file outside the workspace on a device that cannot reveal it", () => {
+  const outside = {
+    filePath: "/Users/me/report.pdf",
+    workspaceRelativePath: null,
+    hasImageAction: false,
+    hasBrowserAction: false,
+    canRevealOnThisDevice: false,
+  };
+
+  it("opens the host's viewer where a tab can, rather than an editor on the host", () => {
+    expect(resolveLinkedFilePrimaryAction({ ...outside, canOpenViewerTab: true })).toBe("viewer");
+    expect(resolveLinkedFilePrimaryAction({ ...outside, canOpenViewerTab: false })).toBe("editor");
+  });
+
+  it("still prefers revealing it on a computer that holds it", () => {
+    expect(
+      resolveLinkedFilePrimaryAction({
+        ...outside,
+        canRevealOnThisDevice: true,
+        canOpenViewerTab: true,
+      }),
+    ).toBe("reveal");
+  });
+
+  it("offers the viewer only where the session cookie will reach it", () => {
+    const page = "https://mac.ts.net";
+    const relayed = `${page}/api/relay/windows-env/api/view/C%3A/a.pdf`;
+    const check = (viewHref: string | null, isDesktopRuntime = false) =>
+      canOpenFileViewerTab({ viewHref, pageOrigin: page, isDesktopRuntime });
+    expect(check(`${page}/api/view/Users/me/a.pdf`)).toBe(true);
+    expect(check(relayed)).toBe(true);
+    expect(check("https://windows.ts.net/api/view/C%3A/a.pdf")).toBe(false);
+    expect(check(relayed, true)).toBe(false);
+    expect(check(null)).toBe(false);
   });
 });

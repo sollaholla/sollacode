@@ -14,6 +14,19 @@ describe("resolveAssetUrl", () => {
     ).toBe("https://environment.example/base/api/assets/signed-token/favicon.png");
   });
 
+  it("keeps a relayed environment's artifact bundle inside the desktop proxy", () => {
+    const entryUrl = resolveDisplayArtifactUrl(
+      "https://mac.ts.net/api/relay/windows-env",
+      "/api/assets/payload.signature/index.html",
+      "sollacode://app/chat/environment/thread",
+    );
+    expect(entryUrl).toContain("sollacode://app/__solla/remote-artifact/");
+    const encodedRoot = entryUrl?.split("/__solla/remote-artifact/")[1]?.split("/")[0] ?? "";
+    expect(atob(encodedRoot.replaceAll("-", "+").replaceAll("_", "/"))).toBe(
+      "https://mac.ts.net/api/relay/windows-env/api/assets/payload.signature/",
+    );
+  });
+
   it("rejects an invalid environment base URL", () => {
     expect(resolveAssetUrl("not a URL", "/api/assets/signed-token/favicon.png")).toBeNull();
   });

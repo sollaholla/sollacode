@@ -131,7 +131,7 @@ function inferHomeFromCwd(cwd: string): string | undefined {
     return `/home/${posixHome[1]}`;
   }
 
-  const windowsUser = cwd.match(/^([A-Za-z]:\\Users\\[^\\]+)/);
+  const windowsUser = cwd.match(/^([A-Za-z]:[\\/]Users[\\/][^\\/]+)/);
   if (windowsUser?.[1]) {
     return windowsUser[1];
   }
