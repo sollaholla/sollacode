@@ -24,6 +24,10 @@ Images in a draft, in the composer or a review comment, page through that draft'
 
 The preview comes from the file on the thread's host. Relative paths resolve within that thread's workspace or worktree. Connected phones and browsers use a signed URL from the selected environment; they do not try to open the host's local filesystem path. The preview prefers the file currently at that path. If the file is moved, removed, or cannot be decoded, it falls back to an image retained in the tool result, when available. Otherwise the thumbnail indicates that the preview is unavailable.
 
+A file link can point outside the thread's workspace. On a phone or in a browser, tapping one opens the file in a new tab through the host's file viewer, using your sign-in on that page. An image outside the workspace opens in the image viewer when the reply links it or puts it in inline code. A path a reply only states in plain text opens in the viewer tab instead. The desktop app has no viewer tab for another computer's files, so a link outside the workspace there still opens in the editor on the computer that owns the thread.
+
+Images attached to messages and browser snapshots are stored copies. They are deleted after **Attachment retention** in Settings (48 hours by default), and then show as no longer available on every device.
+
 Image previews do not turn arbitrary command output or incidental filename mentions into images. An external image outside the workspace must match the exact image path recorded by the tool activity.
 
 ## Browser snapshots

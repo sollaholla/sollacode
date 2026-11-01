@@ -193,7 +193,10 @@ function normalizeMarkdownImageDestination(value: string): string | null {
 
 function assistantImageReferences(markdown: string): ReadonlyArray<string> {
   const destinations: string[] = [];
-  const linkPattern = /!?\[[^\]]*\]\(\s*(<[^>\r\n]+>|[^\s)]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/gu;
+  // One level of balanced parentheses is part of a CommonMark destination, which
+  // is how a name like `Screenshot(3).png` is written.
+  const linkPattern =
+    /!?\[[^\]]*\]\(\s*(<[^>\r\n]+>|(?:[^\s()]|\([^\s()]*\))+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/gu;
   for (const match of markdown.matchAll(linkPattern)) {
     const destination = match[1] ? normalizeMarkdownImageDestination(match[1]) : null;
     if (destination && isWorkspaceImagePreviewPath(destination)) {
@@ -214,16 +217,23 @@ function assistantImageReferences(markdown: string): ReadonlyArray<string> {
  * Remote clients may preview an absolute image path linked by an assistant
  * message. Authorization is scoped to the exact message and exact linked or
  * inline-code destination so arbitrary files adjacent to it remain inaccessible.
+ * `~/` in a destination means the home directory of the host this runs on, which
+ * is the path clients resolve it to.
  */
 export function messageAuthorizesExternalImagePath(
   message: OrchestrationMessage,
   requestedPath: string,
+  homeDirectory?: string,
 ): boolean {
   if (message.role !== "assistant" || !isWorkspaceImagePreviewPath(requestedPath)) {
     return false;
   }
   const requested = normalizeComparablePath(requestedPath);
+  const expandHome = (candidate: string) =>
+    homeDirectory !== undefined && /^~[\\/]/u.test(candidate)
+      ? `${homeDirectory}/${candidate.slice(2)}`
+      : candidate;
   return assistantImageReferences(message.text).some(
-    (candidate) => normalizeComparablePath(candidate) === requested,
+    (candidate) => normalizeComparablePath(expandHome(candidate)) === requested,
   );
 }

@@ -44,6 +44,12 @@ describe("findBareFilePaths", () => {
     expect(findBareFilePaths("~/notes/a.md")).toEqual([]);
   });
 
+  it("finds Windows drive paths written with forward slashes", () => {
+    const [match, ...rest] = findBareFilePaths("Saved C:/Users/me/out/report.png and done.");
+    expect(rest).toEqual([]);
+    expect(match?.path).toBe("C:/Users/me/out/report.png");
+  });
+
   it("finds Windows drive paths", () => {
     expect(findBareFilePaths("open C:\\Users\\me\\report.pdf now").map((m) => m.href)).toEqual([
       "C:\\Users\\me\\report.pdf",

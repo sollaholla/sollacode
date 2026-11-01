@@ -84,7 +84,9 @@ export type LinkedFilePrimaryAction =
   | "preview"
   | "editor"
   /** Hand the file to whatever application the OS has registered for it. */
-  | "default-app";
+  | "default-app"
+  /** The chip's own link: the host's file viewer, in a browser tab on this device. */
+  | "viewer";
 
 export function resolveLinkedFilePrimaryAction(input: {
   readonly filePath: string;
@@ -93,10 +95,14 @@ export function resolveLinkedFilePrimaryAction(input: {
   readonly hasBrowserAction: boolean;
   readonly canRevealOnThisDevice: boolean;
   readonly canOpenInDefaultApp?: boolean;
+  readonly canOpenViewerTab?: boolean;
 }): LinkedFilePrimaryAction {
   if (input.hasImageAction) return "image";
   if (input.workspaceRelativePath === null) {
-    return input.canRevealOnThisDevice ? "reveal" : "editor";
+    if (input.canRevealOnThisDevice) return "reveal";
+    // The panel only reads inside the workspace, and "editor" opens the file on
+    // the host. On a phone that shows nothing where the person is looking.
+    return input.canOpenViewerTab === true ? "viewer" : "editor";
   }
   // Stays ahead of the media check: on desktop a PDF has an integrated-browser
   // action and that remains the better reader. The runtime offers it only where
@@ -149,4 +155,18 @@ export function resolveLocalFileFallback(input: {
   readonly workspaceRelativePath: string | null;
 }): "preview" | "report" {
   return input.hasThreadRef && input.workspaceRelativePath !== null ? "preview" : "report";
+}
+
+/**
+ * Whether a chip's link can open the host's file viewer in a tab here. The viewer
+ * authenticates with the browser session cookie, so it works for a page on the same
+ * origin (a relayed environment included) and not in the desktop app, which has none.
+ */
+export function canOpenFileViewerTab(input: {
+  readonly viewHref: string | null;
+  readonly pageOrigin: string | null;
+  readonly isDesktopRuntime: boolean;
+}): boolean {
+  if (input.isDesktopRuntime || input.viewHref === null || input.pageOrigin === null) return false;
+  return input.viewHref.startsWith(`${input.pageOrigin}/`);
 }
