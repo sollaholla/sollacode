@@ -2734,7 +2734,7 @@ export default function SidebarV2() {
                     no root exists at startup for a trigger to attach to. */}
                 <SidebarMenuButton
                   type="button"
-                  aria-label="Search threads and commands"
+                  aria-label="Search chats, settings and commands"
                   aria-haspopup="dialog"
                   className="h-8 rounded-md bg-sidebar-control-surface font-normal text-sidebar-muted-foreground border border-sidebar-border hover:bg-sidebar-row-hover focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                   data-testid="command-palette-trigger"
