@@ -9,6 +9,8 @@ import {
   DesktopPreviewAutomationScrollInputSchema,
   DesktopPreviewAutomationStatusSchema,
   DesktopPreviewAutomationTypeInputSchema,
+  DesktopPreviewAccountPromptAnswerInputSchema,
+  DesktopPreviewAccountsSnapshotInputSchema,
   DesktopPreviewCredentialFillInputSchema,
   DesktopPreviewCredentialListForTabInputSchema,
   DesktopPreviewCredentialRemoveInputSchema,
@@ -35,7 +37,11 @@ import {
   PreviewAutomationWaitForDownloadResult,
   PreviewAutomationSnapshot,
   PreviewAutomationCredentialFillResult,
+  PreviewAccountLinkInput,
+  PreviewAccountSignOutInput,
+  PreviewAccountsSnapshot,
   PreviewBrowserProfileInventory,
+  PreviewCredentialId,
   PreviewCredentialSummary,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -47,9 +53,86 @@ import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import { previewBrowserProfileScope } from "../../preview/browserProfileScope.ts";
 import * as PreviewManager from "../../preview/Manager.ts";
 import * as BrowserCredentialVault from "../../preview/BrowserCredentialVault.ts";
+import {
+  BrowserSignInPrompts,
+  isPersonOnlySignInOrigin,
+  newSignInPromptId,
+  signInPromptNowMs,
+} from "../../preview/browserSignInPrompts.ts";
+import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import { PREVIEW_WEBVIEW_PREFERENCES } from "../../preview/WebviewPreferences.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
+
+let signInPrompts: BrowserSignInPrompts | null = null;
+
+/** Sign-in signals become questions on a tab; account events reach every window. */
+const installAccountForwarding = Effect.fn("desktop.ipc.preview.installAccountForwarding")(
+  function* () {
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const manager = yield* PreviewManager.PreviewManager;
+    const vault = yield* BrowserCredentialVault.BrowserCredentialVault;
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+    const accounts = manager.browserAccounts;
+    const prompts = new BrowserSignInPrompts({
+      listCredentials: () => runPromise(vault.list),
+      listCredentialsForOrigin: (origin) => runPromise(vault.listForUrl(origin)),
+      readSecret: (id, origin) =>
+        runPromise(
+          vault.resolveForUrl(id as PreviewCredentialId, origin).pipe(
+            Effect.map((resolved) => resolved.secret),
+            Effect.orElseSucceed(() => null),
+          ),
+        ),
+      saveCredential: (input) => runPromise(vault.save(input)),
+      setPrompts: manager.setAccountPrompts,
+      fillForPerson: (tabId, secret) => runPromise(manager.fillPasswordForPerson(tabId, secret)),
+      profileKindOf: manager.browserProfileKind,
+      hasLiveAccount: accounts.hasLiveAccount,
+      findLiveElsewhere: accounts.findLiveElsewhere,
+      linkAccount: accounts.link,
+      newestLiveIdentity: (directory, provider) =>
+        accounts
+          .sessions()
+          .find(
+            (session) =>
+              session.directory === directory && session.provider === provider && session.live,
+          )?.identity ?? null,
+      neverListPath: environment.path.join(environment.stateDir, "browser-never-remember.json"),
+      newId: newSignInPromptId,
+      nowMs: signInPromptNowMs,
+      onFailure: (operation, cause) => {
+        void runPromise(Effect.logWarning("A sign-in prompt failed.", { operation, cause }));
+      },
+    });
+    signInPrompts = prompts;
+    manager.subscribeSignInSignals((signal) => {
+      switch (signal.kind) {
+        case "username":
+          prompts.noteUsername(signal.webContentsId, signal.origin, signal.username);
+          return;
+        case "attempt":
+          prompts.noteAttempt(signal);
+          return;
+        case "page":
+          void prompts.notePage(signal).catch((cause: unknown) => {
+            void runPromise(Effect.logWarning("A sign-in check failed.", { cause }));
+          });
+          return;
+        case "tab-closed":
+          prompts.forgetTab(signal.tabId);
+      }
+    });
+    manager.subscribeAccountEvents((event) => {
+      void runPromise(
+        electronWindow
+          .sendAll(IpcChannels.PREVIEW_ACCOUNTS_EVENT_CHANNEL, event)
+          .pipe(Effect.ignore),
+      );
+    });
+  },
+);
 
 export const installPreviewEventForwarding = Effect.fn(
   "desktop.ipc.preview.installEventForwarding",
@@ -62,6 +145,7 @@ export const installPreviewEventForwarding = Effect.fn(
   yield* manager.subscribeVideoSourceChanges((tabId) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_TAB_VIDEO_SOURCE_CHANGED_CHANNEL, tabId),
   );
+  yield* installAccountForwarding();
   yield* manager.subscribeRecordingFrames((frame) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_RECORDING_FRAME_CHANNEL, frame),
   );
@@ -291,6 +375,69 @@ export const setPreviewDownloadDirectory = DesktopIpc.makeIpcMethod({
       previewBrowserProfileScope(environmentId, browserProfile),
       directory,
       threadId,
+    );
+  }),
+});
+
+export const accountsSnapshot = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_ACCOUNTS_SNAPSHOT_CHANNEL,
+  payload: DesktopPreviewAccountsSnapshotInputSchema,
+  result: PreviewAccountsSnapshot,
+  handler: Effect.fn("desktop.ipc.preview.accountsSnapshot")(function* ({ refresh }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    if (refresh) {
+      yield* Effect.tryPromise(() => manager.browserAccounts.refreshAll()).pipe(Effect.ignore);
+    }
+    const counts = manager.browserProfileCounts();
+    return {
+      sessions: manager.browserAccounts.sessions(),
+      recentEvents: manager.browserAccounts.recentEvents().slice(0, 20),
+      profileCount: counts.profiles,
+      retiredProfileCount: counts.retired,
+      encryptedProfileCount: counts.encrypted,
+    };
+  }),
+});
+
+export const accountsSignOut = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_ACCOUNTS_SIGN_OUT_CHANNEL,
+  payload: PreviewAccountSignOutInput,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.accountsSignOut")(function* ({ provider, directory }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* Effect.tryPromise(() => manager.browserAccounts.signOut(provider, directory)).pipe(
+      Effect.orDie,
+    );
+  }),
+});
+
+export const accountsLink = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_ACCOUNTS_LINK_CHANNEL,
+  payload: PreviewAccountLinkInput,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.accountsLink")(function* (input) {
+    const manager = yield* PreviewManager.PreviewManager;
+    const scope = previewBrowserProfileScope(input.environmentId, input.to);
+    // Opening it records its owner, so a project with no tabs yet can be given one.
+    yield* manager.getBrowserSession(scope);
+    const toDirectory = yield* manager.browserProfileDirectory(scope);
+    yield* Effect.tryPromise(() =>
+      manager.browserAccounts.link(input.provider, input.fromDirectory, toDirectory),
+    ).pipe(Effect.orDie);
+  }),
+});
+
+export const accountsAnswerPrompt = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_ACCOUNTS_ANSWER_PROMPT_CHANNEL,
+  payload: DesktopPreviewAccountPromptAnswerInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.accountsAnswerPrompt")(function* ({ id, answer }) {
+    const prompts = signInPrompts;
+    if (prompts === null) return;
+    yield* Effect.tryPromise(() => prompts.answer(id, answer)).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not act on a sign-in answer.", { cause }),
+      ),
     );
   }),
 });
@@ -617,7 +764,10 @@ export const listCredentialsForTab = DesktopIpc.makeIpcMethod({
         reason: "The browser tab has no active website origin.",
       });
     }
-    return yield* (yield* BrowserCredentialVault.BrowserCredentialVault).listForUrl(status.url);
+    const saved = yield* (yield* BrowserCredentialVault.BrowserCredentialVault).listForUrl(
+      status.url,
+    );
+    return saved.filter((credential) => !isPersonOnlySignInOrigin(credential.origin));
   }),
 });
 
@@ -635,6 +785,12 @@ export const fillCredential = DesktopIpc.makeIpcMethod({
       });
     }
     const resolved = yield* vault.resolveForUrl(input.credentialId, status.url);
+    if (isPersonOnlySignInOrigin(resolved.summary.origin)) {
+      return yield* new BrowserCredentialVault.BrowserCredentialOriginError({
+        reason:
+          "Google sign-in is left to the person: ask them to sign in on this tab. An agent's Google password fill can be refused by Google and would expose the whole account.",
+      });
+    }
     yield* runAutomationInputBeforeExpiry({
       operation: "credentialFill",
       tabId,
@@ -779,6 +935,10 @@ export const methods = [
   revealPreviewDownload,
   answerPreviewDownloadApproval,
   reconcileBrowserProfiles,
+  accountsSnapshot,
+  accountsSignOut,
+  accountsLink,
+  accountsAnswerPrompt,
   forgetDownloadDomains,
   setAnnotationTheme,
   pickElement,

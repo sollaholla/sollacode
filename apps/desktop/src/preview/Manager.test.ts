@@ -322,6 +322,8 @@ const browserSessionLayer = Layer.succeed(
       signOut: () => Promise.resolve(),
       link: () => Promise.resolve(),
     },
+    profileKind: () => null,
+    maintainProfiles: () => Effect.void,
     profileCounts: () => ({ profiles: 0, retired: 0, encrypted: 0 }),
     directoryForScope: () => Effect.succeed("t3code-preview-test"),
     onAccountEvent: () => undefined,

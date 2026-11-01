@@ -44,6 +44,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import { MENU_ACTION_CHANNEL, WINDOW_FULLSCREEN_STATE_CHANNEL } from "../ipc/channels.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
+import type { BrowserAccountTracker } from "../preview/browserAccounts.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 
 const environmentInput = {
@@ -276,6 +277,7 @@ function makeTestLayer(input: {
           getBrowserSession: () => Effect.succeed({} as Electron.Session),
           setMainWindow: () => Effect.void,
           isBrowserPartition: (partition) => partition.startsWith("persist:t3code-preview-"),
+          ...noBrowserAccounts,
           getBrowserPartition: () => Effect.succeed("persist:t3code-preview-test"),
         }),
       ),
@@ -375,6 +377,7 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
             getBrowserSession: () => Effect.succeed({} as Electron.Session),
             setMainWindow: () => Effect.void,
             isBrowserPartition: (partition) => partition.startsWith("persist:t3code-preview-"),
+            ...noBrowserAccounts,
             getBrowserPartition: () => Effect.succeed("persist:t3code-preview-test"),
           }),
         ),
@@ -383,6 +386,16 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
 
     return { layer, createCalls, mainWindow, revealedWindows } as const;
   });
+
+/** The preview manager's plain members, none of which a window test reaches. */
+const noBrowserAccounts = {
+  setAccountPrompts: () => undefined,
+  subscribeSignInSignals: () => undefined,
+  browserAccounts: {} as BrowserAccountTracker,
+  browserProfileKind: () => null,
+  browserProfileCounts: () => ({ profiles: 0, retired: 0, encrypted: 0 }),
+  subscribeAccountEvents: () => undefined,
+};
 
 describe("DesktopWindow", () => {
   it("builds a self-contained recovery overlay with restart and wait actions", () => {

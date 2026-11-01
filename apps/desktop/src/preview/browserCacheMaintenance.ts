@@ -8,6 +8,7 @@ import * as Schedule from "effect/Schedule";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { storageCleanupEnabled } from "../storage/storageCleanupSettings.ts";
 import { availableStorageBytes } from "../storage/availableStorage.ts";
+import * as BrowserSession from "./BrowserSession.ts";
 import { sweepBrowserCaches } from "./browserCacheRetention.ts";
 
 /** Explicit cache-only APIs. Account/storage reset APIs must never be used here. */
@@ -55,6 +56,14 @@ export const layer = Layer.effectDiscard(
           Effect.repeat(Schedule.spaced(Duration.hours(24))),
         ),
       ),
+      Effect.forkScoped,
+    );
+    // Often enough that a session Google ended shows up while it still matters,
+    // and rare enough to be one small request per signed-in profile.
+    const browserSession = yield* BrowserSession.BrowserSession;
+    yield* Effect.sleep(Duration.hours(1)).pipe(
+      Effect.andThen(browserSession.maintainProfiles()),
+      Effect.repeat(Schedule.spaced(Duration.hours(1))),
       Effect.forkScoped,
     );
   }),

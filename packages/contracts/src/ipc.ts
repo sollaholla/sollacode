@@ -97,7 +97,16 @@ import {
   PreviewAutomationWaitForInput,
 } from "./previewAutomation.ts";
 import { PreviewDownload, PreviewDownloadApproval } from "./previewAutomation.ts";
-import { PreviewBrowserProfile, PreviewBrowserProfileInventory } from "./previewAccounts.ts";
+import {
+  PreviewAccountEvent,
+  PreviewAccountLinkInput,
+  PreviewAccountPrompt,
+  PreviewAccountPromptAnswer,
+  PreviewAccountSignOutInput,
+  PreviewAccountsSnapshot,
+  PreviewBrowserProfile,
+  PreviewBrowserProfileInventory,
+} from "./previewAccounts.ts";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -591,6 +600,8 @@ export interface DesktopPreviewTabState {
   downloads: ReadonlyArray<PreviewDownload>;
   /** Downloads paused until the user allows or denies the site. */
   pendingDownloadApprovals: ReadonlyArray<PreviewDownloadApproval>;
+  /** Sign-in questions for this tab; absent when there are none. */
+  accountPrompts?: ReadonlyArray<PreviewAccountPrompt>;
   /** Whether the page is making sound right now; absent until it first does. */
   audible?: boolean;
   updatedAt: string;
@@ -680,6 +691,7 @@ export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> 
   agentActive: Schema.Boolean,
   downloads: Schema.Array(PreviewDownload),
   pendingDownloadApprovals: Schema.Array(PreviewDownloadApproval),
+  accountPrompts: Schema.optionalKey(Schema.Array(PreviewAccountPrompt)),
   audible: Schema.optionalKey(Schema.Boolean),
   updatedAt: Schema.String,
 });
@@ -1145,6 +1157,15 @@ export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
   ...DesktopPreviewAutomationExpiryFields,
 });
 
+export const DesktopPreviewAccountsSnapshotInputSchema = Schema.Struct({
+  refresh: Schema.optionalKey(Schema.Boolean),
+});
+
+export const DesktopPreviewAccountPromptAnswerInputSchema = Schema.Struct({
+  id: Schema.String,
+  answer: PreviewAccountPromptAnswer,
+});
+
 export const DesktopPreviewCredentialSaveInputSchema = PreviewCredentialSaveInput;
 
 export const DesktopPreviewCredentialRemoveInputSchema = PreviewCredentialRemoveInput;
@@ -1584,6 +1605,15 @@ export interface DesktopPreviewBridge {
    * let the desktop retire profiles whose project or agent is gone.
    */
   reconcileBrowserProfiles: (inventory: PreviewBrowserProfileInventory) => Promise<void>;
+  accounts: {
+    /** Who is signed in where. `refresh` asks the sites again instead of using what is known. */
+    snapshot: (input?: { refresh?: boolean }) => Promise<PreviewAccountsSnapshot>;
+    signOut: (input: PreviewAccountSignOutInput) => Promise<void>;
+    link: (input: PreviewAccountLinkInput) => Promise<void>;
+    answerPrompt: (id: string, answer: PreviewAccountPromptAnswer) => Promise<void>;
+    /** A sign-in or sign-out in any browser profile. */
+    onEvent: (listener: (event: PreviewAccountEvent) => void) => () => void;
+  };
   /**
    * Point this thread's downloads at its own workspace, so a file an agent
    * fetches lands where that agent is working instead of in the app's

@@ -220,6 +220,10 @@ export class BrowserSession extends Context.Service<
     readonly reconcileProfiles: (inventory: BrowserProfileInventory) => Effect.Effect<void>;
     /** Who is signed in where, and sign-in events. */
     readonly accounts: BrowserAccountTracker;
+    /** Owner of a profile folder, if it has one. */
+    readonly profileKind: (directory: string) => "project" | "agent" | null;
+    /** The periodic pass: retire what has lost its owner and re-check who is signed in. */
+    readonly maintainProfiles: () => Effect.Effect<void>;
     readonly profileCounts: () => {
       readonly profiles: number;
       readonly retired: number;
@@ -945,6 +949,14 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     isPartition: (partition) => partition.startsWith(PREVIEW_PARTITION_PREFIX),
     reconcileProfiles,
     accounts,
+    profileKind: (directory) => manifest().profiles[directory]?.kind ?? null,
+    maintainProfiles: () =>
+      sweepProfiles().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not sweep browser profiles.", { cause }),
+        ),
+        Effect.andThen(Effect.tryPromise(() => accounts.refreshAll()).pipe(Effect.ignore)),
+      ),
     profileCounts: () => {
       const entries = NodeFS.existsSync(partitionsDir()) ? NodeFS.readdirSync(partitionsDir()) : [];
       return {

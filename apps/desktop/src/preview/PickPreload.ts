@@ -20,9 +20,13 @@ import {
   CANCEL_PICK_CHANNEL,
   ELEMENT_PICKED_CHANNEL,
   HUMAN_INPUT_CHANNEL,
+  SIGN_IN_ATTEMPT_CHANNEL,
+  SIGN_IN_PAGE_CHANNEL,
+  SIGN_IN_USERNAME_CHANNEL,
   START_PICK_CHANNEL,
   VIDEO_SOURCE_CHANGED_CHANNEL,
 } from "./GuestProtocol.ts";
+import { installSignInCapture } from "./signInCapture.ts";
 const OVERLAY_ATTRIBUTE = "data-t3code-annotation-ui";
 const INPUT_LAYER_ATTRIBUTE = "data-t3code-annotation-input";
 const Z_INDEX_OVERLAY = 2147483646;
@@ -120,6 +124,21 @@ const reportHumanKeyInput = (event: KeyboardEvent): void => {
       event.key === "Enter" && anchor !== null && target === "_blank" ? anchor.href : null,
   });
 };
+
+// The "Remember this?" bar. Top frame only: a sign-in embedded in another site
+// is that site's to remember, and an ad frame must not raise the question.
+if (window.top === window) {
+  installSignInCapture({
+    document,
+    origin: () => window.location.origin,
+    isSecure: () => window.isSecureContext,
+    sink: {
+      username: (signal) => ipcRenderer.send(SIGN_IN_USERNAME_CHANNEL, signal),
+      attempt: (signal) => ipcRenderer.send(SIGN_IN_ATTEMPT_CHANNEL, signal),
+      page: (signal) => ipcRenderer.send(SIGN_IN_PAGE_CHANNEL, signal),
+    },
+  });
+}
 
 // Guest layout changes are native capture changes, even when the page does
 // not navigate. Report only events; there is no animation or polling loop.

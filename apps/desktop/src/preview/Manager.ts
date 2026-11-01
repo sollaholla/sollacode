@@ -19,6 +19,8 @@ import type {
   DesktopPreviewScreenshotArtifact,
   DesktopPreviewAutomationStatus,
   PreviewDownload,
+  PreviewAccountEvent,
+  PreviewAccountPrompt,
   PreviewDownloadApproval,
   PreviewAutomationWaitForDownloadResult,
   PreviewAutomationClickInput,
@@ -104,6 +106,7 @@ import {
   initialUserInputHoldState,
   type UserInputHoldState,
 } from "./userInputHold.ts";
+import type { BrowserAccountTracker } from "./browserAccounts.ts";
 import type { BrowserProfileInventory } from "./browserProfiles.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import { classifyPreviewNetworkResponse } from "./CloudflareChallenge.ts";
@@ -113,6 +116,9 @@ import {
   CANCEL_PICK_CHANNEL,
   ELEMENT_PICKED_CHANNEL,
   HUMAN_INPUT_CHANNEL,
+  SIGN_IN_ATTEMPT_CHANNEL,
+  SIGN_IN_PAGE_CHANNEL,
+  SIGN_IN_USERNAME_CHANNEL,
   START_PICK_CHANNEL,
   VIDEO_SOURCE_CHANGED_CHANNEL,
 } from "./GuestProtocol.ts";
@@ -153,6 +159,7 @@ export interface PreviewTabState {
   downloads: ReadonlyArray<PreviewDownload>;
   /** Downloads held on this tab until the user allows or denies the site. */
   pendingDownloadApprovals: ReadonlyArray<PreviewDownloadApproval>;
+  accountPrompts: ReadonlyArray<PreviewAccountPrompt>;
   /** Whether the page is making sound right now (Chromium's audible state). */
   audible?: boolean;
   updatedAt: string;
@@ -1434,6 +1441,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * return it masked.
    */
   const filledSecretsByTab = new Map<string, Set<string>>();
+  const signInListeners = new Set<(signal: SignInSignal) => void>();
   const pointerSequenceRef = yield* Ref.make(0);
   const frameCaptureSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<string, FrameCaptureSession>
@@ -1927,6 +1935,89 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         }
       }),
     );
+  });
+
+  /**
+   * Passes a guest's sign-in signals along, except while an agent is driving the
+   * tab: an agent typing a password is not a person who might want it remembered.
+   * Removed with the guest, which takes its `ipc` listeners with it.
+   */
+  const installSignInListeners = (tabId: string, wc: Electron.WebContents): void => {
+    const directoryOf = () => (wc.session.storagePath ?? "").split(/[\\/]/).pop() ?? "";
+    const forward = (signal: SignInSignal) => {
+      if (signInListeners.size === 0) return;
+      runFork(
+        Effect.gen(function* () {
+          const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+          if (!tab || tab.agentActive) return;
+          for (const listener of signInListeners) listener(signal);
+        }),
+      );
+    };
+    wc.ipc.on(SIGN_IN_USERNAME_CHANNEL, (_event, raw: { origin: string; username: string }) => {
+      forward({
+        kind: "username",
+        webContentsId: wc.id,
+        tabId,
+        directory: directoryOf(),
+        origin: raw.origin,
+        username: raw.username,
+      });
+    });
+    wc.ipc.on(
+      SIGN_IN_ATTEMPT_CHANNEL,
+      (_event, raw: { origin: string; username: string; password: string }) => {
+        forward({
+          kind: "attempt",
+          webContentsId: wc.id,
+          tabId,
+          directory: directoryOf(),
+          origin: raw.origin,
+          username: raw.username,
+          password: raw.password,
+        });
+      },
+    );
+    wc.ipc.on(
+      SIGN_IN_PAGE_CHANNEL,
+      (_event, raw: { origin: string; hasPasswordField: boolean }) => {
+        forward({
+          kind: "page",
+          webContentsId: wc.id,
+          tabId,
+          directory: directoryOf(),
+          origin: raw.origin,
+          hasPasswordField: raw.hasPasswordField,
+        });
+      },
+    );
+  };
+
+  /** Types a saved password into the page's own password box, with no debugger involved. */
+  const fillPasswordForPerson = Effect.fn("PreviewManager.fillPasswordForPerson")(function* (
+    tabId: string,
+    secret: string,
+  ) {
+    const wc = yield* requireWebContents(tabId);
+    const secrets = filledSecretsByTab.get(tabId) ?? new Set<string>();
+    secrets.add(secret);
+    filledSecretsByTab.set(tabId, secrets);
+    yield* Effect.tryPromise({
+      try: async () => {
+        const focused = (await wc.executeJavaScript(
+          `(() => {
+            const field = [...document.querySelectorAll("input[type=password]")]
+              .find((input) => input.getClientRects().length > 0);
+            if (!field) return false;
+            field.focus();
+            field.select();
+            return true;
+          })()`,
+        )) as boolean;
+        if (focused) wc.insertText(secret);
+      },
+      catch: (cause) => new PreviewOperationError({ operation: "fillPasswordForPerson", cause }),
+    });
   });
 
   const requireWebContents = Effect.fn("PreviewManager.requireWebContents")(function* (
@@ -3178,6 +3269,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         popupWebContents.on("destroyed", closed);
         popupWebContents.on("will-navigate", willNavigate);
         popupWebContents.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
+        installSignInListeners(tabId, popupWebContents);
         if (blankHandoff) {
           pendingBlankPopupIds.add(popupWebContents.id);
           popupWebContents.on("did-start-navigation", blankNavigationStarted);
@@ -4210,6 +4302,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.on("did-create-window", didCreateWindow);
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         wc.ipc.on(VIDEO_SOURCE_CHANGED_CHANNEL, videoSourceChanged);
+        installSignInListeners(tabId, wc);
         wc.on("zoom-changed", videoZoomChanged);
         wc.setWindowOpenHandler(({ url, disposition, features, frameName, postBody }) => {
           if (!listenersActive) return { action: "deny" };
@@ -4453,6 +4546,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           agentActive: false,
           downloads: [],
           pendingDownloadApprovals: [],
+          accountPrompts: [],
           updatedAt,
         };
         return [
@@ -4524,6 +4618,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
     activityLeases.clearTab(tabId);
     filledSecretsByTab.delete(tabId);
+    for (const listener of signInListeners) listener({ kind: "tab-closed", tabId });
     remoteFrameSessions.get(tabId)?.pacer?.dispose();
     remoteFrameSessions.delete(tabId);
     yield* recordActivityLeaseMetrics();
@@ -4542,6 +4637,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       agentActive: false,
       downloads: [],
       pendingDownloadApprovals: [],
+      accountPrompts: [],
       updatedAt,
     };
     yield* emit(tabId, closed);
@@ -4949,6 +5045,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         agentActive: current?.agentActive ?? false,
         downloads: current?.downloads ?? [],
         pendingDownloadApprovals: current?.pendingDownloadApprovals ?? [],
+        accountPrompts: current?.accountPrompts ?? [],
         updatedAt,
       };
       return [
@@ -8664,6 +8761,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             outcome: "denied" as const,
             downloads: [],
             pendingDownloadApprovals: [],
+            accountPrompts: [],
           };
         }
         if ((yield* Clock.currentTimeMillis) - startedAtMs >= deadlineMs) {
@@ -8801,6 +8899,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       ),
     automationType,
     automationFillCredential,
+    fillPasswordForPerson,
+    setAccountPrompts: (tabId: string, prompts: ReadonlyArray<PreviewAccountPrompt>) =>
+      runFork(update(tabId, { accountPrompts: prompts }).pipe(Effect.ignore)),
+    subscribeSignInSignals: (listener: (signal: SignInSignal) => void) => {
+      signInListeners.add(listener);
+    },
     automationUpload,
     automationSelectOption,
     automationWaitFor,
@@ -9202,6 +9306,35 @@ export const isPreviewAutomationInvalidSelectorError = Schema.is(
   PreviewAutomationInvalidSelectorError,
 );
 
+/** What a guest reports about a person signing in. The password never leaves the desktop. */
+export type SignInSignal =
+  | {
+      readonly kind: "username";
+      readonly webContentsId: number;
+      readonly tabId: string;
+      readonly directory: string;
+      readonly origin: string;
+      readonly username: string;
+    }
+  | {
+      readonly kind: "attempt";
+      readonly webContentsId: number;
+      readonly tabId: string;
+      readonly directory: string;
+      readonly origin: string;
+      readonly username: string;
+      readonly password: string;
+    }
+  | {
+      readonly kind: "page";
+      readonly webContentsId: number;
+      readonly tabId: string;
+      readonly directory: string;
+      readonly origin: string;
+      readonly hasPasswordField: boolean;
+    }
+  | { readonly kind: "tab-closed"; readonly tabId: string };
+
 /** A runtime tab id is `[environmentId, threadId, epoch, tabId]`; see `previewRuntimeTabId`. */
 export function threadIdOfRuntimeTab(tabId: string): string | null {
   try {
@@ -9318,6 +9451,24 @@ export class PreviewManager extends Context.Service<
       input: PreviewAutomationTypeInput,
       options?: AutomationInputOptions,
     ) => Effect.Effect<void, PreviewManagerError>;
+    readonly fillPasswordForPerson: (
+      tabId: string,
+      secret: string,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly setAccountPrompts: (
+      tabId: string,
+      prompts: ReadonlyArray<PreviewAccountPrompt>,
+    ) => void;
+    readonly subscribeSignInSignals: (listener: (signal: SignInSignal) => void) => void;
+    readonly browserAccounts: BrowserAccountTracker;
+    readonly browserProfileKind: (directory: string) => "project" | "agent" | null;
+    readonly browserProfileCounts: () => {
+      readonly profiles: number;
+      readonly retired: number;
+      readonly encrypted: number;
+    };
+    readonly browserProfileDirectory: (scope: string) => Effect.Effect<string, PreviewManagerError>;
+    readonly subscribeAccountEvents: (listener: (event: PreviewAccountEvent) => void) => void;
     readonly automationFillCredential: (
       tabId: string,
       kind: PreviewCredentialKind,
@@ -9472,6 +9623,22 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     automationContextMenu: operations.automationContextMenu,
     automationType: operations.automationType,
     automationFillCredential: operations.automationFillCredential,
+    fillPasswordForPerson: operations.fillPasswordForPerson,
+    setAccountPrompts: operations.setAccountPrompts,
+    subscribeSignInSignals: operations.subscribeSignInSignals,
+    browserAccounts: browserSession.accounts,
+    browserProfileKind: browserSession.profileKind,
+    browserProfileCounts: browserSession.profileCounts,
+    browserProfileDirectory: Effect.fn("PreviewManager.browserProfileDirectory")(function* (scope) {
+      return yield* browserSession
+        .directoryForScope(scope)
+        .pipe(
+          Effect.mapError(
+            (cause) => new PreviewOperationError({ operation: "browserProfileDirectory", cause }),
+          ),
+        );
+    }),
+    subscribeAccountEvents: browserSession.onAccountEvent,
     automationUpload: operations.automationUpload,
     automationSelectOption: operations.automationSelectOption,
     automationPress: operations.automationPress,

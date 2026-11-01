@@ -315,6 +315,23 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       }),
     reconcileBrowserProfiles: (inventory) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_RECONCILE_PROFILES_CHANNEL, inventory),
+    accounts: {
+      snapshot: (input) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_ACCOUNTS_SNAPSHOT_CHANNEL, input ?? {}),
+      signOut: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_ACCOUNTS_SIGN_OUT_CHANNEL, input),
+      link: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_ACCOUNTS_LINK_CHANNEL, input),
+      answerPrompt: (id, answer) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_ACCOUNTS_ANSWER_PROMPT_CHANNEL, { id, answer }),
+      onEvent: (listener) => {
+        const wrappedListener = (_event: Electron.IpcRendererEvent, event: unknown) => {
+          listener(event as Parameters<typeof listener>[0]);
+        };
+        ipcRenderer.on(IpcChannels.PREVIEW_ACCOUNTS_EVENT_CHANNEL, wrappedListener);
+        return () => {
+          ipcRenderer.removeListener(IpcChannels.PREVIEW_ACCOUNTS_EVENT_CHANNEL, wrappedListener);
+        };
+      },
+    },
     setPreviewDownloadDirectory: (directory, environmentId, threadId, browserProfile) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_SET_DOWNLOAD_DIRECTORY_CHANNEL, {
         environmentId,
