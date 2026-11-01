@@ -129,7 +129,7 @@ type LegacyProviderRuntimeEvent = {
 
 function makeFakeCodexAdapter(
   provider: ProviderDriverKind = CODEX_DRIVER,
-  options?: { readonly messageDeliveryReceipts?: boolean },
+  options?: { readonly messageDeliveryReceipts?: boolean; readonly nativeHostTools?: boolean },
 ) {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -269,6 +269,7 @@ function makeFakeCodexAdapter(
     capabilities: {
       sessionModelSwitch: "in-session",
       ...(options?.messageDeliveryReceipts === true ? { messageDeliveryReceipts: true } : {}),
+      ...(options?.nativeHostTools === true ? { nativeHostTools: true } : {}),
     },
     startSession,
     sendTurn,
@@ -337,6 +338,7 @@ function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER, {
     messageDeliveryReceipts: true,
+    nativeHostTools: true,
   });
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
   const registry = makeAdapterRegistryMock({
@@ -1007,6 +1009,46 @@ mcpRouting.layer("ProviderServiceLive common MCP dispatch", (it) => {
       }),
     );
   }
+
+  it.effect("sends the shell client once per session to providers with native tools", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("mcp-native-once");
+      const instanceId = ProviderInstanceId.make("claudeAgent");
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: instanceId,
+        threadId,
+        cwd: "/tmp/mcp-native-once",
+        runtimeMode: "full-access",
+      });
+      const issueCredential = (client: string) =>
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("test"),
+          threadId,
+          providerInstanceId: instanceId,
+          providerSessionId: "test-claude",
+          endpoint: "http://127.0.0.1:1/mcp",
+          authorizationHeader: "Bearer private",
+          shellBridgeInstructions: `[Solla host tools] ${client} [/Solla host tools]`,
+        });
+      const lastInput = () => mcpRouting.claude.sendTurn.mock.calls.at(-1)?.[0].input;
+      issueCredential("first-client");
+      try {
+        yield* provider.sendTurn({ threadId, input: "first message" });
+        assert.include(lastInput(), "first-client");
+        yield* provider.sendTurn({ threadId, input: "second message" });
+        assert.equal(lastInput(), "second message");
+
+        // A replacement session has a new client, so its first turn names it.
+        issueCredential("second-client");
+        yield* provider.sendTurn({ threadId, input: "third message" });
+        assert.include(lastInput(), "second-client");
+      } finally {
+        McpProviderSession.clearMcpProviderSession(threadId);
+      }
+    }),
+  );
 });
 
 routing.layer("ProviderServiceLive routing", (it) => {

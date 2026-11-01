@@ -8,6 +8,8 @@ export interface McpProviderSessionConfig {
   readonly endpoint: string;
   readonly authorizationHeader: string;
   readonly shellBridgeInstructions?: string;
+  /** A native-transport provider has already received those instructions. */
+  readonly shellBridgeInstructionsDelivered?: boolean;
 }
 
 const sessionsByThread = new Map<ThreadId, McpProviderSessionConfig>();

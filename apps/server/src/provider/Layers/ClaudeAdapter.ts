@@ -5158,6 +5158,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       sessionModelSwitch: "in-session",
       taskStop: true,
       messageDeliveryReceipts: true,
+      nativeHostTools: true,
     },
     startSession,
     forkSession,

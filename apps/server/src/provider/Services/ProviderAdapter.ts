@@ -82,6 +82,14 @@ export interface ProviderAdapterCapabilities {
    * `message.delivered` runtime receipt.
    */
   readonly messageDeliveryReceipts?: boolean;
+
+  /**
+   * The runtime reaches this thread's MCP tools over its own transport. Its
+   * shell-client instructions go out once per session as a fallback instead of
+   * on every message, where they would pile up in the provider's context.
+   * Declare it only after seeing real tool calls through the native transport.
+   */
+  readonly nativeHostTools?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

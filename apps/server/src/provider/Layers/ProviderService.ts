@@ -1532,9 +1532,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                   messageDeliveryReceipts: adapter.capabilities.messageDeliveryReceipts === true,
                 }),
               );
-              const hostTools = McpProviderSession.readMcpProviderSession(
-                input.threadId,
-              )?.shellBridgeInstructions;
+              const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+              const nativeHostTools = adapter.capabilities.nativeHostTools === true;
+              const hostTools =
+                nativeHostTools && mcpSession?.shellBridgeInstructionsDelivered === true
+                  ? undefined
+                  : mcpSession?.shellBridgeInstructions;
               const augmentedInput = McpProviderSession.appendMcpShellBridgeInstructions(
                 input.input,
                 hostTools,
@@ -1547,6 +1550,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                   ? undefined
                   : { onNativeDispatch: acknowledgeNativeDispatch },
               );
+              if (nativeHostTools && mcpSession && augmentedInput !== input.input) {
+                McpProviderSession.setMcpProviderSession({
+                  ...mcpSession,
+                  shellBridgeInstructionsDelivered: true,
+                });
+              }
               if (
                 adapter.capabilities.messageDeliveryReceipts === true &&
                 input.messageId !== undefined

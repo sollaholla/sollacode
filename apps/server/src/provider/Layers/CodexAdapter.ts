@@ -2014,6 +2014,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       sessionModelSwitch: "in-session",
       messageDeliveryReceipts: true,
       taskStop: true,
+      nativeHostTools: true,
     },
     startSession,
     sendTurn,
