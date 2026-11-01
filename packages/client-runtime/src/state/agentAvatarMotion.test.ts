@@ -120,6 +120,21 @@ describe("the avatar director", () => {
     cancel();
   });
 
+  it("keeps gestures coming in a long list, where blinks alone would fill the budget", () => {
+    vi.useFakeTimers();
+    const played: string[] = [];
+    const cancels = Array.from({ length: 14 }, (_, i) =>
+      scheduleAgentAvatarMotion(`agent-${i}`, {
+        play: (gesture) => played.push(gesture.name),
+        rest: vi.fn(),
+      }),
+    );
+    vi.advanceTimersByTime(30_000);
+    for (const cancel of cancels) cancel();
+    expect(played.filter((name) => !name.includes("blink")).length).toBeGreaterThanOrEqual(3);
+    expect(played.length).toBeLessThanOrEqual(13);
+  });
+
   it("returns to rest when cancelled", () => {
     vi.useFakeTimers();
     const rest = vi.fn();

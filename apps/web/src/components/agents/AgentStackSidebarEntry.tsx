@@ -488,7 +488,7 @@ function AgentSidebarRow(props: {
   }, [consumeSuppressedClick, props]);
 
   return (
-    <div className="relative overflow-hidden">
+    <div className="relative overflow-x-clip">
       {swipe.state.offset !== 0 ? (
         <div
           aria-hidden
@@ -529,7 +529,8 @@ function AgentSidebarRow(props: {
         aria-label={`Open ${agent.name} on ${props.environmentLabel}, ${presence.description}${onCall ? ", on a call" : ""}${needsApproval ? ", waiting for your approval" : needsInput ? ", waiting for your input" : ""}${props.unreadNotifications > 0 ? `, ${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "alert" : "alerts"}` : ""}`}
         data-testid="agent-sidebar-entry"
         className={cn(
-          "group/agent-row",
+          // A hopping character rises past this short row; the name truncates on its own.
+          "group/agent-row overflow-visible",
           usesTouch && "touch-pan-y",
           !swipe.state.dragging && swipe.state.offset === 0 && "transition-transform duration-200",
         )}

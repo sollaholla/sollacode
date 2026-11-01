@@ -358,11 +358,7 @@ const MOOD_ENTRANCES: Partial<Record<AgentAvatarMood, AgentAvatarGesture>> = {
   sleeping: body(
     "settle",
     1200,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.45, pose(1.5, 0, 1.05, 0.93), IN_OUT],
-      [1, pose()],
-    ),
+    frames([0, pose(), IN_OUT], [0.45, pose(1.5, 0, 1.05, 0.93), IN_OUT], [1, pose()]),
   ),
 };
 
@@ -404,7 +400,8 @@ const eyesOpen = (mood: AgentAvatarMood) => mood !== "happy" && mood !== "sleepi
 // One director for the whole client. Each avatar asks for its next move and a
 // single timer serves them, at most one every MIN_GAP_MS. So the cost of motion
 // stays flat however many avatars are on screen, nothing runs between moves, and
-// no timer exists at all once none are showing.
+// no timer exists at all once none are showing. Blinks want more turns than the
+// budget has in a long list, so every third turn goes to an overdue move.
 
 const MIN_GAP_MS = 2_500;
 
@@ -428,22 +425,23 @@ interface Registered {
 const registered = new Set<Registered>();
 let timer: ReturnType<typeof setTimeout> | undefined;
 let lastPlayedAt = Number.NEGATIVE_INFINITY;
+let turns = 0;
 
 function earliestDue(entry: Registered): number {
   return eyesOpen(entry.mood()) ? Math.min(entry.nextBlinkAt, entry.nextMoveAt) : entry.nextMoveAt;
 }
 
-function playNext(entry: Registered, now: number): void {
+function playNext(entry: Registered, now: number, preferMove: boolean): void {
   const mood = entry.mood();
-  if (eyesOpen(mood) && entry.nextBlinkAt <= entry.nextMoveAt) {
+  if (!preferMove && eyesOpen(mood) && entry.nextBlinkAt <= entry.nextMoveAt) {
     entry.stage.play(entry.seed % 5 === 0 ? DOUBLE_BLINK : BLINK);
-    entry.nextBlinkAt = now + 4_200 + (entry.seed + entry.moves) % 3_100;
+    entry.nextBlinkAt = now + 4_200 + ((entry.seed + entry.moves) % 3_100);
     entry.moves += 1;
     return;
   }
   if (mood === "working") {
     entry.stage.play(NOD);
-    entry.nextMoveAt = now + 2_600 + entry.seed % 1_400;
+    entry.nextMoveAt = now + 2_600 + (entry.seed % 1_400);
   } else {
     entry.stage.play(
       // Mostly a look around; every third move is the character's own gesture.
@@ -451,7 +449,7 @@ function playNext(entry: Registered, now: number): void {
         ? agentAvatarGlance(entry.agentId, entry.avatarColor)
         : agentAvatarIdleGesture(entry.agentId, entry.avatarColor),
     );
-    entry.nextMoveAt = now + 9_000 + entry.seed % 6_000;
+    entry.nextMoveAt = now + 9_000 + (entry.seed % 6_000);
   }
   entry.moves += 1;
 }
@@ -471,13 +469,19 @@ function arm(): void {
 function tick(): void {
   timer = undefined;
   const now = Date.now();
-  let next: Registered | undefined;
-  for (const entry of registered) {
-    if (next === undefined || earliestDue(entry) < earliestDue(next)) next = entry;
-  }
-  if (next && earliestDue(next) <= now) {
+  const soonest = (due: (entry: Registered) => number) => {
+    let found: Registered | undefined;
+    for (const entry of registered) {
+      if (found === undefined || due(entry) < due(found)) found = entry;
+    }
+    return found && due(found) <= now ? found : undefined;
+  };
+  const move = turns % 3 === 2 ? soonest((entry) => entry.nextMoveAt) : undefined;
+  const next = move ?? soonest(earliestDue);
+  if (next) {
     lastPlayedAt = now;
-    playNext(next, now);
+    turns += 1;
+    playNext(next, now, next === move);
   }
   arm();
 }
@@ -499,8 +503,8 @@ export function scheduleAgentAvatarMotion(
     avatarColor: options.avatarColor,
     mood: options.mood ?? (() => "idle"),
     stage,
-    nextBlinkAt: now + 800 + seed % 3_000,
-    nextMoveAt: now + 3_000 + seed % 7_000,
+    nextBlinkAt: now + 800 + (seed % 3_000),
+    nextMoveAt: now + 3_000 + (seed % 7_000),
     moves: seed % 3,
   };
   registered.add(entry);

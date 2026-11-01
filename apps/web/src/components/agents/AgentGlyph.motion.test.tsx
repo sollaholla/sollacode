@@ -19,7 +19,9 @@ it("moves only by transform: no reduced motion, offline or hidden gestures, no i
   vi.stubGlobal(
     "IntersectionObserver",
     class {
-      constructor(private callback: (entries: Array<{ isIntersecting: boolean; target: Element }>) => void) {}
+      constructor(
+        private callback: (entries: Array<{ isIntersecting: boolean; target: Element }>) => void,
+      ) {}
       observe(target: Element) {
         this.callback([{ isIntersecting: true, target }]);
       }

@@ -479,7 +479,10 @@ function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lea
   if (mood === "waiting") {
     // A small, patient "hm?", drawn to one side.
     const w = 2.6 * s;
-    return stroke(`M${pt([x - w + lean, y + 0.6])}Q${pt([x + lean, y + 1.8 * s])} ${pt([x + w + lean, y - 0.9])}`, line);
+    return stroke(
+      `M${pt([x - w + lean, y + 0.6])}Q${pt([x + lean, y + 1.8 * s])} ${pt([x + w + lean, y - 0.9])}`,
+      line,
+    );
   }
   if (mood === "blocked") {
     const w = 4.4 * s;
@@ -724,22 +727,9 @@ function faceParts(
 
 // ---------------------------------------------------------------------------
 // Accessories: ink pieces with one small gold note each. A faint light rim
-// keeps them on dark backgrounds; a soft sheen along each top edge gives them
-// form without gloss.
+// keeps them on dark backgrounds.
 
 const RIM = 'stroke="#fff" stroke-opacity=".16" stroke-width="1.1"';
-
-const sheen = (d: string, width: number, opacity = 0.24) =>
-  `<path d="${d}" stroke="#fff" stroke-opacity="${opacity}" stroke-width="${f(width)}" stroke-linecap="round" fill="none"/>`;
-
-/** An arc of a circle, as a path, from angle a0 to a1 in degrees (0 = east, clockwise). */
-function arc(c: P2, r: number, a0: number, a1: number): string {
-  const at = (a: number): P2 => [
-    c[0] + Math.cos((a * Math.PI) / 180) * r,
-    c[1] + Math.sin((a * Math.PI) / 180) * r,
-  ];
-  return `M${pt(at(a0))}A${f(r)} ${f(r)} 0 0 1 ${pt(at(a1))}`;
-}
 
 const lerp = (a: P2, b: P2, t: number): P2 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 
@@ -831,8 +821,7 @@ function accessoryMarkup(
       const hang = tail([kx - 1, ky + 1], [kx - 3, ky + drop / 2], [kx + 0.5, ky + drop], 8, 10);
       // A soft square knot, not a ball.
       const knotAt = (dx: number, dy: number): P2 => [kx + dx, ky - 0.5 + dy];
-      const knot =
-        `<path d="${roundedPolygonPath([knotAt(-4.8, -3.6), knotAt(4.2, -4.3), knotAt(4.9, 3.7), knotAt(-4.1, 4.3)], 2.6)}" fill="${INK}" ${RIM}/>`;
+      const knot = `<path d="${roundedPolygonPath([knotAt(-4.8, -3.6), knotAt(4.2, -4.3), knotAt(4.9, 3.7), knotAt(-4.1, 4.3)], 2.6)}" fill="${INK}" ${RIM}/>`;
       return {
         front: wrap + hang + knot,
         box: [l - 1.4, ny - 0.6, Math.max(r + 1.4, kx + 7), ky + drop + 1],
@@ -848,8 +837,7 @@ function accessoryMarkup(
         `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${gold}" stroke-width="3.2"/>`;
       const hang: P2 = [c[0] + radius * 0.62, c[1] + radius * 0.78];
       const end: P2 = [Math.min(right - 1.5, c[0] + 15), c[1] + 19];
-      const chain =
-        `<path d="M${pt(hang)}Q${pt([hang[0] + 1, end[1] + 1])} ${pt(end)}" stroke="${gold}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
+      const chain = `<path d="M${pt(hang)}Q${pt([hang[0] + 1, end[1] + 1])} ${pt(end)}" stroke="${gold}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
       return { front: glass + ring + chain, box: null };
     }
     case "bowtie": {
