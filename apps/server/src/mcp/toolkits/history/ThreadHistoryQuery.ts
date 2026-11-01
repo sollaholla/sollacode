@@ -439,11 +439,15 @@ function matchRegexBatch(
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
+  // Each source sorts and limits on its own index, then the two pages merge.
+  // Sorting a union instead reads the whole thread first, and because SQLite
+  // calls are synchronous that froze the server for 6 s on a 384k-activity thread.
   const queryPageAsc = SqlSchema.findAll({
     Request: QueryPageRequest,
     Result: RawHistoryRow,
     execute: (request) => sql`
       WITH history AS (
+        SELECT * FROM (
         SELECT
           'message' AS "entryType", 0 AS "sortRank", message_id AS id,
           turn_id AS "turnId", role, NULL AS "activityKind", NULL AS tone,
@@ -469,7 +473,12 @@ const make = Effect.gen(function* () {
             OR (created_at = ${request.cursorAt} AND 0 > ${request.cursorRank})
             OR (created_at = ${request.cursorAt} AND 0 = ${request.cursorRank} AND message_id > ${request.cursorId})
           )
+          AND created_at >= COALESCE(${request.cursorAt}, '')
+          ORDER BY created_at ASC, message_id ASC
+          LIMIT ${request.limit}
+        )
         UNION ALL
+        SELECT * FROM (
         SELECT
           'activity' AS "entryType", 1 AS "sortRank", activity_id AS id,
           turn_id AS "turnId", NULL AS role, kind AS "activityKind", tone,
@@ -495,6 +504,10 @@ const make = Effect.gen(function* () {
             OR (created_at = ${request.cursorAt} AND 1 > ${request.cursorRank})
             OR (created_at = ${request.cursorAt} AND 1 = ${request.cursorRank} AND activity_id > ${request.cursorId})
           )
+          AND created_at >= COALESCE(${request.cursorAt}, '')
+          ORDER BY created_at ASC, activity_id ASC
+          LIMIT ${request.limit}
+        )
       )
       SELECT * FROM history
       ORDER BY "createdAt" ASC, "sortRank" ASC, id ASC
@@ -507,6 +520,7 @@ const make = Effect.gen(function* () {
     Result: RawHistoryRow,
     execute: (request) => sql`
       WITH history AS (
+        SELECT * FROM (
         SELECT
           'message' AS "entryType", 0 AS "sortRank", message_id AS id,
           turn_id AS "turnId", role, NULL AS "activityKind", NULL AS tone,
@@ -532,7 +546,12 @@ const make = Effect.gen(function* () {
             OR (created_at = ${request.cursorAt} AND 0 < ${request.cursorRank})
             OR (created_at = ${request.cursorAt} AND 0 = ${request.cursorRank} AND message_id < ${request.cursorId})
           )
+          AND created_at <= COALESCE(${request.cursorAt}, '~')
+          ORDER BY created_at DESC, message_id DESC
+          LIMIT ${request.limit}
+        )
         UNION ALL
+        SELECT * FROM (
         SELECT
           'activity' AS "entryType", 1 AS "sortRank", activity_id AS id,
           turn_id AS "turnId", NULL AS role, kind AS "activityKind", tone,
@@ -558,6 +577,10 @@ const make = Effect.gen(function* () {
             OR (created_at = ${request.cursorAt} AND 1 < ${request.cursorRank})
             OR (created_at = ${request.cursorAt} AND 1 = ${request.cursorRank} AND activity_id < ${request.cursorId})
           )
+          AND created_at <= COALESCE(${request.cursorAt}, '~')
+          ORDER BY created_at DESC, activity_id DESC
+          LIMIT ${request.limit}
+        )
       )
       SELECT * FROM history
       ORDER BY "createdAt" DESC, "sortRank" DESC, id DESC

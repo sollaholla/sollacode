@@ -243,6 +243,66 @@ it.effect("keeps cursor pagination stable when entry timestamps are identical", 
   }).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("merges a lopsided thread in order, in both directions, without dropping entries", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seedHistory;
+    const baselineIds = (
+      (yield* callHistory({ order: "asc", pageSize: 100 })).structuredContent as {
+        readonly entries: ReadonlyArray<{ readonly id: string }>;
+      }
+    ).entries.map((entry) => entry.id);
+    // Far more activities than messages, and every one newer than the seed, so
+    // a page limit applied per source must still merge into the global order.
+    const newIds: Array<string> = [];
+    for (let index = 0; index < 30; index += 1) {
+      const at = `2026-08-01T10:00:${String(index).padStart(2, "0")}.000Z`;
+      if (index % 10 === 0) {
+        const id = `message-lopsided-${String(index).padStart(2, "0")}`;
+        newIds.push(id);
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, input_origin, attachments_json,
+            is_streaming, created_at, updated_at
+          ) VALUES (${id}, ${threadId}, 'turn-3', 'assistant', 'Lopsided', NULL, NULL, 0, ${at}, ${at})
+        `;
+      } else {
+        const id = `activity-lopsided-${String(index).padStart(2, "0")}`;
+        newIds.push(id);
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (${id}, ${threadId}, 'turn-3', 'tool', 'command.completed', 'Lopsided', '{}', ${index + 100}, ${at})
+        `;
+      }
+    }
+
+    const walk = (order: "asc" | "desc") =>
+      Effect.gen(function* () {
+        const ids: Array<string> = [];
+        let cursor: string | undefined;
+        do {
+          const page = yield* callHistory({
+            order,
+            pageSize: 7,
+            ...(cursor === undefined ? {} : { cursor }),
+          });
+          const result = page.structuredContent as {
+            readonly entries: ReadonlyArray<{ readonly id: string }>;
+            readonly pagination: { readonly nextCursor: string | null };
+          };
+          ids.push(...result.entries.map((entry) => entry.id));
+          cursor = result.pagination.nextCursor ?? undefined;
+        } while (cursor !== undefined);
+        return ids;
+      });
+
+    const expected = [...baselineIds, ...newIds];
+    expect(yield* walk("asc")).toEqual(expected);
+    expect(yield* walk("desc")).toEqual([...expected].reverse());
+  }).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("rejects cross-thread access and cursors reused with changed filters", () =>
   Effect.gen(function* () {
     yield* seedHistory;
