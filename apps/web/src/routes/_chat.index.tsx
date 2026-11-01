@@ -1,11 +1,13 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { PROVIDER_SETUP_VERSION } from "@t3tools/contracts";
+import { PROVIDER_SETUP_VERSION, WELCOME_TOUR_VERSION } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { LinkIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { GettingStarted } from "../components/GettingStarted";
+import { FirstRunSurface } from "../components/onboarding/FirstRunSurface";
+import { withFirstRunTransition } from "../components/onboarding/firstRunTransition";
 import { ProviderSetup } from "../components/onboarding/ProviderSetup";
 import { selectLandingProject } from "../lib/projectLanding";
 import { Button } from "../components/ui/button";
@@ -24,6 +26,13 @@ import { useProviderSignInRequestStore } from "../providerSignInRequestStore";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
+
+/** Only someone new ever sees this, so nobody else downloads it. */
+const WelcomeFlow = lazy(() =>
+  import("../components/onboarding/WelcomeFlow").then((module) => ({
+    default: module.WelcomeFlow,
+  })),
+);
 
 function ChatIndexRouteView() {
   const { authGateState } = Route.useRouteContext();
@@ -111,16 +120,24 @@ function DraftStartError({ onRetry }: { readonly onRetry: () => void }) {
 }
 
 /**
- * A fresh environment opens provider setup until it is finished or skipped,
- * then the getting-started checklist, which can reopen setup.
+ * A fresh environment opens provider setup, then preferences and the tour, each
+ * until it is finished or skipped, then the getting-started checklist, which can
+ * reopen setup. This only renders with no projects, so anyone already working
+ * never lands here.
  */
 function NoProjectsHero() {
   const config = useAtomValue(primaryServerConfigAtom);
   const pendingSignIn = useProviderSignInRequestStore((state) => state.pending);
   const [setupOverride, setSetupOverride] = useState<"open" | "closed" | null>(null);
+  const [welcomeClosed, setWelcomeClosed] = useState(false);
   const setupPending =
     config !== null && config.settings.providerSetupVersion < PROVIDER_SETUP_VERSION;
   const showSetup = setupOverride === "open" || (setupOverride === null && setupPending);
+  const showWelcome =
+    !showSetup &&
+    !welcomeClosed &&
+    config !== null &&
+    config.settings.welcomeTourVersion < WELCOME_TOUR_VERSION;
   const connectedProviders = (config?.providers ?? [])
     .filter(
       (provider) =>
@@ -132,7 +149,17 @@ function NoProjectsHero() {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-background pt-12">
         {showSetup ? (
-          <ProviderSetup onDone={() => setSetupOverride("closed")} />
+          <FirstRunSurface>
+            <ProviderSetup
+              onDone={() => withFirstRunTransition(() => setSetupOverride("closed"))}
+            />
+          </FirstRunSurface>
+        ) : showWelcome ? (
+          <FirstRunSurface>
+            <Suspense fallback={null}>
+              <WelcomeFlow onDone={() => setWelcomeClosed(true)} />
+            </Suspense>
+          </FirstRunSurface>
         ) : (
           <GettingStarted
             connectedProviders={connectedProviders}

@@ -14,6 +14,7 @@ import { lazy, Suspense, useEffect, useEffectEvent, useRef, useState } from "rea
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
+import { useWelcomeTourReplayStore } from "../components/onboarding/welcomeTourStore";
 import { useRememberSettingsReturn } from "../components/settings/closeSettings";
 import { CommandPaletteLoader } from "../components/CommandPaletteLoader";
 import { DesktopPermissionsGate } from "../components/desktop/DesktopPermissions";
@@ -86,6 +87,19 @@ const SshPasswordPromptDialog = lazy(() =>
     default: module.SshPasswordPromptDialog,
   })),
 );
+const WelcomeTourReplay = lazy(() => import("../components/onboarding/WelcomeTourReplay"));
+
+/** Empty until someone asks to see the tour again, so it costs nothing otherwise. */
+function WelcomeTourReplayHost() {
+  const open = useWelcomeTourReplayStore((state) => state.open);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <WelcomeTourReplay />
+    </Suspense>
+  );
+}
+
 const RemoteControlCoordinator = lazy(() =>
   import("../components/remoteControl/RemoteControlCoordinator").then((module) => ({
     default: module.RemoteControlCoordinator,
@@ -226,6 +240,7 @@ function RootRouteView() {
         {/* Mounted unconditionally: a confirmation that cannot render is a
             caller left hanging, which is the failure this replaces. */}
         <AppConfirmHost />
+        <WelcomeTourReplayHost />
         <StartupSplashGate />
         <DocumentTitleSync />
         <GlassAppearanceSync />

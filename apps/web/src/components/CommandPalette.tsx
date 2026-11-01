@@ -44,6 +44,7 @@ import {
   MessageSquareIcon,
   PaletteIcon,
   SettingsIcon,
+  CircleHelpIcon,
   SquarePenIcon,
   TextSearchIcon,
 } from "lucide-react";
@@ -65,6 +66,7 @@ import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useClientSettings } from "../hooks/useSettings";
+import { openWelcomeTourReplay } from "./onboarding/welcomeTourStore";
 import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment } from "../state/filesystem";
@@ -1602,6 +1604,17 @@ function OpenCommandPaletteDialog(props: {
     icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/settings" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:welcome-tour",
+    searchTerms: ["welcome tour", "tutorial", "help", "how to use", "getting started"],
+    title: "Replay the welcome tour",
+    icon: <CircleHelpIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      openWelcomeTourReplay();
     },
   });
 
