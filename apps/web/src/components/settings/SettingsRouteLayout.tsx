@@ -8,8 +8,8 @@ import {
   COLLAPSED_SIDEBAR_TITLEBAR_INSET_MD_CLASS,
 } from "../../workspaceTitlebar";
 import { SidebarInset } from "../ui/sidebar";
-import { SettingsMobileTabs, useSettingsMobileTabs } from "./SettingsMobileTabs";
-import { SettingsMobileSearch } from "./SettingsMobileSearch";
+import { useSettingsMobileTabs } from "./SettingsMobileTabs";
+import { SETTINGS_NAV_ITEMS, isSettingsSectionActive } from "./SettingsSidebarNav";
 import { useCloseSettings } from "./closeSettings";
 import { highlightSettingsSearchResult } from "./settingsSearchHighlight";
 
@@ -40,7 +40,10 @@ export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) 
   const location = useLocation();
   const [restoreSignal, setRestoreSignal] = useState(0);
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const showMobileTabs = useSettingsMobileTabs();
+  const phoneLayout = useSettingsMobileTabs();
+  const sectionLabel = SETTINGS_NAV_ITEMS.find((item) =>
+    isSettingsSectionActive(location.pathname, item.to),
+  )?.label;
   const showRestoreDefaults = location.pathname === "/settings/general";
   const handleRestored = () => setRestoreSignal((value) => value + 1);
   const closeSettings = useCloseSettings();
@@ -92,8 +95,9 @@ export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) 
             )}
           >
             <div className="flex w-full items-center gap-2">
-              <span className="shrink-0 text-sm font-medium text-foreground">Settings</span>
-              {showMobileTabs ? <SettingsMobileSearch /> : null}
+              <span className="shrink-0 text-sm font-medium text-foreground">
+                {phoneLayout ? (sectionLabel ?? "Settings") : "Settings"}
+              </span>
               {showRestoreDefaults ? (
                 <div className="ms-auto flex items-center gap-2">
                   <Suspense fallback={null}>
@@ -124,8 +128,6 @@ export function SettingsRouteLayout({ pending = false }: { pending?: boolean }) 
             ) : null}
           </div>
         )}
-
-        {showMobileTabs ? <SettingsMobileTabs pathname={location.pathname} /> : null}
 
         <div key={restoreSignal} className="min-h-0 flex flex-1 flex-col">
           {pending ? <SettingsPanelPending /> : <Outlet />}

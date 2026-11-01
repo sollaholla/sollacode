@@ -22,6 +22,7 @@ vi.mock("../ui/sidebar", () => {
     SidebarContent: Surface,
     SidebarFooter: Surface,
     SidebarGroup: Surface,
+    SidebarGroupLabel: Surface,
     SidebarMenu: Surface,
     SidebarMenuItem: Surface,
     SidebarMenuButton: Item,

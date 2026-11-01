@@ -13,8 +13,11 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as OrchestratorRouteImport } from './routes/orchestrator'
 import { Route as ChatRouteImport } from './routes/_chat'
+import { Route as SettingsIndexRouteImport } from './routes/settings.index'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
+import { Route as SettingsStorageRouteImport } from './routes/settings.storage'
 import { Route as SettingsSourceControlRouteImport } from './routes/settings.source-control'
+import { Route as SettingsSoundRouteImport } from './routes/settings.sound'
 import { Route as SettingsProvidersRouteImport } from './routes/settings.providers'
 import { Route as SettingsProjectsRouteImport } from './routes/settings.projects'
 import { Route as SettingsPermissionsRouteImport } from './routes/settings.permissions'
@@ -56,14 +59,29 @@ const ChatRoute = ChatRouteImport.update({
   id: '/_chat',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const ChatIndexRoute = ChatIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => ChatRoute,
 } as any)
+const SettingsStorageRoute = SettingsStorageRouteImport.update({
+  id: '/storage',
+  path: '/storage',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const SettingsSourceControlRoute = SettingsSourceControlRouteImport.update({
   id: '/source-control',
   path: '/source-control',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsSoundRoute = SettingsSoundRouteImport.update({
+  id: '/sound',
+  path: '/sound',
   getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsProvidersRoute = SettingsProvidersRouteImport.update({
@@ -195,7 +213,10 @@ export interface FileRoutesByFullPath {
   '/settings/permissions': typeof SettingsPermissionsRoute
   '/settings/projects': typeof SettingsProjectsRoute
   '/settings/providers': typeof SettingsProvidersRoute
+  '/settings/sound': typeof SettingsSoundRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
+  '/settings/storage': typeof SettingsStorageRoute
+  '/settings/': typeof SettingsIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/agents/$agentId': typeof ChatAgentsAgentIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -206,7 +227,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/orchestrator': typeof OrchestratorRoute
   '/pair': typeof PairRoute
-  '/settings': typeof SettingsRouteWithChildren
   '/orchestrator/live': typeof OrchestratorLiveRoute
   '/settings/agents': typeof SettingsAgentsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
@@ -222,8 +242,11 @@ export interface FileRoutesByTo {
   '/settings/permissions': typeof SettingsPermissionsRoute
   '/settings/projects': typeof SettingsProjectsRoute
   '/settings/providers': typeof SettingsProvidersRoute
+  '/settings/sound': typeof SettingsSoundRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
+  '/settings/storage': typeof SettingsStorageRoute
   '/': typeof ChatIndexRoute
+  '/settings': typeof SettingsIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/agents/$agentId': typeof ChatAgentsAgentIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -252,8 +275,11 @@ export interface FileRoutesById {
   '/settings/permissions': typeof SettingsPermissionsRoute
   '/settings/projects': typeof SettingsProjectsRoute
   '/settings/providers': typeof SettingsProvidersRoute
+  '/settings/sound': typeof SettingsSoundRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
+  '/settings/storage': typeof SettingsStorageRoute
   '/_chat/': typeof ChatIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/agents/$agentId': typeof ChatAgentsAgentIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -283,7 +309,10 @@ export interface FileRouteTypes {
     | '/settings/permissions'
     | '/settings/projects'
     | '/settings/providers'
+    | '/settings/sound'
     | '/settings/source-control'
+    | '/settings/storage'
+    | '/settings/'
     | '/$environmentId/$threadId'
     | '/agents/$agentId'
     | '/draft/$draftId'
@@ -294,7 +323,6 @@ export interface FileRouteTypes {
   to:
     | '/orchestrator'
     | '/pair'
-    | '/settings'
     | '/orchestrator/live'
     | '/settings/agents'
     | '/settings/appearance'
@@ -310,8 +338,11 @@ export interface FileRouteTypes {
     | '/settings/permissions'
     | '/settings/projects'
     | '/settings/providers'
+    | '/settings/sound'
     | '/settings/source-control'
+    | '/settings/storage'
     | '/'
+    | '/settings'
     | '/$environmentId/$threadId'
     | '/agents/$agentId'
     | '/draft/$draftId'
@@ -339,8 +370,11 @@ export interface FileRouteTypes {
     | '/settings/permissions'
     | '/settings/projects'
     | '/settings/providers'
+    | '/settings/sound'
     | '/settings/source-control'
+    | '/settings/storage'
     | '/_chat/'
+    | '/settings/'
     | '/_chat/$environmentId/$threadId'
     | '/_chat/agents/$agentId'
     | '/_chat/draft/$draftId'
@@ -388,6 +422,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/_chat/': {
       id: '/_chat/'
       path: '/'
@@ -395,11 +436,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatIndexRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/settings/storage': {
+      id: '/settings/storage'
+      path: '/storage'
+      fullPath: '/settings/storage'
+      preLoaderRoute: typeof SettingsStorageRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/source-control': {
       id: '/settings/source-control'
       path: '/source-control'
       fullPath: '/settings/source-control'
       preLoaderRoute: typeof SettingsSourceControlRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/sound': {
+      id: '/settings/sound'
+      path: '/sound'
+      fullPath: '/settings/sound'
+      preLoaderRoute: typeof SettingsSoundRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/providers': {
@@ -585,7 +640,10 @@ interface SettingsRouteChildren {
   SettingsPermissionsRoute: typeof SettingsPermissionsRoute
   SettingsProjectsRoute: typeof SettingsProjectsRoute
   SettingsProvidersRoute: typeof SettingsProvidersRoute
+  SettingsSoundRoute: typeof SettingsSoundRoute
   SettingsSourceControlRoute: typeof SettingsSourceControlRoute
+  SettingsStorageRoute: typeof SettingsStorageRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
   SettingsProjectsEnvironmentIdProjectIdRoute: typeof SettingsProjectsEnvironmentIdProjectIdRoute
 }
 
@@ -604,7 +662,10 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsPermissionsRoute: SettingsPermissionsRoute,
   SettingsProjectsRoute: SettingsProjectsRoute,
   SettingsProvidersRoute: SettingsProvidersRoute,
+  SettingsSoundRoute: SettingsSoundRoute,
   SettingsSourceControlRoute: SettingsSourceControlRoute,
+  SettingsStorageRoute: SettingsStorageRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
   SettingsProjectsEnvironmentIdProjectIdRoute:
     SettingsProjectsEnvironmentIdProjectIdRoute,
 }

@@ -89,17 +89,20 @@ describe("MobileTopBar", () => {
     expect(markup).not.toContain('aria-label="Close settings"');
   });
 
-  it("becomes Close settings on settings, where the drawer has nothing left to show", () => {
-    // Sections moved to the tab strip on this layout, so the drawer trigger
+  it("goes back through settings on a phone: a section to the list, the list closed", () => {
+    // Settings has its own home screen on this layout, so the drawer trigger
     // would open a sheet the person has no reason to open.
-    pathname = "/settings/general";
     portraitSettingsLayout = true;
-    const markup = renderToStaticMarkup(<MobileTopBar />);
-    expect(markup).toContain('aria-label="Close settings"');
-    expect(markup).not.toContain('aria-label="Open navigation"');
+    pathname = "/settings/general";
+    const onSection = renderToStaticMarkup(<MobileTopBar />);
+    expect(onSection).toContain('aria-label="Back to settings"');
+    expect(onSection).not.toContain('aria-label="Open navigation"');
+
+    pathname = "/settings";
+    expect(renderToStaticMarkup(<MobileTopBar />)).toContain('aria-label="Close settings"');
   });
 
-  it("keeps the drawer on settings when the strip is not showing", () => {
+  it("keeps the drawer on settings when the phone home is not in use", () => {
     // Landscape and wider still list sections in the drawer, so taking its
     // trigger away there would strand section navigation entirely.
     pathname = "/settings/general";

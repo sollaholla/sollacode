@@ -1,4 +1,4 @@
-import { Link, useLocation } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { memo } from "react";
 import { ArrowLeftIcon } from "lucide-react";
 
@@ -23,11 +23,13 @@ export const MobileTopBar = memo(function MobileTopBar({
 }) {
   const location = useLocation();
   const closeSettings = useCloseSettings();
-  // Settings on a portrait phone navigates by the tab strip, so the drawer has
-  // nothing left to offer there and its trigger becomes the one control the
-  // screen actually needs. Landscape still lists sections in the drawer, so the
-  // trigger has to stay there — this is the same gate the strip uses.
+  const navigate = useNavigate();
+  // Settings on a portrait phone has its own home screen, so the drawer has
+  // nothing left to offer there and its trigger becomes Back: a section returns
+  // to that list, and the list closes settings. Landscape still lists sections in
+  // the drawer, so the trigger stays there.
   const showBack = useSettingsMobileTabs() && location.pathname.startsWith("/settings");
+  const onSettingsHome = location.pathname === "/settings" || location.pathname === "/settings/";
   const setTrailingSlot = useMobileTopBarTrailingSlot((state) => state.setElement);
   const environmentId = useTopBarEnvironmentId();
 
@@ -41,9 +43,12 @@ export const MobileTopBar = memo(function MobileTopBar({
     >
       {showBack ? (
         <button
-          aria-label="Close settings"
+          aria-label={onSettingsHome ? "Close settings" : "Back to settings"}
           className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-foreground outline-hidden ring-ring transition-colors hover:bg-surface-hover focus-visible:ring-2 active:bg-surface-hover"
-          onClick={closeSettings}
+          onClick={() => {
+            if (onSettingsHome) closeSettings();
+            else void navigate({ to: "/settings", replace: true });
+          }}
           type="button"
         >
           <ArrowLeftIcon className="size-4" />

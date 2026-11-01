@@ -1,8 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { SETTINGS_MOBILE_TABS_QUERY, SettingsMobileTabs } from "./SettingsMobileTabs";
-import { isSettingsSectionActive, visibleSettingsNavItems } from "./SettingsSidebarNav";
+import { SETTINGS_MOBILE_TABS_QUERY } from "./SettingsMobileTabs";
+import { SettingsPhoneHome } from "./SettingsPhoneHome";
+import { SETTINGS_NAV_GROUPS, isSettingsSectionActive } from "./SettingsSidebarNav";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_MD_CLASS } from "../../workspaceTitlebar";
 
 vi.mock("@tanstack/react-router", () => ({
@@ -29,38 +30,26 @@ describe("SettingsMobileTabs", () => {
     expect(SETTINGS_MOBILE_TABS_QUERY).toContain("(max-width: 767px)");
   });
 
-  it("offers every section the sidebar does, so the two cannot drift", () => {
-    const markup = renderToStaticMarkup(<SettingsMobileTabs pathname="/settings/general" />);
-    for (const item of visibleSettingsNavItems()) {
-      expect(markup).toContain(`data-settings-mobile-tab="${item.to}"`);
-      expect(markup).toContain(item.label);
+  it("lists every section by category, each saying what lives there", () => {
+    const markup = renderToStaticMarkup(<SettingsPhoneHome />);
+    for (const group of SETTINGS_NAV_GROUPS) {
+      expect(markup).toContain(`aria-label="${group.label}"`);
+      for (const item of group.items) {
+        expect(markup).toContain(`data-settings-phone-section="${item.to}"`);
+        expect(markup).toContain(item.description);
+      }
     }
   });
 
-  it("marks the open section for assistive tech", () => {
-    const markup = renderToStaticMarkup(<SettingsMobileTabs pathname="/settings/providers" />);
-    // Navigation, not ARIA tabs: `aria-current` is the honest description of a
-    // link set that changes the route, and it carries no tabpanel promise.
-    expect(markup).toContain('aria-current="page"');
-    expect(markup).not.toContain('role="tab"');
-    expect(markup).toContain('aria-label="Settings sections"');
-  });
-
   it("keeps a section marked on the pages beneath it", () => {
-    const markup = renderToStaticMarkup(
-      <SettingsMobileTabs pathname="/settings/projects/env-1/project-1" />,
+    expect(isSettingsSectionActive("/settings/projects/env/project", "/settings/projects")).toBe(
+      true,
     );
-    expect(markup).toMatch(
-      /aria-current="page"[^>]*data-settings-mobile-tab="\/settings\/projects"/,
-    );
-    expect(isSettingsSectionActive("/settings/projectsx", "/settings/projects")).toBe(false);
+    expect(isSettingsSectionActive("/settings/projects", "/settings/general")).toBe(false);
   });
 
-  it("scrolls horizontally without leaving a scrollbar across the strip", () => {
-    const markup = renderToStaticMarkup(<SettingsMobileTabs pathname="/settings/general" />);
-    expect(markup).toContain("overflow-x-auto");
-    // Tabs must not wrap onto a second row — the strip is one line that scrolls.
-    expect(markup).toContain("whitespace-nowrap");
-    expect(markup).toContain("[&amp;::-webkit-scrollbar]:hidden");
+  it("files every section under exactly one category", () => {
+    const paths = SETTINGS_NAV_GROUPS.flatMap((group) => group.items.map((item) => item.to));
+    expect(new Set(paths).size).toBe(paths.length);
   });
 });

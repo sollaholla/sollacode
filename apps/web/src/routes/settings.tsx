@@ -6,16 +6,12 @@ import {
 } from "../components/settings/SettingsRouteLayout";
 
 export const Route = createFileRoute("/settings")({
-  beforeLoad: async ({ context, location }) => {
+  beforeLoad: async ({ context }) => {
     if (
       context.authGateState.status !== "authenticated" &&
       context.authGateState.status !== "hosted-static"
     ) {
       throw redirect({ to: "/pair", replace: true });
-    }
-
-    if (location.pathname === "/settings") {
-      throw redirect({ to: "/settings/general", replace: true });
     }
   },
   component: SettingsRouteLayout,

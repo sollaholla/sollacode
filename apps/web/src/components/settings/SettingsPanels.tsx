@@ -824,7 +824,7 @@ function BackgroundActivityAdvancedDialog({
   );
 }
 
-export function AppearanceSettingsPanel() {
+function AppearanceSettingsSections({ view }: { readonly view: "appearance" | "sound" }) {
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
@@ -845,8 +845,102 @@ export function AppearanceSettingsPanel() {
     "--glass-slider-fill-offset": `${0.5 - soundCueVolumeRatio}rem`,
   } as CSSProperties;
 
+  if (view === "sound") {
+    return (
+      <SettingsSection title="Sound">
+        <SettingsRow
+          title="Sound cues"
+          description="Short tones marking what voice features are doing: the microphone opening, your turn being accepted, waiting on an answer, and the session losing its hearing. One switch covers the voice orchestrator and push-to-talk dictation — they speak the same vocabulary."
+          control={
+            <Switch
+              checked={settings.soundCues}
+              onCheckedChange={(checked) => updateSettings({ soundCues: Boolean(checked) })}
+              aria-label="Sound cues"
+            />
+          }
+        />
+
+        {settings.soundCues ? (
+          <SettingsRow
+            title="Cue volume"
+            description="How loud the cues play, relative to their designed level. They are deliberately quiet — audible under speech, never over it."
+            resetAction={
+              settings.soundCueVolume !== DEFAULT_UNIFIED_SETTINGS.soundCueVolume ? (
+                <SettingResetButton
+                  label="cue volume"
+                  onClick={() =>
+                    updateSettings({ soundCueVolume: DEFAULT_UNIFIED_SETTINGS.soundCueVolume })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <div className="flex w-full items-center gap-3 sm:w-52">
+                <output
+                  className="min-w-12 rounded-md bg-muted px-2 py-1 text-center font-mono text-xs font-medium tabular-nums text-foreground"
+                  htmlFor="sound-cue-volume"
+                >
+                  {settings.soundCueVolume}%
+                </output>
+                <input
+                  aria-label="Cue volume"
+                  className="glass-opacity-slider min-w-0 flex-1"
+                  id="sound-cue-volume"
+                  max={MAX_SOUND_CUE_VOLUME}
+                  min={MIN_SOUND_CUE_VOLUME}
+                  onChange={(event) => {
+                    const soundCueVolume = Number(event.currentTarget.value);
+                    if (
+                      Number.isInteger(soundCueVolume) &&
+                      soundCueVolume >= MIN_SOUND_CUE_VOLUME &&
+                      soundCueVolume <= MAX_SOUND_CUE_VOLUME
+                    ) {
+                      updateSettings({ soundCueVolume });
+                    }
+                  }}
+                  step={5}
+                  style={soundCueVolumeSliderStyle}
+                  type="range"
+                  value={settings.soundCueVolume}
+                />
+              </div>
+            }
+          />
+        ) : null}
+
+        <SettingsRow
+          title="Phone-line calls"
+          description="Agent calls sound like a phone call: the agent's voice comes down a phone line, and while it works in its chat you hear it typing and clicking. The typing follows the cue switch and volume above. Changes apply from the next call."
+          control={
+            <Switch
+              checked={settings.callPhoneLine}
+              onCheckedChange={(checked) => updateSettings({ callPhoneLine: Boolean(checked) })}
+              aria-label="Phone-line calls"
+            />
+          }
+        />
+
+        {isElectron ? (
+          <SettingsRow
+            title="Mute system audio while listening"
+            description="Silence the machine's output while push-to-talk or Orchestrator voice listens, so other audio does not bleed into the microphone. Orchestrator audio is restored while it speaks. macOS only."
+            control={
+              <Switch
+                checked={settings.pushToTalkMutesSystemAudio}
+                onCheckedChange={(checked) =>
+                  updateSettings({ pushToTalkMutesSystemAudio: Boolean(checked) })
+                }
+                aria-label="Mute system audio while listening"
+              />
+            }
+          />
+        ) : null}
+      </SettingsSection>
+    );
+  }
+
   return (
-    <SettingsPageContainer>
+    <>
       <SettingsSection title="Appearance">
         <SettingsRow
           title="Theme"
@@ -1093,101 +1187,49 @@ export function AppearanceSettingsPanel() {
         />
       </SettingsSection>
 
-      <SettingsSection title="Sound">
-        <SettingsRow
-          title="Sound cues"
-          description="Short tones marking what voice features are doing: the microphone opening, your turn being accepted, waiting on an answer, and the session losing its hearing. One switch covers the voice orchestrator and push-to-talk dictation — they speak the same vocabulary."
-          control={
-            <Switch
-              checked={settings.soundCues}
-              onCheckedChange={(checked) => updateSettings({ soundCues: Boolean(checked) })}
-              aria-label="Sound cues"
-            />
-          }
-        />
-
-        {settings.soundCues ? (
-          <SettingsRow
-            title="Cue volume"
-            description="How loud the cues play, relative to their designed level. They are deliberately quiet — audible under speech, never over it."
-            resetAction={
-              settings.soundCueVolume !== DEFAULT_UNIFIED_SETTINGS.soundCueVolume ? (
-                <SettingResetButton
-                  label="cue volume"
-                  onClick={() =>
-                    updateSettings({ soundCueVolume: DEFAULT_UNIFIED_SETTINGS.soundCueVolume })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <div className="flex w-full items-center gap-3 sm:w-52">
-                <output
-                  className="min-w-12 rounded-md bg-muted px-2 py-1 text-center font-mono text-xs font-medium tabular-nums text-foreground"
-                  htmlFor="sound-cue-volume"
-                >
-                  {settings.soundCueVolume}%
-                </output>
-                <input
-                  aria-label="Cue volume"
-                  className="glass-opacity-slider min-w-0 flex-1"
-                  id="sound-cue-volume"
-                  max={MAX_SOUND_CUE_VOLUME}
-                  min={MIN_SOUND_CUE_VOLUME}
-                  onChange={(event) => {
-                    const soundCueVolume = Number(event.currentTarget.value);
-                    if (
-                      Number.isInteger(soundCueVolume) &&
-                      soundCueVolume >= MIN_SOUND_CUE_VOLUME &&
-                      soundCueVolume <= MAX_SOUND_CUE_VOLUME
-                    ) {
-                      updateSettings({ soundCueVolume });
-                    }
-                  }}
-                  step={5}
-                  style={soundCueVolumeSliderStyle}
-                  type="range"
-                  value={settings.soundCueVolume}
-                />
-              </div>
-            }
-          />
-        ) : null}
-
-        <SettingsRow
-          title="Phone-line calls"
-          description="Agent calls sound like a phone call: the agent's voice comes down a phone line, and while it works in its chat you hear it typing and clicking. The typing follows the cue switch and volume above. Changes apply from the next call."
-          control={
-            <Switch
-              checked={settings.callPhoneLine}
-              onCheckedChange={(checked) => updateSettings({ callPhoneLine: Boolean(checked) })}
-              aria-label="Phone-line calls"
-            />
-          }
-        />
-
-        {isElectron ? (
-          <SettingsRow
-            title="Mute system audio while listening"
-            description="Silence the machine's output while push-to-talk or Orchestrator voice listens, so other audio does not bleed into the microphone. Orchestrator audio is restored while it speaks. macOS only."
-            control={
-              <Switch
-                checked={settings.pushToTalkMutesSystemAudio}
-                onCheckedChange={(checked) =>
-                  updateSettings({ pushToTalkMutesSystemAudio: Boolean(checked) })
-                }
-                aria-label="Mute system audio while listening"
-              />
-            }
-          />
-        ) : null}
-      </SettingsSection>
       <ThreadListSettingsSection />
+    </>
+  );
+}
+
+export function AppearanceSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <AppearanceSettingsSections view="appearance" />
+    </SettingsPageContainer>
+  );
+}
+
+export function SoundAndVoiceSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <AppearanceSettingsSections view="sound" />
+      <GeneralSettingsSections view="voice" />
+    </SettingsPageContainer>
+  );
+}
+
+export function StorageSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <GeneralSettingsSections view="storage" />
     </SettingsPageContainer>
   );
 }
 
 export function GeneralSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <GeneralSettingsSections view="general" />
+    </SettingsPageContainer>
+  );
+}
+
+function GeneralSettingsSections({
+  view,
+}: {
+  readonly view: "general" | "models" | "storage" | "voice";
+}) {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const [backgroundActivityDialogOpen, setBackgroundActivityDialogOpen] = useState(false);
@@ -1266,8 +1308,363 @@ export function GeneralSettingsPanel() {
     DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
   );
 
+  if (view === "models") {
+    return (
+      <SettingsSection title="Models">
+        <SettingsRow
+          title="Utility AI model"
+          description="Default model for app-assisted work such as thread titles, task drafting, plan refresh, and source control content. Dedicated voice correction and source control settings can override it."
+          resetAction={
+            isTextGenerationModelDirty ? (
+              <SettingResetButton
+                label="utility AI model"
+                onClick={() =>
+                  updateSettings({
+                    textGenerationModelSelection:
+                      DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <ProviderModelPicker
+                activeInstanceId={textGenInstanceId}
+                model={textGenModel}
+                lockedProvider={null}
+                instanceEntries={textGenerationModelInstanceEntries}
+                modelOptionsByInstance={textGenerationModelOptionsByInstance}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onInstanceModelChange={(instanceId, model) => {
+                  updateSettings({
+                    textGenerationModelSelection: resolveAppModelSelectionState(
+                      {
+                        ...settings,
+                        textGenerationModelSelection: selectAppModelWithHighEffort(
+                          textGenerationModelSelection,
+                          createModelSelection(instanceId, model),
+                          textGenerationCapableProviders,
+                        ),
+                      },
+                      textGenerationCapableProviders,
+                    ),
+                  });
+                }}
+              />
+              <TraitsPicker
+                provider={textGenProvider}
+                models={
+                  // Use the exact instance's models (rather than the
+                  // first-kind-match) so a custom text-gen instance like
+                  // `codex_personal` gets its own model list, not the
+                  // default Codex one.
+                  textGenInstanceEntry?.models ?? []
+                }
+                model={textGenModel}
+                prompt=""
+                onPromptChange={() => {}}
+                modelOptions={textGenModelOptions}
+                allowPromptInjectedEffort={false}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onModelOptionsChange={(nextOptions) => {
+                  updateSettings({
+                    textGenerationModelSelection: resolveAppModelSelectionState(
+                      {
+                        ...settings,
+                        textGenerationModelSelection: createModelSelection(
+                          textGenInstanceId,
+                          textGenModel,
+                          nextOptions,
+                        ),
+                      },
+                      serverProviders,
+                    ),
+                  });
+                }}
+              />
+            </div>
+          }
+        />
+
+        <SettingsRow
+          title="Token Optimizer"
+          description="Fable 5 only. For new Claude sessions, when the measured ROI is positive, converts repeated bulk context such as tool documentation, large tool results, and older history into dense image pages. Your prompt, recent turns, and exact-value factsheet remain text. Off by default."
+          control={
+            <Switch
+              checked={settings.claudeTokenOptimizerEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ claudeTokenOptimizerEnabled: Boolean(checked) })
+              }
+              aria-label="Enable the Token Optimizer"
+            />
+          }
+        />
+      </SettingsSection>
+    );
+  }
+  if (view === "storage") {
+    return (
+      <>
+        <SettingsSection title="Background work">
+          <SettingsRow
+            id="setting-background-activity"
+            title={
+              <span className="inline-flex items-center gap-1.5">
+                Background activity
+                <PolicyTooltip>
+                  This shared policy gates background work such as Git refreshes and provider health
+                  probes after their individual intervals elapse.
+                </PolicyTooltip>
+              </span>
+            }
+            description={backgroundActivityDescription}
+            resetAction={
+              canResetBackgroundActivity ? (
+                <SettingResetButton
+                  label="background activity"
+                  onClick={() => updateSettings(resetBackgroundActivitySettings())}
+                />
+              ) : null
+            }
+            control={
+              <>
+                <Select
+                  value={backgroundActivityProfileOption}
+                  onValueChange={(value) => {
+                    if (value === "advanced") {
+                      setBackgroundActivityDialogOpen(true);
+                      return;
+                    }
+                    if (
+                      value === "balanced" ||
+                      value === "performance" ||
+                      value === "battery-saver"
+                    ) {
+                      updateSettings(backgroundActivityProfileSettings(value));
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    className="w-full sm:w-40"
+                    aria-label="Background activity profile"
+                  >
+                    <SelectValue>
+                      {BACKGROUND_ACTIVITY_PROFILE_OPTION_LABELS[backgroundActivityProfileOption]}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem hideIndicator value="balanced">
+                      {BACKGROUND_ACTIVITY_PROFILE_LABELS.balanced}
+                    </SelectItem>
+                    <SelectItem hideIndicator value="performance">
+                      {BACKGROUND_ACTIVITY_PROFILE_LABELS.performance}
+                    </SelectItem>
+                    <SelectItem hideIndicator value="battery-saver">
+                      {BACKGROUND_ACTIVITY_PROFILE_LABELS["battery-saver"]}
+                    </SelectItem>
+                    <SelectItem hideIndicator value="advanced">
+                      {BACKGROUND_ACTIVITY_PROFILE_OPTION_LABELS.advanced}
+                    </SelectItem>
+                  </SelectPopup>
+                </Select>
+                {backgroundActivityProfileOption === "advanced" ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          size="icon-sm"
+                          variant="outline"
+                          aria-label="Configure advanced background activity"
+                          onClick={() => setBackgroundActivityDialogOpen(true)}
+                        >
+                          <SettingsIcon className="size-4" />
+                        </Button>
+                      }
+                    />
+                    <TooltipPopup side="top">Configure background activity</TooltipPopup>
+                  </Tooltip>
+                ) : null}
+                <BackgroundActivityAdvancedDialog
+                  open={backgroundActivityDialogOpen}
+                  onOpenChange={setBackgroundActivityDialogOpen}
+                />
+              </>
+            }
+          />
+
+          <SettingsRow
+            title="Automatic storage cleanup"
+            description="Clear inactive desktop browser caches and obsolete update files on this computer. Keeps cookies, logins, site data, chats, and projects."
+            control={
+              <Switch
+                checked={settings.automaticStorageCleanupEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ automaticStorageCleanupEnabled: Boolean(checked) })
+                }
+                aria-label="Automatic storage cleanup"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Auto-delete archived chats"
+            description="Permanently delete chats 48 hours after archiving in this environment. Restore a chat before then to keep it."
+            control={
+              <Switch
+                checked={settings.archivedThreadAutoDelete}
+                onCheckedChange={(checked) =>
+                  updateSettings({ archivedThreadAutoDelete: Boolean(checked) })
+                }
+                aria-label="Auto-delete archived chats after 48 hours"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Attachment retention"
+            description="Automatically remove stored chat attachments after this many hours. Cleanup runs in the background and deleted files cannot be recovered."
+            resetAction={
+              settings.attachmentRetentionHours !==
+              DEFAULT_UNIFIED_SETTINGS.attachmentRetentionHours ? (
+                <SettingResetButton
+                  label="attachment retention"
+                  onClick={() =>
+                    updateSettings({
+                      attachmentRetentionHours: DEFAULT_UNIFIED_SETTINGS.attachmentRetentionHours,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <div className="flex shrink-0 items-center gap-2">
+                <NumberField
+                  value={settings.attachmentRetentionHours}
+                  min={MIN_ATTACHMENT_RETENTION_HOURS}
+                  max={MAX_ATTACHMENT_RETENTION_HOURS}
+                  step={1}
+                  size="sm"
+                  className="w-32"
+                  onValueChange={(value) => {
+                    if (
+                      value !== null &&
+                      Number.isInteger(value) &&
+                      value >= MIN_ATTACHMENT_RETENTION_HOURS &&
+                      value <= MAX_ATTACHMENT_RETENTION_HOURS
+                    ) {
+                      updateSettings({ attachmentRetentionHours: value });
+                    }
+                  }}
+                >
+                  <NumberFieldGroup>
+                    <NumberFieldDecrement aria-label="Decrease attachment retention" />
+                    <NumberFieldInput aria-label="Attachment retention in hours" />
+                    <NumberFieldIncrement aria-label="Increase attachment retention" />
+                  </NumberFieldGroup>
+                </NumberField>
+                <span className="text-xs text-muted-foreground">hours</span>
+              </div>
+            }
+          />
+        </SettingsSection>
+
+        <DatabaseStorageSettingsSection />
+      </>
+    );
+  }
+  if (view === "voice") {
+    return (
+      <SettingsSection title="Voice input">
+        <p className="text-sm text-muted-foreground">
+          Chat recordings stay as voice-note attachments until you press Send. Transcription happens
+          on the connected host.
+        </p>
+
+        <SettingsRow
+          title="Contextual transcription correction"
+          description="Correct likely names, punctuation, and recognition errors in terminal dictation. Chat voice notes retain the host transcript. If correction fails, the original terminal transcript is used."
+          resetAction={
+            settings.voiceTranscriptionCorrectionEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled ? (
+              <SettingResetButton
+                label="contextual transcription correction"
+                onClick={() =>
+                  updateSettings({
+                    voiceTranscriptionCorrectionEnabled:
+                      DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.voiceTranscriptionCorrectionEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ voiceTranscriptionCorrectionEnabled: Boolean(checked) })
+              }
+              aria-label="Correct voice transcriptions using conversation context"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Voice correction model"
+          description="Optional fast-model override for contextual voice correction. Off uses the global Utility AI model."
+          control={
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {usesDedicatedVoiceCorrectionModel ? (
+                <ProviderModelPicker
+                  activeInstanceId={voiceCorrectionModelSelection.instanceId}
+                  model={voiceCorrectionModelSelection.model}
+                  lockedProvider={null}
+                  instanceEntries={textGenerationModelInstanceEntries}
+                  modelOptionsByInstance={voiceCorrectionModelOptionsByInstance}
+                  triggerVariant="outline"
+                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                  triggerAriaLabel="Voice correction model"
+                  onInstanceModelChange={(instanceId, model) => {
+                    const selection = resolveAppModelSelectionState(
+                      {
+                        ...settings,
+                        textGenerationModelSelection: selectAppModelWithHighEffort(
+                          voiceCorrectionModelSelection,
+                          createModelSelection(instanceId, model),
+                          textGenerationCapableProviders,
+                        ),
+                      },
+                      textGenerationCapableProviders,
+                    );
+                    updateSettings({ voiceTranscriptionCorrectionModelSelection: selection });
+                  }}
+                />
+              ) : null}
+              <Switch
+                checked={usesDedicatedVoiceCorrectionModel}
+                onCheckedChange={(checked) =>
+                  updateSettings({
+                    voiceTranscriptionCorrectionModelSelection: checked
+                      ? createModelSelection(
+                          textGenerationModelSelection.instanceId,
+                          textGenerationModelSelection.model,
+                        )
+                      : null,
+                  })
+                }
+                aria-label="Use a separate voice correction model"
+              />
+            </div>
+          }
+        />
+      </SettingsSection>
+    );
+  }
+
   return (
-    <SettingsPageContainer>
+    <>
       <SettingsSection title="Threads">
         <SettingsRow
           title="New threads"
@@ -1517,346 +1914,6 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
-      <SettingsSection title="Models">
-        <SettingsRow
-          title="Utility AI model"
-          description="Default model for app-assisted work such as thread titles, task drafting, plan refresh, and source control content. Dedicated voice correction and source control settings can override it."
-          resetAction={
-            isTextGenerationModelDirty ? (
-              <SettingResetButton
-                label="utility AI model"
-                onClick={() =>
-                  updateSettings({
-                    textGenerationModelSelection:
-                      DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
-              <ProviderModelPicker
-                activeInstanceId={textGenInstanceId}
-                model={textGenModel}
-                lockedProvider={null}
-                instanceEntries={textGenerationModelInstanceEntries}
-                modelOptionsByInstance={textGenerationModelOptionsByInstance}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                onInstanceModelChange={(instanceId, model) => {
-                  updateSettings({
-                    textGenerationModelSelection: resolveAppModelSelectionState(
-                      {
-                        ...settings,
-                        textGenerationModelSelection: selectAppModelWithHighEffort(
-                          textGenerationModelSelection,
-                          createModelSelection(instanceId, model),
-                          textGenerationCapableProviders,
-                        ),
-                      },
-                      textGenerationCapableProviders,
-                    ),
-                  });
-                }}
-              />
-              <TraitsPicker
-                provider={textGenProvider}
-                models={
-                  // Use the exact instance's models (rather than the
-                  // first-kind-match) so a custom text-gen instance like
-                  // `codex_personal` gets its own model list, not the
-                  // default Codex one.
-                  textGenInstanceEntry?.models ?? []
-                }
-                model={textGenModel}
-                prompt=""
-                onPromptChange={() => {}}
-                modelOptions={textGenModelOptions}
-                allowPromptInjectedEffort={false}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                onModelOptionsChange={(nextOptions) => {
-                  updateSettings({
-                    textGenerationModelSelection: resolveAppModelSelectionState(
-                      {
-                        ...settings,
-                        textGenerationModelSelection: createModelSelection(
-                          textGenInstanceId,
-                          textGenModel,
-                          nextOptions,
-                        ),
-                      },
-                      serverProviders,
-                    ),
-                  });
-                }}
-              />
-            </div>
-          }
-        />
-
-        <SettingsRow
-          title="Token Optimizer"
-          description="Fable 5 only. For new Claude sessions, when the measured ROI is positive, converts repeated bulk context such as tool documentation, large tool results, and older history into dense image pages. Your prompt, recent turns, and exact-value factsheet remain text. Off by default."
-          control={
-            <Switch
-              checked={settings.claudeTokenOptimizerEnabled}
-              onCheckedChange={(checked) =>
-                updateSettings({ claudeTokenOptimizerEnabled: Boolean(checked) })
-              }
-              aria-label="Enable the Token Optimizer"
-            />
-          }
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Background work">
-        <SettingsRow
-          id="setting-background-activity"
-          title={
-            <span className="inline-flex items-center gap-1.5">
-              Background activity
-              <PolicyTooltip>
-                This shared policy gates background work such as Git refreshes and provider health
-                probes after their individual intervals elapse.
-              </PolicyTooltip>
-            </span>
-          }
-          description={backgroundActivityDescription}
-          resetAction={
-            canResetBackgroundActivity ? (
-              <SettingResetButton
-                label="background activity"
-                onClick={() => updateSettings(resetBackgroundActivitySettings())}
-              />
-            ) : null
-          }
-          control={
-            <>
-              <Select
-                value={backgroundActivityProfileOption}
-                onValueChange={(value) => {
-                  if (value === "advanced") {
-                    setBackgroundActivityDialogOpen(true);
-                    return;
-                  }
-                  if (
-                    value === "balanced" ||
-                    value === "performance" ||
-                    value === "battery-saver"
-                  ) {
-                    updateSettings(backgroundActivityProfileSettings(value));
-                  }
-                }}
-              >
-                <SelectTrigger className="w-full sm:w-40" aria-label="Background activity profile">
-                  <SelectValue>
-                    {BACKGROUND_ACTIVITY_PROFILE_OPTION_LABELS[backgroundActivityProfileOption]}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end" alignItemWithTrigger={false}>
-                  <SelectItem hideIndicator value="balanced">
-                    {BACKGROUND_ACTIVITY_PROFILE_LABELS.balanced}
-                  </SelectItem>
-                  <SelectItem hideIndicator value="performance">
-                    {BACKGROUND_ACTIVITY_PROFILE_LABELS.performance}
-                  </SelectItem>
-                  <SelectItem hideIndicator value="battery-saver">
-                    {BACKGROUND_ACTIVITY_PROFILE_LABELS["battery-saver"]}
-                  </SelectItem>
-                  <SelectItem hideIndicator value="advanced">
-                    {BACKGROUND_ACTIVITY_PROFILE_OPTION_LABELS.advanced}
-                  </SelectItem>
-                </SelectPopup>
-              </Select>
-              {backgroundActivityProfileOption === "advanced" ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        size="icon-sm"
-                        variant="outline"
-                        aria-label="Configure advanced background activity"
-                        onClick={() => setBackgroundActivityDialogOpen(true)}
-                      >
-                        <SettingsIcon className="size-4" />
-                      </Button>
-                    }
-                  />
-                  <TooltipPopup side="top">Configure background activity</TooltipPopup>
-                </Tooltip>
-              ) : null}
-              <BackgroundActivityAdvancedDialog
-                open={backgroundActivityDialogOpen}
-                onOpenChange={setBackgroundActivityDialogOpen}
-              />
-            </>
-          }
-        />
-
-        <SettingsRow
-          title="Automatic storage cleanup"
-          description="Clear inactive desktop browser caches and obsolete update files on this computer. Keeps cookies, logins, site data, chats, and projects."
-          control={
-            <Switch
-              checked={settings.automaticStorageCleanupEnabled}
-              onCheckedChange={(checked) =>
-                updateSettings({ automaticStorageCleanupEnabled: Boolean(checked) })
-              }
-              aria-label="Automatic storage cleanup"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Auto-delete archived chats"
-          description="Permanently delete chats 48 hours after archiving in this environment. Restore a chat before then to keep it."
-          control={
-            <Switch
-              checked={settings.archivedThreadAutoDelete}
-              onCheckedChange={(checked) =>
-                updateSettings({ archivedThreadAutoDelete: Boolean(checked) })
-              }
-              aria-label="Auto-delete archived chats after 48 hours"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Attachment retention"
-          description="Automatically remove stored chat attachments after this many hours. Cleanup runs in the background and deleted files cannot be recovered."
-          resetAction={
-            settings.attachmentRetentionHours !==
-            DEFAULT_UNIFIED_SETTINGS.attachmentRetentionHours ? (
-              <SettingResetButton
-                label="attachment retention"
-                onClick={() =>
-                  updateSettings({
-                    attachmentRetentionHours: DEFAULT_UNIFIED_SETTINGS.attachmentRetentionHours,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <div className="flex shrink-0 items-center gap-2">
-              <NumberField
-                value={settings.attachmentRetentionHours}
-                min={MIN_ATTACHMENT_RETENTION_HOURS}
-                max={MAX_ATTACHMENT_RETENTION_HOURS}
-                step={1}
-                size="sm"
-                className="w-32"
-                onValueChange={(value) => {
-                  if (
-                    value !== null &&
-                    Number.isInteger(value) &&
-                    value >= MIN_ATTACHMENT_RETENTION_HOURS &&
-                    value <= MAX_ATTACHMENT_RETENTION_HOURS
-                  ) {
-                    updateSettings({ attachmentRetentionHours: value });
-                  }
-                }}
-              >
-                <NumberFieldGroup>
-                  <NumberFieldDecrement aria-label="Decrease attachment retention" />
-                  <NumberFieldInput aria-label="Attachment retention in hours" />
-                  <NumberFieldIncrement aria-label="Increase attachment retention" />
-                </NumberFieldGroup>
-              </NumberField>
-              <span className="text-xs text-muted-foreground">hours</span>
-            </div>
-          }
-        />
-      </SettingsSection>
-
-      <DatabaseStorageSettingsSection />
-
-      <SettingsSection title="Voice input">
-        <p className="text-sm text-muted-foreground">
-          Chat recordings stay as voice-note attachments until you press Send. Transcription happens
-          on the connected host.
-        </p>
-
-        <SettingsRow
-          title="Contextual transcription correction"
-          description="Correct likely names, punctuation, and recognition errors in terminal dictation. Chat voice notes retain the host transcript. If correction fails, the original terminal transcript is used."
-          resetAction={
-            settings.voiceTranscriptionCorrectionEnabled !==
-            DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled ? (
-              <SettingResetButton
-                label="contextual transcription correction"
-                onClick={() =>
-                  updateSettings({
-                    voiceTranscriptionCorrectionEnabled:
-                      DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.voiceTranscriptionCorrectionEnabled}
-              onCheckedChange={(checked) =>
-                updateSettings({ voiceTranscriptionCorrectionEnabled: Boolean(checked) })
-              }
-              aria-label="Correct voice transcriptions using conversation context"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Voice correction model"
-          description="Optional fast-model override for contextual voice correction. Off uses the global Utility AI model."
-          control={
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {usesDedicatedVoiceCorrectionModel ? (
-                <ProviderModelPicker
-                  activeInstanceId={voiceCorrectionModelSelection.instanceId}
-                  model={voiceCorrectionModelSelection.model}
-                  lockedProvider={null}
-                  instanceEntries={textGenerationModelInstanceEntries}
-                  modelOptionsByInstance={voiceCorrectionModelOptionsByInstance}
-                  triggerVariant="outline"
-                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                  triggerAriaLabel="Voice correction model"
-                  onInstanceModelChange={(instanceId, model) => {
-                    const selection = resolveAppModelSelectionState(
-                      {
-                        ...settings,
-                        textGenerationModelSelection: selectAppModelWithHighEffort(
-                          voiceCorrectionModelSelection,
-                          createModelSelection(instanceId, model),
-                          textGenerationCapableProviders,
-                        ),
-                      },
-                      textGenerationCapableProviders,
-                    );
-                    updateSettings({ voiceTranscriptionCorrectionModelSelection: selection });
-                  }}
-                />
-              ) : null}
-              <Switch
-                checked={usesDedicatedVoiceCorrectionModel}
-                onCheckedChange={(checked) =>
-                  updateSettings({
-                    voiceTranscriptionCorrectionModelSelection: checked
-                      ? createModelSelection(
-                          textGenerationModelSelection.instanceId,
-                          textGenerationModelSelection.model,
-                        )
-                      : null,
-                  })
-                }
-                aria-label="Use a separate voice correction model"
-              />
-            </div>
-          }
-        />
-      </SettingsSection>
-
       <SettingsSection title="About">
         {isElectron || HOSTED_APP_CHANNEL ? (
           <AboutVersionSection />
@@ -1877,7 +1934,7 @@ export function GeneralSettingsPanel() {
           }
         />
       </SettingsSection>
-    </SettingsPageContainer>
+    </>
   );
 }
 
@@ -2672,6 +2729,7 @@ export function ProviderSettingsPanel() {
       {isAddInstanceDialogOpen ? (
         <AddProviderInstanceDialog open onOpenChange={setIsAddInstanceDialogOpen} />
       ) : null}
+      <GeneralSettingsSections view="models" />
     </SettingsPageContainer>
   );
 }

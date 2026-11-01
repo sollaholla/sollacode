@@ -46,6 +46,41 @@ function entries(
   );
 }
 
+const SETTINGS_PAGE_ENTRIES: ReadonlyArray<SettingsSearchEntry> = [
+  [
+    "/settings/credentials",
+    "Credentials",
+    "Saved logins",
+    ["password", "pin", "sign in", "browser"],
+  ],
+  [
+    "/settings/devices",
+    "Devices",
+    "Simulators and emulators",
+    ["ios", "android", "phone", "simulator"],
+  ],
+  ["/settings/keybindings", "Keybindings", "Keyboard shortcuts", ["hotkeys", "keys", "shortcut"]],
+  ["/settings/storage", "Storage", "Storage and cleanup", ["disk", "database", "space"]],
+  [
+    "/settings/sound",
+    "Sound & voice",
+    "Sound and voice settings",
+    ["audio", "microphone", "dictation"],
+  ],
+  [
+    "/settings/diagnostics",
+    "Diagnostics",
+    "Diagnostics overview",
+    ["logs", "debug", "performance"],
+  ],
+].map(([tab, tabLabel, title, keywords]) => ({
+  tab: tab as SettingsSectionPath,
+  tabLabel: tabLabel as string,
+  section: tabLabel as string,
+  title: title as string,
+  keywords: keywords as ReadonlyArray<string>,
+}));
+
 export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
   ...entries("/settings/providers", "Providers", "Models", [
     {
@@ -74,11 +109,11 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     { title: "Project Grouping", keywords: ["sidebar", "repositories", "environments", "combine"] },
     { title: "Add project starts in", keywords: ["folder", "browser", "directory", "home"] },
   ]),
-  ...entries("/settings/general", "General", "Models", [
+  ...entries("/settings/providers", "Providers", "Models", [
     { title: "Utility AI model", keywords: ["titles", "task drafting", "plan", "text generation"] },
     { title: "Token Optimizer", keywords: ["claude", "context", "images", "roi", "tokens"] },
   ]),
-  ...entries("/settings/general", "General", "Background work", [
+  ...entries("/settings/storage", "Storage", "Background work", [
     {
       title: "Background activity",
       anchor: "setting-background-activity",
@@ -86,14 +121,14 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     },
     { title: "Attachment retention", keywords: ["images", "cleanup", "hours", "storage"] },
   ]),
-  ...entries("/settings/general", "General", "Storage", [
+  ...entries("/settings/storage", "Storage", "Storage", [
     {
       title: "Database",
       anchor: "setting-database-compaction",
       keywords: ["compact", "compaction", "vacuum", "sqlite", "disk space", "free space", "shrink"],
     },
   ]),
-  ...entries("/settings/general", "General", "Voice input", [
+  ...entries("/settings/sound", "Sound & voice", "Voice input", [
     {
       title: "Voice notes",
       keywords: ["recording", "push to talk", "microphone", "audio attachment"],
@@ -138,7 +173,7 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     { title: "Assistant output", keywords: ["streaming", "tokens", "live response"] },
     { title: "Hide whitespace changes", keywords: ["diff", "whitespace", "ignore"] },
   ]),
-  ...entries("/settings/appearance", "Appearance", "Sound", [
+  ...entries("/settings/sound", "Sound & voice", "Sound", [
     { title: "Sound cues", keywords: ["audio", "tones", "voice", "microphone", "beep"] },
     { title: "Cue volume", keywords: ["audio", "loudness", "sound"] },
     {
@@ -336,6 +371,70 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
       "preview",
     ],
   },
+  ...entries("/settings/orchestrator", "Orchestrator", "Agent calls", [
+    { title: "Microphone", keywords: ["input device", "voice", "audio"] },
+    { title: "Agent calls", keywords: ["phone", "voice", "ring", "call"] },
+    { title: "Agents can call me", keywords: ["phone", "ring", "call", "notify"] },
+    { title: "Assistant agent", keywords: ["voice", "delegate", "agent"] },
+    { title: "GPT-Live delegation", keywords: ["voice", "openai", "realtime", "delegate"] },
+    { title: "Recent tool calls", keywords: ["history", "voice", "activity"] },
+    { title: "What it speaks up about", keywords: ["announce", "voice", "notifications"] },
+  ]),
+  ...entries("/settings/agents", "Agents", "Agent names", [
+    { title: "Agent names", keywords: ["rename", "mention", "handle"] },
+  ]),
+  ...entries("/settings/storage", "Storage", "Cleanup", [
+    { title: "Automatic storage cleanup", keywords: ["disk", "space", "delete", "old builds"] },
+    { title: "Auto-delete archived chats", keywords: ["retention", "48 hours", "archive"] },
+    { title: "Last compaction", keywords: ["database", "compact", "vacuum"] },
+  ]),
+  ...entries("/settings/archived", "Archive", "Archived threads", [
+    { title: "Archive cleanup", keywords: ["delete", "old chats", "bulk"] },
+    { title: "Delete all archived chats", keywords: ["remove", "bulk", "clear"] },
+    { title: "Push notifications on this device", keywords: ["alerts", "web push", "phone"] },
+  ]),
+  ...entries("/settings/connections", "Connections", "Connections", [
+    { title: "This environment", keywords: ["computer", "server", "host", "label"] },
+    { title: "Network access", keywords: ["lan", "bind", "listen", "port"] },
+    { title: "Tailscale HTTPS", keywords: ["tailnet", "certificate", "remote"] },
+    { title: "Authorized clients", keywords: ["devices", "sessions", "revoke", "paired"] },
+    { title: "Remote control", keywords: ["screen", "mouse", "keyboard", "desktop"] },
+    { title: "Scan and connect", keywords: ["qr", "pair", "phone", "camera"] },
+    { title: "Nearby Solla Code", keywords: ["discover", "lan", "bonjour", "other computers"] },
+    { title: "Version drift", keywords: ["update", "mismatch", "out of date"] },
+    { title: "WSL only", keywords: ["windows", "linux", "subsystem"] },
+  ]),
+  ...entries("/settings/projects", "Projects", "Project details", [
+    { title: "Token usage", keywords: ["statistics", "cost", "tokens", "spend"] },
+  ]),
+  ...entries("/settings/appearance", "Appearance", "Thread list", [
+    { title: "Days of inactivity before auto-settle", keywords: ["settle", "idle", "sidebar"] },
+  ]),
+  ...entries("/settings/source-control", "Source Control", "Version Control", [
+    { title: "Source Control Providers", keywords: ["github", "gitlab", "bitbucket", "azure"] },
+  ]),
+  ...entries("/settings/providers", "Providers", "Models", [
+    { title: "Usage guard", keywords: ["limit", "failover", "pace", "fallback"] },
+  ]),
+  ...entries("/settings/diagnostics", "Diagnostics", "Resources", [
+    { title: "Resource monitor", keywords: ["cpu", "memory", "performance"] },
+    { title: "Resource History", keywords: ["cpu", "memory", "chart"] },
+    { title: "Resource timeline", keywords: ["cpu", "memory", "chart"] },
+    { title: "Host & collection", keywords: ["machine", "sampling"] },
+    { title: "Instrumented application I/O", keywords: ["disk", "read", "write", "network"] },
+    { title: "Live Processes", keywords: ["running", "pid", "kill"] },
+    { title: "Live process tree", keywords: ["running", "children", "pid"] },
+  ]),
+  ...entries("/settings/diagnostics", "Diagnostics", "Traces", [
+    { title: "Trace Diagnostics", keywords: ["logs", "observability", "debug"] },
+    { title: "Latest Failures", keywords: ["errors", "logs", "debug"] },
+    { title: "Most Common Failures", keywords: ["errors", "logs", "debug"] },
+    { title: "Slowest Spans", keywords: ["performance", "latency"] },
+    { title: "Top Span Names", keywords: ["performance", "traces"] },
+    { title: "Span Logs", keywords: ["logs", "debug"] },
+  ]),
+  // Whole pages, so a section is findable by name or by what it holds.
+  ...SETTINGS_PAGE_ENTRIES,
 ];
 
 export interface SettingsSearchResult extends SettingsSearchEntry {

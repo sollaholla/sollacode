@@ -1,7 +1,10 @@
 import { useCallback, useMemo, useState, type ComponentType } from "react";
 import {
+  ActivityIcon,
   ArchiveIcon,
   ArrowLeftIcon,
+  HardDriveIcon,
+  Volume2Icon,
   SearchIcon,
   XIcon,
   AudioLinesIcon,
@@ -23,6 +26,7 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -39,51 +43,174 @@ export type SettingsSectionPath =
   | "/settings/credentials"
   | "/settings/devices"
   | "/settings/appearance"
+  | "/settings/sound"
   | "/settings/keybindings"
   | "/settings/providers"
   | "/settings/orchestrator"
   | "/settings/agents"
   | "/settings/source-control"
   | "/settings/connections"
+  | "/settings/storage"
+  | "/settings/diagnostics"
   | "/settings/beta"
   | "/settings/archived";
 
-export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
-  label: string;
-  to: SettingsSectionPath;
-  icon: ComponentType<{ className?: string }>;
-}> = [
-  { label: "General", to: "/settings/general", icon: Settings2Icon },
-  { label: "Projects", to: "/settings/projects", icon: FoldersIcon },
-  { label: "Credentials", to: "/settings/credentials", icon: KeyRoundIcon },
-  { label: "Devices", to: "/settings/devices", icon: SmartphoneIcon },
-  { label: "Appearance", to: "/settings/appearance", icon: PaletteIcon },
-  { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
-  { label: "Providers", to: "/settings/providers", icon: BotIcon },
-  { label: "Orchestrator", to: "/settings/orchestrator", icon: AudioLinesIcon },
-  { label: "Agents", to: "/settings/agents", icon: MonitorSmartphoneIcon },
-  { label: "Source Control", to: "/settings/source-control", icon: GitBranchIcon },
-  { label: "Connections", to: "/settings/connections", icon: Link2Icon },
-  { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
+export interface SettingsNavItem {
+  readonly label: string;
+  readonly to: SettingsSectionPath;
+  readonly icon: ComponentType<{ className?: string }>;
+  /** What lives here, in the words someone would look for it by. */
+  readonly description: string;
+}
+
+export interface SettingsNavGroup {
+  readonly label: string;
+  readonly items: ReadonlyArray<SettingsNavItem>;
+}
+
+const PERMISSIONS_NAV_ITEM: SettingsNavItem = {
+  label: "Permissions",
+  to: "/settings/permissions",
+  icon: ShieldCheckIcon,
+  description: "Microphone, screen and system access",
+};
+
+export const SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
+  {
+    label: "App",
+    items: [
+      {
+        label: "General",
+        to: "/settings/general",
+        icon: Settings2Icon,
+        description: "New threads, confirmations, updates",
+      },
+      {
+        label: "Appearance",
+        to: "/settings/appearance",
+        icon: PaletteIcon,
+        description: "Theme, text and the thread list",
+      },
+      {
+        label: "Sound & voice",
+        to: "/settings/sound",
+        icon: Volume2Icon,
+        description: "Sound cues, calls and dictation",
+      },
+      {
+        label: "Keybindings",
+        to: "/settings/keybindings",
+        icon: KeyboardIcon,
+        description: "Keyboard shortcuts",
+      },
+    ],
+  },
+  {
+    label: "AI",
+    items: [
+      {
+        label: "Providers",
+        to: "/settings/providers",
+        icon: BotIcon,
+        description: "Accounts, models and usage",
+      },
+      {
+        label: "Agents",
+        to: "/settings/agents",
+        icon: MonitorSmartphoneIcon,
+        description: "Your always-on agents",
+      },
+      {
+        label: "Orchestrator",
+        to: "/settings/orchestrator",
+        icon: AudioLinesIcon,
+        description: "Voice mode and what it can do",
+      },
+    ],
+  },
+  {
+    label: "Workspace",
+    items: [
+      {
+        label: "Projects",
+        to: "/settings/projects",
+        icon: FoldersIcon,
+        description: "Folders, scripts and statistics",
+      },
+      {
+        label: "Source Control",
+        to: "/settings/source-control",
+        icon: GitBranchIcon,
+        description: "Git, commits and pull requests",
+      },
+      {
+        label: "Archive",
+        to: "/settings/archived",
+        icon: ArchiveIcon,
+        description: "Archived chats",
+      },
+    ],
+  },
+  {
+    label: "Access",
+    items: [
+      {
+        label: "Connections",
+        to: "/settings/connections",
+        icon: Link2Icon,
+        description: "Other computers and remote access",
+      },
+      {
+        label: "Devices",
+        to: "/settings/devices",
+        icon: SmartphoneIcon,
+        description: "Simulators and emulators",
+      },
+      {
+        label: "Credentials",
+        to: "/settings/credentials",
+        icon: KeyRoundIcon,
+        description: "Saved logins for the browser",
+      },
+    ],
+  },
+  {
+    label: "System",
+    items: [
+      {
+        label: "Storage",
+        to: "/settings/storage",
+        icon: HardDriveIcon,
+        description: "Background work and cleanup",
+      },
+      {
+        label: "Diagnostics",
+        to: "/settings/diagnostics",
+        icon: ActivityIcon,
+        description: "Resource use and traces",
+      },
+    ],
+  },
 ];
 
+export const SETTINGS_NAV_ITEMS: ReadonlyArray<SettingsNavItem> = SETTINGS_NAV_GROUPS.flatMap(
+  (group) => group.items,
+);
+
 /**
- * The sections this build actually has, in order.
+ * The sections this build actually has, by category.
  *
- * Permissions only exists when the desktop bridge does, so it is spliced in
- * rather than living in the constant. Exported so the mobile tab strip and the
- * sidebar list cannot drift apart — they are two presentations of one nav.
+ * Permissions only exists when the desktop bridge does, so it is added here
+ * rather than living in the constant. Read during render by the sidebar and the
+ * phone home screen, so it also has to survive a server or static render.
  */
-export function visibleSettingsNavItems(): ReadonlyArray<(typeof SETTINGS_NAV_ITEMS)[number]> {
-  // Guarded rather than bare: this is read during render by both the sidebar
-  // and the mobile tab strip, so it has to survive a server/static render too.
-  if (typeof window === "undefined") return SETTINGS_NAV_ITEMS;
-  if (window.desktopBridge?.permissions === undefined) return SETTINGS_NAV_ITEMS;
-  return [
-    SETTINGS_NAV_ITEMS[0]!,
-    { label: "Permissions", to: "/settings/permissions", icon: ShieldCheckIcon },
-    ...SETTINGS_NAV_ITEMS.slice(1),
-  ];
+export function visibleSettingsNavGroups(): ReadonlyArray<SettingsNavGroup> {
+  if (typeof window === "undefined" || window.desktopBridge?.permissions === undefined) {
+    return SETTINGS_NAV_GROUPS;
+  }
+  return SETTINGS_NAV_GROUPS.map((group) =>
+    group.label === "Access" ? { ...group, items: [...group.items, PERMISSIONS_NAV_ITEM] } : group,
+  );
 }
 
 /** A section stays selected on the pages beneath it, such as one project's details. */
@@ -200,25 +327,30 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
             )}
           </SidebarGroup>
         ) : null}
-        <SidebarGroup className={query.trim().length > 0 ? "hidden" : "p-2"}>
-          <SidebarMenu>
-            {visibleSettingsNavItems().map((item) => {
-              const Icon = item.icon;
-              const isActive = isSettingsSectionActive(pathname, item.to);
-              return (
-                <SidebarMenuItem key={item.to}>
-                  <SidebarMenuButton
-                    isActive={isActive}
-                    onClick={() => handleSectionClick(item.to)}
-                  >
-                    <Icon />
-                    <span className="truncate">{item.label}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              );
-            })}
-          </SidebarMenu>
-        </SidebarGroup>
+        {visibleSettingsNavGroups().map((group) => (
+          <SidebarGroup
+            key={group.label}
+            className={query.trim().length > 0 ? "hidden" : "px-2 py-1.5"}
+          >
+            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+            <SidebarMenu>
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <SidebarMenuItem key={item.to}>
+                    <SidebarMenuButton
+                      isActive={isSettingsSectionActive(pathname, item.to)}
+                      onClick={() => handleSectionClick(item.to)}
+                    >
+                      <Icon />
+                      <span className="truncate">{item.label}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroup>
+        ))}
       </SidebarContent>
       <SidebarFooter className="p-2">
         <div className="flex items-center gap-1">
