@@ -89,6 +89,7 @@ export const PREVIEW_TAB_VIDEO_SOURCE_CHANGED_CHANNEL = "desktop:preview-tab-vid
 export const PREVIEW_GET_TAB_AUDIO_SOURCE_CHANNEL = "desktop:preview-get-tab-audio-source";
 export const PREVIEW_REVEAL_ARTIFACT_CHANNEL = "desktop:preview-reveal-artifact";
 export const PREVIEW_REVEAL_DOWNLOAD_CHANNEL = "desktop:preview-reveal-download";
+export const PREVIEW_RECONCILE_PROFILES_CHANNEL = "desktop:preview-reconcile-profiles";
 export const PREVIEW_ANSWER_DOWNLOAD_APPROVAL_CHANNEL = "desktop:preview-answer-download-approval";
 export const PREVIEW_FORGET_DOWNLOAD_DOMAINS_CHANNEL = "desktop:preview-forget-download-domains";
 export const PREVIEW_COPY_ARTIFACT_CHANNEL = "desktop:preview-copy-artifact";

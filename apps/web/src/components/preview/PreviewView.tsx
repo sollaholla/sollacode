@@ -778,7 +778,6 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         canGoBack={canGoBack}
         canGoForward={canGoForward}
         refreshDisabled={refreshDisabled || humanVerification !== null}
-        sharedBrowserProfile={thread?.browserProfileThreadId != null}
         focusUrlNonce={focusUrlNonce}
         onBack={handleBack}
         onForward={handleForward}

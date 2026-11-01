@@ -307,18 +307,20 @@ contextBridge.exposeInMainWorld("desktopBridge", {
           ...(expiresAt === undefined ? {} : { expiresAt }),
         }),
     },
-    getPreviewConfig: (environmentId, threadId, browserProfileThreadId) =>
+    getPreviewConfig: (environmentId, threadId, browserProfile) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_GET_CONFIG_CHANNEL, {
         environmentId,
         ...(threadId ? { threadId } : {}),
-        ...(browserProfileThreadId ? { browserProfileThreadId } : {}),
+        ...(browserProfile ? { browserProfile } : {}),
       }),
-    setPreviewDownloadDirectory: (directory, environmentId, threadId, browserProfileThreadId) =>
+    reconcileBrowserProfiles: (inventory) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_RECONCILE_PROFILES_CHANNEL, inventory),
+    setPreviewDownloadDirectory: (directory, environmentId, threadId, browserProfile) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_SET_DOWNLOAD_DIRECTORY_CHANNEL, {
         environmentId,
         directory,
         ...(threadId ? { threadId } : {}),
-        ...(browserProfileThreadId ? { browserProfileThreadId } : {}),
+        ...(browserProfile ? { browserProfile } : {}),
       }),
     setAnnotationTheme: (theme) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_SET_ANNOTATION_THEME_CHANNEL, { theme }),

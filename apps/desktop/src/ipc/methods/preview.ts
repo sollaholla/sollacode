@@ -35,6 +35,7 @@ import {
   PreviewAutomationWaitForDownloadResult,
   PreviewAutomationSnapshot,
   PreviewAutomationCredentialFillResult,
+  PreviewBrowserProfileInventory,
   PreviewCredentialSummary,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -255,25 +256,10 @@ export const getPreviewConfig = DesktopIpc.makeIpcMethod({
   result: DesktopPreviewWebviewConfigSchema,
   handler: Effect.fn("desktop.ipc.preview.getConfig")(function* ({
     environmentId,
-    browserProfileThreadId,
+    browserProfile,
   }) {
     const manager = yield* PreviewManager.PreviewManager;
-    // The user's own conversations share ONE environment-wide profile, which is
-    // what makes "the agent sees the sites I'm signed into" true: signing into
-    // YouTube in one thread means every user tab in this environment is signed
-    // in too. A thread that carries a `browserProfileThreadId` (an agent-created
-    // thread, or its inheriting descendants — they all carry the same id) is a
-    // designated profile owner and instead gets its OWN partition, isolated
-    // from the user's jar and from other agent families, seeded (cloned) from
-    // the environment jar on first open so it starts with the user's logins and
-    // then diverges. The desktop used to drop this field entirely and key every
-    // tab on the environment, so per-agent isolation was a no-op at the cookie
-    // layer despite being plumbed end to end.
-    const environmentScope = previewBrowserProfileScope(environmentId);
-    // Legacy per-thread-era migration is an environment-level, one-time fold;
-    // never run it against a per-thread partition.
-    yield* manager.adoptLegacyBrowserProfile(environmentScope);
-    const scope = previewBrowserProfileScope(environmentId, browserProfileThreadId);
+    const scope = previewBrowserProfileScope(environmentId, browserProfile);
     yield* manager.getBrowserSession(scope);
     const partition = yield* manager.getBrowserPartition(scope);
     // Which jar a guest attached to is otherwise invisible from outside the
@@ -293,17 +279,29 @@ export const setPreviewDownloadDirectory = DesktopIpc.makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.preview.setDownloadDirectory")(function* ({
     environmentId,
-    browserProfileThreadId,
+    threadId,
+    browserProfile,
     directory,
   }) {
     const manager = yield* PreviewManager.PreviewManager;
     // The same scope `getConfig` derives, so the directory lands on the very
-    // partition the environment's tabs actually download through — including a
-    // designated per-thread profile owner's own partition.
+    // partition this thread's tabs download through. A project's threads share
+    // that partition but can sit in different worktrees, so it is held per thread.
     yield* manager.setDownloadDirectory(
-      previewBrowserProfileScope(environmentId, browserProfileThreadId),
+      previewBrowserProfileScope(environmentId, browserProfile),
       directory,
+      threadId,
     );
+  }),
+});
+
+export const reconcileBrowserProfiles = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_RECONCILE_PROFILES_CHANNEL,
+  payload: PreviewBrowserProfileInventory,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.reconcileBrowserProfiles")(function* (inventory) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.reconcileBrowserProfiles(inventory);
   }),
 });
 
@@ -780,6 +778,7 @@ export const methods = [
   setPreviewDownloadDirectory,
   revealPreviewDownload,
   answerPreviewDownloadApproval,
+  reconcileBrowserProfiles,
   forgetDownloadDomains,
   setAnnotationTheme,
   pickElement,

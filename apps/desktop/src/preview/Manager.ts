@@ -104,6 +104,7 @@ import {
   initialUserInputHoldState,
   type UserInputHoldState,
 } from "./userInputHold.ts";
+import type { BrowserProfileInventory } from "./browserProfiles.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import { classifyPreviewNetworkResponse } from "./CloudflareChallenge.ts";
 import {
@@ -4569,6 +4570,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     webContentsId: number,
     expectedGeneration: number | undefined,
   ) {
+    browserSession.noteGuestThread(webContentsId, threadIdOfRuntimeTab(tabId));
     const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
     if (
       !tab ||
@@ -9200,6 +9202,16 @@ export const isPreviewAutomationInvalidSelectorError = Schema.is(
   PreviewAutomationInvalidSelectorError,
 );
 
+/** A runtime tab id is `[environmentId, threadId, epoch, tabId]`; see `previewRuntimeTabId`. */
+export function threadIdOfRuntimeTab(tabId: string): string | null {
+  try {
+    const parsed = JSON.parse(tabId) as unknown;
+    return Array.isArray(parsed) && typeof parsed[1] === "string" ? parsed[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 export class PreviewManager extends Context.Service<
   PreviewManager,
   {
@@ -9236,10 +9248,11 @@ export class PreviewManager extends Context.Service<
     /** Forget every site remembered by "Allow for this domain". */
     readonly forgetDownloadDomains: () => Effect.Effect<void>;
     readonly getBrowserPartition: (scope: string) => Effect.Effect<string, PreviewManagerError>;
-    readonly adoptLegacyBrowserProfile: (scope: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly reconcileBrowserProfiles: (inventory: BrowserProfileInventory) => Effect.Effect<void>;
     readonly setDownloadDirectory: (
       scope: string,
       directory: string,
+      threadId?: string,
     ) => Effect.Effect<void, PreviewOperationError>;
     readonly revealDownload: (downloadPath: string) => Effect.Effect<void, PreviewManagerError>;
     readonly answerDownloadApproval: (
@@ -9380,9 +9393,9 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     }),
     isBrowserPartition: browserSession.isPartition,
     setDownloadDirectory: Effect.fn("PreviewManager.setDownloadDirectory")(
-      function* (scope, directory) {
+      function* (scope, directory, threadId) {
         yield* browserSession
-          .setDownloadDirectory(scope, directory)
+          .setDownloadDirectory(scope, directory, threadId)
           .pipe(
             Effect.mapError(
               (cause) => new PreviewOperationError({ operation: "setDownloadDirectory", cause }),
@@ -9424,18 +9437,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     forgetDownloadDomains: Effect.fn("PreviewManager.forgetDownloadDomains")(function* () {
       yield* Effect.sync(() => browserSession.forgetDownloadDomains());
     }),
-    adoptLegacyBrowserProfile: Effect.fn("PreviewManager.adoptLegacyBrowserProfile")(
-      function* (scope) {
-        yield* browserSession
-          .adoptLegacyProfile(scope)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new PreviewOperationError({ operation: "adoptLegacyBrowserProfile", cause }),
-            ),
-          );
-      },
-    ),
+    reconcileBrowserProfiles: browserSession.reconcileProfiles,
     getBrowserPartition: Effect.fn("PreviewManager.getBrowserPartition")(function* (scope) {
       return yield* browserSession
         .getPartition(scope)

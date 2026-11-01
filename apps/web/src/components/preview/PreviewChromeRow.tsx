@@ -31,7 +31,6 @@ interface Props {
   canGoBack: boolean;
   canGoForward: boolean;
   refreshDisabled: boolean;
-  sharedBrowserProfile?: boolean | undefined;
   inputDisabled?: boolean | undefined;
   /** Bumping this value re-focuses and selects the URL input. */
   focusUrlNonce?: number | undefined;
@@ -74,7 +73,6 @@ export function PreviewChromeRow({
   canGoBack,
   canGoForward,
   refreshDisabled,
-  sharedBrowserProfile,
   inputDisabled,
   focusUrlNonce,
   onBack,
@@ -170,25 +168,6 @@ export function PreviewChromeRow({
             <TooltipPopup>{loading ? "Loading…" : "Refresh"}</TooltipPopup>
           </Tooltip>
         </div>
-        {sharedBrowserProfile ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <span
-                  role="img"
-                  aria-label="Shared browser profile"
-                  className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border/60 bg-muted/35 px-1.5 text-[10px] font-medium text-muted-foreground"
-                />
-              }
-            >
-              <Share2Icon className="size-3" />
-              <span className="hidden lg:inline">Shared browser</span>
-            </TooltipTrigger>
-            <TooltipPopup>
-              Cookies, storage, and cache are inherited from the chat that created this thread.
-            </TooltipPopup>
-          </Tooltip>
-        ) : null}
 
         <InputGroup variant="ghost" className="group/address h-7 min-w-0 flex-1 rounded-md">
           <Tooltip>

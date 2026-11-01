@@ -3,6 +3,7 @@ import type {
   DesktopPreviewBridge,
   DesktopPreviewWebviewConfig,
   EnvironmentId,
+  PreviewBrowserProfile,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -11,6 +12,8 @@ import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
 import { previewBridge } from "~/components/preview/previewBridge";
+
+import { browserProfileKey, parseBrowserProfileKey } from "./hostedBrowserProfileBinding";
 
 const PREVIEW_CONFIG_STALE_TIME_MS = 5 * 60_000;
 const PREVIEW_CONFIG_IDLE_TTL_MS = 10 * 60_000;
@@ -49,22 +52,22 @@ export const loadPreviewWebviewConfig = (
   environmentId: EnvironmentId,
   threadId?: ThreadId,
   bridge: PreviewConfigBridge | null = previewBridge,
-  browserProfileThreadId?: ThreadId,
+  browserProfile?: PreviewBrowserProfile,
 ): Effect.Effect<DesktopPreviewWebviewConfig, PreviewWebviewConfigError> => {
   if (bridge === null) {
     return Effect.fail(new PreviewWebviewBridgeUnavailableError({ environmentId }));
   }
 
   return Effect.tryPromise({
-    try: () => bridge.getPreviewConfig(environmentId, threadId, browserProfileThreadId),
+    try: () => bridge.getPreviewConfig(environmentId, threadId, browserProfile),
     catch: (cause) => new PreviewWebviewConfigLoadError({ environmentId, cause }),
   });
 };
 
-// Keyed by host + profile thread. Agent-created threads keep distinct tabs but
-// may intentionally reuse the creator agent's browser partition.
+// Keyed by host + profile. Threads keep distinct tabs but share their project's
+// or agent's browser partition.
 const previewWebviewConfigAtom = Atom.family((key: string) => {
-  const [environmentId, threadId, browserProfileThreadId] = key.split(KEY_SEPARATOR) as [
+  const [environmentId, threadId, profileKey] = key.split(KEY_SEPARATOR) as [
     EnvironmentId,
     string,
     string,
@@ -74,7 +77,7 @@ const previewWebviewConfigAtom = Atom.family((key: string) => {
       environmentId,
       threadId ? (threadId as ThreadId) : undefined,
       previewBridge,
-      browserProfileThreadId ? (browserProfileThreadId as ThreadId) : undefined,
+      parseBrowserProfileKey(profileKey),
     ),
   ).pipe(
     Atom.swr({
@@ -89,11 +92,13 @@ const previewWebviewConfigAtom = Atom.family((key: string) => {
 export function usePreviewWebviewConfig(
   environmentId: EnvironmentId,
   threadId?: ThreadId,
-  browserProfileThreadId?: ThreadId,
+  browserProfile?: PreviewBrowserProfile,
 ): DesktopPreviewWebviewConfig | null {
   const result = useAtomValue(
     previewWebviewConfigAtom(
-      [environmentId, threadId ?? "", browserProfileThreadId ?? ""].join(KEY_SEPARATOR),
+      [environmentId, threadId ?? "", browserProfile ? browserProfileKey(browserProfile) : ""].join(
+        KEY_SEPARATOR,
+      ),
     ),
   );
   return Option.getOrNull(AsyncResult.value(result));

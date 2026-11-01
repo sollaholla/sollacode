@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { PreviewBrowserProfile } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import {
@@ -64,8 +65,8 @@ describe("loadPreviewWebviewConfig", () => {
 
   it.effect("forwards an inherited browser-profile owner separately from the host thread", () =>
     Effect.gen(function* () {
-      const profileThreadId = ThreadId.make("agent-thread");
-      let requestedProfileThreadId: ThreadId | undefined;
+      const browserProfile = { kind: "project", projectId: "project-1" } as const;
+      let requestedProfile: PreviewBrowserProfile | undefined;
       const config = {
         partition: "persist:test-preview",
         webPreferences: "sandbox=yes",
@@ -75,15 +76,15 @@ describe("loadPreviewWebviewConfig", () => {
         environmentId,
         threadId,
         {
-          getPreviewConfig: (_environment, _thread, profileThread) => {
-            requestedProfileThreadId = profileThread;
+          getPreviewConfig: (_environment, _thread, profile) => {
+            requestedProfile = profile;
             return Promise.resolve(config);
           },
         },
-        profileThreadId,
+        browserProfile,
       );
 
-      expect(requestedProfileThreadId).toBe(profileThreadId);
+      expect(requestedProfile).toEqual(browserProfile);
       expect(result).toEqual(config);
     }),
   );

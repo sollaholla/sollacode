@@ -9,7 +9,6 @@ import {
   FILL_PREVIEW_VIEWPORT,
   type PreviewSessionSnapshot,
   type ScopedThreadRef,
-  type ThreadId,
 } from "@t3tools/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -24,19 +23,19 @@ import { previewEnvironment } from "~/state/preview";
 
 import { readPreviewAnnotationTheme } from "./annotationTheme";
 import { useBrowserPointerStore } from "./browserPointerStore";
-import { resolveHostedBrowserProfileBinding } from "./hostedBrowserProfileBinding";
+import {
+  browserProfileThreadsByKey,
+  resolveHostedBrowserProfileBinding,
+  type BrowserProfileThread,
+} from "./hostedBrowserProfileBinding";
+import { BrowserProfileReconcilers, useBrowserProfilesReady } from "./browserProfileReconcile";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
 import { isDesktopOwnedConnectionTarget } from "~/connection/desktopLocal";
 
-interface HostedBrowserProfileShell {
-  readonly threadId: ThreadId;
-  readonly browserProfileThreadId: ThreadId | null | undefined;
-}
-
 function BoundHostedBrowserWebview(props: {
   readonly threadRef: ScopedThreadRef;
-  readonly profileShell: HostedBrowserProfileShell | undefined;
+  readonly profileShell: BrowserProfileThread | undefined;
   readonly snapshot: PreviewSessionSnapshot;
   readonly runtimeTabId: string;
   readonly syncGeneration: number;
@@ -60,7 +59,7 @@ function BoundHostedBrowserWebview(props: {
   return (
     <HostedBrowserWebview
       threadRef={threadRef}
-      browserProfileThreadId={profileBinding.profileThreadId}
+      browserProfile={profileBinding.profile}
       tabId={snapshot.tabId}
       runtimeTabId={runtimeTabId}
       syncGeneration={syncGeneration}
@@ -89,17 +88,14 @@ export function ElectronBrowserHost() {
   }, []);
   const profileShellByThreadKey = useMemo(
     () =>
-      new Map(
-        threadShells.map((thread) => [
-          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-          {
-            threadId: thread.id,
-            browserProfileThreadId: thread.browserProfileThreadId,
-          } satisfies HostedBrowserProfileShell,
-        ]),
+      browserProfileThreadsByKey(
+        threadShells,
+        (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        (thread, rootId) => scopedThreadKey(scopeThreadRef(thread.environmentId, rootId)),
       ),
     [threadShells],
   );
+  const profilesReady = useBrowserProfilesReady();
   const sessions = useMemo(
     () =>
       Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
@@ -107,7 +103,11 @@ export function ElectronBrowserHost() {
         const environment = threadRef
           ? environments.find((candidate) => candidate.environmentId === threadRef.environmentId)
           : undefined;
-        return threadRef && environment && isDesktopOwnedConnectionTarget(environment.entry.target)
+        return threadRef &&
+          environment &&
+          isDesktopOwnedConnectionTarget(environment.entry.target) &&
+          // A guest attaches to its partition once; it has to wait for the fold.
+          profilesReady.has(threadRef.environmentId)
           ? Object.values(previewState.hostedSessions).map((snapshot) => ({
               threadRef,
               profileShell: profileShellByThreadKey.get(threadKey),
@@ -122,7 +122,7 @@ export function ElectronBrowserHost() {
             }))
           : [];
       }),
-    [environments, previewByThreadKey, profileShellByThreadKey],
+    [environments, previewByThreadKey, profileShellByThreadKey, profilesReady],
   );
 
   useEffect(() => {
@@ -182,6 +182,7 @@ export function ElectronBrowserHost() {
   if (!isElectron) return null;
   return (
     <div className="contents" data-electron-browser-host>
+      <BrowserProfileReconcilers />
       {sessions.map(
         ({ threadRef, profileShell, snapshot, runtimeTabId, syncGeneration, zoomFactor }) => (
           <BoundHostedBrowserWebview

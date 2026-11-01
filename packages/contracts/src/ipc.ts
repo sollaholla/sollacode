@@ -97,6 +97,7 @@ import {
   PreviewAutomationWaitForInput,
 } from "./previewAutomation.ts";
 import { PreviewDownload, PreviewDownloadApproval } from "./previewAutomation.ts";
+import { PreviewBrowserProfile, PreviewBrowserProfileInventory } from "./previewAccounts.ts";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -1077,15 +1078,10 @@ export const DesktopPreviewNavigateInputSchema = Schema.Struct({
 
 export const DesktopPreviewConfigInputSchema = Schema.Struct({
   environmentId: EnvironmentId,
-  /**
-   * Thread hosting the webview. When present, the browser partition is scoped
-   * to this thread so each conversation (and therefore each agent, which owns
-   * exactly one thread) keeps its own cookies, logins, and cache.
-   */
+  /** Thread hosting the webview. */
   threadId: Schema.optional(ThreadId),
-  /** Optional profile owner for agent-created threads that intentionally
-      inherit another thread's cookies, storage, and cache. */
-  browserProfileThreadId: Schema.optional(ThreadId),
+  /** Whose cookies, logins and cache this tab uses: a project's or an agent's. */
+  browserProfile: Schema.optional(PreviewBrowserProfile),
 });
 
 /**
@@ -1097,7 +1093,7 @@ export const DesktopPreviewConfigInputSchema = Schema.Struct({
 export const DesktopPreviewSetDownloadDirectoryInputSchema = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: Schema.optional(ThreadId),
-  browserProfileThreadId: Schema.optional(ThreadId),
+  browserProfile: Schema.optional(PreviewBrowserProfile),
   directory: Schema.String,
 });
 
@@ -1580,8 +1576,14 @@ export interface DesktopPreviewBridge {
   getPreviewConfig: (
     environmentId: EnvironmentId,
     threadId?: ThreadId,
-    browserProfileThreadId?: ThreadId,
+    browserProfile?: PreviewBrowserProfile,
   ) => Promise<DesktopPreviewWebviewConfig>;
+  /**
+   * Report what exists in an environment. The first report folds its old
+   * per-thread folders into per-project ones, so guests wait for it; later ones
+   * let the desktop retire profiles whose project or agent is gone.
+   */
+  reconcileBrowserProfiles: (inventory: PreviewBrowserProfileInventory) => Promise<void>;
   /**
    * Point this thread's downloads at its own workspace, so a file an agent
    * fetches lands where that agent is working instead of in the app's
@@ -1591,7 +1593,7 @@ export interface DesktopPreviewBridge {
     directory: string,
     environmentId: EnvironmentId,
     threadId?: ThreadId,
-    browserProfileThreadId?: ThreadId,
+    browserProfile?: PreviewBrowserProfile,
   ) => Promise<void>;
   setAnnotationTheme: (theme: DesktopPreviewAnnotationTheme) => Promise<void>;
   /**

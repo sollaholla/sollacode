@@ -1,5 +1,7 @@
 // @effect-diagnostics globalDate:off - The download `done` callback is a
 // synchronous Electron callback with no Effect context to draw a clock from.
+// @effect-diagnostics globalFetch:off - Checks a closed jar's session with an explicit Cookie
+// header, which is exactly what must not go through a profile's own cookie store.
 // @effect-diagnostics nodeBuiltinImport:off - Electron raises the system save
 // panel the moment the will-download handler returns without a path, so the
 // directory and collision checks there have to be synchronous.
@@ -8,6 +10,7 @@ import { app, Notification, session } from "electron";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -16,7 +19,12 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
-import type { PreviewDownload, PreviewDownloadApproval } from "@t3tools/contracts";
+import type {
+  PreviewAccountEvent,
+  PreviewDownload,
+  PreviewDownloadApproval,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import {
@@ -32,67 +40,32 @@ import {
   serializeDownloadAllowlist,
 } from "./downloadApproval.ts";
 import { resolveDownloadFileName, resolveUniqueDownloadPath } from "./downloadPaths.ts";
+import { previewBrowserProfileScope } from "./browserProfileScope.ts";
 import {
-  environmentScopeOf,
-  isThreadScopedProfile,
-  selectLegacyBrowserProfile,
-} from "./browserProfileScope.ts";
+  makeBrowserAccountTracker,
+  rewriteStoredCookies,
+  type BrowserAccountTracker,
+} from "./browserAccounts.ts";
+import {
+  GOOGLE_ACCOUNT_LIST_URL,
+  applyProfileSweep,
+  countPlaintextCookies,
+  foldThreadProfilesIntoProjects,
+  parseGoogleAccountList,
+  planProfileSweep,
+  profileRecordForScope,
+  readProfileManifest,
+  scrubPlaintextCookies,
+  writeProfileManifest,
+  type BrowserProfileInventory,
+  type BrowserProfileManifest,
+  type GoogleSessionProbe,
+} from "./browserProfiles.ts";
+import { storageCleanupEnabled } from "../storage/storageCleanupSettings.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 // Electron strips the `persist:` marker when it names the on-disk folder.
 const PARTITION_DIRECTORY_PREFIX = PREVIEW_PARTITION_PREFIX.slice("persist:".length);
-
-// A durable "the one-time legacy per-thread → per-environment fold has run"
-// marker. It used to be an in-memory boolean, so the fold re-ran on every
-// launch and could swap a fresh jar for a staler one (see adoptOnDisk).
-const LEGACY_ADOPTION_MARKER = ".t3-legacy-adoption-complete";
-
-// The auth-bearing stores copied when a per-thread profile is first seeded from
-// the environment jar, so an agent's own partition starts with the user's
-// logins and then diverges. The HTTP/code caches are deliberately NOT copied —
-// they refill on their own and would multiply disk use per thread.
-const SEEDED_PROFILE_STORE_PATHS: ReadonlyArray<ReadonlyArray<string>> = [
-  ["Cookies"],
-  ["Cookies-journal"],
-  ["Cookies-wal"],
-  ["Cookies-shm"],
-  ["Network"],
-  ["Local Storage"],
-  ["IndexedDB"],
-  ["Session Storage"],
-];
-
-/**
- * Clone the login/storage state of one partition onto a not-yet-created one.
- *
- * Used to seed a designated per-thread profile from the environment jar the
- * first time it opens, so an agent begins with the user's sessions instead of a
- * blank browser. Best-effort and idempotent: it does nothing if the source is
- * missing or the target already exists (already seeded and possibly diverged),
- * and copies each store independently so one unreadable file cannot abort the
- * rest. The source cookie DB may be open in another guest; a copy taken mid
- * write only costs the agent a re-login on the odd site, never correctness.
- */
-const seedPartitionStores = (
-  partitionsDir: string,
-  sourcePartition: string,
-  targetPartition: string,
-): void => {
-  const sourceDir = NodePath.join(partitionsDir, sourcePartition.slice("persist:".length));
-  const targetDir = NodePath.join(partitionsDir, targetPartition.slice("persist:".length));
-  if (!NodeFS.existsSync(sourceDir) || NodeFS.existsSync(targetDir)) return;
-  NodeFS.mkdirSync(targetDir, { recursive: true });
-  for (const relative of SEEDED_PROFILE_STORE_PATHS) {
-    const source = NodePath.join(sourceDir, ...relative);
-    if (!NodeFS.existsSync(source)) continue;
-    try {
-      NodeFS.cpSync(source, NodePath.join(targetDir, ...relative), { recursive: true });
-    } catch {
-      // One unreadable store is not worth failing the whole seed; the agent
-      // re-authenticates on that site at worst.
-    }
-  }
-};
 
 // Permissions granted to preview web content. `clipboard-sanitized-write` is the
 // Electron permission behind `navigator.clipboard.writeText()` — note it is NOT
@@ -240,12 +213,25 @@ export class BrowserSession extends Context.Service<
     ) => Effect.Effect<string, BrowserSessionPartitionDerivationError>;
     readonly isPartition: (partition: string) => boolean;
     /**
-     * One-time move of the busiest legacy per-thread profile onto `scope`, so
-     * sharing one profile does not read as being signed out of every site.
+     * Take in what exists in an environment. The first report folds its old
+     * per-thread folders into per-project ones; every report lets the sweep
+     * retire profiles whose project or agent is gone.
      */
-    readonly adoptLegacyProfile: (
+    readonly reconcileProfiles: (inventory: BrowserProfileInventory) => Effect.Effect<void>;
+    /** Who is signed in where, and sign-in events. */
+    readonly accounts: BrowserAccountTracker;
+    readonly profileCounts: () => {
+      readonly profiles: number;
+      readonly retired: number;
+      readonly encrypted: number;
+    };
+    /** The folder for a scope, so a tab or account action can name a profile. */
+    readonly directoryForScope: (
       scope: string,
-    ) => Effect.Effect<void, BrowserSessionPartitionDerivationError>;
+    ) => Effect.Effect<string, BrowserSessionPartitionDerivationError>;
+    readonly onAccountEvent: (listener: (event: PreviewAccountEvent) => void) => void;
+    /** Which thread a guest belongs to, so its downloads follow that thread's worktree. */
+    readonly noteGuestThread: (webContentsId: number, threadId: string | null) => void;
     readonly getSession: (scope: string) => Effect.Effect<Session, BrowserSessionGetSessionError>;
     /**
      * Where downloads made in this scope's tabs are written.
@@ -257,6 +243,7 @@ export class BrowserSession extends Context.Service<
     readonly setDownloadDirectory: (
       scope: string,
       directory: string,
+      threadId?: string,
     ) => Effect.Effect<void, BrowserSessionPartitionDerivationError>;
     /** Recently finished downloads, newest first. */
     readonly recentDownloads: () => ReadonlyArray<PreviewDownload>;
@@ -306,8 +293,21 @@ export const make = Effect.gen(function* BrowserSessionMake() {
    * already keeps things it produced on the user's behalf.
    */
   const fallbackDownloadsDir = NodePath.join(environment.browserArtifactsDir, "downloads");
-  /** Partition -> the workspace directory the renderer nominated for it. */
+  /** Partition -> the workspace directory last nominated for it. */
   const downloadDirectories = new Map<string, string>();
+  /** Partition + thread -> that thread's own workspace, which can be a worktree. */
+  const threadDownloadDirectories = new Map<string, string>();
+  const guestThreads = new Map<number, string>();
+  const downloadDirectoryFor = (partition: string, webContentsId: number): string => {
+    const threadId = guestThreads.get(webContentsId);
+    return (
+      (threadId === undefined
+        ? undefined
+        : threadDownloadDirectories.get(`${partition}\u0000${threadId}`)) ??
+      downloadDirectories.get(partition) ??
+      fallbackDownloadsDir
+    );
+  };
   /**
    * Permissions already reported as denied, so one stubborn page cannot fill
    * the log with the same line.
@@ -496,7 +496,6 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     return false;
   };
   const sessionsRef = yield* SynchronizedRef.make<ReadonlyMap<string, Session>>(new Map());
-  let adoptedSharedProfile = false;
 
   // No default scope. A caller that lost its environment id used to fall
   // through to a `"shared"` scope, which silently minted a *second*, empty
@@ -516,148 +515,142 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     return `${PREVIEW_PARTITION_PREFIX}${Encoding.encodeHex(digest).slice(0, 20)}`;
   });
 
-  /**
-   * Move the richest legacy per-thread profile onto the shared partition.
-   *
-   * Browser profiles used to be keyed per thread, so every conversation and
-   * every agent got an empty cookie jar and saw each site logged out while the
-   * user was signed in one thread over. Pointing them all at one partition
-   * fixes that going forward, but the signed-in cookies still live in the jar
-   * whichever thread happened to log in. Without this the switch would read as
-   * "the update signed me out of everything", so the busiest existing jar is
-   * adopted as the shared one. Cookie count is the signal for "where the
-   * logins are"; the file only grows with stored cookies.
-   *
-   * Runs before any session is opened, so no Chromium process holds the
-   * directory. It is a rename, so nothing is copied and nothing is lost.
-   */
-  const adoptLegacyProfile = Effect.fn("BrowserSession.adoptLegacyProfile")(function* (
-    scope: string,
-  ) {
-    const partition = yield* getPartition(scope);
-    // Held against the session map for the whole rename. Several guests ask
-    // for their config at once on startup; the first adopts while the others
-    // fall straight through to `getSession`. Without this lock one of them
-    // opened the partition mid-rename, and Electron's per-partition session
-    // stayed bound to the directory that had just been moved aside — cookies
-    // written to a jar nothing would read again, which looked exactly like
-    // the adoption never happening.
-    yield* SynchronizedRef.updateEffect(sessionsRef, (sessions) =>
-      Effect.suspend(() => {
-        if (adoptedSharedProfile || sessions.has(partition)) return Effect.succeed(sessions);
-        adoptedSharedProfile = true;
-        return adoptOnDisk(partition).pipe(Effect.as(sessions));
-      }),
-    );
-  });
-
-  /**
-   * Size of a profile's cookie database, wherever Chromium put it.
-   *
-   * The jar sits at the profile root on some Chromium versions and under
-   * `Network/` on others. Measuring only the root reads every candidate as
-   * empty on the layouts that use the subdirectory, so the one-time adoption
-   * quietly picks nothing — which lands the user on a fresh profile and reads
-   * as the update having signed them out of every site.
-   */
-  const cookieJarBytes = (partitionsDir: string, directory: string): number => {
-    for (const relative of [["Cookies"], ["Network", "Cookies"]]) {
-      const size = NodeFS.statSync(NodePath.join(partitionsDir, directory, ...relative), {
-        throwIfNoEntry: false,
-      })?.size;
-      if (size !== undefined && size > 0) return size;
+  const partitionsDir = () => NodePath.join(app.getPath("userData"), "Partitions");
+  const directoryOfPartition = (partition: string) => partition.slice("persist:".length);
+  // Lazy, because `app` paths are only meaningful once Electron is up.
+  let manifestCache: BrowserProfileManifest | null = null;
+  const manifest = (): BrowserProfileManifest => {
+    manifestCache ??= readProfileManifest(partitionsDir());
+    return manifestCache;
+  };
+  const saveManifest = (next: BrowserProfileManifest) => {
+    manifestCache = next;
+    try {
+      writeProfileManifest(partitionsDir(), next);
+    } catch (cause) {
+      runFork(Effect.logWarning("Could not save the browser profile manifest.", { cause }));
     }
-    return 0;
+  };
+  const inventories = new Map<string, BrowserProfileInventory>();
+  let hostedEnvironmentIds: ReadonlyArray<string> = [];
+  const accountEventListeners = new Set<(event: PreviewAccountEvent) => void>();
+
+  const scopeOfDirectory = (directory: string): string | null => {
+    const record = manifest().profiles[directory];
+    if (!record) return null;
+    return record.kind === "project"
+      ? previewBrowserProfileScope(record.environmentId, {
+          kind: "project",
+          projectId: record.ownerId,
+        })
+      : previewBrowserProfileScope(record.environmentId, {
+          kind: "agent",
+          rootThreadId: record.ownerId as ThreadId,
+        });
   };
 
-  const adoptOnDisk = (partition: string) =>
-    Effect.sync(() => {
-      const partitionsDir = NodePath.join(app.getPath("userData"), "Partitions");
-      if (!NodeFS.existsSync(partitionsDir)) return;
-      // One time, ever. This guard used to be an in-memory boolean, so the fold
-      // re-ran on every app launch — and because the candidate scan below picks
-      // the largest cookie jar across ALL of `Partitions/`, each run could pick
-      // one of this block's own `.superseded` backups, or another environment's
-      // jar, and rename the live freshest jar aside to swap a staler one in.
-      // That silently dropped the current first-party session, so the app
-      // redirected to its own sign-in page while the long-lived IdP cookie made
-      // the one-click, no-password re-login succeed — the "it keeps making me
-      // sign in" report. A durable on-disk marker makes it genuinely one-time.
-      const marker = NodePath.join(partitionsDir, LEGACY_ADOPTION_MARKER);
-      if (NodeFS.existsSync(marker)) return;
-      const targetName = partition.slice("persist:".length);
-      // A jar that already holds cookies is the live session to KEEP. Never
-      // reshuffle a populated profile; just record the migration as done.
-      if (cookieJarBytes(partitionsDir, targetName) > 0) {
-        NodeFS.writeFileSync(marker, "legacy-adoption-complete\n");
-        return;
-      }
-      const profiles = NodeFS.readdirSync(partitionsDir, { withFileTypes: true }).flatMap(
-        (entry) => {
-          if (!entry.isDirectory() || !entry.name.startsWith(PARTITION_DIRECTORY_PREFIX)) return [];
-          // Never adopt a backup this block made on an earlier launch: that is
-          // exactly how a stale jar climbed back onto the live partition.
-          if (entry.name.includes(".superseded")) return [];
-          return [
-            { directory: entry.name, cookieBytes: cookieJarBytes(partitionsDir, entry.name) },
-          ];
-        },
+  const accounts = makeBrowserAccountTracker({
+    logPath: NodePath.join(environment.logDir, "browser-accounts.ndjson"),
+    ownerOf: (directory) => manifest().profiles[directory] ?? null,
+    linksOf: () => manifest().accountLinks,
+    addLink: (link) => {
+      const current = manifest();
+      const exists = current.accountLinks.some(
+        (known) =>
+          known.provider === link.provider &&
+          known.profiles.includes(link.profiles[0]) &&
+          known.profiles.includes(link.profiles[1]),
       );
-      // The target is one of the candidates. The environment-wide profile
-      // already existed as the old threadless fallback, and its sessions had
-      // long since expired — landing everyone on it read exactly like the bug
-      // it was meant to fix, so an existing target is not on its own a reason
-      // to stop.
-      const adopted = selectLegacyBrowserProfile(profiles);
-      if (adopted !== null && adopted !== targetName) {
-        const target = NodePath.join(partitionsDir, targetName);
-        if (NodeFS.existsSync(target)) {
-          // Moved aside rather than removed: it is the user's browsing history,
-          // and a wrong pick here should be recoverable by hand. Numbered rather
-          // than timestamped so this needs no clock inside a sync Electron path.
-          let aside = `${target}.superseded`;
-          for (let attempt = 2; NodeFS.existsSync(aside); attempt += 1) {
-            aside = `${target}.superseded-${attempt}`;
-          }
-          NodeFS.renameSync(target, aside);
+      if (!exists) saveManifest({ ...current, accountLinks: [...current.accountLinks, link] });
+    },
+    removeLink: (provider, directory) => {
+      const current = manifest();
+      saveManifest({
+        ...current,
+        accountLinks: current.accountLinks.filter(
+          (link) => link.provider !== provider || !link.profiles.includes(directory),
+        ),
+      });
+    },
+    openSession: (directory) => {
+      const scope = scopeOfDirectory(directory);
+      return scope === null
+        ? Promise.resolve(null)
+        : Effect.runPromise(getSession(scope).pipe(Effect.orElseSucceed(() => null)));
+    },
+    onEvent: (event) => {
+      for (const listener of accountEventListeners) {
+        try {
+          listener(event);
+        } catch {
+          // One bad listener must not stop the notice reaching the rest.
         }
-        NodeFS.renameSync(NodePath.join(partitionsDir, adopted), target);
       }
-      NodeFS.writeFileSync(marker, "legacy-adoption-complete\n");
-    }).pipe(
-      // A profile that cannot be adopted is not worth failing preview over:
-      // the user signs in once more and the shared jar fills from there.
-      Effect.catchCause((cause) =>
-        Effect.logWarning("Could not adopt an existing browser profile.", { cause }),
-      ),
-    );
+    },
+    onFailure: (operation, cause) => {
+      runFork(Effect.logWarning("A browser account check failed.", { operation, cause }));
+    },
+  });
+
+  /** Encrypt what a jar stored before encryption was on, before any page can load in it. */
+  const encryptStoredCookies = Effect.fn("BrowserSession.encryptStoredCookies")(function* (
+    directory: string,
+    browserSession: Session,
+  ) {
+    if (!app.isPackaged || manifest().encryptedJars.includes(directory)) return;
+    const plainBefore = countPlaintextCookies(partitionsDir(), directory);
+    if (plainBefore > 0) {
+      const result = yield* Effect.tryPromise(() => rewriteStoredCookies(browserSession));
+      const plainAfter = countPlaintextCookies(partitionsDir(), directory);
+      yield* Effect.logInfo("Encrypted a browser profile's stored cookies.", {
+        directory,
+        ...result,
+        plainBefore,
+        plainAfter,
+      });
+      // Nothing moved: this build has encryption off, so the plain rows are all
+      // the jar has and scrubbing them would sign it out of everything.
+      if (plainAfter >= plainBefore) return;
+    }
+    const current = manifest();
+    saveManifest({
+      ...current,
+      encryptedJars: [...current.encryptedJars, directory],
+      pendingScrub: plainBefore > 0 ? [...current.pendingScrub, directory] : current.pendingScrub,
+    });
+  });
 
   const getSession = Effect.fn("BrowserSession.getSession")(function* (scope: string) {
     const partition = yield* getPartition(scope);
-    // A designated per-thread profile is seeded (cloned) from the environment
-    // jar the first time it opens, so an agent begins with the user's logins
-    // rather than a blank browser, then diverges independently.
-    const seedSource = isThreadScopedProfile(scope)
-      ? yield* getPartition(environmentScopeOf(scope))
-      : null;
+    const directory = directoryOfPartition(partition);
     return yield* SynchronizedRef.modifyEffect(sessionsRef, (sessions) =>
       Effect.gen(function* () {
         const existing = sessions.get(partition);
         if (existing) return [existing, sessions] as const;
-        if (seedSource !== null) {
-          // Held under the sessions lock, before Electron opens the directory,
-          // so a concurrent first open cannot copy onto a half-seeded jar.
-          const partitionsDir = NodePath.join(app.getPath("userData"), "Partitions");
-          yield* Effect.sync(() => seedPartitionStores(partitionsDir, seedSource, partition)).pipe(
+        const record = profileRecordForScope(scope);
+        if (record !== null && manifest().profiles[directory] === undefined) {
+          const current = manifest();
+          saveManifest({
+            ...current,
+            profiles: { ...current.profiles, [directory]: record },
+          });
+        }
+        if (manifest().pendingScrub.includes(directory)) {
+          yield* Effect.sync(() => scrubPlaintextCookies(partitionsDir(), directory)).pipe(
             Effect.catchCause((cause) =>
-              Effect.logWarning(
-                "Could not seed a per-thread browser profile from the environment jar.",
-                { scope, seedSource, cause },
-              ),
+              Effect.logWarning("Could not scrub a browser profile's old cookies.", {
+                directory,
+                cause,
+              }),
             ),
           );
+          const current = manifest();
+          saveManifest({
+            ...current,
+            pendingScrub: current.pendingScrub.filter((name) => name !== directory),
+          });
         }
-        return yield* Effect.try({
+        const opened = yield* Effect.try({
           try: () => {
             const browserSession = session.fromPartition(partition);
             browserSession.on("will-download", (_downloadEvent, item, guest) => {
@@ -665,7 +658,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
               // this handler returns without a path set.
               try {
                 const webContentsId = guest?.id ?? -1;
-                const directory = downloadDirectories.get(partition) ?? fallbackDownloadsDir;
+                const directory = downloadDirectoryFor(partition, webContentsId);
                 NodeFS.mkdirSync(directory, { recursive: true });
                 const fileName = resolveDownloadFileName(item.getFilename());
                 // The guest's own URL is the fallback for downloads with no host
@@ -783,16 +776,124 @@ export const make = Effect.gen(function* BrowserSessionMake() {
               cause,
             }),
         });
+        // Held under the sessions lock: no guest can attach until this finishes.
+        yield* encryptStoredCookies(directory, opened[0]).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not encrypt a browser profile's cookies.", {
+              directory,
+              cause,
+            }),
+          ),
+        );
+        accounts.attach(directory, opened[0]);
+        return opened;
       }),
     );
+  });
+
+  /** Ask Google whether a closed jar's session is alive, without opening the jar. */
+  const probeGoogleSession: GoogleSessionProbe = async (cookieHeader) => {
+    const response = await fetch(GOOGLE_ACCOUNT_LIST_URL, {
+      method: "POST",
+      headers: { Cookie: cookieHeader, Origin: "https://accounts.google.com" },
+      signal: AbortSignal.timeout(4_000),
+    });
+    if (!response.ok) return null;
+    return {
+      liveAccounts: parseGoogleAccountList(await response.text()).filter((account) => account.live)
+        .length,
+    };
+  };
+
+  const sweepProfiles = Effect.fn("BrowserSession.sweepProfiles")(function* () {
+    const nowMs = yield* Clock.currentTimeMillis;
+    const sessions = yield* SynchronizedRef.get(sessionsRef);
+    const purgeEnabled = yield* Effect.tryPromise(() =>
+      storageCleanupEnabled(environment.serverSettingsPath),
+    ).pipe(Effect.orElseSucceed(() => false));
+    const plan = planProfileSweep({
+      partitionsDir: partitionsDir(),
+      manifest: manifest(),
+      inventories,
+      hostedEnvironmentIds,
+      openDirectories: new Set([...sessions.keys()].map(directoryOfPartition)),
+      nowMs,
+    });
+    if (plan.retire.length === 0 && plan.purge.length === 0 && plan.forget.length === 0) return;
+    const applied = applyProfileSweep({
+      partitionsDir: partitionsDir(),
+      manifest: manifest(),
+      plan,
+      nowMs,
+      purgeEnabled,
+    });
+    saveManifest(applied.manifest);
+    yield* Effect.logInfo("Browser profile sweep complete.", {
+      retired: applied.retired.length,
+      purged: applied.purged.length,
+      failures: applied.failures,
+    });
+  });
+
+  const reconcileProfiles = Effect.fn("BrowserSession.reconcileProfiles")(function* (
+    inventory: BrowserProfileInventory,
+  ) {
+    inventories.set(inventory.environmentId, inventory);
+    hostedEnvironmentIds = inventory.hostedEnvironmentIds;
+    yield* SynchronizedRef.updateEffect(sessionsRef, (sessions) =>
+      Effect.gen(function* () {
+        if (manifest().migratedEnvironments.includes(inventory.environmentId)) return sessions;
+        const nowMs = yield* Clock.currentTimeMillis;
+        const result = yield* Effect.tryPromise(() =>
+          foldThreadProfilesIntoProjects({
+            partitionsDir: partitionsDir(),
+            inventory,
+            manifest: manifest(),
+            openDirectories: new Set([...sessions.keys()].map(directoryOfPartition)),
+            probeGoogle: probeGoogleSession,
+            nowMs,
+          }),
+        );
+        saveManifest(result.manifest);
+        yield* Effect.logInfo("Folded per-thread browser profiles into projects.", {
+          environmentId: inventory.environmentId,
+          folded: result.folded,
+        });
+        return sessions;
+      }),
+    ).pipe(
+      // Guests are waiting on this. A failed fold costs a sign-in, never the browser.
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not fold browser profiles.", { cause }),
+      ),
+    );
+    // Opening every owned profile encrypts what it holds and lets the tracker
+    // see who is signed in, so the page and the sign-in offers have answers.
+    for (const directory of Object.keys(manifest().profiles)) {
+      const record = manifest().profiles[directory];
+      if (record?.environmentId !== inventory.environmentId) continue;
+      if (!NodeFS.existsSync(NodePath.join(partitionsDir(), directory))) continue;
+      const scope = scopeOfDirectory(directory);
+      if (scope !== null) yield* getSession(scope).pipe(Effect.ignore);
+    }
+    yield* sweepProfiles().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not sweep browser profiles.", { cause }),
+      ),
+    );
+    yield* Effect.tryPromise(() => accounts.refreshAll()).pipe(Effect.ignore, Effect.forkDetach);
   });
 
   const setDownloadDirectory = Effect.fn("BrowserSession.setDownloadDirectory")(function* (
     scope: string,
     directory: string,
+    threadId?: string,
   ) {
     const partition = yield* getPartition(scope);
     downloadDirectories.set(partition, directory);
+    if (threadId !== undefined) {
+      threadDownloadDirectories.set(`${partition}\u0000${threadId}`, directory);
+    }
     yield* Effect.sync(() => sweepAbandonedHolds(directory));
   });
 
@@ -842,7 +943,24 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       settleHeldDownload(id, held);
     },
     isPartition: (partition) => partition.startsWith(PREVIEW_PARTITION_PREFIX),
-    adoptLegacyProfile,
+    reconcileProfiles,
+    accounts,
+    profileCounts: () => {
+      const entries = NodeFS.existsSync(partitionsDir()) ? NodeFS.readdirSync(partitionsDir()) : [];
+      return {
+        profiles: Object.keys(manifest().profiles).length,
+        retired: entries.filter((name) => name.includes(".retired-")).length,
+        encrypted: manifest().encryptedJars.length,
+      };
+    },
+    directoryForScope: (scope) => getPartition(scope).pipe(Effect.map(directoryOfPartition)),
+    onAccountEvent: (listener) => {
+      accountEventListeners.add(listener);
+    },
+    noteGuestThread: (webContentsId, threadId) => {
+      if (threadId === null) guestThreads.delete(webContentsId);
+      else guestThreads.set(webContentsId, threadId);
+    },
     getSession,
     clearCookies: Effect.fn("BrowserSession.clearCookies")(function* () {
       const sessions = yield* SynchronizedRef.get(sessionsRef);

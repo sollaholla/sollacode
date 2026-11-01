@@ -2,6 +2,7 @@
 
 import type {
   DesktopPreviewWebviewConfig,
+  PreviewBrowserProfile,
   PreviewViewportSetting,
   ScopedThreadRef,
   ThreadId,
@@ -80,7 +81,7 @@ const ALLOW_POPUPS_ATTRIBUTE = { allowpopups: "" } as unknown as { allowpopups?:
 
 export function HostedBrowserWebview(props: {
   readonly threadRef: ScopedThreadRef;
-  readonly browserProfileThreadId?: ThreadId | undefined;
+  readonly browserProfile?: PreviewBrowserProfile | undefined;
   readonly tabId: string;
   readonly runtimeTabId: string;
   readonly syncGeneration: number;
@@ -91,7 +92,7 @@ export function HostedBrowserWebview(props: {
 }) {
   const {
     threadRef,
-    browserProfileThreadId,
+    browserProfile,
     tabId,
     runtimeTabId,
     syncGeneration,
@@ -103,7 +104,7 @@ export function HostedBrowserWebview(props: {
   const loadedConfig = usePreviewWebviewConfig(
     threadRef.environmentId,
     threadRef.threadId,
-    browserProfileThreadId,
+    browserProfile,
   );
   const configRef = useRef<DesktopPreviewWebviewConfig | null>(loadedConfig);
   if (configRef.current === null && loadedConfig !== null) {

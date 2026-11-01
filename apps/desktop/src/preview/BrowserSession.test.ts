@@ -9,13 +9,17 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import { beforeEach, vi } from "vite-plus/test";
 
-const { fromPartition, sessions } = vi.hoisted(() => ({
+const { fromPartition, sessions, testUserData } = vi.hoisted(() => ({
+  // A path nothing exists at: these tests are about downloads and permissions,
+  // and the profile bookkeeping only has to find no folders.
+  testUserData: "/nonexistent/solla-browser-session-test",
   fromPartition: vi.fn(),
   sessions: new Map<
     string,
     {
       readonly clearCache: ReturnType<typeof vi.fn>;
       readonly clearStorageData: ReturnType<typeof vi.fn>;
+      readonly cookies: { readonly on: ReturnType<typeof vi.fn> };
       readonly getUserAgent: ReturnType<typeof vi.fn>;
       readonly on: ReturnType<typeof vi.fn>;
       readonly setPermissionRequestHandler: ReturnType<typeof vi.fn>;
@@ -26,6 +30,7 @@ const { fromPartition, sessions } = vi.hoisted(() => ({
 }));
 
 vi.mock("electron", () => ({
+  app: { isPackaged: false, getPath: () => testUserData },
   session: {
     fromPartition,
   },
@@ -123,6 +128,7 @@ describe("BrowserSession", () => {
       const browserSession = {
         clearCache: vi.fn(() => Promise.resolve()),
         clearStorageData: vi.fn(() => Promise.resolve()),
+        cookies: { on: vi.fn() },
         getUserAgent: vi.fn(() => "Mozilla/5.0 Electron/41.5.0 t3code/0.0.27"),
         on: vi.fn(),
         setPermissionRequestHandler: vi.fn(),

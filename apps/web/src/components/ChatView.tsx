@@ -10905,7 +10905,8 @@ function ChatViewContent(props: ChatViewProps) {
         <PreviewDownloadDirectorySync
           environmentId={activeThreadRef.environmentId}
           threadId={activeThreadRef.threadId}
-          browserProfileThreadId={activeThread?.browserProfileThreadId ?? undefined}
+          projectId={activeThread?.projectId}
+          browserProfileThreadId={activeThread?.browserProfileThreadId}
           cwd={gitStatusCwd}
         />
       ) : null}

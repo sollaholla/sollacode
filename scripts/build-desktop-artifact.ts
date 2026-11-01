@@ -1306,6 +1306,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // WINDOWS_ASAR_UNPACK); macOS and Linux stay packed — smart unpack
     // extracts native libraries, which fff-node finds in app.asar.unpacked.
     ...(platform === "win" ? { asarUnpack: [...WINDOWS_ASAR_UNPACK] } : {}),
+    // One-way: once on, a build without it can no longer read stored cookies.
+    electronFuses: { enableCookieEncryption: true },
     extraResources: resolveDesktopExtraResources(platform),
   };
   if (platform === "mac") {

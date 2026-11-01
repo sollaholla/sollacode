@@ -180,14 +180,10 @@ export function ThreadWorktreeIndicator({
 export function ThreadProvenanceIndicators({
   thread,
 }: {
-  thread: Pick<
-    SidebarThreadSummary,
-    "id" | "environmentId" | "createdByThreadId" | "browserProfileThreadId"
-  >;
+  thread: Pick<SidebarThreadSummary, "id" | "environmentId" | "createdByThreadId">;
 }) {
   const creatorLabel = useThreadCreatorLabel(thread);
-  const sharedBrowser = thread.browserProfileThreadId != null;
-  if (creatorLabel === null && !sharedBrowser) return null;
+  if (creatorLabel === null) return null;
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1">
@@ -206,25 +202,6 @@ export function ThreadProvenanceIndicators({
             <BotIcon className="size-3" />
           </TooltipTrigger>
           <TooltipPopup side="top">{creatorLabel}</TooltipPopup>
-        </Tooltip>
-      ) : null}
-      {sharedBrowser ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span
-                role="img"
-                aria-label="Uses a shared browser profile"
-                data-testid={`thread-shared-browser-${thread.id}`}
-                className="inline-flex items-center justify-center text-muted-foreground/55"
-              />
-            }
-          >
-            <Share2Icon className="size-3" />
-          </TooltipTrigger>
-          <TooltipPopup side="top">
-            Uses browser cookies, storage, and cache inherited from another chat
-          </TooltipPopup>
         </Tooltip>
       ) : null}
     </span>
@@ -322,12 +299,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
     },
   });
 
-  if (
-    !prStatus &&
-    !threadStatus &&
-    thread.createdByThreadId == null &&
-    thread.browserProfileThreadId == null
-  ) {
+  if (!prStatus && !threadStatus && thread.createdByThreadId == null) {
     return null;
   }
 
