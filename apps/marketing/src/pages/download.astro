@@ -111,6 +111,18 @@ import { RELEASES_URL } from "../lib/releases";
     </div>
 
     <p class="releases-link">
+      These builds are not signed with a paid certificate, so your system warns you the first time.
+      See the
+      <a
+        href={`${RELEASES_URL.replace(/\/releases$/, "")}/blob/main/docs/getting-started/quick-start.md#install-a-packaged-build`}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        install guide<span aria-hidden="true"> &#8599;</span>
+      </a>
+    </p>
+
+    <p class="releases-link">
       Looking for older versions? Check the
       <a href={RELEASES_URL} target="_blank" rel="noopener noreferrer">
         GitHub releases page<span aria-hidden="true"> &#8599;</span>

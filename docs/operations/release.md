@@ -33,6 +33,13 @@ This document covers the checked-in workflow for Solla Code stable and nightly d
   - nightly releases are aliased to the `nightly` hosted app channel
 - Signing is optional and auto-detected per platform from secrets.
 
+## Before you tag
+
+- **Run the gate first when `main` has not passed recently.** Preflight runs `vp check`, `vp run typecheck` and `vp run test`, and a failure anywhere stops every build.
+- **Inside a Solla Claude thread, strip the provider environment.** The shell inherits `ANTHROPIC_BASE_URL` and the `T3CODE_CLAUDE_PROXY_*` variables, and `ClaudeAdapter.test.ts` then fails on a value that CI never sees.
+- **Name the repository in `gh` commands.** With both `origin` and `upstream` configured, `gh` can resolve to upstream `pingdotgg/t3code`. Pass `-R sollaholla/sollacode`.
+- **Check what you are publishing.** `origin` is public. Scan unpushed commits for credentials and personal details, because a push cannot be taken back.
+
 ## T3 Connect is not part of this fork
 
 Upstream resolves Clerk sign-in and relay endpoints from a Cloudflare-deployed

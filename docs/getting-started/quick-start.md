@@ -2,6 +2,16 @@
 
 Solla Code is a fork of T3 Code. Use [this fork's releases](https://github.com/sollaholla/sollacode/releases) for packaged desktop builds, or build this checkout. The upstream npm package `t3` does not distribute Solla Code.
 
+## Install a packaged build
+
+Download the file for your platform from [the latest release](https://github.com/sollaholla/sollacode/releases/latest). These builds are not signed with a paid Apple or Microsoft certificate, so your system warns you the first time you open one.
+
+- **macOS:** drag Solla Code to Applications and open it. When macOS says it could not verify the app, open **System Settings → Privacy & Security**, scroll down, and choose **Open Anyway**. Pick the `arm64` file for Apple Silicon and `x64` for Intel.
+- **Windows:** run the `.exe`. If SmartScreen appears, choose **More info**, then **Run anyway**.
+- **Linux:** make the AppImage executable with `chmod +x Solla-Code-*.AppImage`, then run it.
+
+Installed apps do not update themselves from GitHub. To update, download the newer release and install it the same way.
+
 ## Run from source
 
 Use the Node.js version in the root `package.json` (`^24.13.1`) and the Vite+ `vp` command. The repository pins pnpm in `packageManager`; `vp i` installs the workspace dependencies.

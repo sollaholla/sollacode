@@ -643,6 +643,10 @@ jobs:
           target_commitish: ${{ needs.preflight.outputs.ref }}
           name: ${{ needs.preflight.outputs.release_name }}
           generate_release_notes: true
+          # Builds are unsigned without the optional certificates, and an
+          # unexplained system warning reads as a broken download.
+          body: |
+            **First launch:** these builds are not signed with a paid certificate. On macOS, choose **Open Anyway** in System Settings → Privacy & Security. On Windows, choose **More info**, then **Run anyway**. See the [install guide](https://github.com/sollaholla/sollacode/blob/main/docs/getting-started/quick-start.md#install-a-packaged-build).
           previous_tag: ${{ needs.preflight.outputs.previous_tag }}
           prerelease: ${{ needs.preflight.outputs.is_prerelease }}
           make_latest: ${{ needs.preflight.outputs.make_latest }}
