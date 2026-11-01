@@ -334,9 +334,9 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
   capsule: {
     // A two-part pill: the seam and darker half say capsule at any size.
     body: `<rect x="15" y="7" width="50" height="68" rx="25"/>`,
-    trim: `<path d="M15 47H65V50A25 25 0 0 1 15 50Z"/>`,
+    trim: `<path d="M15.1 52H64.9A25 25 0 0 1 15.1 52Z"/>`,
     box: [15, 7, 65, 75],
-    face: [40, 30],
+    face: [40, 31],
     gap: 10,
     sides: [15, 65],
     crown: [40, 7],
@@ -345,15 +345,15 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
   },
   dango: {
     // Two dumplings on a skewer.
-    body: `${circle(40, 52, 23)}${circle(40, 22, 13.5)}`,
-    trim: `<rect x="38" y="1.5" width="4" height="10" rx="2"/><rect x="38" y="73.5" width="4" height="7" rx="2"/>`,
-    box: [17, 1.5, 63, 80.5],
-    face: [40, 52],
-    gap: 9.5,
-    sides: [17, 63],
-    crown: [40, 8.5],
-    chin: [40, 70],
-    neck: [61, 18.8, 61.2],
+    body: `${circle(40, 53, 25.5)}${circle(40, 20.5, 14)}`,
+    trim: `<rect x="38" y="1" width="4" height="8" rx="2"/><rect x="38" y="76" width="4" height="5.5" rx="2"/>`,
+    box: [14.5, 1, 65.5, 81.5],
+    face: [40, 53],
+    gap: 10,
+    sides: [14.5, 65.5],
+    crown: [40, 6.5],
+    chin: [40, 72],
+    neck: [64, 17, 63],
   },
   star: {
     body: `<path d="${roundedPolygonPath(starPoints(5, 40, 44, 37, 21, -Math.PI / 2), 9)}"/>`,
@@ -392,7 +392,7 @@ function eyeCenters(geo: Geo, traits: AgentAvatarTraits, mood: AgentAvatarMood):
     mood === "working"
       ? [gx * 0.5, 2]
       : mood === "waiting"
-        ? [0, -2.2]
+        ? [gx * 0.4, -1]
         : mood === "blocked"
           ? [0, 0.6]
           : mood === "idle"
@@ -435,7 +435,9 @@ const dot = (x: number, y: number, r: number, fill: string, opacity = 1) =>
 function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lean: number): string {
   const line = DETAIL_LINE * s;
   if (mood === "waiting") {
-    return `<ellipse cx="${f(x)}" cy="${f(y)}" rx="${f(2.1 * s)}" ry="${f(2.5 * s)}" fill="none" stroke="${INK}" stroke-width="${f(line)}"/>`;
+    // A small, patient "hm?", drawn to one side.
+    const w = 2.6 * s;
+    return stroke(`M${pt([x - w + lean, y + 0.6])}Q${pt([x + lean, y + 1.8 * s])} ${pt([x + w + lean, y - 0.9])}`, line);
   }
   if (mood === "blocked") {
     const w = 4.4 * s;
@@ -445,12 +447,48 @@ function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lea
     );
   }
   if (mood === "happy") {
-    const w = 3.8 * s;
-    return stroke(`M${pt([x - w, y - 1])}Q${pt([x, y + 3.6 * s])} ${pt([x + w, y - 1])}`, line);
+    // A big open grin: the one filled mouth, so delight reads at 20px.
+    const w = 3.9 * s;
+    const top = y - 1.6;
+    return `<path d="M${pt([x - w, top])}H${f(x + w)}Q${pt([x + w, top + 4.8 * s])} ${pt([x, top + 4.8 * s])}Q${pt([x - w, top + 4.8 * s])} ${pt([x - w, top])}Z" fill="${INK}" stroke="${INK}" stroke-width="1" stroke-linejoin="round"/>`;
   }
   if (mood === "working") {
-    // Concentrating: lips pursed, drawn a little toward the work.
-    return `<ellipse cx="${f(x + lean * 0.6)}" cy="${f(y)}" rx="${f(1.6 * s)}" ry="${f(1.15 * s)}" fill="${INK}"/>`;
+    // Concentrating: a short level line, drawn a little toward the work.
+    const w = 2.1 * s;
+    return stroke(`M${pt([x - w + lean * 0.6, y])}H${f(x + w + lean * 0.6)}`, line);
+  }
+  return "";
+}
+
+/** The one extra mark a mood gets: a sweat drop, blushing cheeks, a floating z. */
+function moodAccent(
+  geo: Geo,
+  centers: readonly [P2, P2],
+  mood: AgentAvatarMood,
+  s: number,
+  bodyColor: string,
+  online: boolean,
+): string {
+  const [, right] = centers;
+  if (mood === "blocked") {
+    const x = Math.min(right[0] + 8.5 * s, geo.sides[1] - 5);
+    const y = right[1] - 8 * s;
+    const k = 0.95 * s;
+    return `<path d="M${pt([x, y - 4.6 * k])}C${pt([x + 3.4 * k, y - 0.4 * k])} ${pt([x + 3 * k, y + 3.4 * k])} ${pt([x, y + 3.4 * k])}C${pt([x - 3 * k, y + 3.4 * k])} ${pt([x - 3.4 * k, y - 0.4 * k])} ${pt([x, y - 4.6 * k])}Z" fill="#d8f2ff"/>`;
+  }
+  if (mood === "happy") {
+    const blush = mix(bodyColor, "#ff2f6e", 0.42);
+    return centers
+      .map((c, index) =>
+        dot(c[0] + (index === 0 ? -5.2 : 5.2) * s, c[1] + 5 * s, 2.4 * s, blush, 0.85),
+      )
+      .join("");
+  }
+  if (mood === "sleeping" && online) {
+    const x = Math.min(right[0] + 3 * s, geo.sides[1] - 9);
+    const y = Math.max(right[1] - 13 * s, geo.crown[1] + 5);
+    const k = 3.6 * (s / FACE_SCALE);
+    return stroke(`M${pt([x, y])}H${f(x + k * 1.5)}L${pt([x, y + k * 1.5])}H${f(x + k * 1.5)}`, 1.9, mix(bodyColor, "#ffffff", 0.78));
   }
   return "";
 }
@@ -461,6 +499,7 @@ function eyesMarkup(
   mood: AgentAvatarMood,
   blinking: boolean,
   bodyColor: string,
+  online: boolean,
 ): string {
   const s = (geo.eyeScale ?? 1) * FACE_SCALE;
   const centers = eyeCenters(geo, traits, mood);
@@ -503,11 +542,16 @@ function eyesMarkup(
       return `<path d="${pillPath([c[0], cy], 7.4, h, lid)}" fill="${light}"/>`;
     };
     return (
-      band + centers.map(cell).join("") + mouthMarkup(midX, y + 11 * s, mood, s, lean)
+      band +
+      centers.map(cell).join("") +
+      mouthMarkup(midX, y + 11 * s, mood, s, lean) +
+      moodAccent(geo, centers, mood, s, bodyColor, online)
     );
   }
 
-  const mouth = mouthMarkup(midX, geo.face[1] + 9.5 * s, mood, s, lean);
+  const mouth =
+    mouthMarkup(midX, geo.face[1] + 9.5 * s, mood, s, lean) +
+    moodAccent(geo, centers, mood, s, bodyColor, online);
 
   // Brows: beads always wear them; the others show them to focus, ask or worry.
   const brow = (c: P2, index: number) => {
@@ -522,16 +566,19 @@ function eyesMarkup(
       );
     }
     if (mood === "waiting") {
+      // One raised brow: asking, not alarmed.
+      const lift = index === 1 ? -2.6 * s : 0.6 * s;
       return stroke(
-        `M${pt([c[0] - 3.8 * s, y - 1.2 * s])}Q${pt([c[0], y - 4.6 * s])} ${pt([c[0] + 3.8 * s, y - 1.2 * s])}`,
+        `M${pt([c[0] - 3.6 * s, y + lift])}Q${pt([c[0], y - 2.6 * s + lift])} ${pt([c[0] + 3.6 * s, y + lift])}`,
         line,
       );
     }
+    // Working: a heavy level lid resting on the flat top of each eye.
     if (mood === "working") {
-      // Low and level, sitting just above the lowered lid.
-      const by = y + (traits.eyes === "beads" ? 0.6 : 3.2) * s;
-      const half = (traits.eyes === "pill" ? 3.4 : 3.9) * s;
-      return stroke(`M${pt([c[0] - half, by])}H${f(c[0] + half)}`, line);
+      const half = (traits.eyes === "pill" ? 3.9 : traits.eyes === "beads" ? 4.4 : 4.7) * s;
+      const lidY =
+        traits.eyes === "pill" ? c[1] - 1.6 * s : traits.eyes === "beads" ? c[1] - 1.1 * s : c[1] - 1.7 * s;
+      return stroke(`M${pt([c[0] - half, lidY])}H${f(c[0] + half)}`, line * 1.15);
     }
     if (traits.eyes !== "beads") return "";
     if (closed)
@@ -561,10 +608,11 @@ function eyesMarkup(
   if (closed) {
     const eye = (c: P2) => {
       const w = (traits.eyes === "pill" ? 3.8 : traits.eyes === "beads" ? 4.2 : 5) * s;
-      const sag = (mood === "sleeping" ? 3 : 3.6) * s;
+      if (!online) return stroke(`M${pt([c[0] - w, c[1] + 1])}H${f(c[0] + w)}`, EYE_LINE * s * 0.8);
+      const sag = (mood === "sleeping" ? 4 : 2) * s;
       return stroke(
         `M${pt([c[0] - w, c[1]])}Q${pt([c[0], c[1] + sag])} ${pt([c[0] + w, c[1]])}`,
-        EYE_LINE * s,
+        (mood === "sleeping" ? EYE_LINE : EYE_LINE * 0.8) * s,
       );
     };
     return brows + centers.map(eye).join("") + mouth;
@@ -575,19 +623,19 @@ function eyesMarkup(
   const eye = (c: P2, index: number) => {
     const inward = side(index);
     const lid: readonly [number, number] | null =
-      mood === "working" ? [-0.32, 0] : mood === "blocked" ? [-0.55, -0.32 * inward] : null;
+      mood === "working" ? [-0.3, 0] : mood === "blocked" ? [-0.55, -0.32 * inward] : null;
     if (traits.eyes === "pill") {
-      const w = (mood === "waiting" ? 6.6 : 5.8) * s;
-      const h = (mood === "waiting" ? 13 : 11.6) * s;
+      const w = (mood === "waiting" ? 6.2 : 5.8) * s;
+      const h = (mood === "waiting" ? 12.2 : 11.6) * s;
       const cut = lid ? ([lid[0] * h * 0.5, lid[1]] as const) : undefined;
       const top = cut ? c[1] + cut[0] : c[1] - h / 2;
       const shine = `<rect x="${f(c[0] - w * 0.32)}" y="${f(top + 1.5 * s)}" width="${f(1.9 * s)}" height="${f((lid ? 2.2 : 3.6) * s)}" rx="${f(0.95 * s)}" fill="#fff"/>`;
       return `<path d="${pillPath(c, w, h, cut)}" fill="${INK}"/>${shine}`;
     }
     if (traits.eyes === "beads") {
-      const r = (mood === "waiting" ? 4.5 : 3.8) * s;
+      const r = (mood === "waiting" ? 4.1 : 3.8) * s;
       // Beads are small, so their lids drop less to keep the eye readable.
-      const k = lid ? lid[0] * r * (mood === "working" ? 0.6 : 1) : 0;
+      const k = lid ? lid[0] * r : 0;
       const shape = lid
         ? `<path d="${lidEllipse(c, r, r, k, lid[1])}" fill="${INK}"/>`
         : dot(c[0], c[1], r, INK);
@@ -595,8 +643,8 @@ function eyesMarkup(
       return shape + dot(c[0] - r * 0.32, top + (lid ? 1.3 * s : r * 0.62), 1.05 * s, "#fff");
     }
     // glint: a tall ink oval with a catchlight and a small second sparkle.
-    const rx = (mood === "waiting" ? 4.7 : 4.1) * s;
-    const ry = (mood === "waiting" ? 6.5 : 5.7) * s;
+    const rx = (mood === "waiting" ? 4.4 : 4.1) * s;
+    const ry = (mood === "waiting" ? 6.1 : 5.7) * s;
     const shape = lid
       ? `<path d="${lidEllipse(c, rx, ry, lid[0] * ry, lid[1])}" fill="${INK}"/>`
       : `<ellipse cx="${f(c[0])}" cy="${f(c[1])}" rx="${f(rx)}" ry="${f(ry)}" fill="${INK}"/>`;
@@ -766,7 +814,7 @@ function accessoryMarkup(
     case "monocle": {
       const c = centers[1];
       const radius = 12.2;
-      const glass = `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="#fff" fill-opacity=".16"/>`;
+      const glass = `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="#fff" fill-opacity=".28"/>`;
       const ring =
         `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${INK}" stroke-width="3.2"/>` +
         `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius - 2.1)}" fill="none" stroke="${gold}" stroke-width=".9"/>` +
@@ -859,7 +907,7 @@ export function agentAvatarSvg(
   // Trim is a deeper dye of the body; vivid bodies give up more chroma so a
   // band never turns electric.
   const [, bodySat, bodyLight] = toHsl(bodyColor);
-  const trimColor = tone(bodyColor, -bodyLight * 0.3, 1 - bodySat * 0.45, COOL, 8);
+  const trimColor = tone(bodyColor, -bodyLight * 0.2, 1 - bodySat * 0.3, COOL, 8);
   const centers = eyeCenters(geo, traits, face);
   const worn = accessoryMarkup(traits.accessory, geo, centers, bodyColor, !online);
 
@@ -889,8 +937,8 @@ export function agentAvatarSvg(
 <defs>${defs}</defs>
 <g transform="matrix(${f(scale)} 0 0 ${f(scale)} ${f(tx)} ${f(ty)})">
 ${material}
-${eyesMarkup(geo, traits, face, blinking, bodyColor)}
 ${worn.front}
+${eyesMarkup(geo, traits, face, blinking, bodyColor, online)}
 </g>
 </svg>`;
 }
