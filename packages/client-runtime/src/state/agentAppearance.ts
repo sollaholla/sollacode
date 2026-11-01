@@ -531,8 +531,9 @@ function moodBadge(mood: AgentAvatarMood): string {
   const keyline = `stroke="${INK}" stroke-width="1.8"`;
   switch (mood) {
     case "working": {
-      const dots = [52.4, 62, 71.6].map((x) => dot(x, 11, 2.5, INK)).join("");
-      return `<rect x="45" y="2" width="34" height="18" rx="9" fill="#fff" ${keyline}/>${dots}`;
+      // The dots sit on the 20 px grid (4 units a pixel), so they stay three dots there.
+      const dots = [54, 62, 70].map((x) => dot(x, 10, 2.3, INK)).join("");
+      return `<rect x="46" y="1.6" width="32" height="16.8" rx="8.4" fill="#fff" ${keyline}/>${dots}`;
     }
     case "waiting":
       return (
@@ -541,6 +542,8 @@ function moodBadge(mood: AgentAvatarMood): string {
       );
     case "blocked":
       return `<path d="M66 1.6C72.6 10 76.4 14.2 76.4 19A10.4 10.4 0 0 1 55.6 19C55.6 14.2 59.4 10 66 1.6Z" fill="#bfe9ff" ${keyline}/>`;
+    case "happy":
+      return `<path d="M66 25.2C58 19.4 54.2 15 54.2 10.4C54.2 3.4 62.8 1.6 66 7.6C69.2 1.6 77.8 3.4 77.8 10.4C77.8 15 74 19.4 66 25.2Z" fill="#ff6f9f" ${keyline}/>`;
     case "sleeping": {
       const z = "M57 5H73L57 21H73";
       return stroke(z, 7.2) + stroke(z, 3.8, "#fff");
@@ -776,9 +779,9 @@ function accessoryMarkup(
       const cx = (nl + nr) / 2;
       const l = nl - 1.3;
       const r = nr + 1.3;
-      const edge = 6.5;
-      const top = 2.6;
-      const belly = 5.4;
+      const edge = 5;
+      const top = 2.4;
+      const belly = 4.2;
       const wrap =
         `<path d="M${pt([l, ny])}Q${pt([cx, ny + 2 * top])} ${pt([r, ny])}` +
         `Q${pt([r + 2.4, ny + edge / 2])} ${pt([r - 0.8, ny + edge])}` +
@@ -946,8 +949,10 @@ function moodPose(mood: AgentAvatarMood): string {
   return `rotate(${lean} 40 44) translate(${f(40 * (1 - k))} ${f(y)}) scale(${f(k)} ${f(k * slump)}) `;
 }
 
+const SVG_OPEN = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80">`;
+
 function svgRoot(transform: string, content: string, badge = ""): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80">
+  return `${SVG_OPEN}
 <g transform="${transform}">
 ${content}
 </g>
@@ -1028,6 +1033,8 @@ export function agentAvatarSvg(
 export interface AgentAvatarLayers {
   readonly body: string;
   readonly eyes: string;
+  /** The corner status mark, when this mood has one. */
+  readonly badge: string | null;
   /** Between the eyes, as fractions of the frame: where they blink from. */
   readonly eyeCenter: readonly [number, number];
 }
@@ -1044,8 +1051,9 @@ export function agentAvatarLayers(
 ): AgentAvatarLayers {
   const parts = avatarParts(agentId, online, avatarColor, false, mood);
   return {
-    body: svgRoot(parts.transform, parts.body, parts.badge),
+    body: svgRoot(parts.transform, parts.body),
     eyes: svgRoot(parts.transform, parts.eyes),
+    badge: parts.badge ? `${SVG_OPEN}${parts.badge}</svg>` : null,
     eyeCenter: parts.eyeCenter,
   };
 }

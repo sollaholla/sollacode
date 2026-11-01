@@ -17,7 +17,7 @@ afterEach(() => vi.useRealTimers());
 
 const allGestures = (): AgentAvatarGesture[] => [
   ...AGENT_AVATAR_SHAPES.map((_, color) => agentAvatarIdleGesture("agent", color)),
-  ...(["happy", "blocked", "waiting", "sleeping"] as const).map(
+  ...(["working", "happy", "blocked", "waiting", "sleeping"] as const).map(
     (mood) => agentAvatarMoodGesture(mood)!,
   ),
   AGENT_AVATAR_BLINK,
@@ -27,6 +27,14 @@ const allGestures = (): AgentAvatarGesture[] => [
 ];
 
 describe("agent avatar gestures", () => {
+  it("pop the status mark in and leave it at full size", () => {
+    for (const mood of ["working", "happy", "blocked", "waiting", "sleeping"] as const) {
+      const badge = agentAvatarMoodGesture(mood)!.badge!;
+      expect(badge[0]!.transform).toBe("scale(0)");
+      expect(badge.at(-1)!.transform).toBe("scale(1)");
+    }
+  });
+
   it("animate only transforms, stay short and finish where they started", () => {
     for (const gesture of allGestures()) {
       expect(gesture.duration).toBeLessThanOrEqual(1_300);

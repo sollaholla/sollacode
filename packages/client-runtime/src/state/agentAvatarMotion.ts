@@ -24,7 +24,12 @@ export interface AgentAvatarGesture {
   readonly origin: readonly [number, number];
   readonly root?: ReadonlyArray<AgentAvatarKeyframe>;
   readonly eyes?: ReadonlyArray<AgentAvatarKeyframe>;
+  /** The corner status mark, which pops in just after the body has moved. */
+  readonly badge?: ReadonlyArray<AgentAvatarKeyframe>;
 }
+
+/** The middle of the corner slot every status mark sits in, as fractions of the frame. */
+export const AGENT_AVATAR_BADGE_ORIGIN = [0.81, 0.16] as const;
 
 const OUT = "cubic-bezier(.2,.8,.3,1)";
 const IN = "cubic-bezier(.6,0,.8,.4)";
@@ -39,6 +44,8 @@ const frames = (
   list.map(([offset, transform, easing]) =>
     easing === undefined ? { offset, transform } : { offset, transform, easing },
   );
+const bend = (skew: number, scaleX = 1, scaleY = 1) =>
+  `skewX(${skew}deg) scale(${scaleX}, ${scaleY})`;
 const FEET = [0.5, 0.92] as const;
 
 function body(
@@ -192,16 +199,17 @@ const SHAPE_GESTURES: Record<AgentAvatarShape, AgentAvatarGesture> = {
     ),
     [0.5, 0.5],
   ),
+  // Bends from the base rather than tipping, so the pot stays planted.
   cactus: body(
     "sway",
     1000,
     frames(
-      [0, pose(), IN_OUT],
-      [0.12, pose(0, 0, 1.05, 0.94), IN_OUT],
-      [0.36, pose(0, -15), IN_OUT],
-      [0.64, pose(0, 11), IN_OUT],
-      [0.86, pose(0, -4), IN_OUT],
-      [1, pose()],
+      [0, bend(0), IN_OUT],
+      [0.12, bend(0, 1.05, 0.94), IN_OUT],
+      [0.36, bend(14, 1, 1.02), IN_OUT],
+      [0.64, bend(-11, 1, 1.02), IN_OUT],
+      [0.86, bend(4), IN_OUT],
+      [1, bend(0)],
     ),
   ),
   saucer: body(
@@ -307,6 +315,16 @@ const NOD: AgentAvatarGesture = {
 
 /** Plays once as a mood arrives; no mood keeps moving because of what it is. */
 const MOOD_ENTRANCES: Partial<Record<AgentAvatarMood, AgentAvatarGesture>> = {
+  working: body(
+    "get-to-it",
+    640,
+    frames(
+      [0, pose(), OUT],
+      [0.3, pose(0, 0, 1.08, 0.9), IN_OUT],
+      [0.62, pose(1, 5, 0.99, 1.02), IN_OUT],
+      [1, pose()],
+    ),
+  ),
   happy: body(
     "cheer",
     980,
@@ -356,8 +374,20 @@ const MOOD_ENTRANCES: Partial<Record<AgentAvatarMood, AgentAvatarGesture>> = {
   ),
 };
 
+/** Overshoot and settle, held back so the mark lands after the body has moved. */
+const BADGE_POP = frames(
+  [0, "scale(0)"],
+  [0.22, "scale(0)", OUT],
+  [0.44, "scale(1.3)", IN_OUT],
+  [0.6, "scale(0.9)", IN_OUT],
+  [0.76, "scale(1.05)", IN_OUT],
+  [0.9, "scale(1)"],
+  [1, "scale(1)"],
+);
+
 export function agentAvatarMoodGesture(mood: AgentAvatarMood): AgentAvatarGesture | null {
-  return MOOD_ENTRANCES[mood] ?? null;
+  const gesture = MOOD_ENTRANCES[mood];
+  return gesture ? { ...gesture, badge: BADGE_POP } : null;
 }
 
 export function agentAvatarIdleGesture(

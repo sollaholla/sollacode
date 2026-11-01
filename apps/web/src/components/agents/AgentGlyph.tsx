@@ -3,6 +3,7 @@ import {
   type AgentAvatarMood,
 } from "@t3tools/client-runtime/state/agent-appearance";
 import {
+  AGENT_AVATAR_BADGE_ORIGIN,
   agentAvatarMoodGesture,
   scheduleAgentAvatarMotion,
   type AgentAvatarGesture,
@@ -37,6 +38,8 @@ const prefersReducedMotion = () =>
  * accessible text. Two images, body and eyes, so every gesture is a transform
  * on the compositor: nothing re-renders or repaints while it moves.
  */
+const BADGE_ORIGIN = `${AGENT_AVATAR_BADGE_ORIGIN[0] * 100}% ${AGENT_AVATAR_BADGE_ORIGIN[1] * 100}%`;
+
 export const AgentGlyph = memo(function AgentGlyph(props: {
   readonly agentId: string;
   readonly online: boolean;
@@ -49,6 +52,7 @@ export const AgentGlyph = memo(function AgentGlyph(props: {
   const mood = props.mood ?? "idle";
   const rootRef = useRef<HTMLSpanElement>(null);
   const eyesRef = useRef<HTMLImageElement>(null);
+  const badgeRef = useRef<HTMLImageElement>(null);
   const playing = useRef<ReadonlyArray<Animation>>([]);
   const moodRef = useRef(mood);
   const layers = useMemo(() => {
@@ -56,6 +60,7 @@ export const AgentGlyph = memo(function AgentGlyph(props: {
     return {
       body: svgSource(drawn.body),
       eyes: svgSource(drawn.eyes),
+      badge: drawn.badge ? svgSource(drawn.badge) : null,
       origin: `${drawn.eyeCenter[0] * 100}% ${drawn.eyeCenter[1] * 100}%`,
     };
   }, [agentId, online, avatarColor, mood]);
@@ -70,6 +75,9 @@ export const AgentGlyph = memo(function AgentGlyph(props: {
     playing.current = [
       ...(gesture.root ? [root.animate([...gesture.root] as Keyframe[], options)] : []),
       ...(gesture.eyes ? [eyes.animate([...gesture.eyes] as Keyframe[], options)] : []),
+      ...(gesture.badge && badgeRef.current
+        ? [badgeRef.current.animate([...gesture.badge] as Keyframe[], options)]
+        : []),
     ];
   }).current;
 
@@ -140,6 +148,18 @@ export const AgentGlyph = memo(function AgentGlyph(props: {
         className={image}
         style={{ transformOrigin: layers.origin }}
       />
+      {layers.badge ? (
+        <img
+          ref={badgeRef}
+          src={layers.badge}
+          alt=""
+          draggable={false}
+          width={80}
+          height={80}
+          className={image}
+          style={{ transformOrigin: BADGE_ORIGIN }}
+        />
+      ) : null}
     </span>
   );
 });
