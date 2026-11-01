@@ -42,9 +42,9 @@ for its next turn; renaming does not interrupt work already running.
 ## Characters
 
 Each agent gets its own character: a vivid body shape (mochi, bell, acorn, lantern, sunburst,
-gumdrop, onion, capsule, pebble, dango or star), a face, and sometimes an ink accessory: goggles,
-a scarf or a monocle. Your first eleven agents each get a different
-shape, and your first fourteen each get a different color. The character follows the agent's
+gumdrop, onion, capsule, pebble, dango, star, cloud, cactus or saucer), a face, and sometimes an
+ink accessory: goggles, a scarf, a monocle or a bow tie. Your first fourteen agents each get a
+different shape and a different color. The character follows the agent's
 permanent identity across web, desktop and mobile, including renames and changes to its
 conversation or coding provider.
 
@@ -55,8 +55,11 @@ the working and waiting faces.
 A green dot means the agent is running and this client is connected to its environment;
 a gray dot means it is stopped, starting, failed, or the environment is disconnected.
 Work-in-progress and unread-alert indicators remain separate from online status.
-Online characters occasionally hop and sway, and blink roughly every 3–5 seconds with
-different, staggered rhythms and occasional double blinks.
+Each state also has its own mark in the character's top-right corner, so a list of small avatars
+reads at a glance: a typing bubble while working, a yellow **?** when waiting on you, a blue drop
+when something went wrong, a heart when it has finished work you haven't opened, and a **Z** when
+sleeping.
+Online characters blink, look around and do a short gesture of their own, one character at a time.
 They rest between gestures, stay still offline, and respect the device's reduced-motion
 setting. Web characters also pause when offscreen or when the page is hidden; mobile
 characters pause when the app is in the background.

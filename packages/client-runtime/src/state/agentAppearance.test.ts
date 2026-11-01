@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   AGENT_AVATAR_SHAPES,
   agentAvatarHue,
+  agentAvatarLayers,
   agentAvatarSvg,
   agentAvatarTraits,
   agentPresence,
@@ -92,6 +93,23 @@ describe("agent appearance", () => {
         );
       }
       expect(agentAvatarSvg("agent", true, color, true)).not.toBe(idle);
+    }
+  });
+
+  it("splits one drawing into a body and eyes that overlay it exactly", () => {
+    for (let color = 0; color < 28; color += 1) {
+      for (const mood of MOODS) {
+        const flat = agentAvatarSvg("agent", true, color, false, mood);
+        const layers = agentAvatarLayers("agent", true, color, mood);
+        const inner = (svg: string) =>
+          svg.match(/<g transform="[^"]+">\n([\s\S]*)\n<\/g>\n[\s\S]*<\/svg>$/u)![1]!;
+        expect(`${inner(layers.body)}\n${inner(layers.eyes)}`).toBe(inner(flat));
+        expect(layers.eyes).not.toContain("clip-path");
+        for (const fraction of layers.eyeCenter) {
+          expect(fraction).toBeGreaterThan(0.1);
+          expect(fraction).toBeLessThan(0.9);
+        }
+      }
     }
   });
 

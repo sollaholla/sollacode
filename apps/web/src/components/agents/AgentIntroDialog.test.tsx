@@ -60,11 +60,13 @@ it("walks from meeting the cast to a named, created agent", async () => {
   });
 
   expect(document.body.textContent).toContain("Meet your agents");
-  expect(document.querySelectorAll("[data-testid=agent-intro-cast] img")).toHaveLength(7);
+  expect(
+    document.querySelectorAll("[data-testid=agent-intro-cast] [data-agent-avatar]"),
+  ).toHaveLength(7);
   await click(buttonNamed("Pick your first agent"));
 
   const characters = document.querySelectorAll("[data-testid=agent-intro-character]");
-  expect(characters).toHaveLength(11);
+  expect(characters).toHaveLength(14);
   await click(characters[3]);
   expect(characters[3]?.getAttribute("aria-checked")).toBe("true");
   await click(buttonNamed("Choose Lantern"));

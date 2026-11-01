@@ -19,8 +19,11 @@ export const AGENT_AVATAR_SHAPES = [
   "capsule",
   "dango",
   "star",
+  "cloud",
+  "cactus",
+  "saucer",
 ] as const;
-export const AGENT_AVATAR_ACCESSORIES = ["none", "goggles", "scarf", "monocle"] as const;
+export const AGENT_AVATAR_ACCESSORIES = ["none", "goggles", "scarf", "monocle", "bowtie"] as const;
 export const AGENT_AVATAR_EYES = ["glint", "pill", "beads", "visor"] as const;
 
 export type AgentAvatarShape = (typeof AGENT_AVATAR_SHAPES)[number];
@@ -38,10 +41,9 @@ export interface AgentAvatarTraits {
 }
 
 /**
- * Fourteen colors, spaced in OKLab so no two sit closer than ~0.1 apart. The
- * cast takes eleven; slots 4–6 are the three left over, which is exactly where
- * the second-round mochi, bell and acorn land (cast color + 4), so a person's
- * first fourteen agents never share a color.
+ * Fourteen colors, spaced in OKLab so no two sit closer than ~0.1 apart, one for
+ * each member of the cast, so a person's first fourteen agents never share a
+ * color or a shape.
  */
 const PALETTE = [
   "#fe6652", // coral
@@ -71,7 +73,7 @@ interface CastMember {
 /** A person's first agents are a designed cast; later ones remix it. */
 // Accessories alternate so neighbours in a list never wear the same one. Later
 // rounds move each worn accessory on by one and leave a bare character bare
-// (acorn→goggles, sunburst→scarf, pebble→monocle).
+// (acorn→bowtie, sunburst→scarf, pebble→monocle, onion→goggles).
 const CAST: readonly CastMember[] = [
   { shape: "mochi", color: 0, eyes: "glint", accessory: "none", glance: [-2.5, -1.5] },
   { shape: "bell", color: 1, eyes: "pill", accessory: "none", glance: [2, 0] },
@@ -79,11 +81,14 @@ const CAST: readonly CastMember[] = [
   { shape: "lantern", color: 3, eyes: "visor", accessory: "none", glance: [2.5, 0] },
   { shape: "sunburst", color: 7, eyes: "glint", accessory: "goggles", glance: [-2, 0] },
   { shape: "gumdrop", color: 8, eyes: "beads", accessory: "none", glance: [2, -1] },
-  { shape: "onion", color: 9, eyes: "glint", accessory: "monocle", glance: [-1.5, -1] },
+  { shape: "onion", color: 9, eyes: "glint", accessory: "bowtie", glance: [-1.5, -1] },
   { shape: "capsule", color: 10, eyes: "pill", accessory: "none", glance: [2.5, -1] },
   { shape: "pebble", color: 11, eyes: "glint", accessory: "scarf", glance: [-2, -1] },
   { shape: "dango", color: 12, eyes: "beads", accessory: "none", glance: [1.5, 0] },
   { shape: "star", color: 13, eyes: "glint", accessory: "none", glance: [0, -1.5] },
+  { shape: "cloud", color: 5, eyes: "glint", accessory: "none", glance: [2, -1] },
+  { shape: "cactus", color: 4, eyes: "pill", accessory: "none", glance: [-2, 0] },
+  { shape: "saucer", color: 6, eyes: "glint", accessory: "none", glance: [2, 0] },
 ];
 
 function agentIdentitySeed(agentId: string): number {
@@ -243,34 +248,38 @@ function starPoints(
 
 const SHAPES: Record<AgentAvatarShape, Geo> = {
   mochi: {
-    body: `<path d="M40 13C59 13 70 18 72 35C74 49 74 62 66 68C59 73 49 74 40 74C31 74 21 73 14 68C6 62 6 49 8 35C10 18 21 13 40 13Z"/>`,
-    box: [7, 13, 73, 74],
-    face: [40, 45],
-    gap: 11,
-    sides: [8, 72],
-    crown: [40, 13],
-    chin: [40, 64],
-    neck: [56, 7.5, 72.4],
+    // A plump slice of toast: a domed top that overhangs narrower shoulders.
+    body: `<path d="M17 73Q11.5 73 11.5 67V49Q4.5 44.5 5 33.5C5.8 20 19 14 30 17Q40 12 50 17C61 14 74.2 20 75 33.5Q75.5 44.5 68.5 49V67Q68.5 73 63 73Z"/>`,
+    box: [5, 14, 75, 73],
+    face: [40, 44],
+    gap: 10.5,
+    sides: [11.5, 68.5],
+    crown: [40, 14],
+    chin: [40, 62],
+    neck: [55, 11.5, 68.5],
   },
   gumdrop: {
-    body: `<path d="M8 69C6 45 18 10 40 10C62 10 74 45 72 69Q72 74 67 74H13Q8 74 8 69Z"/>`,
-    box: [7.8, 10, 72.2, 74],
+    // A soft hill with two stubby horns, so it is never read as a ghost.
+    body: `<path d="M8 69C6 47 17 15 40 15C63 15 74 47 72 69Q72 74 67 74H13Q8 74 8 69Z"/><path d="M19 33Q15 17 22.5 9.5Q25 7.5 26.5 10Q28 16 34 20Z"/><path d="M61 33Q65 17 57.5 9.5Q55 7.5 53.5 10Q52 16 46 20Z"/>`,
+    box: [7.8, 8, 72.2, 74],
     face: [40, 48],
     gap: 11,
     sides: [9, 71],
-    crown: [40, 10],
+    crown: [40, 15],
     chin: [40, 66],
     neck: [58, 8, 72],
   },
   bell: {
-    body: `<path d="M40 9C56 9 64 22 64 38V51C64 57 67 61 71 65Q75 71 69 72H11Q5 71 9 65C13 61 16 57 16 51V38C16 22 24 9 40 9Z"/>`,
-    box: [7.4, 9, 72.6, 72],
+    // A real bell: a knob to hang from and a clapper peeking under the rim.
+    body: `<path d="M40 12C55 12 63 24 63 39V50C63 56 66 60 70 63Q75.5 69 69 70H11Q4.5 69 10 63C14 60 17 56 17 50V39C17 24 25 12 40 12Z"/>`,
+    trim: `<circle cx="40" cy="8.5" r="4.8"/><path d="M32.5 70A7.5 7.5 0 0 0 47.5 70Z"/>`,
+    box: [6.3, 3.7, 73.7, 77.5],
     face: [40, 42],
     gap: 10,
-    sides: [16, 64],
-    crown: [40, 9],
+    sides: [17, 63],
+    crown: [40, 12],
     chin: [40, 60],
-    neck: [54, 15.7, 64.2],
+    neck: [54, 16.7, 63.3],
   },
   acorn: {
     body: `<path d="M40 75C24 75 13 63 13 47V37H67V47C67 63 56 75 40 75Z"/>`,
@@ -295,8 +304,8 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     neck: [55.5, 13.8, 66.2],
   },
   sunburst: {
-    // Nine sharp-tipped rays over soft valleys: a sun, not a bottle cap.
-    body: `<path d="${roundedPolygonPath(starPoints(9, 40, 42, 36, 27.5, -Math.PI / 2), 2.8, 5.5)}"/>`,
+    // Eight sharp-tipped rays over soft valleys: a sun, not a bottle cap.
+    body: `<path d="${roundedPolygonPath(starPoints(8, 40, 42, 36, 26.5, -Math.PI / 2), 2.8, 5.5)}"/>`,
     box: [5.5, 7, 74.5, 75],
     face: [40, 43],
     gap: 10,
@@ -320,32 +329,73 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     // The sprout leans and curls, so it is not a plain drop.
     body: `<path d="M44.5 4.2Q47.6 3.4 47 6.6Q45.4 12.4 50 17C64 24 72 37 72 50C72 64 58 75 40 75C22 75 8 64 8 50C8 37 16 24 30 17Q39.5 12.5 44.5 4.2Z"/>`,
     box: [8, 4, 72, 75],
-    face: [40, 50],
+    face: [40, 42],
     gap: 11,
     sides: [8, 72],
     crown: [44, 4],
-    chin: [40, 69],
+    chin: [40, 58],
     neck: [60.5, 10.8, 69.2],
   },
   capsule: {
+    // A two-part pill: the seam and darker half say capsule at any size.
     body: `<rect x="15" y="7" width="50" height="68" rx="25"/>`,
+    trim: `<path d="M15.1 52H64.9A25 25 0 0 1 15.1 52Z"/>`,
     box: [15, 7, 65, 75],
-    face: [40, 37],
+    face: [40, 31],
     gap: 10,
     sides: [15, 65],
     crown: [40, 7],
-    chin: [40, 58],
-    neck: [48, 15, 65],
+    chin: [40, 45],
+    neck: [47, 15, 65],
   },
   dango: {
-    body: `${circle(40, 52, 24)}${circle(40, 21, 13)}`,
-    box: [16, 8, 64, 76],
-    face: [40, 52],
-    gap: 9.5,
-    sides: [16, 64],
+    // Two dumplings on a skewer.
+    body: `${circle(40, 53, 25.5)}${circle(40, 20.5, 14)}`,
+    trim: `<rect x="38" y="1" width="4" height="8" rx="2"/><rect x="38" y="76" width="4" height="5.5" rx="2"/>`,
+    box: [14.5, 1, 65.5, 81.5],
+    face: [40, 53],
+    gap: 10,
+    sides: [14.5, 65.5],
+    crown: [40, 6.5],
+    chin: [40, 72],
+    neck: [64, 17, 63],
+  },
+  cloud: {
+    // Three puffs on a flat base.
+    body: `${circle(22, 51, 17)}${circle(42, 36, 22)}${circle(61, 49, 16.5)}<rect x="13" y="48" width="56" height="20" rx="9"/>`,
+    box: [5, 14, 77.5, 68],
+    face: [41, 44],
+    gap: 10,
+    sides: [8, 75],
+    crown: [42, 14],
+    chin: [41, 62],
+    neck: [56, 9, 74],
+  },
+  cactus: {
+    // Upturned arms and a little pot.
+    body: `<rect x="23" y="9" width="34" height="62" rx="17"/><rect x="7" y="26" width="11" height="26" rx="5.5"/><rect x="7" y="41" width="22" height="11" rx="5.5"/><rect x="62" y="20" width="11" height="26" rx="5.5"/><rect x="51" y="35" width="22" height="11" rx="5.5"/>`,
+    trim: `<path d="M21 64H59L56.5 76Q56 78 54 78H26Q24 78 23.5 76Z"/>`,
+    box: [7, 9, 73, 78],
+    face: [40, 34],
+    gap: 7.8,
+    sides: [23, 57],
+    crown: [40, 9],
+    chin: [40, 52],
+    neck: [50, 23, 57],
+    eyeScale: 0.84,
+  },
+  saucer: {
+    // A dome on a wide disc.
+    body: `<path d="M13 54C13 22 26 8 40 8C54 8 67 22 67 54Z"/>`,
+    trim: `<ellipse cx="40" cy="57" rx="38" ry="12"/>`,
+    box: [2, 8, 78, 69],
+    face: [40, 30],
+    gap: 9,
+    sides: [13, 67],
     crown: [40, 8],
-    chin: [40, 70],
-    neck: [61, 17.8, 62.2],
+    chin: [40, 48],
+    neck: [44, 15, 65],
+    eyeScale: 0.9,
   },
   star: {
     body: `<path d="${roundedPolygonPath(starPoints(5, 40, 44, 37, 21, -Math.PI / 2), 9)}"/>`,
@@ -374,6 +424,9 @@ const stroke = (d: string, width: number, color = INK) =>
 /** Two face weights: closed eyes at eye weight, brows, lids and mouths at detail weight. */
 const EYE_LINE = 3.6;
 const DETAIL_LINE = 2.5;
+/** Faces carry the character at 20px, so they are drawn large for the body. */
+const FACE_SCALE = 1.4;
+const EYE_SPREAD = 1.2;
 
 function eyeCenters(geo: Geo, traits: AgentAvatarTraits, mood: AgentAvatarMood): [P2, P2] {
   const [gx, gy] = traits.glance;
@@ -381,15 +434,15 @@ function eyeCenters(geo: Geo, traits: AgentAvatarTraits, mood: AgentAvatarMood):
     mood === "working"
       ? [gx * 0.5, 2]
       : mood === "waiting"
-        ? [0, -2.2]
+        ? [gx * 0.4, -1]
         : mood === "blocked"
           ? [0, 0.6]
           : mood === "idle"
             ? [gx, gy]
             : [0, mood === "sleeping" ? 1.5 : 0];
   return [
-    [geo.face[0] - geo.gap + shift[0], geo.face[1] + shift[1]],
-    [geo.face[0] + geo.gap + shift[0], geo.face[1] + shift[1]],
+    [geo.face[0] - geo.gap * EYE_SPREAD + shift[0], geo.face[1] + shift[1]],
+    [geo.face[0] + geo.gap * EYE_SPREAD + shift[0], geo.face[1] + shift[1]],
   ];
 }
 
@@ -417,14 +470,6 @@ function pillPath(c: P2, w: number, h: number, lid?: readonly [number, number]):
   return `M${pt([c[0] - r, clamp(lid[0] - lid[1] * r)])}L${pt([c[0] + r, clamp(lid[0] + lid[1] * r)])}${bottom}Z`;
 }
 
-/** A thin crescent of bounced body light along the bottom of an open eye. */
-function bounce(c: P2, rx: number, ry: number, color: string): string {
-  const a = (28 * Math.PI) / 180;
-  const right: P2 = [c[0] + rx * Math.cos(a), c[1] + ry * Math.sin(a)];
-  const left: P2 = [c[0] - rx * Math.cos(a), c[1] + ry * Math.sin(a)];
-  return `<path d="M${pt(right)}A${f(rx)} ${f(ry)} 0 0 1 ${pt(left)}Q${pt([c[0], c[1] + ry * 1.12])} ${pt(right)}Z" fill="${color}" fill-opacity=".38"/>`;
-}
-
 const dot = (x: number, y: number, r: number, fill: string, opacity = 1) =>
   `<circle cx="${f(x)}" cy="${f(y)}" r="${f(r)}" fill="${fill}"${opacity < 1 ? ` fill-opacity="${opacity}"` : ""}/>`;
 
@@ -432,7 +477,12 @@ const dot = (x: number, y: number, r: number, fill: string, opacity = 1) =>
 function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lean: number): string {
   const line = DETAIL_LINE * s;
   if (mood === "waiting") {
-    return `<ellipse cx="${f(x)}" cy="${f(y)}" rx="${f(2.1 * s)}" ry="${f(2.5 * s)}" fill="none" stroke="${INK}" stroke-width="${f(line)}"/>`;
+    // A small, patient "hm?", drawn to one side.
+    const w = 2.6 * s;
+    return stroke(
+      `M${pt([x - w + lean, y + 0.6])}Q${pt([x + lean, y + 1.8 * s])} ${pt([x + w + lean, y - 0.9])}`,
+      line,
+    );
   }
   if (mood === "blocked") {
     const w = 4.4 * s;
@@ -442,24 +492,89 @@ function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lea
     );
   }
   if (mood === "happy") {
-    const w = 3.8 * s;
-    return stroke(`M${pt([x - w, y - 1])}Q${pt([x, y + 3.6 * s])} ${pt([x + w, y - 1])}`, line);
+    // A big open grin: the one filled mouth, so delight reads at 20px.
+    const w = 3.9 * s;
+    const top = y - 1.6;
+    return `<path d="M${pt([x - w, top])}H${f(x + w)}Q${pt([x + w, top + 4.8 * s])} ${pt([x, top + 4.8 * s])}Q${pt([x - w, top + 4.8 * s])} ${pt([x - w, top])}Z" fill="${INK}" stroke="${INK}" stroke-width="1" stroke-linejoin="round"/>`;
   }
   if (mood === "working") {
-    // Concentrating: lips pursed, drawn a little toward the work.
-    return `<ellipse cx="${f(x + lean * 0.6)}" cy="${f(y)}" rx="${f(1.6 * s)}" ry="${f(1.15 * s)}" fill="${INK}"/>`;
+    // Concentrating: a short line with the tip of the tongue poking out.
+    const w = 2.6 * s;
+    const mx = x + lean * 0.6;
+    return (
+      dot(mx + lean * 1.2, y + 1.5 * s, 1.75 * s, "#ff8fa8") +
+      stroke(`M${pt([mx - w, y])}H${f(mx + w)}`, line)
+    );
   }
   return "";
 }
 
-function eyesMarkup(
+/** Happy shows on the face itself: blushing cheeks under the smile. */
+function moodAccent(
+  centers: readonly [P2, P2],
+  mood: AgentAvatarMood,
+  s: number,
+  bodyColor: string,
+): string {
+  if (mood !== "happy") return "";
+  const blush = mix(bodyColor, "#ff2f6e", 0.42);
+  return centers
+    .map((c, index) =>
+      dot(c[0] + (index === 0 ? -5.2 : 5.2) * s, c[1] + 5 * s, 2.4 * s, blush, 0.85),
+    )
+    .join("");
+}
+
+const HEART =
+  "M66 25.2C58 19.4 54.2 15 54.2 10.4C54.2 3.4 62.8 1.6 66 7.6C69.2 1.6 77.8 3.4 77.8 10.4C77.8 15 74 19.4 66 25.2Z";
+
+/**
+ * The status mark. It stays in the same corner of the frame, upright, whatever
+ * the character does, and each state has its own shape and color, so a list of
+ * 20 px avatars can be read by the corner alone.
+ */
+function moodBadge(mood: AgentAvatarMood): string {
+  const keyline = `stroke="${INK}" stroke-width="1.8"`;
+  switch (mood) {
+    case "working": {
+      // The dots sit on the 20 px grid (4 units a pixel), so they stay three dots there.
+      const dots = [54, 62, 70].map((x) => dot(x, 10, 2.3, INK)).join("");
+      return `<rect x="46" y="1.6" width="32" height="16.8" rx="8.4" fill="#fff" ${keyline}/>${dots}`;
+    }
+    case "waiting":
+      return (
+        `<circle cx="65" cy="15" r="14" fill="#ffc53d" ${keyline}/>` +
+        stroke("M59.6 11.4C59.6 4.8 70.6 4.8 70.6 11.2C70.6 15.2 65 14.8 65 19M65 24h.01", 4.4)
+      );
+    case "blocked":
+      return `<path d="M66 1.6C72.6 10 76.4 14.2 76.4 19A10.4 10.4 0 0 1 55.6 19C55.6 14.2 59.4 10 66 1.6Z" fill="#bfe9ff" ${keyline}/>`;
+    case "happy":
+      // A red heart with a white edge, which holds on the pink and coral bodies too.
+      return `<path d="${HEART}" fill="none" stroke="${INK}" stroke-width="4.8"/><path d="${HEART}" fill="#ff2f55" stroke="#fff" stroke-width="2.2"/>`;
+    case "sleeping": {
+      const z = "M57 5H73L57 21H73";
+      return stroke(z, 7.2) + stroke(z, 3.8, "#fff");
+    }
+    default:
+      return "";
+  }
+}
+
+/** Eyes are separate from the rest of the face so a client can move them alone. */
+interface FaceParts {
+  readonly features: string;
+  readonly eyes: string;
+}
+
+function faceParts(
   geo: Geo,
   traits: AgentAvatarTraits,
   mood: AgentAvatarMood,
   blinking: boolean,
   bodyColor: string,
-): string {
-  const s = geo.eyeScale ?? 1;
+  online: boolean,
+): FaceParts {
+  const s = (geo.eyeScale ?? 1) * FACE_SCALE;
   const centers = eyeCenters(geo, traits, mood);
   const closed = mood === "sleeping" || (blinking && mood !== "happy");
   const midX = (centers[0][0] + centers[1][0]) / 2;
@@ -469,27 +584,25 @@ function eyesMarkup(
   if (traits.eyes === "visor") {
     // One rounded band across the face; the eyes are lit cells inside it.
     const y = centers[0][1];
-    const x0 = centers[0][0] - 9 * s;
-    const x1 = centers[1][0] + 9 * s;
-    const band = `<rect x="${f(x0)}" y="${f(y - 8 * s)}" width="${f(x1 - x0)}" height="${f(16 * s)}" rx="${f(8 * s)}" fill="${INK}"/>`;
-    const sheen = `<path d="M${pt([x0 + 6 * s, y - 5.7 * s])}H${f(x1 - 6 * s)}" stroke="#fff" stroke-opacity=".16" stroke-width="${f(1.1 * s)}" stroke-linecap="round"/>`;
+    const x0 = centers[0][0] - 7.5 * s;
+    const x1 = centers[1][0] + 7.5 * s;
+    const band = `<rect x="${f(x0)}" y="${f(y - 7 * s)}" width="${f(x1 - x0)}" height="${f(14 * s)}" rx="${f(7 * s)}" fill="${INK}"/>`;
     const light = mix(bodyColor, mood === "blocked" ? "#ffc8b8" : "#ffffff", 0.74);
-    const core = "#ffffff";
     const cell = (c: P2, index: number) => {
       if (mood === "happy")
         return stroke(
-          `M${pt([c[0] - 4, c[1] + 1.6])}Q${pt([c[0], c[1] - 4])} ${pt([c[0] + 4, c[1] + 1.6])}`,
-          2.8,
+          `M${pt([c[0] - 5, c[1] + 2])}Q${pt([c[0], c[1] - 5])} ${pt([c[0] + 5, c[1] + 2])}`,
+          3.6,
           light,
         );
       if (closed)
         return stroke(
-          `M${pt([c[0] - 4, c[1] + 0.5])}H${f(c[0] + 4)}`,
-          2.4,
+          `M${pt([c[0] - 5, c[1] + 0.5])}H${f(c[0] + 5)}`,
+          3.2,
           mix(bodyColor, INK, 0.3),
         );
       if (mood === "waiting") {
-        return dot(c[0], c[1], 4.2, light) + dot(c[0] - 0.9, c[1] - 0.9, 1.6, core, 0.9);
+        return dot(c[0], c[1], 5.6, light);
       }
       const lid: readonly [number, number] | undefined =
         mood === "working"
@@ -497,19 +610,22 @@ function eyesMarkup(
           : mood === "blocked"
             ? [-0.8, -0.5 * side(index)]
             : undefined;
-      const h = mood === "working" ? 6.4 : 7.4;
+      const h = mood === "working" ? 8 : 10;
       const cy = mood === "working" ? c[1] + 1 : c[1];
-      return (
-        `<path d="${pillPath([c[0], cy], 5.6, h, lid)}" fill="${light}"/>` +
-        `<rect x="${f(c[0] - 1.6)}" y="${f(cy - (lid ? 0 : 2.2))}" width="1.6" height="${f(lid ? 1.6 : 2.6)}" rx=".8" fill="${core}" fill-opacity=".9"/>`
-      );
+      return `<path d="${pillPath([c[0], cy], 7.4, h, lid)}" fill="${light}"/>`;
     };
-    return (
-      band + sheen + centers.map(cell).join("") + mouthMarkup(midX, y + 12.5 * s, mood, s, lean)
-    );
+    return {
+      features:
+        band +
+        mouthMarkup(midX, y + 11 * s, mood, s, lean) +
+        moodAccent(centers, mood, s, bodyColor),
+      eyes: centers.map(cell).join(""),
+    };
   }
 
-  const mouth = mouthMarkup(midX, geo.face[1] + 9.5 * s, mood, s, lean);
+  const mouth =
+    mouthMarkup(midX, geo.face[1] + 9.5 * s, mood, s, lean) +
+    moodAccent(centers, mood, s, bodyColor);
 
   // Brows: beads always wear them; the others show them to focus, ask or worry.
   const brow = (c: P2, index: number) => {
@@ -524,17 +640,15 @@ function eyesMarkup(
       );
     }
     if (mood === "waiting") {
+      // One raised brow: asking, not alarmed.
+      const lift = index === 1 ? -2.6 * s : 0.6 * s;
       return stroke(
-        `M${pt([c[0] - 3.8 * s, y - 1.2 * s])}Q${pt([c[0], y - 4.6 * s])} ${pt([c[0] + 3.8 * s, y - 1.2 * s])}`,
+        `M${pt([c[0] - 3.6 * s, y + lift])}Q${pt([c[0], y - 2.6 * s + lift])} ${pt([c[0] + 3.6 * s, y + lift])}`,
         line,
       );
     }
-    if (mood === "working") {
-      // Low and level, sitting just above the lowered lid.
-      const by = y + (traits.eyes === "beads" ? 0.6 : 3.2) * s;
-      const half = (traits.eyes === "pill" ? 3.4 : 3.9) * s;
-      return stroke(`M${pt([c[0] - half, by])}H${f(c[0] + half)}`, line);
-    }
+    // Working has no brow: a level one over a lowered lid reads as a scowl.
+    if (mood === "working") return "";
     if (traits.eyes !== "beads") return "";
     if (closed)
       return stroke(
@@ -558,79 +672,64 @@ function eyesMarkup(
         EYE_LINE * s,
       );
     };
-    return brows + centers.map(eye).join("") + mouth;
+    return { features: brows + mouth, eyes: centers.map(eye).join("") };
   }
   if (closed) {
     const eye = (c: P2) => {
       const w = (traits.eyes === "pill" ? 3.8 : traits.eyes === "beads" ? 4.2 : 5) * s;
-      const sag = (mood === "sleeping" ? 3 : 3.6) * s;
+      if (!online) return stroke(`M${pt([c[0] - w, c[1] + 1])}H${f(c[0] + w)}`, EYE_LINE * s * 0.8);
+      const sag = (mood === "sleeping" ? 4 : 2) * s;
       return stroke(
         `M${pt([c[0] - w, c[1]])}Q${pt([c[0], c[1] + sag])} ${pt([c[0] + w, c[1]])}`,
-        EYE_LINE * s,
+        (mood === "sleeping" ? EYE_LINE : EYE_LINE * 0.8) * s,
       );
     };
-    return brows + centers.map(eye).join("") + mouth;
+    return { features: brows + mouth, eyes: centers.map(eye).join("") };
   }
 
   // Open eyes. working: lids drop and the eyes look down at the work.
   // blocked: lids slope down outward. waiting: wide and lifted, looking at you.
-  const rim = mix(bodyColor, "#ffffff", 0.25);
   const eye = (c: P2, index: number) => {
     const inward = side(index);
     const lid: readonly [number, number] | null =
-      mood === "working" ? [-0.32, 0] : mood === "blocked" ? [-0.55, -0.32 * inward] : null;
+      mood === "working" ? [-0.3, 0] : mood === "blocked" ? [-0.55, -0.32 * inward] : null;
     if (traits.eyes === "pill") {
-      const w = (mood === "waiting" ? 6.6 : 5.8) * s;
-      const h = (mood === "waiting" ? 13 : 11.6) * s;
+      const w = (mood === "waiting" ? 6.2 : 5.8) * s;
+      const h = (mood === "waiting" ? 12.2 : 11.6) * s;
       const cut = lid ? ([lid[0] * h * 0.5, lid[1]] as const) : undefined;
       const top = cut ? c[1] + cut[0] : c[1] - h / 2;
       const shine = `<rect x="${f(c[0] - w * 0.32)}" y="${f(top + 1.5 * s)}" width="${f(1.9 * s)}" height="${f((lid ? 2.2 : 3.6) * s)}" rx="${f(0.95 * s)}" fill="#fff"/>`;
       return `<path d="${pillPath(c, w, h, cut)}" fill="${INK}"/>${shine}`;
     }
     if (traits.eyes === "beads") {
-      const r = (mood === "waiting" ? 4.5 : 3.8) * s;
+      const r = (mood === "waiting" ? 4.1 : 3.8) * s;
       // Beads are small, so their lids drop less to keep the eye readable.
-      const k = lid ? lid[0] * r * (mood === "working" ? 0.6 : 1) : 0;
+      const k = lid ? lid[0] * r : 0;
       const shape = lid
         ? `<path d="${lidEllipse(c, r, r, k, lid[1])}" fill="${INK}"/>`
-        : dot(c[0], c[1], r, INK) + bounce(c, r, r, rim);
+        : dot(c[0], c[1], r, INK);
       const top = lid ? c[1] + k : c[1] - r;
       return shape + dot(c[0] - r * 0.32, top + (lid ? 1.3 * s : r * 0.62), 1.05 * s, "#fff");
     }
     // glint: a tall ink oval with a catchlight and a small second sparkle.
-    const rx = (mood === "waiting" ? 4.7 : 4.1) * s;
-    const ry = (mood === "waiting" ? 6.5 : 5.7) * s;
+    const rx = (mood === "waiting" ? 4.4 : 4.1) * s;
+    const ry = (mood === "waiting" ? 6.1 : 5.7) * s;
     const shape = lid
       ? `<path d="${lidEllipse(c, rx, ry, lid[0] * ry, lid[1])}" fill="${INK}"/>`
-      : `<ellipse cx="${f(c[0])}" cy="${f(c[1])}" rx="${f(rx)}" ry="${f(ry)}" fill="${INK}"/>` +
-        bounce(c, rx, ry, rim);
+      : `<ellipse cx="${f(c[0])}" cy="${f(c[1])}" rx="${f(rx)}" ry="${f(ry)}" fill="${INK}"/>`;
     const top = lid ? c[1] + lid[0] * ry : c[1] - ry;
     const big = (mood === "waiting" ? 1.9 : 1.6) * s;
     const glint = dot(c[0] - rx * 0.3, top + (lid ? big + 0.8 * s : ry * 0.55), big, "#fff");
-    const small = lid ? "" : dot(c[0] + rx * 0.36, c[1] - ry * 0.02, 0.8 * s, "#fff", 0.9);
-    return shape + glint + small;
+    return shape + glint;
   };
-  return brows + centers.map(eye).join("") + mouth;
+  return { features: brows + mouth, eyes: centers.map(eye).join("") };
 }
 
 // ---------------------------------------------------------------------------
 // Accessories: ink pieces with one small gold note each. A faint light rim
-// keeps them on dark backgrounds; a soft sheen along each top edge gives them
-// form without gloss.
+// keeps them on dark backgrounds.
 
 const RIM = 'stroke="#fff" stroke-opacity=".16" stroke-width="1.1"';
-
-const sheen = (d: string, width: number, opacity = 0.24) =>
-  `<path d="${d}" stroke="#fff" stroke-opacity="${opacity}" stroke-width="${f(width)}" stroke-linecap="round" fill="none"/>`;
-
-/** An arc of a circle, as a path, from angle a0 to a1 in degrees (0 = east, clockwise). */
-function arc(c: P2, r: number, a0: number, a1: number): string {
-  const at = (a: number): P2 => [
-    c[0] + Math.cos((a * Math.PI) / 180) * r,
-    c[1] + Math.sin((a * Math.PI) / 180) * r,
-  ];
-  return `M${pt(at(a0))}A${f(r)} ${f(r)} 0 0 1 ${pt(at(a1))}`;
-}
 
 const lerp = (a: P2, b: P2, t: number): P2 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 
@@ -654,22 +753,16 @@ function accessoryMarkup(
   const gold = muted ? mix(GOLD, "#8a8790", 0.62) : GOLD;
   switch (accessory) {
     case "goggles": {
-      // Pushed up on the forehead: ink rims, brass bezels, tinted glass.
+      // Pushed up on the forehead: one ink band and two solid brass lenses, which survive 20 px.
       const y = geo.face[1] - 18;
-      const lens = mix(bodyColor, INK, 0.3);
-      const glare = mix(bodyColor, "#ffffff", 0.75);
       const strap = `<rect x="${f(left - 4)}" y="${f(y - 3.2)}" width="${f(right - left + 8)}" height="6.4" fill="${INK}" clip-path="url(#b)" clip-rule="nonzero"/>`;
       const bridge = `<rect x="${f(geo.face[0] - 4)}" y="${f(y - 1.6)}" width="8" height="3.2" fill="${INK}"/>`;
       const rings = [geo.face[0] - 9.6, geo.face[0] + 9.6]
-        .map((x) => {
-          const c: P2 = [x, y];
-          return (
-            `<circle cx="${f(x)}" cy="${f(y)}" r="7.6" fill="${INK}" ${RIM}/>` +
-            `<circle cx="${f(x)}" cy="${f(y)}" r="4.9" fill="${lens}" stroke="${gold}" stroke-width="1.1"/>` +
-            `<path d="${arc(c, 4.3, 180, 300)}Q${pt([x - 0.6, y - 0.6])} ${pt([x - 4.3, y])}Z" fill="${glare}"/>` +
-            sheen(arc(c, 6.3, 205, 290), 1.1, 0.2)
-          );
-        })
+        .map(
+          (x) =>
+            `<circle cx="${f(x)}" cy="${f(y)}" r="8.2" fill="${INK}" ${RIM}/>` +
+            `<circle cx="${f(x)}" cy="${f(y)}" r="5" fill="${gold}"/>`,
+        )
         .join("");
       return { front: strap + bridge + rings, box: null };
     }
@@ -680,25 +773,18 @@ function accessoryMarkup(
       const cx = (nl + nr) / 2;
       const l = nl - 1.3;
       const r = nr + 1.3;
-      const edge = 6.5;
-      const top = 2.6;
-      const belly = 5.4;
+      const edge = 5;
+      const top = 2.4;
+      const belly = 4.2;
       const wrap =
         `<path d="M${pt([l, ny])}Q${pt([cx, ny + 2 * top])} ${pt([r, ny])}` +
         `Q${pt([r + 2.4, ny + edge / 2])} ${pt([r - 0.8, ny + edge])}` +
         `Q${pt([cx, ny + edge + 2 * belly])} ${pt([l + 0.8, ny + edge])}` +
         `Q${pt([l - 2.4, ny + edge / 2])} ${pt([l, ny])}Z" fill="${INK}" ${RIM}/>`;
-      // Where the two turns of the wrap overlap, plus a soft roll along the top.
-      const fold = `<path d="M${pt([l + 4, ny + 3.6])}Q${pt([cx, ny + 3.6 + 2 * (top + 1.6)])} ${pt([r - 4, ny + 3.6])}" stroke="#fff" stroke-opacity=".1" stroke-width="1" fill="none"/>`;
-      const roll = sheen(
-        `M${pt([l + 3, ny + 1.3])}Q${pt([cx, ny + 2 * top + 1.3])} ${pt([r - 3, ny + 1.3])}`,
-        1.3,
-        0.24,
-      );
       const kx = cx + (nr - nl) * 0.2;
       const ky = ny + 7;
-      // A soft tail along a curved centreline, flaring a little, finished
-      // with two knitted gold stripes and a short fringe.
+      // A soft tail along a curved centreline, flaring a little, finished with
+      // one wide gold stripe.
       const tail = (start: P2, ctrl: P2, end: P2, w0: number, w1: number) => {
         const unit = (a: P2, b: P2): P2 => {
           const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
@@ -721,23 +807,10 @@ function accessoryMarkup(
         const [b0, bc, b1] = edge(-1);
         const at = (e: [P2, P2, P2], t: number): P2 =>
           lerp(lerp(e[0], e[1], t), lerp(e[1], e[2], t), t);
-        const stripes = [0.66, 0.8]
-          .map(
-            (t) =>
-              `<path d="M${pt(at([a0, ac, a1], t))}L${pt(at([b0, bc, b1], t))}" stroke="${gold}" stroke-width="1.5"/>`,
-          )
-          .join("");
-        const fringe = [0.18, 0.5, 0.82]
-          .map((t) => {
-            const p = lerp(a1, b1, t);
-            return `M${pt(p)}l${f(d1[0] * 2.6)} ${f(d1[1] * 2.6)}`;
-          })
-          .join("");
+        const stripe = `<path d="M${pt(at([a0, ac, a1], 0.76))}L${pt(at([b0, bc, b1], 0.76))}" stroke="${gold}" stroke-width="3.2"/>`;
         return (
-          `<path d="${fringe}" stroke="#fff" stroke-opacity=".16" stroke-width="2.5" stroke-linecap="round"/>` +
-          `<path d="${fringe}" stroke="${INK}" stroke-width="1.4" stroke-linecap="round"/>` +
           `<path d="M${pt(a0)}Q${pt(ac)} ${pt(a1)}L${pt(b1)}Q${pt(bc)} ${pt(b0)}Z" fill="${INK}" ${RIM} stroke-linejoin="round"/>` +
-          stripes
+          stripe
         );
       };
       // Tails hang as far as the frame allows: long on wide bodies, where the
@@ -745,43 +818,45 @@ function accessoryMarkup(
       const [, by0, , by1] = geo.box;
       const spare = Math.max(0, geo.box[2] - geo.box[0] - (by1 - by0));
       const drop = Math.min(19, Math.max(11, by1 + spare - ky - 1));
-      const swing = tail(
-        [kx + 1.5, ky + 1],
-        [kx + 7.5, ky + 4.5],
-        [kx + 12.5, ky + drop - 4.5],
-        5.6,
-        7,
-      );
-      const hang = tail([kx - 1, ky + 1], [kx - 3, ky + drop / 2], [kx + 0.5, ky + drop], 6, 7.6);
-      // A soft square knot with one crease, not a ball.
+      const hang = tail([kx - 1, ky + 1], [kx - 3, ky + drop / 2], [kx + 0.5, ky + drop], 8, 10);
+      // A soft square knot, not a ball.
       const knotAt = (dx: number, dy: number): P2 => [kx + dx, ky - 0.5 + dy];
-      const knot =
-        `<path d="${roundedPolygonPath([knotAt(-4.8, -3.6), knotAt(4.2, -4.3), knotAt(4.9, 3.7), knotAt(-4.1, 4.3)], 2.6)}" fill="${INK}" ${RIM}/>` +
-        sheen(
-          `M${pt(knotAt(-2.8, -2.4))}Q${pt(knotAt(0, -3.4))} ${pt(knotAt(2.4, -2.8))}`,
-          1.2,
-          0.3,
-        ) +
-        `<path d="M${pt(knotAt(-0.6, -3.2))}Q${pt(knotAt(0.6, 0))} ${pt(knotAt(0, 3.4))}" stroke="#fff" stroke-opacity=".14" stroke-width=".9" fill="none"/>`;
+      const knot = `<path d="${roundedPolygonPath([knotAt(-4.8, -3.6), knotAt(4.2, -4.3), knotAt(4.9, 3.7), knotAt(-4.1, 4.3)], 2.6)}" fill="${INK}" ${RIM}/>`;
       return {
-        front: wrap + fold + roll + swing + hang + knot,
-        box: [l - 1.4, ny - 0.6, Math.max(r + 1.4, kx + 17.5), ky + drop + 3.2],
+        front: wrap + hang + knot,
+        box: [l - 1.4, ny - 0.6, Math.max(r + 1.4, kx + 7), ky + drop + 1],
       };
     }
     case "monocle": {
       const c = centers[1];
-      const radius = 9.4;
-      const glass = `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="#fff" fill-opacity=".16"/>`;
+      const radius = 12.2;
+      const glass = `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="#fff" fill-opacity=".24"/>`;
+      // One bold brass ring: anything finer dissolves into the eye at 20 px.
       const ring =
-        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${INK}" stroke-width="3.2"/>` +
-        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius - 2.1)}" fill="none" stroke="${gold}" stroke-width=".9"/>` +
-        sheen(arc(c, radius - 3.6, 200, 250), 1.4, 0.75);
+        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${INK}" stroke-width="5.2"/>` +
+        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${gold}" stroke-width="3.2"/>`;
       const hang: P2 = [c[0] + radius * 0.62, c[1] + radius * 0.78];
       const end: P2 = [Math.min(right - 1.5, c[0] + 15), c[1] + 19];
-      const chain =
-        `<path d="M${pt(hang)}Q${pt([hang[0] + 1, end[1] + 1])} ${pt(end)}" stroke="${gold}" stroke-width="1.4" stroke-linecap="round" fill="none"/>` +
-        `<circle cx="${f(end[0])}" cy="${f(end[1])}" r="1.6" fill="${gold}"/>`;
+      const chain = `<path d="M${pt(hang)}Q${pt([hang[0] + 1, end[1] + 1])} ${pt(end)}" stroke="${gold}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
       return { front: glass + ring + chain, box: null };
+    }
+    case "bowtie": {
+      // Two ink wings and a brass knot, sitting at the bottom of the body.
+      const [cx, cy] = [geo.chin[0], geo.chin[1] + 7.5];
+      const wing = (dir: number) =>
+        `<path d="${roundedPolygonPath(
+          [
+            [cx + dir * 2, cy - 2.4],
+            [cx + dir * 16, cy - 8.6],
+            [cx + dir * 16, cy + 8.6],
+            [cx + dir * 2, cy + 2.4],
+          ],
+          2,
+        )}" fill="${INK}" ${RIM}/>`;
+      return {
+        front: wing(-1) + wing(1) + dot(cx, cy, 4.3, gold),
+        box: null,
+      };
     }
     default:
       return { front: "", box: null };
@@ -838,19 +913,98 @@ function tone(hex: string, dl: number, sat: number, toward: number, turn: number
   return fromHsl(h + step, s * sat, l + dl);
 }
 
-const WARM = 48;
 const COOL = 250;
 
-function stops(list: ReadonlyArray<readonly [number, string, number]>): string {
-  return list
-    .map(
-      ([offset, color, opacity]) =>
-        `<stop${offset ? ` offset="${f(offset)}"` : ""} stop-color="${color}"${opacity < 1 ? ` stop-opacity="${f(opacity)}"` : ""}/>`,
-    )
-    .join("");
+// ---------------------------------------------------------------------------
+
+/**
+ * How each mood holds the whole body. This is what separates moods at 20px, where
+ * a brow is one pixel, and because it is in the drawing it costs nothing to keep.
+ */
+const MOOD_LEAN: Record<AgentAvatarMood, number> = {
+  idle: 0,
+  working: 3,
+  waiting: 8,
+  blocked: -5,
+  happy: 0,
+  sleeping: 11,
+};
+
+function moodPose(mood: AgentAvatarMood): string {
+  const lean = MOOD_LEAN[mood];
+  if (lean === 0) return "";
+  // Shrinks just enough that a tilted corner stays inside the frame. Blocked also
+  // slumps toward its feet.
+  const k = 1 - Math.abs(lean) * 0.0075;
+  const slump = mood === "blocked" ? 0.91 : 1;
+  const y = 44 * (1 - k) + 78 * k * (1 - slump);
+  return `rotate(${lean} 40 44) translate(${f(40 * (1 - k))} ${f(y)}) scale(${f(k)} ${f(k * slump)}) `;
 }
 
-// ---------------------------------------------------------------------------
+const SVG_OPEN = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80">`;
+
+function svgRoot(transform: string, content: string, badge = ""): string {
+  return `${SVG_OPEN}
+<g transform="${transform}">
+${content}
+</g>
+${badge}</svg>`;
+}
+
+function avatarParts(
+  agentId: string,
+  online: boolean,
+  avatarColor: number | null | undefined,
+  blinking: boolean,
+  mood: AgentAvatarMood,
+) {
+  const traits = agentAvatarTraits(agentId, avatarColor);
+  const face: AgentAvatarMood = online ? mood : "sleeping";
+  const geo = SHAPES[traits.shape];
+  // Offline is unlit vinyl: a cool grey that keeps a whisper of its color.
+  const bodyColor = online
+    ? traits.color
+    : mix(fromHsl(COOL - 20, 0.07, toHsl(traits.color)[2] * 0.62 + 0.12), traits.color, 0.14);
+  // Trim is a deeper dye of the body; vivid bodies give up more chroma so a
+  // band never turns electric.
+  const [, bodySat, bodyLight] = toHsl(bodyColor);
+  const trimColor = tone(bodyColor, -bodyLight * 0.2, 1 - bodySat * 0.3, COOL, 8);
+  const centers = eyeCenters(geo, traits, face);
+  const worn = accessoryMarkup(traits.accessory, geo, centers, bodyColor, !online);
+
+  let [x0, y0, x1, y1] = geo.box;
+  if (worn.box) {
+    x0 = Math.min(x0, worn.box[0]);
+    y0 = Math.min(y0, worn.box[1]);
+    x1 = Math.max(x1, worn.box[2]);
+    y1 = Math.max(y1, worn.box[3]);
+  }
+  const scale = Math.min(76 / (x1 - x0), 76 / (y1 - y0));
+  const tx = 40 - (scale * (x0 + x1)) / 2;
+  const ty = 40 - (scale * (y0 + y1)) / 2;
+  const [bx0, by0, bx1, by1] = geo.box;
+  const span = Math.max(bx1 - bx0, by1 - by0);
+
+  // One flat color and one soft-edged form shadow: a copy of the part in the
+  // main color, nudged toward the light, over the part in its shade.
+  const shaded = (shape: string, clip: string, color: string) =>
+    `<g fill="${tone(color, -0.14, 0.86, COOL, 14)}">${shape}</g>` +
+    `<g fill="${color}" clip-path="url(#${clip})" clip-rule="nonzero"><g transform="translate(${f(-span * 0.025)} ${f(-span * 0.042)})">${shape}</g></g>`;
+  const defs = `<defs><clipPath id="b">${geo.body}</clipPath>${geo.trim ? `<clipPath id="t">${geo.trim}</clipPath>` : ""}</defs>`;
+  const material =
+    shaded(geo.body, "b", bodyColor) + (geo.trim ? shaded(geo.trim, "t", trimColor) : "");
+  const parts = faceParts(geo, traits, face, blinking, bodyColor, online);
+  return {
+    transform: `${online ? moodPose(face) : ""}matrix(${f(scale)} 0 0 ${f(scale)} ${f(tx)} ${f(ty)})`,
+    body: `${defs}${material}\n${worn.front}\n${parts.features}`,
+    eyes: parts.eyes,
+    badge: online ? moodBadge(face) : "",
+    eyeCenter: [
+      (tx + scale * ((centers[0][0] + centers[1][0]) / 2)) / 80,
+      (ty + scale * centers[0][1]) / 80,
+    ] as const,
+  };
+}
 
 /**
  * One small, static drawing for web image documents and native SvgXml. Ids are
@@ -864,126 +1018,34 @@ export function agentAvatarSvg(
   blinking = false,
   mood: AgentAvatarMood = "idle",
 ): string {
-  const traits = agentAvatarTraits(agentId, avatarColor);
-  const face: AgentAvatarMood = online ? mood : "sleeping";
-  const geo = SHAPES[traits.shape];
-  // Offline is unlit vinyl: a cool grey that keeps a whisper of its color.
-  const bodyColor = online
-    ? traits.color
-    : mix(fromHsl(COOL - 20, 0.07, toHsl(traits.color)[2] * 0.62 + 0.12), traits.color, 0.14);
-  // Trim is a deeper dye of the body; vivid bodies give up more chroma so a
-  // band never turns electric.
-  const [, bodySat, bodyLight] = toHsl(bodyColor);
-  const trimColor = tone(bodyColor, -bodyLight * 0.3, 1 - bodySat * 0.45, COOL, 8);
-  const centers = eyeCenters(geo, traits, face);
-  const worn = accessoryMarkup(traits.accessory, geo, centers, bodyColor, !online);
+  const parts = avatarParts(agentId, online, avatarColor, blinking, mood);
+  return svgRoot(parts.transform, `${parts.body}\n${parts.eyes}`, parts.badge);
+}
 
-  let [x0, y0, x1, y1] = geo.box;
-  for (const box of [worn.box]) {
-    if (!box) continue;
-    x0 = Math.min(x0, box[0]);
-    y0 = Math.min(y0, box[1]);
-    x1 = Math.max(x1, box[2]);
-    y1 = Math.max(y1, box[3]);
-  }
-  const scale = Math.min(76 / (x1 - x0), 76 / (y1 - y0));
-  const tx = 40 - (scale * (x0 + x1)) / 2;
-  const ty = 40 - (scale * (y0 + y1)) / 2;
-  const [bx0, by0, bx1, by1] = geo.box;
-  const cx = (bx0 + bx1) / 2;
-  const w = bx1 - bx0;
-  const h = by1 - by0;
-  const span = Math.max(w, h);
+export interface AgentAvatarLayers {
+  readonly body: string;
+  readonly eyes: string;
+  /** The corner status mark, when this mood has one. */
+  readonly badge: string | null;
+  /** Between the eyes, as fractions of the frame: where they blink from. */
+  readonly eyeCenter: readonly [number, number];
+}
 
-  // The edge the light lands on: each part sits on a lifted copy of itself,
-  // stepped twice so the edge softens instead of reading as an outline.
-  const d = Math.max(0.9, span * 0.024);
-  const frame = `x="${f(bx0 - 2)}" y="${f(by0 - 2)}" width="${f(w + 4)}" height="${f(h + 4)}"`;
-  const edgeAxis = `x1="${f(bx0 + w * 0.1)}" y1="${f(by0)}" x2="${f(cx + w * 0.1)}" y2="${f(by0 + h * 0.6)}"`;
-  const key = `cx="${f(cx - w * 0.2)}" cy="${f(by0 + h * 0.2)}" r="${f(span * 0.95)}"`;
-  const floor = `x1="0" y1="${f(by0 + h * 0.8)}" x2="0" y2="${f(by1)}"`;
-
-  /** Gradients for one part: lit edge, key light with form shadow, floor bounce. */
-  const lighting = (color: string, [edge, light, under]: readonly [string, string, string]) => {
-    const lift = online ? tone(color, 0.12, 0.95, WARM, 8) : tone(color, 0.06, 1, WARM, 0);
-    const shade = tone(color, -0.18, 0.72, COOL, 14);
-    const bounce = online ? tone(color, 0.1, 1, WARM, 12) : tone(color, 0.04, 1, WARM, 0);
-    return (
-      `<linearGradient id="${edge}" gradientUnits="userSpaceOnUse" ${edgeAxis}>${stops([
-        [0, lift, 1],
-        [1, color, 1],
-      ])}</linearGradient>` +
-      `<radialGradient id="${light}" gradientUnits="userSpaceOnUse" ${key}>${stops([
-        [0, lift, online ? 0.5 : 0.3],
-        [0.34, lift, 0],
-        [0.56, shade, 0],
-        [0.88, shade, 0.5],
-        [1, shade, 0.62],
-      ])}</radialGradient>` +
-      `<linearGradient id="${under}" gradientUnits="userSpaceOnUse" ${floor}>${stops([
-        [0, bounce, 0],
-        [1, bounce, 0.5],
-      ])}</linearGradient>`
-    );
+/**
+ * The same drawing in two images, so a client can blink and glance by moving the
+ * eyes alone on the compositor, with nothing re-rendered or repainted.
+ */
+export function agentAvatarLayers(
+  agentId: string,
+  online: boolean,
+  avatarColor?: number | null,
+  mood: AgentAvatarMood = "idle",
+): AgentAvatarLayers {
+  const parts = avatarParts(agentId, online, avatarColor, false, mood);
+  return {
+    body: svgRoot(parts.transform, parts.body),
+    eyes: svgRoot(parts.transform, parts.eyes),
+    badge: parts.badge ? `${SVG_OPEN}${parts.badge}</svg>` : null,
+    eyeCenter: parts.eyeCenter,
   };
-  const shifted = (shape: string, clip: string, fill: string, k: number, opacity: string) =>
-    `<g fill="${fill}"${opacity} clip-path="url(#${clip})" clip-rule="nonzero"><g transform="translate(${f(d * k * 0.5)} ${f(d * k)})">${shape}</g></g>`;
-  const paint = (
-    shape: string,
-    clip: string,
-    fill: string,
-    [edge, light, under]: readonly [string, string, string],
-  ) =>
-    `<g fill="url(#${edge})">${shape}</g>` +
-    shifted(shape, clip, fill, 0.5, ' opacity=".55"') +
-    shifted(shape, clip, fill, 1, "") +
-    `<rect ${frame} fill="url(#${light})" clip-path="url(#${clip})" clip-rule="nonzero"/>` +
-    `<rect ${frame} fill="url(#${under})" clip-path="url(#${clip})" clip-rule="nonzero"/>`;
-
-  const bodyIds = ["me", "mk", "mf"] as const;
-  const aoColor = tone(bodyColor, -0.3, 0.7, COOL, 18);
-  const trimIds = ["te", "tk", "tf"] as const;
-  const defs = [
-    `<clipPath id="b">${geo.body}${geo.trim ?? ""}</clipPath>`,
-    geo.trim
-      ? `<clipPath id="mc">${geo.body}</clipPath><clipPath id="mt">${geo.trim}</clipPath>`
-      : "",
-    lighting(bodyColor, bodyIds),
-    geo.trim ? lighting(trimColor, trimIds) : "",
-    // Soft contact shadow; it only shows where the body meets the floor.
-    `<radialGradient id="mg">${stops([
-      [0, "#0a0806", 0.34],
-      [0.5, "#0a0806", 0.14],
-      [1, "#0a0806", 0],
-    ])}</radialGradient>`,
-    // Occlusion where the body presses into the floor.
-    `<radialGradient id="mo">${stops([
-      [0, aoColor, 0.26],
-      [1, aoColor, 0],
-    ])}</radialGradient>`,
-  ].join("");
-
-  const ground = `<ellipse cx="${f(cx)}" cy="${f(by1)}" rx="${f(w * 0.44)}" ry="${f(Math.max(2.6, h * 0.05))}" fill="url(#mg)"/>`;
-  const occlusion = `<ellipse cx="${f(cx)}" cy="${f(by1 + h * 0.03)}" rx="${f(w * 0.42)}" ry="${f(h * 0.11)}" fill="url(#mo)" clip-path="url(#b)" clip-rule="nonzero"/>`;
-  // Trim (a cap, a band) shades the body just beneath it.
-  const trimShadow = geo.trim
-    ? `<g fill="${tone(trimColor, -0.12, 0.7, COOL, 10)}" clip-path="url(#mc)" clip-rule="nonzero">${[
-        0.7, 1.6, 2.8,
-      ]
-        .map((dy) => `<g opacity=".2" transform="translate(0 ${f(dy)})">${geo.trim}</g>`)
-        .join("")}</g>`
-    : "";
-  const material =
-    paint(geo.body, geo.trim ? "mc" : "b", bodyColor, bodyIds) +
-    (geo.trim ? trimShadow + paint(geo.trim, "mt", trimColor, trimIds) : "");
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80">
-<defs>${defs}</defs>
-<g transform="matrix(${f(scale)} 0 0 ${f(scale)} ${f(tx)} ${f(ty)})">
-${ground}
-${material}${occlusion}
-${eyesMarkup(geo, traits, face, blinking, bodyColor)}
-${worn.front}
-</g>
-</svg>`;
 }
