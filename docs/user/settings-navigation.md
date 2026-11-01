@@ -24,4 +24,4 @@ On a phone held upright, Settings opens on a list of sections by category. The b
 
 Search in Settings finds any setting by name, by its section, or by words you might use for it, and jumps to the row. **Search** in the sidebar (Cmd+K or Ctrl+K) finds settings too, along with commands, projects and your conversations.
 
-Conversation search looks through what you wrote and each agent's final answers, in every chat on every connected computer. Archived chats are included and listed last, under **Archived threads**.
+Conversation search looks through what you wrote and each agent's final answers, in every chat on every connected computer. Archived chats are included and listed last, under **Archived threads**. Selecting one restores it to your list and opens it; archive it again to put it back.

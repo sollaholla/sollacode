@@ -77,6 +77,7 @@ import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useListedProjects, useThreadShells } from "../state/entities";
 import { useThreadSearch } from "../state/queries";
+import { useThreadActions } from "../hooks/useThreadActions";
 import { searchSettings } from "./settings/settingsSearchIndex";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
@@ -644,6 +645,7 @@ function OpenCommandPaletteDialog(props: {
   );
   const threadSearchQuery = currentView === null && !isActionsOnly ? deferredQuery : "";
   const threadSearch = useThreadSearch(environmentIds, threadSearchQuery);
+  const { unarchiveThread } = useThreadActions();
   const threadContentMatchByKey = useMemo(
     () =>
       new Map(
@@ -1123,26 +1125,38 @@ function OpenCommandPaletteDialog(props: {
                 // the snippet trims. Keep it for the palette's local filter.
                 searchTerms: [match.threadTitle ?? "", match.snippet, threadSearchQuery],
                 title: match.threadTitle ?? "Archived chat",
-                description: "Archived",
+                description: "Archived · opening restores it to your list",
                 icon: <ArchiveIcon className={ITEM_ICON_CLASS} />,
                 threadContentMatch: {
                   source: match.source,
                   snippet: match.snippet,
                   query: threadSearchQuery,
                 },
+                // The chat view only shows threads in the list, so reading an
+                // archived chat means restoring it. Archiving again reverses that.
                 run: async () => {
+                  const threadRef = scopeThreadRef(match.environmentId, match.threadId);
+                  const restored = await unarchiveThread(threadRef);
+                  if (restored._tag !== "Success") {
+                    toastManager.add(
+                      stackedThreadToast({
+                        type: "error",
+                        title: "Could not open this archived chat",
+                        description: "It is still in Settings → Archive.",
+                      }),
+                    );
+                    return;
+                  }
                   await navigate({
                     to: "/$environmentId/$threadId",
-                    params: buildThreadRouteParams(
-                      scopeThreadRef(match.environmentId, match.threadId),
-                    ),
+                    params: buildThreadRouteParams(threadRef),
                   });
                 },
               },
             ]
           : [],
       ),
-    [navigate, threadSearch.matches, threadSearchQuery],
+    [navigate, threadSearch.matches, threadSearchQuery, unarchiveThread],
   );
   const settingsSearchItems = useMemo(
     () =>
