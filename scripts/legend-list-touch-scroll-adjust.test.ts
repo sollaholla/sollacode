@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off globalTimers:off - Fake timers drive the distributed hook directly
 // @effect-diagnostics nodeBuiltinImport:off - Exercises the distributed package runtime as a filesystem fixture.
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
@@ -61,8 +62,8 @@ function mountScrollAdjust(file: "react.mjs" | "react.js", enabled = true) {
     pendingScrollResolve?: () => void;
     didFinishInitialScroll?: boolean;
     initialScroll?: { viewPosition: number };
-    initialScrollSession?: { kind: string };
-    scrollingTo?: { isInitialScroll: boolean };
+    initialScrollSession?: { kind: string } | undefined;
+    scrollingTo?: { isInitialScroll: boolean } | undefined;
     preservedEndAnchorCorrection?: unknown;
     scrollLength?: number;
     lastNativeScroll?: number;
@@ -333,7 +334,7 @@ function mountScrollAdjust(file: "react.mjs" | "react.js", enabled = true) {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+  vi.stubGlobal("requestAnimationFrame", (callback: (time: number) => void) =>
     setTimeout(() => callback(performance.now()), 16),
   );
 });

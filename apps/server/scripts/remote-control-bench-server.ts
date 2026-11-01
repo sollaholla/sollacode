@@ -13,7 +13,7 @@
  * `/bench/`.
  */
 // @effect-diagnostics nodeBuiltinImport:off - benchmark script runs only under Node
-import { createServer } from "node:http";
+import * as NodeHttp from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -176,7 +176,7 @@ const main = Layer.mergeAll(
   Layer.provide(RemoteControlBroker.layer),
   Layer.provide(MediaRelay.layer),
   Layer.provideMerge(
-    NodeHttpServer.layer(() => createServer(), {
+    NodeHttpServer.layer(() => NodeHttp.createServer(), {
       host: "127.0.0.1",
       port: Number(process.env.BENCH_PORT ?? 0),
     }),
