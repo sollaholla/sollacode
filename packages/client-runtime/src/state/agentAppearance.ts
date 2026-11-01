@@ -23,7 +23,7 @@ export const AGENT_AVATAR_SHAPES = [
   "cactus",
   "saucer",
 ] as const;
-export const AGENT_AVATAR_ACCESSORIES = ["none", "goggles", "scarf", "monocle"] as const;
+export const AGENT_AVATAR_ACCESSORIES = ["none", "goggles", "scarf", "monocle", "bowtie"] as const;
 export const AGENT_AVATAR_EYES = ["glint", "pill", "beads", "visor"] as const;
 
 export type AgentAvatarShape = (typeof AGENT_AVATAR_SHAPES)[number];
@@ -73,7 +73,7 @@ interface CastMember {
 /** A person's first agents are a designed cast; later ones remix it. */
 // Accessories alternate so neighbours in a list never wear the same one. Later
 // rounds move each worn accessory on by one and leave a bare character bare
-// (acorn→goggles, sunburst→scarf, pebble→monocle).
+// (acorn→bowtie, sunburst→scarf, pebble→monocle, onion→goggles).
 const CAST: readonly CastMember[] = [
   { shape: "mochi", color: 0, eyes: "glint", accessory: "none", glance: [-2.5, -1.5] },
   { shape: "bell", color: 1, eyes: "pill", accessory: "none", glance: [2, 0] },
@@ -81,7 +81,7 @@ const CAST: readonly CastMember[] = [
   { shape: "lantern", color: 3, eyes: "visor", accessory: "none", glance: [2.5, 0] },
   { shape: "sunburst", color: 7, eyes: "glint", accessory: "goggles", glance: [-2, 0] },
   { shape: "gumdrop", color: 8, eyes: "beads", accessory: "none", glance: [2, -1] },
-  { shape: "onion", color: 9, eyes: "glint", accessory: "monocle", glance: [-1.5, -1] },
+  { shape: "onion", color: 9, eyes: "glint", accessory: "bowtie", glance: [-1.5, -1] },
   { shape: "capsule", color: 10, eyes: "pill", accessory: "none", glance: [2.5, -1] },
   { shape: "pebble", color: 11, eyes: "glint", accessory: "scarf", glance: [-2, -1] },
   { shape: "dango", color: 12, eyes: "beads", accessory: "none", glance: [1.5, 0] },
@@ -329,11 +329,11 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     // The sprout leans and curls, so it is not a plain drop.
     body: `<path d="M44.5 4.2Q47.6 3.4 47 6.6Q45.4 12.4 50 17C64 24 72 37 72 50C72 64 58 75 40 75C22 75 8 64 8 50C8 37 16 24 30 17Q39.5 12.5 44.5 4.2Z"/>`,
     box: [8, 4, 72, 75],
-    face: [40, 50],
+    face: [40, 42],
     gap: 11,
     sides: [8, 72],
     crown: [44, 4],
-    chin: [40, 69],
+    chin: [40, 58],
     neck: [60.5, 10.8, 69.2],
   },
   capsule: {
@@ -506,6 +506,9 @@ function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lea
   return "";
 }
 
+/** A floating glyph: white over an ink outline, so it holds on every body color. */
+const mark = (d: string) => stroke(d, 4.8) + stroke(d, 2.5, "#fff");
+
 /** The one extra mark a mood gets: a typing bubble, a sweat drop, blushing cheeks, a floating z. */
 function moodAccent(
   geo: Geo,
@@ -519,14 +522,22 @@ function moodAccent(
   if (mood === "working" && online) {
     const cx = Math.min(right[0] + 5 * s, geo.sides[1] - 8);
     const cy = Math.max(right[1] - 11 * s, geo.crown[1] + 2);
-    const dots = [-5, 0, 5].map((dx) => dot(cx + dx, cy, 1.7, INK)).join("");
-    return `<rect x="${f(cx - 10)}" y="${f(cy - 5.5)}" width="20" height="11" rx="5.5" fill="#fff"/>${dots}`;
+    const dots = [-6.2, 0, 6.2].map((dx) => dot(cx + dx, cy, 2.1, INK)).join("");
+    return `<rect x="${f(cx - 12)}" y="${f(cy - 6.5)}" width="24" height="13" rx="6.5" fill="#fff" stroke="${INK}" stroke-width="1.4"/>${dots}`;
   }
   if (mood === "blocked") {
     const x = Math.min(right[0] + 8.5 * s, geo.sides[1] - 5);
     const y = right[1] - 8 * s;
-    const k = 0.95 * s;
-    return `<path d="M${pt([x, y - 4.6 * k])}C${pt([x + 3.4 * k, y - 0.4 * k])} ${pt([x + 3 * k, y + 3.4 * k])} ${pt([x, y + 3.4 * k])}C${pt([x - 3 * k, y + 3.4 * k])} ${pt([x - 3.4 * k, y - 0.4 * k])} ${pt([x, y - 4.6 * k])}Z" fill="#d8f2ff"/>`;
+    const k = 1.3 * s;
+    return `<path d="M${pt([x, y - 4.6 * k])}C${pt([x + 3.4 * k, y - 0.4 * k])} ${pt([x + 3 * k, y + 3.4 * k])} ${pt([x, y + 3.4 * k])}C${pt([x - 3 * k, y + 3.4 * k])} ${pt([x - 3.4 * k, y - 0.4 * k])} ${pt([x, y - 4.6 * k])}Z" fill="#d8f2ff" stroke="${INK}" stroke-width="1.1"/>`;
+  }
+  if (mood === "waiting" && online) {
+    const x = Math.min(right[0] + 3 * s, geo.sides[1] - 9);
+    const y = Math.max(right[1] - 14 * s, geo.crown[1] + 3);
+    const k = 4.6 * (s / FACE_SCALE);
+    return mark(
+      `M${pt([x, y + 0.5 * k])}C${pt([x, y - 0.4 * k])} ${pt([x + 1.7 * k, y - 0.4 * k])} ${pt([x + 1.7 * k, y + 0.6 * k])}C${pt([x + 1.7 * k, y + 1.2 * k])} ${pt([x + 0.85 * k, y + 1.1 * k])} ${pt([x + 0.85 * k, y + 1.8 * k])}M${pt([x + 0.85 * k, y + 2.75 * k])}h.01`,
+    );
   }
   if (mood === "happy") {
     const blush = mix(bodyColor, "#ff2f6e", 0.42);
@@ -540,7 +551,7 @@ function moodAccent(
     const x = Math.min(right[0] + 3 * s, geo.sides[1] - 9);
     const y = Math.max(right[1] - 13 * s, geo.crown[1] + 5);
     const k = 5.4 * (s / FACE_SCALE);
-    return stroke(`M${pt([x, y])}H${f(x + k * 1.5)}L${pt([x, y + k * 1.5])}H${f(x + k * 1.5)}`, 2.5, mix(bodyColor, "#ffffff", 0.82));
+    return mark(`M${pt([x, y])}H${f(x + k * 1.5)}L${pt([x, y + k * 1.5])}H${f(x + k * 1.5)}`);
   }
   return "";
 }
@@ -758,8 +769,8 @@ function accessoryMarkup(
       const rings = [geo.face[0] - 9.6, geo.face[0] + 9.6]
         .map(
           (x) =>
-            `<circle cx="${f(x)}" cy="${f(y)}" r="7.8" fill="${INK}" ${RIM}/>` +
-            `<circle cx="${f(x)}" cy="${f(y)}" r="4.4" fill="${gold}"/>`,
+            `<circle cx="${f(x)}" cy="${f(y)}" r="8.2" fill="${INK}" ${RIM}/>` +
+            `<circle cx="${f(x)}" cy="${f(y)}" r="5" fill="${gold}"/>`,
         )
         .join("");
       return { front: strap + bridge + rings, box: null };
@@ -839,14 +850,32 @@ function accessoryMarkup(
       const glass = `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="#fff" fill-opacity=".24"/>`;
       // One bold brass ring: anything finer dissolves into the eye at 20 px.
       const ring =
-        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${INK}" stroke-width="4.6"/>` +
-        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${gold}" stroke-width="2.6"/>`;
+        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${INK}" stroke-width="5.2"/>` +
+        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${gold}" stroke-width="3.2"/>`;
       const hang: P2 = [c[0] + radius * 0.62, c[1] + radius * 0.78];
       const end: P2 = [Math.min(right - 1.5, c[0] + 15), c[1] + 19];
       const chain =
         `<path d="M${pt(hang)}Q${pt([hang[0] + 1, end[1] + 1])} ${pt(end)}" stroke="${gold}" stroke-width="1.4" stroke-linecap="round" fill="none"/>` +
         `<circle cx="${f(end[0])}" cy="${f(end[1])}" r="1.6" fill="${gold}"/>`;
       return { front: glass + ring + chain, box: null };
+    }
+    case "bowtie": {
+      // Two ink wings and a brass knot, sitting at the bottom of the body.
+      const [cx, cy] = [geo.chin[0], geo.chin[1] + 7.5];
+      const wing = (dir: number) =>
+        `<path d="${roundedPolygonPath(
+          [
+            [cx + dir * 2, cy - 2.4],
+            [cx + dir * 14, cy - 7.4],
+            [cx + dir * 14, cy + 7.4],
+            [cx + dir * 2, cy + 2.4],
+          ],
+          2,
+        )}" fill="${INK}" ${RIM}/>`;
+      return {
+        front: wing(-1) + wing(1) + dot(cx, cy, 3.7, gold),
+        box: null,
+      };
     }
     default:
       return { front: "", box: null };
@@ -914,7 +943,7 @@ const COOL = 250;
 const MOOD_LEAN: Record<AgentAvatarMood, number> = {
   idle: 0,
   working: 3,
-  waiting: 6,
+  waiting: 8,
   blocked: -5,
   happy: 0,
   sleeping: 11,
@@ -923,9 +952,12 @@ const MOOD_LEAN: Record<AgentAvatarMood, number> = {
 function moodPose(mood: AgentAvatarMood): string {
   const lean = MOOD_LEAN[mood];
   if (lean === 0) return "";
-  // Shrinks just enough that a tilted corner stays inside the frame.
+  // Shrinks just enough that a tilted corner stays inside the frame. Blocked also
+  // slumps toward its feet.
   const k = 1 - Math.abs(lean) * 0.0075;
-  return `rotate(${lean} 40 44) translate(${f(40 * (1 - k))} ${f(44 * (1 - k))}) scale(${f(k)}) `;
+  const slump = mood === "blocked" ? 0.91 : 1;
+  const y = 44 * (1 - k) + 78 * k * (1 - slump);
+  return `rotate(${lean} 40 44) translate(${f(40 * (1 - k))} ${f(y)}) scale(${f(k)} ${f(k * slump)}) `;
 }
 
 function svgRoot(transform: string, content: string): string {
