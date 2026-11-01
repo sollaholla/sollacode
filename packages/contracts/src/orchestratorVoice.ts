@@ -6,7 +6,7 @@
  * official xAI Speech-to-Speech API.
  */
 import * as Schema from "effect/Schema";
-import { OPENAI_LIVE_MODEL } from "./orchestratorLive.ts";
+import { OPENAI_LIVE_MODEL, OPENAI_LIVE_VOICES } from "./orchestratorLive.ts";
 
 export const OrchestratorVoiceProvider = Schema.Literals(["openai", "xai"]);
 export type OrchestratorVoiceProvider = typeof OrchestratorVoiceProvider.Type;
@@ -207,6 +207,11 @@ export function resolveOrchestratorVoiceSelection(input: {
     ? input.voice.trim()
     : catalog.defaultVoice;
   return { model, voice };
+}
+
+/** The configured voice when GPT-Live has it, otherwise its default. */
+export function liveVoiceFor(voice: string): string {
+  return (OPENAI_LIVE_VOICES as readonly string[]).includes(voice) ? voice : "marin";
 }
 
 /**

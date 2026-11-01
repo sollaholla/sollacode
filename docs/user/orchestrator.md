@@ -273,7 +273,10 @@ happened is the hard part, and there are two separate failure modes.
 A noise is not speech. A cup set down is louder than any voice, so loudness is
 deliberately not evidence; what separates them is shape. The client watches the
 microphone for a fraction of a second and only interrupts on sound that sustains
-and is still going when it looks again.
+and is still going when it looks again. It keeps looking for as long as you are
+talking, so a pause between your words does not cost you the interruption, and a
+reply can be cut off for as long as it is still playing, including after the
+model has finished generating it.
 
 Its own voice is not speech either. On a phone speaker - or leaking headphones -
 the orchestrator's output comes back into the microphone, and echo is _perfectly_
@@ -518,6 +521,10 @@ cannot have caught up yet.
 ## Checking which model the orchestrator is using
 
 The voice session's provider, model and voice are read from settings when the session **starts**.
+GPT-Live speaks only its own voices, so **Voice** lists those while GPT-Live is selected. A voice
+saved from another provider, such as Grok's Eve, is not heard on GPT-Live: **Voice** shows the voice
+that plays instead. To hear a Grok voice, set **Voice provider** to Grok.
+
 Changing **Settings → Orchestrator → Voice provider**, **Model** or **Voice** restarts a live
 session so the change is heard immediately. It does not affect typing to the orchestrator.
 

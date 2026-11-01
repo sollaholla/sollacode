@@ -7,6 +7,7 @@ import {
   isOrchestratorVoiceProvider,
   isUsableOrchestratorVoice,
   isXaiCustomVoiceId,
+  liveVoiceFor,
   resolveOrchestratorVoiceSelection,
   xaiClientSecretProtocol,
   xaiLanguageHint,
@@ -69,6 +70,13 @@ describe("resolveOrchestratorVoiceSelection", () => {
         voice: "nlbqfwie",
       }).voice,
     ).toBe("nlbqfwie");
+  });
+});
+
+describe("liveVoiceFor", () => {
+  it("keeps a GPT-Live voice and replaces any other with the default", () => {
+    expect(liveVoiceFor("vesper")).toBe("vesper");
+    expect(liveVoiceFor("eve")).toBe("marin");
   });
 });
 
