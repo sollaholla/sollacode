@@ -1,3 +1,5 @@
+import { stackedThreadToast, toastManager } from "../components/ui/toast";
+
 /**
  * Whether this device is on an agent call.
  *
@@ -14,4 +16,15 @@ export function isAgentCallLive(): boolean {
 
 export function setAgentCallLive(next: boolean): void {
   live = next;
+}
+
+/** Tells the person why the orchestrator's voice did not start. */
+export function sayVoiceWaitsForCall(): void {
+  toastManager.add(
+    stackedThreadToast({
+      type: "info",
+      title: "You're on a call",
+      description: "End the agent call to talk to the orchestrator.",
+    }),
+  );
 }

@@ -196,6 +196,23 @@ export function hostSettledCallOutcome(
  */
 export const AGENT_CALL_DROPPED_MESSAGE = "The call dropped.";
 
+/**
+ * How a call ends when its voice session closed by itself. Only a call that
+ * reached the person and was accepted by its host can end normally; a session
+ * that closed before then never connected, whatever the host had accepted.
+ */
+export function agentCallSessionEnd(input: {
+  readonly sessionFailed: boolean;
+  readonly claimed: boolean;
+  readonly connected: boolean;
+  readonly error: string | null;
+}): { readonly phase: "ended" | "failed"; readonly error: string | null } {
+  if (input.sessionFailed || !input.claimed || !input.connected) {
+    return { phase: "failed", error: input.error ?? "The call could not connect." };
+  }
+  return { phase: "ended", error: null };
+}
+
 export interface AgentCallLocation {
   readonly environmentId: EnvironmentId;
   readonly callId: string;

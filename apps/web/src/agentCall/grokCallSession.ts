@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { isEchoProneDevice } from "../orchestrator/echoProneDevice";
 import { isAssistantGoodbye, isPersonGoodbye } from "../orchestrator/farewell";
 import { createLiveTranscriptContext, trimLiveHistory } from "../orchestrator/liveProtocol";
 import {
@@ -89,6 +90,7 @@ export function createGrokCallSession(
   let userFragments = 0;
   const userTranscriptArrived = new Set<() => void>();
   let lastUserWords = "";
+  let lastAssistantWords = "";
   let endedByGoodbye = false;
   let sequence = 0;
   let latestDelegationId: string | null = null;
@@ -270,11 +272,18 @@ export function createGrokCallSession(
       userFragments += 1;
       // A copy: a waiter that asks again adds a new waiter, which must wait for the next words.
       for (const arrived of Array.from(userTranscriptArrived)) arrived();
-      return;
+    } else {
+      lastAssistantWords = text;
     }
     // Grok has no tool to hang up with either: a goodbye the person said,
     // answered in kind, ends the call once that goodbye has been spoken.
-    if (!endedByGoodbye && isAssistantGoodbye(text) && isPersonGoodbye(lastUserWords)) {
+    // Grok usually delivers the person's words after its reply to them, so
+    // either transcript can be the one that completes the pair.
+    if (
+      !endedByGoodbye &&
+      isAssistantGoodbye(lastAssistantWords) &&
+      isPersonGoodbye(lastUserWords)
+    ) {
       endedByGoodbye = true;
       inner.endAfterReply();
     }
@@ -422,6 +431,9 @@ export function createGrokCallSession(
   const inner = createVoiceSession(
     {
       ...realtimeOptions,
+      // On a phone speaker the voice comes back through the microphone, and
+      // it must not take that for the person talking over it.
+      interruptWhileSpeaking: !isEchoProneDevice(),
       // The orchestrator's state tones have no place on a phone call.
       cuePolicy: () => ({ enabled: false, volume: 0 }),
       realtimeCall: {
@@ -447,6 +459,9 @@ export function createGrokCallSession(
       },
       // The session's own "thinking" is not the chat working; `setWorking` reports that.
       onWorkingChange: () => undefined,
+      // The levels are what lets the person talk over the voice: the session
+      // judges an interruption from its meter, which only runs with a listener.
+      onLevels: callbacks.onLevels ?? (() => undefined),
       onStateChange: (next: VoiceSessionState) => {
         // The voice ended itself (a goodbye, a transfer, a lost socket): free the host.
         if (next === "idle" || next === "error") cleanup();
@@ -465,6 +480,7 @@ export function createGrokCallSession(
     endAfterReply: () => inner.endAfterReply(),
     hush: () => inner.hush(),
     setMuted: (muted) => inner.setMuted?.(muted),
+    setMicrophone: (deviceId) => inner.setMicrophone?.(deviceId),
     instruct: (text) => inner.instruct?.(text),
     get state() {
       return inner.state;

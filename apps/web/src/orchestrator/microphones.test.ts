@@ -5,6 +5,7 @@ import {
   isMissingMicrophoneError,
   microphoneChoices,
   microphoneConstraintsFor,
+  microphoneFailureMessage,
 } from "./microphones";
 
 const input = (deviceId: string, label: string, groupId = deviceId) =>
@@ -61,5 +62,20 @@ describe("microphone choices", () => {
     expect(isMissingMicrophoneError({ name: "NotFoundError" })).toBe(true);
     expect(isMissingMicrophoneError({ name: "NotAllowedError" })).toBe(false);
     expect(isMissingMicrophoneError(null)).toBe(false);
+  });
+});
+
+describe("microphoneFailureMessage", () => {
+  const named = (name: string) => Object.assign(new Error("Permission denied"), { name });
+
+  it("says what to do about a refused or missing microphone", () => {
+    expect(microphoneFailureMessage(named("NotAllowedError"))).toContain("Allow it");
+    expect(microphoneFailureMessage(named("NotFoundError"))).toContain("No microphone");
+    expect(microphoneFailureMessage(named("NotReadableError"))).toContain("Another app");
+  });
+
+  it("leaves failures that have nothing to do with the microphone alone", () => {
+    expect(microphoneFailureMessage(new Error("Add an OpenAI key"))).toBeNull();
+    expect(microphoneFailureMessage(null)).toBeNull();
   });
 });

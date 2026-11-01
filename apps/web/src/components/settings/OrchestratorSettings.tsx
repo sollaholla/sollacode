@@ -4,6 +4,7 @@ import {
   ORCHESTRATOR_VOICE_PROVIDERS,
   OPENAI_LIVE_MODEL,
   OPENAI_LIVE_VOICES,
+  liveVoiceFor,
   type OrchestratorActivationMode,
   type OrchestratorAuthority,
   type OrchestratorVoiceProvider,
@@ -166,9 +167,12 @@ export function OrchestratorSettingsPanel() {
   const modelOptions = catalogModels.includes(orchestrator.model)
     ? catalogModels
     : [orchestrator.model, ...catalogModels];
-  const voiceOptions = catalogVoices.includes(orchestrator.voice)
+  // GPT-Live speaks only its own voices and falls back to its default for any
+  // other, so this shows the voice that will actually be heard.
+  const shownVoice = isLive ? liveVoiceFor(orchestrator.voice) : orchestrator.voice;
+  const voiceOptions = catalogVoices.includes(shownVoice)
     ? catalogVoices
-    : [orchestrator.voice, ...catalogVoices];
+    : [shownVoice, ...catalogVoices];
 
   const applyRealtime = (patch: {
     provider?: OrchestratorVoiceProvider;
@@ -375,10 +379,12 @@ export function OrchestratorSettingsPanel() {
           description={
             orchestrator.provider === "xai"
               ? "Which Grok Voice the orchestrator speaks with. Custom 8-character voice IDs can be typed if you have cloned one."
-              : "Which OpenAI Realtime voice the orchestrator speaks with."
+              : isLive
+                ? "Which GPT-Live voice the orchestrator speaks with."
+                : "Which OpenAI Realtime voice the orchestrator speaks with."
           }
           resetAction={
-            orchestrator.voice !== catalog.defaultVoice ? (
+            shownVoice !== catalog.defaultVoice ? (
               <SettingResetButton
                 label="voice"
                 onClick={() => applyRealtime({ voice: catalog.defaultVoice })}
@@ -386,15 +392,11 @@ export function OrchestratorSettingsPanel() {
             ) : null
           }
           control={
-            orchestrator.provider === "xai" ? (
+            orchestrator.provider === "xai" || isLive ? (
               <Select
-                value={orchestrator.voice}
+                value={shownVoice}
                 onValueChange={(value) => {
-                  if (
-                    typeof value === "string" &&
-                    value.length > 0 &&
-                    value !== orchestrator.voice
-                  ) {
+                  if (typeof value === "string" && value.length > 0 && value !== shownVoice) {
                     applyRealtime({ voice: value });
                   }
                 }}

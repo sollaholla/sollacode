@@ -183,6 +183,39 @@ describe("Grok call session", () => {
     expect(mocks.inner.endAfterReply).toHaveBeenCalledOnce();
   });
 
+  it("hangs up when the person's goodbye is transcribed after the reply to it", async () => {
+    const f = fixture();
+    await f.start();
+    f.created.callbacks.onTranscript?.({ role: "assistant", text: "Bye!" });
+    expect(mocks.inner.endAfterReply).not.toHaveBeenCalled();
+    f.created.callbacks.onTranscript?.({ role: "user", text: "Okay, thanks. Goodbye." });
+    expect(mocks.inner.endAfterReply).toHaveBeenCalledOnce();
+  });
+
+  it("stays on the call when only the agent said goodbye", async () => {
+    const f = fixture();
+    await f.start();
+    f.created.callbacks.onTranscript?.({ role: "assistant", text: "Bye!" });
+    f.created.callbacks.onTranscript?.({ role: "user", text: "Wait, one more thing." });
+    expect(mocks.inner.endAfterReply).not.toHaveBeenCalled();
+  });
+
+  it("keeps the level meter running, since talking over the voice is judged from it", async () => {
+    const f = fixture();
+    await f.start();
+    expect(f.created.callbacks.onLevels).toBeTypeOf("function");
+    expect(f.created.options.interruptWhileSpeaking).toBe(true);
+  });
+
+  it("moves the running call to the chosen microphone", async () => {
+    const setMicrophone = vi.fn();
+    Object.assign(mocks.inner, { setMicrophone });
+    const f = fixture();
+    await f.start();
+    f.session.setMicrophone?.("mic-b");
+    expect(setMicrophone).toHaveBeenCalledWith("mic-b");
+  });
+
   it("treats the host refusing the claim as a refusal, not a fault", async () => {
     const f = fixture({ startStatus: 409 });
     await expect(f.start()).rejects.toThrow("Answered on iPhone");

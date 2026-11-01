@@ -2,7 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 import {
   OPENAI_LIVE_MODEL,
-  OPENAI_LIVE_VOICES,
+  liveVoiceFor,
   type OrchestratorLiveStartInput,
   type OrchestratorLiveDelegationInput,
   type OrchestratorLiveWorkEvent,
@@ -44,10 +44,6 @@ const LiveResponse = Schema.Struct({
   transport: Schema.Struct({ type: Schema.Literal("webrtc"), sdp: Schema.NonEmptyString }),
 });
 const terminalStatuses = new Set(["completed", "failed", "cancelled", "expired"]);
-
-/** The configured voice when GPT-Live has it, otherwise its default. */
-export const liveVoiceFor = (voice: string): string =>
-  (OPENAI_LIVE_VOICES as readonly string[]).includes(voice) ? voice : "marin";
 
 const GPT_LIVE_SESSIONS_URL = "https://api.openai.com/v1/live/sessions";
 

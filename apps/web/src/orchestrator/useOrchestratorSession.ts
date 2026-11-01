@@ -4,9 +4,11 @@ import {
   DEFAULT_RUNTIME_MODE,
   EnvironmentId,
   MessageId,
+  OPENAI_LIVE_MODEL,
   ORCHESTRATOR_THREAD_ID,
   ProjectId,
   ThreadId,
+  liveVoiceFor,
   type DesktopOrchestratorBubbleState,
   type OrchestratorVoiceProvider,
 } from "@t3tools/contracts";
@@ -108,7 +110,7 @@ import {
   type ProviderCatalog,
 } from "./threadSettings";
 import { useOrchestratorThread } from "./useOrchestratorThread";
-import { isAgentCallLive } from "../agentCall/agentCallActivity";
+import { isAgentCallLive, sayVoiceWaitsForCall } from "../agentCall/agentCallActivity";
 import { randomUUID } from "../lib/utils";
 import { ORCHESTRATOR_RUN_COMMAND_PATH } from "@t3tools/contracts";
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -1069,11 +1071,17 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
 
   const describeSelf = useCallback((): OrchestratorSelfReport => {
     const active = activeSessionRef.current;
+    // GPT-Live falls back to its default for a voice it does not have, so
+    // comparing the raw setting would report a restart that changes nothing.
+    const configuredVoice =
+      orchestrator.model === OPENAI_LIVE_MODEL
+        ? liveVoiceFor(orchestrator.voice)
+        : orchestrator.voice;
     return {
       activeModel: active?.model ?? "not running",
       configuredModel: orchestrator.model,
       activeVoice: active?.voice ?? "not running",
-      configuredVoice: orchestrator.voice,
+      configuredVoice,
       activeProvider: active === null ? "not running" : orchestrator.provider,
       configuredProvider: orchestrator.provider,
       language: orchestrator.language,
@@ -1081,7 +1089,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
       confirmDestructiveActions: orchestrator.confirmDestructiveActions,
       restartRequiredToApply:
         active !== null &&
-        (active.model !== orchestrator.model || active.voice !== orchestrator.voice),
+        (active.model !== orchestrator.model || active.voice !== configuredVoice),
     };
   }, [
     orchestrator.authority,
@@ -2343,8 +2351,16 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
   }, [state, stop]);
 
   const toggle = useCallback(() => {
-    if (sessionRef.current === null && state !== "connecting") start();
-    else stop();
+    if (sessionRef.current !== null || state === "connecting") {
+      stop();
+      return;
+    }
+    // Pressed on purpose (the sidebar, the orb), so being refused is said aloud.
+    if (isAgentCallLive()) {
+      sayVoiceWaitsForCall();
+      return;
+    }
+    start();
   }, [start, state, stop]);
 
   // The floating orb is the microphone control, but it lives in a window that

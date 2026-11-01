@@ -18,6 +18,7 @@ import {
   defaultMicrophoneKey,
   isMissingMicrophoneError,
   microphoneConstraintsFor,
+  microphoneFailureMessage,
 } from "./microphones";
 import { applyVoiceIsolation } from "./voiceIsolation";
 import { DEFAULT_VOICE_CUE_POLICY } from "./voiceCues";
@@ -513,17 +514,35 @@ export function createLiveVoiceSession(
       reportUsage();
       if (event.type === "session.closed") {
         const wasClosing = closing;
+        // Only a hang-up is the conversation ending. A dropped or expired
+        // session is a drop, and a refusal has a reason the person should hear.
+        if (!wasClosing && (event.reason === "connection_lost" || event.reason === "expired")) {
+          lost();
+          return;
+        }
         cleanup();
+        if (!wasClosing && event.reason === "content") {
+          setState("error");
+          callbacks.onError?.("GPT-Live ended this session because of its content rules.");
+          return;
+        }
         if (!wasClosing) callbacks.onEndedByVoice?.();
       }
       return;
     }
     if (event.type === "error") {
+      // GPT-Live's own reason is the only thing that says what actually went wrong.
+      const reason =
+        Predicate.isObject(event.error) && typeof event.error.message === "string"
+          ? event.error.message.trim()
+          : "";
       callbacks.onError?.(
-        "GPT-Live rejected a session command. Check the connection or restart voice; delegated tasks remain in agent activity.",
+        `GPT-Live rejected a session command${reason ? `: ${reason}` : "."} Check the connection or restart voice; delegated tasks remain in agent activity.`,
       );
       if (!ready) {
-        readyReject?.(new Error("GPT-Live did not accept the session."));
+        readyReject?.(
+          new Error(`GPT-Live did not accept the session${reason ? `: ${reason}` : "."}`),
+        );
         cleanup();
       }
       return;
@@ -914,7 +933,10 @@ export function createLiveVoiceSession(
       if (!stopped) {
         cleanup();
         setState("error");
-        callbacks.onError?.(cause instanceof Error ? cause.message : "Could not start GPT-Live.");
+        callbacks.onError?.(
+          microphoneFailureMessage(cause) ??
+            (cause instanceof Error ? cause.message : "Could not start GPT-Live."),
+        );
       }
     }
   };

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   addableCallRoster,
   agentCallKey,
+  agentCallSessionEnd,
   agentCallMood,
   agentCallStatusText,
   callElapsedSeconds,
@@ -407,5 +408,30 @@ describe("people on a call", () => {
     expect(sameCallParticipants([gregg], [{ ...gregg }])).toBe(true);
     expect(sameCallParticipants([gregg], [{ ...gregg, title: "Greg" }])).toBe(false);
     expect(sameCallParticipants([gregg], [])).toBe(false);
+  });
+});
+
+describe("agentCallSessionEnd", () => {
+  const base = { sessionFailed: false, claimed: true, connected: true, error: null };
+
+  it("ends normally only a call that was accepted and connected", () => {
+    expect(agentCallSessionEnd(base)).toEqual({ phase: "ended", error: null });
+  });
+
+  it("fails a call the host accepted but that closed before it connected", () => {
+    expect(agentCallSessionEnd({ ...base, connected: false })).toEqual({
+      phase: "failed",
+      error: "The call could not connect.",
+    });
+  });
+
+  it("keeps the reason the session reported", () => {
+    expect(
+      agentCallSessionEnd({ ...base, claimed: false, connected: false, error: "No key" }),
+    ).toEqual({ phase: "failed", error: "No key" });
+    expect(agentCallSessionEnd({ ...base, sessionFailed: true, error: "Lost" })).toEqual({
+      phase: "failed",
+      error: "Lost",
+    });
   });
 });

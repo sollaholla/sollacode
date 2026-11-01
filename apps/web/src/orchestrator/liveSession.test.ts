@@ -388,6 +388,57 @@ describe("GPT-Live routes and mute", () => {
     expect(f.session.state).not.toBe("idle");
   });
 
+  it("says what to do when the microphone is refused", async () => {
+    const onError = vi.fn();
+    const f = fixture({ onError });
+    f.getUserMedia.mockImplementation(async () => {
+      throw Object.assign(new Error("Permission denied"), { name: "NotAllowedError" });
+    });
+    await f.session.start();
+    expect(f.session.state).toBe("error");
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("isn't allowed to use"));
+  });
+
+  it("treats a session GPT-Live lost or expired as a drop, not a goodbye", async () => {
+    for (const reason of ["connection_lost", "expired"]) {
+      const onConnectionLost = vi.fn();
+      const onEndedByVoice = vi.fn();
+      const f = fixture({ onConnectionLost, onEndedByVoice });
+      await f.ready();
+      f.event({ type: "session.closed", reason, usage: { seconds: 20 } });
+      expect(onConnectionLost).toHaveBeenCalledOnce();
+      expect(onEndedByVoice).not.toHaveBeenCalled();
+    }
+  });
+
+  it("says so when GPT-Live ends a session over its content", async () => {
+    const onError = vi.fn();
+    const onEndedByVoice = vi.fn();
+    const f = fixture({ onError, onEndedByVoice });
+    await f.ready();
+    f.event({ type: "session.closed", reason: "content", usage: { seconds: 20 } });
+    expect(f.session.state).toBe("error");
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("content rules"));
+    expect(onEndedByVoice).not.toHaveBeenCalled();
+  });
+
+  it("still ends quietly when the far side hangs up", async () => {
+    const onEndedByVoice = vi.fn();
+    const f = fixture({ onEndedByVoice });
+    await f.ready();
+    f.event({ type: "session.closed", reason: "remote_hangup", usage: { seconds: 20 } });
+    expect(onEndedByVoice).toHaveBeenCalledOnce();
+    expect(f.session.state).toBe("idle");
+  });
+
+  it("keeps GPT-Live's own reason when it rejects a command", async () => {
+    const onError = vi.fn();
+    const f = fixture({ onError });
+    await f.ready();
+    f.event({ type: "error", error: { message: "Commentary is too long." } });
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("Commentary is too long."));
+  });
+
   it("ends the session when no microphone is left", async () => {
     const onError = vi.fn();
     const f = fixture({ onError });
