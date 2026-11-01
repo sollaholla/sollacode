@@ -123,17 +123,21 @@ const SHAPE_GESTURES: Record<AgentAvatarShape, AgentAvatarGesture> = {
     ),
     [0.5, 0.5],
   ),
-  // A full turn with a little overshoot.
+  // A leap with one fast turn in the air, so the face is only upside down for a
+  // blink, and a squashed landing that sells the weight.
   sunburst: body(
     "spin",
-    980,
+    820,
     frames(
-      [0, pose(0, 0), IN],
-      [0.12, pose(0, -14, 1.04, 0.96), IN_OUT],
-      [0.72, pose(0, 372), OUT],
+      [0, pose(0, 0), OUT],
+      [0.18, pose(0, -12, 1.12, 0.84), IN],
+      [0.3, pose(-14, 60, 0.96, 1.06), "linear"],
+      [0.5, pose(-18, 372, 0.96, 1.06), IN],
+      [0.62, pose(0, 360, 1.16, 0.82), OUT],
+      [0.8, pose(-2, 360, 0.97, 1.05), IN_OUT],
       [1, pose(0, 360)],
     ),
-    [0.5, 0.55],
+    [0.5, 0.6],
   ),
   gumdrop: body(
     "perk",
@@ -166,6 +170,39 @@ const SHAPE_GESTURES: Record<AgentAvatarShape, AgentAvatarGesture> = {
       [0.8, pose(0, 3), IN_OUT],
       [1, pose()],
     ),
+  ),
+  cloud: body(
+    "drift",
+    1200,
+    frames(
+      [0, pose(), IN_OUT],
+      [0.3, pose(-4, -3, 1.03, 0.98, -8), IN_OUT],
+      [0.7, pose(-2, 3, 1.03, 0.98, 8), IN_OUT],
+      [1, pose()],
+    ),
+    [0.5, 0.5],
+  ),
+  cactus: body(
+    "sway",
+    1000,
+    frames(
+      [0, pose(), IN_OUT],
+      [0.28, pose(0, -9), IN_OUT],
+      [0.6, pose(0, 7), IN_OUT],
+      [0.84, pose(0, -2.5), IN_OUT],
+      [1, pose()],
+    ),
+  ),
+  saucer: body(
+    "hover",
+    1100,
+    frames(
+      [0, pose(), OUT],
+      [0.3, pose(-11, -9), IN_OUT],
+      [0.66, pose(-8, 7), IN_OUT],
+      [1, pose()],
+    ),
+    [0.5, 0.6],
   ),
   star: body(
     "pop",
@@ -215,16 +252,18 @@ function glance(direction: number): AgentAvatarGesture {
     name: "glance",
     duration: 1300,
     origin: FEET,
+    // The eyes get there first and the head follows, so they never press on the edge.
     root: frames(
       [0, pose(), IN_OUT],
-      [0.2, pose(0, direction * 5), IN_OUT],
-      [0.8, pose(0, direction * 5), IN_OUT],
+      [0.08, pose(), IN_OUT],
+      [0.3, pose(0, direction * 8, 1, 1, direction * 4), IN_OUT],
+      [0.8, pose(0, direction * 8, 1, 1, direction * 4), IN_OUT],
       [1, pose()],
     ),
     eyes: frames(
       [0, EYES_REST, OUT],
-      [0.14, eyesAt(direction * 9, -1), IN_OUT],
-      [0.82, eyesAt(direction * 9, -1), OUT],
+      [0.12, eyesAt(direction * 5, -0.5), IN_OUT],
+      [0.84, eyesAt(direction * 5, -0.5), OUT],
       [1, EYES_REST],
     ),
   };

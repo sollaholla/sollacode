@@ -19,6 +19,9 @@ export const AGENT_AVATAR_SHAPES = [
   "capsule",
   "dango",
   "star",
+  "cloud",
+  "cactus",
+  "saucer",
 ] as const;
 export const AGENT_AVATAR_ACCESSORIES = ["none", "goggles", "scarf", "monocle"] as const;
 export const AGENT_AVATAR_EYES = ["glint", "pill", "beads", "visor"] as const;
@@ -38,10 +41,9 @@ export interface AgentAvatarTraits {
 }
 
 /**
- * Fourteen colors, spaced in OKLab so no two sit closer than ~0.1 apart. The
- * cast takes eleven; slots 4–6 are the three left over, which is exactly where
- * the second-round mochi, bell and acorn land (cast color + 4), so a person's
- * first fourteen agents never share a color.
+ * Fourteen colors, spaced in OKLab so no two sit closer than ~0.1 apart, one for
+ * each member of the cast, so a person's first fourteen agents never share a
+ * color or a shape.
  */
 const PALETTE = [
   "#fe6652", // coral
@@ -84,6 +86,9 @@ const CAST: readonly CastMember[] = [
   { shape: "pebble", color: 11, eyes: "glint", accessory: "scarf", glance: [-2, -1] },
   { shape: "dango", color: 12, eyes: "beads", accessory: "none", glance: [1.5, 0] },
   { shape: "star", color: 13, eyes: "glint", accessory: "none", glance: [0, -1.5] },
+  { shape: "cloud", color: 5, eyes: "glint", accessory: "none", glance: [2, -1] },
+  { shape: "cactus", color: 4, eyes: "pill", accessory: "none", glance: [-2, 0] },
+  { shape: "saucer", color: 6, eyes: "glint", accessory: "none", glance: [2, 0] },
 ];
 
 function agentIdentitySeed(agentId: string): number {
@@ -355,6 +360,43 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     chin: [40, 72],
     neck: [64, 17, 63],
   },
+  cloud: {
+    // Three puffs on a flat base.
+    body: `${circle(22, 51, 17)}${circle(42, 36, 22)}${circle(61, 49, 16.5)}<rect x="13" y="48" width="56" height="20" rx="9"/>`,
+    box: [5, 14, 77.5, 68],
+    face: [41, 44],
+    gap: 10,
+    sides: [8, 75],
+    crown: [42, 14],
+    chin: [41, 62],
+    neck: [56, 9, 74],
+  },
+  cactus: {
+    // Upturned arms and a little pot.
+    body: `<rect x="23" y="9" width="34" height="62" rx="17"/><rect x="7" y="26" width="11" height="26" rx="5.5"/><rect x="7" y="41" width="22" height="11" rx="5.5"/><rect x="62" y="20" width="11" height="26" rx="5.5"/><rect x="51" y="35" width="22" height="11" rx="5.5"/>`,
+    trim: `<path d="M21 64H59L56.5 76Q56 78 54 78H26Q24 78 23.5 76Z"/>`,
+    box: [7, 9, 73, 78],
+    face: [40, 34],
+    gap: 7.8,
+    sides: [23, 57],
+    crown: [40, 9],
+    chin: [40, 52],
+    neck: [50, 23, 57],
+    eyeScale: 0.84,
+  },
+  saucer: {
+    // A dome on a wide disc.
+    body: `<path d="M13 54C13 22 26 8 40 8C54 8 67 22 67 54Z"/>`,
+    trim: `<ellipse cx="40" cy="57" rx="38" ry="12"/>`,
+    box: [2, 8, 78, 69],
+    face: [40, 30],
+    gap: 9,
+    sides: [13, 67],
+    crown: [40, 8],
+    chin: [40, 48],
+    neck: [44, 15, 65],
+    eyeScale: 0.9,
+  },
   star: {
     body: `<path d="${roundedPolygonPath(starPoints(5, 40, 44, 37, 21, -Math.PI / 2), 9)}"/>`,
     box: [8.3, 10.8, 71.7, 71.5],
@@ -464,7 +506,7 @@ function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lea
   return "";
 }
 
-/** The one extra mark a mood gets: a sweat drop, blushing cheeks, a floating z. */
+/** The one extra mark a mood gets: a typing bubble, a sweat drop, blushing cheeks, a floating z. */
 function moodAccent(
   geo: Geo,
   centers: readonly [P2, P2],
@@ -474,6 +516,12 @@ function moodAccent(
   online: boolean,
 ): string {
   const [, right] = centers;
+  if (mood === "working" && online) {
+    const cx = Math.min(right[0] + 5 * s, geo.sides[1] - 8);
+    const cy = Math.max(right[1] - 11 * s, geo.crown[1] + 2);
+    const dots = [-5, 0, 5].map((dx) => dot(cx + dx, cy, 1.7, INK)).join("");
+    return `<rect x="${f(cx - 10)}" y="${f(cy - 5.5)}" width="20" height="11" rx="5.5" fill="#fff"/>${dots}`;
+  }
   if (mood === "blocked") {
     const x = Math.min(right[0] + 8.5 * s, geo.sides[1] - 5);
     const y = right[1] - 8 * s;
@@ -703,22 +751,16 @@ function accessoryMarkup(
   const gold = muted ? mix(GOLD, "#8a8790", 0.62) : GOLD;
   switch (accessory) {
     case "goggles": {
-      // Pushed up on the forehead: ink rims, brass bezels, tinted glass.
+      // Pushed up on the forehead: one ink band and two solid brass lenses, which survive 20 px.
       const y = geo.face[1] - 18;
-      const lens = mix(bodyColor, INK, 0.3);
-      const glare = mix(bodyColor, "#ffffff", 0.75);
       const strap = `<rect x="${f(left - 4)}" y="${f(y - 3.2)}" width="${f(right - left + 8)}" height="6.4" fill="${INK}" clip-path="url(#b)" clip-rule="nonzero"/>`;
       const bridge = `<rect x="${f(geo.face[0] - 4)}" y="${f(y - 1.6)}" width="8" height="3.2" fill="${INK}"/>`;
       const rings = [geo.face[0] - 9.6, geo.face[0] + 9.6]
-        .map((x) => {
-          const c: P2 = [x, y];
-          return (
-            `<circle cx="${f(x)}" cy="${f(y)}" r="7.6" fill="${INK}" ${RIM}/>` +
-            `<circle cx="${f(x)}" cy="${f(y)}" r="4.9" fill="${lens}" stroke="${gold}" stroke-width="1.1"/>` +
-            `<path d="${arc(c, 4.3, 180, 300)}Q${pt([x - 0.6, y - 0.6])} ${pt([x - 4.3, y])}Z" fill="${glare}"/>` +
-            sheen(arc(c, 6.3, 205, 290), 1.1, 0.2)
-          );
-        })
+        .map(
+          (x) =>
+            `<circle cx="${f(x)}" cy="${f(y)}" r="7.8" fill="${INK}" ${RIM}/>` +
+            `<circle cx="${f(x)}" cy="${f(y)}" r="4.4" fill="${gold}"/>`,
+        )
         .join("");
       return { front: strap + bridge + rings, box: null };
     }
@@ -737,17 +779,10 @@ function accessoryMarkup(
         `Q${pt([r + 2.4, ny + edge / 2])} ${pt([r - 0.8, ny + edge])}` +
         `Q${pt([cx, ny + edge + 2 * belly])} ${pt([l + 0.8, ny + edge])}` +
         `Q${pt([l - 2.4, ny + edge / 2])} ${pt([l, ny])}Z" fill="${INK}" ${RIM}/>`;
-      // Where the two turns of the wrap overlap, plus a soft roll along the top.
-      const fold = `<path d="M${pt([l + 4, ny + 3.6])}Q${pt([cx, ny + 3.6 + 2 * (top + 1.6)])} ${pt([r - 4, ny + 3.6])}" stroke="#fff" stroke-opacity=".1" stroke-width="1" fill="none"/>`;
-      const roll = sheen(
-        `M${pt([l + 3, ny + 1.3])}Q${pt([cx, ny + 2 * top + 1.3])} ${pt([r - 3, ny + 1.3])}`,
-        1.3,
-        0.24,
-      );
       const kx = cx + (nr - nl) * 0.2;
       const ky = ny + 7;
-      // A soft tail along a curved centreline, flaring a little, finished
-      // with two knitted gold stripes and a short fringe.
+      // A soft tail along a curved centreline, flaring a little, finished with
+      // one wide gold stripe.
       const tail = (start: P2, ctrl: P2, end: P2, w0: number, w1: number) => {
         const unit = (a: P2, b: P2): P2 => {
           const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
@@ -770,23 +805,10 @@ function accessoryMarkup(
         const [b0, bc, b1] = edge(-1);
         const at = (e: [P2, P2, P2], t: number): P2 =>
           lerp(lerp(e[0], e[1], t), lerp(e[1], e[2], t), t);
-        const stripes = [0.66, 0.8]
-          .map(
-            (t) =>
-              `<path d="M${pt(at([a0, ac, a1], t))}L${pt(at([b0, bc, b1], t))}" stroke="${gold}" stroke-width="1.5"/>`,
-          )
-          .join("");
-        const fringe = [0.18, 0.5, 0.82]
-          .map((t) => {
-            const p = lerp(a1, b1, t);
-            return `M${pt(p)}l${f(d1[0] * 2.6)} ${f(d1[1] * 2.6)}`;
-          })
-          .join("");
+        const stripe = `<path d="M${pt(at([a0, ac, a1], 0.76))}L${pt(at([b0, bc, b1], 0.76))}" stroke="${gold}" stroke-width="3.2"/>`;
         return (
-          `<path d="${fringe}" stroke="#fff" stroke-opacity=".16" stroke-width="2.5" stroke-linecap="round"/>` +
-          `<path d="${fringe}" stroke="${INK}" stroke-width="1.4" stroke-linecap="round"/>` +
           `<path d="M${pt(a0)}Q${pt(ac)} ${pt(a1)}L${pt(b1)}Q${pt(bc)} ${pt(b0)}Z" fill="${INK}" ${RIM} stroke-linejoin="round"/>` +
-          stripes
+          stripe
         );
       };
       // Tails hang as far as the frame allows: long on wide bodies, where the
@@ -802,29 +824,23 @@ function accessoryMarkup(
         7,
       );
       const hang = tail([kx - 1, ky + 1], [kx - 3, ky + drop / 2], [kx + 0.5, ky + drop], 6, 7.6);
-      // A soft square knot with one crease, not a ball.
+      // A soft square knot, not a ball.
       const knotAt = (dx: number, dy: number): P2 => [kx + dx, ky - 0.5 + dy];
       const knot =
-        `<path d="${roundedPolygonPath([knotAt(-4.8, -3.6), knotAt(4.2, -4.3), knotAt(4.9, 3.7), knotAt(-4.1, 4.3)], 2.6)}" fill="${INK}" ${RIM}/>` +
-        sheen(
-          `M${pt(knotAt(-2.8, -2.4))}Q${pt(knotAt(0, -3.4))} ${pt(knotAt(2.4, -2.8))}`,
-          1.2,
-          0.3,
-        ) +
-        `<path d="M${pt(knotAt(-0.6, -3.2))}Q${pt(knotAt(0.6, 0))} ${pt(knotAt(0, 3.4))}" stroke="#fff" stroke-opacity=".14" stroke-width=".9" fill="none"/>`;
+        `<path d="${roundedPolygonPath([knotAt(-4.8, -3.6), knotAt(4.2, -4.3), knotAt(4.9, 3.7), knotAt(-4.1, 4.3)], 2.6)}" fill="${INK}" ${RIM}/>`;
       return {
-        front: wrap + fold + roll + swing + hang + knot,
+        front: wrap + swing + hang + knot,
         box: [l - 1.4, ny - 0.6, Math.max(r + 1.4, kx + 17.5), ky + drop + 3.2],
       };
     }
     case "monocle": {
       const c = centers[1];
       const radius = 12.2;
-      const glass = `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="#fff" fill-opacity=".28"/>`;
+      const glass = `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="#fff" fill-opacity=".24"/>`;
+      // One bold brass ring: anything finer dissolves into the eye at 20 px.
       const ring =
-        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${INK}" stroke-width="3.2"/>` +
-        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius - 2.1)}" fill="none" stroke="${gold}" stroke-width=".9"/>` +
-        sheen(arc(c, radius - 3.6, 200, 250), 1.4, 0.75);
+        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${INK}" stroke-width="4.6"/>` +
+        `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(radius)}" fill="none" stroke="${gold}" stroke-width="2.6"/>`;
       const hang: P2 = [c[0] + radius * 0.62, c[1] + radius * 0.78];
       const end: P2 = [Math.min(right - 1.5, c[0] + 15), c[1] + 19];
       const chain =
