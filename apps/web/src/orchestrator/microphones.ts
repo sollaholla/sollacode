@@ -73,6 +73,26 @@ export function isMissingMicrophoneError(error: unknown): boolean {
   return name === "OverconstrainedError" || name === "NotFoundError";
 }
 
+/**
+ * What to tell the person when voice could not open a microphone, or null when
+ * the failure was something else. The browser's own wording ("Permission
+ * denied") names neither the microphone nor what to do about it.
+ */
+export function microphoneFailureMessage(error: unknown): string | null {
+  switch ((error as { readonly name?: unknown } | null)?.name) {
+    case "NotAllowedError":
+    case "SecurityError":
+      return "Solla Code isn't allowed to use the microphone. Allow it in your browser or system settings, then try again.";
+    case "NotFoundError":
+    case "OverconstrainedError":
+      return "No microphone was found. Connect one, then try again.";
+    case "NotReadableError":
+      return "The microphone couldn't be opened. Another app may be using it.";
+    default:
+      return null;
+  }
+}
+
 /** Opens a microphone, or the system default when the chosen one is gone or none is chosen. */
 export async function openMicrophoneStream(deviceId: string | null): Promise<MediaStream> {
   if (deviceId !== null) {
