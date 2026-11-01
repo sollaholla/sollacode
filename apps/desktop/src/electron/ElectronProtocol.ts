@@ -126,6 +126,11 @@ function withRemoteAssetCachePolicy(response: Response, requestUrl: URL): Respon
   });
 }
 
+/** Signed asset links, at the root or under the relay of the host that reaches them. */
+const REMOTE_ASSET_PATH_PATTERN = /^(?:\/api\/relay\/[^/]+)?\/api\/assets\//u;
+const REMOTE_ARTIFACT_ROOT_PATTERN =
+  /^(?:\/api\/relay\/[^/]+)?\/api\/assets\/[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+\/$/u;
+
 export function resolveRemoteAssetProxyTarget(requestUrl: URL): URL | null {
   if (requestUrl.pathname !== DESKTOP_REMOTE_ASSET_PROXY_PATH) return null;
 
@@ -138,7 +143,7 @@ export function resolveRemoteAssetProxyTarget(requestUrl: URL): URL | null {
       (target.protocol !== "http:" && target.protocol !== "https:") ||
       target.username.length > 0 ||
       target.password.length > 0 ||
-      !target.pathname.startsWith("/api/assets/")
+      !REMOTE_ASSET_PATH_PATTERN.test(target.pathname)
     ) {
       return null;
     }
@@ -185,7 +190,7 @@ export function resolveRemoteArtifactProxyTarget(requestUrl: URL): URL | null {
       (root.protocol !== "http:" && root.protocol !== "https:") ||
       root.username.length > 0 ||
       root.password.length > 0 ||
-      !/^\/api\/assets\/[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+\/$/u.test(root.pathname) ||
+      !REMOTE_ARTIFACT_ROOT_PATTERN.test(root.pathname) ||
       root.search.length > 0 ||
       root.hash.length > 0
     ) {

@@ -264,6 +264,36 @@ describe("ElectronProtocol", () => {
     );
   });
 
+  it("proxies a relayed environment's asset links, which sit under the relay's prefix", () => {
+    const relayed = "https://mac.ts.net/api/relay/windows-env/api/assets/payload.signature/a.png";
+    assert.equal(
+      ElectronProtocol.resolveRemoteAssetProxyTarget(
+        new URL(`sollacode://app/__solla/remote-asset?url=${encodeURIComponent(relayed)}`),
+      )?.toString(),
+      relayed,
+    );
+    const root = "https://mac.ts.net/api/relay/windows-env/api/assets/payload.signature/";
+    const encodedRoot = Buffer.from(root).toString("base64url");
+    assert.equal(
+      ElectronProtocol.resolveRemoteArtifactProxyTarget(
+        new URL(
+          `sollacode://app${ElectronProtocol.DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/${encodedRoot}/index.html`,
+        ),
+      )?.toString(),
+      `${root}index.html`,
+    );
+    // The relay's other routes carry the host's credential, so they stay out.
+    assert.isNull(
+      ElectronProtocol.resolveRemoteAssetProxyTarget(
+        new URL(
+          `sollacode://app/__solla/remote-asset?url=${encodeURIComponent(
+            "https://mac.ts.net/api/relay/windows-env/api/view/etc/passwd",
+          )}`,
+        ),
+      ),
+    );
+  });
+
   it("rejects malformed and non-asset remote proxy targets", () => {
     assert.isNull(
       ElectronProtocol.resolveRemoteAssetProxyTarget(

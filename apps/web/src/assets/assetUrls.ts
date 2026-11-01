@@ -65,8 +65,9 @@ export function resolveDisplayArtifactUrl(
     ) {
       return assetUrl;
     }
-    const assetPrefix = "/api/assets/";
-    if (!target.pathname.startsWith(assetPrefix)) return assetUrl;
+    // A relayed environment's links sit under the relay's path prefix.
+    const assetPrefix = /^(?:\/api\/relay\/[^/]+)?\/api\/assets\//u.exec(target.pathname)?.[0];
+    if (assetPrefix === undefined) return assetUrl;
     const assetSuffix = target.pathname.slice(assetPrefix.length);
     const separatorIndex = assetSuffix.indexOf("/");
     if (separatorIndex <= 0 || separatorIndex === assetSuffix.length - 1) return assetUrl;
