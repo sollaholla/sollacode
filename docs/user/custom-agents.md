@@ -389,8 +389,8 @@ agent's calls need, **Call** is disabled on web, desktop, and the phone app's ag
 note saying which key is needed; the phone button in the phone app's Agents list is hidden. OpenAI
 or xAI bills call time to that key, and Grok calls are counted in the orchestrator's voice usage. A
 ring that nobody answers costs nothing, because the voice session only starts when the call
-connects. Grok calls follow the microphone chosen when the call starts; changing it mid-call
-applies from the next call.
+connects. A microphone you pick moves a Grok call at once, but a Grok call does not follow the
+system default or an unplugged microphone by itself.
 
 During a call:
 
@@ -408,6 +408,9 @@ During a call:
   agent tells you so, and what you said still goes to the chat as a message.
 - If the chat needs an approval, the agent tells you. Approvals still happen in Solla Code. Saying
   yes on the call does not approve anything.
+- Talking over the agent cuts it off, on both GPT-Live and Grok voices. On a phone without
+  headphones, a Grok voice finishes its sentence instead, so that it doesn't answer its own echo.
+- Say goodbye and the agent says it back, then the call hangs up.
 - **Chat** opens the agent's chat and shrinks the call to a small pill with the timer. Tap the pill
   to go back to the call.
 - **End** hangs up. Closing or reloading the page also hangs up.

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { DISCONNECTED_GRACE_MS } from "./reconnect";
 import { CONTINUATION_GRACE_MS } from "./endOfSpeech";
@@ -11,6 +11,7 @@ import {
   type VoiceSessionOptions,
   type VoiceSessionState,
 } from "./realtimeSession";
+import { BARGE_IN_SUSTAIN_MS } from "./bargeIn";
 import { GROK_UTTERANCE_SETTLE_MS } from "./utteranceCoalesce";
 
 /**
@@ -1663,6 +1664,9 @@ const GROK_TOKEN_RESPONSE = {
   }),
 };
 
+/** What the fake microphone analyser reads: 128 is silence, 255 someone talking. */
+const grokMicByte = { value: 128 };
+
 function installGrokVoiceGlobals(track: ReturnType<typeof makeTrack>) {
   const processors: Array<{
     onaudioprocess:
@@ -1687,6 +1691,20 @@ function installGrokVoiceGlobals(track: ReturnType<typeof makeTrack>) {
         connect: () => undefined,
         disconnect: () => undefined,
       });
+      // The microphone opens first, so the first analyser reads it.
+      let analysers = 0;
+      this.createAnalyser = () => {
+        const isMic = analysers === 0;
+        analysers += 1;
+        return {
+          fftSize: 512,
+          connect: () => undefined,
+          getByteTimeDomainData: (buffer: Uint8Array) => {
+            buffer.fill(isMic ? grokMicByte.value : 128);
+          },
+        };
+      };
+      this.createMediaStreamDestination = () => ({ stream: {} });
       this.createScriptProcessor = () => {
         const node = {
           connect: () => undefined,
@@ -1840,6 +1858,137 @@ describe("Grok Voice capture and turn close", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("talking over a reply that finished generating but is still playing", () => {
+    async function replyStillPlaying() {
+      const frames: Array<() => void> = [];
+      vi.stubGlobal("requestAnimationFrame", (frame: () => void) => frames.push(frame));
+      vi.stubGlobal("cancelAnimationFrame", () => undefined);
+      const { playbackSources, sockets } = installGrokVoiceGlobals(makeTrack());
+      const session = createVoiceSession(OPTIONS, {
+        onToolCall: async () => ({}),
+        onLevels: () => undefined,
+      });
+      await session.start();
+      const socket = sockets[0];
+      if (socket === undefined) throw new Error("expected a Grok websocket");
+      socket.fire("message", { data: JSON.stringify({ type: "session.updated" }) });
+      socket.fire("message", { data: JSON.stringify({ type: "response.created" }) });
+      socket.fire("message", {
+        data: JSON.stringify({ type: "response.output_audio.delta", delta: "AAAAAA==" }),
+      });
+      socket.fire("message", { data: JSON.stringify({ type: "response.done" }) });
+      socket.send.mockClear();
+      expect(session.state).toBe("speaking");
+      /** Speech starts, the meter samples it, and the barge-in window closes. */
+      const speak = async () => {
+        socket.fire("message", {
+          data: JSON.stringify({ type: "input_audio_buffer.speech_started" }),
+        });
+        for (let i = 0; i < 10; i += 1) frames.shift()?.();
+        await vi.advanceTimersByTimeAsync(BARGE_IN_SUSTAIN_MS);
+      };
+      return { frames, playbackSources, session, socket, speak };
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      grokMicByte.value = 128;
+      vi.useRealTimers();
+    });
+
+    it("stops the voice for someone talking, without cancelling a finished reply", async () => {
+      const { playbackSources, session, socket, speak } = await replyStillPlaying();
+      grokMicByte.value = 255;
+      await speak();
+
+      expect(playbackSources[0]?.stop).toHaveBeenCalled();
+      expect(session.state).toBe("listening");
+      const sent = socket.send.mock.calls.map(([frame]) => String(frame));
+      expect(sent.some((frame) => frame.includes("response.cancel"))).toBe(false);
+      session.stop();
+    });
+
+    it("keeps judging while they talk, so a pause in their speech doesn't lose them", async () => {
+      const { frames, playbackSources, session, speak } = await replyStillPlaying();
+      await speak();
+      expect(session.state).toBe("speaking");
+
+      grokMicByte.value = 255;
+      for (let i = 0; i < 10; i += 1) frames.shift()?.();
+      await vi.advanceTimersByTimeAsync(BARGE_IN_SUSTAIN_MS);
+
+      expect(playbackSources[0]?.stop).toHaveBeenCalled();
+      expect(session.state).toBe("listening");
+      session.stop();
+    });
+
+    it("keeps speaking through a noise", async () => {
+      const { frames, playbackSources, session, socket, speak } = await replyStillPlaying();
+      await speak();
+      socket.fire("message", {
+        data: JSON.stringify({ type: "input_audio_buffer.speech_stopped" }),
+      });
+      for (let i = 0; i < 10; i += 1) frames.shift()?.();
+      await vi.advanceTimersByTimeAsync(BARGE_IN_SUSTAIN_MS * 2);
+
+      expect(playbackSources[0]?.stop).not.toHaveBeenCalled();
+      expect(session.state).toBe("speaking");
+      session.stop();
+    });
+
+    it("hushes a reply that is still playing", async () => {
+      const { playbackSources, session } = await replyStillPlaying();
+      session.hush();
+
+      expect(playbackSources[0]?.stop).toHaveBeenCalled();
+      expect(session.state).toBe("listening");
+      session.stop();
+    });
+  });
+
+  it("lets a generated goodbye finish playing before it ends the session", async () => {
+    vi.useFakeTimers();
+    try {
+      const { playbackSources, session, socket } = await openGrokSession();
+      socket.fire("message", { data: JSON.stringify({ type: "response.created" }) });
+      socket.fire("message", {
+        data: JSON.stringify({ type: "response.output_audio.delta", delta: "AAAAAA==" }),
+      });
+      socket.fire("message", { data: JSON.stringify({ type: "response.done" }) });
+
+      session.endAfterReply();
+      expect(session.state).not.toBe("idle");
+
+      playbackSources[0]?.end();
+      expect(session.state).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("moves a running session to another microphone and frees the old one", async () => {
+    const { session, track } = await openGrokSession();
+    const next = makeTrack();
+    const getUserMedia = vi.mocked(navigator.mediaDevices.getUserMedia);
+    getUserMedia.mockClear();
+    getUserMedia.mockResolvedValueOnce({
+      getTracks: () => [next],
+      getAudioTracks: () => [next],
+    } as unknown as MediaStream);
+
+    session.setMicrophone?.("mic-b");
+    await vi.waitFor(() => expect(track.stop).toHaveBeenCalled());
+
+    expect(getUserMedia.mock.calls[0]?.[0]).toMatchObject({
+      audio: { deviceId: { exact: "mic-b" } },
+    });
+    expect(next.stop).not.toHaveBeenCalled();
+    session.stop();
+    expect(next.stop).toHaveBeenCalled();
   });
 
   it("stops locally buffered Grok audio when a response is held", async () => {

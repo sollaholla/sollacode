@@ -43,7 +43,7 @@ import {
   type BufferedUtterance,
   type FlushedUtterance,
 } from "./utteranceCoalesce";
-import { openMicrophoneStream } from "./microphones";
+import { microphoneFailureMessage, openMicrophoneStream } from "./microphones";
 import { applyVoiceIsolation } from "./voiceIsolation";
 import {
   DISCONNECTED_GRACE_MS,
@@ -1471,6 +1471,16 @@ export function createVoiceSession(
   };
 
   /**
+   * What to send to silence a reply. A finished one has nothing left to cancel,
+   * and the server reports a cancel of nothing as an error; on Grok the audio
+   * left is all local, already stopped, so the server has nothing to do at all.
+   */
+  const cutReplyFrames = (generating: boolean): ReadonlyArray<Record<string, unknown>> => {
+    if (generating) return buildInterruptFrames();
+    return voiceProvider === "xai" ? [] : [{ type: "output_audio_buffer.clear" }];
+  };
+
+  /**
    * Called when the server reports input speech while the assistant is talking.
    *
    * The server has been told not to interrupt on its own, so nothing has been
@@ -1484,19 +1494,26 @@ export function createVoiceSession(
     // does. On a phone speaker its own voice returns through the microphone,
     // and no amount of level analysis is completely reliable against that.
     if (options.interruptWhileSpeaking === false) return;
-    if (!responseActive || bargeInTimer !== null) return;
+    // A reply usually finishes generating long before it finishes playing (Grok
+    // by many seconds), so the part still being heard counts as speaking too.
+    if ((!responseActive && !audioPlaying) || bargeInTimer !== null) return;
     const window = createBargeInWindow();
     bargeInWindow = window;
     bargeInTimer = setTimeout(() => {
       bargeInTimer = null;
       bargeInWindow = null;
-      if (!responseActive) return;
+      if (!responseActive && !audioPlaying) return;
       if (!window.verdict()) {
-        callbacks.onNoiseIgnored?.();
+        // Speech has gaps, and the server will not report the start of this
+        // speech again: while they are still talking, keep judging. A noise
+        // decays well before the server reports the end of it.
+        if (userSpeaking) considerBargeIn();
+        else callbacks.onNoiseIgnored?.();
         return;
       }
+      const generating = responseActive;
       stopXaiPlayback();
-      for (const frame of buildInterruptFrames()) send(frame);
+      for (const frame of cutReplyFrames(generating)) send(frame);
       // The gate has to reopen here: a cancelled response still emits
       // `response.done`, but clearing eagerly keeps a cancel that races with
       // completion from stranding the session mute.
@@ -2169,7 +2186,10 @@ export function createVoiceSession(
       const wasCancelled = stopped;
       stop();
       if (!wasCancelled) {
-        fail(cause instanceof Error ? cause.message : "Could not start a voice session.");
+        fail(
+          microphoneFailureMessage(cause) ??
+            (cause instanceof Error ? cause.message : "Could not start a voice session."),
+        );
       }
     }
   };
@@ -2306,18 +2326,44 @@ export function createVoiceSession(
     stop,
     endAfterReply: () => {
       if (state === "idle") return;
-      // Nothing is being said, so there is no farewell to wait for.
-      if (!responseActive && !responseRequested) {
+      // Nothing is being said, so there is no farewell to wait for. A reply
+      // can be finished generating and still be playing: that one is waited for.
+      if (!responseActive && !responseRequested && !audioPlaying) {
         callbacks.onEndedByVoice?.();
         stop();
         return;
       }
       endWhenReplyFinishes = true;
     },
+    setMicrophone: (deviceId) => {
+      // Only the PCM transport can move: the media-track one has no switch yet.
+      if (captureSource === null || captureProcessor === null || audioContext === null) return;
+      const context = audioContext;
+      void openMicrophoneStream(deviceId).then(
+        (next) => {
+          if (stopped || captureProcessor === null) {
+            for (const track of next.getTracks()) track.stop();
+            return;
+          }
+          const previous = micStream;
+          captureSource?.disconnect();
+          captureSource = context.createMediaStreamSource(next);
+          captureSource.connect(captureProcessor);
+          micStream = next;
+          sentStream = next;
+          watchMicrophoneAvailability(next);
+          attachMicMeter(next);
+          for (const track of previous?.getTracks() ?? []) track.stop();
+        },
+        () => {
+          if (!stopped) callbacks.onError?.("That microphone could not be opened.");
+        },
+      );
+    },
     hush: () => {
-      if (!responseActive) return;
+      if (!responseActive && !audioPlaying) return;
       stopPlayback();
-      for (const frame of buildInterruptFrames()) send(frame);
+      for (const frame of cutReplyFrames(responseActive)) send(frame);
       responseRequested = false;
       closeBargeInWindow();
       // Anything queued was going to be spoken next; being told to be quiet
