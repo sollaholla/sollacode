@@ -383,6 +383,19 @@ describe("hang-up sound", () => {
     expect(mocks.playHangUpTone).toHaveBeenCalledOnce();
   });
 
+  it("fails, rather than reads as ended, a call the host accepted that never connected", async () => {
+    render();
+    await answer();
+    await claimed();
+    await act(async () => {
+      mocks.session.state = "idle";
+      sessionCallbacks().onStateChange?.("idle");
+    });
+    expect(container.textContent).toContain("The call could not connect.");
+    expect(container.textContent).not.toContain("Call ended");
+    expect(mocks.playHangUpTone).not.toHaveBeenCalled();
+  });
+
   it("stays quiet when an answer fails before it connects", async () => {
     render();
     await answer();

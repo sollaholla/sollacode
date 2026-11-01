@@ -49,6 +49,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { vmAgentEnvironment } from "../state/vmAgents";
 import {
   AGENT_CALL_DROPPED_MESSAGE,
+  agentCallSessionEnd,
   agentCallKey,
   hostSettledCallOutcome,
   incomingCallOpening,
@@ -635,18 +636,20 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
             // The session ended itself: a failed start, the host or GPT-Live
             // closing it, a lost microphone. Settled after this tick, because
             // a failure's message is reported right after the state change.
-            // One that ended before the host accepted the claim never
-            // connected, so it fails with whatever reason it reported.
+            // One that ended before it was live never connected, so it fails
+            // with whatever reason it reported.
             queueMicrotask(() => {
               if (sessionRef.current !== session) return;
               // The voice finished "Transferring you to …": the call moves on.
               if (completeTransferRef.current(generation)) return;
-              const failed = session.state === "error" || !claimedRef.current;
               finish(
                 generation,
-                failed
-                  ? { phase: "failed", error: activeRef.current?.error ?? null }
-                  : { phase: "ended", error: null },
+                agentCallSessionEnd({
+                  sessionFailed: session.state === "error",
+                  claimed: claimedRef.current,
+                  connected: activeRef.current?.phase === "live",
+                  error: activeRef.current?.error ?? null,
+                }),
                 failureRelease(claimedRef.current, call.placedHere),
               );
             });
