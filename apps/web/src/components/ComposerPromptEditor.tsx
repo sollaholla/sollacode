@@ -1193,7 +1193,10 @@ function NativeIOSComposerPromptEditor(props: ComposerPromptEditorProps) {
           className={cn(
             "relative block min-h-17.5 w-full resize-none overflow-y-hidden overscroll-y-contain whitespace-pre-wrap bg-transparent text-[16px] leading-relaxed text-foreground outline-none touch-auto",
             slashCommandOverlay.active && "text-transparent caret-foreground",
+            "placeholder:text-muted-foreground/65",
             className,
+            // Keeps the hint clear of the emoji button floating at the top right.
+            nativeText.length === 0 && "pe-8",
           )}
           onInput={(event) => {
             resizeTextarea(event.currentTarget);
@@ -2286,8 +2289,11 @@ function ComposerPromptEditorInner({
                 aria-hidden="true"
                 data-testid="composer-placeholder"
                 className={cn(
-                  "pointer-events-none absolute inset-x-0 top-0 overflow-hidden whitespace-pre-wrap wrap-break-word text-[16px] leading-relaxed text-muted-foreground/35 select-none sm:text-[14px]",
+                  "pointer-events-none absolute inset-x-0 top-0 overflow-hidden whitespace-pre-wrap wrap-break-word text-[16px] leading-relaxed text-muted-foreground/65 select-none sm:text-[14px]",
                   className,
+                  // Stays clear of the emoji button floating at the top right,
+                  // which hid words of the hint on phones.
+                  "pe-8",
                 )}
               >
                 {placeholder}

@@ -949,7 +949,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               isUnread || isWoke
                 ? "text-foreground"
                 : shouldRecede
-                  ? "text-muted-foreground/60"
+                  ? "text-muted-foreground/80"
                   : status === "failed"
                     ? "text-foreground/90"
                     : "text-muted-foreground/85",
