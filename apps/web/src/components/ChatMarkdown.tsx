@@ -88,7 +88,7 @@ import {
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
-import { resolveDisplayAssetUrl, withAssetRevision } from "../assets/assetUrls";
+import { resolveAssetUrl, resolveDisplayAssetUrl, withAssetRevision } from "../assets/assetUrls";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useRightPanelStore } from "../rightPanelStore";
 import { useActiveEnvironmentId } from "../state/entities";
@@ -947,6 +947,8 @@ interface MarkdownFileLinkProps {
   onOpen: (targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>;
   onOpenImage?: (() => void) | undefined;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
+  /** Open a file outside the workspace through a link the thread's host signs. */
+  onOpenFromHost?: ((filePath: string) => void) | undefined;
   className?: string | undefined;
 }
 
@@ -1244,6 +1246,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   onOpen,
   onOpenImage,
   onOpenInBrowser,
+  onOpenFromHost,
   className,
 }: MarkdownFileLinkProps) {
   const handleOpenInEditor = useCallback(() => {
@@ -1483,6 +1486,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       try {
         const clicked = await api.contextMenu.show(
           [
+            ...(onOpenFromHost && !canRevealOnThisDevice && workspaceRelativePath === null
+              ? ([{ id: "open-from-host", label: "Open file" }] as const)
+              : []),
             { id: "open", label: "Open in editor" },
             ...(onOpenInBrowser
               ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
@@ -1504,6 +1510,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
           { x: event.clientX, y: event.clientY },
         );
 
+        if (clicked === "open-from-host") {
+          onOpenFromHost?.(iconPath);
+          return;
+        }
         if (clicked === "open") {
           handleOpenInEditor();
           return;
@@ -1571,6 +1581,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
                   pageOrigin: window.location.origin,
                   isDesktopRuntime: window.desktopBridge !== undefined,
                 }),
+                canOpenHostLink: onOpenFromHost !== undefined,
               });
               switch (action) {
                 case "image":
@@ -1590,6 +1601,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
                   return;
                 case "viewer":
                   window.open(href, "_blank", "noopener");
+                  return;
+                case "host-link":
+                  onOpenFromHost?.(iconPath);
                   return;
                 case "preview":
                   handleOpenInFilePreview();
@@ -1633,6 +1647,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.onOpen === next.onOpen &&
     previous.onOpenImage === next.onOpenImage &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
+    previous.onOpenFromHost === next.onOpenFromHost &&
     previous.className === next.className
   );
 }
@@ -1872,6 +1887,59 @@ function ChatMarkdown({
     },
     [createAssetUrl, openPreview, preparedConnection, threadRef],
   );
+  const openFileFromHost = useCallback(
+    (filePath: string) => {
+      if (!threadRef) return;
+      // A browser only allows a new tab during the tap itself, not after the wait for
+      // the link. The desktop app hands the link to the system browser instead.
+      const pendingTab = window.desktopBridge === undefined ? window.open("", "_blank") : null;
+      void (async () => {
+        try {
+          if (preparedConnection._tag === "None") {
+            throw new Error("Environment is not connected.");
+          }
+          const result = await createAssetUrl({
+            environmentId: threadRef.environmentId,
+            input: {
+              resource: { _tag: "thread-file", threadId: threadRef.threadId, path: filePath },
+            },
+          });
+          if (result._tag === "Failure") {
+            if (isAtomCommandInterrupted(result)) {
+              pendingTab?.close();
+              return;
+            }
+            throw squashAtomCommandFailure(result);
+          }
+          const url = resolveAssetUrl(
+            preparedConnection.value.httpBaseUrl,
+            result.value.relativeUrl,
+          );
+          if (url === null) throw new Error("The host returned an unusable file link.");
+          if (pendingTab !== null) {
+            pendingTab.opener = null;
+            pendingTab.location.href = url;
+            return;
+          }
+          await readLocalApi()?.shell.openExternal(url);
+        } catch (cause) {
+          pendingTab?.close();
+          reportMarkdownActionFailure(
+            { operation: "open-file-from-host", target: filePath },
+            cause,
+          );
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Unable to open file",
+              description: cause instanceof Error ? cause.message : "An error occurred.",
+            }),
+          );
+        }
+      })();
+    },
+    [createAssetUrl, preparedConnection, threadRef],
+  );
   const openMarkdownImageInFullScreen = useCallback(
     (fileLinkMeta: MarkdownFileLinkMeta, assetPath: string) => {
       if (!expandedImagePreviewController || !threadRef) {
@@ -1960,19 +2028,7 @@ function ChatMarkdown({
         filePath: fileLinkMeta.filePath,
         workspaceRelativePath: fileLinkMeta.workspaceRelativePath,
         isRemoteThread,
-        // The host only signs an outside-the-workspace image a message links or
-        // puts in inline code. A path stated in prose would be refused, so where the
-        // viewer can open it, the tap goes there instead of ending in an error.
-        hasSourceMessage:
-          sourceMessageId !== undefined &&
-          !(
-            verifiedBareFilePaths.has(fileLinkMeta.filePath) &&
-            canOpenFileViewerTab({
-              viewHref,
-              pageOrigin: window.location.origin,
-              isDesktopRuntime: window.desktopBridge !== undefined,
-            })
-          ),
+        hasSourceMessage: sourceMessageId !== undefined,
       });
       const onOpenImage = shouldOpenImageReferenceInFullScreen({
         isThinPortraitMobile: expandedImagePreviewController?.fullScreenMobile ?? false,
@@ -2000,6 +2056,7 @@ function ChatMarkdown({
           canRevealOnThisDevice={canRevealFileOnThisDevice}
           onOpen={openInPreferredEditor}
           onOpenImage={onOpenImage}
+          onOpenFromHost={threadRef ? openFileFromHost : undefined}
           onOpenInBrowser={
             threadRef &&
             fileLinkMeta.workspaceRelativePath !== null &&

@@ -12,6 +12,15 @@ export const AssetResource = Schema.Union([
     sourceActivityId: Schema.optional(EventId),
     sourceMessageId: Schema.optional(MessageId),
   }),
+  /**
+   * Any file on the host, opened from a chat link. The host signs it only when
+   * an assistant message in this thread names the exact path, and the link is
+   * short-lived and read-only.
+   */
+  Schema.TaggedStruct("thread-file", {
+    threadId: ThreadId,
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+  }),
   Schema.TaggedStruct("attachment", {
     attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   }),
@@ -151,6 +160,20 @@ export class AssetWorkspaceResolutionError extends Schema.TaggedErrorClass<Asset
   }
 }
 
+export class AssetThreadFileRefusedError extends Schema.TaggedErrorClass<AssetThreadFileRefusedError>()(
+  "AssetThreadFileRefusedError",
+  {
+    resource: AssetResource,
+    reason: Schema.Literals(["not-named", "not-a-file"]),
+  },
+) {
+  override get message(): string {
+    return this.reason === "not-a-file"
+      ? "Only a file can be opened from this link, not a folder."
+      : "This chat doesn't name that file, so it can't be opened from here.";
+  }
+}
+
 export class AssetAttachmentNotFoundError extends Schema.TaggedErrorClass<AssetAttachmentNotFoundError>()(
   "AssetAttachmentNotFoundError",
   {
@@ -219,6 +242,7 @@ export const AssetAccessError = Schema.Union([
   AssetPreviewFileTooLargeError,
   AssetWorkspaceAssetInspectionError,
   AssetWorkspaceAssetNotFoundError,
+  AssetThreadFileRefusedError,
   AssetWorkspaceResolutionError,
   AssetAttachmentNotFoundError,
   AssetProjectFaviconResolutionError,

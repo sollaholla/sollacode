@@ -97,7 +97,10 @@ import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
 import {
   activityAuthorizesExternalImagePath,
+  expandHostHomePath,
+  messageAuthorizesExternalFilePath,
   messageAuthorizesExternalImagePath,
+  threadFileMentionTerms,
 } from "./assets/ThreadAssetAuthorization.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -2598,6 +2601,49 @@ const makeWsRpcLayer = (
                   });
                 }
                 return yield* issueAssetUrl({ resource: artifactResource });
+              }
+              if (input.resource._tag === "thread-file") {
+                const homeDirectory = NodeOS.homedir();
+                const fileResource = {
+                  ...input.resource,
+                  path: expandHostHomePath(input.resource.path, homeDirectory),
+                };
+                const fileThread = yield* projectionSnapshotQuery
+                  .getThreadShellById(fileResource.threadId)
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new AssetWorkspaceContextResolutionError({
+                          resource: fileResource,
+                          cause,
+                        }),
+                    ),
+                  );
+                if (Option.isNone(fileThread)) {
+                  return yield* new AssetWorkspaceContextNotFoundError({
+                    resource: fileResource,
+                  });
+                }
+                const messages = yield* (
+                  projectionSnapshotQuery.listThreadAssistantMessagesMentioning?.(
+                    fileResource.threadId,
+                    threadFileMentionTerms(fileResource.path),
+                  ) ?? Effect.succeed([])
+                ).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AssetWorkspaceContextResolutionError({
+                        resource: fileResource,
+                        cause,
+                      }),
+                  ),
+                );
+                return yield* issueAssetUrl({
+                  resource: fileResource,
+                  threadNamesFile: messages.some((message) =>
+                    messageAuthorizesExternalFilePath(message, fileResource.path, homeDirectory),
+                  ),
+                });
               }
               if (input.resource._tag !== "workspace-file") {
                 return yield* issueAssetUrl({ resource: input.resource });

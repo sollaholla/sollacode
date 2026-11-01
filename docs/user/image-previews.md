@@ -24,11 +24,13 @@ Images in a draft, in the composer or a review comment, page through that draft'
 
 The preview comes from the file on the thread's host. Relative paths resolve within that thread's workspace or worktree. Connected phones and browsers use a signed URL from the selected environment; they do not try to open the host's local filesystem path. The preview prefers the file currently at that path. If the file is moved, removed, or cannot be decoded, it falls back to an image retained in the tool result, when available. Otherwise the thumbnail indicates that the preview is unavailable.
 
-A file link can point outside the thread's workspace. On a phone or in a browser, tapping one opens the file in a new tab through the host's file viewer, using your sign-in on that page. An image outside the workspace opens in the image viewer when the reply links it or puts it in inline code. A path a reply only states in plain text opens in the viewer tab instead. The desktop app has no viewer tab for another computer's files, so a link outside the workspace there still opens in the editor on the computer that owns the thread.
+A file link can point outside the thread's workspace. On a phone or in a browser on the host's own address, tapping one opens the file in a new tab through the host's file viewer, using your sign-in on that page. The desktop app viewing another computer, and the iPhone and Android apps, open it in your system browser through a short-lived link the host signs. That link works for one file for 15 minutes, reads only, and is issued only when a reply in that thread names the exact path. A folder can't be opened this way, and a path only you wrote doesn't count.
 
-Images attached to messages and browser snapshots are stored copies. They are deleted after **Attachment retention** in Settings (48 hours by default), and then show as no longer available on every device.
+An image outside the workspace opens in the image viewer when a reply names it, whether it links the path, puts it in inline code, or writes it in plain text.
 
-Image previews do not turn arbitrary command output or incidental filename mentions into images. An external image outside the workspace must match the exact image path recorded by the tool activity.
+Images you send stay until their chat is deleted. Browser snapshots and images an agent read are stored copies that are deleted after **Attachment retention** in Settings (48 hours by default), and then show as no longer available on every device. Images you sent before this rule may already have been deleted, and can't be recovered.
+
+Image previews do not turn arbitrary command output or incidental filename mentions into images. An external image outside the workspace must match the exact path recorded by the tool activity or named by a reply. A longer name or path that merely contains it doesn't count.
 
 ## Browser snapshots
 

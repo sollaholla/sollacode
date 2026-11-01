@@ -2306,6 +2306,35 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listThreadAssistantMessageRowsMentioning = SqlSchema.findAll({
+    Request: Schema.Struct({ threadId: ThreadId, terms: Schema.Array(Schema.String) }),
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId, terms }) =>
+      sql`
+        SELECT
+          message_id AS "messageId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          role,
+          text,
+          input_origin AS "inputOrigin",
+          sender_thread_id AS "senderThreadId",
+          sender_thread_title AS "senderThreadTitle",
+          delegation_id AS "delegationId",
+          voice_transcript AS "voiceTranscript",
+          attachments_json AS "attachments",
+          is_streaming AS "isStreaming",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+          AND role = 'assistant'
+          AND (${sql.or(terms.map((term) => sql`instr(lower(text), ${term}) > 0`))})
+        ORDER BY created_at DESC
+        LIMIT 200
+      `,
+  });
+
   const getLatestTaskTitleRow = SqlSchema.findOneOption({
     Request: ThreadTaskLookupInput,
     Result: ProjectionTaskTitleRowSchema,
@@ -4008,6 +4037,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       } satisfies ProjectionThreadIngestionContext);
     });
 
+  const listThreadAssistantMessagesMentioning: NonNullable<
+    ProjectionSnapshotQueryShape["listThreadAssistantMessagesMentioning"]
+  > = (threadId, terms) =>
+    listThreadAssistantMessageRowsMentioning({ threadId, terms }).pipe(
+      Effect.map((rows) => rows.map(mapMessageRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listThreadAssistantMessagesMentioning:query",
+          "ProjectionSnapshotQuery.listThreadAssistantMessagesMentioning:decodeRow",
+        ),
+      ),
+    );
+
   const getThreadAssetSource: NonNullable<ProjectionSnapshotQueryShape["getThreadAssetSource"]> = (
     threadId,
     source,
@@ -4524,6 +4566,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getTurnTrigger,
     getThreadIngestionContext,
     getThreadAssetSource,
+    listThreadAssistantMessagesMentioning,
     getLatestThreadActivityByKind,
     getLatestClientModelSelection,
     getThreadDetailById,

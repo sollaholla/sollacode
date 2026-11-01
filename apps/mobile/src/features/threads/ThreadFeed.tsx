@@ -120,6 +120,8 @@ import {
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { useAssetUrl } from "../../state/assets";
 import { resolveWorkspaceRelativeFilePath } from "../files/filePath";
+import { useThreadFileOpener } from "../files/useThreadFileOpener";
+import { ErrorBanner } from "../../components/ErrorBanner";
 
 const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
@@ -1593,6 +1595,11 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const iconSubtleColor = useThemeColor("--color-icon-subtle");
   const userBubbleColor = useThemeColor("--color-user-bubble");
   const openThreadUrl = useThreadUrlOpener(props.environmentId, props.threadId);
+  const {
+    openFile: openFileFromHost,
+    failure: openFileFailure,
+    dismissFailure: dismissOpenFileFailure,
+  } = useThreadFileOpener(props.environmentId, props.threadId);
   const onMarkdownLinkPress = useCallback(
     (href: string) => {
       const presentation = resolveMarkdownLinkPresentation(href);
@@ -1601,14 +1608,16 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           props.workspaceRoot,
           presentation.path,
         );
+        void Haptics.selectionAsync();
         if (relativePath) {
-          void Haptics.selectionAsync();
           navigation.navigate("ThreadFile", {
             environmentId: String(props.environmentId),
             threadId: String(props.threadId),
             path: relativePath.split("/").filter((segment) => segment.length > 0),
             ...(presentation.line ? { line: String(presentation.line) } : {}),
           });
+        } else {
+          openFileFromHost(presentation.path);
         }
         return;
       }
@@ -1617,7 +1626,14 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         openThreadUrl(presentation.href);
       }
     },
-    [props.environmentId, props.threadId, props.workspaceRoot, navigation, openThreadUrl],
+    [
+      props.environmentId,
+      props.threadId,
+      props.workspaceRoot,
+      navigation,
+      openFileFromHost,
+      openThreadUrl,
+    ],
   );
   const markdownStyles = useMarkdownStyles(onMarkdownLinkPress);
   const reviewCommentColors = useReviewCommentColors();
@@ -2056,6 +2072,21 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   return (
     <>
       <View className="flex-1" onLayout={handleViewportLayout}>
+        {openFileFailure !== null ? (
+          <Pressable
+            accessibilityRole="alert"
+            onPress={dismissOpenFileFailure}
+            style={{
+              position: "absolute",
+              top: topContentInset + 8,
+              left: horizontalPadding,
+              right: horizontalPadding,
+              zIndex: 10,
+            }}
+          >
+            <ErrorBanner message={openFileFailure} />
+          </Pressable>
+        ) : null}
         <View className="flex-1">
           <KeyboardAwareLegendList
             ref={props.listRef}

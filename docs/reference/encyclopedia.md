@@ -32,6 +32,10 @@ A project folder's size on disk, for Settings → Projects. [ProjectFolderUsage.
 
 A small JPEG of an image asset, asked for with `thumbnail=1` on its signed URL and made by macOS's `sips` in [ImageThumbnails.ts](../../apps/server/src/assets/ImageThumbnails.ts), cached by the file's size and modification time. Thumbnail tiles use them; viewers fetch the original. Other hosts, and files of 96 KB or less, get the original. See [image-previews.md](../user/image-previews.md).
 
+#### Thread file link
+
+A 15-minute signed URL for one file outside a thread's workspace, for devices the file viewer's cookie can't reach. The host issues it only when an assistant message in that thread names the exact path, in [ThreadAssetAuthorization.ts](../../apps/server/src/assets/ThreadAssetAuthorization.ts), and serves it under the viewer's rules, so text never renders as a document.
+
 #### Database compaction
 
 Rewriting an environment's `state.sqlite` without its free pages, which SQLite reuses but never returns to the disk. A person schedules it from Settings → General → Storage (`server.scheduleDatabaseCompaction`, `server.cancelDatabaseCompaction`, `server.getDatabaseStorage`); the request is a file beside the database, and the next server start runs it in [DatabaseCompaction.ts](../../apps/server/src/persistence/DatabaseCompaction.ts) before the SQLite client opens the file: exclusivity proof (leaving WAL mode), `VACUUM INTO` a copy in a worker thread ([DatabaseCompactionWorker.ts](../../apps/server/src/persistence/DatabaseCompactionWorker.ts)), `quick_check` plus schema and row-count comparison, then one rename. Launches made by the app updater carry `--solla-update-launch=` and defer it. See [storage.md](../user/storage.md#compacting-the-database).
