@@ -86,7 +86,15 @@ const installAccountForwarding = Effect.fn("desktop.ipc.preview.installAccountFo
           ),
         ),
       saveCredential: (input) => runPromise(vault.save(input)),
-      setPrompts: manager.setAccountPrompts,
+      setPrompts: (tabId, next) => {
+        manager.setAccountPrompts(tabId, next);
+        // Kinds only: a prompt's fields name the account it is asking about.
+        void runPromise(
+          Effect.logInfo("Sign-in questions on a tab changed.", {
+            kinds: next.map((prompt) => prompt.kind),
+          }).pipe(Effect.withSpan("desktop.preview.accountPrompts")),
+        );
+      },
       fillForPerson: (tabId, secret) => runPromise(manager.fillPasswordForPerson(tabId, secret)),
       profileKindOf: manager.browserProfileKind,
       findLiveElsewhere: accounts.findLiveElsewhere,
