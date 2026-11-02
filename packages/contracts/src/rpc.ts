@@ -1,4 +1,9 @@
 import {
+  PreviewAccountLinkInput,
+  PreviewAccountSignOutInput,
+  PreviewAccountsSnapshot,
+} from "./previewAccounts.ts";
+import {
   WebPushStatusInput,
   WebPushStatus,
   WebPushSubscribeInput,
@@ -388,6 +393,9 @@ export const WS_METHODS = {
   previewCredentialsList: "previewCredentials.list",
   previewCredentialsSave: "previewCredentials.save",
   previewCredentialsRemove: "previewCredentials.remove",
+  previewAccountsSnapshot: "previewAccounts.snapshot",
+  previewAccountsSignOut: "previewAccounts.signOut",
+  previewAccountsLink: "previewAccounts.link",
   devicesList: "devices.list",
   devicesCatalog: "devices.catalog",
   devicesCreate: "devices.create",
@@ -1176,6 +1184,22 @@ export const WsPreviewCredentialsRemoveRpc = Rpc.make(WS_METHODS.previewCredenti
   error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
 });
 
+export const WsPreviewAccountsSnapshotRpc = Rpc.make(WS_METHODS.previewAccountsSnapshot, {
+  payload: Schema.Struct({ refresh: Schema.optionalKey(Schema.Boolean) }),
+  success: PreviewAccountsSnapshot,
+  error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
+});
+
+export const WsPreviewAccountsSignOutRpc = Rpc.make(WS_METHODS.previewAccountsSignOut, {
+  payload: PreviewAccountSignOutInput,
+  error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
+});
+
+export const WsPreviewAccountsLinkRpc = Rpc.make(WS_METHODS.previewAccountsLink, {
+  payload: PreviewAccountLinkInput,
+  error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
+});
+
 // iOS simulators and Android emulators on the environment's machine.
 export const WsDevicesListRpc = Rpc.make(WS_METHODS.devicesList, {
   payload: Schema.Struct({}),
@@ -1852,6 +1876,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewCredentialsListRpc,
   WsPreviewCredentialsSaveRpc,
   WsPreviewCredentialsRemoveRpc,
+  WsPreviewAccountsSnapshotRpc,
+  WsPreviewAccountsSignOutRpc,
+  WsPreviewAccountsLinkRpc,
   WsDevicesListRpc,
   WsDevicesCatalogRpc,
   WsDevicesCreateRpc,

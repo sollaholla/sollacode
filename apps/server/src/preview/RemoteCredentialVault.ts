@@ -1,7 +1,10 @@
 import {
+  PreviewAccountsSnapshot,
   PreviewCredentialSummary,
   PreviewCredentialVaultError,
   type EnvironmentId,
+  type PreviewAccountLinkInput,
+  type PreviewAccountSignOutInput,
   type PreviewCredentialRemoveInput,
   type PreviewCredentialSaveInput,
 } from "@t3tools/contracts";
@@ -17,6 +20,7 @@ type CredentialVaultRelay = Pick<
 
 const decodeSummaries = Schema.decodeUnknownEffect(Schema.Array(PreviewCredentialSummary));
 const decodeSummary = Schema.decodeUnknownEffect(PreviewCredentialSummary);
+const decodeAccounts = Schema.decodeUnknownEffect(PreviewAccountsSnapshot);
 
 // The desktop answered with something this server cannot read, most likely a
 // different app version. Its value is not echoed: it could be anything.
@@ -66,5 +70,44 @@ export const removeRemoteCredential = (input: {
     .manageCredentials({
       environmentId: input.environmentId,
       command: { action: "remove", id: input.request.id },
+    })
+    .pipe(Effect.asVoid);
+
+/** Settings → Accounts from any client: who is signed in to the desktop's browser profiles. */
+export const remoteAccountsSnapshot = (input: {
+  readonly broker: CredentialVaultRelay;
+  readonly environmentId: EnvironmentId;
+  readonly refresh: boolean;
+}) =>
+  input.broker
+    .manageCredentials({
+      environmentId: input.environmentId,
+      command: { action: "accountsSnapshot", refresh: input.refresh },
+    })
+    .pipe(
+      Effect.flatMap((result) => decodeAccounts(result).pipe(Effect.mapError(unreadableAnswer))),
+    );
+
+export const remoteAccountsSignOut = (input: {
+  readonly broker: CredentialVaultRelay;
+  readonly environmentId: EnvironmentId;
+  readonly signOut: PreviewAccountSignOutInput;
+}) =>
+  input.broker
+    .manageCredentials({
+      environmentId: input.environmentId,
+      command: { action: "accountsSignOut", signOut: input.signOut },
+    })
+    .pipe(Effect.asVoid);
+
+export const remoteAccountsLink = (input: {
+  readonly broker: CredentialVaultRelay;
+  readonly environmentId: EnvironmentId;
+  readonly link: PreviewAccountLinkInput;
+}) =>
+  input.broker
+    .manageCredentials({
+      environmentId: input.environmentId,
+      command: { action: "accountsLink", link: input.link },
     })
     .pipe(Effect.asVoid);

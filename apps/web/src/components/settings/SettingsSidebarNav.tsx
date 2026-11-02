@@ -167,10 +167,10 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
         description: "Simulators and emulators",
       },
       {
-        label: "Credentials",
+        label: "Accounts",
         to: "/settings/credentials",
         icon: KeyRoundIcon,
-        description: "Saved logins for the browser",
+        description: "Sign-ins and saved logins",
       },
     ],
   },

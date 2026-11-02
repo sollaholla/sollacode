@@ -157,6 +157,9 @@ import {
   listRemoteCredentials,
   removeRemoteCredential,
   saveRemoteCredential,
+  remoteAccountsLink,
+  remoteAccountsSignOut,
+  remoteAccountsSnapshot,
 } from "./preview/RemoteCredentialVault.ts";
 import { dispatchRemotePreviewInput } from "./preview/RemotePreviewInput.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -3154,6 +3157,42 @@ const makeWsRpcLayer = (
             WS_METHODS.previewAutomationFocusHost,
             previewAutomationBroker.focusHost(input),
             { "rpc.aggregate": "preview-automation" },
+          ),
+        [WS_METHODS.previewAccountsSnapshot]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewAccountsSnapshot,
+            Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
+              remoteAccountsSnapshot({
+                broker: previewAutomationBroker,
+                environmentId,
+                refresh: input.refresh ?? false,
+              }),
+            ),
+            { "rpc.aggregate": "preview-credentials" },
+          ),
+        [WS_METHODS.previewAccountsSignOut]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewAccountsSignOut,
+            Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
+              remoteAccountsSignOut({
+                broker: previewAutomationBroker,
+                environmentId,
+                signOut: input,
+              }),
+            ),
+            { "rpc.aggregate": "preview-credentials" },
+          ),
+        [WS_METHODS.previewAccountsLink]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewAccountsLink,
+            Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
+              remoteAccountsLink({
+                broker: previewAutomationBroker,
+                environmentId,
+                link: input,
+              }),
+            ),
+            { "rpc.aggregate": "preview-credentials" },
           ),
         [WS_METHODS.previewCredentialsList]: () =>
           observeRpcEffect(

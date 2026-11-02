@@ -234,5 +234,26 @@ export function createPreviewEnvironmentAtoms<R, E>(
       scheduler: credentialScheduler,
       concurrency: credentialChangeConcurrency,
     }),
+    accountsSnapshot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:accounts-snapshot",
+      tag: WS_METHODS.previewAccountsSnapshot,
+      scheduler: credentialScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
+    accountsSignOut: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:accounts-sign-out",
+      tag: WS_METHODS.previewAccountsSignOut,
+      scheduler: credentialScheduler,
+      concurrency: credentialChangeConcurrency,
+    }),
+    accountsLink: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:accounts-link",
+      tag: WS_METHODS.previewAccountsLink,
+      scheduler: credentialScheduler,
+      concurrency: credentialChangeConcurrency,
+    }),
   };
 }

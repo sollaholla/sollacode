@@ -1,3 +1,4 @@
+import { PreviewAccountLinkInput, PreviewAccountSignOutInput } from "./previewAccounts.ts";
 import { Schema } from "effect";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -1371,6 +1372,15 @@ export const PreviewCredentialVaultCommand = Schema.Union([
   Schema.Struct({ action: Schema.Literal("list") }),
   Schema.Struct({ action: Schema.Literal("save"), credential: PreviewCredentialSaveInput }),
   Schema.Struct({ action: Schema.Literal("remove"), id: PreviewCredentialId }),
+  Schema.Struct({
+    action: Schema.Literal("accountsSnapshot"),
+    refresh: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    action: Schema.Literal("accountsSignOut"),
+    signOut: PreviewAccountSignOutInput,
+  }),
+  Schema.Struct({ action: Schema.Literal("accountsLink"), link: PreviewAccountLinkInput }),
 ]);
 export type PreviewCredentialVaultCommand = typeof PreviewCredentialVaultCommand.Type;
 

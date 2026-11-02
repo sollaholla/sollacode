@@ -351,7 +351,10 @@ const raisePreviewAutomationHostError = (
 // password.
 const applyCredentialVaultCommand = (command: PreviewCredentialVaultCommand): Promise<unknown> => {
   const credentials = previewBridge?.credentials;
-  if (!credentials) return Promise.reject(new Error("Saved passwords are unavailable here."));
+  const accounts = previewBridge?.accounts;
+  if (!credentials || !accounts) {
+    return Promise.reject(new Error("Saved passwords are unavailable here."));
+  }
   switch (command.action) {
     case "list":
       return credentials.list();
@@ -359,6 +362,12 @@ const applyCredentialVaultCommand = (command: PreviewCredentialVaultCommand): Pr
       return credentials.save(command.credential);
     case "remove":
       return credentials.remove(command.id);
+    case "accountsSnapshot":
+      return accounts.snapshot(command.refresh === undefined ? {} : { refresh: command.refresh });
+    case "accountsSignOut":
+      return accounts.signOut(command.signOut);
+    case "accountsLink":
+      return accounts.link(command.link);
   }
 };
 

@@ -16,7 +16,17 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import type { PreviewCredentialId, PreviewCredentialSummary } from "@t3tools/contracts";
+import {
+  ACCOUNT_PROVIDER_LABELS,
+  accountDisplayName,
+  summarizeAccounts,
+} from "@t3tools/client-runtime/preview/account-summary";
+import type {
+  PreviewAccountOwner,
+  PreviewAccountsSnapshot,
+  PreviewCredentialId,
+  PreviewCredentialSummary,
+} from "@t3tools/contracts";
 import { useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, ScrollView, View } from "react-native";
@@ -28,6 +38,7 @@ import { AppText as Text, AppTextInput as TextInput } from "../../components/App
 import { cn } from "../../lib/cn";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { useProjects, useThreadShells } from "../../state/entities";
 import { previewEnvironment } from "../../state/preview";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
@@ -58,7 +69,7 @@ export function SettingsCredentialsRouteScreen() {
         <>
           {/* Android renders its own in-screen header instead of the native bar. */}
           <NativeStackScreenOptions options={{ headerShown: false }} />
-          <AndroidScreenHeader title="Credentials" onBack={() => navigation.goBack()} />
+          <AndroidScreenHeader title="Accounts" onBack={() => navigation.goBack()} />
         </>
       ) : null}
       <ScrollView
@@ -70,9 +81,11 @@ export function SettingsCredentialsRouteScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <Text className="px-2 text-sm leading-normal text-foreground-muted">
-          Logins, PINs, and codes agents can use on sites in the browser panel. Agents see each
-          entry's label, type, username, and site. Solla Code types the secret into the page itself,
-          only on the exact site it was saved for, so it never reaches an agent, a chat, or a log.
+          Each project's threads share one browser, and each agent has its own. Saved logins, PINs,
+          and codes are for sites in the browser panel; agents can use them, except saved Google
+          passwords, which only you can fill. Agents see each entry's label, type, username, and
+          site. Solla Code types the secret into the page itself, only on the exact site it was
+          saved for, so it never reaches an agent, a chat, or a log.
         </Text>
         {connectedEnvironments.length === 0 ? (
           <View className="rounded-[24px] bg-card px-6 py-8">
@@ -82,19 +95,148 @@ export function SettingsCredentialsRouteScreen() {
           </View>
         ) : (
           connectedEnvironments.map((environment) => (
-            <EnvironmentCredentials
-              key={environment.environmentId}
-              environment={environment}
-              title={
-                connectedEnvironments.length > 1
-                  ? environment.environmentLabel
-                  : "Saved credentials"
-              }
-            />
+            <View key={environment.environmentId} className="gap-6">
+              <EnvironmentAccounts
+                environment={environment}
+                title={
+                  connectedEnvironments.length > 1
+                    ? `${environment.environmentLabel} accounts`
+                    : "Signed-in accounts"
+                }
+              />
+              <EnvironmentCredentials
+                environment={environment}
+                title={
+                  connectedEnvironments.length > 1
+                    ? `${environment.environmentLabel} saved logins`
+                    : "Saved logins"
+                }
+              />
+            </View>
           ))
         )}
       </ScrollView>
     </View>
+  );
+}
+
+/** Who is signed in to this environment's browsers, relayed from its desktop app. */
+function EnvironmentAccounts(props: {
+  readonly environment: ConnectedEnvironmentSummary;
+  readonly title: string;
+}) {
+  const environmentId = props.environment.environmentId;
+  const snapshot = useAtomCommand(previewEnvironment.accountsSnapshot, { reportFailure: false });
+  const signOut = useAtomCommand(previewEnvironment.accountsSignOut, { reportFailure: false });
+  const projects = useProjects();
+  const threadShells = useThreadShells();
+  const [accounts, setAccounts] = useState<PreviewAccountsSnapshot | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setAccounts(settled(await snapshot({ environmentId, input: { refresh: true } })));
+      setError(null);
+    } catch (cause) {
+      setError(credentialErrorMessage(cause, "Could not check accounts on this computer."));
+    }
+  }, [environmentId, snapshot]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const ownerLabel = (owner: PreviewAccountOwner): string =>
+    owner.kind === "project"
+      ? (projects.find(
+          (project) =>
+            project.environmentId === owner.environmentId && project.id === owner.ownerId,
+        )?.title ?? "a removed project")
+      : `${
+          threadShells.find(
+            (thread) => thread.environmentId === owner.environmentId && thread.id === owner.ownerId,
+          )?.title ?? "An agent"
+        } (agent)`;
+
+  const summaries = accounts ? summarizeAccounts(accounts.sessions) : [];
+  return (
+    <SettingsSection title={props.title}>
+      <View className="gap-3 rounded-[24px] bg-card px-5 py-4">
+        {error ? (
+          <Text className="text-sm leading-normal text-foreground-muted">{error}</Text>
+        ) : accounts === null ? (
+          <ActivityIndicator />
+        ) : summaries.length === 0 ? (
+          <Text className="text-sm leading-normal text-foreground-muted">
+            No Google, GitHub, Microsoft, or Apple sign-ins yet. Sign in on a site in a project's
+            browser and it appears here.
+          </Text>
+        ) : (
+          summaries.map((account) => (
+            <View key={account.key} className="gap-1.5">
+              <Text className="text-sm font-t3-bold text-foreground" numberOfLines={1}>
+                {accountDisplayName(account)}
+              </Text>
+              <Text className="text-xs text-foreground-muted">
+                {ACCOUNT_PROVIDER_LABELS[account.provider]} ·{" "}
+                {account.live ? "Signed in" : "Signed out"}
+              </Text>
+              {account.profiles.map((profile) => {
+                const key = `${account.key}\u0000${profile.directory}`;
+                return (
+                  <View key={key} className="flex-row items-center gap-2">
+                    <Text className="flex-1 text-xs text-foreground-muted" numberOfLines={1}>
+                      {ownerLabel(profile.owner)}
+                      {profile.live ? "" : " · signed out"}
+                    </Text>
+                    {profile.live ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={busy}
+                        className="min-h-8 justify-center px-2"
+                        onPress={() => {
+                          // A second tap confirms: no native dialogs here.
+                          if (confirming !== key) {
+                            setConfirming(key);
+                            return;
+                          }
+                          setConfirming(null);
+                          setBusy(true);
+                          void (async () => {
+                            try {
+                              settled(
+                                await signOut({
+                                  environmentId,
+                                  input: {
+                                    provider: profile.provider,
+                                    directory: profile.directory,
+                                  },
+                                }),
+                              );
+                              await load();
+                            } catch (cause) {
+                              setError(credentialErrorMessage(cause, "Could not sign out."));
+                            } finally {
+                              setBusy(false);
+                            }
+                          })();
+                        }}
+                      >
+                        <Text className="text-xs font-t3-bold text-foreground">
+                          {confirming === key ? "Tap again to sign out" : "Sign out"}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+          ))
+        )}
+      </View>
+    </SettingsSection>
   );
 }
 

@@ -17,6 +17,7 @@ import {
   type PreviewDownload,
   type PreviewEvent,
   type PreviewListResult,
+  type PreviewAccountPrompt,
   type PreviewDownloadApproval,
   type PreviewSessionSnapshot,
   type ScopedThreadRef,
@@ -43,6 +44,8 @@ export interface DesktopPreviewOverlay {
   downloads: ReadonlyArray<PreviewDownload>;
   /** Downloads held on this tab until the user allows or denies the site. */
   pendingDownloadApprovals: ReadonlyArray<PreviewDownloadApproval>;
+  /** Sign-in questions on this tab; absent from an older desktop host. */
+  accountPrompts?: ReadonlyArray<PreviewAccountPrompt> | undefined;
 }
 
 export interface ThreadPreviewState {

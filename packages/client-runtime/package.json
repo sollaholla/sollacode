@@ -103,6 +103,10 @@
       "types": "./src/preview/credentialForm.ts",
       "default": "./src/preview/credentialForm.ts"
     },
+    "./preview/account-summary": {
+      "types": "./src/preview/accountSummary.ts",
+      "default": "./src/preview/accountSummary.ts"
+    },
     "./devices/device-logic": {
       "types": "./src/devices/deviceLogic.ts",
       "default": "./src/devices/deviceLogic.ts"

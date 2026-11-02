@@ -2674,7 +2674,7 @@ function WorkGroupToggleTimelineRow({
     <div className="min-w-0 py-0.5">
       <button
         type="button"
-        className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--line)] bg-surface-row px-3 text-left text-[12px] font-medium leading-5 text-foreground/85 transition-colors duration-150 hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+        className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-[10px] border border-[var(--line)] bg-surface-row px-3 text-left text-[12px] font-medium leading-5 text-foreground/85 transition-colors duration-150 hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
         aria-expanded={row.expanded}
         onClick={() => ctx.onToggleWorkGroup(row.groupId)}
       >

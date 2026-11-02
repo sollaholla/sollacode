@@ -885,7 +885,18 @@ export const make = Effect.gen(function* BrowserSessionMake() {
         Effect.logWarning("Could not sweep browser profiles.", { cause }),
       ),
     );
-    yield* Effect.tryPromise(() => accounts.refreshAll()).pipe(Effect.ignore, Effect.forkDetach);
+    yield* Effect.tryPromise(() => accounts.refreshAll()).pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          Effect.logInfo("Checked who is signed in to the browser profiles.", {
+            sessions: accounts.sessions().length,
+            live: accounts.sessions().filter((session) => session.live).length,
+          }),
+        ),
+      ),
+      Effect.ignore,
+      Effect.forkDetach,
+    );
   });
 
   const setDownloadDirectory = Effect.fn("BrowserSession.setDownloadDirectory")(function* (

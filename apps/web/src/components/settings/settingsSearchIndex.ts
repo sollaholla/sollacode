@@ -49,9 +49,9 @@ function entries(
 const SETTINGS_PAGE_ENTRIES: ReadonlyArray<SettingsSearchEntry> = [
   [
     "/settings/credentials",
-    "Credentials",
-    "Saved logins",
-    ["password", "pin", "sign in", "browser"],
+    "Accounts",
+    "Sign-ins and saved logins",
+    ["credentials", "password", "pin", "sign in", "browser", "google", "oauth", "cookies"],
   ],
   [
     "/settings/devices",
@@ -353,10 +353,37 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     ],
   },
   {
+    title: "Signed-in accounts",
+    tab: "/settings/credentials",
+    tabLabel: "Accounts",
+    section: "Signed-in accounts",
+    anchor: "setting-signed-in-accounts",
+    keywords: [
+      "google",
+      "oauth",
+      "github",
+      "microsoft",
+      "sign in",
+      "sign out",
+      "logged out",
+      "session",
+      "browser profile",
+      "cookies",
+    ],
+  },
+  {
+    title: "Browser data",
+    tab: "/settings/credentials",
+    tabLabel: "Accounts",
+    section: "Browser data",
+    anchor: "setting-browser-data",
+    keywords: ["cookies", "encrypted", "cache", "profiles", "cleanup", "project browser"],
+  },
+  {
     title: "Saved passwords and PINs",
     tab: "/settings/credentials",
-    tabLabel: "Credentials",
-    section: "Credentials",
+    tabLabel: "Accounts",
+    section: "Saved logins",
     anchor: "setting-saved-passwords",
     keywords: [
       "credentials",

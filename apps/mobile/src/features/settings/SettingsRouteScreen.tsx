@@ -186,7 +186,7 @@ function LocalSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
-          <SettingsRow icon="key" label="Credentials" target="SettingsCredentials" />
+          <SettingsRow icon="key" label="Accounts" target="SettingsCredentials" />
         </SettingsSection>
       ),
     },

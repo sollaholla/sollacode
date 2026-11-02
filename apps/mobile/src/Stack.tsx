@@ -391,7 +391,7 @@ const SettingsSheetStack = createNativeStackNavigator({
       screen: SettingsCredentialsRouteScreen,
       linking: "credentials",
       options: {
-        title: "Credentials",
+        title: "Accounts",
       },
     }),
     SettingsProjects: createNativeStackScreen({

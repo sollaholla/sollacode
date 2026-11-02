@@ -175,6 +175,7 @@ function projectDesktopState(state: DesktopPreviewTabState): DesktopPreviewOverl
     agentActive: state.agentActive,
     downloads: state.downloads,
     pendingDownloadApprovals: state.pendingDownloadApprovals,
+    accountPrompts: state.accountPrompts,
   };
 }
 

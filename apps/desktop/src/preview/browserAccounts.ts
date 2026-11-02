@@ -12,6 +12,11 @@ import type {
 } from "@t3tools/contracts";
 
 import {
+  ACCOUNT_EVENT_CAUSE_ACCOUNTS_PAGE,
+  ACCOUNT_EVENT_CAUSE_LINKED,
+} from "@t3tools/client-runtime/preview/account-summary";
+
+import {
   GOOGLE_ACCOUNT_LIST_URL,
   cookieSiteGroup,
   parseGoogleAccountList,
@@ -143,6 +148,8 @@ export function makeBrowserAccountTracker(
   /** Changes this tracker made itself, so a linked write is not echoed back. */
   const ownWrites = new Set<string>();
   const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Profile + provider being signed out from the Accounts page right now. */
+  const signingOut = new Set<string>();
 
   const record = (event: Omit<PreviewAccountEvent, "at" | "owner">) => {
     const complete: PreviewAccountEvent = {
@@ -294,7 +301,11 @@ export function makeBrowserAccountTracker(
           identity:
             accountsIn(directory, provider).find((account) => account.live)?.identity ?? null,
           directory,
-          cookieCause: cause,
+          cookieCause: signingOut.has(`${directory}\u0000${provider}`)
+            ? ACCOUNT_EVENT_CAUSE_ACCOUNTS_PAGE
+            : echoed
+              ? ACCOUNT_EVENT_CAUSE_LINKED
+              : cause,
         });
       }
       scheduleRefresh(directory);
@@ -354,19 +365,25 @@ export function makeBrowserAccountTracker(
       if (!session) return;
       options.removeLink(provider, directory);
       const definition = ACCOUNT_PROVIDERS[provider];
-      if (definition.signOutUrl) {
-        // Ends the session at the site too; clearing cookies alone only forgets it.
-        await session
-          .fetch(definition.signOutUrl, { credentials: "include" })
-          .catch(() => undefined);
-      }
-      const cookies = await session.cookies.get({});
-      for (const cookie of cookies) {
-        if (definition.groups.has(cookieSiteGroup(cookie.domain ?? ""))) {
-          await session.cookies.remove(cookieUrl(cookie), cookie.name);
+      const key = `${directory}\u0000${provider}`;
+      signingOut.add(key);
+      try {
+        if (definition.signOutUrl) {
+          // Ends the session at the site too; clearing cookies alone only forgets it.
+          await session
+            .fetch(definition.signOutUrl, { credentials: "include" })
+            .catch(() => undefined);
         }
+        const cookies = await session.cookies.get({});
+        for (const cookie of cookies) {
+          if (definition.groups.has(cookieSiteGroup(cookie.domain ?? ""))) {
+            await session.cookies.remove(cookieUrl(cookie), cookie.name);
+          }
+        }
+        await session.cookies.flushStore();
+      } finally {
+        signingOut.delete(key);
       }
-      await session.cookies.flushStore();
       await refresh(directory);
     },
     link: async (provider, fromDirectory, toDirectory) => {

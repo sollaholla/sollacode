@@ -28,6 +28,7 @@ import {
   resolveHostedBrowserProfileBinding,
   type BrowserProfileThread,
 } from "./hostedBrowserProfileBinding";
+import { BrowserAccountNotices } from "./BrowserAccountNotices";
 import { BrowserProfileReconcilers, useBrowserProfilesReady } from "./browserProfileReconcile";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
@@ -183,6 +184,7 @@ export function ElectronBrowserHost() {
   return (
     <div className="contents" data-electron-browser-host>
       <BrowserProfileReconcilers />
+      <BrowserAccountNotices />
       {sessions.map(
         ({ threadRef, profileShell, snapshot, runtimeTabId, syncGeneration, zoomFactor }) => (
           <BoundHostedBrowserWebview

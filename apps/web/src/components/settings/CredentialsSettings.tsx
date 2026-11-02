@@ -16,7 +16,7 @@ import {
   RefreshCwIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { usePrimaryEnvironmentId } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
@@ -35,6 +35,7 @@ import { previewBridge } from "../preview/previewBridge";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { confirmInApp } from "../ui/appConfirm";
 import { Button } from "../ui/button";
+import { AccountsSections, type AccountsSource } from "./AccountsSections";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
 /** What the settings screen needs from wherever the passwords are kept. */
@@ -53,8 +54,16 @@ export type CredentialsVault = Pick<
  */
 export function CredentialsSettingsPanel() {
   const desktopVault = previewBridge?.credentials;
+  const desktopAccounts = previewBridge?.accounts;
   const environmentId = usePrimaryEnvironmentId();
-  if (desktopVault) return <CredentialsSettingsView bridge={desktopVault} />;
+  if (desktopVault && desktopAccounts) {
+    return (
+      <CredentialsSettingsView
+        bridge={desktopVault}
+        before={<AccountsSections source={desktopAccounts} environmentId={environmentId} />}
+      />
+    );
+  }
   if (environmentId === null) return <CredentialsSettingsView bridge={undefined} />;
   return <RelayedCredentialsSettings key={environmentId} environmentId={environmentId} />;
 }
@@ -63,6 +72,13 @@ function RelayedCredentialsSettings({ environmentId }: { environmentId: Environm
   const list = useAtomCommand(previewEnvironment.listCredentials, { reportFailure: false });
   const save = useAtomCommand(previewEnvironment.saveCredential, { reportFailure: false });
   const remove = useAtomCommand(previewEnvironment.removeCredential, { reportFailure: false });
+  const accountsSnapshot = useAtomCommand(previewEnvironment.accountsSnapshot, {
+    reportFailure: false,
+  });
+  const accountsSignOut = useAtomCommand(previewEnvironment.accountsSignOut, {
+    reportFailure: false,
+  });
+  const accountsLink = useAtomCommand(previewEnvironment.accountsLink, { reportFailure: false });
   const vault = useMemo<CredentialsVault>(
     () => ({
       list: async () => settled(await list({ environmentId, input: {} })),
@@ -71,7 +87,21 @@ function RelayedCredentialsSettings({ environmentId }: { environmentId: Environm
     }),
     [environmentId, list, remove, save],
   );
-  return <CredentialsSettingsView bridge={vault} />;
+  const accountsSource = useMemo<AccountsSource>(
+    () => ({
+      snapshot: async (input) =>
+        settled(await accountsSnapshot({ environmentId, input: input ?? {} })),
+      signOut: async (input) => settled(await accountsSignOut({ environmentId, input })),
+      link: async (input) => settled(await accountsLink({ environmentId, input })),
+    }),
+    [accountsLink, accountsSignOut, accountsSnapshot, environmentId],
+  );
+  return (
+    <CredentialsSettingsView
+      bridge={vault}
+      before={<AccountsSections source={accountsSource} environmentId={environmentId} />}
+    />
+  );
 }
 
 function settled<A, E>(result: AtomCommandResult<A, E>): A {
@@ -79,7 +109,13 @@ function settled<A, E>(result: AtomCommandResult<A, E>): A {
   return result.value;
 }
 
-export function CredentialsSettingsView({ bridge }: { bridge: CredentialsVault | undefined }) {
+export function CredentialsSettingsView({
+  bridge,
+  before,
+}: {
+  bridge: CredentialsVault | undefined;
+  before?: ReactNode;
+}) {
   const [credentials, setCredentials] = useState<readonly PreviewCredentialSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -220,9 +256,10 @@ export function CredentialsSettingsView({ bridge }: { bridge: CredentialsVault |
 
   return (
     <SettingsPageContainer>
+      {before}
       <SettingsSection
         id="setting-saved-passwords"
-        title="Credentials"
+        title="Saved logins"
         icon={<KeyRoundIcon className="size-5" />}
         headerAction={
           bridge && credentials && credentials.length > 0 ? (
@@ -234,11 +271,11 @@ export function CredentialsSettingsView({ bridge }: { bridge: CredentialsVault |
         }
       >
         <p className="mb-4 max-w-2xl px-3 text-sm leading-relaxed text-muted-foreground sm:px-4">
-          Logins, PINs, and codes agents can use on sites in the browser panel. Agents see each
-          entry's label, type, username, and site. Solla Code types the secret into the page itself,
-          only on the exact site it was saved for, so it never reaches an agent, a chat, or a log. A
-          password fills only password boxes; a PIN or code also fills the plain text and number
-          boxes many sites use for one.
+          Logins, PINs, and codes agents can use on sites in the browser panel, except saved Google
+          passwords, which only you can fill. Agents see each entry's label, type, username, and
+          site. Solla Code types the secret into the page itself, only on the exact site it was
+          saved for, so it never reaches an agent, a chat, or a log. A password fills only password
+          boxes; a PIN or code also fills the plain text and number boxes many sites use for one.
         </p>
         {error ? (
           <Alert variant="error" className="mb-3">
