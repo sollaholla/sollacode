@@ -51,6 +51,7 @@ const LOCAL_WORDS_IGNORED = new Set([
   "users",
 ]);
 
+const ATTRIBUTION_TRAILER = /^(?:co-authored-by|signed-off-by|reviewed-by|reported-by):/iu;
 const TAILNET_ADDRESS = /\.tail[0-9a-f]{6}\.ts\.net/iu;
 const EMAIL_ADDRESS = /[a-z0-9._%+-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})/giu;
 const CREDENTIALS: ReadonlyArray<readonly [string, RegExp]> = [
@@ -203,11 +204,17 @@ function readLocalTerms(): ReadonlySet<string> {
 
 function scanCommit(commit: string, rules: SafetyRules, problems: Array<string>): void {
   const short = commit.slice(0, 10);
+  // A contributor's address is theirs to publish, so names and hashes are all
+  // that apply to authors and trailers: an address only stands out in prose.
   const details = git("log", "-1", "--format=%an <%ae>%n%cn <%ce>%n%B", commit);
-  for (const line of details.split("\n")) {
-    const problem = findProblem(line, rules);
+  details.split("\n").forEach((line, index) => {
+    const attribution = index < 2 || ATTRIBUTION_TRAILER.test(line);
+    const problem = findProblem(
+      line,
+      attribution ? { ...rules, checkNewTextPatterns: false } : rules,
+    );
     if (problem !== null) problems.push(`${short} message or author: ${problem}`);
-  }
+  });
   const diff = git(
     "log",
     "-1",
