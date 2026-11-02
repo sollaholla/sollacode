@@ -11,6 +11,14 @@ export interface TouchMenuState {
 }
 export const TOUCH_MENU_HOLD_MS = 400;
 export const TOUCH_MENU_DWELL_MS = 450;
+/**
+ * How long a finished tap waits to see if it was really the start of a pinch.
+ * Screens often report a pinch's first contact as a very short touch, gone before
+ * the second finger registers.
+ */
+export const TOUCH_TAP_GRACE_MS = 80;
+/** A touch this close during the grace is a double tap; further away, it is a pinch. */
+const TOUCH_TAP_NEARBY_PX = 48;
 export const TOUCH_MENU_ITEMS = [
   { action: "scroll", label: "Scroll", x: 0, y: -66 },
   { action: "drag", label: "Drag", x: -66, y: 10 },
@@ -35,6 +43,7 @@ export function createTouchActionMenu(callbacks: {
   pointer: (action: "down" | "move" | "up", point: TouchPoint, button: "left" | "right") => void;
   scroll: (anchor: TouchPoint, delta: TouchPoint) => void;
   panScrolls?: boolean;
+  tapGraceMs?: number;
 }) {
   let phase: "idle" | "pending" | "cancelled" | "menu" | TouchAction = "idle";
   let origin = { x: 0, y: 0 };
@@ -46,6 +55,18 @@ export function createTouchActionMenu(callbacks: {
   let startedAt = 0;
   let hold: ReturnType<typeof setTimeout> | undefined;
   let dwell: ReturnType<typeof setTimeout> | undefined;
+  let waitingTap: { point: TouchPoint; timer: ReturnType<typeof setTimeout> } | null = null;
+  const sendTap = (point: TouchPoint) => {
+    callbacks.pointer("down", point, "left");
+    callbacks.pointer("up", point, "left");
+  };
+  const flushWaitingTap = () => {
+    const tap = waitingTap;
+    if (tap === null) return;
+    clearTimeout(tap.timer);
+    waitingTap = null;
+    sendTap(tap.point);
+  };
   const clearTimers = () => {
     clearTimeout(hold);
     clearTimeout(dwell);
@@ -65,6 +86,17 @@ export function createTouchActionMenu(callbacks: {
     cancel,
     start(point: TouchPoint, menuCenter: TouchPoint) {
       cancel();
+      if (waitingTap !== null) {
+        if (
+          Math.hypot(point.x - waitingTap.point.x, point.y - waitingTap.point.y) <=
+          TOUCH_TAP_NEARBY_PX
+        ) {
+          flushWaitingTap();
+        } else {
+          clearTimeout(waitingTap.timer);
+          waitingTap = null;
+        }
+      }
       origin = point;
       last = point;
       dragPoint = point;
@@ -131,8 +163,11 @@ export function createTouchActionMenu(callbacks: {
     end() {
       if (phase === "idle") return false;
       if (phase === "pending" && Date.now() - startedAt < TOUCH_MENU_HOLD_MS) {
-        callbacks.pointer("down", origin, "left");
-        callbacks.pointer("up", origin, "left");
+        if (callbacks.tapGraceMs === undefined) {
+          sendTap(origin);
+        } else {
+          waitingTap = { point: origin, timer: setTimeout(flushWaitingTap, callbacks.tapGraceMs) };
+        }
       }
       cancel();
       return true;

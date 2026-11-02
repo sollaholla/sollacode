@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createTouchActionMenu, TOUCH_MENU_HOLD_MS, TOUCH_MENU_DWELL_MS } from "./touchActionMenu";
+import {
+  createTouchActionMenu,
+  TOUCH_MENU_HOLD_MS,
+  TOUCH_MENU_DWELL_MS,
+  TOUCH_TAP_GRACE_MS,
+} from "./touchActionMenu";
 const origin = { x: 200, y: 300 };
 function harness() {
   const callbacks = { menu: vi.fn(), pointer: vi.fn(), scroll: vi.fn() };
@@ -20,6 +25,57 @@ describe("remote touch action menu", () => {
     expect(callbacks.menu).not.toHaveBeenCalledWith(expect.objectContaining({ center: origin }));
     gesture.end();
     expect(callbacks.pointer).not.toHaveBeenCalled();
+  });
+  describe("a tap that may be the start of a pinch", () => {
+    const withGrace = () => {
+      const callbacks = {
+        menu: vi.fn(),
+        pointer: vi.fn(),
+        scroll: vi.fn(),
+        tapGraceMs: TOUCH_TAP_GRACE_MS,
+      };
+      return { ...callbacks, gesture: createTouchActionMenu(callbacks) };
+    };
+
+    it("clicks once the grace passes, surviving the capture loss that follows a release", () => {
+      const h = withGrace();
+      h.gesture.start(origin, origin);
+      h.gesture.end();
+      h.gesture.cancel();
+      expect(h.pointer).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(TOUCH_TAP_GRACE_MS);
+      expect(h.pointer.mock.calls).toEqual([
+        ["down", origin, "left"],
+        ["up", origin, "left"],
+      ]);
+    });
+
+    it("sends no click when a finger lands elsewhere during the grace", () => {
+      const h = withGrace();
+      h.gesture.start(origin, origin);
+      h.gesture.end();
+      const elsewhere = { x: 320, y: 420 };
+      h.gesture.start(elsewhere, elsewhere);
+      h.gesture.cancel();
+      vi.runAllTimers();
+      expect(h.pointer).not.toHaveBeenCalled();
+    });
+
+    it("keeps both clicks of a quick double tap", () => {
+      const h = withGrace();
+      h.gesture.start(origin, origin);
+      h.gesture.end();
+      const nearby = { x: origin.x + 6, y: origin.y - 4 };
+      h.gesture.start(nearby, nearby);
+      expect(h.pointer.mock.calls).toEqual([
+        ["down", origin, "left"],
+        ["up", origin, "left"],
+      ]);
+      h.gesture.end();
+      vi.advanceTimersByTime(TOUCH_TAP_GRACE_MS);
+      expect(h.pointer).toHaveBeenCalledTimes(4);
+      expect(h.pointer).toHaveBeenLastCalledWith("up", nearby, "left");
+    });
   });
   it("only clicks on quick tap release, sending down then up", () => {
     const h = harness();

@@ -1,4 +1,7 @@
-import { RemoteClickFeedback } from "@t3tools/client-runtime/preview/click-feedback";
+import {
+  RemoteClickFeedback,
+  TOUCH_PRESS_MARKER_DELAY_MS,
+} from "@t3tools/client-runtime/preview/click-feedback";
 import { RemoteClickMarkers } from "./RemoteClickMarkers";
 import { useFocusEffect, type StaticScreenProps } from "@react-navigation/native";
 import { RemotePreviewCommandCoordinator } from "@t3tools/client-runtime/preview/remote-command-coordinator";
@@ -277,7 +280,7 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
         onPanResponderGrant: (event) => {
           const contact = { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY };
           const point = frameLayoutRef.current && frameFraction(frameLayoutRef.current, contact);
-          if (point) clickFeedback.press(point, contact);
+          if (point) clickFeedback.press(point, contact, { delayMs: TOUCH_PRESS_MARKER_DELAY_MS });
           gestureRef.current = {
             startedAt: Date.now(),
             start: { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY },
@@ -286,9 +289,21 @@ export function ThreadBrowserRouteScreen({ route }: ThreadBrowserRouteProps) {
           };
           setFrameInteracting(true);
         },
+        // One finger belongs to the page. A second means this was never a tap
+        // or a scroll, so the whole gesture is dropped until they all lift.
+        onPanResponderStart: (_event, gestureState) => {
+          if (gestureState.numberActiveTouches < 2) return;
+          clickFeedback.cancelPress();
+          gestureRef.current = null;
+        },
         onPanResponderMove: (_event, gestureState) => {
           const gesture = gestureRef.current;
           if (gesture === null) return;
+          if (gestureState.numberActiveTouches > 1) {
+            clickFeedback.cancelPress();
+            gestureRef.current = null;
+            return;
+          }
           const distance = Math.hypot(gestureState.dx, gestureState.dy);
           if (distance > FRAME_TAP_SLOP_PX) clickFeedback.cancelPress();
           gestureRef.current = {

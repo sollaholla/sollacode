@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { TOUCH_PRESS_MARKER_DELAY_MS } from "@t3tools/client-runtime/preview/click-feedback";
+import { TOUCH_TAP_GRACE_MS } from "../remoteControl/touchActionMenu";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -284,6 +286,68 @@ describe("remote browser frame availability", () => {
     // The next image is still unresolved: input receipt, not a frame timer, retired the dot.
     expect(container.querySelector("img")?.getAttribute("src")).toContain("page-frame");
     await act(async () => recapture.resolve(ready("after-click")));
+  });
+
+  describe("a touch that may be the start of a pinch", () => {
+    const clicks = () =>
+      mocks.input.mock.calls.map(
+        ([request]) => (request as { input: { action: { position: { x: number } } } }).input.action,
+      );
+    const surfaceOf = () => {
+      const surface = container.querySelector('[role="application"]') as HTMLDivElement;
+      surface.setPointerCapture = vi.fn();
+      surface.hasPointerCapture = () => false;
+      return surface;
+    };
+    const touch = (surface: HTMLDivElement, type: string, x: number, pointerId = 1) =>
+      act(async () => {
+        surface.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            pointerId,
+            pointerType: "touch",
+            button: 0,
+            clientX: x,
+            clientY: 300,
+          }),
+        );
+      });
+    const prepare = async () => {
+      mocks.input.mockResolvedValue({ _tag: "Success", value: { deliveredAt: "now" } });
+      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(800);
+      vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
+      await render();
+      return surfaceOf();
+    };
+
+    it("shows no dot at the first contact, then one if the finger stays", async () => {
+      const surface = await prepare();
+      await touch(surface, "pointerdown", 200);
+      expect(container.querySelector("[data-remote-click]")).toBeNull();
+      await act(async () => vi.advanceTimersByTime(TOUCH_PRESS_MARKER_DELAY_MS - 1));
+      expect(container.querySelector("[data-remote-click]")).toBeNull();
+      await act(async () => vi.advanceTimersByTime(1));
+      expect(container.querySelector('[data-remote-click="pressed"]')).not.toBeNull();
+    });
+
+    it("clicks a real tap once the grace passes", async () => {
+      const surface = await prepare();
+      await touch(surface, "pointerdown", 200);
+      await touch(surface, "pointerup", 200);
+      await act(async () => vi.advanceTimersByTime(TOUCH_TAP_GRACE_MS - 1));
+      expect(mocks.input).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTime(1));
+      expect(clicks()).toMatchObject([{ kind: "click", position: { x: 0.25 } }]);
+    });
+
+    it("never clicks the first spot when a very short first touch is followed by the other finger", async () => {
+      const surface = await prepare();
+      await touch(surface, "pointerdown", 200);
+      await touch(surface, "pointerup", 200);
+      await touch(surface, "pointerdown", 600, 2);
+      await act(async () => vi.advanceTimersByTime(TOUCH_TAP_GRACE_MS * 2));
+      expect(mocks.input).not.toHaveBeenCalled();
+    });
   });
 
   it("freezes the last valid frame during capture failures and resumes automatically", async () => {

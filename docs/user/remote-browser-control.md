@@ -52,7 +52,7 @@ Open the web app from your phone's browser the way you already do for remote acc
   the blank pane older builds showed.
 - If the panel shows the empty state, enter a URL — it opens as a real tab on the desktop host
   and the frame appears.
-- Tapping shows a small blue pulsing dot immediately at the target, matching the agent cursor. It stays while the click is
+- Tapping shows a small blue pulsing dot at the target, matching the agent cursor, once the touch is clearly a tap and not the start of a pinch. It stays while the click is
   queued or travelling to the host, then disappears when the browser confirms the action.
   A failed click leaves a red dot until your next gesture. Scrolling, pinching, or cancelling
   a touch removes the initial tap marker without sending a click. Native mobile uses the same

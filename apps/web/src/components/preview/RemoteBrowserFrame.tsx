@@ -1,3 +1,4 @@
+import { TOUCH_PRESS_MARKER_DELAY_MS } from "@t3tools/client-runtime/preview/click-feedback";
 import { RemoteClickMarkers, useRemoteClickFeedback } from "./RemoteClickMarkers";
 import {
   PreviewTabId,
@@ -54,6 +55,7 @@ import { cn } from "~/lib/utils";
 import { TouchActionRadialMenu } from "../remoteControl/TouchActionRadialMenu";
 import {
   createTouchActionMenu,
+  TOUCH_TAP_GRACE_MS,
   type TouchMenuState,
   type TouchPoint,
 } from "../remoteControl/touchActionMenu";
@@ -365,6 +367,7 @@ export function RemoteBrowserFrame(props: {
       pointer: gestures.pointer,
       scroll: (anchor, delta) => touchScrollRef.current(delta, anchor),
       panScrolls: true,
+      tapGraceMs: TOUCH_TAP_GRACE_MS,
     });
     return { gestures, actions };
   });
@@ -849,7 +852,13 @@ export function RemoteBrowserFrame(props: {
     // Input landing in the letterbox bars belongs to the panel, not the page.
     const point = pagePoint(client, { clamp: false });
     if (point === null) return;
-    if (event.button === 0) clickFeedback.press(point, client);
+    if (event.button === 0) {
+      clickFeedback.press(
+        point,
+        client,
+        event.pointerType === "touch" ? { delayMs: TOUCH_PRESS_MARKER_DELAY_MS } : undefined,
+      );
+    }
     if (event.pointerType === "touch") {
       if (touchPointerRef.current !== null) return;
       // Keeps focus where it is, so an open keyboard stays up while the

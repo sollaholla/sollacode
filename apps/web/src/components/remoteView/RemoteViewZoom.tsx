@@ -29,6 +29,9 @@ export type RemoteViewPointerSample = {
 
 type TrackedPointer = { x: number; y: number; readonly pinched: boolean };
 
+/** A touch this soon after a pinch is a fingertip lifting, not a tap on the page. */
+const PINCH_SETTLE_MS = 250;
+
 /**
  * Pinch-to-zoom for a mirrored remote surface.
  *
@@ -66,6 +69,7 @@ export function useRemoteViewZoom(): {
   const paneRef = useRef<RemoteViewSize | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
   const pointersRef = useRef(new Map<number, TrackedPointer>());
+  const pinchEndedAtRef = useRef<number | null>(null);
   const gestureRef = useRef<{
     readonly start: RemoteViewTransform;
     readonly from: RemoteViewPinch;
@@ -152,6 +156,15 @@ export function useRemoteViewZoom(): {
         pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, pinched: true });
         return true;
       }
+      const pinchEndedAt = pinchEndedAtRef.current;
+      if (
+        pointers.size === 0 &&
+        pinchEndedAt !== null &&
+        Date.now() - pinchEndedAt < PINCH_SETTLE_MS
+      ) {
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, pinched: true });
+        return true;
+      }
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, pinched: false });
       if (pointers.size < 2) return false;
       const paneOrigin = measurePane();
@@ -199,6 +212,7 @@ export function useRemoteViewZoom(): {
       if (gesture !== null) {
         const remaining = pinchFromPointers(gesture.paneOrigin);
         if (remaining === null) {
+          pinchEndedAtRef.current = Date.now();
           endGesture();
         } else {
           // One of three fingers lifted: continue from the current view with

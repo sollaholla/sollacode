@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vite-plus/test";
-import { RemoteClickFeedback } from "./clickFeedback.ts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { RemoteClickFeedback, TOUCH_PRESS_MARKER_DELAY_MS } from "./clickFeedback.ts";
 
 describe("remote click feedback", () => {
   it("shows touch-down immediately, then waits for its matching host receipt", () => {
@@ -36,6 +36,45 @@ describe("remote click feedback", () => {
     expect(state.getSnapshot()).toMatchObject([{ id, state: "failed" }]);
     state.press({ x: 0.2, y: 0.2 }, { x: 20, y: 20 });
     expect(state.getSnapshot()).toMatchObject([{ state: "pressed" }]);
+  });
+
+  describe("a touch that may turn out to be a pinch", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+    const touch = { delayMs: TOUCH_PRESS_MARKER_DELAY_MS };
+
+    it("shows no dot if the second finger lands in time", () => {
+      const state = new RemoteClickFeedback();
+      state.press({ x: 0.3, y: 0.4 }, { x: 30, y: 40 }, touch);
+      expect(state.getSnapshot()).toEqual([]);
+      vi.advanceTimersByTime(TOUCH_PRESS_MARKER_DELAY_MS - 1);
+      state.cancelPress();
+      vi.runAllTimers();
+      expect(state.getSnapshot()).toEqual([]);
+    });
+
+    it("shows the dot once the touch has lasted, and keeps clicks already sent", () => {
+      const state = new RemoteClickFeedback();
+      const pending = state.submit({ x: 0.1, y: 0.2 });
+      state.press({ x: 0.3, y: 0.4 }, { x: 30, y: 40 }, touch);
+      vi.advanceTimersByTime(TOUCH_PRESS_MARKER_DELAY_MS);
+      expect(state.getSnapshot()).toMatchObject([{ id: pending }, { state: "pressed" }]);
+    });
+
+    it("clears an old failure straight away, and adds no dot after a click or reset", () => {
+      const state = new RemoteClickFeedback();
+      const failed = state.submit({ x: 0.5, y: 0.5 });
+      state.settle(failed, false);
+      state.press({ x: 0.3, y: 0.4 }, { x: 30, y: 40 }, touch);
+      expect(state.getSnapshot()).toEqual([]);
+      const clicked = state.submit({ x: 0.3, y: 0.4 });
+      vi.runAllTimers();
+      expect(state.getSnapshot()).toMatchObject([{ id: clicked, state: "pending" }]);
+      state.press({ x: 0.3, y: 0.4 }, { x: 30, y: 40 }, touch);
+      state.reset();
+      vi.runAllTimers();
+      expect(state.getSnapshot()).toEqual([]);
+    });
   });
 
   it("ignores a previous tab's completion after scope reset", () => {

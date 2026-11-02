@@ -13,7 +13,8 @@ import { readPreparedConnection } from "~/state/session";
 
 import { RemoteClickMarkers, useRemoteClickFeedback } from "../preview/RemoteClickMarkers";
 
-import { createTouchActionMenu, type TouchMenuState } from "./touchActionMenu";
+import { TOUCH_PRESS_MARKER_DELAY_MS } from "@t3tools/client-runtime/preview/click-feedback";
+import { createTouchActionMenu, TOUCH_TAP_GRACE_MS, type TouchMenuState } from "./touchActionMenu";
 import { TouchActionRadialMenu } from "./TouchActionRadialMenu";
 
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -250,6 +251,7 @@ export function RemoteControlViewerDialog(props: {
       },
       pointer: (...args) => touchCallbacksRef.current?.pointer(...args),
       scroll: (...args) => touchCallbacksRef.current?.scroll(...args),
+      tapGraceMs: TOUCH_TAP_GRACE_MS,
     }),
   );
   const pressedPointerButtonRef = useRef<RemoteControlPointerButton | null>(null);
@@ -1485,6 +1487,7 @@ export function RemoteControlViewerDialog(props: {
                   clickFeedback.press(
                     normalizedRemotePoint({ clientX: event.clientX, clientY: event.clientY, rect }),
                     { x: event.clientX, y: event.clientY },
+                    { delayMs: TOUCH_PRESS_MARKER_DELAY_MS },
                   );
                 }
                 const press = () => {

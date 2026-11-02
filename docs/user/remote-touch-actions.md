@@ -2,7 +2,7 @@
 
 On the web or desktop remote-control viewer, including mobile Safari:
 
-- **Tap and release** sends one left mouse-down/mouse-up pair on release. Touching down alone sends nothing.
+- **Tap and release** sends one left mouse-down/mouse-up pair on release. Touching down alone sends nothing. The click goes out about 80 ms after you lift, so a touch that turns out to be the first finger of a pinch never reaches the page.
 - **Hold still** for 400 ms opens the action menu without clicking. Move your finger over an option and hold there for 450 ms; its ring fills and the action activates without lifting.
 - **Scroll** uses subsequent finger movement as scroll deltas at the original target. Moving through the menu does not move or scroll the remote pointer.
 - **Drag** presses left at the original target, then moves it by subsequent finger deltas. Lift to drop.

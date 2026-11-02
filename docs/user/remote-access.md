@@ -124,9 +124,9 @@ between Command on macOS and Control on Windows. The host can stop the session a
 Pointer motion is sampled to the current display frame and stale unsent motion is replaced rather
 than replayed. Keyboard holds use down/up state edges instead of buffering browser repeat events.
 
-A small blue pulsing dot appears immediately where you tap, matching the agent cursor. It remains until the host confirms that
+A small blue pulsing dot appears where you tap, matching the agent cursor, once the touch is clearly a tap and not the start of a pinch. It remains until the host confirms that
 the mouse press was applied, then disappears. A red dot means the press failed or was blocked;
-it clears on your next gesture. Turning a touch into a scroll or pinch cancels its initial dot.
+it clears on your next gesture. A pinch shows no dot and sends no click, and a touch right after a pinch is ignored, so a fingertip lifting can't click.
 Reduced-motion settings show a steady dot instead. This feedback also appears in the remote
 browser preview, where it waits for the browser action to complete.
 
