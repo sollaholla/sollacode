@@ -371,6 +371,9 @@ function SurfaceMenuItem(props: {
   return <DisabledReasonTooltip reason={props.disabledReason} trigger={item} />;
 }
 
+const SURFACE_CARD_CLASS_NAME =
+  "flex min-h-28 w-full flex-col items-start rounded-lg border border-border bg-card p-4 text-left transition hover:border-border hover:bg-accent/60 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5";
+
 export function RightPanelEmptyState(props: {
   onAddBrowser: () => void;
   onAddTerminal: () => void;
@@ -383,6 +386,8 @@ export function RightPanelEmptyState(props: {
   sideChatAvailable: boolean;
   agentSurfaces?: boolean;
   artifactShelf?: ReactNode;
+  /** Artifact choices behind the Artifacts card, the same ones the new-surface menu offers. */
+  artifactMenu?: ReactNode;
 }) {
   const allActions = [
     {
@@ -462,7 +467,7 @@ export function RightPanelEmptyState(props: {
                     key={action.label}
                     type="button"
                     onClick={action.onClick}
-                    className="flex min-h-28 w-full flex-col items-start rounded-lg border border-border bg-card p-4 text-left transition hover:border-border hover:bg-accent/60 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5"
+                    className={SURFACE_CARD_CLASS_NAME}
                   >
                     {content}
                   </button>
@@ -485,6 +490,20 @@ export function RightPanelEmptyState(props: {
                 />
               );
             })}
+            {props.artifactMenu != null ? (
+              <Menu>
+                <MenuTrigger className={SURFACE_CARD_CLASS_NAME}>
+                  <Package className="mb-3 size-5" />
+                  <span className="text-sm font-medium">Artifacts</span>
+                  <span className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    Open something this thread published.
+                  </span>
+                </MenuTrigger>
+                <MenuPopup align="start" side="bottom" sideOffset={6} className="min-w-64">
+                  {props.artifactMenu}
+                </MenuPopup>
+              </Menu>
+            ) : null}
           </div>
         </div>
       </div>
@@ -1201,6 +1220,7 @@ function RightPanelTabsContent(props: RightPanelTabsProps & { onExitComplete: ()
             artifactShelf={
               shouldShowArtifactShelf(props.activeSurfaceId) ? props.artifactShelf : null
             }
+            artifactMenu={props.artifactMenu}
           />
         ) : (
           props.children

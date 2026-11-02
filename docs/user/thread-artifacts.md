@@ -8,8 +8,8 @@ the thread and environment that created them.
 
 On web and desktop, open the right drawer. When no surface tab is selected, **Artifacts** appear
 expanded at the top of the empty picker, above the surface choices. Selecting an artifact opens its
-current revision, and the list hides while any tab is active. The surface add menu still includes an
-**Artifacts** submenu. On mobile, choose **Artifacts** from the thread header.
+current revision, and the list hides while any tab is active. An **Artifacts** card among the surface
+choices, and the **Artifacts** submenu of the surface add menu, offer the same list. On mobile, choose **Artifacts** from the thread header.
 Links shaped like `/<environment>/<thread>?artifact=<artifact>` open the artifact directly.
 Tapping one in a chat or terminal opens the artifact preview in the current browser tab, including
 links using another LAN or Tailscale address for a connected environment. A link to another thread

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   FILL_PREVIEW_VIEWPORT,
@@ -379,6 +380,33 @@ describe("RightPanelEmptyState", () => {
     expect(markup.match(/<button/g)).toHaveLength(5);
     expect(markup).toContain("Side Chat");
     expect(markup).toContain("Fork an isolated, disposable sub-agent.");
+  });
+
+  it("offers artifacts as a surface only when there is a menu to open", () => {
+    const render = (artifactMenu?: ReactNode) =>
+      renderToStaticMarkup(
+        <RightPanelEmptyState
+          onAddBrowser={vi.fn()}
+          onAddTerminal={vi.fn()}
+          onAddFiles={vi.fn()}
+          onAddDiff={vi.fn()}
+          onAddSideChat={vi.fn()}
+          browserAvailable
+          diffAvailable
+          filesAvailable
+          sideChatAvailable
+          artifactMenu={artifactMenu}
+        />,
+      );
+
+    const withMenu = render(<div>Feature tour</div>);
+    expect(withMenu).toContain("Artifacts");
+    expect(withMenu).toContain("Open something this thread published.");
+    expect(withMenu.match(/<button/g)).toHaveLength(6);
+    // The choices wait in the popup until the card is pressed.
+    expect(withMenu).not.toContain("Feature tour");
+
+    expect(render()).not.toContain("Artifacts");
   });
 });
 
