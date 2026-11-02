@@ -62,8 +62,9 @@ export const layer = Layer.effectDiscard(
     // and rare enough to be one small request per signed-in profile.
     const browserSession = yield* BrowserSession.BrowserSession;
     yield* Effect.sleep(Duration.hours(1)).pipe(
-      Effect.andThen(browserSession.maintainProfiles()),
-      Effect.repeat(Schedule.spaced(Duration.hours(1))),
+      Effect.andThen(
+        browserSession.maintainProfiles().pipe(Effect.repeat(Schedule.spaced(Duration.hours(1)))),
+      ),
       Effect.forkScoped,
     );
   }),
