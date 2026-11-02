@@ -187,9 +187,13 @@ A point-in-time view of state. The word is used in multiple layers, including or
 
 A named Agent Stack identity with one dedicated chat thread whose browser keeps persistent logins. It is not a generic provider agent or an ordinary project thread. See [the user guide](../user/custom-agents.md).
 
+#### Browser profile
+
+The cookies, logins, storage and cache a preview tab uses. A project's threads share one and each agent has its own, keyed by a scope hashed into a folder under `Partitions/`. `.t3-browser-profiles.json` records each folder's owner, and folders whose owner is gone are retired, then purged. See [Accounts and browser profiles](../user/accounts.md).
+
 #### Credential vault
 
-The desktop's store of saved website logins, PINs, and codes, managed in Settings → Credentials.
+The desktop's store of saved website logins, PINs, and codes, managed in Settings → Accounts.
 Each entry has a kind: a `password` fills only a password input, and a `code` (a PIN or similar)
 also fills a single-line text, tel, number, or search input. Entries saved before kinds existed are
 passwords. Secrets are encrypted by the operating system and are only ever decrypted in the Electron

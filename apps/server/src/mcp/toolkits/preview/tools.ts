@@ -175,7 +175,7 @@ export const PreviewTypeTool = browserTool(
 export const PreviewCredentialsTool = readonlyBrowserTool(
   Tool.make("preview_credentials", {
     description:
-      "List the saved logins, PINs, and codes (Settings → Credentials) whose origin exactly matches the active tab. Returns labels, usernames, kinds, and opaque IDs only; secrets never enter the tool response, server, WebSocket, or logs. Type the username yourself with preview_type, then fill the secret with preview_fill_credential. kind password fills a password input; kind code (a PIN or similar) also fills a text, tel, number, or search input.",
+      "Saved Google passwords are not listed and cannot be filled: when Google asks for a password, ask the person to sign in on that tab. List the saved logins, PINs, and codes (Settings → Accounts) whose origin exactly matches the active tab. Returns labels, usernames, kinds, and opaque IDs only; secrets never enter the tool response, server, WebSocket, or logs. Type the username yourself with preview_type, then fill the secret with preview_fill_credential. kind password fills a password input; kind code (a PIN or similar) also fills a text, tel, number, or search input.",
     parameters: PreviewAutomationCredentialListInput,
     success: PreviewAutomationCredentialListResult,
     failure: PreviewAutomationError,

@@ -53,7 +53,7 @@ function settled<A>(result: AtomCommandResult<A, unknown>): A {
 }
 
 /**
- * Settings → Credentials on the phone. Saved passwords, PINs, and codes live in
+ * Settings → Accounts on the phone. Saved passwords, PINs, and codes live in
  * the desktop app on each environment's own machine, so each connected
  * environment gets its own list, reached through the server. The secret is
  * write-only here too: the phone sends a new one and never receives a saved one.

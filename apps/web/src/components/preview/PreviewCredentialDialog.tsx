@@ -12,7 +12,7 @@ import { previewBridge } from "./previewBridge";
 /**
  * "Save password or PIN…" from the preview menu: the shared credential editor, with
  * the website prefilled from the tab. Listing, editing, and deleting live in
- * Settings → Credentials, linked from the footer.
+ * Settings → Accounts, linked from the footer.
  */
 export function PreviewCredentialDialog(props: {
   readonly open: boolean;

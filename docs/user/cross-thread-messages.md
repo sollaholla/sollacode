@@ -8,7 +8,7 @@ Agents send these messages with the `workspace_consult` tool, which every chat h
 
 - `list_threads` and `list_projects` show what exists. Agent chats are marked, so a chat can find an agent to talk to. `agent_collaboration` `list_agents` lists the agents too.
 - `ask` with a thread sends the question into that chat and waits for its reply, a minute by default and at most two. With `waitMs` 0 it just sends. `read_thread` collects a reply that was still being written.
-- `ask` with a project opens a new chat there for the question. The new chat shares the asking chat’s browser profile and is marked with who created it (see below).
+- `ask` with a project opens a new chat there for the question. When an agent asks, the new chat uses that agent’s browser profile; otherwise it uses the project’s. It is marked with who created it (see below).
 
 The sender is the asking chat’s title, or the agent’s name when an agent, one of its side chats, or one of its delegated workers asks.
 

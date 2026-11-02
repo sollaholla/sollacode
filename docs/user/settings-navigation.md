@@ -12,13 +12,13 @@ On a phone held upright, Settings opens on a list of sections by category. The b
 
 ## Where things are
 
-| Category  | Sections                                                      |
-| --------- | ------------------------------------------------------------- |
-| App       | General, Appearance, Sound & voice, Keybindings               |
-| AI        | Providers (including models), Agents, Orchestrator            |
-| Workspace | Projects, Source Control, Archive                             |
-| Access    | Connections, Devices, Credentials, and Permissions on desktop |
-| System    | Storage, Diagnostics                                          |
+| Category  | Sections                                                   |
+| --------- | ---------------------------------------------------------- |
+| App       | General, Appearance, Sound & voice, Keybindings            |
+| AI        | Providers (including models), Agents, Orchestrator         |
+| Workspace | Projects, Source Control, Archive                          |
+| Access    | Connections, Devices, Accounts, and Permissions on desktop |
+| System    | Storage, Diagnostics                                       |
 
 ## Search
 

@@ -85,7 +85,7 @@ instruction file or a very long message.
 
 When an agent consults a project by opening a new thread, that thread is marked with an icon whose tooltip names the agent. Threads opened by an ordinary chat are marked the same way with that chat's title; see [Messages between chats](./cross-thread-messages.md). A shared-browser indicator appears on both the thread and browser toolbar.
 
-Every thread and agent in an environment shares one browser profile: the same cookies, logins, storage, and HTTP cache. Signing into a site once — in any thread, or in the agent's own panel — signs in everywhere in that environment, which is what lets an agent act on the sites you are already signed into. Profiles used to be per thread, so each conversation opened an empty cookie jar and an agent read a site as signed out while you were signed in one thread over. Separate environments still keep separate profiles. When another device connects to an environment, it displays and controls the environment-owning desktop's browser frame so cookies, login state, and the live page remain identical.
+Each agent has its own browser profile: its own cookies, logins, storage and HTTP cache, shared by its chat, side chats and scheduled tasks. A new agent starts signed out. Give it an account from Settings → Accounts, or sign in from its panel. See [Accounts and browser profiles](./accounts.md).
 
 ### If the browser reads as signed out on macOS
 

@@ -32,7 +32,7 @@ const unreadableAnswer = () =>
   });
 
 /**
- * Settings → Credentials from any client. Saved passwords stay in the vault of
+ * Settings → Accounts from any client. Saved passwords stay in the vault of
  * the desktop app on the environment's own machine, which agents' fills read
  * from; these relay a settings screen's change there. A new password crosses
  * inbound once and is never logged, persisted, or returned.

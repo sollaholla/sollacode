@@ -45,7 +45,7 @@ export type CredentialsVault = Pick<
 >;
 
 /**
- * Settings → Credentials: the passwords, PINs, and codes agents can fill into
+ * Settings → Accounts: the passwords, PINs, and codes agents can fill into
  * preview pages.
  *
  * They are kept by the desktop app on the environment's machine. That desktop

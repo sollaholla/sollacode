@@ -228,7 +228,7 @@ a pure JavaScript change, so an over-the-air update or Metro reload is enough.
 
 ## Saved passwords and PINs for agents
 
-Manage logins, PINs, and codes in **Settings → Credentials**. Each entry has a type, a label, a
+Manage logins, PINs, and codes in **Settings → Accounts**. Each entry has a type, a label, a
 website, and its secret. A **Password** entry can also carry a username or email; a **PIN or code**
 entry has none. Add, edit, and delete entries there; deleting asks for confirmation first. The
 secret field is write-only: editing an entry starts it blank, and leaving it blank keeps the saved
@@ -268,7 +268,7 @@ secret on the page.
 
 Saved passwords and PINs live in the desktop app on the environment's own machine, because that is where
 agents' browser tabs run. The Credentials tab is in every client: the desktop app, the web app in
-another browser or on a phone, and the mobile app (**Settings → Credentials**, one list per
+another browser or on a phone, and the mobile app (**Settings → Accounts**, one list per
 connected environment). A client that is not that desktop app sends its changes through the server
 to it, so the desktop app must be open there; if it is closed or asleep, the tab says the passwords
 could not be loaded and offers **Try again** rather than showing an empty list. A new password
