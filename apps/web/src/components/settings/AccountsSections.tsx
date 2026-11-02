@@ -64,7 +64,7 @@ function useOwnerLabel() {
       return (
         threadShells.find(
           (thread) => thread.environmentId === owner.environmentId && thread.id === owner.ownerId,
-        )?.title ?? "an agent"
+        )?.title ?? "a removed agent"
       );
     },
     [projects, threadShells],
@@ -128,7 +128,7 @@ function AccountRow(props: {
         <UserRoundIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-foreground">
-            {accountDisplayName(account)}
+            {account.identity ?? `${ACCOUNT_PROVIDER_LABELS[account.provider]} account`}
           </p>
           <p className="text-xs text-muted-foreground">
             {ACCOUNT_PROVIDER_LABELS[account.provider]} ·{" "}
@@ -167,7 +167,7 @@ function AccountRow(props: {
           <li key={profile.directory} className="flex items-center gap-2 text-xs">
             <span className="min-w-0 flex-1 truncate text-muted-foreground">
               {props.ownerLabel(profile.owner)}
-              {profile.owner.kind === "agent" ? " (agent)" : ""}
+              {profile.owner.kind === "agent" ? " · agent" : ""}
               {profile.linked ? " · linked" : ""}
               {profile.live ? "" : " · signed out"}
             </span>

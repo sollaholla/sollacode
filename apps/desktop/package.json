@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/desktop",
-  "version": "0.1.780",
+  "version": "0.1.781",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.cjs",
