@@ -265,10 +265,11 @@ describe("resolvePreviewAutomationThreadTarget agent isolation", () => {
           [scopedThreadKey(channelRef)]: channelState,
         },
         presentationsByRuntimeTabId: {
-          [previewRuntimeTabId(workAgentRef, workAgentState.serverEpoch, "tab-work-gmail")]: presentation({
-            interactive: true,
-            updatedAt: 2,
-          }),
+          [previewRuntimeTabId(workAgentRef, workAgentState.serverEpoch, "tab-work-gmail")]:
+            presentation({
+              interactive: true,
+              updatedAt: 2,
+            }),
           [previewRuntimeTabId(
             channelRef,
             channelState.serverEpoch,

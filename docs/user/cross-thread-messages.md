@@ -22,7 +22,7 @@ Only the orchestrator can post into another chat as if the person had typed it, 
 
 An agent can read and message chats on the computers this one's desktop app is connected to, the same way it does chats here. `list_threads` and `list_projects` cover this computer and every connected one. A row on another computer carries that computer's name and an `environmentId`; pass it to `read_thread` or `ask`, or to a list to see only that computer. A thread id alone works too, since one not found here is looked for on the connected computers. The result's `computers` field says which computers answered, so one that is switched off isn't mistaken for one with no chats.
 
-The message arrives with the sender's name and computer, such as “Scout (Studio's Mac)”. Select the name to open the source chat, if the device you're on is connected to that computer too. Otherwise the name stays plain text.
+The message arrives with the sender's name and computer, such as “Scout (Studio Mac)”. Select the name to open the source chat, if the device you're on is connected to that computer too. Otherwise the name stays plain text.
 
 Every limit below applies across computers, enforced by the computer receiving the message. A message from another computer always counts as another chat, even one the orchestrator sent, so in Agent mode that chat asks you before consequential actions.
 
