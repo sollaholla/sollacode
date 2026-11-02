@@ -196,10 +196,10 @@ describe("foldThreadProfilesIntoProjects", () => {
     ]);
   });
 
-  it("gives a project only Google from a deleted thread's folder, and only if it has none", async () => {
+  it("takes nothing from a deleted thread's folder, and asks Google nothing about it", async () => {
+    const asked: Array<string> = [];
     seedJar("t3code-preview-" + "a".repeat(20), [
       { host: ".google.com", name: "SID", value: "orphan-session", seenMs: NOW - 1_000 },
-      { host: ".bank.example", name: "session", value: "not-this-project", seenMs: NOW - 1_000 },
     ]);
 
     await foldThreadProfilesIntoProjects({
@@ -207,13 +207,17 @@ describe("foldThreadProfilesIntoProjects", () => {
       inventory: inventory({ projects: [{ projectId: "project-a", threadIds: [] }] }),
       manifest: EMPTY_PROFILE_MANIFEST,
       openDirectories: new Set(),
-      probeGoogle: async () => ({ liveAccounts: 1 }),
+      probeGoogle: async (header) => {
+        asked.push(header);
+        return { liveAccounts: 1 };
+      },
       nowMs: NOW,
     });
 
-    expect(cookiesIn(projectDirectory("project-a"))).toEqual([
-      { host_key: ".google.com", name: "SID", value: "orphan-session" },
-    ]);
+    expect(asked).toEqual([]);
+    expect(NodeFS.existsSync(NodePath.join(partitionsDir, projectDirectory("project-a")))).toBe(
+      false,
+    );
   });
 
   it("leaves an agent's folder alone and records it as the agent's", async () => {

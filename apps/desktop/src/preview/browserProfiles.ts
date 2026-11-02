@@ -375,9 +375,10 @@ function bestGoogleSession(
  * Each project keeps its most recently used thread folder, so that thread's
  * site storage survives. Every other site is taken from whichever of the
  * project's folders used it last, and Google is taken from the folder Google
- * itself says has the most live accounts. Sign-ins that were only ever made in a
- * since-deleted thread cannot be attributed to a project, so they are only used
- * for Google, and only when the project has no live Google session of its own.
+ * itself says has the most live accounts. A folder from a since-deleted thread
+ * cannot be attributed to a project, so it contributes nothing. A project left
+ * with no Google session is offered one from another project the first time it
+ * needs it, rather than each being handed a copy of the same session now.
  *
  * Folders it replaces are retired, not deleted, for a few days.
  */
@@ -431,15 +432,10 @@ export async function foldThreadProfilesIntoProjects(input: {
     return { projectId: project.projectId, directories, summaries };
   });
 
-  const orphanSummaries = [...present].flatMap((directory) => {
-    if (claimed.has(directory) || directory.includes(".superseded")) return [];
-    const summary = safeSummary(directory);
-    return summary?.googleSessionKey ? [summary] : [];
-  });
-
   // Ask Google about each distinct session once, freshest first, because
   // copying has left the same session in dozens of folders.
-  const probeOrder = [...projectJars.flatMap((jar) => jar.summaries), ...orphanSummaries]
+  const probeOrder = projectJars
+    .flatMap((jar) => jar.summaries)
     .filter((summary) => summary.googleSessionKey !== null && summary.googleCookieHeader !== null)
     .toSorted((left, right) => right.lastActivityMs - left.lastActivityMs);
   const liveBySession = new Map<string, number>();
@@ -465,9 +461,7 @@ export async function foldThreadProfilesIntoProjects(input: {
       folded.push({ projectId: jar.projectId, base: null, mergedSites: 0, retired: 0 });
       continue;
     }
-    const googleSource =
-      bestGoogleSession(jar.summaries, liveBySession) ??
-      bestGoogleSession(orphanSummaries, liveBySession);
+    const googleSource = bestGoogleSession(jar.summaries, liveBySession);
     const base =
       jar.summaries.toSorted((left, right) => right.lastActivityMs - left.lastActivityMs)[0] ??
       null;
@@ -505,30 +499,6 @@ export async function foldThreadProfilesIntoProjects(input: {
             // a few days if it turns out to matter.
           }
         }
-      }
-    } else if (googleSource !== null) {
-      // No thread in this project ever opened a browser, or none survived; give
-      // it the Google sign-in and nothing else from the orphan.
-      const sourceJar = cookieJarPath(NodePath.join(partitionsDir, googleSource.directory));
-      if (sourceJar !== null) {
-        NodeFS.mkdirSync(target, { recursive: true, mode: 0o700 });
-        const targetJar = NodePath.join(target, "Cookies");
-        NodeFS.copyFileSync(sourceJar, targetJar);
-        NodeFS.chmodSync(targetJar, 0o600);
-        const database = new DatabaseSync(targetJar);
-        try {
-          const hosts = allRows<{ host_key: string }>(
-            database.prepare("SELECT DISTINCT host_key FROM cookies"),
-          );
-          const removeHost = database.prepare("DELETE FROM cookies WHERE host_key = ?");
-          for (const { host_key: host } of hosts) {
-            if (cookieSiteGroup(host) !== "google") removeHost.run(host);
-          }
-          database.exec("VACUUM");
-        } finally {
-          database.close();
-        }
-        mergedSites = 1;
       }
     }
     let retired = 0;

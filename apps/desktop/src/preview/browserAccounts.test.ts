@@ -203,6 +203,27 @@ describe("who is signed in", () => {
     ]);
   });
 
+  it("offers the project with the most accounts, naming all of them", async () => {
+    const one = fakeSession([SID], googleList(googleRow("solo@example.com", 1, null)));
+    const two = fakeSession(
+      [SID],
+      googleList(
+        googleRow("work@example.com", 1, null),
+        googleRow("home@example.com", 1, null),
+        googleRow("old@example.com", 0, 1),
+      ),
+    );
+    const tracker = makeTracker();
+    tracker.attach("one", one.session);
+    tracker.attach("two", two.session);
+    await tracker.refresh("one");
+    await tracker.refresh("two");
+    expect(tracker.findLiveElsewhere("here", "google")).toMatchObject({
+      directory: "two",
+      identity: "work@example.com, home@example.com",
+    });
+  });
+
   it("offers a project's account to another profile, but never an agent's", async () => {
     const project = fakeSession([SID], googleList(googleRow("work@example.com", 1, null)));
     const tracker = makeBrowserAccountTracker({

@@ -341,24 +341,30 @@ export function makeBrowserAccountTracker(
     hasLiveAccount: (directory, provider) =>
       accountsIn(directory, provider).some((account) => account.live),
     findLiveElsewhere: (directory, provider) => {
+      // Linking carries a profile's whole sign-in for this provider, and Google
+      // keeps several accounts in one. So the profile with the most is offered,
+      // and the offer names all of them.
+      let best: PreviewAccountSession | null = null;
+      let bestCount = 0;
       for (const [candidate, byProvider] of accounts) {
         if (candidate === directory) continue;
         const owner = options.ownerOf(candidate);
         // A project's sign-in is offered around; an agent's is its own.
         if (owner?.kind !== "project") continue;
-        const live = byProvider.get(provider)?.find((account) => account.live);
-        if (live) {
-          return {
-            provider,
-            identity: live.identity,
-            live: true,
-            directory: candidate,
-            owner,
-            linked: false,
-          };
-        }
+        const live = (byProvider.get(provider) ?? []).filter((account) => account.live);
+        if (live.length <= bestCount) continue;
+        bestCount = live.length;
+        const names = live.flatMap((account) => (account.identity ? [account.identity] : []));
+        best = {
+          provider,
+          identity: names.length > 0 ? names.join(", ") : null,
+          live: true,
+          directory: candidate,
+          owner,
+          linked: false,
+        };
       }
-      return null;
+      return best;
     },
     signOut: async (provider, directory) => {
       const session = sessions.get(directory) ?? (await options.openSession(directory));

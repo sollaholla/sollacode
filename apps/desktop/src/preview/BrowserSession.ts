@@ -970,10 +970,12 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       ),
     profileCounts: () => {
       const entries = NodeFS.existsSync(partitionsDir()) ? NodeFS.readdirSync(partitionsDir()) : [];
+      const onDisk = new Set(entries);
       return {
-        profiles: Object.keys(manifest().profiles).length,
+        // A project with no browser yet has a record but nothing stored.
+        profiles: Object.keys(manifest().profiles).filter((name) => onDisk.has(name)).length,
         retired: entries.filter((name) => name.includes(".retired-")).length,
-        encrypted: manifest().encryptedJars.length,
+        encrypted: manifest().encryptedJars.filter((name) => onDisk.has(name)).length,
       };
     },
     directoryForScope: (scope) => getPartition(scope).pipe(Effect.map(directoryOfPartition)),
