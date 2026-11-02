@@ -83,7 +83,7 @@ If a provider rejects even a fresh session before it does any work, the thread s
 explanation instead of starting new sessions that fail the same way. The usual cause is a large
 instruction file or a very long message.
 
-When an agent consults a project by opening a new thread, that thread is marked with an icon whose tooltip names the agent. Threads opened by an ordinary chat are marked the same way with that chat's title; see [Messages between chats](./cross-thread-messages.md). A shared-browser indicator appears on both the thread and browser toolbar.
+When an agent consults a project by opening a new thread, that thread is marked with an icon whose tooltip names the agent. Threads opened by an ordinary chat are marked the same way with that chat's title; see [Messages between chats](./cross-thread-messages.md).
 
 Each agent has its own browser profile: its own cookies, logins, storage and HTTP cache, shared by its chat, side chats and scheduled tasks. A new agent starts signed out. Give it an account from Settings → Accounts, or sign in from its panel. See [Accounts and browser profiles](./accounts.md).
 
