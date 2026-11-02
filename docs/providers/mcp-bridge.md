@@ -21,7 +21,7 @@ Each child also receives the reserved `SOLLA_PROVIDER_INSTANCE_ID` environment v
 
 ## Example
 
-For a separately owned checkout of provider bridge on this machine, the pasteable command is:
+For a separately owned bridge checkout on this machine, the pasteable command is:
 
 ```text
 command: /Users/example/Projects/provider-bridge/scripts/provider-bridge-launch.sh

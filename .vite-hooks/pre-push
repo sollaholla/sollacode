@@ -1,0 +1,1 @@
+node --no-warnings scripts/check-public-safety.ts --pre-push

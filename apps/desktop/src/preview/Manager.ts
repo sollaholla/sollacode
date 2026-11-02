@@ -9218,8 +9218,8 @@ export class PreviewAutomationTimeoutError extends Schema.TaggedErrorClass<Previ
  * `deferToUserInput`), and that wait used to be charged against the request's
  * own deadline, so a user composing a message for more than the deadline made
  * every click, drag, type and press "time out" -- reported to the model with
- * the same words as a page that failed to respond. Live 2026-09-03 (
- * Suno tab): two clicks died at 14997ms and 14956ms inside the wait, nothing
+ * the same words as a page that failed to respond. Live 2026-09-03
+ * (Suno tab): two clicks died at 14997ms and 14956ms inside the wait, nothing
  * was ever dispatched, and the model concluded the site's menus were broken.
  * This error says what actually happened so the caller retries instead of
  * changing strategy.

@@ -82,13 +82,13 @@ describe("DesktopNetworkInterfaces", () => {
         ],
         "Wi-Fi": [
           {
-            address: "10.0.0.243",
+            address: "10.0.0.50",
             family: "IPv4",
             internal: false,
           },
         ],
       }),
-    ).toBe("10.0.0.243");
+    ).toBe("10.0.0.50");
   });
 
   it("falls back to an unknown private adapter and rejects public addresses", () => {

@@ -112,9 +112,9 @@ describe("activityAuthorizesExternalImagePath", () => {
       },
     });
     expect(activityAuthorizesExternalImagePath(activity, path)).toBe(true);
-    expect(activityAuthorizesExternalImagePath(activity, "D:/GameProject/Assets/Temp/other.png")).toBe(
-      false,
-    );
+    expect(
+      activityAuthorizesExternalImagePath(activity, "D:/GameProject/Assets/Temp/other.png"),
+    ).toBe(false);
   });
 
   it("does not authorize a sibling path or an unrelated tool activity", () => {

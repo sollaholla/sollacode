@@ -7,7 +7,7 @@ const peer = {
   id: "peer-1",
   environmentId: "environment-windows" as EnvironmentId,
   label: "StudioComputer",
-  backendUrl: "http://10.0.0.243:3773",
+  backendUrl: "http://10.0.0.50:3773",
   lastSeenAt: 1,
 } satisfies DesktopLanPeer;
 
@@ -26,11 +26,11 @@ describe("nearby Solla environment filtering", () => {
   it("suppresses legacy peers by canonical endpoint origin", () => {
     expect(
       isNearbyPeerAlreadyAdded(
-        { ...peer, environmentId: null, backendUrl: "HTTP://10.0.0.243:3773/" },
+        { ...peer, environmentId: null, backendUrl: "HTTP://10.0.0.50:3773/" },
         [
           {
             environmentId: "other-environment" as EnvironmentId,
-            displayUrl: "http://10.0.0.243:3773",
+            displayUrl: "http://10.0.0.50:3773",
           },
         ],
       ),

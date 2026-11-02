@@ -4,9 +4,9 @@ import { fileViewHref } from "./fileViewHref";
 
 describe("fileViewHref", () => {
   it("builds the viewer URL against the environment's HTTP base", () => {
-    expect(
-      fileViewHref("https://studio-macbook.example.ts.net/", "/Users/me/Docs/a b.md"),
-    ).toBe("https://studio-macbook.example.ts.net/api/view/Users/me/Docs/a%20b.md");
+    expect(fileViewHref("https://studio-macbook.example.ts.net/", "/Users/me/Docs/a b.md")).toBe(
+      "https://studio-macbook.example.ts.net/api/view/Users/me/Docs/a%20b.md",
+    );
   });
 
   it("returns null without a connection or for a path the viewer cannot serve", () => {

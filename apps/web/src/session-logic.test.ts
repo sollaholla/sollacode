@@ -1751,8 +1751,7 @@ describe("deriveWorkLogEntries", () => {
           data: {
             kind: "read",
             rawInput: {
-              file_path:
-                "OpenWorldGame/C:/Users/me/OpenWorldGame/build/renders/preview.png",
+              file_path: "OpenWorldGame/C:/Users/me/OpenWorldGame/build/renders/preview.png",
             },
           },
         },
@@ -1822,9 +1821,7 @@ describe("deriveWorkLogEntries", () => {
       }),
     ]);
 
-    expect(entry?.readImagePath).toBe(
-      "/Users/me/Desktop/OpenWorldGame/build/renders/scene.png",
-    );
+    expect(entry?.readImagePath).toBe("/Users/me/Desktop/OpenWorldGame/build/renders/scene.png");
   });
 
   it("collapses a Windows image-view lifecycle without duplicating the raw path", () => {

@@ -90,8 +90,8 @@ export interface ThreadSnapshot {
   /** The conversation this side chat was forked from; null for a normal thread. */
   readonly sideChatParentThreadId: string | null;
   /**
-   * Name of the named background agent whose chat this thread is — "Scout",
-   * "Scout" — or null for an ordinary conversation. Interaction mode
+   * Name of the named background agent whose chat this thread is — "Scout" —
+   * or null for an ordinary conversation. Interaction mode
    * cannot answer this: a background agent's chat often runs in default mode
    * while a throwaway chat runs in agent mode, and the orchestrator kept
    * describing the user's actual agents as plain threads.

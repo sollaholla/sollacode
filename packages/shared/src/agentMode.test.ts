@@ -321,7 +321,7 @@ describe("shouldAgentContinueAfterReply", () => {
 });
 
 describe("isTerminalProviderRefusal", () => {
-  // Reported 2026-08-15: the provider bridge tripped its own breaker and the
+  // Reported 2026-08-15: a provider bridge tripped its own breaker and the
   // resume retried it every 15s, republishing "Provider turn start failed"
   // under a permanent "Auto-resuming thread…" with nothing to cancel.
   it("recognises a provider that has stopped accepting turns", () => {
@@ -330,9 +330,9 @@ describe("isTerminalProviderRefusal", () => {
         "this session has failed 5 turns in a row; refusing to start another until the cause is fixed.",
       ),
     ).toBe(true);
-    expect(
-      isTerminalProviderRefusal("The provider bridge is disabled by the operator: runaway loop"),
-    ).toBe(true);
+    expect(isTerminalProviderRefusal("The bridge is disabled by the operator: runaway loop")).toBe(
+      true,
+    );
     expect(
       isTerminalProviderRefusal(
         "Claude Code isn't installed. Install Claude Code, or set its path in Settings → Providers.",

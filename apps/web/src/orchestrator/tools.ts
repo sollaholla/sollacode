@@ -514,8 +514,8 @@ export interface SpokenThreadSummary {
   readonly isSideChat: boolean;
   readonly sideChatOf?: string;
   /**
-   * Name of the named background agent whose chat this is — "Scout",
-   * "Scout". Present only on actual agents: interaction mode cannot
+   * Name of the named background agent whose chat this is — "Scout".
+   * Present only on actual agents: interaction mode cannot
    * answer this (an agent's chat often runs in default mode), and without the
    * field the orchestrator described the user's agents as ordinary threads.
    */

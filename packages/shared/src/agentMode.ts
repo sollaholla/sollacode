@@ -364,7 +364,7 @@ export function shouldAgentContinueAfterReply(text: string): boolean {
  * cannot work. Feeding that into the ordinary failure-retry path re-attempts
  * it every 15 seconds, so the thread emits "Provider turn start failed" on a
  * loop while showing "Auto-resuming thread…", and the user has nothing to
- * cancel because each attempt is a fresh one. Reported 2026-08-15 against the
+ * cancel because each attempt is a fresh one. Reported 2026-08-15 against a
  * provider bridge ("this session has failed 5 turns in a row; refusing to start
  * another until the cause is fixed").
  *

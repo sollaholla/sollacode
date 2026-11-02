@@ -1,1 +1,2 @@
 vp staged
+node --no-warnings scripts/check-public-safety.ts --staged

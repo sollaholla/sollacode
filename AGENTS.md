@@ -30,6 +30,14 @@ We need to be on the same page with terminology. When communicating, use this la
 - **turn** means one user-to-agent cycle, including follow-up work such as checkpointing.
 - **Solla home** means the base data directory. Runtime state normally lives below its userdata directory.
 
+## This repository is public
+
+Everything committed here is published, and you read private things all day: the names of the person's projects, agents, computers and customers, their paths and addresses, and what is in their chats. None of it belongs in code, comments, tests, docs, commit messages or screenshots.
+
+- Use made-up names in fixtures and comments: `Studio Mac`, `Acme`, `/Users/me`, `work@example.com`. Real reports get a date, not a project name.
+- `scripts/check-public-safety.ts` runs on commit, on push and in CI. Never skip it with `--no-verify`. If it stops you, change the text. It can't read images, so check screenshots yourself.
+- When a new private name comes up that it doesn't catch, add its hash (`--hash <word>`).
+
 ## The three ways to hurt yourself
 
 1. **Killing by pattern.** Never `pkill -f`, `pgrep | kill`, or `kill` a PID you found by matching a name, path, or worktree string. Your own agent process has this worktree's path in its argv, and this machine runs several other dev servers at once. Kill only a PID you captured at spawn, or the owner of your port from `ss -H -ltnp` after confirming `/proc/<pid>/cwd` is your worktree.

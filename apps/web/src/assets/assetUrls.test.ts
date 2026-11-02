@@ -48,7 +48,7 @@ describe("resolveAssetUrl", () => {
       resolveDisplayAssetUrl(
         "http://192.0.2.10:3773/",
         "/api/assets/signed-token/check_knuckle.png",
-        "http://10.0.0.243:3773/chat/environment/thread",
+        "http://10.0.0.50:3773/chat/environment/thread",
       ),
     ).toBe("http://192.0.2.10:3773/api/assets/signed-token/check_knuckle.png");
   });

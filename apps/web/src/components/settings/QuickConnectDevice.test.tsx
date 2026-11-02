@@ -5,7 +5,7 @@ import { QuickConnectQrPanel } from "./QuickConnectDevice";
 
 describe("QuickConnectQrPanel", () => {
   it("renders a large, resilient QR code and a copyable full link", () => {
-    const pairingUrl = "http://10.0.0.243:3773/pair#token=ONE_TIME_TOKEN";
+    const pairingUrl = "http://10.0.0.50:3773/pair#token=ONE_TIME_TOKEN";
     const markup = renderToStaticMarkup(
       <QuickConnectQrPanel pairingUrl={pairingUrl} onCopy={vi.fn()} />,
     );

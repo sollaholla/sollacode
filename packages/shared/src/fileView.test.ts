@@ -26,9 +26,7 @@ describe("decodeFileViewPath", () => {
     for (const path of ["/Users/me/My Docs/notes #1.md", "/tmp", "/a/%2F/b"]) {
       expect(decodeFileViewPath(fileViewPath(path)!)).toBe(path);
     }
-    expect(decodeFileViewPath(fileViewPath("C:\\Users\\me\\a b.txt")!)).toBe(
-      "C:/Users/me/a b.txt",
-    );
+    expect(decodeFileViewPath(fileViewPath("C:\\Users\\me\\a b.txt")!)).toBe("C:/Users/me/a b.txt");
   });
 
   it("names the drive root for a bare Windows drive", () => {

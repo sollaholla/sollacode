@@ -42,12 +42,12 @@ describe("DesktopLanDiscovery private-network boundary", () => {
         ],
         "Wi-Fi": [
           {
-            address: "10.0.0.243",
+            address: "10.0.0.50",
             netmask: "255.255.255.0",
             family: "IPv4",
             mac: "00:00:00:00:00:02",
             internal: false,
-            cidr: "10.0.0.243/24",
+            cidr: "10.0.0.50/24",
           },
         ],
         Tailscale: [

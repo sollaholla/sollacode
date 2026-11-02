@@ -151,6 +151,9 @@ jobs:
             fi
           fi
 
+      - name: Check nothing private is published
+        run: node scripts/check-public-safety.ts --tree
+
       - name: Check
         # Vite+ panics ("failed printing to stdout ... os error 11") when the
         # runner hands it a non-blocking stdout and the report is long; a pipe
