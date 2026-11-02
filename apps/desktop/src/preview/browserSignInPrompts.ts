@@ -62,7 +62,6 @@ export interface SignInPromptDependencies {
   readonly setPrompts: (tabId: string, prompts: ReadonlyArray<PreviewAccountPrompt>) => void;
   readonly fillForPerson: (tabId: string, secret: string) => Promise<void>;
   readonly profileKindOf: (directory: string) => "project" | "agent" | null;
-  readonly hasLiveAccount: (directory: string, provider: PreviewAccountProvider) => boolean;
   readonly findLiveElsewhere: (
     directory: string,
     provider: PreviewAccountProvider,
@@ -277,28 +276,26 @@ export class BrowserSignInPrompts {
     // An agent starts signed out and is given accounts from Settings, so a page
     // it happens to open does not offer it the person's.
     if (onProviderSignIn && dependencies.profileKindOf(input.directory) === "project") {
-      if (!dependencies.hasLiveAccount(input.directory, provider)) {
-        const elsewhere = dependencies.findLiveElsewhere(input.directory, provider);
-        if (elsewhere && !this.hasPrompt(input.tabId, "use-account")) {
-          this.addPrompt(
-            input.tabId,
-            {
-              id: "",
-              kind: "use-account",
-              provider,
-              identity: elsewhere.identity,
-              fromDirectory: elsewhere.directory,
-              fromOwner: elsewhere.owner,
-            },
-            {
-              kind: "use-account",
-              provider,
-              fromDirectory: elsewhere.directory,
-              toDirectory: input.directory,
-            },
-          );
-          return;
-        }
+      const elsewhere = dependencies.findLiveElsewhere(input.directory, provider);
+      if (elsewhere && !this.hasPrompt(input.tabId, "use-account")) {
+        this.addPrompt(
+          input.tabId,
+          {
+            id: "",
+            kind: "use-account",
+            provider,
+            identity: elsewhere.identity,
+            fromDirectory: elsewhere.directory,
+            fromOwner: elsewhere.owner,
+          },
+          {
+            kind: "use-account",
+            provider,
+            fromDirectory: elsewhere.directory,
+            toDirectory: input.directory,
+          },
+        );
+        return;
       }
     }
     if (!input.hasPasswordField || this.hasPrompt(input.tabId, "fill-saved")) return;

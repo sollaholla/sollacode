@@ -22,8 +22,8 @@ export const PROFILE_MANIFEST_FILE = ".t3-browser-profiles.json";
 const DAY_MS = 24 * 60 * 60 * 1_000;
 /** Long enough to notice a bad fold after an update, short enough not to hoard logins. */
 export const RETIRED_PROFILE_RETENTION_MS = 3 * DAY_MS;
-/** A folder with no known owner may belong to a chat that is still loading elsewhere. */
-export const UNOWNED_PROFILE_MIN_AGE_MS = 7 * DAY_MS;
+/** Holds a folder with no known owner for a day, in case it is in use right now. */
+export const UNOWNED_PROFILE_MIN_AGE_MS = DAY_MS;
 
 const WINDOWS_FILETIME_TO_UNIX_MS = 11_644_473_600_000;
 

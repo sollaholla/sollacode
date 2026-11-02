@@ -224,6 +224,24 @@ describe("who is signed in", () => {
     });
   });
 
+  it("offers only what another project would add to this one", async () => {
+    const here = fakeSession([SID], googleList(googleRow("home@example.com", 1, null)));
+    const other = fakeSession(
+      [SID],
+      googleList(googleRow("home@example.com", 1, null), googleRow("work@example.com", 1, null)),
+    );
+    const tracker = makeTracker();
+    tracker.attach("here", here.session);
+    tracker.attach("other", other.session);
+    await tracker.refresh("here");
+    await tracker.refresh("other");
+    expect(tracker.findLiveElsewhere("here", "google")).toMatchObject({
+      directory: "other",
+      identity: "work@example.com",
+    });
+    expect(tracker.findLiveElsewhere("other", "google")).toBeNull();
+  });
+
   it("offers a project's account to another profile, but never an agent's", async () => {
     const project = fakeSession([SID], googleList(googleRow("work@example.com", 1, null)));
     const tracker = makeBrowserAccountTracker({

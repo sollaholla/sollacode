@@ -592,7 +592,11 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       }
     },
     onFailure: (operation, cause) => {
-      runFork(Effect.logWarning("A browser account check failed.", { operation, cause }));
+      runFork(
+        Effect.logWarning("A browser account check failed.", { operation, cause }).pipe(
+          Effect.withSpan("BrowserSession.accountCheckFailed"),
+        ),
+      );
     },
   });
 
@@ -839,6 +843,16 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     });
   });
 
+  /** A count only, so the logs can show this ran without saying who is signed in. */
+  const checkAccounts = Effect.fn("BrowserSession.checkAccounts")(function* () {
+    yield* Effect.tryPromise(() => accounts.refreshAll()).pipe(Effect.ignore);
+    const sessions = accounts.sessions();
+    yield* Effect.logInfo("Checked who is signed in to the browser profiles.", {
+      sessions: sessions.length,
+      live: sessions.filter((session) => session.live).length,
+    });
+  });
+
   const reconcileProfiles = Effect.fn("BrowserSession.reconcileProfiles")(function* (
     inventory: BrowserProfileInventory,
   ) {
@@ -885,18 +899,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
         Effect.logWarning("Could not sweep browser profiles.", { cause }),
       ),
     );
-    yield* Effect.tryPromise(() => accounts.refreshAll()).pipe(
-      Effect.andThen(
-        Effect.suspend(() =>
-          Effect.logInfo("Checked who is signed in to the browser profiles.", {
-            sessions: accounts.sessions().length,
-            live: accounts.sessions().filter((session) => session.live).length,
-          }),
-        ),
-      ),
-      Effect.ignore,
-      Effect.forkDetach,
-    );
+    yield* checkAccounts().pipe(Effect.forkDetach);
   });
 
   const setDownloadDirectory = Effect.fn("BrowserSession.setDownloadDirectory")(function* (
@@ -966,7 +969,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
         Effect.catchCause((cause) =>
           Effect.logWarning("Could not sweep browser profiles.", { cause }),
         ),
-        Effect.andThen(Effect.tryPromise(() => accounts.refreshAll()).pipe(Effect.ignore)),
+        Effect.andThen(checkAccounts()),
       ),
     profileCounts: () => {
       const entries = NodeFS.existsSync(partitionsDir()) ? NodeFS.readdirSync(partitionsDir()) : [];

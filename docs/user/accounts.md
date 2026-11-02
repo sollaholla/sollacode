@@ -19,7 +19,7 @@ Downloads still go to each thread's own workspace, including its worktree, even 
 
 - **Remember this?** After you sign in, a bar on the tab offers **Remember**, **Just this once** and **Never for this site**. Nothing is saved until you choose Remember. If the password has changed, it offers **Update** instead.
 - **Saved passwords.** On a site's password page, a bar offers to fill the saved login.
-- **Accounts from another project.** On a Google, GitHub, Microsoft or Apple sign-in page, in a project not signed in yet, a bar offers an account already signed in to another project. **Use account** signs this project in too and keeps the two in step, including when you sign out of one.
+- **Accounts from another project.** On a Google, GitHub, Microsoft or Apple sign-in page, a bar offers any account another project is signed in to and this one is not. **Use account** signs this project in too and keeps the two in step, including when you sign out of one.
 - **Agents.** Agents are not offered your accounts. To give one an account, use **Use in…** on this page.
 
 Solla Code does not fill Google passwords for agents, and agents don't see them. Google can refuse a sign-in it sees under automation, and that password opens everything behind the account.
@@ -39,7 +39,7 @@ If a site signs you out, a notice says so with **Sign in again**, at most once a
 - **Cookies are encrypted on disk** with your computer's keychain (Keychain on macOS, DPAPI on Windows). A Linux desktop without a system keyring gets weaker protection. Browser Data on this page shows how many profiles are encrypted.
 - **Passwords** stay write-only in the vault: no client, agent or log ever receives one. A captured password stays in the desktop app's memory until you answer, or until the tab closes.
 - **Removed projects and agents:** their browser data is set aside and deleted after three days.
-- **Folders from deleted threads:** set aside after seven idle days, then deleted three days later.
+- **Folders from deleted threads:** set aside after a day idle, then deleted three days later.
 
 Turning off automatic cleanup in Settings → Storage stops that final deletion. Encrypted cookies can't be read by an older version of Solla Code, so rolling back means signing in again.
 

@@ -342,8 +342,11 @@ export function makeBrowserAccountTracker(
       accountsIn(directory, provider).some((account) => account.live),
     findLiveElsewhere: (directory, provider) => {
       // Linking carries a profile's whole sign-in for this provider, and Google
-      // keeps several accounts in one. So the profile with the most is offered,
-      // and the offer names all of them.
+      // keeps several accounts in one. So the profile adding the most accounts
+      // is offered, and the offer names what it would add. A project already
+      // signed in to one account still hears about the others.
+      const signedInHere = accountsIn(directory, provider).filter((account) => account.live);
+      const hereNames = new Set(signedInHere.map((account) => account.identity));
       let best: PreviewAccountSession | null = null;
       let bestCount = 0;
       for (const [candidate, byProvider] of accounts) {
@@ -351,10 +354,17 @@ export function makeBrowserAccountTracker(
         const owner = options.ownerOf(candidate);
         // A project's sign-in is offered around; an agent's is its own.
         if (owner?.kind !== "project") continue;
-        const live = (byProvider.get(provider) ?? []).filter((account) => account.live);
-        if (live.length <= bestCount) continue;
-        bestCount = live.length;
-        const names = live.flatMap((account) => (account.identity ? [account.identity] : []));
+        const adds = (byProvider.get(provider) ?? []).filter(
+          (account) =>
+            account.live &&
+            // A site that does not say who is signed in cannot be told apart.
+            (account.identity === null
+              ? signedInHere.length === 0
+              : !hereNames.has(account.identity)),
+        );
+        if (adds.length <= bestCount) continue;
+        bestCount = adds.length;
+        const names = adds.flatMap((account) => (account.identity ? [account.identity] : []));
         best = {
           provider,
           identity: names.length > 0 ? names.join(", ") : null,

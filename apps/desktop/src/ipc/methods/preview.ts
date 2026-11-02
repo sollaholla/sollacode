@@ -89,7 +89,6 @@ const installAccountForwarding = Effect.fn("desktop.ipc.preview.installAccountFo
       setPrompts: manager.setAccountPrompts,
       fillForPerson: (tabId, secret) => runPromise(manager.fillPasswordForPerson(tabId, secret)),
       profileKindOf: manager.browserProfileKind,
-      hasLiveAccount: accounts.hasLiveAccount,
       findLiveElsewhere: accounts.findLiveElsewhere,
       linkAccount: accounts.link,
       newestLiveIdentity: (directory, provider) =>

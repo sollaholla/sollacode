@@ -24,7 +24,6 @@ let clock: number;
 let prompts: ReadonlyArray<PreviewAccountPrompt>;
 let saved: Array<{ summary: PreviewCredentialSummary; secret: string }>;
 let liveElsewhere: PreviewAccountSession | null;
-let hasLive: boolean;
 let kind: "project" | "agent";
 let saveCredential: ReturnType<typeof vi.fn>;
 let fillForPerson: ReturnType<typeof vi.fn>;
@@ -55,7 +54,6 @@ function makePrompts(): BrowserSignInPrompts {
     },
     fillForPerson: fillForPerson as unknown as SignInPromptDependencies["fillForPerson"],
     profileKindOf: () => kind,
-    hasLiveAccount: () => hasLive,
     findLiveElsewhere: () => liveElsewhere,
     linkAccount: linkAccount as unknown as SignInPromptDependencies["linkAccount"],
     newestLiveIdentity: () => "resolved@example.com",
@@ -90,7 +88,6 @@ beforeEach(() => {
   prompts = [];
   saved = [];
   liveElsewhere = null;
-  hasLive = false;
   kind = "project";
   saveCredential = vi.fn(async () => undefined);
   fillForPerson = vi.fn(async () => undefined);
@@ -239,9 +236,8 @@ describe("use an account from another project", () => {
     expect(linkAccount).toHaveBeenCalledWith("google", "other-profile", "profile");
   });
 
-  it("does not offer it when already signed in here", async () => {
-    liveElsewhere = elsewhere;
-    hasLive = true;
+  it("does not offer it when no other project adds an account", async () => {
+    liveElsewhere = null;
     const subject = makePrompts();
     await subject.notePage(page(GOOGLE, false));
     expect(prompts).toEqual([]);
