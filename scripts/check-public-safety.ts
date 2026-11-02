@@ -38,6 +38,17 @@ const EMAIL_DOMAINS_ALLOWED = new Set([
   "github.com",
   "users.noreply.github.com",
 ]);
+/** Service and placeholder users, which name no one. */
+const EMAIL_LOCAL_PARTS_ALLOWED = new Set([
+  "deploy",
+  "git",
+  "gitlab",
+  "me",
+  "no-reply",
+  "noreply",
+  "test",
+  "user",
+]);
 /** Folder names too common to mean anything, and this project's own. */
 const LOCAL_WORDS_IGNORED = new Set([
   "admin",
@@ -113,6 +124,21 @@ export interface SafetyRules {
   readonly checkNewTextPatterns: boolean;
 }
 
+/** Remote URLs, URL logins and package patches share an address's shape. */
+function looksLikeRealEmail(match: RegExpMatchArray, line: string): boolean {
+  const address = match[0].toLowerCase();
+  const domain = match[1]?.toLowerCase() ?? "";
+  const localPart = address.slice(0, address.indexOf("@"));
+  const before = line[(match.index ?? 0) - 1];
+  if (
+    EMAIL_DOMAINS_ALLOWED.has(domain) ||
+    /\.(?:example\.[a-z]+|test|patch|local)$/u.test(domain)
+  ) {
+    return false;
+  }
+  return !EMAIL_LOCAL_PARTS_ALLOWED.has(localPart) && before !== ":" && before !== "/";
+}
+
 /** Why a line must not be published, or null. Never includes the line itself. */
 export function findProblem(line: string, rules: SafetyRules): string | null {
   if (TAILNET_ADDRESS.test(line)) return "a real tailnet address";
@@ -121,8 +147,7 @@ export function findProblem(line: string, rules: SafetyRules): string | null {
       if (pattern.test(line)) return name;
     }
     for (const match of line.matchAll(EMAIL_ADDRESS)) {
-      const domain = match[1]?.toLowerCase() ?? "";
-      if (!EMAIL_DOMAINS_ALLOWED.has(domain)) return "a real email address";
+      if (looksLikeRealEmail(match, line)) return "a real email address";
     }
   }
   for (const candidate of termCandidates(line)) {

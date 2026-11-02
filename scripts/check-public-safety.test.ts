@@ -46,6 +46,15 @@ describe("findProblem", () => {
     expect(findProblem("work@example.com", rules)).toBeNull();
     expect(findProblem("Co-Authored-By: Claude <noreply@anthropic.com>", rules)).toBeNull();
     expect(findProblem("pnpm@10.24.0 and @t3tools/contracts", rules)).toBeNull();
+    for (const line of [
+      "git@bitbucket.org:team/repo.git",
+      "ssh://git@gitlab.example.test/group/project.git",
+      "https://user:secret@fcm.googleapis.com/a",
+      "patches/@effect__vitest@4.0.0-beta.102.patch",
+      "email me@host.com/x.png",
+    ]) {
+      expect(findProblem(line, rules), line).toBeNull();
+    }
   });
 
   it("catches credentials in new text", () => {
