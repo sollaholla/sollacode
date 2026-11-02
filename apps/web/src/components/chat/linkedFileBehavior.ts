@@ -86,7 +86,9 @@ export type LinkedFilePrimaryAction =
   /** Hand the file to whatever application the OS has registered for it. */
   | "default-app"
   /** The chip's own link: the host's file viewer, in a browser tab on this device. */
-  | "viewer";
+  | "viewer"
+  /** A short-lived link signed by the host, for a device its viewer's cookie can't reach. */
+  | "host-link";
 
 export function resolveLinkedFilePrimaryAction(input: {
   readonly filePath: string;
@@ -96,13 +98,15 @@ export function resolveLinkedFilePrimaryAction(input: {
   readonly canRevealOnThisDevice: boolean;
   readonly canOpenInDefaultApp?: boolean;
   readonly canOpenViewerTab?: boolean;
+  readonly canOpenHostLink?: boolean;
 }): LinkedFilePrimaryAction {
   if (input.hasImageAction) return "image";
   if (input.workspaceRelativePath === null) {
     if (input.canRevealOnThisDevice) return "reveal";
     // The panel only reads inside the workspace, and "editor" opens the file on
-    // the host. On a phone that shows nothing where the person is looking.
-    return input.canOpenViewerTab === true ? "viewer" : "editor";
+    // the host, which shows nothing where a person on another device is looking.
+    if (input.canOpenViewerTab === true) return "viewer";
+    return input.canOpenHostLink === true ? "host-link" : "editor";
   }
   // Stays ahead of the media check: on desktop a PDF has an integrated-browser
   // action and that remains the better reader. The runtime offers it only where

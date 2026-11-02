@@ -823,6 +823,19 @@ export const assetRouteLayer = HttpRouter.add(
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
+    if (asset.kind === "file" && asset.fileViewer) {
+      const info = yield* FileSystem.FileSystem.pipe(
+        Effect.flatMap((fileSystem) => fileSystem.stat(asset.path)),
+        Effect.orElseSucceed(() => null),
+      );
+      return info === null
+        ? HttpServerResponse.text("Not Found", { status: 404, headers: FILE_VIEW_PAGE_HEADERS })
+        : yield* fileViewFileResponse({
+            request,
+            targetPath: asset.path,
+            size: Number(info.size),
+          });
+    }
     if (wantsAssetThumbnail(url.value, asset)) {
       const thumbnails = yield* ImageThumbnails.ImageThumbnails;
       const thumbnail = yield* thumbnails.thumbnail(asset.path);
@@ -900,6 +913,66 @@ export const assetRouteLayer = HttpRouter.add(
 );
 
 const FILE_VIEW_SNIFF_BYTES = 8192;
+
+/**
+ * One file under the viewer's rules: text is never a document, media keeps its type,
+ * and the sandbox holds if a content type slips. Shared by the cookie-authenticated
+ * viewer route and the signed `thread-file` link.
+ */
+const fileViewFileResponse = Effect.fn("fileViewFileResponse")(function* (input: {
+  readonly request: HttpServerRequest.HttpServerRequest;
+  readonly targetPath: string;
+  readonly size: number;
+}) {
+  const { request, targetPath, size } = input;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const head = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* fileSystem.open(targetPath, { flag: "r" });
+      const budget = Math.min(FILE_VIEW_SNIFF_BYTES, Math.max(size, 0));
+      if (budget === 0) return new Uint8Array(0);
+      const chunk = yield* file.readAlloc(budget);
+      return Option.isNone(chunk) ? new Uint8Array(0) : chunk.value;
+    }),
+  ).pipe(Effect.orElseSucceed(() => null));
+  if (head === null) {
+    return HttpServerResponse.text("Forbidden", { status: 403, headers: FILE_VIEW_PAGE_HEADERS });
+  }
+  const fileName = path.basename(targetPath);
+  const contentType = fileViewContentType({
+    fileName,
+    mimeType: Mime.getType(targetPath),
+    looksBinary: head.includes(0),
+  });
+  const baseHeaders = {
+    ...FILE_VIEW_RESPONSE_HEADERS,
+    "Accept-Ranges": "bytes",
+    "Content-Disposition": fileViewContentDisposition(fileName),
+  };
+  const range = Number.isSafeInteger(size) ? resolveByteRange(request.headers.range, size) : null;
+  if (range === "unsatisfiable") {
+    return HttpServerResponse.text("Range Not Satisfiable", {
+      status: 416,
+      headers: { ...baseHeaders, "Content-Range": `bytes */${size}` },
+    });
+  }
+  const options = range
+    ? {
+        status: 206,
+        headers: {
+          ...baseHeaders,
+          "Content-Range": `bytes ${range.offset}-${range.offset + range.bytesToRead - 1}/${size}`,
+        },
+        offset: range.offset,
+        bytesToRead: range.bytesToRead,
+      }
+    : { status: 200, headers: baseHeaders };
+  return yield* HttpServerResponse.file(targetPath, options).pipe(
+    Effect.map((response) => HttpServerResponse.setHeader(response, "content-type", contentType)),
+    Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
+  );
+});
 
 /**
  * Plain-HTTP file viewer: `GET /api/view/<absolute path>`.
@@ -989,52 +1062,7 @@ export const fileViewRouteLayer = HttpRouter.add(
       });
     }
 
-    const size = Number(info.size);
-    const head = yield* Effect.scoped(
-      Effect.gen(function* () {
-        const file = yield* fileSystem.open(targetPath, { flag: "r" });
-        const budget = Math.min(FILE_VIEW_SNIFF_BYTES, Math.max(size, 0));
-        if (budget === 0) return new Uint8Array(0);
-        const chunk = yield* file.readAlloc(budget);
-        return Option.isNone(chunk) ? new Uint8Array(0) : chunk.value;
-      }),
-    ).pipe(Effect.orElseSucceed(() => null));
-    if (head === null) {
-      return HttpServerResponse.text("Forbidden", { status: 403, headers: FILE_VIEW_PAGE_HEADERS });
-    }
-    const fileName = path.basename(targetPath);
-    const contentType = fileViewContentType({
-      fileName,
-      mimeType: Mime.getType(targetPath),
-      looksBinary: head.includes(0),
-    });
-    const baseHeaders = {
-      ...FILE_VIEW_RESPONSE_HEADERS,
-      "Accept-Ranges": "bytes",
-      "Content-Disposition": fileViewContentDisposition(fileName),
-    };
-    const range = Number.isSafeInteger(size) ? resolveByteRange(request.headers.range, size) : null;
-    if (range === "unsatisfiable") {
-      return HttpServerResponse.text("Range Not Satisfiable", {
-        status: 416,
-        headers: { ...baseHeaders, "Content-Range": `bytes */${size}` },
-      });
-    }
-    const options = range
-      ? {
-          status: 206,
-          headers: {
-            ...baseHeaders,
-            "Content-Range": `bytes ${range.offset}-${range.offset + range.bytesToRead - 1}/${size}`,
-          },
-          offset: range.offset,
-          bytesToRead: range.bytesToRead,
-        }
-      : { status: 200, headers: baseHeaders };
-    return yield* HttpServerResponse.file(targetPath, options).pipe(
-      Effect.map((response) => HttpServerResponse.setHeader(response, "content-type", contentType)),
-      Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
-    );
+    return yield* fileViewFileResponse({ request, targetPath, size: Number(info.size) });
   }).pipe(
     Effect.catchTags({
       EnvironmentAuthInvalidError: () =>

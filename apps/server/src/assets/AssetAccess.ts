@@ -8,6 +8,7 @@ import {
   AssetProjectFaviconNotFoundError,
   AssetProjectFaviconResolutionError,
   AssetSigningKeyLoadError,
+  AssetThreadFileRefusedError,
   AssetWorkspaceAssetInspectionError,
   AssetWorkspaceAssetNotFoundError,
   AssetWorkspaceContextNotFoundError,
@@ -58,6 +59,9 @@ export const ASSET_ROUTE_PREFIX = "/api/assets";
 
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
+// A link to an arbitrary host file works for whoever holds it, so it outlives the
+// tap by minutes. It stays longer than the client's five-minute reuse of a result.
+const THREAD_FILE_TOKEN_TTL_MS = 15 * 60 * 1000;
 const PROJECT_FAVICON_TOKEN_BUCKET_MS = 30 * 60 * 1000;
 const PROJECT_FAVICON_VERSION_PREFIX = "v";
 const PREVIEW_ASSET_EXTENSIONS = new Set([
@@ -198,6 +202,12 @@ const AssetClaimsSchema = Schema.Union([
   }),
   Schema.Struct({
     version: Schema.Literal(1),
+    kind: Schema.Literal("thread-file-exact"),
+    canonicalFile: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
     kind: Schema.Literal("attachment"),
     attachmentId: Schema.String,
     expiresAt: Schema.Number,
@@ -241,6 +251,8 @@ export type ResolvedAsset =
       readonly path: string;
       readonly artifact?: boolean;
       readonly contentType?: string;
+      /** Any file a chat names: served under the file viewer's rules, never as a document. */
+      readonly fileViewer?: boolean;
     }
   | { readonly kind: "bytes"; readonly bytes: Uint8Array; readonly contentType: string };
 
@@ -474,6 +486,8 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   readonly resource: AssetResource;
   readonly workspaceRoot?: string;
   readonly allowExternalExactImage?: boolean;
+  /** The caller found the exact path named by an assistant message in the thread. */
+  readonly threadNamesFile?: boolean;
 }) {
   if (input.resource._tag === "artifact-revision" || input.resource._tag === "artifact-icon") {
     return yield* issueArtifactAssetUrl(input.resource);
@@ -634,6 +648,64 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             expiresAt,
           };
       fileName = path.basename(resolved.relativePath);
+      break;
+    }
+    case "thread-file": {
+      if (!input.threadNamesFile) {
+        return yield* new AssetThreadFileRefusedError({
+          resource: input.resource,
+          reason: "not-named",
+        });
+      }
+      const requestedFile = normalizeEmbeddedWindowsAbsolutePath(input.resource.path);
+      if (!path.isAbsolute(requestedFile)) {
+        return yield* new AssetWorkspacePathValidationError({
+          resource: input.resource,
+          cause: new Error("A chat file link needs an absolute path."),
+        });
+      }
+      const canonicalFile = yield* optionOnNotFound(fileSystem.realPath(requestedFile)).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AssetWorkspaceAssetInspectionError({
+              resource: input.resource,
+              cause,
+            }),
+        ),
+      );
+      if (Option.isNone(canonicalFile)) {
+        return yield* new AssetWorkspaceAssetNotFoundError({
+          resource: input.resource,
+        });
+      }
+      const info = yield* optionOnNotFound(fileSystem.stat(canonicalFile.value)).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AssetWorkspaceAssetInspectionError({
+              resource: input.resource,
+              cause,
+            }),
+        ),
+      );
+      if (Option.isNone(info)) {
+        return yield* new AssetWorkspaceAssetNotFoundError({
+          resource: input.resource,
+        });
+      }
+      if (info.value.type !== "File") {
+        return yield* new AssetThreadFileRefusedError({
+          resource: input.resource,
+          reason: "not-a-file",
+        });
+      }
+      expiresAt = expiresAt - ASSET_TOKEN_TTL_MS + THREAD_FILE_TOKEN_TTL_MS;
+      claims = {
+        version: 1,
+        kind: "thread-file-exact",
+        canonicalFile: canonicalFile.value,
+        expiresAt,
+      };
+      fileName = path.basename(canonicalFile.value);
       break;
     }
     case "attachment": {
@@ -908,6 +980,16 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   const decodedPath = decodeRelativePath(relativePath);
   if (decodedPath === null) return null;
   const path = yield* Path.Path;
+  if (claims.kind === "thread-file-exact") {
+    if (decodedPath !== path.basename(claims.canonicalFile)) return null;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const info = yield* fileSystem
+      .stat(claims.canonicalFile)
+      .pipe(Effect.orElseSucceed(() => null));
+    return info?.type === "File"
+      ? ({ kind: "file", path: claims.canonicalFile, fileViewer: true } satisfies ResolvedAsset)
+      : null;
+  }
   if (claims.kind === "external-image-exact") {
     if (decodedPath !== path.basename(claims.canonicalFile)) return null;
     const extension = path.extname(claims.canonicalFile).toLowerCase();

@@ -191,7 +191,8 @@ function normalizeMarkdownImageDestination(value: string): string | null {
   return safeDecodeUriComponent(withoutPosition);
 }
 
-function assistantImageReferences(markdown: string): ReadonlyArray<string> {
+/** Links and inline code that hold a path, decoded the way clients read them. */
+function markdownPathReferences(markdown: string): ReadonlyArray<string> {
   const destinations: string[] = [];
   // One level of balanced parentheses is part of a CommonMark destination, which
   // is how a name like `Screenshot(3).png` is written.
@@ -199,41 +200,113 @@ function assistantImageReferences(markdown: string): ReadonlyArray<string> {
     /!?\[[^\]]*\]\(\s*(<[^>\r\n]+>|(?:[^\s()]|\([^\s()]*\))+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/gu;
   for (const match of markdown.matchAll(linkPattern)) {
     const destination = match[1] ? normalizeMarkdownImageDestination(match[1]) : null;
-    if (destination && isWorkspaceImagePreviewPath(destination)) {
-      destinations.push(destination);
-    }
+    if (destination) destinations.push(destination);
   }
   const inlineCodePattern = /(?<!`)`([^`\r\n]+)`(?!`)/gu;
   for (const match of markdown.matchAll(inlineCodePattern)) {
     const destination = match[1] ? normalizeMarkdownImageDestination(match[1].trim()) : null;
-    if (destination && isWorkspaceImagePreviewPath(destination)) {
-      destinations.push(destination);
-    }
+    if (destination) destinations.push(destination);
   }
   return destinations;
 }
 
+const LINE_SUFFIX_PATTERN = /:\d+(?::\d+)?$/u;
+const WINDOWS_PATH_PATTERN = /^(?:[A-Za-z]:[\\/]|\\\\)/u;
+// What may sit next to a path without being part of it. A name that merely starts
+// the same way (`a.png.bak`) or a longer path ending the same way is another file.
+const PATH_CHARACTER_PATTERN = /[\p{L}\p{N}_\-/\\~%+@]/u;
+
+function textNamesExactPath(text: string, path: string): boolean {
+  for (let at = text.indexOf(path); at >= 0; at = text.indexOf(path, at + 1)) {
+    const before = text.slice(Math.max(0, at - 1), at);
+    if (before === "." || (before !== "" && PATH_CHARACTER_PATTERN.test(before))) continue;
+    const after = text.slice(at + path.length, at + path.length + 2);
+    const continues = after.startsWith(".") ? after.slice(1) : after.slice(0, 1);
+    if (continues !== "" && PATH_CHARACTER_PATTERN.test(continues.slice(0, 1))) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Whether the text names this absolute path as written: linked, in code, or plain. */
+function messageTextNamesPath(
+  text: string,
+  requestedPath: string,
+  homeDirectory: string | undefined,
+): boolean {
+  const requested = normalizeComparablePath(requestedPath);
+  const expandHome = (candidate: string) =>
+    homeDirectory !== undefined && /^~[\\/]/u.test(candidate)
+      ? `${homeDirectory}/${candidate.slice(2)}`
+      : candidate;
+  const named = markdownPathReferences(text).some((reference) => {
+    const candidate = expandHome(reference);
+    return (
+      normalizeComparablePath(candidate) === requested ||
+      normalizeComparablePath(candidate.replace(LINE_SUFFIX_PATTERN, "")) === requested
+    );
+  });
+  if (named) return true;
+
+  const embedded = normalizeEmbeddedWindowsAbsolutePath(requestedPath);
+  // Windows paths compare without regard to case or slash direction.
+  const comparable = WINDOWS_PATH_PATTERN.test(embedded)
+    ? (value: string) => value.replaceAll("\\", "/").toLowerCase()
+    : (value: string) => value;
+  const haystack = comparable(text.replaceAll("file://", ""));
+  const absolute = comparable(embedded);
+  if (textNamesExactPath(haystack, absolute)) return true;
+  if (homeDirectory === undefined) return false;
+  const home = comparable(homeDirectory).replace(/\/+$/u, "");
+  return (
+    absolute.startsWith(`${home}/`) &&
+    textNamesExactPath(haystack, `~/${absolute.slice(home.length + 1)}`)
+  );
+}
+
 /**
- * Remote clients may preview an absolute image path linked by an assistant
- * message. Authorization is scoped to the exact message and exact linked or
- * inline-code destination so arbitrary files adjacent to it remain inaccessible.
- * `~/` in a destination means the home directory of the host this runs on, which
- * is the path clients resolve it to.
+ * Remote clients may preview an absolute image path an assistant message names,
+ * whether it links it, puts it in inline code, or writes it in plain text.
+ * Authorization is scoped to the exact message and exact path so arbitrary files
+ * adjacent to it remain inaccessible. `~/` means the home directory of the host
+ * this runs on, which is the path clients resolve it to.
  */
 export function messageAuthorizesExternalImagePath(
   message: OrchestrationMessage,
   requestedPath: string,
   homeDirectory?: string,
 ): boolean {
-  if (message.role !== "assistant" || !isWorkspaceImagePreviewPath(requestedPath)) {
-    return false;
-  }
-  const requested = normalizeComparablePath(requestedPath);
-  const expandHome = (candidate: string) =>
-    homeDirectory !== undefined && /^~[\\/]/u.test(candidate)
-      ? `${homeDirectory}/${candidate.slice(2)}`
-      : candidate;
-  return assistantImageReferences(message.text).some(
-    (candidate) => normalizeComparablePath(expandHome(candidate)) === requested,
+  return (
+    isWorkspaceImagePreviewPath(requestedPath) &&
+    messageAuthorizesExternalFilePath(message, requestedPath, homeDirectory)
   );
+}
+
+/**
+ * The same rule for any file, behind the `thread-file` link. A person's own
+ * message does not count: naming a path there must not be a way to read it.
+ */
+export function messageAuthorizesExternalFilePath(
+  message: Pick<OrchestrationMessage, "role" | "text">,
+  requestedPath: string,
+  homeDirectory?: string,
+): boolean {
+  return (
+    message.role === "assistant" && messageTextNamesPath(message.text, requestedPath, homeDirectory)
+  );
+}
+
+/** A leading `~/` on a host path, as a message would write it and a client may send it. */
+export function expandHostHomePath(path: string, homeDirectory: string): string {
+  return /^~[\\/]/u.test(path) ? `${homeDirectory}/${path.slice(2)}` : path;
+}
+
+/**
+ * Substrings that narrow a thread's messages before the exact check runs: the file
+ * name as written and as a link encodes it. Lower-case because the search ignores
+ * case, which Windows paths need.
+ */
+export function threadFileMentionTerms(path: string): ReadonlyArray<string> {
+  const name = path.split(/[\\/]/u).at(-1) ?? path;
+  return [...new Set([name, encodeURIComponent(name)].map((term) => term.toLowerCase()))];
 }

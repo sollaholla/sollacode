@@ -119,7 +119,10 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
       anchor: "setting-background-activity",
       keywords: ["git refresh", "health probes", "policy", "intervals", "advanced"],
     },
-    { title: "Attachment retention", keywords: ["images", "cleanup", "hours", "storage"] },
+    {
+      title: "Attachment retention",
+      keywords: ["images", "snapshots", "voice notes", "cleanup", "hours", "storage"],
+    },
   ]),
   ...entries("/settings/storage", "Storage", "Storage", [
     {

@@ -8,7 +8,10 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   activityAuthorizesExternalImagePath,
+  expandHostHomePath,
+  messageAuthorizesExternalFilePath,
   messageAuthorizesExternalImagePath,
+  threadFileMentionTerms,
 } from "./ThreadAssetAuthorization.ts";
 
 const WINDOWS_IMAGE_PATH = String.raw`D:\GameProject\Temp\BillboardNormalValidation\conifer_22_5.png`;
@@ -244,11 +247,54 @@ describe("messageAuthorizesExternalImagePath", () => {
     expect(messageAuthorizesExternalImagePath(message, "/Users/me/Desktop/shot.png")).toBe(false);
   });
 
-  it("rejects unlinked plain-text paths", () => {
+  it("authorizes a path written in plain text", () => {
     expect(
       messageAuthorizesExternalImagePath(
-        makeAssistantMessage("Generated /tmp/plain-text-only.png"),
+        makeAssistantMessage("Generated /tmp/plain-text-only.png, and it looks right."),
         "/tmp/plain-text-only.png",
+      ),
+    ).toBe(true);
+    expect(
+      messageAuthorizesExternalImagePath(
+        makeAssistantMessage("Saved it to /tmp/end-of-sentence.png."),
+        "/tmp/end-of-sentence.png",
+      ),
+    ).toBe(true);
+    expect(
+      messageAuthorizesExternalImagePath(
+        makeAssistantMessage("Saved it to ~/Desktop/plain.png"),
+        "/Users/me/Desktop/plain.png",
+        "/Users/me",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not read a longer name or path as the one requested", () => {
+    for (const text of [
+      "Generated /tmp/shot.png.bak",
+      "Generated /tmp/shot.pngx",
+      "Generated /home/me/tmp/shot.png",
+      "Generated ./tmp/shot.png",
+      "Generated ~/tmp/shot.png",
+      "Nothing to see in /tmp/other.png",
+    ]) {
+      expect(messageAuthorizesExternalImagePath(makeAssistantMessage(text), "/tmp/shot.png")).toBe(
+        false,
+      );
+    }
+  });
+
+  it("compares Windows paths without regard to case or slash direction", () => {
+    expect(
+      messageAuthorizesExternalImagePath(
+        makeAssistantMessage(String.raw`Wrote C:\Users\Me\Shot.PNG for you`),
+        "c:/users/me/shot.png",
+      ),
+    ).toBe(true);
+    expect(
+      messageAuthorizesExternalImagePath(
+        makeAssistantMessage("Wrote /tmp/Shot.png"),
+        "/tmp/shot.png",
       ),
     ).toBe(false);
   });
@@ -261,5 +307,41 @@ describe("messageAuthorizesExternalImagePath", () => {
         imagePath,
       ),
     ).toBe(false);
+  });
+});
+
+describe("messageAuthorizesExternalFilePath", () => {
+  it("covers any file an assistant message names, and nothing else", () => {
+    const message = makeAssistantMessage(
+      "The report is at /tmp/out/report.pdf and the config in `/etc/app/config.toml:12`. See [notes](/tmp/my%20notes.txt#L4).",
+    );
+    expect(messageAuthorizesExternalFilePath(message, "/tmp/out/report.pdf")).toBe(true);
+    expect(messageAuthorizesExternalFilePath(message, "/etc/app/config.toml")).toBe(true);
+    expect(messageAuthorizesExternalFilePath(message, "/tmp/my notes.txt")).toBe(true);
+    expect(messageAuthorizesExternalFilePath(message, "/tmp/out/secret.pdf")).toBe(false);
+    expect(messageAuthorizesExternalFilePath(message, "/etc/passwd")).toBe(false);
+  });
+
+  it("does not let a person's own message authorize a path", () => {
+    expect(
+      messageAuthorizesExternalFilePath(
+        makeAssistantMessage("Please read /etc/passwd", { role: "user" }),
+        "/etc/passwd",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("threadFileMentionTerms", () => {
+  it("searches for the name as written and as a link encodes it", () => {
+    expect(threadFileMentionTerms("/tmp/My Notes.TXT")).toEqual(["my notes.txt", "my%20notes.txt"]);
+    expect(threadFileMentionTerms(String.raw`C:\Temp\a.pdf`)).toEqual(["a.pdf"]);
+  });
+});
+
+describe("expandHostHomePath", () => {
+  it("only rewrites a leading home directory", () => {
+    expect(expandHostHomePath("~/a.txt", "/Users/me")).toBe("/Users/me/a.txt");
+    expect(expandHostHomePath("/tmp/~/a.txt", "/Users/me")).toBe("/tmp/~/a.txt");
   });
 });

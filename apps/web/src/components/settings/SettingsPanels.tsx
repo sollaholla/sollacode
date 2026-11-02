@@ -1526,7 +1526,7 @@ function GeneralSettingsSections({
 
           <SettingsRow
             title="Attachment retention"
-            description="Automatically remove stored chat attachments after this many hours. Cleanup runs in the background and deleted files cannot be recovered."
+            description="Automatically remove browser snapshots, voice notes and other stored attachments after this many hours. Images you send stay until their chat is deleted. Deleted files cannot be recovered."
             resetAction={
               settings.attachmentRetentionHours !==
               DEFAULT_UNIFIED_SETTINGS.attachmentRetentionHours ? (

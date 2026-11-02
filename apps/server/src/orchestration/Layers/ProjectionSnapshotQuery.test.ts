@@ -1286,6 +1286,44 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("finds the assistant messages on one thread that mention a term", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const listMentioning = snapshotQuery.listThreadAssistantMessagesMentioning;
+      assert.isDefined(listMentioning);
+
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, role, text, is_streaming, created_at, updated_at
+        )
+        VALUES
+          ('named', 'mention-thread', 'assistant', 'Wrote /tmp/Report.PDF', 0,
+            '2026-07-30T20:00:00.000Z', '2026-07-30T20:00:00.000Z'),
+          ('encoded', 'mention-thread', 'assistant', '[a](/tmp/my%20notes.txt)', 0,
+            '2026-07-30T20:00:01.000Z', '2026-07-30T20:00:01.000Z'),
+          ('unrelated', 'mention-thread', 'assistant', 'Nothing here', 0,
+            '2026-07-30T20:00:02.000Z', '2026-07-30T20:00:02.000Z'),
+          ('from-person', 'mention-thread', 'user', 'See /tmp/report.pdf', 0,
+            '2026-07-30T20:00:03.000Z', '2026-07-30T20:00:03.000Z'),
+          ('other-thread', 'mention-other', 'assistant', 'Wrote /tmp/report.pdf', 0,
+            '2026-07-30T20:00:04.000Z', '2026-07-30T20:00:04.000Z')
+      `;
+
+      const found = yield* listMentioning(ThreadId.make("mention-thread"), [
+        "report.pdf",
+        "my%20notes.txt",
+      ]);
+
+      assert.deepEqual(
+        found.map((message) => message.id),
+        [MessageId.make("encoded"), MessageId.make("named")],
+      );
+      yield* sql`DELETE FROM projection_thread_messages`;
+    }),
+  );
+
   it.effect("keeps archived threads out of the main shell snapshot", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

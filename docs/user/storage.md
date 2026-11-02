@@ -125,10 +125,17 @@ a new 48-hour period. Already deleted chats cannot be restored.
 
 ## Attachment retention
 
-**Settings → General → Attachment retention** controls how long chat attachments remain on disk.
-The default is **48 hours**. Cleanup runs in the background at startup, whenever the retention
-value changes, and once per day. Files whose modification time is at least the configured age are
-permanently removed; regular conversation text remains until its thread is deleted.
+**Images you send stay until their chat is deleted.** Deleting the chat removes them, including when
+an archived chat is deleted automatically.
+
+**Settings → General → Attachment retention** controls how long everything else stays on disk:
+browser snapshots, images an agent read, and voice notes. The default is **48 hours**. Cleanup runs
+in the background at startup, whenever the retention value changes, and once per day. Files whose
+modification time is at least the configured age are permanently removed; regular conversation text
+remains until its thread is deleted.
+
+The same limit used to apply to images you sent. Those already deleted can't be recovered, and show
+as no longer available.
 
 The attachment directory is walked incrementally so a large store does not have to be loaded into
 memory. Closing or deleting a thread removes only the attachment paths recorded by that thread and

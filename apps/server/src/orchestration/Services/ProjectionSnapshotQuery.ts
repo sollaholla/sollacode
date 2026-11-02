@@ -357,6 +357,16 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<ProjectionThreadAssetSource, ProjectionRepositoryError>;
 
   /**
+   * The newest assistant messages on a thread whose text holds any of these
+   * lower-case terms, read through the `(thread_id, role)` index. Optional for
+   * lightweight test doubles; without it no message can name a file.
+   */
+  readonly listThreadAssistantMessagesMentioning?: (
+    threadId: ThreadId,
+    terms: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationMessage>, ProjectionRepositoryError>;
+
+  /**
    * The newest activity of one kind on a thread, read through the
    * `(thread_id, kind)` index rather than the bounded detail window — a
    * failover record can sit behind hundreds of tool rows by the time the

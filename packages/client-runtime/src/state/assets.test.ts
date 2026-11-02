@@ -7,6 +7,7 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
   assetThumbnailUrl,
   createAssetEnvironmentAtoms,
+  createMissingAttachmentMemory,
   InvalidAssetCollectionKeyError,
   parseAssetCollectionKey,
 } from "./assets.ts";
@@ -119,5 +120,33 @@ describe("createAssetEnvironmentAtoms", () => {
         resources: [...resources].toReversed(),
       }),
     ).not.toBe(assets.createUrls({ environmentId, resources }));
+  });
+});
+
+describe("createMissingAttachmentMemory", () => {
+  it("stops asking only after the host has twice said an attachment is gone", () => {
+    const memory = createMissingAttachmentMemory();
+    expect(memory.isMissing("a")).toBe(false);
+    memory.recordNotFound("a");
+    expect(memory.isMissing("a")).toBe(false);
+    memory.recordNotFound("a");
+    expect(memory.isMissing("a")).toBe(true);
+    expect(memory.isMissing("b")).toBe(false);
+  });
+
+  it("forgets a not-found once the attachment turns up", () => {
+    const memory = createMissingAttachmentMemory();
+    memory.recordNotFound("a");
+    memory.recordFound("a");
+    memory.recordNotFound("a");
+    expect(memory.isMissing("a")).toBe(false);
+  });
+
+  it("stays bounded, dropping the oldest entry", () => {
+    const memory = createMissingAttachmentMemory(2);
+    for (const id of ["a", "a", "b", "b", "c", "c"]) memory.recordNotFound(id);
+    expect(memory.isMissing("a")).toBe(false);
+    expect(memory.isMissing("b")).toBe(true);
+    expect(memory.isMissing("c")).toBe(true);
   });
 });

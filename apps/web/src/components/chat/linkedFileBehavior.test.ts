@@ -258,6 +258,35 @@ describe("a file outside the workspace on a device that cannot reveal it", () =>
     ).toBe("reveal");
   });
 
+  it("opens a host-signed link where the viewer's cookie can't reach", () => {
+    const outside = {
+      filePath: "/Users/me/Downloads/report.pdf",
+      workspaceRelativePath: null,
+      hasImageAction: false,
+      hasBrowserAction: false,
+      canRevealOnThisDevice: false,
+    };
+    expect(resolveLinkedFilePrimaryAction({ ...outside, canOpenHostLink: true })).toBe("host-link");
+    expect(
+      resolveLinkedFilePrimaryAction({ ...outside, canOpenHostLink: true, canOpenViewerTab: true }),
+    ).toBe("viewer");
+    expect(
+      resolveLinkedFilePrimaryAction({
+        ...outside,
+        canOpenHostLink: true,
+        canRevealOnThisDevice: true,
+      }),
+    ).toBe("reveal");
+    expect(
+      resolveLinkedFilePrimaryAction({
+        ...outside,
+        canOpenHostLink: true,
+        workspaceRelativePath: "src/app.ts",
+      }),
+    ).toBe("preview");
+    expect(resolveLinkedFilePrimaryAction(outside)).toBe("editor");
+  });
+
   it("offers the viewer only where the session cookie will reach it", () => {
     const page = "https://mac.ts.net";
     const relayed = `${page}/api/relay/windows-env/api/view/C%3A/a.pdf`;

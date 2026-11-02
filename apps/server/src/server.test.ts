@@ -19,6 +19,7 @@ import {
   GitCommandError,
   KeybindingRule,
   MessageId,
+  type OrchestrationMessage,
   ExternalLauncherCommandNotFoundError,
   type OrchestrationThreadShell,
   type OrchestrationThreadStreamItem,
@@ -5379,6 +5380,70 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
       assert.equal(full.status, 200);
       assert.deepEqual(new Uint8Array(yield* full.arrayBuffer), original);
       assert.deepEqual(requested, [attachmentPath]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("signs a file a chat names, and serves it as a read-only viewer response", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outside = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-thread-file-" });
+      const namedPath = path.join(outside, "report.html");
+      const unnamedPath = path.join(outside, "unnamed.html");
+      yield* fileSystem.writeFileString(namedPath, "<script>alert(1)</script>");
+      yield* fileSystem.writeFileString(unnamedPath, "secret");
+      const searched: Array<ReadonlyArray<string>> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadShellById: (threadId) =>
+              Effect.succeed(
+                threadId === defaultThreadId
+                  ? Option.some(makeDefaultOrchestrationThreadShell({ id: defaultThreadId }))
+                  : Option.none(),
+              ),
+            listThreadAssistantMessagesMentioning: (_threadId, terms) =>
+              Effect.sync(() => {
+                searched.push(terms);
+                return [
+                  {
+                    id: MessageId.make("message-named"),
+                    role: "assistant",
+                    text: `The report is at ${namedPath}.`,
+                    turnId: null,
+                    streaming: false,
+                    createdAt: "2026-11-01T00:00:00.000Z",
+                    updatedAt: "2026-11-01T00:00:00.000Z",
+                  } satisfies OrchestrationMessage,
+                ];
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const createUrl = (threadId: ThreadId, target: string) =>
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.assetsCreateUrl]({
+              resource: { _tag: "thread-file", threadId, path: target },
+            }),
+          ),
+        );
+
+      const { relativeUrl } = yield* createUrl(defaultThreadId, namedPath);
+      assert.deepEqual(searched, [["report.html"]]);
+      const response = yield* HttpClient.get(relativeUrl);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers["content-type"], "text/plain; charset=utf-8");
+      assert.equal(response.headers["content-security-policy"], "default-src 'none'; sandbox");
+      assert.equal(response.headers["x-content-type-options"], "nosniff");
+      assert.equal(yield* response.text, "<script>alert(1)</script>");
+
+      const refused = yield* Effect.flip(createUrl(defaultThreadId, unnamedPath));
+      assertInclude(String(refused), "AssetThreadFileRefusedError");
+      const noThread = yield* Effect.flip(createUrl(ThreadId.make("thread-missing"), namedPath));
+      assertInclude(String(noThread), "AssetWorkspaceContextNotFoundError");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

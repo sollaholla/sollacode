@@ -12,6 +12,7 @@ import {
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { describe, expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -424,6 +425,70 @@ describe("AssetAccess", () => {
 
       yield* fileSystem.writeFileString(imagePath, "no longer a png");
       expect(yield* resolveAsset(token, "preview.png")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("signs one named file outside the workspace, briefly and exactly", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-thread-file-",
+      });
+      const filePath = path.join(outside, "report.html");
+      yield* fileSystem.writeFileString(filePath, "<script>alert(1)</script>");
+      const canonicalFile = yield* fileSystem.realPath(filePath);
+      const resource = {
+        _tag: "thread-file",
+        threadId: ThreadId.make("thread-1"),
+        path: filePath,
+      } as const;
+
+      const issuedAt = yield* Clock.currentTimeMillis;
+      const result = yield* issueAssetUrl({ resource, threadNamesFile: true });
+      expect(result.expiresAt - issuedAt).toBe(15 * 60 * 1000);
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+
+      expect(yield* resolveAsset(token, "report.html")).toEqual({
+        kind: "file",
+        path: canonicalFile,
+        fileViewer: true,
+      });
+      expect(yield* resolveAsset(token, "other.html")).toBeNull();
+
+      yield* TestClock.adjust("16 minutes");
+      expect(yield* resolveAsset(token, "report.html")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("refuses a file no message names, a folder, and a missing or relative path", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-thread-file-refused-",
+      });
+      const filePath = path.join(outside, "report.pdf");
+      yield* fileSystem.writeFileString(filePath, "pdf");
+      const issue = (target: string, threadNamesFile: boolean) =>
+        issueAssetUrl({
+          resource: { _tag: "thread-file", threadId: ThreadId.make("thread-1"), path: target },
+          threadNamesFile,
+        }).pipe(Effect.flip);
+
+      expect(yield* issue(filePath, false)).toMatchObject({
+        _tag: "AssetThreadFileRefusedError",
+        reason: "not-named",
+      });
+      expect(yield* issue(outside, true)).toMatchObject({
+        _tag: "AssetThreadFileRefusedError",
+        reason: "not-a-file",
+      });
+      expect((yield* issue(path.join(outside, "gone.pdf"), true))._tag).toBe(
+        "AssetWorkspaceAssetNotFoundError",
+      );
+      expect((yield* issue("report.pdf", true))._tag).toBe("AssetWorkspacePathValidationError");
     }).pipe(Effect.provide(testLayer)),
   );
 
