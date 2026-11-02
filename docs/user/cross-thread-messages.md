@@ -54,7 +54,7 @@ Tasks an agent adds, or whose title, prompt, criteria or schedule it changes, in
 
 ## Chats opened by another chat
 
-A chat opened by another chat shows a small icon in the sidebar on web, desktop, and the phone app. Its tooltip, or the row’s accessibility label on the phone, names the creator: the agent’s name when an agent or one of its side chats or workers opened it, “Created by the Orchestrator” when the orchestrator itself opened it, the creating chat’s title (a side chat of the orchestrator included), or “Created by another chat” when that chat is gone or not loaded. A link icon marks a chat that uses another chat’s browser profile.
+A chat opened by another chat shows a small icon in the sidebar on web, desktop, and the phone app. Its tooltip, or the row’s accessibility label on the phone, names the creator: the agent’s name when an agent or one of its side chats or workers opened it, “Created by the Orchestrator” when the orchestrator itself opened it, the creating chat’s title (a side chat of the orchestrator included), or “Created by another chat” when that chat is gone or not loaded.
 
 ## How the message is shown
 

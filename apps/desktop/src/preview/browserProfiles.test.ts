@@ -2,7 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import * as NodeSqlite from "node:sqlite";
 
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -41,7 +41,7 @@ interface SeedCookie {
 function seedJar(directory: string, cookies: ReadonlyArray<SeedCookie>): void {
   const profile = NodePath.join(partitionsDir, directory);
   NodeFS.mkdirSync(profile, { recursive: true });
-  const database = new DatabaseSync(NodePath.join(profile, "Cookies"));
+  const database = new NodeSqlite.DatabaseSync(NodePath.join(profile, "Cookies"));
   database.exec(`CREATE TABLE IF NOT EXISTS cookies (
     host_key TEXT NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL,
     value TEXT NOT NULL, encrypted_value BLOB NOT NULL DEFAULT x'',
@@ -64,7 +64,7 @@ function seedJar(directory: string, cookies: ReadonlyArray<SeedCookie>): void {
 function cookiesIn(
   directory: string,
 ): ReadonlyArray<{ host_key: string; name: string; value: string }> {
-  const database = new DatabaseSync(NodePath.join(partitionsDir, directory, "Cookies"), {
+  const database = new NodeSqlite.DatabaseSync(NodePath.join(partitionsDir, directory, "Cookies"), {
     readOnly: true,
   });
   try {

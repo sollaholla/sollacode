@@ -3,7 +3,7 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import * as NodeSqlite from "node:sqlite";
 
 /**
  * Browser profiles on disk: which folder belongs to which project or agent, the
@@ -31,7 +31,7 @@ const WINDOWS_FILETIME_TO_UNIX_MS = 11_644_473_600_000;
  * Typed rows from a prepared statement. Big integers stay as `bigint`: Chromium's
  * timestamps are past `Number.MAX_SAFE_INTEGER`, and reading one as a number throws.
  */
-function allRows<Row>(statement: StatementSync, ...parameters: ReadonlyArray<string>) {
+function allRows<Row>(statement: NodeSqlite.StatementSync, ...parameters: ReadonlyArray<string>) {
   statement.setReadBigInts(true);
   return statement.all(...parameters) as unknown as ReadonlyArray<Row>;
 }
@@ -186,7 +186,7 @@ export function summarizeCookieJar(
 ): CookieJarSummary | null {
   const jar = cookieJarPath(NodePath.join(partitionsDir, directory));
   if (jar === null) return null;
-  const database = new DatabaseSync(jar, { readOnly: true });
+  const database = new NodeSqlite.DatabaseSync(jar, { readOnly: true });
   try {
     const siteActivityMs = new Map<string, number>();
     const rows = allRows<{ host_key: string; seen: bigint }>(
@@ -235,7 +235,7 @@ export function copyCookieSites(input: {
   readonly groups: ReadonlySet<string>;
 }): void {
   if (input.groups.size === 0) return;
-  const database = new DatabaseSync(input.targetJar);
+  const database = new NodeSqlite.DatabaseSync(input.targetJar);
   try {
     database.prepare("ATTACH DATABASE ? AS source").run(input.sourceJar);
     const columnsOf = (schema: string) =>
@@ -276,7 +276,7 @@ export function copyCookieSites(input: {
 export function countPlaintextCookies(partitionsDir: string, directory: string): number {
   const jar = cookieJarPath(NodePath.join(partitionsDir, directory));
   if (jar === null) return 0;
-  const database = new DatabaseSync(jar, { readOnly: true });
+  const database = new NodeSqlite.DatabaseSync(jar, { readOnly: true });
   try {
     const [row] = allRows<{ plain: bigint }>(
       database.prepare("SELECT COUNT(*) AS plain FROM cookies WHERE value <> ''"),
@@ -296,7 +296,7 @@ export function countPlaintextCookies(partitionsDir: string, directory: string):
 export function scrubPlaintextCookies(partitionsDir: string, directory: string): void {
   const jar = cookieJarPath(NodePath.join(partitionsDir, directory));
   if (jar === null) return;
-  const database = new DatabaseSync(jar);
+  const database = new NodeSqlite.DatabaseSync(jar);
   try {
     database.exec("DELETE FROM cookies WHERE value <> ''");
     database.exec("VACUUM");

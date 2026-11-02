@@ -15,32 +15,18 @@ export const ThreadProvenanceIndicators = memo(function ThreadProvenanceIndicato
   const creatorLabel = useThreadCreatorLabel(props.thread);
   const tintColor = props.selected ? "#ffffff" : subtleColor;
   const size = props.size ?? 12;
-  if (creatorLabel === null && props.thread.browserProfileThreadId == null) {
-    return null;
-  }
+  if (creatorLabel === null) return null;
 
   return (
     <View className="shrink-0 flex-row items-center gap-1">
-      {creatorLabel !== null ? (
-        <SymbolView
-          accessibilityLabel={creatorLabel}
-          name={{ ios: "sparkles", android: "auto_awesome" }}
-          size={size}
-          testID={`thread-agent-created-${props.thread.id}`}
-          tintColor={tintColor}
-          type="monochrome"
-        />
-      ) : null}
-      {props.thread.browserProfileThreadId != null ? (
-        <SymbolView
-          accessibilityLabel="Uses a shared browser profile"
-          name="link"
-          size={size}
-          testID={`thread-shared-browser-${props.thread.id}`}
-          tintColor={tintColor}
-          type="monochrome"
-        />
-      ) : null}
+      <SymbolView
+        accessibilityLabel={creatorLabel}
+        name={{ ios: "sparkles", android: "auto_awesome" }}
+        size={size}
+        testID={`thread-agent-created-${props.thread.id}`}
+        tintColor={tintColor}
+        type="monochrome"
+      />
     </View>
   );
 });

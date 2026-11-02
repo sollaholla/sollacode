@@ -65,7 +65,7 @@ describe("ThreadProvenanceIndicators", () => {
       />,
     );
     expect(fromUnknownChat).toContain('aria-label="Created by another chat"');
-    expect(fromUnknownChat).toContain('aria-label="Uses a shared browser profile"');
+    expect(fromUnknownChat).not.toContain("shared browser");
   });
 
   it("renders nothing for a thread the person started", () => {
