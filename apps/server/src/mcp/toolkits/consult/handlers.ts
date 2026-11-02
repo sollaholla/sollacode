@@ -1,14 +1,18 @@
 import {
   CommandId,
+  type EnvironmentId,
   isAgentBuilderThreadId,
   isAgentsProjectId,
   isOrchestratorProjectId,
   isOrchestratorThreadId,
+  makeRemoteThreadId,
   MessageId,
   ORCHESTRATOR_THREAD_TITLE,
   type OrchestrationEvent,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
+  parseRemoteThreadId,
+  type RelayedEnvironmentSource,
   ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
@@ -20,20 +24,27 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
+import { ServerEnvironment } from "../../../environment/ServerEnvironment.ts";
+import { RelayedEnvironments } from "../../../relay/RelayedEnvironments.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import { resolveOwningVmAgent } from "../../../vm/owningAgent.ts";
 import { resolveRelatedChats } from "../collaboration/relationships.ts";
+import { callConnectedComputer } from "./remoteClient.ts";
 import { WorkspaceConsultToolkit } from "./tools.ts";
 import {
+  type RemoteConsultCaller,
+  type RemoteConsultRequest,
   WorkspaceConsultFailedError,
   WorkspaceConsultInvalidInputError,
   WorkspaceConsultNotFoundError,
   WorkspaceConsultRefusedError,
   WorkspaceConsultUnavailableError,
+  type WorkspaceConsultError,
   type WorkspaceConsultInput,
+  type WorkspaceConsultResult,
 } from "./types.ts";
 
 /** Ceiling on how long one `ask` may block before handing back a poll instead. */
@@ -60,6 +71,10 @@ const MAX_OPEN_CREATED_THREADS = 10;
 const DELEGATION_WORKER_THREAD_PREFIX = "delegation-worker:";
 /** The sender label for a chat with no usable title of its own. */
 const ANOTHER_CHAT_LABEL = "Another chat";
+/** How long a list waits for each connected computer before reporting it unreachable. */
+const COMPUTER_LIST_TIMEOUT_MS = 6_000;
+/** How long a read, or the network around an `ask`'s own wait, may take. */
+const COMPUTER_CALL_TIMEOUT_MS = 15_000;
 
 /**
  * Recent `ask` times per calling chat, for the sliding-window rate limit. One
@@ -89,25 +104,126 @@ const wakesReplyWait = (event: OrchestrationEvent, threadId: ThreadId): boolean 
   event.aggregateId === threadId &&
   !(event.type === "thread.message-sent" && event.payload.streaming);
 
-export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(function* (
+const failed = (operation: string) => (cause: unknown) =>
+  new WorkspaceConsultFailedError({
+    operation,
+    detail: cause instanceof Error && cause.message ? cause.message : "unexpected failure",
+  });
+
+interface ConsultUpstream {
+  /** Every chat waiting on the caller's current work. */
+  readonly chats: ReadonlySet<ThreadId>;
+  /** The longest chain of chats behind that work. */
+  readonly depth: number;
+  /** Whether delegated work reached it. */
+  readonly delegated: boolean;
+}
+
+/** Who is calling: a chat on this computer, or one another computer's server vouches for. */
+type ConsultActor =
+  | { readonly kind: "local"; readonly threadId: ThreadId }
+  | {
+      readonly kind: "remote";
+      /** The same across requests, so its asks and opened threads add up. */
+      readonly threadId: ThreadId;
+      /** What its messages record, carrying how deep the request already is. */
+      readonly senderThreadId: ThreadId;
+      readonly label: string;
+      readonly upstream: ConsultUpstream;
+    };
+
+/**
+ * The chats upstream of a chat in the work it is doing now: every chat whose
+ * message started or joined that work (steered into a running turn included),
+ * the chats upstream of each of those, and so on. The person ends a chain: a
+ * message with no sender, or one the orchestrator sent on their behalf. A
+ * sender on another computer ends it too, adding how deep the request already
+ * was when it left there; chats further back on that computer are not known
+ * here, so only the depth limit covers them.
+ */
+const readLocalUpstream = Effect.fn("WorkspaceConsult.readUpstream")(function* (
+  callerThreadId: ThreadId,
+) {
+  const projection = yield* ProjectionSnapshotQuery;
+  const getTurnTrigger = projection.getTurnTrigger;
+  if (getTurnTrigger === undefined) {
+    return yield* new WorkspaceConsultFailedError({
+      operation: "checking who started this request",
+      detail: "turn provenance is unavailable",
+    });
+  }
+  const readSenders = (threadId: ThreadId) =>
+    getTurnTrigger(threadId).pipe(
+      Effect.mapError(failed("checking who started this request")),
+      Effect.map(
+        Option.match({
+          onNone: () => ({ senders: [] as ReadonlyArray<ThreadId>, delegated: false }),
+          onSome: (trigger) => ({
+            senders:
+              trigger.senderThreadIds ??
+              (trigger.senderThreadId === null ? [] : [trigger.senderThreadId]),
+            delegated: trigger.delegationId !== null,
+          }),
+        }),
+      ),
+    );
+  const own = yield* readSenders(callerThreadId);
+  const upstream = new Set<ThreadId>();
+  let depth = 0;
+  let carriedDepth = 0;
+  let lookups = 0;
+  let frontier = own.senders;
+  while (depth < MAX_CHAIN_HOPS) {
+    const next = new Set(
+      frontier.filter(
+        (id) => !isOrchestratorThreadId(id) && id !== callerThreadId && !upstream.has(id),
+      ),
+    );
+    if (next.size === 0) break;
+    depth += 1;
+    for (const id of next) upstream.add(id);
+    const nextFrontier: Array<ThreadId> = [];
+    for (const id of next) {
+      const remote = parseRemoteThreadId(id);
+      if (remote !== null) {
+        carriedDepth = Math.max(carriedDepth, depth + remote.upstreamDepth);
+        continue;
+      }
+      if (depth >= MAX_CHAIN_HOPS || lookups >= MAX_CHAIN_LOOKUPS) break;
+      lookups += 1;
+      nextFrontier.push(...(yield* readSenders(id)).senders);
+    }
+    frontier = nextFrontier;
+  }
+  return {
+    chats: upstream,
+    depth: Math.max(depth, carriedDepth),
+    delegated: own.delegated,
+  } satisfies ConsultUpstream;
+});
+
+/** The sender label a chat shows. Only the orchestrator itself is labelled as the orchestrator. */
+const senderLabelOf = (
+  threadId: ThreadId,
+  thread: OrchestrationThreadShell | undefined,
+  agentName: string | undefined,
+): string => {
+  if (isOrchestratorThreadId(threadId)) return ORCHESTRATOR_THREAD_TITLE;
+  const label = agentName?.trim() || thread?.title.trim() || ANOTHER_CHAT_LABEL;
+  return label.toLowerCase() === ORCHESTRATOR_THREAD_TITLE.toLowerCase()
+    ? ANOTHER_CHAT_LABEL
+    : label;
+};
+
+const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
+  actor: ConsultActor,
   input: WorkspaceConsultInput,
   askLog: ConsultAskLog,
 ) {
-  const invocation = yield* McpInvocationContext.McpInvocationContext;
-  if (!invocation.capabilities.has("collaboration")) {
-    return yield* new WorkspaceConsultUnavailableError({ threadId: invocation.threadId });
-  }
-
   const store = yield* VmAgentStore;
   const projection = yield* ProjectionSnapshotQuery;
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
-
-  const failed = (operation: string) => (cause: unknown) =>
-    new WorkspaceConsultFailedError({
-      operation,
-      detail: cause instanceof Error && cause.message ? cause.message : "unexpected failure",
-    });
 
   const randomId = crypto.randomUUIDv4.pipe(
     Effect.mapError(() =>
@@ -136,11 +252,13 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
   const resolveCaller = Effect.fn("WorkspaceConsult.resolveCaller")(function* (
     threads: ReadonlyArray<OrchestrationThreadShell>,
   ) {
-    const agent = yield* owningAgentOf(invocation.threadId).pipe(
+    // A chat on another computer has no family here.
+    if (actor.kind === "remote") return { agent: null, family: new Set<ThreadId>() };
+    const agent = yield* owningAgentOf(actor.threadId).pipe(
       Effect.mapError(failed("resolving the calling chat")),
     );
-    const family = new Set<ThreadId>([invocation.threadId]);
-    for (const related of resolveRelatedChats(threads, invocation.threadId)?.related ?? []) {
+    const family = new Set<ThreadId>([actor.threadId]);
+    for (const related of resolveRelatedChats(threads, actor.threadId)?.related ?? []) {
       family.add(related.id);
     }
     if (Option.isSome(agent) && agent.value.threadId !== null) family.add(agent.value.threadId);
@@ -190,61 +308,8 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
     return target;
   });
 
-  /**
-   * The chats upstream of the caller in the work it is doing now: every chat
-   * whose message started or joined that work (steered into a running turn
-   * included), the chats upstream of each of those, and so on. The person ends
-   * a chain: a message with no sender, or one the orchestrator sent on their
-   * behalf. `chats` holds them all and `depth` is the longest chain;
-   * `delegated` says whether delegated work reached the caller's own work.
-   */
-  const readUpstream = Effect.fn("WorkspaceConsult.readUpstream")(function* () {
-    const getTurnTrigger = projection.getTurnTrigger;
-    if (getTurnTrigger === undefined) {
-      return yield* new WorkspaceConsultFailedError({
-        operation: "checking who started this request",
-        detail: "turn provenance is unavailable",
-      });
-    }
-    const readSenders = (threadId: ThreadId) =>
-      getTurnTrigger(threadId).pipe(
-        Effect.mapError(failed("checking who started this request")),
-        Effect.map(
-          Option.match({
-            onNone: () => ({ senders: [] as ReadonlyArray<ThreadId>, delegated: false }),
-            onSome: (trigger) => ({
-              senders:
-                trigger.senderThreadIds ??
-                (trigger.senderThreadId === null ? [] : [trigger.senderThreadId]),
-              delegated: trigger.delegationId !== null,
-            }),
-          }),
-        ),
-      );
-    const own = yield* readSenders(invocation.threadId);
-    const upstream = new Set<ThreadId>();
-    let depth = 0;
-    let lookups = 0;
-    let frontier = own.senders;
-    while (depth < MAX_CHAIN_HOPS) {
-      const next = new Set(
-        frontier.filter(
-          (id) => !isOrchestratorThreadId(id) && id !== invocation.threadId && !upstream.has(id),
-        ),
-      );
-      if (next.size === 0) break;
-      depth += 1;
-      for (const id of next) upstream.add(id);
-      const nextFrontier: Array<ThreadId> = [];
-      for (const id of next) {
-        if (depth >= MAX_CHAIN_HOPS || lookups >= MAX_CHAIN_LOOKUPS) break;
-        lookups += 1;
-        nextFrontier.push(...(yield* readSenders(id)).senders);
-      }
-      frontier = nextFrontier;
-    }
-    return { chats: upstream, depth, delegated: own.delegated };
-  });
+  const readUpstream = () =>
+    actor.kind === "remote" ? Effect.succeed(actor.upstream) : readLocalUpstream(actor.threadId);
 
   switch (input.action) {
     case "list_projects": {
@@ -358,17 +423,12 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
       }
       const shell = yield* readShell();
       const caller = yield* resolveCaller(shell.threads);
-      const callerThread = shell.threads.find((thread) => thread.id === invocation.threadId);
-      // The sender label the asked chat shows. Only the orchestrator thread
-      // itself is ever labelled as the orchestrator, whatever another chat or
-      // agent happens to be named.
-      const ownLabel =
-        caller.agent?.name.trim() || callerThread?.title.trim() || ANOTHER_CHAT_LABEL;
-      const senderThreadTitle = isOrchestratorThreadId(invocation.threadId)
-        ? ORCHESTRATOR_THREAD_TITLE
-        : ownLabel.toLowerCase() === ORCHESTRATOR_THREAD_TITLE.toLowerCase()
-          ? ANOTHER_CHAT_LABEL
-          : ownLabel;
+      const callerThread = shell.threads.find((thread) => thread.id === actor.threadId);
+      const senderThreadTitle =
+        actor.kind === "remote"
+          ? actor.label
+          : senderLabelOf(actor.threadId, callerThread, caller.agent?.name);
+      const senderThreadId = actor.kind === "remote" ? actor.senderThreadId : actor.threadId;
       const upstream = yield* readUpstream();
 
       // Either continue an existing conversation, or open a fresh thread in a
@@ -412,7 +472,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
         // delegation reached, may ask existing threads, but opening new ones
         // would let it fan out unbounded work. A named agent's own chat is not
         // delegated work merely because a delegation to it is still queued.
-        if (upstream.delegated || invocation.threadId.startsWith(DELEGATION_WORKER_THREAD_PREFIX)) {
+        if (upstream.delegated || actor.threadId.startsWith(DELEGATION_WORKER_THREAD_PREFIX)) {
           return yield* new WorkspaceConsultRefusedError({
             reason:
               "Delegated work cannot open new conversations. Ask an existing thread with threadId instead.",
@@ -423,7 +483,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
         // opened in a project.
         const openCreated = shell.threads.filter(
           (thread) =>
-            thread.createdByThreadId === invocation.threadId &&
+            thread.createdByThreadId === actor.threadId &&
             thread.archivedAt === null &&
             thread.isSideChat !== true &&
             !isInternalProject(thread.projectId),
@@ -451,7 +511,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
 
       const now = yield* DateTime.now;
       const nowMs = DateTime.toEpochMillis(now);
-      const recentAsks = (askLog.get(invocation.threadId) ?? []).filter(
+      const recentAsks = (askLog.get(actor.threadId) ?? []).filter(
         (at) => nowMs - at < ASK_WINDOW_MS,
       );
       if (recentAsks.length >= MAX_ASKS_PER_WINDOW) {
@@ -462,7 +522,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
       for (const [threadId, times] of askLog) {
         if (times.every((at) => nowMs - at >= ASK_WINDOW_MS)) askLog.delete(threadId);
       }
-      askLog.set(invocation.threadId, [...recentAsks, nowMs]);
+      askLog.set(actor.threadId, [...recentAsks, nowMs]);
 
       const askedAt = DateTime.formatIso(now);
       let targetId: ThreadId;
@@ -483,7 +543,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
             message: {
               messageId: MessageId.make(yield* randomId),
               role: "user",
-              senderThreadId: invocation.threadId,
+              senderThreadId,
               senderThreadTitle,
               text: question,
               attachments: [],
@@ -513,8 +573,11 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
             threadId: targetId,
             projectId: project.id,
             title: input.title ?? titleFromQuestion(question),
-            createdByThreadId: invocation.threadId,
-            browserProfileThreadId: callerThread?.browserProfileThreadId ?? invocation.threadId,
+            createdByThreadId: actor.threadId,
+            // A chat on another computer has no browser here: the project's is used.
+            ...(actor.kind === "local"
+              ? { browserProfileThreadId: callerThread?.browserProfileThreadId ?? actor.threadId }
+              : {}),
             modelSelection,
             interactionMode: "default",
             // `auto` rather than the app default `full-access`: a consulted
@@ -536,7 +599,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
             message: {
               messageId: MessageId.make(yield* randomId),
               role: "user",
-              senderThreadId: invocation.threadId,
+              senderThreadId,
               senderThreadTitle,
               text: question,
               attachments: [],
@@ -632,6 +695,245 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
       };
     }
   }
+});
+
+/** Calls one connected computer as the chat behind `invocation`. */
+const callComputerAs = Effect.fn("WorkspaceConsult.callComputerAs")(function* (
+  callerThreadId: ThreadId,
+  callerEnvironmentId: EnvironmentId,
+  source: RelayedEnvironmentSource,
+  input: WorkspaceConsultInput,
+  timeoutMs: number,
+) {
+  const environment = yield* ServerEnvironment;
+  const descriptor = yield* environment.getDescriptor;
+  const { environmentId: _here, ...rest } = input;
+  const base: RemoteConsultCaller = {
+    environmentId: callerEnvironmentId,
+    computer: descriptor.label,
+    threadId: callerThreadId,
+    label: ANOTHER_CHAT_LABEL,
+    upstreamDepth: 0,
+    waitingThreadIds: [],
+    delegated: false,
+  };
+  // Only a question needs to say who is asking and how far it has come.
+  if (input.action !== "ask") {
+    return yield* callConnectedComputer(source, { input: rest, caller: base }, timeoutMs);
+  }
+  const projection = yield* ProjectionSnapshotQuery;
+  const store = yield* VmAgentStore;
+  const thread = yield* projection
+    .getThreadShellById(callerThreadId)
+    .pipe(Effect.mapError(failed("reading the calling chat")));
+  const agent = yield* resolveOwningVmAgent({
+    threadId: callerThreadId,
+    getAgentByThreadId: store.getByThreadId,
+    getThreadShellById: projection.getThreadShellById,
+  }).pipe(Effect.mapError(failed("resolving the calling chat")));
+  const upstream = yield* readLocalUpstream(callerThreadId);
+  const caller: RemoteConsultCaller = {
+    ...base,
+    label: senderLabelOf(
+      callerThreadId,
+      Option.getOrUndefined(thread),
+      Option.getOrUndefined(agent)?.name,
+    ),
+    upstreamDepth: upstream.depth,
+    waitingThreadIds: [...upstream.chats].flatMap((id) => {
+      const remote = parseRemoteThreadId(id);
+      return remote?.environmentId === source.environmentId ? [remote.threadId] : [];
+    }),
+    delegated: upstream.delegated || callerThreadId.startsWith(DELEGATION_WORKER_THREAD_PREFIX),
+  };
+  return yield* callConnectedComputer(source, { input: rest, caller }, timeoutMs);
+});
+
+const located = (source: RelayedEnvironmentSource) => ({
+  environmentId: source.environmentId,
+  computer: source.label,
+});
+
+/** Time for one `ask` on another computer: its own wait, plus the network around it. */
+const callTimeoutFor = (input: WorkspaceConsultInput): number =>
+  input.action === "ask"
+    ? Math.min(MAX_WAIT_MS, Math.max(0, Math.trunc(input.waitMs ?? DEFAULT_WAIT_MS))) +
+      COMPUTER_CALL_TIMEOUT_MS
+    : COMPUTER_CALL_TIMEOUT_MS;
+
+const failureDetail = (error: WorkspaceConsultError): string => error.message;
+
+/**
+ * Handles a call from a chat on this computer. A thread or project is reached
+ * the same way wherever it lives: lists cover every connected computer, and a
+ * thread or project not found here is looked for on them.
+ */
+export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(function* (
+  input: WorkspaceConsultInput,
+  askLog: ConsultAskLog,
+) {
+  const invocation = yield* McpInvocationContext.McpInvocationContext;
+  if (!invocation.capabilities.has("collaboration")) {
+    return yield* new WorkspaceConsultUnavailableError({ threadId: invocation.threadId });
+  }
+  const relays = yield* RelayedEnvironments;
+  const callComputer = (
+    source: RelayedEnvironmentSource,
+    call: WorkspaceConsultInput,
+    timeoutMs: number,
+  ) => callComputerAs(invocation.threadId, invocation.environmentId, source, call, timeoutMs);
+  const tagged = (source: RelayedEnvironmentSource, result: WorkspaceConsultResult) => ({
+    ...result,
+    ...(result.threadId === undefined ? {} : located(source)),
+    ...(result.threads === undefined
+      ? {}
+      : { threads: result.threads.map((thread) => ({ ...thread, ...located(source) })) }),
+    ...(result.projects === undefined
+      ? {}
+      : { projects: result.projects.map((project) => ({ ...project, ...located(source) })) }),
+  });
+
+  // Named another computer: that one answers.
+  if (input.environmentId !== undefined && input.environmentId !== invocation.environmentId) {
+    const source = yield* relays.get(input.environmentId);
+    if (Option.isNone(source)) {
+      return yield* new WorkspaceConsultNotFoundError({
+        kind: "connected computer",
+        id: input.environmentId,
+      });
+    }
+    const result = yield* callComputer(source.value, input, callTimeoutFor(input));
+    return tagged(source.value, {
+      ...result,
+      ...(result.threads === undefined && result.projects === undefined
+        ? {}
+        : { computers: [{ ...located(source.value), reachable: true }] }),
+    });
+  }
+
+  const actor: ConsultActor = { kind: "local", threadId: invocation.threadId };
+  // Named this one: nothing else is consulted.
+  if (input.environmentId !== undefined) return yield* runConsult(actor, input, askLog);
+
+  if (input.action === "list_threads" || input.action === "list_projects") {
+    const here = yield* runConsult(actor, input, askLog);
+    const sources = yield* relays.sources;
+    if (sources.length === 0) return here;
+    const answers = yield* Effect.forEach(
+      sources,
+      (source) =>
+        callComputer(source, input, COMPUTER_LIST_TIMEOUT_MS).pipe(
+          Effect.map((result) => ({ source, result: tagged(source, result), error: null })),
+          Effect.catch((error) =>
+            Effect.succeed({ source, result: null, error: failureDetail(error) }),
+          ),
+        ),
+      { concurrency: "unbounded" },
+    );
+    const reachedSummary = answers.flatMap(({ source, result }) => {
+      if (result === null) return [];
+      const count = result.threads?.length ?? result.projects?.length ?? 0;
+      return [`${count} on ${source.label}`];
+    });
+    const unreachable = answers.flatMap(({ source, error }) =>
+      error === null ? [] : [source.label],
+    );
+    return {
+      ...here,
+      status: [
+        here.status,
+        ...(reachedSummary.length > 0
+          ? [`Connected computers: ${reachedSummary.join(", ")}.`]
+          : []),
+        ...(unreachable.length > 0 ? [`Could not reach ${unreachable.join(", ")}.`] : []),
+      ].join(" "),
+      computers: answers.map(({ source, error }) => ({
+        ...located(source),
+        reachable: error === null,
+        ...(error === null ? {} : { detail: error }),
+      })),
+      ...(input.action === "list_threads"
+        ? {
+            threads: [
+              ...(here.threads ?? []),
+              ...answers.flatMap(({ result }) => result?.threads ?? []),
+            ],
+          }
+        : {
+            projects: [
+              ...(here.projects ?? []),
+              ...answers.flatMap(({ result }) => result?.projects ?? []),
+            ],
+          }),
+    };
+  }
+
+  return yield* runConsult(actor, input, askLog).pipe(
+    Effect.catchTag("WorkspaceConsultNotFoundError", (notFound) =>
+      Effect.gen(function* () {
+        // Not here, so nothing was sent: safe to try the connected computers.
+        const unreachable: Array<string> = [];
+        for (const source of yield* relays.sources) {
+          const answer = yield* callComputer(source, input, callTimeoutFor(input)).pipe(
+            Effect.map((result) => tagged(source, result)),
+            Effect.map(Option.some),
+            Effect.catchTags({
+              WorkspaceConsultNotFoundError: () => Effect.succeed(Option.none()),
+              WorkspaceConsultFailedError: () => {
+                unreachable.push(source.label);
+                return Effect.succeed(Option.none());
+              },
+            }),
+          );
+          if (Option.isSome(answer)) return answer.value;
+        }
+        if (unreachable.length > 0) {
+          return yield* new WorkspaceConsultFailedError({
+            operation: `looking for ${notFound.id}`,
+            detail: `it is not on this computer, and ${unreachable.join(", ")} could not be reached`,
+          });
+        }
+        return yield* notFound;
+      }),
+    ),
+  );
+});
+
+/**
+ * Handles a call from a chat on another computer, under every limit a chat here
+ * has. It only ever answers from this computer, so a call goes one hop.
+ */
+export const handleRemoteConsult = Effect.fn("WorkspaceConsult.handleRemote")(function* (
+  request: RemoteConsultRequest,
+  askLog: ConsultAskLog,
+) {
+  const environment = yield* ServerEnvironment;
+  const { caller, input } = request;
+  if (caller.environmentId === (yield* environment.getEnvironmentId)) {
+    return yield* new WorkspaceConsultRefusedError({
+      reason: "That connection leads back to the same computer.",
+    });
+  }
+  const { environmentId: _here, ...local } = input;
+  return yield* runConsult(
+    {
+      kind: "remote",
+      threadId: makeRemoteThreadId(caller.environmentId, caller.threadId),
+      senderThreadId: makeRemoteThreadId(
+        caller.environmentId,
+        caller.threadId,
+        caller.upstreamDepth,
+      ),
+      label: `${caller.label.trim() || ANOTHER_CHAT_LABEL} (${caller.computer})`,
+      upstream: {
+        chats: new Set(caller.waitingThreadIds),
+        depth: caller.upstreamDepth,
+        delegated: caller.delegated,
+      },
+    },
+    local,
+    askLog,
+  );
 });
 
 export const WorkspaceConsultToolkitHandlersLive = WorkspaceConsultToolkit.toLayer(

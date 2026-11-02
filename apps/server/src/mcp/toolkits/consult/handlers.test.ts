@@ -5,8 +5,11 @@ import {
   ORCHESTRATOR_THREAD_ID,
   ProjectId,
   ProviderInstanceId,
+  makeRemoteThreadId,
+  parseRemoteThreadId,
   ThreadId,
   TurnId,
+  type RelayedEnvironmentSource,
   VmAgent,
   VmAgentDelegationId,
   VmAgentId,
@@ -22,16 +25,35 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
+import { ServerEnvironment } from "../../../environment/ServerEnvironment.ts";
+import { RelayedEnvironments } from "../../../relay/RelayedEnvironments.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
-import { type ConsultAskLog, handleWorkspaceConsult } from "./handlers.ts";
-import type { WorkspaceConsultInput } from "./types.ts";
+import { type ConsultAskLog, handleRemoteConsult, handleWorkspaceConsult } from "./handlers.ts";
+import {
+  REMOTE_CONSULT_PATH,
+  type RemoteConsultCaller,
+  RemoteConsultRequest,
+  RemoteConsultResponse,
+  type WorkspaceConsultInput,
+  type WorkspaceConsultResult,
+} from "./types.ts";
 
+const hereEnvironmentId = EnvironmentId.make("env-consult-test");
+const windowsEnvironmentId = EnvironmentId.make("env-windows");
+const windows: RelayedEnvironmentSource = {
+  environmentId: windowsEnvironmentId,
+  label: "Windows PC",
+  httpBaseUrl: "http://windows.test:3773",
+  bearerToken: "windows-token",
+};
 const agentThreadId = ThreadId.make("thread-scout");
 const inheritedBrowserProfileThreadId = ThreadId.make("thread-browser-root");
 const medicalThreadId = ThreadId.make("thread-medical");
@@ -43,7 +65,7 @@ const invocation = (
   threadId: ThreadId,
   capabilities: Set<McpInvocationContext.McpCapability>,
 ): McpInvocationContext.McpInvocationScope => ({
-  environmentId: EnvironmentId.make("env-consult-test"),
+  environmentId: hereEnvironmentId,
   threadId,
   providerSessionId: "provider-session-consult",
   providerInstanceId: ProviderInstanceId.make("claudeAgent"),
@@ -146,8 +168,42 @@ const makeHarness = (options: {
   readonly events?: PubSub.PubSub<OrchestrationEvent>;
   /** Runs on every read of the asked thread's shell while waiting. */
   readonly onReplyCheck?: Effect.Effect<void>;
+  /** Computers this host's desktop app connected to. */
+  readonly computers?: ReadonlyArray<RelayedEnvironmentSource>;
+  /** How those computers answer; defaults to failing the test's network. */
+  readonly remote?: (request: HttpClientRequest.HttpClientRequest) => Response;
 }) => {
   const commands: OrchestrationCommand[] = [];
+  const remoteRequests: Array<HttpClientRequest.HttpClientRequest> = [];
+  const renewedTokens: Array<string> = [];
+  const computers = options.computers ?? [];
+  const relaysLayer = Layer.mock(RelayedEnvironments)({
+    get: (environmentId) =>
+      Effect.succeed(
+        Option.fromNullishOr(computers.find((entry) => entry.environmentId === environmentId)),
+      ),
+    sources: Effect.succeed(computers),
+    renewToken: (_environmentId, _previous, next) =>
+      Effect.sync(() => {
+        renewedTokens.push(next);
+      }),
+  });
+  const environmentLayer = Layer.mock(ServerEnvironment)({
+    getEnvironmentId: Effect.succeed(hereEnvironmentId),
+    getDescriptor: Effect.succeed({ label: "Mac" } as never),
+  });
+  const httpLayer = Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make((request) =>
+      Effect.sync(() => {
+        remoteRequests.push(request);
+        return HttpClientResponse.fromWeb(
+          request,
+          options.remote?.(request) ?? new Response(null, { status: 500 }),
+        );
+      }),
+    ),
+  );
   const detailReads: Array<{ activityLimit?: number; messageLimit?: number } | undefined> = [];
   const threads = options.threads ?? [threadShell(), agentThreadShell];
   const state = { shellById: options.shellById, messages: options.messages ?? [] };
@@ -218,8 +274,18 @@ const makeHarness = (options: {
   return {
     commands,
     detailReads,
+    remoteRequests,
+    renewedTokens,
     state,
-    layer: Layer.mergeAll(storeLayer, projectionLayer, engineLayer, cryptoLayer),
+    layer: Layer.mergeAll(
+      storeLayer,
+      projectionLayer,
+      engineLayer,
+      cryptoLayer,
+      relaysLayer,
+      environmentLayer,
+      httpLayer,
+    ),
   };
 };
 
@@ -227,7 +293,10 @@ type ConsultServices =
   | VmAgentStore
   | ProjectionSnapshotQuery
   | OrchestrationEngineService
-  | Crypto.Crypto;
+  | Crypto.Crypto
+  | RelayedEnvironments
+  | ServerEnvironment
+  | HttpClient.HttpClient;
 
 const consult = (
   input: WorkspaceConsultInput,
@@ -856,5 +925,396 @@ it.effect("hands back the thread to poll once the wait runs out", () =>
     const result = yield* Fiber.join(asking);
     assert.strictEqual(result.answered, false);
     assert.strictEqual(result.threadId, medicalThreadId);
+  }),
+);
+
+// ── Between computers ───────────────────────────────────────────────
+
+const decodeRemoteRequest = Schema.decodeUnknownSync(RemoteConsultRequest);
+const decodeRemoteResponse = Schema.decodeUnknownSync(RemoteConsultResponse);
+const encodeRemoteResponse = Schema.encodeSync(RemoteConsultResponse);
+
+/** {@link consult} with every optional field of the result in view. */
+const consultAnywhere = (...args: Parameters<typeof consult>) =>
+  consult(...args).pipe(Effect.map((result): WorkspaceConsultResult => result));
+
+const remoteThreadId = ThreadId.make("thread-on-windows");
+const remoteProjectId = ProjectId.make("project-on-windows");
+
+const answerWith = (result: unknown) =>
+  new Response(JSON.stringify({ ok: true, result }), {
+    headers: { "content-type": "application/json" },
+  });
+
+const sentBody = (request: HttpClientRequest.HttpClientRequest) => {
+  const body = request.body;
+  if (body._tag !== "Uint8Array") return assert.fail("expected a JSON body");
+  return decodeRemoteRequest(JSON.parse(new TextDecoder().decode(body.body)));
+};
+
+const windowsThreads = {
+  action: "list_threads",
+  status: "Found 1 conversation(s).",
+  threads: [
+    {
+      threadId: remoteThreadId,
+      title: "Windows build",
+      projectId: remoteProjectId,
+      isWorking: false,
+      isAgent: false,
+    },
+  ],
+};
+
+const remoteCaller = (overrides: Partial<RemoteConsultCaller> = {}): RemoteConsultCaller => ({
+  environmentId: windowsEnvironmentId,
+  computer: "Windows PC",
+  threadId: remoteThreadId,
+  label: "Windows build",
+  upstreamDepth: 0,
+  waitingThreadIds: [],
+  delegated: false,
+  ...overrides,
+});
+
+const fromRemote = (
+  input: WorkspaceConsultInput,
+  caller: RemoteConsultCaller,
+  layer: Layer.Layer<ConsultServices>,
+  askLog: ConsultAskLog = new Map(),
+) => handleRemoteConsult({ input, caller }, askLog).pipe(Effect.provide(layer));
+
+it.effect("list_threads adds every connected computer's chats, labelled by computer", () =>
+  Effect.gen(function* () {
+    const { layer, remoteRequests } = makeHarness({
+      computers: [windows],
+      remote: () => answerWith(windowsThreads),
+    });
+    const result = yield* consultAnywhere({ action: "list_threads" }, layer);
+    const rows = result.threads ?? [];
+    assert.isTrue(rows.some((row) => row.threadId === medicalThreadId && !row.environmentId));
+    const remote = rows.find((row) => row.threadId === remoteThreadId);
+    assert.strictEqual(remote?.environmentId, windowsEnvironmentId);
+    assert.strictEqual(remote?.computer, "Windows PC");
+    assert.deepStrictEqual(result.computers, [
+      { environmentId: windowsEnvironmentId, computer: "Windows PC", reachable: true },
+    ]);
+    assert.match(result.status, /1 on Windows PC/);
+
+    const [request] = remoteRequests;
+    assert.strictEqual(request?.url, `http://windows.test:3773${REMOTE_CONSULT_PATH}`);
+    assert.strictEqual(request?.headers.authorization, "Bearer windows-token");
+  }),
+);
+
+it.effect("a computer that cannot be reached is reported and the list still answers", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({
+      computers: [windows],
+      remote: () => new Response(null, { status: 404 }),
+    });
+    const result = yield* consultAnywhere({ action: "list_threads" }, layer);
+    assert.isTrue((result.threads ?? []).some((row) => row.threadId === medicalThreadId));
+    const [computer] = result.computers ?? [];
+    assert.strictEqual(computer?.reachable, false);
+    assert.match(computer?.detail ?? "", /needs updating/);
+    assert.match(result.status, /Could not reach Windows PC/);
+  }),
+);
+
+it.effect("with no connected computers a list is exactly what it was", () =>
+  Effect.gen(function* () {
+    const { layer, remoteRequests } = makeHarness({});
+    const result = yield* consultAnywhere({ action: "list_threads" }, layer);
+    assert.isUndefined(result.computers);
+    assert.lengthOf(remoteRequests, 0);
+  }),
+);
+
+it.effect("read_thread with an environmentId goes to that computer and says so", () =>
+  Effect.gen(function* () {
+    const { layer, remoteRequests } = makeHarness({
+      computers: [windows],
+      remote: () =>
+        answerWith({
+          action: "read_thread",
+          status: "Read the last 1 message(s).",
+          threadId: remoteThreadId,
+          messages: [{ role: "assistant", text: "Built.", createdAt: iso }],
+        }),
+    });
+    const result = yield* consultAnywhere(
+      { action: "read_thread", threadId: remoteThreadId, environmentId: windowsEnvironmentId },
+      layer,
+    );
+    assert.strictEqual(result.messages?.[0]?.text, "Built.");
+    assert.strictEqual(result.environmentId, windowsEnvironmentId);
+    assert.strictEqual(result.computer, "Windows PC");
+    assert.lengthOf(remoteRequests, 1);
+    assert.isUndefined(sentBody(remoteRequests[0]!).input.environmentId);
+  }),
+);
+
+it.effect("a thread not found here is looked for on the connected computers", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({
+      computers: [windows],
+      remote: () =>
+        answerWith({
+          action: "read_thread",
+          status: "Read the last 0 message(s).",
+          threadId: remoteThreadId,
+          messages: [],
+        }),
+    });
+    const result = yield* consultAnywhere(
+      { action: "read_thread", threadId: remoteThreadId },
+      layer,
+    );
+    assert.strictEqual(result.environmentId, windowsEnvironmentId);
+  }),
+);
+
+it.effect("a thread on no computer is still not found", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({
+      computers: [windows],
+      remote: () =>
+        new Response(
+          JSON.stringify({
+            ok: false,
+            error: {
+              _tag: "WorkspaceConsultNotFoundError",
+              kind: "conversation",
+              id: remoteThreadId,
+            },
+          }),
+        ),
+    });
+    const error = yield* Effect.flip(
+      consultAnywhere({ action: "read_thread", threadId: remoteThreadId }, layer),
+    );
+    assert.strictEqual(error._tag, "WorkspaceConsultNotFoundError");
+  }),
+);
+
+it.effect("a computer's refusal reaches the asking chat as that refusal", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({
+      computers: [windows],
+      remote: () =>
+        new Response(
+          JSON.stringify({
+            ok: false,
+            error: { _tag: "WorkspaceConsultRefusedError", reason: "That agent is stopped." },
+          }),
+        ),
+    });
+    const error = yield* Effect.flip(
+      consultAnywhere({ ...ask(remoteThreadId), environmentId: windowsEnvironmentId }, layer),
+    );
+    assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+    assert.strictEqual(error.message, "That agent is stopped.");
+  }),
+);
+
+it.effect("an unknown computer is not found, and nothing is sent", () =>
+  Effect.gen(function* () {
+    const { layer, remoteRequests } = makeHarness({ computers: [windows] });
+    const error = yield* Effect.flip(
+      consultAnywhere(
+        {
+          action: "read_thread",
+          threadId: remoteThreadId,
+          environmentId: EnvironmentId.make("env-gone"),
+        },
+        layer,
+      ),
+    );
+    assert.strictEqual(error._tag, "WorkspaceConsultNotFoundError");
+    assert.lengthOf(remoteRequests, 0);
+  }),
+);
+
+it.effect("a lapsed credential is renewed once and the call goes through", () =>
+  Effect.gen(function* () {
+    const { layer, remoteRequests, renewedTokens } = makeHarness({
+      computers: [windows],
+      remote: (request) => {
+        if (request.url.endsWith("/api/auth/renew")) {
+          return new Response(JSON.stringify({ credential: "renewed-token" }));
+        }
+        return request.headers.authorization === "Bearer renewed-token"
+          ? answerWith(windowsThreads)
+          : new Response(null, { status: 401 });
+      },
+    });
+    const result = yield* consultAnywhere(
+      { action: "list_threads", environmentId: windowsEnvironmentId },
+      layer,
+    );
+    assert.lengthOf(result.threads ?? [], 1);
+    assert.deepStrictEqual(renewedTokens, ["renewed-token"]);
+    assert.lengthOf(remoteRequests, 3);
+  }),
+);
+
+it.effect("an ask says who is asking and how far the request has come", () =>
+  Effect.gen(function* () {
+    const senderOnWindows = makeRemoteThreadId(windowsEnvironmentId, remoteThreadId, 1);
+    const { layer, remoteRequests } = makeHarness({
+      computers: [windows],
+      senders: { [agentThreadId]: senderOnWindows },
+      remote: () =>
+        answerWith({ action: "ask", status: "Asked.", threadId: remoteThreadId, answered: false }),
+    });
+    const result = yield* consultAnywhere(
+      { ...ask(remoteThreadId), environmentId: windowsEnvironmentId },
+      layer,
+    );
+    assert.strictEqual(result.environmentId, windowsEnvironmentId);
+    const { caller } = sentBody(remoteRequests[0]!);
+    assert.strictEqual(caller.environmentId, hereEnvironmentId);
+    assert.strictEqual(caller.computer, "Mac");
+    assert.strictEqual(caller.threadId, agentThreadId);
+    assert.strictEqual(caller.label, "Scout");
+    // The Windows chat it is answering, plus the one chat already behind that.
+    assert.strictEqual(caller.upstreamDepth, 2);
+    assert.deepStrictEqual(caller.waitingThreadIds, [remoteThreadId]);
+  }),
+);
+
+it.effect("a message from another computer is never recorded as a local chat", () =>
+  Effect.gen(function* () {
+    const { commands, layer } = makeHarness({});
+    yield* fromRemote(
+      ask(medicalThreadId),
+      remoteCaller({ threadId: ThreadId.make(ORCHESTRATOR_THREAD_ID), label: "Orchestrator" }),
+      layer,
+    );
+    const message = startedMessage(commands);
+    assert.notStrictEqual(message.senderThreadId, ORCHESTRATOR_THREAD_ID);
+    assert.strictEqual(message.senderThreadTitle, "Orchestrator (Windows PC)");
+    const sender = parseRemoteThreadId(message.senderThreadId ?? "");
+    assert.strictEqual(sender?.environmentId, windowsEnvironmentId);
+    assert.strictEqual(sender?.threadId, ORCHESTRATOR_THREAD_ID);
+  }),
+);
+
+it.effect("a chat from another computer may not ask one waiting on it", () =>
+  Effect.gen(function* () {
+    const { commands, layer } = makeHarness({});
+    const error = yield* Effect.flip(
+      fromRemote(
+        ask(medicalThreadId),
+        remoteCaller({ waitingThreadIds: [medicalThreadId], upstreamDepth: 1 }),
+        layer,
+      ),
+    );
+    assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+    assert.match(error.message, /would loop/);
+    assert.lengthOf(commands, 0);
+  }),
+);
+
+it.effect("the relay limit counts chats on the other computer", () =>
+  Effect.gen(function* () {
+    const { commands, layer } = makeHarness({});
+    const error = yield* Effect.flip(
+      fromRemote(ask(medicalThreadId), remoteCaller({ upstreamDepth: 3 }), layer),
+    );
+    assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+    assert.match(error.message, /3 chats deep/);
+    assert.lengthOf(commands, 0);
+  }),
+);
+
+it.effect("depth carried in by another computer counts on this one", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({
+      senders: { [agentThreadId]: makeRemoteThreadId(windowsEnvironmentId, remoteThreadId, 2) },
+    });
+    const error = yield* Effect.flip(consult(ask(medicalThreadId), layer));
+    assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+    assert.match(error.message, /3 chats deep/);
+  }),
+);
+
+it.effect("delegated work on another computer may not open a conversation here", () =>
+  Effect.gen(function* () {
+    const { commands, layer } = makeHarness({});
+    const error = yield* Effect.flip(
+      fromRemote(
+        { action: "ask", projectId: medicalProjectId, question: "Hello?", waitMs: 0 },
+        remoteCaller({ delegated: true }),
+        layer,
+      ),
+    );
+    assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+    assert.lengthOf(commands, 0);
+  }),
+);
+
+it.effect("a conversation another computer opens has no browser of its own and records it", () =>
+  Effect.gen(function* () {
+    const { commands, layer } = makeHarness({});
+    yield* fromRemote(
+      { action: "ask", projectId: medicalProjectId, question: "Hello?", waitMs: 0 },
+      remoteCaller(),
+      layer,
+    );
+    const created = commands.find((command) => command.type === "thread.create");
+    if (created?.type !== "thread.create") return assert.fail("expected a new thread");
+    assert.isUndefined(created.browserProfileThreadId);
+    assert.strictEqual(
+      created.createdByThreadId,
+      makeRemoteThreadId(windowsEnvironmentId, remoteThreadId),
+    );
+    assert.strictEqual(created.runtimeMode, "auto");
+  }),
+);
+
+it.effect("asks from another computer share one budget, however deep each one is", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({});
+    const askLog: ConsultAskLog = new Map();
+    for (let index = 0; index < 20; index += 1) {
+      yield* fromRemote(
+        ask(medicalThreadId),
+        remoteCaller({ upstreamDepth: index % 2 }),
+        layer,
+        askLog,
+      );
+    }
+    const error = yield* Effect.flip(
+      fromRemote(ask(medicalThreadId), remoteCaller(), layer, askLog),
+    );
+    assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+    assert.match(error.message, /20 times/);
+  }),
+);
+
+it.effect("a connection that leads back here is refused", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({});
+    const error = yield* Effect.flip(
+      fromRemote(ask(medicalThreadId), remoteCaller({ environmentId: hereEnvironmentId }), layer),
+    );
+    assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+  }),
+);
+
+it.effect("what a computer answers survives the wire", () =>
+  Effect.sync(() => {
+    const decoded = decodeRemoteResponse({
+      ok: false,
+      error: { _tag: "WorkspaceConsultFailedError", operation: "x", detail: "y" },
+    });
+    assert.isFalse(decoded.ok);
+    const encoded = encodeRemoteResponse(decoded);
+    assert.deepStrictEqual(encoded, {
+      ok: false,
+      error: { _tag: "WorkspaceConsultFailedError", operation: "x", detail: "y" },
+    });
   }),
 );

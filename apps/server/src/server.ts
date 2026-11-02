@@ -124,6 +124,7 @@ import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
 import * as DeviceManager from "./devices/DeviceManager.ts";
 import * as RelayedEnvironments from "./relay/RelayedEnvironments.ts";
 import { relayRouteLayer } from "./relay/relayRoute.ts";
+import { remoteConsultRouteLayer } from "./mcp/toolkits/consult/remoteRoute.ts";
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as LiveFeed from "./orchestration/LiveFeed.ts";
@@ -536,6 +537,7 @@ export const makeRoutesLayer = Layer.mergeAll(
     websocketRpcRouteLayer,
     mediaChannelRouteLayer,
     relayRouteLayer,
+    remoteConsultRouteLayer,
   ),
   McpHttpServer.layer.pipe(
     Layer.provide(McpSessionRegistry.layer),

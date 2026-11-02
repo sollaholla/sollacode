@@ -2,6 +2,7 @@ import {
   isAgentBuilderThreadId,
   isAgentsProjectId,
   isOrchestratorThreadId,
+  parseRemoteThreadId,
   type EnvironmentId,
   type OrchestrationThreadShell,
   type ScopedThreadRef,
@@ -23,6 +24,20 @@ export type ThreadCreatorShell = Pick<
 >;
 
 /**
+ * Where a message's sender lives: a chat on the same computer as the message,
+ * or, for a message that came from another computer, the chat there.
+ */
+export function resolveSenderThreadRef(
+  environmentId: EnvironmentId,
+  senderThreadId: ThreadId,
+): ScopedThreadRef {
+  const remote = parseRemoteThreadId(senderThreadId);
+  return remote === null
+    ? { environmentId, threadId: senderThreadId }
+    : { environmentId: remote.environmentId, threadId: remote.threadId };
+}
+
+/**
  * Names the chat that opened a thread (its `createdByThreadId`) for the
  * provenance chip: the Orchestrator only when the orchestrator thread itself
  * opened it, the agent that owns the creating chat (its own chat, one of its
@@ -37,6 +52,9 @@ export function resolveThreadCreatorLabel(input: {
   readonly readAgents: () => ReadonlyArray<Pick<VmAgent, "threadId" | "name">>;
 }): string {
   if (isOrchestratorThreadId(input.createdByThreadId)) return "Created by the Orchestrator";
+  if (parseRemoteThreadId(input.createdByThreadId) !== null) {
+    return "Created by a chat on another computer";
+  }
   const creator = input.readThread(input.createdByThreadId);
   if (creator === null) return "Created by another chat";
 

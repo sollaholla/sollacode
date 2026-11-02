@@ -18,6 +18,22 @@ To have the person called, a chat asks an agent this way to use `call_user`; see
 
 Only the orchestrator can post into another chat as if the person had typed it, or interrupt its turn other than in the case above, with `workspace_orchestration` `send_to_thread` and `interrupt_thread`. Every chat can look across threads and terminals with `workspace_orchestration` `list_threads`, `describe_thread`, `list_terminals`, and `read_terminal`, and can list, read and type into any live terminal pane with `thread_terminals`. See [the orchestrator](./orchestrator.md#what-stays-with-the-orchestrator).
 
+## Chats on connected computers
+
+An agent can read and message chats on the computers this one's desktop app is connected to, the same way it does chats here. `list_threads` and `list_projects` cover this computer and every connected one. A row on another computer carries that computer's name and an `environmentId`; pass it to `read_thread` or `ask`, or to a list to see only that computer. A thread id alone works too, since one not found here is looked for on the connected computers. The result's `computers` field says which computers answered, so one that is switched off isn't mistaken for one with no chats.
+
+The message arrives with the sender's name and computer, such as “Scout (Studio's Mac)”. Select the name to open the source chat, if the device you're on is connected to that computer too. Otherwise the name stays plain text.
+
+Every limit below applies across computers, enforced by the computer receiving the message. A message from another computer always counts as another chat, even one the orchestrator sent, so in Agent mode that chat asks you before consequential actions.
+
+Some things to know:
+
+- It works in one direction per connection. A chat on the Mac can reach a chat on the Windows machine because the Mac added it, and that chat's reply comes back. For a chat on the Windows machine to start a conversation with the Mac, add the Mac on the Windows machine as well.
+- The other computer must be running a version with this feature. Until it is, it's listed in `computers` as needing an update.
+- Only the host computer's desktop app shares its connections, and only while it runs, so a server on its own has no connected computers.
+- Turning off **Share with connected devices and agents** under **Settings → Connections** stops this, along with sharing to your other devices.
+- `workspace_consult` is the only tool that crosses computers. `workspace_orchestration`, `thread_terminals` and `agent_collaboration` stay on this computer.
+
 ## Limits
 
 Chats asking chats can loop, so the server refuses an `ask` that would:

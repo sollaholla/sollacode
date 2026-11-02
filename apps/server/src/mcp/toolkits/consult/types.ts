@@ -1,4 +1,4 @@
-import { IsoDateTime, ProjectId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, IsoDateTime, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 /**
@@ -31,6 +31,10 @@ export const WorkspaceConsultInput = Schema.Struct({
     description:
       "An existing conversation. For `ask`, the question continues this thread instead of opening a new one. Required for `read_thread`.",
   }),
+  environmentId: Schema.optional(EnvironmentId).annotate({
+    description:
+      "The connected computer a thread or project is on, from the `environmentId` on its `list_threads` or `list_projects` row. Omit for this computer. On `list_threads` and `list_projects` it limits the list to that computer; without it they cover this computer and every connected one.",
+  }),
   question: Schema.optional(Schema.String.check(Schema.isMaxLength(10_000))).annotate({
     description:
       "What to ask. Include the context the other conversation needs — it cannot see your screen or your chat. Required for `ask`.",
@@ -48,11 +52,19 @@ export const WorkspaceConsultInput = Schema.Struct({
 });
 export type WorkspaceConsultInput = typeof WorkspaceConsultInput.Type;
 
+/** Where a row lives when it is not on this computer; pass `environmentId` back to reach it. */
+const ConsultRemoteLocation = {
+  environmentId: Schema.optional(EnvironmentId),
+  /** The connected computer's name. */
+  computer: Schema.optional(Schema.String),
+};
+
 export const ConsultProjectSummary = Schema.Struct({
   projectId: ProjectId,
   title: Schema.String,
   workspaceRoot: Schema.String,
   threadCount: Schema.Int,
+  ...ConsultRemoteLocation,
 });
 
 export const ConsultThreadSummary = Schema.Struct({
@@ -66,6 +78,15 @@ export const ConsultThreadSummary = Schema.Struct({
   /** True for a custom agent's own chat: ask it to reach that agent. */
   isAgent: Schema.Boolean,
   lastActivityAt: Schema.optional(IsoDateTime),
+  ...ConsultRemoteLocation,
+});
+
+/** One connected computer a list looked at, so an empty row set is not mistaken for no chats. */
+export const ConsultComputer = Schema.Struct({
+  environmentId: EnvironmentId,
+  computer: Schema.String,
+  reachable: Schema.Boolean,
+  detail: Schema.optional(Schema.String),
 });
 
 export const ConsultMessage = Schema.Struct({
@@ -80,12 +101,17 @@ export const WorkspaceConsultResult = Schema.Struct({
   status: Schema.String,
   projects: Schema.optional(Schema.Array(ConsultProjectSummary)),
   threads: Schema.optional(Schema.Array(ConsultThreadSummary)),
+  /** The connected computers a list covered. Absent when there are none. */
+  computers: Schema.optional(Schema.Array(ConsultComputer)),
   messages: Schema.optional(Schema.Array(ConsultMessage)),
   /** The conversation `ask` used, so a follow-up can continue or poll it. */
   threadId: Schema.optional(ThreadId),
   /** The reply, when one arrived before the wait elapsed. */
   answer: Schema.optional(Schema.String),
   answered: Schema.optional(Schema.Boolean),
+  /** Set when `threadId` is on a connected computer: pass it back to continue or poll. */
+  environmentId: Schema.optional(EnvironmentId),
+  computer: Schema.optional(Schema.String),
 });
 export type WorkspaceConsultResult = typeof WorkspaceConsultResult.Type;
 
@@ -145,3 +171,37 @@ export const WorkspaceConsultError = Schema.Union([
   WorkspaceConsultFailedError,
 ]);
 export type WorkspaceConsultError = typeof WorkspaceConsultError.Type;
+
+// ── Between computers ───────────────────────────────────────────────
+
+/** Where one server sends another a `workspace_consult` call. */
+export const REMOTE_CONSULT_PATH = "/api/consult";
+
+/** A chat on another computer calling this one. Its server vouches for these. */
+export const RemoteConsultCaller = Schema.Struct({
+  environmentId: EnvironmentId,
+  /** That computer's name, shown beside the sender on this one. */
+  computer: Schema.String,
+  threadId: ThreadId,
+  /** The name the asked chat shows: the calling chat's title or its agent's name. */
+  label: Schema.String,
+  /** How many chats this request had already passed through. */
+  upstreamDepth: Schema.Int,
+  /** Chats on this computer that are waiting on the caller, so asking one back would loop. */
+  waitingThreadIds: Schema.Array(ThreadId),
+  /** Whether delegated work reached the caller, which may not open new conversations. */
+  delegated: Schema.Boolean,
+});
+export type RemoteConsultCaller = typeof RemoteConsultCaller.Type;
+
+export const RemoteConsultRequest = Schema.Struct({
+  input: WorkspaceConsultInput,
+  caller: RemoteConsultCaller,
+});
+export type RemoteConsultRequest = typeof RemoteConsultRequest.Type;
+
+export const RemoteConsultResponse = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true), result: WorkspaceConsultResult }),
+  Schema.Struct({ ok: Schema.Literal(false), error: WorkspaceConsultError }),
+]);
+export type RemoteConsultResponse = typeof RemoteConsultResponse.Type;

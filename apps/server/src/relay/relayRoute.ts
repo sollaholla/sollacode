@@ -161,7 +161,7 @@ class RelayRenewalRefusedError extends Schema.TaggedErrorClass<RelayRenewalRefus
 ) {}
 
 /** The host's credential lapsed: trade it in once, the way a client reconnecting would. */
-const renewRelayCredential = Effect.fn("relay.renewCredential")(function* (
+export const renewRelayCredential = Effect.fn("relay.renewCredential")(function* (
   httpBaseUrl: string,
   bearerToken: string,
 ) {

@@ -43,7 +43,7 @@ each request with its own connection to Windows.
   **Shared** label instead of **Remove**. Add or remove them in Solla Code on the host.
 - A computer you have also added directly on the device uses that direct connection instead.
 - Only devices with standard access to the host can use them. Read-only connections cannot.
-- To stop sharing, turn off **Share with connected devices** under **Settings → Connections** on
+- To stop sharing, turn off **Share with connected devices and agents** under **Settings → Connections** on
   the host. Devices then stop seeing those computers at once.
 - The host's desktop app shares its connections while it runs. After the host restarts, they come
   back once its desktop app is open again.

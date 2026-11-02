@@ -19,6 +19,7 @@ import {
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
   type TurnId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -189,6 +190,7 @@ import { useOpenInPreferredEditor } from "../../editorPreferences";
 import { readLocalApi } from "../../localApi";
 import { serverEnvironment } from "../../state/server";
 import { useEnvironment } from "../../state/environments";
+import { resolveSenderThreadRef } from "@t3tools/client-runtime/state/thread-provenance";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { revealInFileExplorerLabel } from "../preview/fileExplorerLabel";
@@ -1899,6 +1901,43 @@ function ConversationBoundaryTimelineRow({
   );
 }
 
+/**
+ * The name on a message another chat sent, opening that chat. One on another
+ * computer this device does not reach still names it, but has nowhere to go.
+ */
+function SenderThreadChip(props: {
+  readonly routeRef: ScopedThreadRef | null;
+  readonly environmentId: EnvironmentId;
+  readonly senderThreadId: ThreadId;
+  readonly title: string | undefined;
+}) {
+  const target = resolveSenderThreadRef(props.environmentId, props.senderThreadId);
+  const reachable = useEnvironment(target.environmentId) !== null;
+  const chip =
+    "mb-2 inline-flex max-w-full items-center gap-1.5 rounded-full border border-sky-500/25 bg-sky-500/10 px-2.5 py-1 text-sm font-medium text-foreground";
+  const content = (
+    <>
+      <BotIcon className="size-4" aria-hidden />
+      <span className="truncate">{props.title || "Another chat"}</span>
+    </>
+  );
+  if (!reachable) return <span className={chip}>{content}</span>;
+  return (
+    <Link
+      to="/$environmentId/$threadId"
+      params={target}
+      onClick={(event) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+          return;
+        collapseSenderSideChats(props.routeRef, target);
+      }}
+      className={`${chip} hover:bg-sky-500/20 focus-visible:outline-2 focus-visible:outline-ring`}
+    >
+      {content}
+    </Link>
+  );
+}
+
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const [syntheticPromptExpanded, setSyntheticPromptExpanded] = useState(false);
@@ -2073,31 +2112,12 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         }
       >
         {row.message.senderThreadId ? (
-          <Link
-            to="/$environmentId/$threadId"
-            params={{
-              environmentId: ctx.activeThreadEnvironmentId,
-              threadId: row.message.senderThreadId,
-            }}
-            onClick={(event) => {
-              if (
-                event.button !== 0 ||
-                event.metaKey ||
-                event.ctrlKey ||
-                event.shiftKey ||
-                event.altKey
-              )
-                return;
-              collapseSenderSideChats(ctx.threadRef, {
-                environmentId: ctx.activeThreadEnvironmentId,
-                threadId: row.message.senderThreadId!,
-              });
-            }}
-            className="mb-2 inline-flex max-w-full items-center gap-1.5 rounded-full border border-sky-500/25 bg-sky-500/10 px-2.5 py-1 text-sm font-medium text-foreground hover:bg-sky-500/20 focus-visible:outline-2 focus-visible:outline-ring"
-          >
-            <BotIcon className="size-4" aria-hidden />
-            <span className="truncate">{row.message.senderThreadTitle || "Another chat"}</span>
-          </Link>
+          <SenderThreadChip
+            routeRef={ctx.threadRef}
+            environmentId={ctx.activeThreadEnvironmentId}
+            senderThreadId={row.message.senderThreadId}
+            title={row.message.senderThreadTitle}
+          />
         ) : null}
         {voiceNotes.length > 0 && (
           <div className="mb-2 flex flex-col gap-2">

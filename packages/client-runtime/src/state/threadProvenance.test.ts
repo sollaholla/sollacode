@@ -2,6 +2,7 @@ import {
   AGENT_BUILDER_THREAD_ID,
   AGENTS_PROJECT_ID,
   EnvironmentId,
+  makeRemoteThreadId,
   ORCHESTRATOR_PROJECT_ID,
   ORCHESTRATOR_THREAD_ID,
   ProjectId,
@@ -12,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   createThreadCreatorLabelAtoms,
+  resolveSenderThreadRef,
   resolveThreadCreatorLabel,
   type ThreadCreatorShell,
 } from "./threadProvenance.ts";
@@ -148,5 +150,29 @@ describe("createThreadCreatorLabelAtoms", () => {
     expect(seen).toEqual(["Created by “Scout”", "Created by Scout Prime"]);
     unsubscribe();
     registry.dispose();
+  });
+});
+
+describe("threads from another computer", () => {
+  const windows = EnvironmentId.make("env-windows");
+  const here = EnvironmentId.make("env-here");
+  const chat = ThreadId.make("chat-on-windows");
+
+  it("names a creator on another computer without looking for it here", () => {
+    expect(
+      resolveThreadCreatorLabel({
+        createdByThreadId: makeRemoteThreadId(windows, chat),
+        readThread: () => null,
+        readAgents: () => [],
+      }),
+    ).toBe("Created by a chat on another computer");
+  });
+
+  it("opens a sender where it lives", () => {
+    expect(resolveSenderThreadRef(here, chat)).toEqual({ environmentId: here, threadId: chat });
+    expect(resolveSenderThreadRef(here, makeRemoteThreadId(windows, chat, 2))).toEqual({
+      environmentId: windows,
+      threadId: chat,
+    });
   });
 });

@@ -148,7 +148,7 @@ export function terminalAgentContext(input: {
   readonly threadId: string;
   readonly terminalId: string;
 }): string {
-  return `You are running inside Solla Code's integrated terminal, attached to Solla thread ${input.threadId} and terminal ${input.terminalId}. Solla injects a credential-bound t3-code MCP server in memory. Use its collaboration and history tools for parent or sibling chats and persisted transcripts, workspace_consult to message any other chat or custom agent (ask an agent to use call_user when the person should be called), its terminal tools for live panes, and its preview tools for attached browser surfaces. ${T3_BROWSER_CONTROL_POLICY} The server is not expected in filesystem MCP configuration; use the provider-qualified tool names your client exposes and query live state when needed.`;
+  return `You are running inside Solla Code's integrated terminal, attached to Solla thread ${input.threadId} and terminal ${input.terminalId}. Solla injects a credential-bound t3-code MCP server in memory. Use its collaboration and history tools for parent or sibling chats and persisted transcripts, workspace_consult to read and message any other chat or custom agent, including those on connected computers (ask an agent to use call_user when the person should be called), its terminal tools for live panes, and its preview tools for attached browser surfaces. ${T3_BROWSER_CONTROL_POLICY} The server is not expected in filesystem MCP configuration; use the provider-qualified tool names your client exposes and query live state when needed.`;
 }
 
 function terminalPathKey(environment: NodeJS.ProcessEnv): string {

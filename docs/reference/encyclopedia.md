@@ -475,6 +475,10 @@ it opens, and a choice made during a call switches that call's microphone. See
 
 An environment a device reaches through another environment it is connected to: a phone on the Mac's Tailscale address sees the Windows machine the Mac's desktop app added. The host's desktop app publishes its saved connections (`relayedEnvironments.publish`, held in memory by [RelayedEnvironments.ts](../../apps/server/src/relay/RelayedEnvironments.ts)); clients follow `subscribeRelayedEnvironments` and register a `RelayConnectionTarget`. Requests go through `/api/relay/<environment id>` ([relayRoute.ts](../../apps/server/src/relay/relayRoute.ts)), checked against the caller's session on the host and signed with the host's credential. The `shareConnectedComputers` server setting turns it off. See [remote-access.md](../user/remote-access.md).
 
+#### Connected computer
+
+What an agent calls a relayed environment. `workspace_consult` reaches one with the credential the host already holds, through `POST /api/consult` on that computer ([remoteRoute.ts](../../apps/server/src/mcp/toolkits/consult/remoteRoute.ts)), which applies the same limits as a local call. A chat there is recorded here under `remote:<environment id>:<depth>:<thread id>` (`makeRemoteThreadId`), so it can never pass for a local chat. See [Messages between chats](../user/cross-thread-messages.md#chats-on-connected-computers).
+
 ### Color themes
 
 #### Named color theme

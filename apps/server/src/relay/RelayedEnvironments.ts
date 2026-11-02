@@ -16,7 +16,8 @@ import { ServerSettingsService } from "../serverSettings.ts";
  * The other machines this host passes through to its clients, with the
  * credential that signs each relayed request. The host's own desktop app
  * publishes them from its saved connections; nothing is written to disk, so a
- * restart forgets them until the desktop app publishes again. Turning off the
+ * restart forgets them until the desktop app publishes again. Agents on this
+ * host reach the same machines with `workspace_consult`. Turning off the
  * `shareConnectedComputers` setting hides and refuses all of them.
  */
 export class RelayedEnvironments extends Context.Service<
@@ -33,6 +34,8 @@ export class RelayedEnvironments extends Context.Service<
       previous: string,
       next: string,
     ) => Effect.Effect<void>;
+    /** Every shared environment right now, credentials included: server-side use only. */
+    readonly sources: Effect.Effect<ReadonlyArray<RelayedEnvironmentSource>>;
     /** What clients may see: names only, the current list first. */
     readonly list: Stream.Stream<RelayedEnvironmentList>;
   }
@@ -74,6 +77,10 @@ export const make = Effect.gen(function* () {
         if (!(yield* sharing)) return Option.none();
         return Option.fromUndefinedOr((yield* SubscriptionRef.get(sources)).get(environmentId));
       }),
+    sources: Effect.gen(function* () {
+      if (!(yield* sharing)) return [];
+      return [...(yield* SubscriptionRef.get(sources)).values()];
+    }),
     renewToken: (environmentId, previous, next) =>
       SubscriptionRef.update(sources, (current) => {
         const source = current.get(environmentId);

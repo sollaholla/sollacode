@@ -3,7 +3,16 @@ import { useThreadUrlOpener } from "../preview/useThreadUrlOpener";
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
-import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import { resolveSenderThreadRef } from "@t3tools/client-runtime/state/thread-provenance";
+import type {
+  EnvironmentId,
+  MessageId,
+  ScopedThreadRef,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
+import { environmentPresentations } from "../../state/presentation";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { isBrowserTabCleanupMessageId } from "@t3tools/shared/browserTabCleanup";
 import {
@@ -881,6 +890,34 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
   ]);
 }
 
+/**
+ * The name on a message another chat sent, opening that chat. One on another
+ * computer this device does not reach still names it, but has nowhere to go.
+ */
+function SenderThreadChip(props: {
+  readonly environmentId: EnvironmentId;
+  readonly senderThreadId: ThreadId;
+  readonly title: string | undefined;
+  readonly onOpen: (target: ScopedThreadRef) => void;
+}) {
+  const target = resolveSenderThreadRef(props.environmentId, props.senderThreadId);
+  const reachable = useAtomValue(environmentPresentations.presentationsAtom).has(
+    target.environmentId,
+  );
+  return (
+    <Pressable
+      accessibilityRole={reachable ? "link" : "text"}
+      className="self-start rounded-full border border-sky-500/25 bg-sky-500/10 px-2.5 py-1"
+      disabled={!reachable}
+      onPress={() => props.onOpen(target)}
+    >
+      <Text className="font-t3-medium text-sm text-foreground">
+        {props.title || "Another chat"}
+      </Text>
+    </Pressable>
+  );
+}
+
 function renderFeedEntry(
   info: { item: ThreadFeedEntry; index: number },
   props: Pick<ThreadFeedProps, "environmentId" | "threadId" | "skills"> & {
@@ -894,7 +931,7 @@ function renderFeedEntry(
     readonly onToggleTurnFold: (turnId: TurnId) => void;
     readonly imageGallery: ThreadImageGalleryOpener;
     readonly onMarkdownLinkPress: (href: string) => void;
-    readonly onOpenSenderThread: (threadId: string) => void;
+    readonly onOpenSenderThread: (target: ScopedThreadRef) => void;
     readonly iconSubtleColor: string | import("react-native").ColorValue;
     readonly userBubbleColor: string | import("react-native").ColorValue;
     readonly markdownStyles: MarkdownStyleSets;
@@ -1075,15 +1112,12 @@ function renderFeedEntry(
             }}
           >
             {message.senderThreadId ? (
-              <Pressable
-                accessibilityRole="link"
-                className="self-start rounded-full border border-sky-500/25 bg-sky-500/10 px-2.5 py-1"
-                onPress={() => props.onOpenSenderThread(message.senderThreadId!)}
-              >
-                <Text className="font-t3-medium text-sm text-foreground">
-                  {message.senderThreadTitle || "Another chat"}
-                </Text>
-              </Pressable>
+              <SenderThreadChip
+                environmentId={props.environmentId}
+                senderThreadId={message.senderThreadId}
+                title={message.senderThreadTitle}
+                onOpen={props.onOpenSenderThread}
+              />
             ) : null}
             {message.text.trim().length > 0 &&
             !(
@@ -2019,11 +2053,11 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         onToggleTurnFold,
         imageGallery,
         onMarkdownLinkPress,
-        onOpenSenderThread: (threadId) =>
+        onOpenSenderThread: (target) =>
           navigation.dispatch(
             CommonActions.navigate("Thread", {
-              environmentId: String(props.environmentId),
-              threadId,
+              environmentId: String(target.environmentId),
+              threadId: target.threadId,
             }),
           ),
         iconSubtleColor,

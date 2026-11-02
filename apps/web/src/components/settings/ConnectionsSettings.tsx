@@ -3663,15 +3663,15 @@ export function ConnectionsSettings() {
       >
         {canManageLocalBackend ? (
           <SettingsRow
-            title="Share with connected devices"
-            description="Phones and browsers connected to this computer also see the remote environments its desktop app added, through this computer."
+            title="Share with connected devices and agents"
+            description="Phones and browsers connected to this computer also see the remote environments its desktop app added, through this computer. Agents here can read and message the chats on them."
             control={
               <Switch
                 checked={primarySettings.shareConnectedComputers}
                 onCheckedChange={(checked) =>
                   updatePrimarySettings({ shareConnectedComputers: Boolean(checked) })
                 }
-                aria-label="Share remote environments with connected devices"
+                aria-label="Share remote environments with connected devices and agents"
               />
             }
           />
