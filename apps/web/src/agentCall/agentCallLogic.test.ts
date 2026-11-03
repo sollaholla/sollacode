@@ -61,7 +61,9 @@ describe("agentCallMood", () => {
     expect(agentCallMood({ phase: "connecting", sessionState: "connecting", working: false })).toBe(
       "waiting",
     );
-    expect(agentCallMood({ phase: "live", sessionState: "speaking", working: true })).toBe("happy");
+    expect(agentCallMood({ phase: "live", sessionState: "speaking", working: true })).toBe(
+      "speaking",
+    );
     expect(agentCallMood({ phase: "live", sessionState: "listening", working: true })).toBe(
       "working",
     );

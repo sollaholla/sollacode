@@ -16,6 +16,7 @@ const MOODS: readonly AgentAvatarMood[] = [
   "waiting",
   "blocked",
   "happy",
+  "speaking",
   "sleeping",
 ];
 
@@ -136,5 +137,31 @@ describe("agent appearance", () => {
       "Online — Ready for events and notifications",
     );
     expect(agentPresence("failed").description).toBe("Offline — Agent failed");
+  });
+});
+
+describe("what each mood says", () => {
+  const cast = Array.from({ length: 14 }, (_, color) => color);
+  const mark = (mood: AgentAvatarMood, color: number) =>
+    agentAvatarLayers("agent", true, color, mood).badge;
+
+  it("marks finished work with a green check and no heart", () => {
+    for (const color of cast) {
+      expect(mark("happy", color)).toContain("#16a34a");
+      expect(mark("happy", color)).not.toContain("#ff2f55");
+    }
+  });
+
+  it("shows no status mark or delight while talking", () => {
+    for (const color of cast) {
+      expect(mark("speaking", color)).toBeNull();
+      expect(agentAvatarSvg("agent", true, color, false, "speaking")).not.toContain("#16a34a");
+    }
+  });
+
+  it("does not poke a tongue out while working", () => {
+    for (const color of cast) {
+      expect(agentAvatarSvg("agent", true, color, false, "working")).not.toContain("#ff8fa8");
+    }
   });
 });

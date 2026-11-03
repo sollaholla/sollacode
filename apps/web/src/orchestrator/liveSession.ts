@@ -13,7 +13,7 @@ import type {
   VoiceSessionOptions,
   VoiceSessionState,
 } from "./realtimeSession";
-import { isAssistantGoodbye, isPersonGoodbye } from "./farewell";
+import { isAssistantGoodbye, isPersonGoodbye, readVoiceStop } from "./farewell";
 import {
   defaultMicrophoneKey,
   isMissingMicrophoneError,
@@ -150,9 +150,15 @@ export function createLiveVoiceSession(
     const text = pending.text.trim();
     pending.text = "";
     if (!text) return;
-    callbacks.onTranscript?.({ role, text });
-    if (role === "user") lastUserWords = text;
-    else endIfGoodbyeAgreed(text);
+    if (role === "user") {
+      callbacks.onTranscript?.({ role, text });
+      lastUserWords = text;
+      return;
+    }
+    const { stop, words } = readVoiceStop(text);
+    if (words) callbacks.onTranscript?.({ role, text: words });
+    if (stop) endAfterSpeaking();
+    else endIfGoodbyeAgreed(words);
   };
   /**
    * GPT-Live has no tool to hang up with, so a goodbye the person says and the
@@ -160,10 +166,13 @@ export function createLiveVoiceSession(
    * Words the person is still saying keep it open.
    */
   const endIfGoodbyeAgreed = (assistantWords: string) => {
-    if (!ready || closing || stopped || endedByGoodbye) return;
     if (!isAssistantGoodbye(assistantWords)) return;
     const stillSaying = transcripts.user.text.trim();
     if (!isPersonGoodbye(stillSaying || lastUserWords)) return;
+    endAfterSpeaking();
+  };
+  const endAfterSpeaking = () => {
+    if (!ready || closing || stopped || endedByGoodbye) return;
     endedByGoodbye = true;
     if (state === "speaking") endAfterAudio = true;
     else {

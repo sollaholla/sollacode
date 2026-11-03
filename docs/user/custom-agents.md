@@ -57,8 +57,8 @@ a gray dot means it is stopped, starting, failed, or the environment is disconne
 Work-in-progress and unread-alert indicators remain separate from online status.
 Each state also has its own mark in the character's top-right corner, so a list of small avatars
 reads at a glance: a typing bubble while working, a yellow **?** when waiting on you, a blue drop
-when something went wrong, a heart when it has finished work you haven't opened, and a **Z** when
-sleeping.
+when something went wrong, a green check when it has finished work you haven't opened, and a **Z** when
+sleeping. On a call, the character's mouth opens while it talks.
 Online characters blink, look around and do a short gesture of their own, one character at a time.
 They rest between gestures, stay still offline, and respect the device's reduced-motion
 setting. Web characters also pause when offscreen or when the page is hidden; mobile

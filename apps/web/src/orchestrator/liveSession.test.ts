@@ -476,6 +476,26 @@ describe("GPT-Live routes and mute", () => {
     expect(f.channel.send).toHaveBeenCalledWith(JSON.stringify({ type: "session.close" }));
   });
 
+  it("hangs up when the voice closes with AGENT_STOP, without showing it", async () => {
+    const onEndedByVoice = vi.fn();
+    const onTranscript = vi.fn();
+    const f = fixture({ onEndedByVoice, onTranscript });
+    await f.ready();
+    f.event({
+      type: "session.output_transcript.delta",
+      delta: "Okay, I'll let you go. AGENT_STOP",
+      start_ms: 0,
+      end_ms: 400,
+    });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith({
+      role: "assistant",
+      text: "Okay, I'll let you go.",
+    });
+    expect(onEndedByVoice).toHaveBeenCalledOnce();
+    expect(f.channel.send).toHaveBeenCalledWith(JSON.stringify({ type: "session.close" }));
+  });
+
   it("stays on the call when only one side says goodbye", async () => {
     const onEndedByVoice = vi.fn();
     const f = fixture({ onEndedByVoice });

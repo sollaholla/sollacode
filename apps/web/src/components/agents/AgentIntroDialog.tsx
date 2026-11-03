@@ -204,7 +204,7 @@ export function AgentIntroDialog(props: {
                       agentId={`agent-intro-${avatarColor}`}
                       avatarColor={avatarColor}
                       online
-                      mood={index === 3 ? "happy" : "idle"}
+                      mood={index === 3 ? "speaking" : "idle"}
                       className="size-full"
                     />
                   </span>

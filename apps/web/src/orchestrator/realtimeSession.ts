@@ -1,3 +1,4 @@
+import { readVoiceStop } from "./farewell";
 import {
   OPENAI_REALTIME_CALLS_URL,
   ORCHESTRATOR_REALTIME_TOKEN_PATH,
@@ -1697,9 +1698,12 @@ export function createVoiceSession(
         // becomes four user messages and four model replies.
         noteUserTranscript(event.text, event.itemId);
         return;
-      case "assistant-transcript":
-        callbacks.onTranscript?.({ role: "assistant", text: event.text });
+      case "assistant-transcript": {
+        const { stop: voiceStopped, words } = readVoiceStop(event.text);
+        if (words) callbacks.onTranscript?.({ role: "assistant", text: words });
+        if (voiceStopped) endAfterReply();
         return;
+      }
       case "tool-call":
         void handleToolCall(event.callId, event.name, event.argumentsJson);
         return;
@@ -2321,20 +2325,22 @@ export function createVoiceSession(
     setState("idle");
   };
 
+  function endAfterReply(): void {
+    if (state === "idle") return;
+    // Nothing is being said, so there is no farewell to wait for. A reply
+    // can be finished generating and still be playing: that one is waited for.
+    if (!responseActive && !responseRequested && !audioPlaying) {
+      callbacks.onEndedByVoice?.();
+      stop();
+      return;
+    }
+    endWhenReplyFinishes = true;
+  }
+
   return {
     start,
     stop,
-    endAfterReply: () => {
-      if (state === "idle") return;
-      // Nothing is being said, so there is no farewell to wait for. A reply
-      // can be finished generating and still be playing: that one is waited for.
-      if (!responseActive && !responseRequested && !audioPlaying) {
-        callbacks.onEndedByVoice?.();
-        stop();
-        return;
-      }
-      endWhenReplyFinishes = true;
-    },
+    endAfterReply,
     setMicrophone: (deviceId) => {
       // Only the PCM transport can move: the media-track one has no switch yet.
       if (captureSource === null || captureProcessor === null || audioContext === null) return;

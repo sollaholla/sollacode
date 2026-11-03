@@ -63,7 +63,7 @@ export function agentCallMood(input: {
   ) {
     return "waiting";
   }
-  if (input.sessionState === "speaking") return "happy";
+  if (input.sessionState === "speaking") return "speaking";
   if (input.working) return "working";
   return "idle";
 }

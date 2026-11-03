@@ -328,6 +328,11 @@ it("gives the voice the agent's role, not the rules its chat works by", () => {
   assert.match(agentCallRole("word ".repeat(200)), /word…$/u);
 });
 
+it("never hands the voice the chat's stop token to read out", () => {
+  assert.strictEqual(spokenReply("The deploy is green.\n\nAGENT_STOP"), "The deploy is green.");
+  assert.strictEqual(spokenReplies(["Done. AGENT_STOP", "All set."]), "Done. All set.");
+});
+
 it("speaks as the agent doing the work, never as a relay to its chat", () => {
   // The person heard "let me check with my chat" when the voice was told its
   // work happened in a separate chat.

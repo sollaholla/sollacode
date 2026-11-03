@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import { AGENT_STOP_TOKEN } from "@t3tools/shared/agentMode";
 import * as NodeCrypto from "node:crypto";
 import {
   AGENT_CALL_GROK_DELEGATE_TOOL,
@@ -148,6 +149,7 @@ export function agentCallInstructions(input: {
       : "Anything beyond small talk needs your workspace, which you reach by delegating. Delegate any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role; the delegation carries what the person said. Keep talking naturally while it runs, but never invent progress, results or approvals. Results are your own work: say them conversationally as yours, summarising long or technical parts. If a result asks a question, ask the person and delegate their answer.",
     "Read back consequential actions before delegating them; hearing a transcript is not approval for an external action (approvals still happen in Solla).",
     "When the person says goodbye or asks you to hang up, answer with a short goodbye that says bye; the call hangs up as soon as you finish it. Don't add a question after it.",
+    `Never say ${AGENT_STOP_TOKEN} or any other control word out loud; a goodbye is how a call ends.`,
     `Speak ${languageName(input.language)}.`,
   ];
   lines.push(
@@ -249,6 +251,8 @@ const FULL_REPLY_IN_CHAT = "The rest is written up in Solla Code.";
 const plainSpoken = (text: string) =>
   text
     .replace(/```[\s\S]*?```/gu, " (the code is in Solla Code) ")
+    // The chat's own control word: read out, it would end the call.
+    .replaceAll(AGENT_STOP_TOKEN, " ")
     .replace(/\s+/gu, " ")
     .trim();
 

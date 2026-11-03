@@ -1970,6 +1970,30 @@ describe("Grok Voice capture and turn close", () => {
     }
   });
 
+  it("ends once a spoken AGENT_STOP has finished playing", async () => {
+    vi.useFakeTimers();
+    try {
+      const { playbackSources, session, socket } = await openGrokSession();
+      socket.fire("message", { data: JSON.stringify({ type: "response.created" }) });
+      socket.fire("message", {
+        data: JSON.stringify({ type: "response.output_audio.delta", delta: "AAAAAA==" }),
+      });
+      socket.fire("message", {
+        data: JSON.stringify({
+          type: "response.output_audio_transcript.done",
+          transcript: "Okay, talk soon. AGENT_STOP",
+        }),
+      });
+      socket.fire("message", { data: JSON.stringify({ type: "response.done" }) });
+      expect(session.state).not.toBe("idle");
+
+      playbackSources[0]?.end();
+      expect(session.state).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("moves a running session to another microphone and frees the old one", async () => {
     const { session, track } = await openGrokSession();
     const next = makeTrack();

@@ -5,7 +5,14 @@ import type { VmAgentStatus } from "@t3tools/contracts";
  * carries every mood, and an optional ink accessory. Web draws the SVG as an
  * image document and mobile through SvgXml, so ids are scoped to each root.
  */
-export type AgentAvatarMood = "idle" | "working" | "waiting" | "blocked" | "happy" | "sleeping";
+export type AgentAvatarMood =
+  | "idle"
+  | "working"
+  | "waiting"
+  | "blocked"
+  | "happy"
+  | "speaking"
+  | "sleeping";
 
 export const AGENT_AVATAR_SHAPES = [
   "mochi",
@@ -318,12 +325,13 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
     // A wide river stone, tipped up to the right: never mistaken for mochi.
     body: `<path d="M5.7 54.2C3 40.5 11.6 28.3 27.1 23.4C42.7 18.5 62.8 18 71.2 29.1C77.4 38.4 76.4 55.6 66.4 63.9C57.2 71.1 33.5 75 20 71.6C11.7 69.6 7 64.2 5.7 54.2Z"/>`,
     box: [5.2, 20.1, 75.1, 72.8],
-    face: [40, 45.5],
+    // Face high and scarf low: the only scarf in the cast, and it must leave room for a mouth.
+    face: [40, 41],
     gap: 11.5,
     sides: [6, 75],
     crown: [44, 20],
     chin: [40, 66],
-    neck: [56, 6, 72.2],
+    neck: [62.5, 9.5, 69],
   },
   onion: {
     // The sprout leans and curls, so it is not a plain drop.
@@ -413,7 +421,7 @@ const SHAPES: Record<AgentAvatarShape, Geo> = {
 // ---------------------------------------------------------------------------
 // Faces. Ink features with a white catchlight. Idle and asleep have no mouth;
 // it appears only when a mood has something to say: focus, a question, worry,
-// delight.
+// delight, or actually talking.
 
 const INK = "#17161c";
 const GOLD = "#ffc23d";
@@ -497,14 +505,16 @@ function mouthMarkup(x: number, y: number, mood: AgentAvatarMood, s: number, lea
     const top = y - 1.6;
     return `<path d="M${pt([x - w, top])}H${f(x + w)}Q${pt([x + w, top + 4.8 * s])} ${pt([x, top + 4.8 * s])}Q${pt([x - w, top + 4.8 * s])} ${pt([x - w, top])}Z" fill="${INK}" stroke="${INK}" stroke-width="1" stroke-linejoin="round"/>`;
   }
+  if (mood === "speaking") {
+    // An open mouth mid-word: rounder and smaller than the grin, and it says
+    // nothing about how the conversation is going.
+    return `<ellipse cx="${f(x)}" cy="${f(y + 0.8 * s)}" rx="${f(2.7 * s)}" ry="${f(2.9 * s)}" fill="${INK}"/>`;
+  }
   if (mood === "working") {
-    // Concentrating: a short line with the tip of the tongue poking out.
+    // Concentrating: a short line, turned a little toward the work.
     const w = 2.6 * s;
     const mx = x + lean * 0.6;
-    return (
-      dot(mx + lean * 1.2, y + 1.5 * s, 1.75 * s, "#ff8fa8") +
-      stroke(`M${pt([mx - w, y])}H${f(mx + w)}`, line)
-    );
+    return stroke(`M${pt([mx - w, y])}H${f(mx + w)}`, line);
   }
   return "";
 }
@@ -517,16 +527,14 @@ function moodAccent(
   bodyColor: string,
 ): string {
   if (mood !== "happy") return "";
-  const blush = mix(bodyColor, "#ff2f6e", 0.42);
+  // Mostly pink: a closer mix goes grey on the green bodies.
+  const blush = mix(bodyColor, "#ff2f6e", 0.68);
   return centers
     .map((c, index) =>
       dot(c[0] + (index === 0 ? -5.2 : 5.2) * s, c[1] + 5 * s, 2.4 * s, blush, 0.85),
     )
     .join("");
 }
-
-const HEART =
-  "M66 25.2C58 19.4 54.2 15 54.2 10.4C54.2 3.4 62.8 1.6 66 7.6C69.2 1.6 77.8 3.4 77.8 10.4C77.8 15 74 19.4 66 25.2Z";
 
 /**
  * The status mark. It stays in the same corner of the frame, upright, whatever
@@ -549,8 +557,11 @@ function moodBadge(mood: AgentAvatarMood): string {
     case "blocked":
       return `<path d="M66 1.6C72.6 10 76.4 14.2 76.4 19A10.4 10.4 0 0 1 55.6 19C55.6 14.2 59.4 10 66 1.6Z" fill="#bfe9ff" ${keyline}/>`;
     case "happy":
-      // A red heart with a white edge, which holds on the pink and coral bodies too.
-      return `<path d="${HEART}" fill="none" stroke="${INK}" stroke-width="4.8"/><path d="${HEART}" fill="#ff2f55" stroke="#fff" stroke-width="2.2"/>`;
+      // Finished: a white check on green. The keyline holds it on the green bodies too.
+      return (
+        `<circle cx="65" cy="15" r="14" fill="#16a34a" ${keyline}/>` +
+        stroke("M58 15.4L63 20.4L72.4 9.6", 4.4, "#fff")
+      );
     case "sleeping": {
       const z = "M57 5H73L57 21H73";
       return stroke(z, 7.2) + stroke(z, 3.8, "#fff");
@@ -605,14 +616,8 @@ function faceParts(
         return dot(c[0], c[1], 5.6, light);
       }
       const lid: readonly [number, number] | undefined =
-        mood === "working"
-          ? [-0.6, 0]
-          : mood === "blocked"
-            ? [-0.8, -0.5 * side(index)]
-            : undefined;
-      const h = mood === "working" ? 8 : 10;
-      const cy = mood === "working" ? c[1] + 1 : c[1];
-      return `<path d="${pillPath([c[0], cy], 7.4, h, lid)}" fill="${light}"/>`;
+        mood === "blocked" ? [-0.8, -0.5 * side(index)] : undefined;
+      return `<path d="${pillPath(c, 7.4, 10, lid)}" fill="${light}"/>`;
     };
     return {
       features:
@@ -647,7 +652,7 @@ function faceParts(
         line,
       );
     }
-    // Working has no brow: a level one over a lowered lid reads as a scowl.
+    // Working has no brow: a level one over a short flat mouth reads as a scowl.
     if (mood === "working") return "";
     if (traits.eyes !== "beads") return "";
     if (closed)
@@ -687,12 +692,13 @@ function faceParts(
     return { features: brows + mouth, eyes: centers.map(eye).join("") };
   }
 
-  // Open eyes. working: lids drop and the eyes look down at the work.
-  // blocked: lids slope down outward. waiting: wide and lifted, looking at you.
+  // Open eyes. working: open and looking down at the work; a lowered lid reads
+  // as bored, whatever the mouth does. blocked: lids slope down outward. waiting:
+  // wide and lifted, looking at you.
   const eye = (c: P2, index: number) => {
     const inward = side(index);
     const lid: readonly [number, number] | null =
-      mood === "working" ? [-0.3, 0] : mood === "blocked" ? [-0.55, -0.32 * inward] : null;
+      mood === "blocked" ? [-0.55, -0.32 * inward] : null;
     if (traits.eyes === "pill") {
       const w = (mood === "waiting" ? 6.2 : 5.8) * s;
       const h = (mood === "waiting" ? 12.2 : 11.6) * s;
@@ -927,6 +933,7 @@ const MOOD_LEAN: Record<AgentAvatarMood, number> = {
   waiting: 8,
   blocked: -5,
   happy: 0,
+  speaking: 0,
   sleeping: 11,
 };
 
