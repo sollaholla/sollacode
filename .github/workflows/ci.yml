@@ -104,8 +104,10 @@ jobs:
 
   mobile_native_static_analysis:
     name: Mobile Native Static Analysis
-    runs-on: macos-26
-    timeout-minutes: 10
+    # Linting needs no arm64 and no particular SDK, and arm64 runners are often
+    # unavailable, which turned CI red on commits with nothing wrong with them.
+    runs-on: macos-26-intel
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
