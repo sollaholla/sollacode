@@ -252,9 +252,17 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-          fetch-depth: 0
+
+      # Every build waits for this job, and the binary only changes with the lockfile.
+      - id: cached_prebuild
+        name: Restore node-pty linux-x64 prebuild
+        uses: actions/cache@v6
+        with:
+          path: wsl-prebuild/pty.node
+          key: wsl-node-pty-x64-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Setup Vite+
+        if: steps.cached_prebuild.outputs.cache-hit != 'true'
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
@@ -262,6 +270,7 @@ jobs:
           run-install: true
 
       - name: Build node-pty linux-x64 prebuild
+        if: steps.cached_prebuild.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
