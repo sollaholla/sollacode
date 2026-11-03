@@ -35,7 +35,7 @@ This document covers the checked-in workflow for Solla Code stable and nightly d
 
 ## Before you tag
 
-- **Run the gate first when `main` has not passed recently.** Preflight runs `vp check`, `vp run typecheck` and `vp run test`, and a failure anywhere stops every build.
+- **Run the gate first when `main` has not passed recently.** `vp check`, `vp run typecheck` and `vp run test` run beside the builds, and a failure anywhere stops the release from publishing.
 - **Inside a Solla Claude thread, strip the provider environment.** The shell inherits `ANTHROPIC_BASE_URL` and the `T3CODE_CLAUDE_PROXY_*` variables, and `ClaudeAdapter.test.ts` then fails on a value that CI never sees.
 - **Name the repository in `gh` commands.** With both `origin` and `upstream` configured, `gh` can resolve to upstream `pingdotgg/t3code`. Pass `-R sollaholla/sollacode`.
 - **Check what you are publishing.** `origin` is public. Scan unpushed commits for credentials and personal details, because a push cannot be taken back.
@@ -285,7 +285,7 @@ Checklist:
 3. Create release tag: `vX.Y.Z`.
 4. Push tag.
 5. Verify workflow steps:
-   - preflight passes
+   - preflight, `Check and typecheck` and every `Test` job pass
    - all matrix builds pass
    - `publish_cli` publishes the exact release version before the release job when enabled; otherwise it is explicitly skipped
    - release job uploads expected files

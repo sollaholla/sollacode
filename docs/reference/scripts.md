@@ -15,6 +15,7 @@
 - `vp run test` - Runs workspace tests.
 - `node apps/server/scripts/t3-sqlite-state.ts <query|exec> --base-dir <path> ...` - Inspects or seeds an isolated Solla Code SQLite database; writes create a private backup first.
 - `vp run dist:desktop:artifact -- --platform <mac|linux|win> --target <target> --arch <arch>` - Builds a desktop artifact for a specific platform/target/arch.
+- `node scripts/rerun-unassigned-jobs.ts` - Reruns workflow jobs GitHub cancelled without starting, until a runner takes them. Run by `.github/workflows/rerun-unassigned-jobs.yml`; reads `GITHUB_TOKEN`, `GITHUB_REPOSITORY` and `RUN_ID`.
 - `node scripts/smoke-packaged-desktop.ts --platform <mac|linux|win> --artifacts <dir> [--skip-desktop]` - Installs the one artifact of that platform in `<dir>`, boots its server, spawns a terminal shell, and (unless skipped) launches the whole app. The release workflow runs it on every build.
 - `vp run dist:desktop:dmg` - Builds a shareable macOS `.dmg` into `./release`.
 - `vp run dist:desktop:dmg:x64` - Builds an Intel macOS `.dmg`.

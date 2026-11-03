@@ -1801,6 +1801,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     "--publish",
     "never",
   ];
+  // The default zip level takes twice as long overall for a 2% smaller file
+  // (97 s and 239 MB against 44 s and 243 MB). An installer gains far more from
+  // it (206 MB against 284 MB), so Windows keeps the default.
+  if (options.platform === "mac") buildEnv.ELECTRON_BUILDER_COMPRESSION_LEVEL ??= "1";
   const builderCommand = localVpCommand(repoRoot, builderArgs);
   yield* runCommand(
     ChildProcess.make(builderCommand.command, builderCommand.args, {
