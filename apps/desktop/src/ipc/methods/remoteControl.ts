@@ -271,6 +271,7 @@ export const listRemoteControlCaptureSources = DesktopIpc.makeIpcMethod({
             label: describeDisplay(source, display, index, isPrimary),
             width: display?.size.width ?? 0,
             height: display?.size.height ?? 0,
+            ...(display ? { scaleFactor: display.scaleFactor } : {}),
             isPrimary,
           })),
           sources: paired.map(({ source }) => ({ displayId: source.id, sourceId: source.id })),

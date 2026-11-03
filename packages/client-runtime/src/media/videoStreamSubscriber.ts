@@ -9,9 +9,10 @@
  * a close in the 4000 range means the topic ended and is final.
  */
 import type { MediaViewport } from "@t3tools/contracts";
-import type { MediaVideoConfig } from "@t3tools/shared/mediaPacket";
+import type { MediaPacketRegion, MediaVideoConfig } from "@t3tools/shared/mediaPacket";
 
 import { openMediaSubscriber, type MediaSubscriberSocket } from "./mediaChannelSocket.ts";
+import { sameMediaRegion } from "./mediaEncodeSize.ts";
 import {
   createVideoCanvasRenderer,
   type VideoCanvasRenderer,
@@ -22,10 +23,16 @@ export interface VideoStreamSubscriberOptions {
   /** A fresh media-channel URL; called for every (re)connect. */
   readonly resolveUrl: () => Promise<string>;
   readonly canvas: HTMLCanvasElement;
+  /** Where crops of the source are shown; see `createVideoCanvasRenderer`. */
+  readonly regionCanvas?: HTMLCanvasElement | null;
   /** Codecs this browser decodes, from `detectDecodableCodecs`. */
   readonly codecs: ReadonlyArray<string>;
   readonly viewport: () => MediaViewport;
-  readonly onFrame?: (frame: VideoFrame, config: MediaVideoConfig) => void;
+  readonly onFrame?: (
+    frame: VideoFrame,
+    config: MediaVideoConfig,
+    region: MediaPacketRegion | null,
+  ) => void;
   readonly onBroadcast?: (key: string, body: unknown) => void;
   readonly onPublisher?: (online: boolean) => void;
   /** Optional recoverable fallback for a quiet source; keeps its socket and decoder alive. */
@@ -60,7 +67,8 @@ function sameViewport(left: MediaViewport | null, right: MediaViewport): boolean
     close(left.width, right.width) &&
     close(left.height, right.height) &&
     left.devicePixelRatio === right.devicePixelRatio &&
-    close(left.zoom, right.zoom)
+    Math.abs(left.zoom - right.zoom) <= right.zoom * 0.02 &&
+    sameMediaRegion(left.region ?? null, right.region ?? null)
   );
 }
 
@@ -77,6 +85,15 @@ export function createVideoStreamSubscriber(
   let frameDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
   let viewTimer: ReturnType<typeof setTimeout> | null = null;
   let sentView: MediaViewport | null = null;
+  // A crop needs a whole picture around it, so one is requested first even when
+  // this viewer opens already magnified.
+  let wholePicturePainted = false;
+  const currentViewport = (): MediaViewport => {
+    const view = options.viewport();
+    if (wholePicturePainted || !view.region) return view;
+    const { region: _region, ...whole } = view;
+    return whole;
+  };
   const counters = { packets: 0, bytes: 0 };
   const clearFrameDeadline = () => {
     if (frameDeadlineTimer !== null) clearTimeout(frameDeadlineTimer);
@@ -101,10 +118,15 @@ export function createVideoStreamSubscriber(
 
   const renderer: VideoCanvasRenderer = createVideoCanvasRenderer({
     canvas: options.canvas,
-    onFrame: (frame, config) => {
+    regionCanvas: options.regionCanvas ?? null,
+    onFrame: (frame, config, region) => {
       failedConnects = 0;
       if (publisherOnline && frameExpected) clearFrameDeadline();
-      options.onFrame?.(frame, config);
+      options.onFrame?.(frame, config, region);
+      if (!region && !wholePicturePainted) {
+        wholePicturePainted = true;
+        updateViewport();
+      }
     },
     onKeyframeNeeded: () => socket?.send({ type: "keyframe" }),
     onFatal: (reason) => fatal(`The video decoder kept failing: ${reason}`),
@@ -127,7 +149,7 @@ export function createVideoStreamSubscriber(
         onOpen: () => {
           opened = true;
           awaitFrame("The host did not deliver a decodable video frame within 5 seconds.");
-          sentView = options.viewport();
+          sentView = currentViewport();
           current.send({ type: "hello", codecs: [...options.codecs], view: sentView });
         },
         onPacket: (packet) => {
@@ -191,6 +213,17 @@ export function createVideoStreamSubscriber(
     );
   };
 
+  const updateViewport = () => {
+    if (stopped || viewTimer !== null) return;
+    viewTimer = setTimeout(() => {
+      viewTimer = null;
+      const view = currentViewport();
+      if (sameViewport(sentView, view)) return;
+      sentView = view;
+      socket?.send({ type: "view", view });
+    }, VIEW_UPDATE_DELAY_MS);
+  };
+
   const stop = () => {
     if (stopped) return;
     stopped = true;
@@ -212,16 +245,7 @@ export function createVideoStreamSubscriber(
         awaitFrame("The host resumed capture but did not deliver video within 5 seconds.");
       else if (publisherOnline) clearFrameDeadline();
     },
-    updateViewport: () => {
-      if (stopped || viewTimer !== null) return;
-      viewTimer = setTimeout(() => {
-        viewTimer = null;
-        const view = options.viewport();
-        if (sameViewport(sentView, view)) return;
-        sentView = view;
-        socket?.send({ type: "view", view });
-      }, VIEW_UPDATE_DELAY_MS);
-    },
+    updateViewport,
     stop,
     stats: () => ({ ...renderer.stats(), ...counters, reconnects }),
   };

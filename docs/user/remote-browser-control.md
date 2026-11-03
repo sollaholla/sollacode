@@ -31,6 +31,8 @@ Compatible desktop hosts and web viewers use video for the visible tab, includin
 The viewer keeps its current picture until the first decoded video frame arrives. Image size
 follows the panel, screen density, and zoom, with a sampling margin for readable text and a
 maximum pixel budget. When several video viewers watch a tab, the largest requested size wins.
+While you are zoomed in on video, only the part on screen is sent, so it stays sharp and uses less
+data; it sharpens a moment after you move, and the whole page returns when you zoom out.
 
 Browsers without the required video APIs and older hosts use changed JPEG regions where possible.
 Native mobile uses whole changed JPEG pictures. A native viewer makes the shared JPEG capture use

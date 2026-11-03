@@ -1231,6 +1231,8 @@ export const DesktopRemoteControlDisplaySchema = Schema.Struct({
   width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   isPrimary: Schema.Boolean,
+  /** Physical pixels per unit of `width` and `height`. */
+  scaleFactor: Schema.optional(Schema.Number),
 });
 export type DesktopRemoteControlDisplay = typeof DesktopRemoteControlDisplaySchema.Type;
 

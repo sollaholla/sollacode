@@ -17,10 +17,16 @@
  * from how far behind that budget the stream is (`mediaFrameQuality`). While
  * the encoder is busy or the budget is spent, newer frames replace older
  * ones, so the stream degrades to fewer, current frames - never to a queue.
+ *
+ * While every viewer is magnified only the part on screen is encoded
+ * (`targetEncodeRegion`), so the pixels and the byte budget go to what is being
+ * read, and the capture may rise to the display's full resolution for as long
+ * as that lasts. Each crop starts at a key frame that names it.
  */
 import type {
   MediaPublisherMessage,
   MediaPublisherNotice,
+  MediaRegion,
   MediaSubscriberInfo,
 } from "@t3tools/contracts";
 import { encodeMediaPacket, type MediaVideoConfig } from "@t3tools/shared/mediaPacket";
@@ -32,7 +38,13 @@ import {
   type BitrateControllerState,
 } from "./mediaBitrateController.ts";
 import { openMediaPublisher, type MediaPublisherSocket } from "./mediaChannelSocket.ts";
-import { shouldReconfigureSize, targetEncodeSize, type PixelSize } from "./mediaEncodeSize.ts";
+import {
+  sameMediaRegion,
+  shouldReconfigureSize,
+  targetEncodeRegion,
+  targetEncodeSize,
+  type PixelSize,
+} from "./mediaEncodeSize.ts";
 import {
   BUCKET_SKIP_SECONDS,
   bucketSeconds,
@@ -58,6 +70,8 @@ export type MediaBroadcastBody = Extract<MediaPublisherMessage, { type: "broadca
 export interface VideoSource {
   readonly track: MediaStreamTrack;
   readonly close: () => void;
+  /** This capture is below what the display offers, so a sharper one could be opened. */
+  readonly canCaptureHigher?: boolean;
 }
 
 export interface VideoStreamPublisherStats {
@@ -76,6 +90,7 @@ export interface VideoStreamPublisherStats {
   readonly quantizerMode: boolean | null;
   readonly width: number;
   readonly height: number;
+  readonly region: MediaRegion | null;
   readonly targetBitsPerSecond: number;
 }
 
@@ -91,8 +106,11 @@ export interface VideoStreamPublisher {
 export interface VideoStreamPublisherOptions {
   /** A fresh media-channel URL; called for every (re)connect. */
   readonly resolveUrl: () => Promise<string>;
-  /** Opens the capture when the first subscriber arrives. */
-  readonly openSource: () => Promise<VideoSource>;
+  /**
+   * Opens the capture when the first subscriber arrives. `highResolution` asks
+   * for everything the display has, for a viewer reading a magnified crop.
+   */
+  readonly openSource: (request: { readonly highResolution: boolean }) => Promise<VideoSource>;
   readonly codecs?: ReadonlyArray<string>;
   /** The capture failed or ended. The publisher retries while subscribed. */
   readonly onCaptureError?: (cause: unknown) => void;
@@ -114,6 +132,8 @@ const MAX_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024;
 const SOCKET_DRAIN_RETRY_MS = 50;
 const BITRATE_RECONFIGURE_SPACING_MS = 500;
 const MAX_ENCODE_QUEUE = 1;
+/** A pinch out is often followed by another pinch in, and reopening a capture has a gap. */
+const HIGH_RESOLUTION_HOLD_MS = 10_000;
 
 export function createVideoStreamPublisher(
   options: VideoStreamPublisherOptions,
@@ -134,6 +154,9 @@ export function createVideoStreamPublisher(
   let captureRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let captureRetryAttempt = 0;
   let sourceSize: PixelSize | null = null;
+  let highResolutionCapture = false;
+  let highResolutionFailed = false;
+  let highResolutionHoldTimer: ReturnType<typeof setTimeout> | null = null;
 
   let encoder: VideoEncoder | null = null;
   let encoderConfig: VideoEncoderConfig | null = null;
@@ -141,6 +164,7 @@ export function createVideoStreamPublisher(
   let quantizerMode: boolean | null = null;
   let scale: QuantizerScale = quantizerScale("avc1");
   let encodeSize: PixelSize | null = null;
+  let encodeRegion: MediaRegion | null = null;
   let decoderConfig: MediaVideoConfig | null = null;
   let bitrate: BitrateControllerState | null = null;
   let bucket: FrameBucket = EMPTY_BUCKET;
@@ -164,7 +188,11 @@ export function createVideoStreamPublisher(
   let lastTimestamp = 0;
   let encodeTimer: ReturnType<typeof setTimeout> | null = null;
   let refineTimer: ReturnType<typeof setTimeout> | null = null;
-  const captureTimes = new Map<number, number>();
+  /** What each frame in the encoder was cut from, read back when it comes out. */
+  const pendingEncodes = new Map<
+    number,
+    { readonly capturedAt: number; readonly region: MediaRegion | null }
+  >();
 
   const counters = {
     framesIn: 0,
@@ -292,7 +320,7 @@ export function createVideoStreamPublisher(
     opening = true;
     const generation = ++sourceGeneration;
     void options
-      .openSource()
+      .openSource({ highResolution: highResolutionCapture })
       .then((opened) => {
         if (generation === sourceGeneration) opening = false;
         if (stopped || generation !== sourceGeneration || subscribers.length === 0) {
@@ -309,6 +337,11 @@ export function createVideoStreamPublisher(
       .catch((cause: unknown) => {
         if (generation !== sourceGeneration) return;
         opening = false;
+        if (highResolutionCapture) {
+          // The display's full size is an extra, not a reason to lose the picture.
+          highResolutionCapture = false;
+          highResolutionFailed = true;
+        }
         captureFailed(cause);
       });
   };
@@ -387,10 +420,39 @@ export function createVideoStreamPublisher(
     latestEncoded = true;
   };
 
+  const cancelHighResolutionHold = () => {
+    if (highResolutionHoldTimer !== null) clearTimeout(highResolutionHoldTimer);
+    highResolutionHoldTimer = null;
+  };
+
   const stopCapture = () => {
     releaseSource();
     closeEncoder();
     sourceSize = null;
+    highResolutionCapture = false;
+    cancelHighResolutionHold();
+  };
+
+  const replaceCapture = () => {
+    releaseSource();
+    ensureCapture();
+  };
+
+  /** Full resolution only while it is being read, since it costs the host on every frame. */
+  const syncCaptureResolution = (cropped: boolean) => {
+    if (cropped) {
+      cancelHighResolutionHold();
+      if (highResolutionCapture || highResolutionFailed || !source?.canCaptureHigher) return;
+      highResolutionCapture = true;
+      replaceCapture();
+      return;
+    }
+    if (!highResolutionCapture || highResolutionHoldTimer !== null) return;
+    highResolutionHoldTimer = setTimeout(() => {
+      highResolutionHoldTimer = null;
+      highResolutionCapture = false;
+      replaceCapture();
+    }, HIGH_RESOLUTION_HOLD_MS);
   };
 
   // ---- encoder --------------------------------------------------------
@@ -412,8 +474,9 @@ export function createVideoStreamPublisher(
     encoder = null;
     encoderConfig = null;
     encodeSize = null;
+    encodeRegion = null;
     decoderConfig = null;
-    captureTimes.clear();
+    pendingEncodes.clear();
   };
 
   /** Serialized: codec probing is async and must not interleave. */
@@ -443,13 +506,23 @@ export function createVideoStreamPublisher(
       }
       return;
     }
-    const size = targetEncodeSize({
-      source: sourceSize,
-      viewports: subscribers.map((subscriber) => subscriber.view),
-    });
+    const viewports = subscribers.map((subscriber) => subscriber.view);
+    const region =
+      typeof OffscreenCanvas === "undefined"
+        ? null
+        : targetEncodeRegion({ viewports, current: encodeRegion });
+    syncCaptureResolution(region !== null);
+    const size = targetEncodeSize({ source: sourceSize, viewports, region });
     const codecStillValid = encoderConfig !== null && codecs.includes(encoderConfig.codec);
     if (encoder && codecStillValid && !shouldReconfigureSize(encodeSize, size)) {
-      maybeEncode();
+      if (sameMediaRegion(encodeRegion, region)) {
+        maybeEncode();
+        return;
+      }
+      // Same picture size, different part of the screen: no new encoder, but
+      // the viewer needs a key frame to know where this picture belongs.
+      encodeRegion = region;
+      requestKeyframe();
       return;
     }
     bitrate = bitrate ? resizeBitrateController(bitrate, size) : createBitrateController(size);
@@ -488,6 +561,7 @@ export function createVideoStreamPublisher(
     quantizerMode = choice.quantizer;
     scale = quantizerScale(choice.config.codec);
     encodeSize = size;
+    encodeRegion = region;
     bucket = EMPTY_BUCKET;
     epoch += 1;
     forceKey = true;
@@ -560,8 +634,8 @@ export function createVideoStreamPublisher(
     lastTimestamp = timestamp;
     // Some rate-controlled encoders drop frames without an output callback.
     // Keep timestamp bookkeeping bounded even on a permanently busy capture.
-    if (captureTimes.size >= 128) captureTimes.delete(captureTimes.keys().next().value!);
-    captureTimes.set(timestamp, latestFrameAt);
+    if (pendingEncodes.size >= 128) pendingEncodes.delete(pendingEncodes.keys().next().value!);
+    pendingEncodes.set(timestamp, { capturedAt: latestFrameAt, region: encodeRegion });
     const frame = new VideoFrame(scaleForEncode(latestFrame), { timestamp });
     const perFrame =
       quantizer === null
@@ -582,7 +656,7 @@ export function createVideoStreamPublisher(
       lastEncodeAt = at;
       if (key) lastKeyAt = at;
     } catch {
-      captureTimes.delete(timestamp);
+      pendingEncodes.delete(timestamp);
     } finally {
       frame.close();
     }
@@ -603,7 +677,9 @@ export function createVideoStreamPublisher(
     if (
       !encodeSize ||
       typeof OffscreenCanvas === "undefined" ||
-      (frame.displayWidth === encodeSize.width && frame.displayHeight === encodeSize.height)
+      (!encodeRegion &&
+        frame.displayWidth === encodeSize.width &&
+        frame.displayHeight === encodeSize.height)
     ) {
       return frame;
     }
@@ -614,7 +690,21 @@ export function createVideoStreamPublisher(
     if (!scalerContext) return frame;
     scalerContext.imageSmoothingEnabled = true;
     scalerContext.imageSmoothingQuality = "high";
-    scalerContext.drawImage(frame, 0, 0, encodeSize.width, encodeSize.height);
+    if (encodeRegion) {
+      scalerContext.drawImage(
+        frame,
+        encodeRegion.x * frame.displayWidth,
+        encodeRegion.y * frame.displayHeight,
+        encodeRegion.width * frame.displayWidth,
+        encodeRegion.height * frame.displayHeight,
+        0,
+        0,
+        encodeSize.width,
+        encodeSize.height,
+      );
+    } else {
+      scalerContext.drawImage(frame, 0, 0, encodeSize.width, encodeSize.height);
+    }
     return scaler;
   };
 
@@ -663,8 +753,10 @@ export function createVideoStreamPublisher(
     metadata: EncodedVideoChunkMetadata | undefined,
   ) => {
     if (from !== encoder || !encodeSize || !sourceSize) return;
-    const capturedAt = captureTimes.get(chunk.timestamp) ?? wallClock();
-    captureTimes.delete(chunk.timestamp);
+    const pending = pendingEncodes.get(chunk.timestamp);
+    pendingEncodes.delete(chunk.timestamp);
+    const capturedAt = pending?.capturedAt ?? wallClock();
+    const region = pending?.region ?? null;
     if (chunk.timestamp === latestTimestamp) latestOutput = true;
     const reported = metadata?.decoderConfig;
     if (reported) {
@@ -693,7 +785,9 @@ export function createVideoStreamPublisher(
         sequence: sequence++,
         capturedAt,
         timestamp: chunk.timestamp,
-        ...(key && decoderConfig ? { config: decoderConfig } : {}),
+        ...(key && decoderConfig
+          ? { config: region ? { ...decoderConfig, region } : decoderConfig }
+          : {}),
         payload,
       });
       current.sendPacket(packet);
@@ -739,6 +833,7 @@ export function createVideoStreamPublisher(
       quantizerMode,
       width: encodeSize?.width ?? 0,
       height: encodeSize?.height ?? 0,
+      region: encodeRegion,
       targetBitsPerSecond: bitrate?.targetBitsPerSecond ?? 0,
     }),
   };

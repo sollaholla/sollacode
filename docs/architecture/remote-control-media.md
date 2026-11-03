@@ -32,6 +32,23 @@ independent flow control. A dropped inter-frame sequence waits for a fresh keyfr
 The decoder also skips excessive backlog and requests a keyframe. Static content
 can receive one refinement pass; nothing continuously repaints the canvas.
 
+A magnified viewer also reports the part of the source on screen, once its fingers
+settle. When every viewer does, the publisher draws just that part (with a pan
+margin) into the encoder, so the pixel budget and bitrate go to what is being read.
+A viewer without a region keeps the whole picture for everyone, which is also how
+older viewers stay correct: they never send a region, so they never receive a crop.
+Each crop starts at a key frame whose configuration names it in fractions of the
+source. Moving a crop without resizing it needs that key frame but no new encoder,
+and a pan inside the margin needs neither. The viewer paints crops on a second
+canvas over its part of the last whole picture, moved in the same task as the paint;
+frames still in the decoder stay in the crop they were cut from. The whole picture
+is frozen meanwhile, so panning away shows it briefly until the next crop arrives.
+It is requested first whenever a viewer opens already magnified.
+
+The capture normally stops at 2560x1600. While a crop is active the host reopens
+it at the display's physical size if that is larger, and returns ten seconds after
+the crop ends, because full-size capture costs the host on every frame.
+
 Legacy watch demand is counted separately, so the host runs its old encoder only
 while a viewer actually needs that path. Display selection restarts both active
 capture paths; pointer-lock and cursor changes remain RPC events and do not depend

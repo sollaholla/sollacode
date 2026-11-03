@@ -81,13 +81,13 @@ describe("preview video host ownership", () => {
     test.host.setDemand([target]);
     const publisher = test.publishers[0]!;
     await expect(publisher.options.resolveUrl()).resolves.toBe("wss://example.test/tab-1");
-    await publisher.options.openSource();
+    await publisher.options.openSource({ highResolution: false });
     expect(test.openSource).toHaveBeenLastCalledWith("tab-1:one");
     test.setGeneration("two");
     test.changes[0]!();
     expect(publisher.restartSource).toHaveBeenCalledOnce();
     expect(test.unsubscribe).toHaveBeenCalledOnce();
-    await publisher.options.openSource();
+    await publisher.options.openSource({ highResolution: false });
     expect(test.openSource).toHaveBeenLastCalledWith("tab-1:two");
     expect(test.host.hasRuntime("tab-1:one")).toBe(false);
     expect(test.host.hasRuntime("tab-1:two")).toBe(true);
@@ -163,7 +163,7 @@ describe("preview video host ownership", () => {
           }),
       );
       test.host.setDemand([target]);
-      const pending = test.publishers[0]!.options.openSource();
+      const pending = test.publishers[0]!.options.openSource({ highResolution: false });
       if (change === "removed") test.host.setDemand([]);
       if (change === "disposed") test.host.dispose();
       if (change === "resized") test.host.sourceChanged("tab-1:one");

@@ -73,19 +73,44 @@ export function encodeBlobToBase64(blob: Blob): Promise<string> {
  * constraints. These live under `mandatory`, which is not in the standard
  * `MediaTrackConstraints` type, hence the cast.
  */
-export function openDisplayStream(sourceId: string): Promise<MediaStream> {
+export function openDisplayStream(
+  sourceId: string,
+  limits: { readonly maxWidth: number; readonly maxHeight: number } = {
+    maxWidth: REMOTE_CONTROL_MAX_WIDTH,
+    maxHeight: REMOTE_CONTROL_MAX_HEIGHT,
+  },
+): Promise<MediaStream> {
   return navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
       mandatory: {
         chromeMediaSource: "desktop",
         chromeMediaSourceId: sourceId,
-        maxWidth: REMOTE_CONTROL_MAX_WIDTH,
-        maxHeight: REMOTE_CONTROL_MAX_HEIGHT,
+        maxWidth: limits.maxWidth,
+        maxHeight: limits.maxHeight,
         maxFrameRate: REMOTE_CONTROL_TARGET_FPS,
       },
     } as unknown as MediaTrackConstraints,
   });
+}
+
+/**
+ * The display's physical size when it is larger than the normal capture limit,
+ * else null: nothing sharper exists to ask for.
+ */
+export function higherCaptureLimits(
+  display: {
+    readonly width: number;
+    readonly height: number;
+    readonly scaleFactor?: number | undefined;
+  } | null,
+): { readonly maxWidth: number; readonly maxHeight: number } | null {
+  if (!display) return null;
+  const maxWidth = Math.round(display.width * (display.scaleFactor ?? 1));
+  const maxHeight = Math.round(display.height * (display.scaleFactor ?? 1));
+  return maxWidth > REMOTE_CONTROL_MAX_WIDTH || maxHeight > REMOTE_CONTROL_MAX_HEIGHT
+    ? { maxWidth, maxHeight }
+    : null;
 }
 
 export function stopStream(stream: MediaStream | null): void {

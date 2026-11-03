@@ -67,6 +67,8 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Spinner } from "../ui/spinner";
+import { RemoteViewRegionLayer } from "../remoteView/RemoteViewRegionLayer";
+import { remoteViewVisibleRegion } from "../remoteView/remoteViewTransform";
 import { RemoteViewZoomReadout, useRemoteViewZoom } from "../remoteView/RemoteViewZoom";
 import {
   controllerPlatform,
@@ -127,6 +129,7 @@ export function RemoteControlViewerDialog(props: {
   const [mediaCodecs, setMediaCodecs] = useState<ReadonlyArray<string>>([]);
   const [mediaDisabled, setMediaDisabled] = useState(false);
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
+  const regionCanvasRef = useRef<HTMLCanvasElement>(null);
   const mediaSubscriberRef = useRef<VideoStreamSubscriber | null>(null);
   const mediaEnabled =
     !mediaDisabled &&
@@ -704,13 +707,18 @@ export function RemoteControlViewerDialog(props: {
   useEffect(() => {
     if (!canPointer) releasePressedInputs();
   }, [canPointer, releasePressedInputs]);
-  const zoomRef = useRef(zoomView.view.zoom);
-  zoomRef.current = zoomView.view.zoom;
+  // The host only hears where the fingers settled: every step of a pinch would
+  // cost it a new crop and a key frame nobody gets to read.
+  const settledViewRef = useRef(zoomView.view);
+  if (!zoomView.pinching) settledViewRef.current = zoomView.view;
+  const clickFrameSizeRef = useRef(clickFrameSize);
+  clickFrameSizeRef.current = clickFrameSize;
   useEffect(() => {
     const canvas = frameCanvasRef.current;
     if (!open || !pageVisible || !isApproved || !session || !mediaEnabled || !canvas) return;
     const subscriber = createVideoStreamSubscriber({
       canvas,
+      regionCanvas: regionCanvasRef.current,
       codecs: mediaCodecs,
       resolveUrl: async () => {
         const result = await mediaTicket({
@@ -724,11 +732,19 @@ export function RemoteControlViewerDialog(props: {
       },
       viewport: () => {
         const rect = canvas.parentElement?.getBoundingClientRect();
+        const width = Math.max(1, rect?.width ?? 640);
+        const height = Math.max(1, rect?.height ?? 480);
+        const view = settledViewRef.current;
+        const picture = clickFrameSizeRef.current;
+        const region = picture
+          ? remoteViewVisibleRegion({ view, pane: { width, height }, picture })
+          : null;
         return {
-          width: Math.max(1, rect?.width ?? 640),
-          height: Math.max(1, rect?.height ?? 480),
+          width,
+          height,
           devicePixelRatio: window.devicePixelRatio || 1,
-          zoom: zoomRef.current,
+          zoom: view.zoom,
+          ...(region ? { region } : {}),
         };
       },
       onFrame: (_frame, config) => {
@@ -765,8 +781,8 @@ export function RemoteControlViewerDialog(props: {
     session?.sessionId,
   ]);
   useEffect(() => {
-    mediaSubscriberRef.current?.updateViewport();
-  }, [zoomView.view.zoom]);
+    if (!zoomView.pinching) mediaSubscriberRef.current?.updateViewport();
+  }, [zoomView.pinching, zoomView.view]);
 
   const surface = resolveRemoteControlSurface({
     isApproved,
@@ -1621,6 +1637,13 @@ export function RemoteControlViewerDialog(props: {
                     // clicks keep landing where the user aimed while zoomed.
                     style={zoomView.style}
                     className="pointer-events-none absolute inset-0 size-full touch-none select-none object-contain"
+                  />
+                ) : null}
+                {mediaEnabled ? (
+                  <RemoteViewRegionLayer
+                    canvasRef={regionCanvasRef}
+                    frame={clickFrameSize}
+                    style={zoomView.style}
                   />
                 ) : null}
                 {clickFrameSize ? (

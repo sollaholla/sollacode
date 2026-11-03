@@ -128,3 +128,95 @@ describe("video decoder lifecycle", () => {
     expect(decoder.close).toHaveBeenCalledOnce();
   });
 });
+
+describe("a magnified viewer's crop", () => {
+  const crop = { x: 0.5, y: 0.25, width: 0.25, height: 0.5 };
+  function setupRegion() {
+    let callbacks!: VideoDecoderInit;
+    const configure = vi.fn();
+    vi.stubGlobal("VideoDecoder", function (init: VideoDecoderInit) {
+      callbacks = init;
+      return {
+        state: "configured",
+        close: vi.fn(),
+        reset: vi.fn(),
+        configure,
+        decode: vi.fn(),
+        decodeQueueSize: 0,
+      };
+    });
+    vi.stubGlobal("EncodedVideoChunk", function (init: unknown) {
+      return { init };
+    });
+    const surface = () => {
+      const drawImage = vi.fn();
+      const canvas = {
+        width: 0,
+        height: 0,
+        style: {} as CSSStyleDeclaration,
+        getContext: () => ({ drawImage }),
+      } as unknown as HTMLCanvasElement;
+      return { canvas, drawImage };
+    };
+    const base = surface();
+    const region = surface();
+    const onFrame = vi.fn();
+    const renderer = createVideoCanvasRenderer({
+      canvas: base.canvas,
+      regionCanvas: region.canvas,
+      onFrame,
+      onKeyframeNeeded: vi.fn(),
+      onFatal: vi.fn(),
+    });
+    const output = (timestamp: number) =>
+      callbacks.output({
+        displayWidth: 320,
+        displayHeight: 200,
+        timestamp,
+        close: vi.fn(),
+      } as unknown as VideoFrame);
+    return { renderer, base, region, onFrame, output, configure };
+  }
+
+  it("paints over its part of the last whole picture", () => {
+    const { renderer, base, region, onFrame, output } = setupRegion();
+    renderer.push(packet({ timestamp: 1 }));
+    output(1);
+    expect(base.drawImage).toHaveBeenCalledOnce();
+    expect(region.canvas.style.display).toBe("none");
+    renderer.push(packet({ timestamp: 2, config: { ...config, region: crop } }));
+    output(2);
+    expect(base.drawImage).toHaveBeenCalledOnce();
+    expect(region.drawImage).toHaveBeenCalledOnce();
+    expect(base.canvas.width).toBe(320);
+    expect(region.canvas.style).toMatchObject({
+      display: "block",
+      left: "50%",
+      top: "25%",
+      width: "25%",
+      height: "50%",
+    });
+    expect(onFrame.mock.calls.at(-1)![2]).toEqual(crop);
+  });
+
+  it("does not restart the decoder for a crop that only moved", () => {
+    const { renderer, configure } = setupRegion();
+    renderer.push(packet({ timestamp: 1, config: { ...config, region: crop } }));
+    renderer.push(packet({ timestamp: 2, config: { ...config, region: { ...crop, x: 0.1 } } }));
+    expect(configure).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a frame still in the decoder in the place it was cut from", () => {
+    const { renderer, base, region, output } = setupRegion();
+    renderer.push(packet({ timestamp: 1, config: { ...config, region: crop } }));
+    renderer.push(packet({ timestamp: 2, key: false }));
+    renderer.push(packet({ timestamp: 3 }));
+    output(1);
+    output(2);
+    expect(region.drawImage).toHaveBeenCalledTimes(2);
+    expect(base.drawImage).not.toHaveBeenCalled();
+    output(3);
+    expect(base.drawImage).toHaveBeenCalledOnce();
+    expect(region.canvas.style.display).toBe("none");
+  });
+});

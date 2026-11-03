@@ -45,6 +45,7 @@ export function listenToPreviewMedia<E>(
 /** Owns one visible tab's media watch and decoder; JPEG remains until a frame arrives. */
 export function createRemotePreviewMedia(options: {
   readonly canvas: HTMLCanvasElement;
+  readonly regionCanvas?: HTMLCanvasElement | null;
   readonly watch: (handlers: {
     readonly onEvent: (event: RemotePreviewMediaWatchEvent) => void;
     readonly onFailure: () => void;
@@ -120,6 +121,7 @@ export function createRemotePreviewMedia(options: {
           try {
             const next = createVideoStreamSubscriber({
               canvas: options.canvas,
+              regionCanvas: options.regionCanvas ?? null,
               codecs,
               resolveUrl: () => options.resolveUrl(currentWatch),
               viewport: options.viewport,

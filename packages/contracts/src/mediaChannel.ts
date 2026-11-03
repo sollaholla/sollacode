@@ -15,6 +15,17 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 /** The path the media channel upgrades on, under the dev proxy's `/ws` prefix. */
 export const MEDIA_CHANNEL_PATH = "/ws/media";
 
+const MediaFraction = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
+
+/** A rectangle of the source picture, in fractions of its width and height. */
+export const MediaRegion = Schema.Struct({
+  x: MediaFraction,
+  y: MediaFraction,
+  width: MediaFraction,
+  height: MediaFraction,
+});
+export type MediaRegion = typeof MediaRegion.Type;
+
 /** Where a subscriber shows the picture, so the publisher can size it. */
 export const MediaViewport = Schema.Struct({
   /** CSS pixels the picture may occupy (the pane, before letterboxing). */
@@ -23,6 +34,12 @@ export const MediaViewport = Schema.Struct({
   devicePixelRatio: Schema.Number.check(Schema.isBetween({ minimum: 0.25, maximum: 8 })),
   /** Viewer-side magnification of the picture (pinch zoom). */
   zoom: Schema.Number.check(Schema.isBetween({ minimum: 1, maximum: 16 })),
+  /**
+   * The part of the source on screen while magnified. Sending one also says
+   * this subscriber can show a cropped stream, so a viewer without it keeps
+   * the whole picture for everyone.
+   */
+  region: Schema.optional(MediaRegion),
 });
 export type MediaViewport = typeof MediaViewport.Type;
 

@@ -109,9 +109,9 @@ describe("remote preview media lifecycle", () => {
     await Promise.resolve();
     f.handlers.onEvent({ type: "ready", watchId: "one" });
     expect(f.onPicture).not.toHaveBeenCalled();
-    subscribers[0]!.options.onFrame?.({} as VideoFrame, config);
+    subscribers[0]!.options.onFrame?.({} as VideoFrame, config, null);
     expect(f.onPicture).toHaveBeenCalledExactlyOnceWith({ width: 1_600, height: 900 });
-    subscribers[0]!.options.onFrame?.({} as VideoFrame, config);
+    subscribers[0]!.options.onFrame?.({} as VideoFrame, config, null);
     expect(f.onPicture).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(REMOTE_PREVIEW_MEDIA_STARTUP_MS);
     expect(f.onFallback).not.toHaveBeenCalled();
@@ -155,9 +155,9 @@ describe("remote preview media lifecycle", () => {
     f.handlers.onEvent({ type: "ready", watchId: "two" });
     expect(subscribers).toHaveLength(2);
     expect(subscribers[0]!.stop).toHaveBeenCalledOnce();
-    subscribers[0]!.options.onFrame?.({} as VideoFrame, config);
+    subscribers[0]!.options.onFrame?.({} as VideoFrame, config, null);
     expect(f.onPicture).not.toHaveBeenCalled();
-    subscribers[1]!.options.onFrame?.({} as VideoFrame, config);
+    subscribers[1]!.options.onFrame?.({} as VideoFrame, config, null);
     expect(f.onPicture).toHaveBeenCalledOnce();
     f.viewer.stop();
   });
@@ -175,7 +175,7 @@ describe("remote preview media lifecycle", () => {
       expect(current.stop).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(30_000);
       expect(f.onFallback).toHaveBeenCalledOnce();
-      current.options.onFrame?.({} as VideoFrame, config);
+      current.options.onFrame?.({} as VideoFrame, config, null);
       expect(f.onPicture).toHaveBeenCalledOnce();
       expect(subscribers).toHaveLength(1);
       f.viewer.stop();
@@ -190,7 +190,7 @@ describe("remote preview media lifecycle", () => {
       await Promise.resolve();
       f.handlers.onEvent({ type: "ready", watchId: "one" });
       const current = subscribers[0]!;
-      current.options.onFrame?.({} as VideoFrame, config);
+      current.options.onFrame?.({} as VideoFrame, config, null);
       if (reason === "unavailable")
         f.handlers.onEvent({ type: "unavailable", reason: "Host left" });
       else if (reason === "fatal") current.options.onFatal("Decoder failed");
@@ -227,19 +227,19 @@ describe("remote preview media lifecycle", () => {
       await Promise.resolve();
       f.handlers.onEvent({ type: "ready", watchId: "one" });
       const current = subscribers[0]!;
-      if (hadPicture) current.options.onFrame?.({} as VideoFrame, config);
+      if (hadPicture) current.options.onFrame?.({} as VideoFrame, config, null);
       f.onPicture.mockClear();
       current.options.onBroadcast?.("preview-capture", { capturing: false });
       expect(f.onFallback).toHaveBeenCalledOnce();
       expect(current.frameExpected).toHaveBeenLastCalledWith(false);
-      current.options.onFrame?.({} as VideoFrame, config);
+      current.options.onFrame?.({} as VideoFrame, config, null);
       expect(f.onPicture).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(30_000);
       expect(current.stop).not.toHaveBeenCalled();
       current.options.onBroadcast?.("preview-capture", { capturing: true });
       expect(current.frameExpected).toHaveBeenLastCalledWith(true);
       expect(f.onPicture).not.toHaveBeenCalled();
-      current.options.onFrame?.({} as VideoFrame, config);
+      current.options.onFrame?.({} as VideoFrame, config, null);
       expect(f.onPicture).toHaveBeenCalledExactlyOnceWith({ width: 1_600, height: 900 });
       expect(subscribers).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(REMOTE_PREVIEW_MEDIA_STARTUP_MS);
@@ -265,7 +265,7 @@ describe("remote preview media lifecycle", () => {
     expect(f.onState).toHaveBeenCalledOnce();
     expect(f.onFallback).not.toHaveBeenCalled();
     f.viewer.stop();
-    subscribers[1]!.options.onFrame?.({} as VideoFrame, config);
+    subscribers[1]!.options.onFrame?.({} as VideoFrame, config, null);
     expect(f.onPicture).not.toHaveBeenCalled();
     expect(f.unsubscribe).toHaveBeenCalledOnce();
   });
@@ -274,7 +274,7 @@ describe("remote preview media lifecycle", () => {
     const f = fixture();
     await Promise.resolve();
     f.handlers.onEvent({ type: "ready", watchId: "one" });
-    subscribers[0]!.options.onFrame?.({} as VideoFrame, { ...config, sourceWidth: 0 });
+    subscribers[0]!.options.onFrame?.({} as VideoFrame, { ...config, sourceWidth: 0 }, null);
     expect(f.onPicture).not.toHaveBeenCalled();
     expect(f.onFallback).toHaveBeenCalledOnce();
     f.viewer.stop();

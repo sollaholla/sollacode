@@ -42,13 +42,44 @@ describe("video subscriber recovery", () => {
   });
   const callbacks = () => vi.mocked(openMediaSubscriber).mock.calls.at(-1)![1];
   const frame = () =>
-    vi.mocked(createVideoCanvasRenderer).mock.calls[0]![0].onFrame?.({} as VideoFrame, {
-      codec: "vp8",
-      codedWidth: 640,
-      codedHeight: 480,
-      sourceWidth: 640,
-      sourceHeight: 480,
+    vi.mocked(createVideoCanvasRenderer).mock.calls[0]![0].onFrame?.(
+      {} as VideoFrame,
+      {
+        codec: "vp8",
+        codedWidth: 640,
+        codedHeight: 480,
+        sourceWidth: 640,
+        sourceHeight: 480,
+      },
+      null,
+    );
+
+  it("asks for a whole picture before any crop, so a crop has something around it", async () => {
+    const send = vi.fn();
+    vi.mocked(openMediaSubscriber).mockReturnValue({ close, send });
+    const region = { x: 0.4, y: 0.4, width: 0.2, height: 0.2 };
+    const subscriber = createVideoStreamSubscriber({
+      resolveUrl: async () => "wss://example.test/ws/media?ticket=fresh",
+      canvas: {} as HTMLCanvasElement,
+      codecs: ["vp8"],
+      viewport: () => ({ width: 640, height: 480, devicePixelRatio: 1, zoom: 4, region }),
+      onFatal: vi.fn(),
     });
+    await vi.advanceTimersByTimeAsync(0);
+    callbacks().onOpen?.();
+    expect(send.mock.calls[0]![0]).toMatchObject({ type: "hello" });
+    expect(send.mock.calls[0]![0].view).not.toHaveProperty("region");
+    subscriber.updateViewport();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(send).toHaveBeenCalledOnce();
+    frame();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(send.mock.calls.at(-1)![0]).toEqual({
+      type: "view",
+      view: { width: 640, height: 480, devicePixelRatio: 1, zoom: 4, region },
+    });
+    subscriber.stop();
+  });
 
   it("falls back when a connected publisher never produces a usable frame", async () => {
     const { onFatal } = start();

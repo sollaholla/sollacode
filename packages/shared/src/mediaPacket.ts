@@ -18,7 +18,9 @@
  * The config block carries what a decoder needs to start at this chunk:
  *
  *   u8 codec length, codec (ASCII), u16 coded width, u16 coded height,
- *   u16 source width, u16 source height, u16 description length, description
+ *   u16 source width, u16 source height, u16 description length, description,
+ *   then optionally the cropped region as four u16 fractions of 65535
+ *   (x, y, width, height), present only when the picture is a crop
  *
  * Every key frame repeats it, so a subscriber can join at any key frame
  * without the relay remembering anything. The relay itself only ever reads
@@ -39,6 +41,8 @@ export const MEDIA_PACKET_MAX_BYTES = 8 * 1024 * 1024;
 
 const FLAG_KEY = 1;
 const FLAG_CONFIG = 2;
+const REGION_BYTES = 8;
+const REGION_SCALE = 0xffff;
 
 export type MediaPacketKind = "video";
 
@@ -52,6 +56,19 @@ export interface MediaVideoConfig {
   readonly sourceHeight: number;
   /** avcC / hvcC record; absent for Annex B and VP8. */
   readonly description?: Uint8Array;
+  /**
+   * The part of the source this picture shows, from this key frame until the
+   * next one. Absent means the whole source.
+   */
+  readonly region?: MediaPacketRegion;
+}
+
+/** A rectangle of the source in fractions of its size. */
+export interface MediaPacketRegion {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
 }
 
 export interface MediaPacketHeader {
@@ -82,7 +99,8 @@ function encodeConfig(config: MediaVideoConfig): Uint8Array {
   const codec = textEncoder.encode(config.codec);
   if (codec.length === 0 || codec.length > 0xff) throw new RangeError("codec string length");
   const description = config.description ?? new Uint8Array(0);
-  const bytes = new Uint8Array(1 + codec.length + 10 + description.length);
+  const regionLength = config.region ? REGION_BYTES : 0;
+  const bytes = new Uint8Array(1 + codec.length + 10 + description.length + regionLength);
   const view = new DataView(bytes.buffer);
   bytes[0] = codec.length;
   bytes.set(codec, 1);
@@ -94,6 +112,13 @@ function encodeConfig(config: MediaVideoConfig): Uint8Array {
   view.setUint16(offset + 8, asUint16(description.length, "description length"));
   offset += 10;
   bytes.set(description, offset);
+  if (config.region) {
+    offset += description.length;
+    const { x, y, width, height } = config.region;
+    [x, y, width, height].forEach((fraction, index) => {
+      view.setUint16(offset + index * 2, Math.round(fraction * REGION_SCALE));
+    });
+  }
   return bytes;
 }
 
@@ -105,8 +130,11 @@ function decodeConfig(bytes: Uint8Array): MediaVideoConfig | null {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const offset = 1 + codecLength;
   const descriptionLength = view.getUint16(offset + 8);
-  if (bytes.length !== offset + 10 + descriptionLength) return null;
-  const description = bytes.slice(offset + 10, offset + 10 + descriptionLength);
+  const descriptionEnd = offset + 10 + descriptionLength;
+  const regionLength = bytes.length - descriptionEnd;
+  if (regionLength !== 0 && regionLength !== REGION_BYTES) return null;
+  const description = bytes.slice(offset + 10, descriptionEnd);
+  const fraction = (index: number) => view.getUint16(descriptionEnd + index * 2) / REGION_SCALE;
   return {
     codec,
     codedWidth: view.getUint16(offset),
@@ -114,6 +142,9 @@ function decodeConfig(bytes: Uint8Array): MediaVideoConfig | null {
     sourceWidth: view.getUint16(offset + 4),
     sourceHeight: view.getUint16(offset + 6),
     ...(descriptionLength > 0 ? { description } : {}),
+    ...(regionLength > 0
+      ? { region: { x: fraction(0), y: fraction(1), width: fraction(2), height: fraction(3) } }
+      : {}),
   };
 }
 

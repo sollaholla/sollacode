@@ -37,6 +37,7 @@ import { useEnvironmentQuery } from "~/state/query";
 import { remoteControlEnvironment } from "~/state/remoteControl";
 import {
   encodeBlobToBase64,
+  higherCaptureLimits,
   openDisplayStream,
   REMOTE_CONTROL_TIMESLICE_MS,
   REMOTE_CONTROL_VIDEO_BITS_PER_SECOND,
@@ -523,7 +524,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         if (!connection) throw new Error("The environment is disconnected.");
         return mediaChannelUrl(connection.socketUrl, result.value.ticket);
       },
-      openSource: async () => {
+      openSource: async ({ highResolution }) => {
         const catalog = await bridge.listRemoteControlCaptureSources();
         const match =
           catalog.sources.find(
@@ -535,7 +536,13 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
           ) ??
           catalog.sources[0];
         if (!match) throw new Error("No capturable display was found.");
-        const stream = await openDisplayStream(match.sourceId);
+        const higher = higherCaptureLimits(
+          catalog.displays.find((display) => display.id === match.displayId) ?? null,
+        );
+        const stream = await openDisplayStream(
+          match.sourceId,
+          ...(highResolution && higher ? [higher] : []),
+        );
         const track = stream.getVideoTracks()[0];
         if (!track) {
           stopStream(stream);
@@ -545,9 +552,9 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         displaysRef.current = catalog.displays;
         publisher.broadcast(REMOTE_CONTROL_MEDIA_DISPLAYS_KEY, {
           ...(match.displayId ? { activeDisplayId: match.displayId } : {}),
-          displays: [...catalog.displays],
+          displays: catalog.displays.map(({ scaleFactor: _scaleFactor, ...display }) => display),
         });
-        return { track, close: () => stopStream(stream) };
+        return { track, close: () => stopStream(stream), canCaptureHigher: higher !== null };
       },
       onCaptureError: () => {
         captureInterruptedRef.current = true;

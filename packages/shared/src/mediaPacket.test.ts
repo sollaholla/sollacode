@@ -12,6 +12,52 @@ import {
 const payload = new Uint8Array([1, 2, 3, 4, 5]);
 
 describe("media packets", () => {
+  it("round-trips a crop, with and without a decoder description", () => {
+    const config = {
+      codec: "vp8",
+      codedWidth: 640,
+      codedHeight: 400,
+      sourceWidth: 3_024,
+      sourceHeight: 1_964,
+      region: { x: 0.25, y: 0.5, width: 0.125, height: 0.0625 },
+    };
+    for (const extra of [{}, { description: new Uint8Array([1, 2, 3]) }]) {
+      const decoded = decodeMediaPacket(
+        encodeMediaPacket({
+          key: true,
+          epoch: 1,
+          sequence: 1,
+          capturedAt: 1,
+          timestamp: 1,
+          config: { ...config, ...extra },
+          payload,
+        }),
+      );
+      expect(decoded?.config?.region?.x).toBeCloseTo(0.25, 4);
+      expect(decoded?.config?.region?.y).toBeCloseTo(0.5, 4);
+      expect(decoded?.config?.region?.width).toBeCloseTo(0.125, 4);
+      expect(decoded?.config?.region?.height).toBeCloseTo(0.0625, 4);
+      expect(decoded?.config?.description).toEqual(
+        "description" in extra ? extra.description : undefined,
+      );
+    }
+  });
+
+  it("does not add a region to a whole picture", () => {
+    const decoded = decodeMediaPacket(
+      encodeMediaPacket({
+        key: true,
+        epoch: 1,
+        sequence: 1,
+        capturedAt: 1,
+        timestamp: 1,
+        config: { codec: "vp8", codedWidth: 2, codedHeight: 2, sourceWidth: 2, sourceHeight: 2 },
+        payload,
+      }),
+    );
+    expect(decoded?.config).not.toHaveProperty("region");
+  });
+
   it("round-trips a key frame with its decoder config", () => {
     const description = new Uint8Array([0x01, 0x64, 0x00, 0x33, 0xff]);
     const bytes = encodeMediaPacket({

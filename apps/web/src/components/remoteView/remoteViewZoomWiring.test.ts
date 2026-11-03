@@ -37,6 +37,17 @@ describe("remote view zoom wiring", () => {
       expect(source).toContain("useRemoteViewZoom()");
     });
 
+    it(`shows crops and reports what is on screen in the ${surface.name}`, () => {
+      const source = read(...surface.file);
+      expect(source, "without this canvas a magnified viewer stays on the soft picture").toMatch(
+        /regionCanvas: \w+\.current/,
+      );
+      expect(source).toContain("remoteViewVisibleRegion(");
+      expect(source, "reporting mid-pinch would cost the host a key frame per step").toContain(
+        "if (!zoomView.pinching) settledViewRef.current = zoomView.view;",
+      );
+    });
+
     it(`stops sending input while the ${surface.name} view is being moved`, () => {
       const source = read(...surface.file);
       expect(

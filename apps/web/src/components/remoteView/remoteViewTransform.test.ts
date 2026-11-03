@@ -12,6 +12,7 @@ import {
   remoteViewTransformStyle,
   zoomInRemoteView,
   zoomOutRemoteView,
+  remoteViewVisibleRegion,
 } from "./remoteViewTransform.ts";
 
 const PANE = { width: 100, height: 200 } as const;
@@ -240,5 +241,63 @@ describe("formatRemoteViewZoom", () => {
   it("reads as a round number of times", () => {
     expect(formatRemoteViewZoom(1.5)).toBe("1.5×");
     expect(formatRemoteViewZoom(3)).toBe("3×");
+  });
+});
+
+describe("remoteViewVisibleRegion", () => {
+  const pane = { width: 800, height: 500 };
+  const picture = { width: 1600, height: 1000 };
+  const centred = { zoom: 2, origin: { x: 50, y: 50 }, pan: { x: 0, y: 0 } };
+
+  it("reports nothing at fit, where all of it is on screen", () => {
+    expect(remoteViewVisibleRegion({ view: REMOTE_VIEW_IDENTITY, pane, picture })).toBeNull();
+  });
+
+  it("finds the middle of a centred zoom", () => {
+    expect(remoteViewVisibleRegion({ view: centred, pane, picture })).toEqual({
+      x: 0.25,
+      y: 0.25,
+      width: 0.5,
+      height: 0.5,
+    });
+  });
+
+  it("follows a pan to the matching edge", () => {
+    const view = { ...centred, pan: { x: 400, y: 250 } };
+    expect(remoteViewVisibleRegion({ view, pane, picture })).toEqual({
+      x: 0,
+      y: 0,
+      width: 0.5,
+      height: 0.5,
+    });
+  });
+
+  it("measures against the letterboxed picture, not the element", () => {
+    // 800 by 500 in a tall pane: at 2x it is 1000 tall and still fits the pane's
+    // 1100, so all its height stays on screen while only half its width does.
+    const tall = { width: 800, height: 1100 };
+    expect(remoteViewVisibleRegion({ view: centred, pane: tall, picture })).toEqual({
+      x: 0.25,
+      y: 0,
+      width: 0.5,
+      height: 1,
+    });
+  });
+
+  it("agrees with where the render equation puts a picture point", () => {
+    const view = pinchRemoteView({
+      start: centred,
+      from: { midpoint: { x: 200, y: 100 }, distance: 100 },
+      to: { midpoint: { x: 260, y: 180 }, distance: 220 },
+      pane,
+    });
+    const region = remoteViewVisibleRegion({ view, pane, picture })!;
+    const onScreen = (fraction: number, size: number, origin: number, pan: number) =>
+      fraction * size * view.zoom + (origin / 100) * size * (1 - view.zoom) + pan;
+    expect(onScreen(region.x, pane.width, view.origin.x, view.pan.x)).toBeCloseTo(0, 5);
+    expect(onScreen(region.x + region.width, pane.width, view.origin.x, view.pan.x)).toBeCloseTo(
+      pane.width,
+      5,
+    );
   });
 });

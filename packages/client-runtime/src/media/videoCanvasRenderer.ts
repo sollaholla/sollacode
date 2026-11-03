@@ -10,12 +10,17 @@
  * decoded frame is drawn and released in the same callback, and nothing
  * repaints between frames.
  *
+ * A crop of the source goes on a second canvas instead (`regionCanvas`), placed
+ * over its part of the last whole picture, so a magnified viewer sees sharp
+ * pixels where it is looking and the older, softer picture around them while
+ * panning. Whichever picture arrives is the only one that repaints.
+ *
  * Recovery is local: a decoder error or a backlog drops everything until the
  * next key frame and asks for one. Repeated failure is reported once so the
  * caller can fall back to the legacy picture.
  */
 import { isAvc } from "./videoCodecs.ts";
-import type { MediaPacket, MediaVideoConfig } from "@t3tools/shared/mediaPacket";
+import type { MediaPacket, MediaPacketRegion, MediaVideoConfig } from "@t3tools/shared/mediaPacket";
 
 export interface VideoCanvasRendererStats {
   readonly decoded: number;
@@ -38,6 +43,7 @@ const MAX_DECODE_QUEUE = 3;
 const MAX_ERRORS = 3;
 const ERROR_WINDOW_MS = 10_000;
 const KEYFRAME_REQUEST_SPACING_MS = 300;
+const MAX_REGION_CHANGES = 16;
 
 function sameConfig(left: MediaVideoConfig | null, right: MediaVideoConfig): boolean {
   if (!left) return false;
@@ -58,16 +64,38 @@ function sameConfig(left: MediaVideoConfig | null, right: MediaVideoConfig): boo
   return true;
 }
 
+const percent = (fraction: number) => `${String(fraction * 100)}%`;
+
 export function createVideoCanvasRenderer(options: {
   readonly canvas: HTMLCanvasElement;
-  /** Called with each decoded frame after it is drawn, before it is closed. */
-  readonly onFrame?: (frame: VideoFrame, config: MediaVideoConfig) => void;
+  /**
+   * Shows crops of the source. Its parent must cover exactly the area of the
+   * whole picture, since it is placed in percentages of that.
+   */
+  readonly regionCanvas?: HTMLCanvasElement | null;
+  /**
+   * Called with each decoded frame after it is drawn, before it is closed.
+   * `region` is the part of the source this frame shows, null for all of it.
+   */
+  readonly onFrame?: (
+    frame: VideoFrame,
+    config: MediaVideoConfig,
+    region: MediaPacketRegion | null,
+  ) => void;
   readonly onKeyframeNeeded: () => void;
   /** The decoder keeps failing; the caller should stop using this path. */
   readonly onFatal: (reason: string) => void;
 }): VideoCanvasRenderer {
   const context = options.canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("A 2D canvas context is unavailable.");
+  const regionCanvas = options.regionCanvas ?? null;
+  const regionContext = regionCanvas?.getContext("2d", { alpha: false }) ?? null;
+  /** When each crop starts; frames still in the decoder belong to the one before. */
+  const regionChanges: Array<{ readonly from: number; readonly region: MediaPacketRegion | null }> =
+    [];
+  let shownRegion: MediaPacketRegion | null = null;
+  // A viewer reopening this canvas may have left a crop on it.
+  if (regionCanvas) regionCanvas.style.display = "none";
   let decoder: VideoDecoder | null = null;
   let config: MediaVideoConfig | null = null;
   let epoch: number | null = null;
@@ -104,6 +132,35 @@ export function createVideoCanvasRenderer(options: {
     options.onKeyframeNeeded();
   };
 
+  const regionOf = (timestamp: number): MediaPacketRegion | null => {
+    while (regionChanges.length > 1 && regionChanges[1]!.from <= timestamp) regionChanges.shift();
+    return regionChanges[0]?.region ?? null;
+  };
+
+  /** Moved in the same task as the paint, so a crop never shows in the old crop's place. */
+  const showRegion = (region: MediaPacketRegion | null) => {
+    if (!regionCanvas || region === shownRegion) return;
+    shownRegion = region;
+    if (!region) {
+      regionCanvas.style.display = "none";
+      return;
+    }
+    regionCanvas.style.display = "block";
+    regionCanvas.style.left = percent(region.x);
+    regionCanvas.style.top = percent(region.y);
+    regionCanvas.style.width = percent(region.width);
+    regionCanvas.style.height = percent(region.height);
+  };
+
+  const noteRegion = (packet: MediaPacket) => {
+    if (!packet.key || !packet.config) return;
+    const region = packet.config.region ?? null;
+    const last = regionChanges.at(-1);
+    if (last && JSON.stringify(last.region) === JSON.stringify(region)) return;
+    if (regionChanges.length >= MAX_REGION_CHANGES) regionChanges.shift();
+    regionChanges.push({ from: packet.timestamp, region });
+  };
+
   const draw = (frame: VideoFrame) => {
     if (disposed) {
       frame.close();
@@ -113,13 +170,24 @@ export function createVideoCanvasRenderer(options: {
     cancelKeyframeRetry();
     const width = frame.displayWidth;
     const height = frame.displayHeight;
-    if (options.canvas.width !== width || options.canvas.height !== height) {
-      options.canvas.width = width;
-      options.canvas.height = height;
+    const region = regionOf(frame.timestamp);
+    if (region && regionCanvas && regionContext) {
+      if (regionCanvas.width !== width || regionCanvas.height !== height) {
+        regionCanvas.width = width;
+        regionCanvas.height = height;
+      }
+      regionContext.drawImage(frame, 0, 0, width, height);
+      showRegion(region);
+    } else {
+      if (options.canvas.width !== width || options.canvas.height !== height) {
+        options.canvas.width = width;
+        options.canvas.height = height;
+      }
+      context.drawImage(frame, 0, 0, width, height);
+      showRegion(null);
     }
-    context.drawImage(frame, 0, 0, width, height);
     try {
-      if (config) options.onFrame?.(frame, config);
+      if (config) options.onFrame?.(frame, config, region);
     } finally {
       frame.close();
     }
@@ -174,6 +242,7 @@ export function createVideoCanvasRenderer(options: {
   return {
     push: (packet) => {
       if (disposed || failed) return;
+      noteRegion(packet);
       if (packet.config && (packet.epoch !== epoch || !sameConfig(config, packet.config))) {
         if (!packet.key) return;
         if (!configure(packet.config)) return;

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { shouldReconfigureSize, targetEncodeSize } from "./mediaEncodeSize.ts";
+import {
+  sameMediaRegion,
+  shouldReconfigureSize,
+  targetEncodeRegion,
+  targetEncodeSize,
+} from "./mediaEncodeSize.ts";
 
 const desktop = { width: 2_560, height: 1_600 };
 const phone = { width: 374, height: 744, devicePixelRatio: 3, zoom: 1 };
@@ -121,5 +126,66 @@ describe("media encode size", () => {
     expect(shouldReconfigureSize({ width: 900, height: 1000 }, { width: 900, height: 995 })).toBe(
       false,
     );
+  });
+});
+
+describe("encoding only the magnified part", () => {
+  const retina = { width: 3_024, height: 1_964 };
+  const region = { x: 0.4, y: 0.4, width: 1 / 6, height: 1 / 6 };
+  const zoomed = { ...laptop, zoom: 6, region };
+
+  it("spends pixels on the visible part, at the source's own sharpness", () => {
+    const crop = targetEncodeRegion({ viewports: [zoomed], current: null })!;
+    const size = targetEncodeSize({ source: retina, viewports: [zoomed], region: crop });
+    const whole = targetEncodeSize({ source: retina, viewports: [zoomed] });
+    expect(size.width).toBeGreaterThan(retina.width * crop.width - 5);
+    expect(size.width).toBeLessThanOrEqual(retina.width * crop.width);
+    expect(size.width * size.height).toBeLessThan((whole.width * whole.height) / 8);
+  });
+
+  it("leaves a margin for small pans and stays inside the picture", () => {
+    expect(targetEncodeRegion({ viewports: [zoomed], current: null })).toMatchObject({
+      x: expect.closeTo(0.375, 5),
+      width: expect.closeTo(0.2167, 3),
+    });
+    const corner = { ...zoomed, region: { x: 0.9, y: 0, width: 0.1, height: 0.1 } };
+    const crop = targetEncodeRegion({ viewports: [corner], current: null })!;
+    expect(crop.x + crop.width).toBeCloseTo(1, 5);
+    expect(crop.y).toBe(0);
+  });
+
+  it("keeps the whole picture when a crop would save little", () => {
+    const slight = { ...laptop, zoom: 1.2, region: { x: 0.1, y: 0.1, width: 0.8, height: 0.8 } };
+    expect(targetEncodeRegion({ viewports: [slight], current: null })).toBeNull();
+  });
+
+  it("keeps the whole picture for a viewer that reports no region", () => {
+    expect(targetEncodeRegion({ viewports: [zoomed, laptop], current: null })).toBeNull();
+    expect(targetEncodeRegion({ viewports: [], current: null })).toBeNull();
+  });
+
+  it("covers every magnified viewer", () => {
+    const other = { ...zoomed, region: { x: 0.1, y: 0.1, width: 0.1, height: 0.1 } };
+    const crop = targetEncodeRegion({ viewports: [zoomed, other], current: null })!;
+    expect(crop.x).toBeLessThanOrEqual(0.1);
+    expect(crop.x + crop.width).toBeGreaterThanOrEqual(region.x + region.width);
+  });
+
+  it("does not cut a new crop, or pay a key frame, for a pan inside the margin", () => {
+    const crop = targetEncodeRegion({ viewports: [zoomed], current: null })!;
+    const nudged = { ...zoomed, region: { ...region, x: region.x + 0.01 } };
+    expect(targetEncodeRegion({ viewports: [nudged], current: crop })).toBe(crop);
+    const away = { ...zoomed, region: { ...region, x: 0.05 } };
+    expect(sameMediaRegion(targetEncodeRegion({ viewports: [away], current: crop }), crop)).toBe(
+      false,
+    );
+  });
+
+  it("cuts a tighter crop once magnified much further", () => {
+    const wide = targetEncodeRegion({
+      viewports: [{ ...laptop, zoom: 2, region: { x: 0.25, y: 0.25, width: 0.5, height: 0.5 } }],
+      current: null,
+    })!;
+    expect(targetEncodeRegion({ viewports: [zoomed], current: wide })?.width).toBeLessThan(0.3);
   });
 });

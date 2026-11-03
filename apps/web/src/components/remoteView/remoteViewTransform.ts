@@ -237,6 +237,39 @@ export function remoteViewTransformStyle(view: RemoteViewTransform):
   };
 }
 
+/**
+ * The part of the picture on screen, in fractions of the picture, or null when
+ * all of it is. Inverts the render equation above for the pane's two edges, then
+ * measures against the picture's letterboxed rectangle rather than the element.
+ */
+export function remoteViewVisibleRegion(input: {
+  readonly view: RemoteViewTransform;
+  readonly pane: RemoteViewSize;
+  readonly picture: RemoteViewSize;
+}): { x: number; y: number; width: number; height: number } | null {
+  const { view, pane, picture } = input;
+  if (view.zoom <= 1 || pane.width <= 0 || pane.height <= 0) return null;
+  if (picture.width <= 0 || picture.height <= 0) return null;
+  const fit = Math.min(pane.width / picture.width, pane.height / picture.height);
+  const axis = (size: number, pictureSize: number, originPercent: number, pan: number) => {
+    const shown = pictureSize * fit;
+    const offset = (size - shown) / 2;
+    const originPx = (originPercent / 100) * size;
+    const toFraction = (screen: number) =>
+      Math.min(
+        1,
+        Math.max(0, ((screen - pan - originPx * (1 - view.zoom)) / view.zoom - offset) / shown),
+      );
+    const start = toFraction(0);
+    return { start, size: toFraction(size) - start };
+  };
+  const across = axis(pane.width, picture.width, view.origin.x, view.pan.x);
+  const down = axis(pane.height, picture.height, view.origin.y, view.pan.y);
+  if (across.size <= 0 || down.size <= 0) return null;
+  if (across.size >= 1 && down.size >= 1) return null;
+  return { x: across.start, y: down.start, width: across.size, height: down.size };
+}
+
 /** Rounded for a readout: continuous values would jitter the button width. */
 export function formatRemoteViewZoom(zoom: number): string {
   return `${String(Math.round(zoom * 10) / 10)}×`;

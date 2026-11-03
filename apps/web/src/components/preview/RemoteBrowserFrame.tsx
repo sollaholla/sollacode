@@ -59,6 +59,7 @@ import {
   type TouchMenuState,
   type TouchPoint,
 } from "../remoteControl/touchActionMenu";
+import { remoteViewVisibleRegion } from "../remoteView/remoteViewTransform";
 import { RemoteViewZoomReadout, useRemoteViewZoom } from "../remoteView/RemoteViewZoom";
 import { RemoteAgentCursor } from "./RemoteAgentCursor";
 import { RemoteBrowserContextMenu } from "./RemoteBrowserContextMenu";
@@ -231,9 +232,14 @@ export function RemoteBrowserFrame(props: {
       .remotePreviewMediaChannel === true;
   const mediaCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const mediaViewerRef = useRef<ReturnType<typeof createRemotePreviewMedia> | null>(null);
-  const mediaZoomRef = useRef(zoomView.view.zoom);
-  mediaZoomRef.current = zoomView.view.zoom;
+  // The host only hears where the fingers settled: every step of a pinch would
+  // cost it a new crop and a key frame nobody gets to read.
+  const settledViewRef = useRef(zoomView.view);
+  if (!zoomView.pinching) settledViewRef.current = zoomView.view;
   const [mediaPicture, setMediaPicture] = useState<FrameSize | null>(null);
+  const mediaPictureRef = useRef(mediaPicture);
+  mediaPictureRef.current = mediaPicture;
+  const mediaRegionCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [mediaActive, setMediaActive] = useState(false);
   const mediaActiveRef = useRef(false);
   const [streamPicture, setStreamPicture] = useState<{
@@ -535,6 +541,7 @@ export function RemoteBrowserFrame(props: {
     if (!mediaSupported || !visible || !pageVisible || canvas === null) return;
     const viewer = createRemotePreviewMedia({
       canvas,
+      regionCanvas: mediaRegionCanvasRef.current,
       watch: (handlers) =>
         listenToPreviewMedia(
           registry,
@@ -547,11 +554,19 @@ export function RemoteBrowserFrame(props: {
       resolveUrl: resolveMediaUrl,
       viewport: () => {
         const rect = containerRef.current?.getBoundingClientRect();
+        const width = Math.max(1, rect?.width ?? 640);
+        const height = Math.max(1, rect?.height ?? 480);
+        const view = settledViewRef.current;
+        const picture = mediaPictureRef.current;
+        const region = picture
+          ? remoteViewVisibleRegion({ view, pane: { width, height }, picture })
+          : null;
         return {
-          width: Math.max(1, rect?.width ?? 640),
-          height: Math.max(1, rect?.height ?? 480),
+          width,
+          height,
           devicePixelRatio: window.devicePixelRatio || 1,
-          zoom: mediaZoomRef.current,
+          zoom: view.zoom,
+          ...(region ? { region } : {}),
         };
       },
       onPicture: (picture) => {
@@ -592,8 +607,8 @@ export function RemoteBrowserFrame(props: {
   ]);
 
   useEffect(() => {
-    mediaViewerRef.current?.updateViewport();
-  }, [paneSize?.width, paneSize?.height, zoomView.view.zoom]);
+    if (!zoomView.pinching) mediaViewerRef.current?.updateViewport();
+  }, [paneSize?.width, paneSize?.height, zoomView.pinching, zoomView.view]);
 
   useEffect(() => {
     if (
@@ -1172,6 +1187,10 @@ export function RemoteBrowserFrame(props: {
               ref={mediaCanvasRef}
               style={canvasBox(paneSize, mediaPicture)}
             />
+            {/* A sharp crop while magnified, placed in percentages of this box. */}
+            <div className="absolute" style={canvasBox(paneSize, mediaPicture)}>
+              <canvas aria-hidden className="absolute hidden" ref={mediaRegionCanvasRef} />
+            </div>
           </div>
         ) : null}
         {streamSupported || streamPicture !== null ? (
