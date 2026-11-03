@@ -117,7 +117,8 @@ describe("closePreviewSession", () => {
       tabId: snapshot.tabId,
       threadRef,
     });
-    expect(closeResult).toEqual(AsyncResult.success(undefined));
+    // Not compared whole: a result carries the millisecond it was made.
+    expect(closeResult).toMatchObject({ _tag: "Success", value: undefined });
     if (closeResult._tag === "Failure") throw new Error("Expected legacy close success");
 
     const listPreviews = vi.fn(async () =>
