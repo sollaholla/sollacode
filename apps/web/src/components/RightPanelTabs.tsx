@@ -328,7 +328,14 @@ export function rightPanelNewSurfaceKinds(
   artifactMenuAvailable: boolean,
   agentSurfaces = false,
 ): readonly RightPanelNewSurfaceKind[] {
-  if (agentSurfaces) return ["browser", "terminal", "side-chat"];
+  if (agentSurfaces) {
+    return [
+      "browser",
+      "terminal",
+      ...(artifactMenuAvailable ? (["artifact"] as const) : []),
+      "side-chat",
+    ];
+  }
   return [
     "browser",
     "terminal",

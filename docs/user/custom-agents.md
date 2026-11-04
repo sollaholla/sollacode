@@ -2,6 +2,11 @@
 
 Custom agents are the named agents in the **Agents** section. Each one owns one dedicated conversation. They are separate from ordinary coding threads and from the orchestrator.
 
+With more than one computer connected, the section lists each computer's agents under its name.
+Select a computer's name to fold its agents away; folded, it shows how many agents it has and a
+dot when one of them needs you, and the agent you have open stays in view. Each device remembers
+which computers you folded across restarts. The phone's **Agents** screen folds the same way.
+
 ## Creating your first agent
 
 While the computer you are using Solla Code on has no agents, the sidebar's **Agents** section

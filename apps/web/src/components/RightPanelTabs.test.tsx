@@ -210,9 +210,14 @@ describe("right-panel artifact access", () => {
     expect(rightPanelNewSurfaceKinds(false)).not.toContain("artifact");
   });
 
-  it("offers Browser, Terminal, and Side Chat in an agent's new-surface menu", () => {
+  it("offers Browser, Terminal, Artifacts, and Side Chat in an agent's new-surface menu", () => {
     expect(rightPanelNewSurfaceKinds(false, true)).toEqual(["browser", "terminal", "side-chat"]);
-    expect(rightPanelNewSurfaceKinds(true, true)).toEqual(["browser", "terminal", "side-chat"]);
+    expect(rightPanelNewSurfaceKinds(true, true)).toEqual([
+      "browser",
+      "terminal",
+      "artifact",
+      "side-chat",
+    ]);
   });
 });
 

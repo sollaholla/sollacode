@@ -1,6 +1,6 @@
 # Thread artifacts
 
-A thread artifact is a named, revisioned preview published by an agent in an ordinary chat. It can
+A thread artifact is a named, revisioned preview published by an agent in a chat, a custom agent's chat included. It can
 be structured content, Markdown, an image, a PDF, or a small web bundle. Artifacts remain owned by
 the thread and environment that created them.
 

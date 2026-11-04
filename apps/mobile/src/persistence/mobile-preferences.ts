@@ -20,6 +20,8 @@ export interface Preferences {
   readonly codeFontSize?: number | null;
   readonly codeWordBreak?: boolean;
   readonly collapsedProjectGroups?: readonly string[];
+  /** Computers whose agents are folded under their heading on the Agents screen. */
+  readonly collapsedAgentEnvironments?: readonly string[];
   readonly projectGroupingEnabled?: boolean;
   /**
    * Device-local mirror of the web beta's `sidebarV2Enabled`. Mobile has no
@@ -75,6 +77,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     codeFontSize?: number | null;
     codeWordBreak?: boolean;
     collapsedProjectGroups?: readonly string[];
+    collapsedAgentEnvironments?: readonly string[];
     projectGroupingEnabled?: boolean;
     threadListV2Enabled?: boolean;
   } = {};
@@ -92,6 +95,11 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (typeof parsed.codeWordBreak === "boolean") preferences.codeWordBreak = parsed.codeWordBreak;
   if (Array.isArray(parsed.collapsedProjectGroups)) {
     preferences.collapsedProjectGroups = parsed.collapsedProjectGroups.filter(
+      (key): key is string => typeof key === "string",
+    );
+  }
+  if (Array.isArray(parsed.collapsedAgentEnvironments)) {
+    preferences.collapsedAgentEnvironments = parsed.collapsedAgentEnvironments.filter(
       (key): key is string => typeof key === "string",
     );
   }

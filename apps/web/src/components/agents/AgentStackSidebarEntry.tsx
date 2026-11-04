@@ -956,6 +956,23 @@ function AgentEnvironmentSection(props: {
   const noAgents = isLocalHost && snapshot !== null && agents.length === 0;
   const [createWithIntro, setCreateWithIntro] = useState(noAgents);
   if (!props.createOpen && createWithIntro !== noAgents) setCreateWithIntro(noAgents);
+  // Folding needs the computer's heading to click, so a single host never folds.
+  const foldedPreference = useUiStateStore((state) =>
+    state.collapsedAgentEnvironmentIds.includes(props.environmentId),
+  );
+  const setEnvironmentCollapsed = useUiStateStore((state) => state.setAgentEnvironmentCollapsed);
+  const folded = props.showEnvironmentLabel && foldedPreference;
+  const isActiveEnvironment = props.environmentId === activeEnvironmentId;
+  const needsAttention = agents.some((agent) => {
+    const attention = attentionForAgent(attentionSnapshot?.agents ?? [], agent.vmAgentId);
+    return attention.openBlockerCount > 0 || attention.unreadNotificationCount > 0;
+  });
+  // The open agent stays in view under a folded heading, as an open thread does
+  // under the settled shelf: folding must never hide where you are.
+  const visibleAgents = folded
+    ? agents.filter((agent) => isActiveEnvironment && agent.vmAgentId === activeAgentId)
+    : agents;
+  const bodyId = `agent-environment-body-${props.environmentId}`;
 
   return (
     <div className="flex min-w-0 flex-col gap-0.5" data-agent-environment={props.environmentId}>
@@ -964,13 +981,35 @@ function AgentEnvironmentSection(props: {
           button — a band of empty sidebar between the section header and the
           first agent. The header carries the button in that case. */}
       {props.showEnvironmentLabel ? (
-        <div className="flex min-w-0 items-center justify-between pl-2 pr-1">
-          <span
-            className="min-w-0 truncate text-[11px] text-sidebar-muted-foreground/65"
-            title={props.environmentLabel}
+        <div className="flex min-w-0 items-center justify-between gap-1 pr-1">
+          <button
+            type="button"
+            onClick={() => setEnvironmentCollapsed(props.environmentId, !foldedPreference)}
+            aria-expanded={!folded}
+            aria-controls={bodyId}
+            data-testid="agent-environment-toggle"
+            title={folded ? `Show ${props.environmentLabel}'s agents` : props.environmentLabel}
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 pl-2 text-left text-[11px] text-sidebar-muted-foreground/65 transition-colors hover:text-sidebar-foreground"
           >
-            {props.environmentLabel}
-          </span>
+            <span className="min-w-0 truncate">{props.environmentLabel}</span>
+            <ChevronDownIcon
+              aria-hidden
+              className={cn(
+                "size-3 shrink-0 opacity-60 transition-transform",
+                folded && "-rotate-90",
+              )}
+            />
+            {folded && agents.length > 0 ? (
+              <span className="shrink-0 tabular-nums opacity-80">{agents.length}</span>
+            ) : null}
+            {folded && needsAttention ? (
+              <span
+                role="img"
+                aria-label="An agent here needs you"
+                className="size-1.5 shrink-0 rounded-full bg-amber-500 dark:bg-amber-300/90"
+              />
+            ) : null}
+          </button>
           <div className="flex shrink-0 items-center">
             <BuildAgentButton environmentId={props.environmentId} onClick={props.onOpenBuilder} />
             <NewAgentButton onClick={() => props.onCreateOpenChange(true)} />
@@ -978,50 +1017,52 @@ function AgentEnvironmentSection(props: {
         </div>
       ) : null}
 
-      {agents.length === 0 && notice === "empty" ? (
-        isLocalHost ? (
-          <MeetAgentsButton onClick={() => props.onCreateOpenChange(true)} />
-        ) : null
-      ) : agents.length === 0 && notice !== null && notice !== "stale" ? (
-        <p className="min-w-0 break-words px-2 py-1 text-xs leading-relaxed text-sidebar-muted-foreground/60">
-          {agentRegistryNoticeCopy(notice)}
-        </p>
-      ) : (
-        agents.map((agent) => {
-          const activeWork = activeDelegationsForAgent(
-            collaborationSnapshot?.agents ?? [],
-            agent.vmAgentId,
-          );
-          const attention = attentionForAgent(attentionSnapshot?.agents ?? [], agent.vmAgentId);
-          return (
-            <AgentSidebarRow
-              key={agent.vmAgentId}
-              agent={agent}
-              activeWork={activeWork}
-              openBlockers={attention.openBlockerCount}
-              unreadNotifications={attention.unreadNotificationCount}
-              environmentId={props.environmentId}
-              environmentLabel={props.environmentLabel}
-              isActive={
-                agent.vmAgentId === activeAgentId && props.environmentId === activeEnvironmentId
-              }
-              onOpen={() =>
-                void router.navigate({
-                  to: "/agents/$environmentId/$agentId",
-                  params: {
-                    environmentId: props.environmentId,
-                    agentId: agent.vmAgentId,
-                  },
-                })
-              }
-              onRequestDelete={() => setPendingDelete(agent)}
-              onRequestRename={() => setPendingRename(agent)}
-              onTogglePower={() => void power.toggle(agent)}
-              powerBusy={power.busyAgentId === agent.vmAgentId}
-            />
-          );
-        })
-      )}
+      <div id={bodyId} className="contents">
+        {folded ? null : agents.length === 0 && notice === "empty" ? (
+          isLocalHost ? (
+            <MeetAgentsButton onClick={() => props.onCreateOpenChange(true)} />
+          ) : null
+        ) : !folded && agents.length === 0 && notice !== null && notice !== "stale" ? (
+          <p className="min-w-0 break-words px-2 py-1 text-xs leading-relaxed text-sidebar-muted-foreground/60">
+            {agentRegistryNoticeCopy(notice)}
+          </p>
+        ) : (
+          visibleAgents.map((agent) => {
+            const activeWork = activeDelegationsForAgent(
+              collaborationSnapshot?.agents ?? [],
+              agent.vmAgentId,
+            );
+            const attention = attentionForAgent(attentionSnapshot?.agents ?? [], agent.vmAgentId);
+            return (
+              <AgentSidebarRow
+                key={agent.vmAgentId}
+                agent={agent}
+                activeWork={activeWork}
+                openBlockers={attention.openBlockerCount}
+                unreadNotifications={attention.unreadNotificationCount}
+                environmentId={props.environmentId}
+                environmentLabel={props.environmentLabel}
+                isActive={
+                  agent.vmAgentId === activeAgentId && props.environmentId === activeEnvironmentId
+                }
+                onOpen={() =>
+                  void router.navigate({
+                    to: "/agents/$environmentId/$agentId",
+                    params: {
+                      environmentId: props.environmentId,
+                      agentId: agent.vmAgentId,
+                    },
+                  })
+                }
+                onRequestDelete={() => setPendingDelete(agent)}
+                onRequestRename={() => setPendingRename(agent)}
+                onTogglePower={() => void power.toggle(agent)}
+                powerBusy={power.busyAgentId === agent.vmAgentId}
+              />
+            );
+          })
+        )}
+      </div>
 
       {createWithIntro ? (
         <AgentIntroDialog

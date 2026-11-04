@@ -11,6 +11,7 @@ import {
   persistState,
   reorderProjects,
   resolveProjectExpanded,
+  setAgentEnvironmentCollapsed,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
@@ -31,6 +32,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     showProviderUsageBar: true,
     settledShelfExpanded: false,
     agentsSectionExpanded: true,
+    collapsedAgentEnvironmentIds: [],
     threadsSectionExpanded: true,
     agentHeaderCollapsed: false,
     ...overrides,
@@ -225,6 +227,7 @@ describe("parsePersistedState", () => {
       showProviderUsageBar: true,
       settledShelfExpanded: false,
       agentsSectionExpanded: true,
+      collapsedAgentEnvironmentIds: [],
       threadsSectionExpanded: true,
       agentHeaderCollapsed: false,
       threadChangedFilesExpandedById: {
@@ -360,6 +363,7 @@ describe("uiStateStore persistence", () => {
       showProviderUsageBar: true,
       settledShelfExpanded: false,
       agentsSectionExpanded: true,
+      collapsedAgentEnvironmentIds: [],
       threadsSectionExpanded: true,
       agentHeaderCollapsed: false,
       threadChangedFilesExpansionVersion: 1,
@@ -374,6 +378,31 @@ describe("uiStateStore persistence", () => {
     expect(parsePersistedState(persisted)).toEqual({
       ...state,
     });
+  });
+
+  it("remembers which computers' agents are folded, across restarts", () => {
+    let state = makeUiState();
+    state = setAgentEnvironmentCollapsed(state, "environment-windows", true);
+    expect(setAgentEnvironmentCollapsed(state, "environment-windows", true)).toBe(state);
+    state = setAgentEnvironmentCollapsed(state, "environment-studio", true);
+    persistState(state);
+    const persisted = JSON.parse(
+      localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
+    ) as PersistedUiState;
+    expect(parsePersistedState(persisted).collapsedAgentEnvironmentIds).toEqual([
+      "environment-windows",
+      "environment-studio",
+    ]);
+    expect(
+      setAgentEnvironmentCollapsed(state, "environment-windows", false)
+        .collapsedAgentEnvironmentIds,
+    ).toEqual(["environment-studio"]);
+    expect(parsePersistedState({}).collapsedAgentEnvironmentIds).toEqual([]);
+    expect(
+      parsePersistedState({
+        collapsedAgentEnvironmentIds: "environment-windows" as unknown as string[],
+      }).collapsedAgentEnvironmentIds,
+    ).toEqual([]);
   });
 
   it("round-trips a collapsed sidebar section through storage", () => {

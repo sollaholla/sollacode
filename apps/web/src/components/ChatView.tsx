@@ -10835,8 +10835,8 @@ function ChatViewContent(props: ChatViewProps) {
           filesAvailable={activeProject !== null}
           sideChatAvailable={sideChatAvailable}
           agentSurfaces={agentSurfaces}
-          artifactShelf={agentSurfaces ? undefined : artifactShelf}
-          artifactMenu={agentSurfaces ? undefined : artifactMenu}
+          artifactShelf={artifactShelf}
+          artifactMenu={artifactMenu}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -10877,8 +10877,8 @@ function ChatViewContent(props: ChatViewProps) {
             filesAvailable={activeProject !== null}
             sideChatAvailable={sideChatAvailable}
             agentSurfaces={agentSurfaces}
-            artifactShelf={agentSurfaces ? undefined : artifactShelf}
-            artifactMenu={agentSurfaces ? undefined : artifactMenu}
+            artifactShelf={artifactShelf}
+            artifactMenu={artifactMenu}
           >
             {rightPanelContent}
           </RightPanelTabs>

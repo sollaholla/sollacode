@@ -32,6 +32,8 @@ export interface PersistedUiState {
   showProviderUsageBar?: boolean;
   settledShelfExpanded?: boolean;
   agentsSectionExpanded?: boolean;
+  /** Computers whose agents are folded under their heading in the Agents section. */
+  collapsedAgentEnvironmentIds?: string[];
   threadsSectionExpanded?: boolean;
   agentHeaderCollapsed?: boolean;
   threadChangedFilesExpansionVersion?: typeof THREAD_CHANGED_FILES_EXPANSION_VERSION;
@@ -69,6 +71,7 @@ export interface UiSidebarShelfState {
 
 export interface UiSidebarSectionState {
   agentsSectionExpanded: boolean;
+  collapsedAgentEnvironmentIds: string[];
   threadsSectionExpanded: boolean;
 }
 
@@ -101,6 +104,7 @@ const initialState: UiState = {
   showProviderUsageBar: true,
   settledShelfExpanded: false,
   agentsSectionExpanded: true,
+  collapsedAgentEnvironmentIds: [],
   threadsSectionExpanded: true,
   agentHeaderCollapsed: false,
 };
@@ -192,6 +196,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
     settledShelfExpanded: parsed.settledShelfExpanded === true,
     // Sidebar sections start open: absent means "never collapsed", not "collapsed".
     agentsSectionExpanded: parsed.agentsSectionExpanded !== false,
+    collapsedAgentEnvironmentIds: sanitizeStringArray(parsed.collapsedAgentEnvironmentIds),
     threadsSectionExpanded: parsed.threadsSectionExpanded !== false,
     agentHeaderCollapsed: parsed.agentHeaderCollapsed === true,
   };
@@ -285,6 +290,7 @@ export function persistState(state: UiState): void {
         showProviderUsageBar: state.showProviderUsageBar,
         settledShelfExpanded: state.settledShelfExpanded,
         agentsSectionExpanded: state.agentsSectionExpanded,
+        collapsedAgentEnvironmentIds: state.collapsedAgentEnvironmentIds,
         threadsSectionExpanded: state.threadsSectionExpanded,
         agentHeaderCollapsed: state.agentHeaderCollapsed,
       } satisfies PersistedUiState),
@@ -485,6 +491,21 @@ export function reorderProjects(
   };
 }
 
+export function setAgentEnvironmentCollapsed(
+  state: UiState,
+  environmentId: string,
+  collapsed: boolean,
+): UiState {
+  const current = state.collapsedAgentEnvironmentIds;
+  if (current.includes(environmentId) === collapsed) return state;
+  return {
+    ...state,
+    collapsedAgentEnvironmentIds: collapsed
+      ? [...current, environmentId]
+      : current.filter((id) => id !== environmentId),
+  };
+}
+
 interface UiStateStore extends UiState {
   markThreadVisited: (threadId: string, visitedAt: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
@@ -494,6 +515,7 @@ interface UiStateStore extends UiState {
   setShowProviderUsageBar: (visible: boolean) => void;
   setSettledShelfExpanded: (expanded: boolean) => void;
   setAgentsSectionExpanded: (expanded: boolean) => void;
+  setAgentEnvironmentCollapsed: (environmentId: string, collapsed: boolean) => void;
   setThreadsSectionExpanded: (expanded: boolean) => void;
   setAgentHeaderCollapsed: (collapsed: boolean) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
@@ -532,6 +554,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
         ? state
         : { ...state, agentsSectionExpanded: expanded },
     ),
+  setAgentEnvironmentCollapsed: (environmentId, collapsed) =>
+    set((state) => setAgentEnvironmentCollapsed(state, environmentId, collapsed)),
   setThreadsSectionExpanded: (expanded) =>
     set((state) =>
       state.threadsSectionExpanded === expanded

@@ -1,6 +1,6 @@
 import { agentPresence } from "@t3tools/client-runtime/state/agent-appearance";
 import { AgentAvatar } from "../../components/AgentAvatar";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   EnvironmentId,
@@ -28,6 +28,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { transformComposerDraftText } from "../../state/use-composer-drafts";
 import { vmAgentEnvironment } from "../../state/vmAgents";
+import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { requestComposerFocus } from "../../state/composer-focus-requests";
 import { openMobileWaitingOnYouFollowUp } from "./mobileAgentAttentionFollowUp";
@@ -152,13 +153,53 @@ function AgentEnvironmentSection(props: {
   const collaboration = collaborationItem?.type === "snapshot" ? collaborationItem : null;
   const attentionItem = Option.getOrNull(AsyncResult.value(attentionResult));
   const attention = attentionItem?.type === "snapshot" ? attentionItem.agents : [];
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const collapsedEnvironments = AsyncResult.isSuccess(preferences)
+    ? (preferences.value.collapsedAgentEnvironments ?? [])
+    : [];
+  const folded = collapsedEnvironments.includes(String(props.environmentId));
+  const needsAttention = attention.some(
+    (entry) => entry.openBlockerCount > 0 || entry.unreadNotificationCount > 0,
+  );
+  const toggleFolded = () =>
+    savePreferences({
+      collapsedAgentEnvironments: folded
+        ? collapsedEnvironments.filter((id) => id !== String(props.environmentId))
+        : [...collapsedEnvironments, String(props.environmentId)],
+    });
 
   return (
     <View className="min-w-0 gap-2">
-      <Text className="px-1 text-xs font-t3-bold uppercase text-foreground-muted" numberOfLines={1}>
-        {props.label}
-      </Text>
-      {result._tag === "Failure" && latest === null ? (
+      <Pressable
+        accessibilityLabel={`${props.label} agents`}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: !folded }}
+        className="min-w-0 flex-row items-center gap-1.5 px-1 py-1"
+        onPress={toggleFolded}
+      >
+        <Text
+          className="shrink text-xs font-t3-bold uppercase text-foreground-muted"
+          numberOfLines={1}
+        >
+          {props.label}
+        </Text>
+        <SymbolView
+          name={folded ? "chevron.right" : "chevron.down"}
+          size={11}
+          tintColor="#737373"
+        />
+        {folded && agents.length > 0 ? (
+          <Text className="text-xs text-foreground-muted">{agents.length}</Text>
+        ) : null}
+        {folded && needsAttention ? (
+          <View
+            accessibilityLabel="An agent here needs you"
+            className="size-1.5 rounded-full bg-amber-500"
+          />
+        ) : null}
+      </Pressable>
+      {folded ? null : result._tag === "Failure" && latest === null ? (
         <View className="rounded-2xl border border-red-500/25 bg-sheet p-4">
           <Text className="text-sm text-red-700 dark:text-red-300">
             Agents are unavailable while this host reconnects.
