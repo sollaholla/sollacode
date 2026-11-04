@@ -59,6 +59,7 @@ import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { KIMI_DRIVER_KIND } from "../provider/acp/KimiAcpSupport.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { AgentCalls, agentCallKeyMissingMessage } from "./AgentCalls.ts";
+import { makeCallAgentLookup } from "./callAgent.ts";
 import {
   callAddressing,
   callParticipantFor,
@@ -906,6 +907,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
   const settingsService = yield* ServerSettingsService;
   const secrets = yield* ServerSecretStore;
   const agents = yield* VmAgentStore;
+  const agentById = makeCallAgentLookup(agents, settingsService);
   const calls = yield* AgentCalls;
   const engine = yield* OrchestrationEngineService;
   const projections = yield* ProjectionSnapshotQuery;
@@ -949,9 +951,9 @@ export const makeAgentCallLive = Effect.gen(function* () {
   ) {
     const call = yield* calls.get(callId);
     if (Option.isNone(call)) return yield* ended();
-    const agent = yield* agents
-      .getById(call.value.vmAgentId)
-      .pipe(Effect.orElseSucceed(() => Option.none()));
+    const agent = yield* agentById(call.value.vmAgentId).pipe(
+      Effect.orElseSucceed(() => Option.none()),
+    );
     if (Option.isNone(agent) || agent.value.threadId === null) {
       yield* calls.fail(callId);
       return yield* ended("That agent has no chat to call.");

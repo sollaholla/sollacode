@@ -376,6 +376,18 @@ Every decision not to wake is recorded in **Recent tool calls** with its reason
 (`not-awaited`, `expired`, `not-closed-by-timeout`, …), so a wake-up that did not
 happen can be explained rather than guessed at.
 
+## When the orchestrator calls you
+
+With **agent calls** turned on, the orchestrator can ring you, the same way a custom agent can, when
+something needs you: a finished job you asked it to watch, a decision it can't make alone, a blocker
+it hit. The ring shows as **Orchestrator** on every signed-in device, with what the call is about.
+Answering puts you through to the orchestrator in its own voice, and what is said lands in its chat;
+**Open chat** on the call screen goes there. A call you miss is just missed - the orchestrator
+writes the update in its chat instead.
+
+It rings sparingly. Routine progress stays in text, and calls share the agent-call limits, so it
+can't ring more than a few times an hour.
+
 ## When a thread fails
 
 A failure announcement carries the provider's own error text, verbatim, plus the
@@ -706,6 +718,12 @@ It also covers the "let me check that…" pause. An answer that opens with a sen
 away to run something used to leave dead silence: you hear a finished-sounding utterance, assume the
 floor is yours, and talk into a session that is not listening. The pulse now runs through that gap
 too, and the floating orb shows a spinner rather than a microphone for the same reason.
+
+While the orchestrator works on something you asked for by voice - a tool call, a message to a
+thread, a search - a quiet sci-fi ambience plays under the silence: a low, slowly breathing hum with
+short runs of soft data blips. It starts after a moment of work, never plays over the orchestrator's
+own voice, stops the moment it speaks or the work ends, and follows the cue volume, so turning sounds
+off silences it too. Agent calls have desk typing for the same job; this is the orchestrator's own.
 
 The not-heard tone replaces what used to be an error box. Talking over a reply that is already
 being generated is not a fault and there is nothing to dismiss - it is answered in the register that

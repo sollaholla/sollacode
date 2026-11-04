@@ -1,4 +1,5 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ORCHESTRATOR_THREAD_ID } from "@t3tools/contracts";
+import { isOrchestratorCaller } from "@t3tools/shared/orchestratorCaller";
 import { useCanGoBack, useNavigate, useParams, useRouter, useSearch } from "@tanstack/react-router";
 import { PhoneIcon, PhoneOffIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -188,10 +189,15 @@ export function AgentCallRoute() {
               type="button"
               variant="outline"
               onClick={() =>
-                void navigate({
-                  to: "/agents/$environmentId/$agentId",
-                  params: { environmentId, agentId: call.vmAgentId },
-                })
+                void (isOrchestratorCaller(call.vmAgentId)
+                  ? navigate({
+                      to: "/$environmentId/$threadId",
+                      params: { environmentId, threadId: ORCHESTRATOR_THREAD_ID },
+                    })
+                  : navigate({
+                      to: "/agents/$environmentId/$agentId",
+                      params: { environmentId, agentId: call.vmAgentId },
+                    }))
               }
             >
               Open chat

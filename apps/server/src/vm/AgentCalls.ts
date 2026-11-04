@@ -1,4 +1,6 @@
 import * as NodeCrypto from "node:crypto";
+import { makeCallAgentLookup } from "./callAgent.ts";
+import { isOrchestratorCaller } from "@t3tools/shared/orchestratorCaller";
 import {
   AGENT_CALL_LEASE_SECONDS,
   AGENT_CALL_MAX_PARTICIPANTS,
@@ -189,6 +191,7 @@ export const make = Effect.gen(function* () {
   const settingsService = yield* ServerSettingsService;
   const secrets = yield* ServerSecretStore;
   const agents = yield* VmAgentStore;
+  const agentById = makeCallAgentLookup(agents, settingsService);
   const scope = yield* Effect.scope;
   const lock = yield* Semaphore.make(1);
   /** `leaseUntil`: epoch ms an active call ends at unless its device renews it. */
@@ -214,8 +217,16 @@ export const make = Effect.gen(function* () {
    * xAI for an agent given a Grok voice. An agent that can't be read counts
    * as GPT-Live.
    */
+  /** The orchestrator's voice, stamped on its calls so devices pick the right engine. */
+  const callerVoiceFor = (vmAgentId: VmAgentId) =>
+    isOrchestratorCaller(vmAgentId)
+      ? agentById(vmAgentId).pipe(
+          Effect.map((agent) => ({ callerVoice: Option.getOrNull(agent)?.voice ?? null })),
+          Effect.orElseSucceed(() => ({ callerVoice: null })),
+        )
+      : Effect.succeed({});
   const callKeyConfigured = (vmAgentId: VmAgentId) =>
-    agents.getById(vmAgentId).pipe(
+    agentById(vmAgentId).pipe(
       Effect.map((agent) =>
         Option.isSome(agent) ? agentCallEngineFor(agent.value) : ("gpt-live" as const),
       ),
@@ -334,9 +345,10 @@ export const make = Effect.gen(function* () {
     )?.call;
 
   const place: AgentCallsShape["place"] = Effect.fn("AgentCalls.place")(function* (input) {
-    const agent = yield* agents
-      .getById(input.vmAgentId)
-      .pipe(Effect.mapError(() => new AgentCallError({ detail: "Could not look up that agent." })));
+    const agent = yield* agentById(input.vmAgentId).pipe(
+      Effect.mapError(() => new AgentCallError({ detail: "Could not look up that agent." })),
+    );
+    const callerVoice = yield* callerVoiceFor(input.vmAgentId);
     if (Option.isNone(agent) || agent.value.threadId === null)
       return yield* new AgentCallError({ detail: "That agent has no chat to call." });
     const key = yield* callKeyConfigured(input.vmAgentId).pipe(
@@ -368,6 +380,7 @@ export const make = Effect.gen(function* () {
           endedAt: null,
           expiresAt: isoAt(now + AGENT_CALL_OUTGOING_RING_SECONDS * 1_000),
           participants: [],
+          ...callerVoice,
         };
         yield* commit(null, call, null);
         yield* after(
@@ -381,6 +394,7 @@ export const make = Effect.gen(function* () {
 
   const ring: AgentCallsShape["ring"] = Effect.fn("AgentCalls.ring")(function* (input) {
     if (!(yield* ringingAllowed(input.vmAgentId))) return { status: "disabled" } as const;
+    const callerVoice = yield* callerVoiceFor(input.vmAgentId);
     return yield* lock.withPermits(1)(
       Effect.gen(function* (): Effect.fn.Return<AgentCallRingOutcome> {
         const now = yield* nowMs;
@@ -415,6 +429,7 @@ export const make = Effect.gen(function* () {
           endedAt: null,
           expiresAt: isoAt(now + AGENT_CALL_RING_SECONDS * 1_000),
           participants: [],
+          ...callerVoice,
         };
         yield* commit(null, call, input.key);
         yield* after(

@@ -18,6 +18,7 @@ import { TestClock } from "effect/testing";
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { ORCHESTRATOR_CALLER_ID, isOrchestratorCaller } from "@t3tools/shared/orchestratorCaller";
 import {
   AGENT_CALL_AUTOMATIC_COOLDOWN_MS,
   AGENT_CALL_ENDED_RETENTION_MS,
@@ -45,12 +46,19 @@ const agentFor = (id: VmAgentId): VmAgent => ({
   updatedAt: iso,
 });
 
-function fixture(options: { readonly agentCalls?: boolean; readonly key?: boolean } = {}) {
+function fixture(
+  options: {
+    readonly agentCalls?: boolean;
+    readonly key?: boolean;
+    readonly orchestratorVoice?: string;
+  } = {},
+) {
   const settings = {
     ...DEFAULT_SERVER_SETTINGS,
     orchestrator: {
       ...DEFAULT_SERVER_SETTINGS.orchestrator,
       agentCalls: options.agentCalls ?? true,
+      ...(options.orchestratorVoice === undefined ? {} : { voice: options.orchestratorVoice }),
     },
   };
   return Layer.mergeAll(
@@ -64,7 +72,8 @@ function fixture(options: { readonly agentCalls?: boolean; readonly key?: boolea
         ),
     }),
     Layer.mock(VmAgentStore)({
-      getById: (id) => Effect.succeed(Option.some(agentFor(id))),
+      getById: (id) =>
+        Effect.succeed(isOrchestratorCaller(id) ? Option.none() : Option.some(agentFor(id))),
     }),
   );
 }
@@ -277,6 +286,30 @@ it.effect("call_user skips the cooldown but is capped per hour", () =>
         key: "request:4",
       });
       assert.strictEqual(allowed.status, "ringing");
+    }),
+  ),
+);
+
+it.effect("the orchestrator rings as itself, carrying its voice, with no agent behind it", () =>
+  withCalls({ orchestratorVoice: "marin" }, (calls) =>
+    Effect.gen(function* () {
+      const rung = yield* calls.ring({
+        vmAgentId: ORCHESTRATOR_CALLER_ID,
+        reason: "request",
+        topic: "The release build finished",
+        key: "orchestrator-request:1",
+      });
+      if (rung.status !== "ringing") return assert.fail(rung.status);
+      assert.strictEqual(rung.call.vmAgentId, ORCHESTRATOR_CALLER_ID);
+      assert.strictEqual(rung.call.callerVoice, "marin");
+      const agentRing = yield* calls.ring({
+        vmAgentId,
+        reason: "request",
+        topic: null,
+        key: "request:agent",
+      });
+      if (agentRing.status !== "ringing") return assert.fail(agentRing.status);
+      assert.strictEqual(agentRing.call.callerVoice, undefined);
     }),
   ),
 );

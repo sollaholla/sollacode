@@ -5,6 +5,8 @@ import {
   AGENT_CALL_GROK_SESSION_PATH,
   AGENT_CALL_SESSION_PATH,
   AGENT_CALL_SESSION_RELEASE_PATH,
+  ORCHESTRATOR_THREAD_ID,
+  ORCHESTRATOR_THREAD_TITLE,
   type AgentCall,
   type AgentCallDirection,
   type AgentCallId,
@@ -17,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 import { agentCallTransferDetail } from "@t3tools/shared/agentCallBridge";
 import { agentCallEngineFor, type AgentCallEngine } from "@t3tools/shared/agentCallVoice";
+import { isOrchestratorCaller } from "@t3tools/shared/orchestratorCaller";
 import * as Cause from "effect/Cause";
 import {
   createContext,
@@ -243,13 +246,33 @@ const commandFailureMessage = (cause: Cause.Cause<unknown>, fallback: string) =>
     : fallback;
 };
 
-const partyFor = (agent: VmAgent | null, vmAgentId: VmAgentId): AgentCallParty => ({
-  vmAgentId,
-  name: agent?.name ?? "Agent",
-  avatarColor: agent?.avatarColor ?? null,
-  threadId: agent?.threadId ?? null,
-  engine: agent === null ? "gpt-live" : agentCallEngineFor(agent),
-});
+/**
+ * Who is on a call, as this device shows and voices them. The orchestrator is
+ * never in an agent registry: its name and chat are fixed, and its voice comes
+ * with the call (`callerVoice`), which picks the engine to open.
+ */
+const partyFor = (
+  agent: VmAgent | null,
+  vmAgentId: VmAgentId,
+  callerVoice?: string | null,
+): AgentCallParty => {
+  if (isOrchestratorCaller(vmAgentId)) {
+    return {
+      vmAgentId,
+      name: ORCHESTRATOR_THREAD_TITLE,
+      avatarColor: null,
+      threadId: ORCHESTRATOR_THREAD_ID,
+      engine: agentCallEngineFor({ vmAgentId, voice: callerVoice ?? agent?.voice ?? null }),
+    };
+  }
+  return {
+    vmAgentId,
+    name: agent?.name ?? "Agent",
+    avatarColor: agent?.avatarColor ?? null,
+    threadId: agent?.threadId ?? null,
+    engine: agent === null ? "gpt-live" : agentCallEngineFor(agent),
+  };
+};
 
 /** A spoken transfer waiting for the voice to finish saying so. */
 interface PendingTransfer {
@@ -931,7 +954,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       const next = beginCall(
         {
           environmentId,
-          agent: partyFor(agent, call.vmAgentId),
+          agent: partyFor(agent, call.vmAgentId, call.callerVoice),
           callId: call.callId,
           direction: call.direction,
           topic: call.topic,

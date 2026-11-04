@@ -1,4 +1,5 @@
-import type { AgentCall, EnvironmentId } from "@t3tools/contracts";
+import { ORCHESTRATOR_THREAD_ID, type AgentCall, type EnvironmentId } from "@t3tools/contracts";
+import { isOrchestratorCaller } from "@t3tools/shared/orchestratorCaller";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
@@ -61,10 +62,15 @@ export function AgentCallOverlay() {
             embedded={embedded}
             onOpenChat={() => {
               api.setMinimised(true);
-              void navigate({
-                to: "/agents/$environmentId/$agentId",
-                params: { environmentId: call.environmentId, agentId: call.agent.vmAgentId },
-              });
+              void (isOrchestratorCaller(call.agent.vmAgentId)
+                ? navigate({
+                    to: "/$environmentId/$threadId",
+                    params: { environmentId: call.environmentId, threadId: ORCHESTRATOR_THREAD_ID },
+                  })
+                : navigate({
+                    to: "/agents/$environmentId/$agentId",
+                    params: { environmentId: call.environmentId, agentId: call.agent.vmAgentId },
+                  }));
             }}
           />
         )

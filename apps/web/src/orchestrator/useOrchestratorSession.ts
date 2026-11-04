@@ -66,6 +66,7 @@ import {
   type AwaitedWorkState,
 } from "./awaitedWork";
 import { buildHangUpHandoff } from "./hangUpHandoff";
+import { createWorkingAmbience, type WorkingAmbience } from "./workingAmbience";
 import { isEchoProneDevice, resolveInterruptWhileSpeaking } from "./echoProneDevice";
 import { resolveVoiceCuePolicy } from "./voiceCues";
 import { decideReconnect } from "./reconnect";
@@ -2312,6 +2313,59 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
       });
     }
   }, [announceCompletion, orchestrator.spokenEvents, recordToolCall, world]);
+
+  // The sound of the orchestrator at work: while a request runs and the voice
+  // is quiet, a hum and soft blips, so a wait is audibly work. A quick lookup
+  // finishes inside the delay and stays silent.
+  const ambienceRef = useRef<{ context: AudioContext; sounds: WorkingAmbience } | null>(null);
+  useEffect(() => {
+    if (!working || state !== "listening") {
+      ambienceRef.current?.sounds.setActive(false);
+      return;
+    }
+    let pump: ReturnType<typeof setInterval> | null = null;
+    const delay = setTimeout(() => {
+      let current = ambienceRef.current;
+      if (current === null) {
+        const AudioContextConstructor =
+          window.AudioContext ??
+          (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (AudioContextConstructor === undefined) return;
+        const context = new AudioContextConstructor();
+        current = {
+          context,
+          sounds: createWorkingAmbience({
+            context,
+            destination: context.destination,
+            volume: () => {
+              const cues = resolveVoiceCuePolicy(getClientSettings());
+              return cues.enabled ? cues.volume : 0;
+            },
+          }),
+        };
+        ambienceRef.current = current;
+      }
+      const playing = current;
+      void playing.context.resume().catch(() => undefined);
+      playing.sounds.setActive(true);
+      playing.sounds.pump();
+      pump = setInterval(() => playing.sounds.pump(), 100);
+    }, 700);
+    return () => {
+      clearTimeout(delay);
+      if (pump !== null) clearInterval(pump);
+      ambienceRef.current?.sounds.setActive(false);
+    };
+  }, [state, working]);
+  useEffect(
+    () => () => {
+      const current = ambienceRef.current;
+      ambienceRef.current = null;
+      current?.sounds.dispose();
+      void current?.context.close().catch(() => undefined);
+    },
+    [],
+  );
 
   // Tear the session down when the feature is switched off or the component
   // unmounts, so the microphone never outlives its owner.

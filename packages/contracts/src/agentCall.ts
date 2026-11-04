@@ -154,6 +154,12 @@ export const AgentCall = Schema.Struct({
   expiresAt: Schema.NullOr(IsoDateTime),
   /** Chats added to the call, oldest first. Absent from hosts before merged calls. */
   participants: Schema.optionalKey(Schema.Array(AgentCallParticipant)),
+  /**
+   * The voice the caller speaks with, when it is not one of the host's agents:
+   * set for the orchestrator, whose voice is a setting rather than an agent's.
+   * Devices pick the voice engine from it.
+   */
+  callerVoice: Schema.optionalKey(Schema.NullOr(Schema.String.check(Schema.isMaxLength(64)))),
 });
 export type AgentCall = typeof AgentCall.Type;
 

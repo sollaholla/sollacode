@@ -5,7 +5,9 @@ import {
   AgentCallId,
   type AgentCallStatus,
   EnvironmentId,
+  ORCHESTRATOR_THREAD_TITLE,
 } from "@t3tools/contracts";
+import { isOrchestratorCaller } from "@t3tools/shared/orchestratorCaller";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import * as Haptics from "expo-haptics";
@@ -58,6 +60,8 @@ function useAgentName(environmentId: EnvironmentId, vmAgentId: string | null): s
     [environmentId],
   );
   const latest = Option.getOrNull(AsyncResult.value(useAtomValue(agentsAtom)));
+  // The orchestrator calls as itself and is never in the agent registry.
+  if (isOrchestratorCaller(vmAgentId)) return ORCHESTRATOR_THREAD_TITLE;
   if (vmAgentId === null || latest?.type !== "snapshot") return null;
   return latest.agents.find((agent) => agent.vmAgentId === vmAgentId)?.name ?? null;
 }

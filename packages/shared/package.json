@@ -71,6 +71,10 @@
       "types": "./src/agentCallVoice.ts",
       "import": "./src/agentCallVoice.ts"
     },
+    "./orchestratorCaller": {
+      "types": "./src/orchestratorCaller.ts",
+      "import": "./src/orchestratorCaller.ts"
+    },
     "./agentAttentionFollowUp": {
       "types": "./src/agentAttentionFollowUp.ts",
       "import": "./src/agentAttentionFollowUp.ts"

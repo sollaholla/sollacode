@@ -24,6 +24,7 @@ export const WorkspaceOrchestrationInput = Schema.Struct({
     "list_terminals",
     "read_terminal",
     "write_to_terminal",
+    "call_user",
   ]),
   threadId: Schema.optional(ThreadId).annotate({
     description:
@@ -48,6 +49,10 @@ export const WorkspaceOrchestrationInput = Schema.Struct({
   includeSettled: Schema.optional(Schema.Boolean).annotate({
     description:
       "list_threads only: include threads the user has already settled. Defaults to false.",
+  }),
+  callReason: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(500))).annotate({
+    description:
+      "call_user only: one sentence on why you are calling. The call opens with it, and it shows on the incoming-call screen.",
   }),
   includeSideChats: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -163,6 +168,11 @@ export const WorkspaceOrchestrationResult = Schema.Union([
     written: Schema.Boolean,
     submitted: Schema.Boolean,
   }),
+  Schema.Struct({
+    action: Schema.Literal("call_user"),
+    /** Whether it rang, and if not, why. */
+    status: Schema.String,
+  }),
 ]);
 export type WorkspaceOrchestrationResult = typeof WorkspaceOrchestrationResult.Type;
 
@@ -174,6 +184,7 @@ export const ORCHESTRATOR_ONLY_WORKSPACE_ACTIONS: ReadonlySet<string> = new Set(
   "send_to_thread",
   "interrupt_thread",
   "write_to_terminal",
+  "call_user",
 ]);
 
 export class WorkspaceOrchestrationScopeError extends Schema.TaggedErrorClass<WorkspaceOrchestrationScopeError>()(

@@ -7,6 +7,7 @@ import {
   type OrchestrationThreadShell,
   type TerminalSummary,
 } from "@t3tools/contracts";
+import { ORCHESTRATOR_CALLER_ID } from "@t3tools/shared/orchestratorCaller";
 import { encodeTerminalWrite, visibleTerminalText } from "@t3tools/shared/terminalText";
 import { isThreadWorking, liveBackgroundTasks } from "@t3tools/shared/threadWorking";
 import * as Crypto from "effect/Crypto";
@@ -18,6 +19,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { TerminalManager } from "../../../terminal/Manager.ts";
+import { AgentCalls, type AgentCallRingOutcome } from "../../../vm/AgentCalls.ts";
 import { WorkspaceOrchestrationToolkit } from "./tools.ts";
 import {
   ORCHESTRATOR_ONLY_WORKSPACE_ACTIONS,
@@ -495,8 +497,39 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
 
       return { action: "interrupt_thread" as const, threadId: thread.id, interrupted: true };
     }
+
+    case "call_user": {
+      const callReason = input.callReason?.trim();
+      if (callReason === undefined || callReason.length === 0) {
+        return yield* new WorkspaceOrchestrationInvalidInputError({
+          action: input.action,
+          missing: "callReason",
+        });
+      }
+      const calls = yield* AgentCalls;
+      const outcome = yield* calls.ring({
+        vmAgentId: ORCHESTRATOR_CALLER_ID,
+        reason: "request",
+        topic: callReason,
+        key: `orchestrator-request:${yield* crypto.randomUUIDv4.pipe(Effect.orDie)}`,
+      });
+      return { action: "call_user" as const, status: ORCHESTRATOR_CALL_STATUS[outcome.status] };
+    }
   }
 });
+
+/** What call_user tells the orchestrator, so it knows its next step. */
+const ORCHESTRATOR_CALL_STATUS: Record<AgentCallRingOutcome["status"], string> = {
+  ringing:
+    "ringing — if the person answers, the call's conversation arrives in this chat as messages. End your turn so you can reply to them.",
+  disabled:
+    "calls are turned off (Settings → Orchestrator → Agents can call me) or no voice key is set; write in this chat instead",
+  "already-ringing": "already ringing",
+  busy: "already on a call with the person",
+  duplicate: "already ringing",
+  cooldown: "rate-limited — write in this chat instead",
+  "rate-limited": "rate-limited — write in this chat instead",
+};
 
 const handlers = {
   workspace_orchestration: handleWorkspaceOrchestration,

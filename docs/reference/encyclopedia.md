@@ -316,6 +316,12 @@ between automatic rings and an hourly cap on `call_user`. `call_user` works from
 its side chats and its delegated workers, all as the agent; any other chat asks the agent with a
 [cross-chat message](#cross-chat-message).
 
+The orchestrator rings too, through workspace_orchestration `call_user`, as the reserved caller id
+`solla-orchestrator` (`packages/shared/src/orchestratorCaller.ts`). It is never a real agent: the
+host resolves it from settings (`apps/server/src/vm/callAgent.ts`), the call carries the
+orchestrator's voice as `callerVoice` so devices pick the right engine, and the call talks to the
+orchestrator's own chat.
+
 `vmAgent.call.end` takes `AgentCallEndInput`. A plain end settles a `ringing` or `active` call as
 `ended`. With `ifRinging: true` the host ends it only while it still rings, so a device that never
 connected can cancel its ring without hanging up a call another device answered. The web client

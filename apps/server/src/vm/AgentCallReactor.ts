@@ -1,4 +1,6 @@
 import {
+  ORCHESTRATOR_THREAD_ID,
+  ORCHESTRATOR_THREAD_TITLE,
   agentCallRoutePath,
   type AgentCall,
   type EnvironmentId,
@@ -26,6 +28,7 @@ import {
   type AgentCallTransition,
 } from "./AgentCalls.ts";
 import { resolveOwningVmAgent } from "./owningAgent.ts";
+import { isOrchestratorCaller } from "@t3tools/shared/orchestratorCaller";
 import { VmAgentWorkspace } from "./VmAgentWorkspace.ts";
 
 /** A request older than this is a replay (a restart, a reconnect), not something to ring for. */
@@ -128,7 +131,10 @@ export function agentCallPushActions(
       },
     ];
   if (previous?.status !== "ringing" || call.status === "ringing") return [];
-  const agentPath = `/agents/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(call.vmAgentId)}`;
+  // The orchestrator's missed call opens its chat; an agent's opens the agent.
+  const agentPath = isOrchestratorCaller(call.vmAgentId)
+    ? `/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(ORCHESTRATOR_THREAD_ID)}`
+    : `/agents/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(call.vmAgentId)}`;
   if (call.status !== "missed") {
     const createdAt = call.endedAt ?? call.answeredAt ?? call.createdAt;
     return [
@@ -178,16 +184,23 @@ export const AgentCallReactorLive = Layer.effectDiscard(
     const engine = yield* OrchestrationEngineService;
     const environmentId = yield* (yield* ServerEnvironment).getEnvironmentId;
     const agentName = (call: AgentCall) =>
-      agents.getById(call.vmAgentId).pipe(
-        Effect.map((agent) => (Option.isSome(agent) ? agent.value.name : "Your agent")),
-        Effect.orElseSucceed(() => "Your agent"),
-      );
+      isOrchestratorCaller(call.vmAgentId)
+        ? Effect.succeed(ORCHESTRATOR_THREAD_TITLE)
+        : agents.getById(call.vmAgentId).pipe(
+            Effect.map((agent) => (Option.isSome(agent) ? agent.value.name : "Your agent")),
+            Effect.orElseSucceed(() => "Your agent"),
+          );
 
     const onTransition = Effect.fn("AgentCalls.onTransition")(
       function* (transition: AgentCallTransition) {
         const name = yield* agentName(transition.call);
         const call = transition.call;
-        if (call.direction === "incoming" && call.status === "missed") {
+        // The orchestrator has no agent inbox; its missed call is in the push alone.
+        if (
+          call.direction === "incoming" &&
+          call.status === "missed" &&
+          !isOrchestratorCaller(call.vmAgentId)
+        ) {
           // The inbox keeps the missed call after the in-memory record is
           // pruned. Web push leaves this entry alone (WebPushReactor skips
           // missed-call ids): the missed-call push below already replaces the

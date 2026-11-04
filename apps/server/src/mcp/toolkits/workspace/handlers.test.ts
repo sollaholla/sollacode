@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ORCHESTRATOR_CALLER_ID } from "@t3tools/shared/orchestratorCaller";
 import {
   EnvironmentId,
   makeRemoteThreadId,
@@ -24,6 +25,7 @@ import * as Stream from "effect/Stream";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { AgentCalls } from "../../../vm/AgentCalls.ts";
 import { TerminalManager } from "../../../terminal/Manager.ts";
 import { handleWorkspaceOrchestration, summarizeThread } from "./handlers.ts";
 
@@ -233,7 +235,21 @@ const makeHarness = (
     subscribeLayouts: () => Effect.succeed(() => undefined),
   });
 
-  return { commands, writes, layer: Layer.mergeAll(projectionLayer, engineLayer, terminalLayer) };
+  const rings: Array<Parameters<AgentCalls["Service"]["ring"]>[0]> = [];
+  const callsLayer = Layer.mock(AgentCalls)({
+    ring: (input) =>
+      Effect.sync(() => {
+        rings.push(input);
+        return { status: "disabled" } as const;
+      }),
+  });
+
+  return {
+    commands,
+    writes,
+    rings,
+    layer: Layer.mergeAll(projectionLayer, engineLayer, terminalLayer, callsLayer),
+  };
 };
 
 type HandlerEffect = ReturnType<typeof handleWorkspaceOrchestration>;
@@ -725,6 +741,35 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
       expect(command.message.role).toBe("user");
       expect(command.message.senderThreadId).toBe(ORCHESTRATOR_THREAD_ID);
       expect(command.message.senderThreadTitle).toBe("Orchestrator");
+    }),
+  );
+
+  it.effect("lets the orchestrator ring the person, as itself", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const result = yield* runAs(
+        ORCHESTRATOR_THREAD_ID,
+        harness,
+        handleWorkspaceOrchestration({
+          action: "call_user",
+          callReason: "The release build is waiting on your approval.",
+        }),
+      );
+      expect(harness.rings).toHaveLength(1);
+      expect(harness.rings[0]?.vmAgentId).toBe(ORCHESTRATOR_CALLER_ID);
+      expect(harness.rings[0]?.topic).toBe("The release build is waiting on your approval.");
+      expect(result).toMatchObject({ action: "call_user" });
+
+      // Another chat may not ring the person as the orchestrator.
+      const refused = yield* Effect.flip(
+        runAs(
+          ThreadId.make("thread-other"),
+          harness,
+          handleWorkspaceOrchestration({ action: "call_user", callReason: "Hello" }),
+        ),
+      );
+      expect(refused._tag).toBe("WorkspaceOrchestrationScopeError");
+      expect(harness.rings).toHaveLength(1);
     }),
   );
 
