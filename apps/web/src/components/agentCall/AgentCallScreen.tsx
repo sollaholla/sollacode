@@ -3,6 +3,7 @@ import {
   MessageSquareIcon,
   MicIcon,
   MicOffIcon,
+  PhoneIcon,
   PhoneOffIcon,
   UserPlusIcon,
   XIcon,
@@ -396,7 +397,18 @@ export function AgentCallScreen(props: {
             />
           </>
         ) : (
-          <CallRoundButton label="Close" icon={<XIcon />} tone="neutral" onClick={api.dismiss} />
+          <>
+            <CallRoundButton label="Close" icon={<XIcon />} tone="neutral" onClick={api.dismiss} />
+            {/* The phone app's own screen offers this, and owns placing its calls. */}
+            {!props.embedded ? (
+              <CallRoundButton
+                label="Call back"
+                icon={<PhoneIcon />}
+                tone="accept"
+                onClick={api.callBack}
+              />
+            ) : null}
+          </>
         )}
       </div>
     </div>

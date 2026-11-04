@@ -36,6 +36,7 @@ import {
   startRingingHaptics,
 } from "./agentCallModel";
 import { useAppActive } from "./useAppActive";
+import { usePlaceAgentCall } from "./usePlaceAgentCall";
 
 type AgentCallRouteProps = StaticScreenProps<{
   readonly environmentId: string;
@@ -105,6 +106,8 @@ export function AgentCallRouteScreen({ route }: AgentCallRouteProps) {
   const calls = useAgentCalls(environmentId);
   const appActive = useAppActive();
   const endCall = useAtomCommand(vmAgentEnvironment.endCall, { reportFailure: false });
+  const { place: callBack, placing: placingAgent } = usePlaceAgentCall();
+  const placing = placingAgent !== null;
 
   const [hold, setHold] = useState(() =>
     initialAgentCallScreenHold({
@@ -239,6 +242,18 @@ export function AgentCallRouteScreen({ route }: AgentCallRouteProps) {
           >
             {hold.failure}
           </Text>
+          {call !== null ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={placing}
+              className="mt-2 min-h-[42px] self-start justify-center rounded-[10px] bg-blue-500 px-4 active:opacity-70"
+              onPress={() => void callBack(environmentId, call.vmAgentId)}
+            >
+              <Text className="text-sm font-t3-bold text-white">
+                {placing ? "Calling…" : "Call back"}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
       <EnvironmentWebScreen

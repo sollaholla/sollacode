@@ -1,48 +1,71 @@
-import { RING_BURST_MS, RING_VIBRATION_PATTERN, nextRingBurstDelay } from "./agentCallLogic";
+import { RING_VIBRATION_PATTERN, nextRingBurstDelay } from "./agentCallLogic";
 
-/** Two notes a major third apart, alternated quickly: a handset's trill. */
-const RING_NOTES_HZ = [698.46, 880] as const;
-const NOTE_SECONDS = 0.125;
-const NOTES_PER_BURST = Math.floor(RING_BURST_MS / 1_000 / NOTE_SECONDS);
-/** The short break that makes one burst read as "ring-ring". */
-const BREAK_NOTES: ReadonlySet<number> = new Set([7, 8]);
+/**
+ * The ring: an original mallet phrase, soft and rounded in the manner of a
+ * phone's ringtone. Every call sound here is synthesized, so nothing of anyone
+ * else's ships with the app.
+ */
+const RING_NOTE_SECONDS = 0.22;
+const RING_PHRASE_HZ = [659.25, 830.61, 987.77, 1318.51, 987.77, 830.61, 987.77, 1318.51] as const;
 const PEAK_GAIN = 0.16;
+
+/** Harmonics of a struck bar: the body, and a bright attack that dies at once. */
+const STRUCK_PARTIALS = [
+  { ratio: 1, level: 1, decay: 1 },
+  { ratio: 4, level: 0.16, decay: 0.22 },
+] as const;
+
+/** One struck note. Faded in over milliseconds: a hard edge on a sine is a click. */
+function scheduleStruckNote(input: {
+  readonly context: AudioContext;
+  readonly frequency: number;
+  readonly at: number;
+  readonly seconds: number;
+  readonly peak: number;
+}): OscillatorNode[] {
+  const { context, frequency, at, seconds, peak } = input;
+  return STRUCK_PARTIALS.map((partial) => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const end = at + seconds * partial.decay;
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(frequency * partial.ratio, at);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(Math.max(peak * partial.level, 0.0002), at + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, end);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(at);
+    oscillator.stop(end + 0.01);
+    return oscillator;
+  });
+}
 
 export interface Ringtone {
   stop(): void;
 }
 
 /**
- * Schedules one two-second burst on the context's own clock. Two audio nodes
- * per burst and no animation frames: Web Audio plays it without the page
- * doing any work until the next burst four seconds later.
+ * Schedules one phrase on the context's own clock, with nothing for the page to
+ * do until the next one four seconds later.
  */
 function scheduleRingBurst(context: AudioContext, volume: number): void {
   const start = context.currentTime + 0.02;
-  const oscillator = context.createOscillator();
-  const gain = context.createGain();
-  oscillator.type = "sine";
   const peak = PEAK_GAIN * Math.min(Math.max(volume, 0), 1);
-  gain.gain.setValueAtTime(0.0001, start);
-  for (let index = 0; index < NOTES_PER_BURST; index += 1) {
-    if (BREAK_NOTES.has(index)) continue;
-    const at = start + index * NOTE_SECONDS;
-    oscillator.frequency.setValueAtTime(RING_NOTES_HZ[index % 2] ?? RING_NOTES_HZ[0], at);
-    // Ramped, never switched: a hard edge on a sine is a click.
-    gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.linearRampToValueAtTime(peak, at + 0.012);
-    gain.gain.linearRampToValueAtTime(peak * 0.6, at + NOTE_SECONDS * 0.7);
-    gain.gain.linearRampToValueAtTime(0.0001, at + NOTE_SECONDS);
-  }
-  oscillator.connect(gain);
-  gain.connect(context.destination);
-  oscillator.start(start);
-  oscillator.stop(start + NOTES_PER_BURST * NOTE_SECONDS + 0.02);
+  RING_PHRASE_HZ.forEach((frequency, index) => {
+    scheduleStruckNote({
+      context,
+      frequency,
+      at: start + index * RING_NOTE_SECONDS,
+      seconds: RING_NOTE_SECONDS * 2.4,
+      peak,
+    });
+  });
 }
 
 /**
  * Rings until stopped or until the ring expires: two seconds of a synthesized
- * trill, four of silence, with a vibration pattern per burst where the device
+ * phrase, four of silence, with a vibration pattern per burst where the device
  * has one. `volume` is read at every burst, so changing the sound-cue volume
  * lands on the next ring. Best-effort throughout — a browser that will not
  * start audio without a tap gets its first ring after the next tap, and a
@@ -118,15 +141,11 @@ export function startRingtone(input: {
   };
 }
 
-/** Three falling notes, the sound of a call ending. */
-const HANG_UP_NOTES_HZ = [784, 659.25, 523.25] as const;
-const HANG_UP_NOTE_SECONDS = 0.13;
-
-/**
- * Plays the hang-up sound once a connected call ends, from either side.
- * Best-effort like the ring: no audio is never a reason anything fails.
- */
-export function playHangUpTone(volume: number): void {
+/** A short synthesized cue: gliding sine notes, one after another. */
+function playCueNotes(
+  notes: ReadonlyArray<{ readonly from: number; readonly to: number; readonly seconds: number }>,
+  volume: number,
+): void {
   if (typeof AudioContext === "undefined") return;
   let context: AudioContext;
   try {
@@ -135,28 +154,52 @@ export function playHangUpTone(volume: number): void {
     return;
   }
   try {
-    const start = context.currentTime + 0.02;
+    void context.resume().catch(() => undefined);
     const peak = PEAK_GAIN * Math.min(Math.max(volume, 0), 1);
-    const oscillator = context.createOscillator();
     const gain = context.createGain();
-    oscillator.type = "sine";
-    gain.gain.setValueAtTime(0.0001, start);
-    HANG_UP_NOTES_HZ.forEach((frequency, index) => {
-      const at = start + index * HANG_UP_NOTE_SECONDS;
-      oscillator.frequency.setValueAtTime(frequency, at);
-      gain.gain.setValueAtTime(0.0001, at);
-      gain.gain.linearRampToValueAtTime(peak, at + 0.012);
-      gain.gain.linearRampToValueAtTime(0.0001, at + HANG_UP_NOTE_SECONDS * 0.9);
-    });
-    const end = start + HANG_UP_NOTES_HZ.length * HANG_UP_NOTE_SECONDS;
-    oscillator.connect(gain);
     gain.connect(context.destination);
+    const oscillator = context.createOscillator();
+    oscillator.type = "sine";
+    oscillator.connect(gain);
+    let at = context.currentTime + 0.02;
+    const start = at;
+    gain.gain.setValueAtTime(0.0001, at);
+    for (const note of notes) {
+      oscillator.frequency.setValueAtTime(note.from, at);
+      oscillator.frequency.exponentialRampToValueAtTime(note.to, at + note.seconds);
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.linearRampToValueAtTime(peak, at + 0.008);
+      gain.gain.linearRampToValueAtTime(0.0001, at + note.seconds);
+      at += note.seconds + 0.025;
+    }
     oscillator.start(start);
-    oscillator.stop(end);
+    oscillator.stop(at);
     oscillator.addEventListener("ended", () => void context.close().catch(() => undefined));
   } catch {
     void context.close().catch(() => undefined);
   }
+}
+
+/** Two soft falling beeps, the sound of a call ending. */
+const HANG_UP_NOTES = [
+  { from: 620, to: 610, seconds: 0.12 },
+  { from: 470, to: 460, seconds: 0.16 },
+] as const;
+/** A quick tick downwards as the microphone closes, and upwards as it opens. */
+const MUTE_NOTES = [{ from: 620, to: 430, seconds: 0.07 }] as const;
+const UNMUTE_NOTES = [{ from: 430, to: 720, seconds: 0.07 }] as const;
+
+/**
+ * Plays the hang-up sound once a connected call ends, from either side.
+ * Best-effort like the ring: no audio is never a reason anything fails.
+ */
+export function playHangUpTone(volume: number): void {
+  playCueNotes(HANG_UP_NOTES, volume);
+}
+
+/** Confirms the microphone changed, for someone not looking at the screen. */
+export function playMuteTone(muted: boolean, volume: number): void {
+  playCueNotes(muted ? MUTE_NOTES : UNMUTE_NOTES, volume);
 }
 
 /** North American ringback: two tones together, two seconds on, four off. */

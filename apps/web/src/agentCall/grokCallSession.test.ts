@@ -234,6 +234,24 @@ describe("Grok call session", () => {
     expect(mocks.inner.stop).toHaveBeenCalled();
   });
 
+  it("drops the call when the host stops answering, though the voice is still up", async () => {
+    const f = fixture();
+    const lost = vi.fn();
+    (f.callbacks as { onConnectionLost?: () => void }).onConnectionLost = lost;
+    await f.start();
+    // Mid-task, with the typing sound going and a task stream nothing will end.
+    f.created.callbacks.onTranscript?.({ role: "user", text: "Is the deploy green?" });
+    await f.created.callbacks.onToolCall({ name: "start_work", args: {} });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.callbacks.onWorkingChange).toHaveBeenLastCalledWith(true);
+
+    vi.mocked(fetch).mockRejectedValue(new TypeError("Load failed"));
+    await vi.advanceTimersByTimeAsync(15_000 + 3_000 * 2);
+    expect(lost).toHaveBeenCalledOnce();
+    expect(mocks.inner.stop).toHaveBeenCalled();
+    expect(f.callbacks.onWorkingChange).toHaveBeenLastCalledWith(false);
+  });
+
   it("frees the host's session when the voice ends itself", async () => {
     const f = fixture();
     await f.start();

@@ -25,6 +25,7 @@ import {
   type VoiceSessionOptions,
   type VoiceSessionState,
 } from "../orchestrator/realtimeSession";
+import { startHeartbeatWatch, type HeartbeatWatch } from "../orchestrator/heartbeatWatch";
 import { DEFAULT_VOICE_CUE_POLICY } from "../orchestrator/voiceCues";
 
 const decodeStart = Schema.decodeUnknownSync(AgentCallGrokSessionStartResult);
@@ -84,7 +85,7 @@ export function createGrokCallSession(
   let stopped = false;
   let released = false;
   let startedAt = Date.now();
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let heartbeatWatch: HeartbeatWatch | null = null;
   const context = createLiveTranscriptContext(options.recentHistory);
   /** Finished user transcripts so far; a delegation notes the count it was sent with. */
   let userFragments = 0;
@@ -168,8 +169,8 @@ export function createGrokCallSession(
     if (stopped) return;
     stopped = true;
     if (typeof window !== "undefined") window.removeEventListener("pagehide", onPageHide);
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
+    heartbeatWatch?.stop();
+    heartbeatWatch = null;
     for (const timer of delegationTimers) clearTimeout(timer);
     delegationTimers.clear();
     userTranscriptArrived.clear();
@@ -197,25 +198,31 @@ export function createGrokCallSession(
     callbacks.onSessionGone?.();
   };
 
+  /** The host stopped answering: the voice may still be up, but nothing behind it is. */
+  const lost = () => {
+    if (stopped) return;
+    cleanup();
+    inner.stop();
+    callbacks.onConnectionLost?.();
+  };
+
   const startHeartbeat = () => {
     const heartbeat = routes.heartbeat;
-    if (!heartbeat || !sessionId || heartbeatTimer) return;
+    if (!heartbeat || !sessionId || heartbeatWatch) return;
     const id = sessionId;
-    heartbeatTimer = setInterval(() => {
-      if (stopped) return;
-      void fetch(url(heartbeat.path), {
-        method: "POST",
-        headers,
-        credentials,
-        body: JSON.stringify({ sessionId: id }),
-      }).then(
-        (response) => {
-          if (response.status === 409) gone();
-        },
-        // A missed beat is fine: the lease outlasts a few of them.
-        () => undefined,
-      );
-    }, heartbeat.everySeconds * 1_000);
+    heartbeatWatch = startHeartbeatWatch({
+      everyMs: heartbeat.everySeconds * 1_000,
+      beat: (signal) =>
+        fetch(url(heartbeat.path), {
+          method: "POST",
+          headers,
+          credentials,
+          signal,
+          body: JSON.stringify({ sessionId: id }),
+        }),
+      onRefused: gone,
+      onLost: lost,
+    });
   };
 
   /** Claims the call on its host and hands the realtime session what to open. */

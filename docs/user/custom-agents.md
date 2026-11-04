@@ -345,7 +345,9 @@ Say goodbye to end a call by voice: once you say bye (or "that's all", "hang up"
 answers with its own goodbye, the call hangs up as soon as that goodbye finishes. A connected call
 ending, from either side, plays a short hang-up tone (off when sound cues are off in Settings).
 
-A call sounds like a phone call. Calling an agent rings out until it picks up, and it answers
+If the connection really drops, the call ends with **The call dropped.** and a **Call back** button, within about 10 to 25 seconds of the link going, and sooner when the device knows it is offline. The typing sound stops with it. While the page is hidden, such as on a locked phone, the call ends if the voice's own connection dies, not on a missed check with the host.
+
+Mute and unmute each play a short tick, and these and the ring and hang-up sounds are made by Solla Code itself and follow your sound-cue settings. A call sounds like a phone call. Calling an agent rings out until it picks up, and it answers
 with a short hello such as "Hey, what's up?"; an agent that calls you opens with why it called. The
 agent's voice comes down a phone line, cut to the range a handset carries, and while the agent works
 in its chat you hear it typing in bursts of a couple of seconds, with pauses and the odd mouse click

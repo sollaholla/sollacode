@@ -36,7 +36,7 @@ import { getClientSettings } from "../hooks/useSettings";
 import { readPreferredMicrophone } from "../orchestrator/microphones";
 import { resolveVoiceCuePolicy } from "../orchestrator/voiceCues";
 import { createGrokCallSession } from "./grokCallSession";
-import { playHangUpTone, startRingback } from "./ringtone";
+import { playHangUpTone, playMuteTone, startRingback } from "./ringtone";
 import { useLiveUsageStore } from "../orchestrator/liveUsageStore";
 import { appendUsage } from "../orchestrator/usageStore";
 import type { VoiceSession, VoiceSessionState } from "../orchestrator/realtimeSession";
@@ -174,6 +174,8 @@ export interface AgentCallApi {
   readonly setMinimised: (minimised: boolean) => void;
   /** Clears a finished call's screen. */
   readonly dismiss: () => void;
+  /** Calls the agent again from a call that has ended here, such as one that dropped. */
+  readonly callBack: () => void;
 }
 
 /**
@@ -988,6 +990,8 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     mutedRef.current = next;
     setMuted(next);
     sessionRef.current?.setMuted?.(next);
+    const cues = resolveVoiceCuePolicy(getClientSettings());
+    if (cues.enabled) playMuteTone(next, cues.volume);
   }, []);
 
   const addParticipant = useCallback(
@@ -1020,6 +1024,20 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
     const current = activeRef.current;
     if (current !== null && !isAgentCallPhaseOpen(current.phase)) commitActive(null);
   }, [commitActive]);
+
+  const callBack = useCallback(() => {
+    const current = activeRef.current;
+    if (current === null || isAgentCallPhaseOpen(current.phase)) return;
+    const registry = agentsRef.current;
+    const agent =
+      registry?.environmentId === current.environmentId
+        ? registry.agents.find((candidate) => candidate.vmAgentId === current.agent.vmAgentId)
+        : undefined;
+    placeParty(
+      current.environmentId,
+      agent === undefined ? current.agent : partyFor(agent, agent.vmAgentId),
+    );
+  }, [placeParty]);
 
   const reportCalls = useCallback(
     (environmentId: EnvironmentId, calls: ReadonlyArray<AgentCall> | null) => {
@@ -1228,6 +1246,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       chooseMicrophone,
       setMinimised,
       dismiss,
+      callBack,
     }),
     [
       activeCall,
@@ -1235,6 +1254,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       answer,
       decline,
       dismiss,
+      callBack,
       end,
       hangUp,
       minimised,

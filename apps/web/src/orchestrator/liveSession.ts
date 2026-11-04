@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { startHeartbeatWatch, type HeartbeatWatch } from "./heartbeatWatch";
 import type {
   LiveSessionRoutes,
   VoiceSession,
@@ -93,7 +94,7 @@ export function createLiveVoiceSession(
   let meter: ReturnType<typeof setInterval> | null = null;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
   let unstableTimer: ReturnType<typeof setTimeout> | null = null;
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let heartbeatWatch: HeartbeatWatch | null = null;
   let released = false;
   let readyResolve: (() => void) | null = null;
   let readyReject: ((error: Error) => void) | null = null;
@@ -208,8 +209,8 @@ export function createLiveVoiceSession(
     opening.abort();
     if (typeof window !== "undefined") window.removeEventListener("pagehide", onPageHide);
     navigator.mediaDevices?.removeEventListener?.("devicechange", onDeviceChange);
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
+    heartbeatWatch?.stop();
+    heartbeatWatch = null;
     if (meter) clearInterval(meter);
     if (closeTimer) clearTimeout(closeTimer);
     if (unstableTimer) clearTimeout(unstableTimer);
@@ -310,23 +311,21 @@ export function createLiveVoiceSession(
   };
   const startHeartbeat = () => {
     const heartbeat = routes.heartbeat;
-    if (!heartbeat || !sessionId || heartbeatTimer) return;
+    if (!heartbeat || !sessionId || heartbeatWatch) return;
     const id = sessionId;
-    heartbeatTimer = setInterval(() => {
-      if (stopped) return;
-      void fetch(url(heartbeat.path), {
-        method: "POST",
-        headers,
-        credentials,
-        body: JSON.stringify({ sessionId: id }),
-      }).then(
-        (response) => {
-          if (response.status === 409) gone();
-        },
-        // A missed beat is fine: the lease outlasts a few of them.
-        () => undefined,
-      );
-    }, heartbeat.everySeconds * 1_000);
+    heartbeatWatch = startHeartbeatWatch({
+      everyMs: heartbeat.everySeconds * 1_000,
+      beat: (signal) =>
+        fetch(url(heartbeat.path), {
+          method: "POST",
+          headers,
+          credentials,
+          signal,
+          body: JSON.stringify({ sessionId: id }),
+        }),
+      onRefused: gone,
+      onLost: lost,
+    });
   };
   /**
    * Asks again, once, for a delegation the host answered with nothing new:

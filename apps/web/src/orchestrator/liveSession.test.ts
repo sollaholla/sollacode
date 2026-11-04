@@ -753,6 +753,36 @@ describe("GPT-Live session liveness", () => {
     expect(urls(f).filter((url) => url.endsWith("/heartbeat"))).toHaveLength(beats);
   });
 
+  it("drops the call when the host stops answering, even with the voice still connected", async () => {
+    const gone = vi.fn();
+    const lostConnection = vi.fn();
+    const working = vi.fn();
+    const f = fixture(
+      { onSessionGone: gone, onConnectionLost: lostConnection, onWorkingChange: working },
+      { live: callRoutes },
+    );
+    let reachable = true;
+    const original = f.fetchMock.getMockImplementation()!;
+    f.fetchMock.mockImplementation(async (url: string, init: RequestInit) => {
+      if (!url.endsWith("/heartbeat")) return original(url, init);
+      if (!reachable) throw new TypeError("Load failed");
+      return new Response(null, { status: 204 });
+    });
+    await f.ready();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(lostConnection).not.toHaveBeenCalled();
+
+    reachable = false;
+    await vi.advanceTimersByTimeAsync(15_000 + 3_000 * 2);
+    expect(lostConnection).toHaveBeenCalledOnce();
+    expect(gone).not.toHaveBeenCalled();
+    expect(f.peer.close).toHaveBeenCalledOnce();
+    expect(f.track.stop).toHaveBeenCalled();
+    expect(f.session.state).toBe("idle");
+    // Whatever was running, nothing is left telling the person it still is.
+    expect(working).toHaveBeenLastCalledWith(false);
+  });
+
   it("ends a leased session whose delegation the host refuses with 409", async () => {
     const gone = vi.fn();
     const errors = vi.fn();
