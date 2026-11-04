@@ -192,8 +192,9 @@ export function passkeySiteRows(snapshot: PreviewPasskeysSnapshot): readonly Pas
     const site = passkeySiteForHost(passkey.rpId);
     passkeysBySite.set(site, [...(passkeysBySite.get(site) ?? []), passkey]);
   }
+  // .sort() on a copy, as above: the phone uses this too.
   return [...new Set([...snapshot.sites, ...passkeysBySite.keys()])]
-    .toSorted((left, right) => left.localeCompare(right))
+    .sort((left, right) => left.localeCompare(right))
     .map((site) => ({
       site,
       enabled: snapshot.sites.includes(site),

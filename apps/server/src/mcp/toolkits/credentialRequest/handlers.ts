@@ -48,7 +48,7 @@ export const handleCredentialRequest = Effect.fn("CredentialRequest.handle")(fun
     message,
   });
   const { tabId } = input;
-  const target = tabId === undefined ? {} : { tabId };
+  const target = tabId ? { tabId } : {};
   const status = yield* invokeTargeted<PreviewAutomationStatus>("status", target);
   const origin = credentialRequestOrigin(status.url);
   if (origin === null) {
