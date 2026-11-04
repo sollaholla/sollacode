@@ -10,6 +10,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "../atomicWrite.ts";
+import { orderProviderSnapshotModels } from "./providerModelOrder.ts";
 
 const decodeProviderStatusCache = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ServerProviderSchema),
@@ -31,12 +32,14 @@ const mergeProviderModels = (
 export const orderProviderSnapshots = (
   providers: ReadonlyArray<ServerProvider>,
 ): ReadonlyArray<ServerProvider> =>
-  [...providers].toSorted(
-    (left, right) =>
-      (left.displayName ?? "").localeCompare(right.displayName ?? "") ||
-      left.driver.localeCompare(right.driver) ||
-      left.instanceId.localeCompare(right.instanceId),
-  );
+  providers
+    .map(orderProviderSnapshotModels)
+    .toSorted(
+      (left, right) =>
+        (left.displayName ?? "").localeCompare(right.displayName ?? "") ||
+        left.driver.localeCompare(right.driver) ||
+        left.instanceId.localeCompare(right.instanceId),
+    );
 
 export const isCachedProviderCorrelated = (input: {
   readonly cachedProvider: ServerProvider;

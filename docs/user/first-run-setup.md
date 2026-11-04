@@ -82,6 +82,9 @@ A new project starts on the first ready provider in the app's order: Codex, Clau
 OpenCode, Antigravity, Deep Code, Muse Code, then Kimi Code. Change it from the model picker in
 the composer at any time.
 
+Claude and Codex list their models newest version first, then by name. A manual order you set in
+Settings still comes first.
+
 ## Coming back to setup
 
 Until you add your first project, the Getting Started page offers **Set up providers** (or **Add
