@@ -195,6 +195,7 @@ function persistedTransferCandidate(input: {
     const directMatch = metadata.find((transfer) => transfer.token === markerToken);
     return directMatch ? { metadata: directMatch, matchedByPlainText: false } : null;
   }
+  if (!canMatchByPlainText(input.plainText)) return null;
   const fingerprint = clipboardTextFingerprint(input.plainText);
   for (let index = metadata.length - 1; index >= 0; index -= 1) {
     const candidate = metadata[index];
@@ -205,7 +206,18 @@ function persistedTransferCandidate(input: {
   return null;
 }
 
+/**
+ * Text alone identifies a cut only when there is text. An image copied anywhere
+ * else carries no text either, so matching empty text pasted the last cut in
+ * place of whatever was copied after it. An image-only cut whose marker was
+ * stripped still pastes, from the image bytes it put on the clipboard.
+ */
+function canMatchByPlainText(plainText: string): boolean {
+  return normalizeClipboardText(plainText).trim().length > 0;
+}
+
 function latestTransferMatchingPlainText(plainText: string): StagedComposerTransfer | null {
+  if (!canMatchByPlainText(plainText)) return null;
   trimStagedTransfers();
   const normalizedPlainText = normalizeClipboardText(plainText);
   const transfers = Array.from(stagedTransfers.values());
@@ -391,46 +403,50 @@ export async function writeComposerTransferToClipboard(
   // while leaving only the image on the native pasteboard, which removes the
   // marker needed to restore the complete cut.
   if (firstImage) {
-    const png = await toPngBlob(firstImage);
-    if (png) {
-      const desktopWrite =
-        typeof window === "undefined" ? undefined : window.desktopBridge?.writeComposerClipboard;
-      if (desktopWrite) {
-        try {
-          return await desktopWrite({
-            text: transfer.prompt,
-            html,
-            imagePng: new Uint8Array(await png.arrayBuffer()),
-          });
-        } catch {
-          // Never clear an image draft after a failed native write. Unlike the
-          // string-only fallbacks below, this route promises the real bitmap.
-          return false;
-        }
-      }
-
-      // Browser and remote clients do not have the desktop bridge. Their best
-      // available route is the standards-based async clipboard API.
-      if (!clipboard || typeof clipboard.write !== "function" || !ClipboardItemConstructor) {
-        return false;
-      }
+    const desktopWrite =
+      typeof window === "undefined" ? undefined : window.desktopBridge?.writeComposerClipboard;
+    if (desktopWrite) {
+      // A non-PNG source that cannot be decoded cannot be represented safely on
+      // the system clipboard. Keep the draft intact instead of copying only text.
+      const png = await toPngBlob(firstImage);
+      if (!png) return false;
       try {
-        await clipboard.write([
-          new ClipboardItemConstructor({
-            "text/plain": new Blob([transfer.prompt], { type: "text/plain" }),
-            "text/html": new Blob([html], { type: "text/html" }),
-            "image/png": png,
-          }),
-        ]);
-        return true;
+        return await desktopWrite({
+          text: transfer.prompt,
+          html,
+          imagePng: new Uint8Array(await png.arrayBuffer()),
+        });
       } catch {
+        // Never clear an image draft after a failed native write. Unlike the
+        // string-only fallbacks below, this route promises the real bitmap.
         return false;
       }
     }
 
-    // A non-PNG source that cannot be decoded cannot be represented safely on
-    // the system clipboard. Keep the draft intact instead of copying only text.
-    return false;
+    // Browser and remote clients do not have the desktop bridge. Their best
+    // available route is the standards-based async clipboard API, called before
+    // anything is awaited: Safari and Chrome allow the write only while the tap
+    // that asked for it is still being handled, and converting the image first
+    // used up that moment. The PNG follows as a promise, which both accept.
+    if (!clipboard || typeof clipboard.write !== "function" || !ClipboardItemConstructor) {
+      return false;
+    }
+    const png = toPngBlob(firstImage).then((blob) => {
+      if (blob === null) throw new Error("The image could not be converted for the clipboard.");
+      return blob;
+    });
+    try {
+      await clipboard.write([
+        new ClipboardItemConstructor({
+          "text/plain": new Blob([transfer.prompt], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+          "image/png": png,
+        }),
+      ]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   if (writeWithCopyEvent({ token: transfer.token, prompt: transfer.prompt, html })) {

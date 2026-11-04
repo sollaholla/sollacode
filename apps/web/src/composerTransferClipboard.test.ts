@@ -157,14 +157,32 @@ describe("composer transfer clipboard", () => {
     discardComposerTransfer(staged.token);
   });
 
-  it("restores attachment-only drafts from a stripped clipboard representation", () => {
+  it("restores an attachment-only cut by its marker", () => {
     const image = new File(["image"], "attachment-only.png", { type: "image/png" });
     const staged = stageComposerTransfer("", [image]);
 
-    const resolved = readComposerTransferFromClipboard(clipboardData({ "text/plain": "" }));
+    const resolved = readComposerTransferFromClipboard(
+      clipboardData({ "text/plain": "", "text/html": composerTransferHtml(staged) }),
+    );
 
     expect(resolved?.prompt).toBe("");
     expect(resolved?.files.map((file) => file.name)).toEqual(["attachment-only.png"]);
+    discardComposerTransfer(staged.token);
+  });
+
+  it("pastes an image copied after an attachment-only cut, not the cut", async () => {
+    // Neither carries text, so matching empty text handed back the old cut.
+    const metadataStorage = createMetadataStorage();
+    const { persistence } = createTransferPersistence();
+    setComposerTransferPersistenceForTest({ persistence, metadataStorage });
+    const staged = stageComposerTransfer("", [new File(["cut"], "cut.png", { type: "image/png" })]);
+    await expect(persistComposerTransfer(staged)).resolves.toBe(true);
+    const externalImage = clipboardData({ "text/plain": "" });
+
+    expect(readComposerTransferFromClipboard(externalImage)).toBeNull();
+    expect(hasPersistedComposerTransfer(externalImage)).toBe(false);
+    clearInMemoryComposerTransfersForTest();
+    await expect(resolveComposerTransferFromClipboard(externalImage)).resolves.toBeNull();
     discardComposerTransfer(staged.token);
   });
 
@@ -221,10 +239,13 @@ describe("composer transfer clipboard", () => {
 
     await expect(persistComposerTransfer(staged)).resolves.toBe(true);
     clearInMemoryComposerTransfersForTest();
-    const emptyClipboard = clipboardData({ "text/plain": "" });
+    const markedClipboard = clipboardData({
+      "text/plain": "",
+      "text/html": composerTransferHtml(staged),
+    });
 
-    expect(hasPersistedComposerTransfer(emptyClipboard)).toBe(true);
-    await expect(resolveComposerTransferFromClipboard(emptyClipboard)).resolves.toMatchObject({
+    expect(hasPersistedComposerTransfer(markedClipboard)).toBe(true);
+    await expect(resolveComposerTransferFromClipboard(markedClipboard)).resolves.toMatchObject({
       prompt: "",
       files: [{ name: "attachment-only.png" }],
     });
@@ -380,21 +401,21 @@ describe("writeComposerTransferToClipboard image bytes", () => {
   it("writes real PNG bytes alongside the text so a stripped clipboard still carries the image", async () => {
     // The bug this covers: cut put only text/html on the clipboard, so pasting
     // into another thread produced text and silently lost every attachment.
-    const written: Array<Record<string, Blob>> = [];
+    const written: Array<Record<string, Blob | Promise<Blob>>> = [];
     const originalClipboard = globalThis.navigator?.clipboard;
     const originalItem = globalThis.ClipboardItem;
     Object.defineProperty(globalThis.navigator, "clipboard", {
       configurable: true,
       value: {
-        write: (items: Array<{ readonly parts: Record<string, Blob> }>) => {
+        write: (items: Array<{ readonly parts: Record<string, Blob | Promise<Blob>> }>) => {
           for (const item of items) written.push(item.parts);
           return Promise.resolve();
         },
       },
     });
     (globalThis as { ClipboardItem?: unknown }).ClipboardItem = class {
-      readonly parts: Record<string, Blob>;
-      constructor(parts: Record<string, Blob>) {
+      readonly parts: Record<string, Blob | Promise<Blob>>;
+      constructor(parts: Record<string, Blob | Promise<Blob>>) {
         this.parts = parts;
       }
     };
@@ -402,10 +423,14 @@ describe("writeComposerTransferToClipboard image bytes", () => {
     try {
       const png = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
       const staged = stageComposerTransfer("look at this", [png]);
-      const ok = await writeComposerTransferToClipboard(staged, [png]);
+      const pending = writeComposerTransferToClipboard(staged, [png]);
+      // Written while the tap is still being handled, before anything awaits:
+      // browsers refuse a clipboard write that comes later.
+      expect(written).toHaveLength(1);
+      const ok = await pending;
 
       expect(ok).toBe(true);
-      expect(written).toHaveLength(1);
+      expect(await Promise.resolve(written[0]?.["image/png"])).toBeInstanceOf(Blob);
       expect(Object.keys(written[0] ?? {}).toSorted()).toEqual([
         "image/png",
         "text/html",

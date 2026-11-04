@@ -2879,9 +2879,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       cutPrompt,
       cutImages.map((image) => image.file),
     );
+    // The clipboard write starts before anything is awaited, while the tap is
+    // still being handled; browsers refuse a later one. Saving the images runs
+    // alongside, and the draft is cleared only once both have succeeded.
+    const copying = writeComposerTransferToClipboard(
+      transfer,
+      cutImages.map((image) => image.file),
+    );
+    const persisting = cutImages.length > 0 ? persistComposerTransfer(transfer) : true;
     setIsCuttingComposerContents(true);
     try {
-      if (cutImages.length > 0 && !(await persistComposerTransfer(transfer))) {
+      const [copied, persisted] = await Promise.all([copying, persisting]);
+      if (!persisted) {
         discardComposerTransfer(transfer.token);
         toastManager.add({
           type: "error",
@@ -2892,10 +2901,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
         return;
       }
-      const copied = await writeComposerTransferToClipboard(
-        transfer,
-        cutImages.map((image) => image.file),
-      );
       if (!copied) {
         discardComposerTransfer(transfer.token);
         toastManager.add({
