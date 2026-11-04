@@ -17,6 +17,9 @@ import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { ActionApprovalToolkitHandlersLive } from "./toolkits/actionApproval/handlers.ts";
 import * as ActionApprovalPrompt from "./toolkits/actionApproval/prompt.ts";
 import { ActionApprovalToolkit } from "./toolkits/actionApproval/tools.ts";
+import { CredentialRequestToolkitHandlersLive } from "./toolkits/credentialRequest/handlers.ts";
+import * as CredentialRequestPrompt from "./toolkits/credentialRequest/prompt.ts";
+import { CredentialRequestToolkit } from "./toolkits/credentialRequest/tools.ts";
 import { AppUpdateToolkitHandlersLive } from "./toolkits/appUpdate/handlers.ts";
 import { AppUpdateToolkit } from "./toolkits/appUpdate/tools.ts";
 import { ThreadArtifactToolkitHandlersLive } from "./toolkits/artifacts/handlers.ts";
@@ -353,6 +356,13 @@ export const ActionApprovalToolkitRegistrationLive = McpServer.toolkit(ActionApp
   Layer.provide(ActionApprovalPrompt.layer),
 );
 
+export const CredentialRequestToolkitRegistrationLive = McpServer.toolkit(
+  CredentialRequestToolkit,
+).pipe(
+  Layer.provide(CredentialRequestToolkitHandlersLive),
+  Layer.provide(CredentialRequestPrompt.layer),
+);
+
 export const WorkspaceOrchestrationToolkitRegistrationLive = McpServer.toolkit(
   WorkspaceOrchestrationToolkit,
 ).pipe(Layer.provide(WorkspaceOrchestrationToolkitHandlersLive));
@@ -393,6 +403,7 @@ export const layer = Layer.mergeAll(
   ThreadHistoryToolkitRegistrationLive,
   ThreadCollaborationToolkitRegistrationLive,
   ActionApprovalToolkitRegistrationLive,
+  CredentialRequestToolkitRegistrationLive,
   AppUpdateToolkitRegistrationLive,
   WorkspaceOrchestrationToolkitRegistrationLive,
   ThreadTerminalsToolkitRegistrationLive,

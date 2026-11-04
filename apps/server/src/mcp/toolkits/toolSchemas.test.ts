@@ -5,6 +5,7 @@ import { AgentWorkspaceToolkit } from "./agentWorkspace/tools.ts";
 import { AppUpdateToolkit } from "./appUpdate/tools.ts";
 import { ActionApprovalToolkit } from "./actionApproval/tools.ts";
 import { ThreadCollaborationToolkit } from "./collaboration/tools.ts";
+import { CredentialRequestToolkit } from "./credentialRequest/tools.ts";
 import { ThreadHistoryToolkit } from "./history/tools.ts";
 import { JevToolkit } from "./jev/tools.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./preview/tools.ts";
@@ -21,6 +22,7 @@ import { WorkspaceOrchestrationToolkit } from "./workspace/tools.ts";
 const ALL_TOOLKITS = {
   JevToolkit,
   ActionApprovalToolkit,
+  CredentialRequestToolkit,
   AppUpdateToolkit,
   ThreadCollaborationToolkit,
   ThreadHistoryToolkit,

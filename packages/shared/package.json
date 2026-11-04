@@ -43,6 +43,10 @@
       "types": "./src/endpointRedaction.ts",
       "import": "./src/endpointRedaction.ts"
     },
+    "./credentialRequest": {
+      "types": "./src/credentialRequest.ts",
+      "import": "./src/credentialRequest.ts"
+    },
     "./agentAwareness": {
       "types": "./src/agentAwareness.ts",
       "import": "./src/agentAwareness.ts"

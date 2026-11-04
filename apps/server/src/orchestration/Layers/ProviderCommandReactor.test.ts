@@ -14317,6 +14317,74 @@ describe("ProviderCommandReactor", () => {
     ).toContain("Rainy Cottage");
   });
 
+  it("tells the agent the vault id of an entered login, in a fresh turn, without a secret", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const requestId = asApprovalRequestId("credential-request:durable-request-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-credential-request-requested"),
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make("activity-credential-request-requested"),
+          tone: "approval",
+          kind: "user-input.requested",
+          summary: "Sign-in requested",
+          payload: {
+            requestId,
+            questions: [],
+            credentialRequest: {
+              origin: "https://app.example.com",
+              mode: "password",
+              reason: "Acme billing needs a login",
+            },
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.respond",
+        commandId: CommandId.make("cmd-credential-request-respond"),
+        threadId: ThreadId.make("thread-1"),
+        requestId,
+        answers: { t3_credential_request: "Entered and saved", t3_credential_id: "vault-entry-1" },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+      return (
+        thread?.messages.some(
+          (message) => message.id === `action-approval-response:${requestId}`,
+        ) === true
+      );
+    });
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(harness.respondToUserInput).not.toHaveBeenCalled();
+    expect(
+      thread?.activities.some(
+        (activity) =>
+          activity.kind === "user-input.resolved" &&
+          (activity.payload as Record<string, unknown>).requestId === requestId,
+      ),
+    ).toBe(true);
+    const text = thread?.messages.find(
+      (message) => message.id === `action-approval-response:${requestId}`,
+    )?.text;
+    expect(text).toContain("https://app.example.com");
+    expect(text).toContain('credentialId "vault-entry-1"');
+    expect(text).toContain("preview_fill_credential");
+  });
+
   it("surfaces stale provider approval request failures without faking approval resolution", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

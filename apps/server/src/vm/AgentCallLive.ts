@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { AGENT_STOP_TOKEN } from "@t3tools/shared/agentMode";
+import { parseCredentialRequest } from "@t3tools/shared/credentialRequest";
 import * as NodeCrypto from "node:crypto";
 import {
   AGENT_CALL_GROK_DELEGATE_TOOL,
@@ -406,7 +407,12 @@ export function voiceAnswerableRequest(
   activity: CallThreadActivity,
   providerName: string | null,
 ): { readonly requestId: string; readonly questionIds: ReadonlyArray<string> } | null {
-  if (activity.kind !== "user-input.requested" || isActionApprovalRequest(activity)) return null;
+  if (
+    activity.kind !== "user-input.requested" ||
+    isActionApprovalRequest(activity) ||
+    isCredentialRequest(activity)
+  )
+    return null;
   if (providerName !== null && OPTION_ONLY_PROVIDERS.has(providerName)) return null;
   return Option.match(decodeAnswerable(activity.payload), {
     onNone: () => null,
@@ -433,6 +439,10 @@ export function requestText(activity: CallThreadActivity): string {
 
 export const isActionApprovalRequest = (activity: Pick<CallThreadActivity, "payload">) =>
   Option.isSome(decodeActionApproval(activity.payload));
+
+/** A sign-in request is answered on its card: a password must never be spoken. */
+export const isCredentialRequest = (activity: Pick<CallThreadActivity, "payload">) =>
+  parseCredentialRequest(activity.payload) !== null;
 
 /**
  * What one delegation passed to the agent's chat, and how to tell the chat's
@@ -1380,7 +1390,8 @@ export const makeAgentCallLive = Effect.gen(function* () {
           answer === null &&
           providerName !== null &&
           OPTION_ONLY_PROVIDERS.has(providerName) &&
-          !isActionApprovalRequest(open);
+          !isActionApprovalRequest(open) &&
+          !isCredentialRequest(open);
         return { answer, dismissedRequestId: dismissed ? requestIdOf(open) : null };
       }),
       Effect.orElseSucceed(() => ({ answer: null, dismissedRequestId: null })),

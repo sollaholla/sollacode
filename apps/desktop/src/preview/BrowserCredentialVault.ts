@@ -117,7 +117,20 @@ export interface BrowserCredentialSaveInput {
   readonly kind?: PreviewCredentialKind;
   readonly username?: string;
   readonly secret?: string;
+  readonly ephemeral?: boolean;
 }
+
+/** How long a "just this sign-in" entry stays usable. */
+const EPHEMERAL_CREDENTIAL_TTL_MS = 60 * 60_000;
+
+/** The entry a new login replaces: same site, same account, same kind of secret. */
+const isSameLogin = (
+  left: Pick<StoredCredential, "origin" | "kind" | "username" | "label">,
+  right: Pick<StoredCredential, "origin" | "kind" | "username" | "label">,
+): boolean =>
+  left.origin === right.origin &&
+  (left.kind ?? "password") === (right.kind ?? "password") &&
+  (left.username || right.username ? left.username === right.username : left.label === right.label);
 
 export class BrowserCredentialVault extends Context.Service<
   BrowserCredentialVault,
@@ -130,7 +143,9 @@ export class BrowserCredentialVault extends Context.Service<
      * Adds an entry, or replaces the one with `id`. Omitting `secret` keeps the
      * existing entry's encrypted password, so a label, username, or origin edit
      * never sends the password back through the renderer. Omitting `kind` keeps
-     * the existing entry's kind, and a new entry is a password.
+     * the existing entry's kind, and a new entry is a password. A new entry for
+     * a login already saved replaces it. `ephemeral` keeps the entry in memory
+     * for one sign-in: `list` leaves it out, and it never reaches the file.
      */
     readonly save: (
       input: BrowserCredentialSaveInput,
@@ -157,6 +172,19 @@ export const make = Effect.gen(function* () {
   const safeStorage = yield* ElectronSafeStorage.ElectronSafeStorage;
   const lock = yield* Semaphore.make(1);
   const vaultPath = environment.browserCredentialVaultPath;
+  const ephemeral = new Map<
+    string,
+    { readonly record: StoredCredential; readonly until: number }
+  >();
+
+  /** Entries for one sign-in that are still in date. Their secrets stay encrypted here too. */
+  const liveEphemeral = Effect.gen(function* () {
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    for (const [id, entry] of ephemeral) {
+      if (entry.until <= now) ephemeral.delete(id);
+    }
+    return [...ephemeral.values()].map((entry) => entry.record);
+  });
 
   const read = Effect.fn("browserCredentialVault.read")(function* () {
     const exists = yield* fileSystem
@@ -230,10 +258,21 @@ export const make = Effect.gen(function* () {
       catch: (cause) => cause as BrowserCredentialOriginError,
     });
     const document = yield* read();
-    const now = DateTime.formatIso(yield* DateTime.now);
-    const existing = input.id
-      ? document.credentials.find((credential) => credential.id === input.id)
-      : undefined;
+    const clock = yield* DateTime.now;
+    const now = DateTime.formatIso(clock);
+    const label = input.label.trim();
+    const existing = input.ephemeral
+      ? undefined
+      : input.id
+        ? document.credentials.find((credential) => credential.id === input.id)
+        : document.credentials.find((credential) =>
+            isSameLogin(credential, {
+              origin,
+              kind: input.kind ?? "password",
+              label,
+              ...(input.username === undefined ? {} : { username: input.username }),
+            }),
+          );
     let encryptedSecret: string;
     if (input.secret === undefined) {
       if (!existing) {
@@ -253,15 +292,23 @@ export const make = Effect.gen(function* () {
       ).toString("base64");
     }
     const record: StoredCredential = {
-      id: (input.id ?? NodeCrypto.randomUUID()) as PreviewCredentialId,
-      label: input.label.trim(),
+      id: (input.id ?? existing?.id ?? NodeCrypto.randomUUID()) as PreviewCredentialId,
+      label,
       origin,
       kind: input.kind ?? existing?.kind ?? "password",
       ...(input.username === undefined ? {} : { username: input.username }),
+      ...(input.ephemeral ? { ephemeral: true } : {}),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       encryptedSecret,
     };
+    if (input.ephemeral) {
+      ephemeral.set(record.id, {
+        record,
+        until: DateTime.toEpochMillis(clock) + EPHEMERAL_CREDENTIAL_TTL_MS,
+      });
+      return metadata(record);
+    }
     yield* write({
       version: 1,
       credentials: [...document.credentials.filter((item) => item.id !== record.id), record],
@@ -270,6 +317,7 @@ export const make = Effect.gen(function* () {
   });
 
   const remove = Effect.fn("browserCredentialVault.remove")(function* (id: PreviewCredentialId) {
+    ephemeral.delete(id);
     const document = yield* read();
     yield* write({
       version: 1,
@@ -283,7 +331,9 @@ export const make = Effect.gen(function* () {
       catch: (cause) => cause as BrowserCredentialOriginError,
     });
     const document = yield* read();
-    return document.credentials.filter((record) => record.origin === origin).map(metadata);
+    return [...document.credentials, ...(yield* liveEphemeral)]
+      .filter((record) => record.origin === origin)
+      .map(metadata);
   });
 
   const resolveForUrl = Effect.fn("browserCredentialVault.resolveForUrl")(function* (
@@ -295,7 +345,9 @@ export const make = Effect.gen(function* () {
       try: () => normalizeCredentialOrigin(url),
       catch: (cause) => cause as BrowserCredentialOriginError,
     });
-    const record = (yield* read()).credentials.find((credential) => credential.id === id);
+    const record = [...(yield* read()).credentials, ...(yield* liveEphemeral)].find(
+      (credential) => credential.id === id,
+    );
     if (!record || record.origin !== origin) {
       return yield* new BrowserCredentialNotFoundError({ credentialId: id });
     }

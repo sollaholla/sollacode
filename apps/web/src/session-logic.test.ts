@@ -222,6 +222,37 @@ describe("derivePendingApprovals", () => {
 });
 
 describe("derivePendingUserInputs", () => {
+  it("carries an agent's sign-in request to the card", () => {
+    const credentialRequest = {
+      origin: "https://app.example.com",
+      mode: "password",
+      reason: "Acme billing needs a login",
+    };
+    const pending = derivePendingUserInputs([
+      makeActivity({
+        id: "credential-request-open",
+        createdAt: "2026-11-03T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "Sign-in requested",
+        tone: "approval",
+        payload: {
+          requestId: "credential-request:1",
+          questions: [
+            {
+              id: "t3_credential_request",
+              header: "Sign-in needed",
+              question: "The agent needs a login.",
+              options: [{ label: "Not now", description: "Carry on without." }],
+              multiSelect: false,
+            },
+          ],
+          credentialRequest,
+        },
+      }),
+    ]);
+    expect(pending[0]?.credentialRequest).toEqual(credentialRequest);
+  });
+
   it("tracks open structured prompts and removes resolved ones", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

@@ -23,6 +23,7 @@ import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { resolveOsFilePath } from "../../lib/terminalFileDrop";
 import { isActionApprovalQuestion } from "@t3tools/shared/actionApproval";
+import { isCredentialRequestQuestion } from "@t3tools/shared/credentialRequest";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
   memo,
@@ -701,6 +702,10 @@ export interface ChatComposerProps {
   activePendingQuestionIndex: number;
   respondingRequestIds: ApprovalRequestId[];
   respondingUserInputRequestIds: ApprovalRequestId[];
+  onRespondToActivePendingUserInput: (
+    requestId: ApprovalRequestId,
+    answers: Record<string, string>,
+  ) => void;
 
   // Plan
   showPlanFollowUpPrompt: boolean;
@@ -822,6 +827,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activePendingQuestionIndex,
     respondingRequestIds,
     respondingUserInputRequestIds,
+    onRespondToActivePendingUserInput,
     showPlanFollowUpPrompt,
     activeProposedPlan,
     activePlan,
@@ -1547,7 +1553,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       ? "Request changes"
                       : "Approve",
                 }
-              : {}),
+              : isCredentialRequestQuestion(activePendingProgress.activeQuestion)
+                ? { submitLabel: "Send reply" }
+                : {}),
           }
         : null,
     [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
@@ -3394,6 +3402,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   questionIndex={activePendingQuestionIndex}
                   onToggleOption={onSelectActivePendingUserInputOption}
                   onAdvance={onAdvanceActivePendingUserInput}
+                  environmentId={environmentId}
+                  onRespond={onRespondToActivePendingUserInput}
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (
@@ -3440,6 +3450,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 questionIndex={activePendingQuestionIndex}
                 onToggleOption={onSelectActivePendingUserInputOption}
                 onAdvance={onAdvanceActivePendingUserInput}
+                environmentId={environmentId}
+                onRespond={onRespondToActivePendingUserInput}
               />
               <div className="px-3 pb-3 sm:px-4">
                 <div
@@ -3779,7 +3791,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     : activePendingProgress
                       ? isActionApprovalQuestion(activePendingProgress.activeQuestion)
                         ? "Type corrections, or choose Approve above"
-                        : "Type your own answer, or leave this blank to use the selected option"
+                        : isCredentialRequestQuestion(activePendingProgress.activeQuestion)
+                          ? "Reply to the agent. Never type a password here: this goes into the chat"
+                          : "Type your own answer, or leave this blank to use the selected option"
                       : showPlanFollowUpPrompt && activeProposedPlan
                         ? interactionMode === "plan"
                           ? "Add feedback to refine the plan, or leave this blank to implement it"

@@ -55,7 +55,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   });
 });
 
-const invokeTargeted = <A>(
+export const invokeTargeted = <A>(
   operation: PreviewAutomationOperation,
   input: {
     readonly tabId?: PreviewTabId | undefined;

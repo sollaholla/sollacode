@@ -24,6 +24,7 @@ import type {
   TurnId,
   UserInputQuestion,
 } from "@t3tools/contracts";
+import { parseCredentialRequest, type CredentialRequest } from "@t3tools/shared/credentialRequest";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { normalizeOpenCodeToolPayload } from "@t3tools/shared/toolActivity";
 import { TURN_USAGE_ACTIVITY_KIND } from "@t3tools/shared/turnUsage";
@@ -46,6 +47,8 @@ export interface PendingUserInput {
   readonly requestId: ApprovalRequestId;
   readonly createdAt: string;
   readonly questions: ReadonlyArray<UserInputQuestion>;
+  /** Set when an agent asked the person to sign in: the card collects it instead. */
+  readonly credentialRequest?: CredentialRequest;
 }
 
 export interface PendingUserInputDraftAnswer {
@@ -1428,10 +1431,12 @@ export function derivePendingUserInputs(
       if (!questions) {
         continue;
       }
+      const credentialRequest = parseCredentialRequest(payload);
       openByRequestId.set(requestId, {
         requestId,
         createdAt: activity.createdAt,
         questions,
+        ...(credentialRequest ? { credentialRequest } : {}),
       });
       continue;
     }

@@ -1,3 +1,4 @@
+import { parseCredentialRequest, type CredentialRequest } from "@t3tools/shared/credentialRequest";
 import {
   isReasoningStatusPlaceholder,
   isRoutineMusePollingNotice,
@@ -195,6 +196,8 @@ export interface PendingUserInput {
   questions: ReadonlyArray<UserInputQuestion>;
   /** The turn that raised it; null when the activity carried none. */
   turnId: TurnId | null;
+  /** Set when an agent asked the person to sign in: the card collects it instead. */
+  credentialRequest?: CredentialRequest;
 }
 
 /**
@@ -626,11 +629,13 @@ export function derivePendingUserInputs(
       if (!questions) {
         continue;
       }
+      const credentialRequest = parseCredentialRequest(payload);
       openByRequestId.set(requestId, {
         requestId,
         createdAt: activity.createdAt,
         questions,
         turnId: activity.turnId ?? null,
+        ...(credentialRequest ? { credentialRequest } : {}),
       });
       continue;
     }

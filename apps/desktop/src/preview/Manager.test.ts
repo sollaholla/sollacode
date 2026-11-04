@@ -1312,6 +1312,85 @@ describe("PreviewManager", () => {
   );
 
   effectIt.effect(
+    "keeps the debugger off a guest on Google's sign-in page, however busy other agents are",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const makeGuest = (id: number, url: () => string) => {
+            const sendCommand = vi.fn(
+              async (_method: string, _params?: Record<string, unknown>): Promise<unknown> =>
+                undefined,
+            );
+            const attach = vi.fn();
+            const on = vi.fn();
+            const webContents = {
+              id,
+              isDestroyed: () => false,
+              getType: () => "webview",
+              getURL: url,
+              getTitle: () => "Sign in",
+              isLoading: () => false,
+              isDevToolsOpened: () => false,
+              getZoomFactor: () => 1,
+              setZoomFactor: vi.fn(),
+              setBackgroundThrottling: vi.fn(),
+              invalidate: vi.fn(),
+              on,
+              off: vi.fn(),
+              ipc: { on: vi.fn(), off: vi.fn() },
+              send: webviewSend,
+              navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+              setWindowOpenHandler: vi.fn(),
+              debugger: {
+                isAttached: () => attach.mock.calls.length > 0,
+                attach,
+                detach: vi.fn(),
+                sendCommand,
+                on: vi.fn(),
+                off: vi.fn(),
+              },
+            } as unknown as Electron.WebContents;
+            return { webContents, sendCommand, attach, on };
+          };
+          const GOOGLE = "https://accounts.google.com/v3/signin/identifier";
+          let moverUrl = "https://example.com/";
+          const signingIn = makeGuest(51, () => GOOGLE);
+          const mover = makeGuest(52, () => moverUrl);
+          fromId.mockImplementation((id) =>
+            id === 51 ? signingIn.webContents : id === 52 ? mover.webContents : null,
+          );
+
+          yield* manager.createTab("tab_signing_in");
+          yield* manager.registerWebview("tab_signing_in", 51);
+          yield* manager.createTab("tab_mover");
+          yield* manager.registerWebview("tab_mover", 52);
+          yield* manager.renewAutomationForeground();
+
+          expect(signingIn.attach).not.toHaveBeenCalled();
+          expect(mover.attach).toHaveBeenCalled();
+          // Staying out of the fleet does not read as an unusable tab.
+          expect((yield* manager.automationStatus("tab_signing_in")).available).toBe(true);
+
+          // A foregrounded guest that goes to the sign-in page leaves the fleet.
+          const started = mover.on.mock.calls.filter(([event]) => event === "did-start-navigation");
+          moverUrl = GOOGLE;
+          for (const [, listener] of started) {
+            (listener as (...args: unknown[]) => void)({}, GOOGLE, false, true);
+          }
+          for (let turn = 0; turn < 5; turn += 1) {
+            yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+          }
+          expect(
+            mover.sendCommand.mock.calls.some(
+              ([method, params]) =>
+                method === "Emulation.setFocusEmulationEnabled" && params?.enabled === false,
+            ),
+          ).toBe(true);
+        }),
+      ),
+  );
+
+  effectIt.effect(
     "foregrounds every live tab immediately and releases the fleet one minute after activity",
     () =>
       withManager((manager) =>

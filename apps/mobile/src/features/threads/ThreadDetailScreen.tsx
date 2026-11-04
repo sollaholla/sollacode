@@ -465,6 +465,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       onSelectOption={props.onSelectUserInputOption}
                       onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
                       onSubmit={props.onSubmitUserInput}
+                      environmentId={props.environmentId}
                     />
                   ) : null}
                   {props.pendingProposedPlan &&

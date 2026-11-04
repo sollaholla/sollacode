@@ -1,9 +1,11 @@
-import type { ApprovalRequestId } from "@t3tools/contracts";
+import type { ApprovalRequestId, EnvironmentId } from "@t3tools/contracts";
 import { ACTION_APPROVAL_CHOICE, isActionApprovalQuestion } from "@t3tools/shared/actionApproval";
+import { credentialRequestSiteName } from "@t3tools/shared/credentialRequest";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { cn } from "../../lib/cn";
+import { CredentialRequestFields } from "./CredentialRequestFields";
 import type { PendingUserInput, PendingUserInputDraftAnswer } from "../../lib/threadActivity";
 
 export interface PendingUserInputCardProps {
@@ -22,9 +24,64 @@ export interface PendingUserInputCardProps {
     customAnswer: string,
   ) => void;
   readonly onSubmit: (answersOverride?: Record<string, string>) => Promise<unknown>;
+  readonly environmentId: EnvironmentId;
+}
+
+/**
+ * An agent asking the person to sign in. The site comes from the tab and is
+ * what the login is filed under; the reason is the agent's own words. There is
+ * no free-text answer here, since a box beside a password field invites typing
+ * the password into something that goes to the chat.
+ */
+function CredentialRequestCard(props: PendingUserInputCardProps) {
+  const request = props.pendingUserInput.credentialRequest;
+  const question = props.pendingUserInput.questions[0];
+  if (!request || !question) return null;
+  const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
+  return (
+    <View className="gap-2.5 rounded-[20px] border border-neutral-200 bg-neutral-100 p-4 dark:border-white/6 dark:bg-neutral-900">
+      <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-sky-700 dark:text-sky-300">
+        {isResponding ? "Resolving response…" : "Sign-in needed"}
+      </Text>
+      <Text className="font-t3-bold text-lg text-neutral-950 dark:text-neutral-50">
+        {credentialRequestSiteName(request.origin)}
+      </Text>
+      <Text className="font-sans text-base leading-snug text-neutral-950 dark:text-neutral-50">
+        {`The agent says: ${request.reason}`}
+      </Text>
+      {request.mode === "person" ? (
+        <Text className="font-sans text-sm text-neutral-500">
+          Sign in on its browser tab on your computer. The agent has stopped and won't touch the
+          page.
+        </Text>
+      ) : (
+        <CredentialRequestFields
+          request={{ ...request, mode: request.mode }}
+          environmentId={props.environmentId}
+          disabled={isResponding}
+          onProvided={(answers) => void props.onSubmit(answers)}
+        />
+      )}
+      <View className="flex-row flex-wrap gap-2.5">
+        {question.options.map((option) => (
+          <Pressable
+            key={option.label}
+            disabled={isResponding}
+            className="min-h-11 justify-center rounded-full border border-neutral-200 bg-white px-3 py-2.5 dark:border-white/6 dark:bg-neutral-950/70"
+            onPress={() => void props.onSubmit({ [question.id]: option.label })}
+          >
+            <Text className="font-t3-bold text-sm text-neutral-600 dark:text-neutral-300">
+              {option.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
 }
 
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
+  if (props.pendingUserInput.credentialRequest) return <CredentialRequestCard {...props} />;
   const hasActionApproval = props.pendingUserInput.questions.some(isActionApprovalQuestion);
   const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
   // The surface is opaque on purpose: the card floats over the thread feed

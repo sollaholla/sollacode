@@ -24,6 +24,7 @@ export interface CredentialSaveInput {
   readonly kind: PreviewCredentialKind;
   readonly username?: string;
   readonly secret?: string;
+  readonly ephemeral?: boolean;
 }
 
 /**
@@ -139,4 +140,35 @@ export function credentialErrorMessage(cause: unknown, fallback: string): string
     return cause.message.replace(/^Error invoking remote method '[^']+': (?:\w+: )?/, "");
   }
   return fallback;
+}
+
+/**
+ * What a credential request card hands the vault, or null while it is
+ * incomplete. Filing it under the tab's own origin is what adds the domain, so
+ * the person never types one. The agent's filling a password box depends on the
+ * username too, but some sites ask for a password alone, so it stays optional.
+ */
+export function credentialRequestSaveInput(input: {
+  readonly origin: string;
+  readonly kind: PreviewCredentialKind;
+  readonly username: string;
+  readonly secret: string;
+  readonly save: boolean;
+}): CredentialSaveInput | null {
+  if (!input.secret) return null;
+  const username = input.kind === "code" ? "" : input.username.trim();
+  let label: string;
+  try {
+    label = new URL(input.origin).host;
+  } catch {
+    return null;
+  }
+  return {
+    label,
+    origin: input.origin,
+    kind: input.kind,
+    ...(username ? { username } : {}),
+    secret: input.secret,
+    ...(input.save ? {} : { ephemeral: true }),
+  };
 }

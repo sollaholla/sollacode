@@ -1581,6 +1581,8 @@ export interface DesktopPreviewBridge {
       username?: string;
       /** Omit with an existing `id` to keep that entry's saved password. */
       secret?: string;
+      /** Use for one sign-in without saving: never written to disk. */
+      ephemeral?: boolean;
     }) => Promise<PreviewCredentialSummary>;
     remove: (id: PreviewCredentialId) => Promise<void>;
     listForTab: (tabId: string) => Promise<readonly PreviewCredentialSummary[]>;

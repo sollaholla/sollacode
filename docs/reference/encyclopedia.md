@@ -208,6 +208,16 @@ the preview automation broker to the environment's own desktop host, which regis
 [RemoteCredentialVault.ts](../../apps/server/src/preview/RemoteCredentialVault.ts), and
 [remote-browser-control.md](../user/remote-browser-control.md#saved-passwords-and-pins-for-agents).
 
+#### Credential request
+
+An agent's `preview_request_credentials` call: a durable `user-input.requested` activity carrying a
+`credentialRequest` (origin read from the tab, mode `password`, `code`, or `person`, and the agent's
+reason), which ends the turn. The card sends the secret straight to the
+[credential vault](#credential-vault), `ephemeral` when not saved, and answers with only the entry's
+id, so the follow-up turn tells the agent what to fill without any secret entering the thread. Agent
+mode and voice calls never answer one. See
+[credentialRequest.ts](../../packages/shared/src/credentialRequest.ts).
+
 #### Media channel
 
 The authenticated binary WebSocket at `/ws/media` used for remote-control video. An approved

@@ -9193,6 +9193,8 @@ function ChatViewContent(props: ChatViewProps) {
       agentAnsweredRequestIdRef.current = null;
       return;
     }
+    // Only the person can sign in: answering for them would just tell the agent no.
+    if (activePendingUserInput.credentialRequest) return;
     if (activeEnvironmentConnectionPhase !== "connected") return;
     const requestId = String(activePendingUserInput.requestId);
     if (agentAnsweredRequestIdRef.current === requestId) return;
@@ -10568,6 +10570,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activePendingQuestionIndex={activePendingQuestionIndex}
                             respondingRequestIds={respondingRequestIds}
                             respondingUserInputRequestIds={respondingUserInputRequestIds}
+                            onRespondToActivePendingUserInput={onRespondToUserInput}
                             showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                             activeProposedPlan={activeProposedPlan}
                             activePlan={taskList}

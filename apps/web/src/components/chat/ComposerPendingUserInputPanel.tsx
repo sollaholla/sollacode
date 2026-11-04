@@ -1,5 +1,6 @@
-import { type ApprovalRequestId } from "@t3tools/contracts";
+import { type ApprovalRequestId, type EnvironmentId } from "@t3tools/contracts";
 import { isActionApprovalQuestion } from "@t3tools/shared/actionApproval";
+import { credentialRequestSiteName } from "@t3tools/shared/credentialRequest";
 import { memo, useEffect, useEffectEvent, useRef, useState } from "react";
 import { type PendingUserInput } from "../../session-logic";
 import {
@@ -7,6 +8,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../../pendingUserInput";
 import { CheckIcon } from "lucide-react";
+import { CredentialRequestForm } from "./CredentialRequestForm";
 import { cn } from "~/lib/utils";
 
 interface PendingUserInputPanelProps {
@@ -16,6 +18,8 @@ interface PendingUserInputPanelProps {
   questionIndex: number;
   onToggleOption: (questionId: string, optionLabel: string) => void;
   onAdvance: () => void;
+  environmentId: EnvironmentId;
+  onRespond: (requestId: ApprovalRequestId, answers: Record<string, string>) => void;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -25,6 +29,8 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   questionIndex,
   onToggleOption,
   onAdvance,
+  environmentId,
+  onRespond,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
@@ -39,6 +45,8 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
       questionIndex={questionIndex}
       onToggleOption={onToggleOption}
       onAdvance={onAdvance}
+      environmentId={environmentId}
+      onRespond={onRespond}
     />
   );
 });
@@ -50,6 +58,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   questionIndex,
   onToggleOption,
   onAdvance,
+  environmentId,
+  onRespond,
 }: {
   prompt: PendingUserInput;
   isResponding: boolean;
@@ -57,6 +67,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   questionIndex: number;
   onToggleOption: (questionId: string, optionLabel: string) => void;
   onAdvance: () => void;
+  environmentId: EnvironmentId;
+  onRespond: (requestId: ApprovalRequestId, answers: Record<string, string>) => void;
 }) {
   const progress = derivePendingUserInputProgress(prompt.questions, answers, questionIndex);
   const activeQuestion = progress.activeQuestion;
@@ -153,6 +165,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
 
   const customAnswerActive = progress.customAnswer.trim().length > 0;
   const isActionApproval = isActionApprovalQuestion(activeQuestion);
+  const credentialRequest = prompt.credentialRequest ?? null;
 
   return (
     <div className="min-w-0 px-3 py-3 sm:px-5">
@@ -171,6 +184,18 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           </span>
         ) : null}
       </div>
+      {credentialRequest ? (
+        <div className="mb-1 min-w-0">
+          <p className="truncate text-sm font-semibold text-foreground">
+            {credentialRequestSiteName(credentialRequest.origin)}
+          </p>
+          <p className="text-xs text-muted-foreground/70">
+            {credentialRequest.mode === "person"
+              ? "Sign in on its browser tab. The agent has stopped and won't touch the page."
+              : "The agent can't sign in until you enter this."}
+          </p>
+        </div>
+      ) : null}
       <p
         // The composer's mobile touch boundary blocks any touch scroll that
         // does not start inside a marked scroll container, so this pane is
@@ -182,8 +207,18 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             "max-h-64 touch-pan-y overscroll-contain overflow-y-auto overflow-x-hidden break-words [overflow-wrap:anywhere] whitespace-pre-wrap rounded-lg border border-border/55 bg-background/55 p-3 font-mono text-xs leading-relaxed",
         )}
       >
-        {activeQuestion.question}
+        {credentialRequest
+          ? `The agent says: ${credentialRequest.reason}`
+          : activeQuestion.question}
       </p>
+      {credentialRequest && credentialRequest.mode !== "person" ? (
+        <CredentialRequestForm
+          request={{ ...credentialRequest, mode: credentialRequest.mode }}
+          environmentId={environmentId}
+          disabled={isResponding}
+          onProvided={(answers) => onRespond(prompt.requestId, answers)}
+        />
+      ) : null}
       {activeQuestion.multiSelect ? (
         <p className="mt-1 text-xs text-muted-foreground/65">Select one or more options.</p>
       ) : null}

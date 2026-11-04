@@ -38,6 +38,11 @@ import {
   actionApprovalAnswerFromUnknown,
   isActionApprovalRequestId,
 } from "@t3tools/shared/actionApproval";
+import {
+  credentialRequestAnswerFromUnknown,
+  isCredentialRequestId,
+  parseCredentialRequest,
+} from "@t3tools/shared/credentialRequest";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import { providerDisplayLabel } from "@t3tools/shared/model";
 import { RESUME_PROMPT } from "@t3tools/shared/resumePrompt";
@@ -625,6 +630,39 @@ function findDurableActionApprovalProposal(
     };
   }
   return null;
+}
+
+/**
+ * What the agent is told once the person has answered a credential request.
+ * Carries the opaque vault id at most: the secret itself never left the card.
+ */
+export function credentialRequestContinuationMessage(input: {
+  readonly requestId: string;
+  readonly activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>;
+  readonly answers: Readonly<Record<string, unknown>>;
+}): string {
+  const raised = input.activities
+    .toReversed()
+    .find(
+      (activity) =>
+        activity.kind === "user-input.requested" &&
+        typeof activity.payload === "object" &&
+        activity.payload !== null &&
+        (activity.payload as Record<string, unknown>).requestId === input.requestId,
+    );
+  const request = parseCredentialRequest(raised?.payload);
+  const site = request?.origin ?? "the site";
+  const answer = credentialRequestAnswerFromUnknown(input.answers);
+  switch (answer.status) {
+    case "provided":
+      return `The user entered ${request?.mode === "code" ? "the code" : "the login"} for ${site}${answer.saved ? " and saved it" : " for this sign-in only"}. You never see the secret: call preview_credentials on that tab for the username, type it with preview_type, then fill the secret with preview_fill_credential using credentialId "${answer.credentialId}". If the site rejects it, call preview_request_credentials again with retryAfterFailure true.`;
+    case "signed_in":
+      return `The user says they finished signing in on the tab at ${site}. Check the page, then continue the work.`;
+    case "declined":
+      return `The user chose not to sign in to ${site} right now. Do not ask again for it during this work; continue with whatever does not depend on it.`;
+    case "feedback":
+      return `The user replied to your sign-in request for ${site} instead of entering anything:\n${answer.feedback}\n\nFollow that. Do not ask for a password or code in chat.`;
+  }
 }
 
 function actionApprovalContinuationMessage(input: {
@@ -4084,6 +4122,56 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               text: actionApprovalContinuationMessage({
                 requestId: event.payload.requestId,
                 proposal,
+                answers: event.payload.answers,
+              }),
+              attachments: [],
+            },
+            modelSelection: thread.modelSelection,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            createdAt: event.payload.createdAt,
+          });
+          return;
+        }
+
+        if (isCredentialRequestId(event.payload.requestId)) {
+          if (!hasResolvedProviderRequest(thread.activities, resolvedRequest)) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.make(
+                `server:credential-request-resolved:${event.payload.requestId}`,
+              ),
+              threadId: event.payload.threadId,
+              activity: {
+                id: EventId.make(`credential-request-resolved:${event.payload.requestId}`),
+                tone: "info",
+                kind: "user-input.resolved",
+                summary: "Sign-in request answered",
+                payload: {
+                  requestId: event.payload.requestId,
+                  answers: event.payload.answers,
+                },
+                turnId: null,
+                createdAt: event.payload.createdAt,
+              },
+              createdAt: event.payload.createdAt,
+            });
+          }
+          yield* orchestrationEngine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(
+              `server:credential-request-followup:${event.payload.requestId}`,
+            ),
+            threadId: event.payload.threadId,
+            message: {
+              // Continues the work that asked, as an action approval's answer does.
+              messageId: MessageId.make(
+                `${ACTION_APPROVAL_RESPONSE_MESSAGE_ID_PREFIX}${event.payload.requestId}`,
+              ),
+              role: "user",
+              text: credentialRequestContinuationMessage({
+                requestId: event.payload.requestId,
+                activities: thread.activities,
                 answers: event.payload.answers,
               }),
               attachments: [],

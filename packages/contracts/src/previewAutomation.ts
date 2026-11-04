@@ -795,6 +795,8 @@ export const PreviewCredentialSummary = Schema.Struct({
   origin: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
   kind: Schema.optionalKey(PreviewCredentialKind),
   username: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+  /** Held in memory for one sign-in: never written to disk, gone within the hour. */
+  ephemeral: Schema.optionalKey(Schema.Boolean),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
@@ -816,6 +818,8 @@ export const PreviewCredentialSaveInput = Schema.Struct({
   secret: Schema.optionalKey(
     Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(4096)),
   ),
+  /** Use for one sign-in without saving: never written to disk. */
+  ephemeral: Schema.optionalKey(Schema.Boolean),
 });
 export type PreviewCredentialSaveInput = typeof PreviewCredentialSaveInput.Type;
 
@@ -823,6 +827,27 @@ export const PreviewCredentialRemoveInput = Schema.Struct({
   id: PreviewCredentialId,
 });
 export type PreviewCredentialRemoveInput = typeof PreviewCredentialRemoveInput.Type;
+
+export const PreviewAutomationCredentialRequestInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  kind: Schema.optional(Schema.Literals(["password", "code", "person"])).annotate({
+    description:
+      "password (the default) asks for a username and password; code asks for a PIN or one-time code; person asks them to finish on the page themselves, for single sign-on, a passkey, a phone approval, or anything with nothing to type. Google sign-in pages always use person.",
+  }),
+  reason: TrimmedNonEmptyString.check(Schema.isMaxLength(500)).annotate({
+    description:
+      "One sentence the person reads on the card: what you are signing in to and why. Never include a secret.",
+  }),
+  usernameHint: Schema.optional(Schema.String.check(Schema.isMaxLength(512))).annotate({
+    description: "Username to prefill when you already know which account is wanted.",
+  }),
+  retryAfterFailure: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Set when the site rejected a saved credential, so the person is asked again instead of being told one is already saved.",
+  }),
+});
+export type PreviewAutomationCredentialRequestInput =
+  typeof PreviewAutomationCredentialRequestInput.Type;
 
 export const PreviewAutomationCredentialListInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,

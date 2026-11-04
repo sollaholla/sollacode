@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -81,6 +82,63 @@ describe("BrowserCredentialVault", () => {
           vault.resolveForUrl(saved.id, "https://other.example.com/login"),
         );
         assert.strictEqual(mismatch._tag, "BrowserCredentialNotFoundError");
+      }),
+    ),
+  );
+
+  it.effect("keeps a one-time login in memory and out of the file and the Settings list", () =>
+    withVault(
+      Effect.gen(function* () {
+        const vault = yield* BrowserCredentialVault.BrowserCredentialVault;
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const saved = yield* vault.save({
+          label: "app.example.com",
+          origin: "https://app.example.com",
+          username: "person@example.com",
+          secret: "just-this-once",
+          ephemeral: true,
+        });
+
+        assert.strictEqual(saved.ephemeral, true);
+        assert.strictEqual(yield* fileSystem.exists(environment.browserCredentialVaultPath), false);
+        assert.deepStrictEqual(yield* vault.list, []);
+        assert.deepStrictEqual(yield* vault.listForUrl("https://app.example.com/login"), [saved]);
+        const resolved = yield* vault.resolveForUrl(saved.id, "https://app.example.com/login");
+        assert.strictEqual(resolved.secret, "just-this-once");
+
+        yield* TestClock.adjust("61 minutes");
+        assert.deepStrictEqual(yield* vault.listForUrl("https://app.example.com/login"), []);
+        const expired = yield* Effect.flip(
+          vault.resolveForUrl(saved.id, "https://app.example.com/login"),
+        );
+        assert.strictEqual(expired._tag, "BrowserCredentialNotFoundError");
+      }),
+    ),
+  );
+
+  it.effect("replaces the saved entry when the same login is saved again", () =>
+    withVault(
+      Effect.gen(function* () {
+        const vault = yield* BrowserCredentialVault.BrowserCredentialVault;
+        const login = {
+          label: "app.example.com",
+          origin: "https://app.example.com",
+          username: "person@example.com",
+        };
+        const first = yield* vault.save({ ...login, secret: "old-password" });
+        const second = yield* vault.save({ ...login, secret: "new-password" });
+        const other = yield* vault.save({
+          ...login,
+          username: "other@example.com",
+          secret: "other-password",
+        });
+
+        assert.strictEqual(second.id, first.id);
+        assert.strictEqual(other.id === first.id, false);
+        assert.strictEqual((yield* vault.list).length, 2);
+        const resolved = yield* vault.resolveForUrl(first.id, "https://app.example.com/login");
+        assert.strictEqual(resolved.secret, "new-password");
       }),
     ),
   );

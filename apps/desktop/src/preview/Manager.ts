@@ -42,6 +42,7 @@ import type {
   PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
 import { PreviewCredentialKind, DesktopPreviewVideoSourceSchema } from "@t3tools/contracts";
+import { isPersonOnlySignInOrigin } from "@t3tools/shared/credentialRequest";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import {
@@ -3270,6 +3271,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         popupWebContents.on("will-navigate", willNavigate);
         popupWebContents.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         installSignInListeners(tabId, popupWebContents);
+        // "Sign in with Google" usually opens here, not in the tab itself.
+        popupWebContents.on("did-start-navigation", (_event, url, _isInPlace, isMainFrame) => {
+          if (isMainFrame && isPersonOnlySignInOrigin(url)) {
+            runFork(releaseGuestForPersonSignIn(tabId, popupWebContents).pipe(Effect.ignore));
+          }
+        });
         if (blankHandoff) {
           pendingBlankPopupIds.add(popupWebContents.id);
           popupWebContents.on("did-start-navigation", blankNavigationStarted);
@@ -3899,6 +3906,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       isMainFrame: boolean,
     ): void => {
       if (!listenersActive || !isMainFrame) return;
+      if (isPersonOnlySignInOrigin(url)) {
+        runFork(releaseGuestForPersonSignIn(tabId, wc).pipe(Effect.ignore));
+      }
       invalidatePlaywrightExecutionContext(tabId, webContentsId);
       const attempt = navigationAttemptsByTab.get(tabId);
       if (attempt?.webContentsId === webContentsId && attempt.url === url) {
@@ -5361,6 +5371,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     // connected and woke the whole guest fleet at once. A dead guest simply
     // has no foreground to activate, so bail rather than fail.
     if (wc.isDestroyed()) return;
+    // No agent is using this guest, and the fleet would otherwise put a debugger
+    // on it: any agent working anywhere made Google refuse a person's sign-in.
+    if (isPersonOnlySignInOrigin(wc.getURL())) return;
     yield* attempt(
       {
         operation: "automationForeground.setBackgroundThrottling",
@@ -5529,6 +5542,69 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
   });
 
+  /** Undoes what foregrounding did to one guest, down to detaching when nothing else needs it. */
+  const restoreGuestFromAutomationForeground = Effect.fn(
+    "PreviewManager.restoreGuestFromAutomationForeground",
+  )(function* (tabId: string, wc: Electron.WebContents) {
+    // A request that itself outlives the fleet lease still owns its own
+    // Automation activity lease. Let that action keep focus emulation;
+    // its normal cleanup disables it when the action actually finishes.
+    if (!activityLeases.has(tabId, PreviewActivityConsumer.Automation)) {
+      // Symmetry for the setBackgroundThrottling(false) that acquiring
+      // this lease performed. Without it a tab stayed unthrottled for
+      // the rest of the app's life after a single automated action, so
+      // every tab an agent had ever touched kept running timers and
+      // decoding media off screen (measured 2026-09-03).
+      yield* attempt(
+        {
+          operation: "automationForeground.restoreBackgroundThrottling",
+          tabId,
+          webContentsId: wc.id,
+        },
+        () => wc.setBackgroundThrottling(true),
+      ).pipe(Effect.ignore);
+      const control = (yield* SynchronizedRef.get(controlSessionsRef)).get(wc.id);
+      if (control) {
+        yield* control.semaphore
+          .withPermit(
+            attemptPromiseWithin(
+              {
+                operation: "automationForeground.disableFocusEmulation",
+                tabId,
+                webContentsId: wc.id,
+              },
+              () =>
+                wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", {
+                  enabled: false,
+                }),
+              AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
+            ),
+          )
+          .pipe(Effect.timeout(AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS), Effect.ignore);
+      }
+    }
+    yield* detachControlSessionIfIdle(tabId, wc.id);
+  });
+
+  /**
+   * A guest arriving at a person-only sign-in page leaves the foreground fleet
+   * at once, since the page judges whether a debugger is attached as it loads.
+   * An agent's own action still attaches for as long as that action runs.
+   */
+  const releaseGuestForPersonSignIn = Effect.fn("PreviewManager.releaseGuestForPersonSignIn")(
+    function* (tabId: string, wc: Electron.WebContents) {
+      yield* automationForegroundMutationMutex.withPermit(
+        Effect.gen(function* () {
+          automationForegroundWebContentsIds.delete(wc.id);
+          activityLeases.release(tabId, AUTOMATION_FOREGROUND_LEASE_ID);
+          if (wc.isDestroyed()) return;
+          yield* restoreGuestFromAutomationForeground(tabId, wc);
+        }),
+      );
+      yield* recordActivityLeaseMetrics();
+    },
+  );
+
   const releaseAutomationForegroundFleet = Effect.fn(
     "PreviewManager.releaseAutomationForegroundFleet",
   )(function* () {
@@ -5550,44 +5626,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           const wc = webContents.fromId(webContentsId);
           if (!wc || wc.isDestroyed()) return;
 
-          // A request that itself outlives the fleet lease still owns its own
-          // Automation activity lease. Let that action keep focus emulation;
-          // its normal cleanup disables it when the action actually finishes.
-          if (!activityLeases.has(tabId, PreviewActivityConsumer.Automation)) {
-            // Symmetry for the setBackgroundThrottling(false) that acquiring
-            // this lease performed. Without it a tab stayed unthrottled for
-            // the rest of the app's life after a single automated action, so
-            // every tab an agent had ever touched kept running timers and
-            // decoding media off screen (measured 2026-09-03).
-            yield* attempt(
-              {
-                operation: "automationForeground.restoreBackgroundThrottling",
-                tabId,
-                webContentsId: wc.id,
-              },
-              () => wc.setBackgroundThrottling(true),
-            ).pipe(Effect.ignore);
-            const control = (yield* SynchronizedRef.get(controlSessionsRef)).get(wc.id);
-            if (control) {
-              yield* control.semaphore
-                .withPermit(
-                  attemptPromiseWithin(
-                    {
-                      operation: "automationForeground.disableFocusEmulation",
-                      tabId,
-                      webContentsId: wc.id,
-                    },
-                    () =>
-                      wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", {
-                        enabled: false,
-                      }),
-                    AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
-                  ),
-                )
-                .pipe(Effect.timeout(AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS), Effect.ignore);
-            }
-          }
-          yield* detachControlSessionIfIdle(tabId, wc.id);
+          yield* restoreGuestFromAutomationForeground(tabId, wc);
         }),
       { concurrency: "unbounded", discard: true },
     );
@@ -6498,7 +6537,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const popupActive = currentPopupForTab(tabId) !== null;
     const wc = currentWebContentsForTab(tab);
     const foregroundReady =
-      !automationForegroundActive || Boolean(wc && automationForegroundWebContentsIds.has(wc.id));
+      !automationForegroundActive ||
+      Boolean(
+        wc &&
+        (automationForegroundWebContentsIds.has(wc.id) || isPersonOnlySignInOrigin(wc.getURL())),
+      );
     const viewport = wc
       ? yield* attemptPromise(
           { operation: "automationStatus.viewport", tabId, webContentsId: wc.id },

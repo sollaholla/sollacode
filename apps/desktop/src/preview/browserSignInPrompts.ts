@@ -10,26 +10,17 @@ import type {
   PreviewCredentialSummary,
 } from "@t3tools/contracts";
 
+import { isPersonOnlySignInOrigin } from "@t3tools/shared/credentialRequest";
+
 import { providerForCookieDomain } from "./browserAccounts.ts";
+
+export { isPersonOnlySignInOrigin };
 
 /** How long a submitted password waits for the sign-in to finish, 2FA included. */
 const ATTEMPT_TTL_MS = 5 * 60_000;
 const USERNAME_TTL_MS = 10 * 60_000;
 
 const GOOGLE_ACCOUNTS_ORIGIN = "https://accounts.google.com";
-
-/**
- * Google refuses a sign-in it sees under automation, and a saved Google password
- * is the key to everything behind that account, so filling it stays with a person.
- */
-export function isPersonOnlySignInOrigin(origin: string): boolean {
-  try {
-    const { hostname } = new URL(origin);
-    return hostname === "accounts.google.com" || hostname.endsWith(".accounts.google.com");
-  } catch {
-    return false;
-  }
-}
 
 export const signInPromptNowMs = (): number => Date.now();
 export const newSignInPromptId = (): string => NodeCrypto.randomUUID();
