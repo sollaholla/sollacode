@@ -2,144 +2,97 @@
 import { it, expect } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
-  DEFAULT_VM_AGENT_DELEGATION_LIMITS,
   AuthSessionId,
   AuthOrchestrationOperateScope,
-  VmAgent,
-  VmAgentDelegationDetail,
-  type VmAgentCollaborationReceipt,
+  ORCHESTRATOR_THREAD_ID,
+  TurnId,
+  VmAgentDelegationId,
+  MessageId,
+  type OrchestrationCommand,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient, HttpClient, HttpRouter } from "effect/unstable/http";
 import { EnvironmentAuth } from "../auth/EnvironmentAuth.ts";
 import { orchestratorLiveRouteLayer } from "../http.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
-import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
-import { VmAgentCollaboration } from "../vm/VmAgentCollaboration.ts";
-import { VmAgentTaskScheduler } from "../vm/VmAgentTaskScheduler.ts";
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   createGptLiveSession,
   liveDelegationTask,
   liveVoiceInstructions,
-  liveWorkEvent,
+  voiceWorkEvent,
   withFinalLineBreak,
   makeOrchestratorLive,
   OrchestratorLiveLayer,
 } from "./OrchestratorLive.ts";
 
-const now = "2026-09-10T00:00:00.000Z";
-const agent = Schema.decodeUnknownSync(VmAgent)({
-  vmAgentId: "agent-pa",
-  name: "Personal Assistant",
-  handle: "personal-assistant",
-  purpose: "Personal administration",
-  icon: null,
-  vmId: "vm-host",
-  threadId: "pa-thread",
-  status: "running",
-  controlMode: "agent",
-  guestIp: null,
-  lastError: null,
-  createdAt: now,
-  updatedAt: now,
-});
-const identity = {
-  vmAgentId: agent.vmAgentId,
-  name: agent.name,
-  handle: agent.handle,
-  purpose: agent.purpose,
-};
-const decodeDetail = Schema.decodeUnknownSync(VmAgentDelegationDetail);
-const detail = () =>
-  decodeDetail({
-    delegation: {
-      delegationId: "work-one",
-      rootVmAgentId: agent.vmAgentId,
-      sourceVmAgentId: agent.vmAgentId,
-      rootDelegationId: null,
-      parentDelegationId: null,
-      depth: 1,
-      target: { kind: "ephemeral" },
-      targetVmAgentId: null,
-      workerThreadId: "worker",
-      rootAgentSnapshot: identity,
-      sourceAgentSnapshot: identity,
-      targetAgentSnapshot: null,
-      taskId: "task-one",
-      runId: "run-one",
-      title: "Voice request",
-      task: "Do the requested work",
-      completionCriteria: [],
-      requestedCapabilities: [],
-      status: "running",
-      followupCount: 0,
-      messageCount: 0,
-      effectiveLimits: DEFAULT_VM_AGENT_DELEGATION_LIMITS,
-      revision: 1,
-      createdAt: now,
-      startedAt: now,
-      completedAt: null,
-      expiresAt: "2026-09-11T00:00:00.000Z",
-      updatedAt: now,
-      result: null,
-      error: null,
-    },
-    rootAgent: null,
-    sourceAgent: null,
-    targetAgent: null,
-    messages: [],
-  });
+/** Written after any request in these tests, so it always counts as the reply. */
+const later = "2999-01-01T00:00:00.000Z";
 
+/**
+ * The orchestrator's chat, faked: every message the voice sends starts a turn,
+ * and `complete()` finishes the current one with a reply.
+ */
 function fixture() {
   let settings = {
     ...DEFAULT_SERVER_SETTINGS,
     orchestrator: { ...DEFAULT_SERVER_SETTINGS.orchestrator, enabled: true, model: "gpt-live-1" },
   };
-  let current = detail();
-  let delegates = 0;
-  let messages = 0;
-  let capturedTask = "";
-  let capturedManageAgents: boolean | undefined;
+  const sent: Array<string> = [];
+  let turns = 0;
+  let finishOnSend = false;
+  let latestTurn: { turnId: TurnId; state: string } | null = null;
+  const replies: Array<Record<string, unknown>> = [];
+  const finish = () => {
+    if (latestTurn === null) return;
+    latestTurn = { ...latestTurn, state: "completed" };
+    replies.push({
+      id: MessageId.make(`reply-${turns}`),
+      role: "assistant",
+      text: "Verified result",
+      turnId: latestTurn.turnId,
+      streaming: false,
+      createdAt: later,
+      updatedAt: later,
+    });
+  };
   const requests: unknown[] = [];
-  const receipt = (): VmAgentCollaborationReceipt => ({
-    operation: "delegate",
-    delegationId: current.delegation.delegationId,
-    status: current.delegation.status,
-    revision: current.delegation.revision,
-    acceptedAt: now,
-  });
   const layer = Layer.mergeAll(
     Layer.mock(ServerSettingsService)({ getSettings: Effect.sync(() => settings) }),
     Layer.mock(ServerSecretStore)({
       get: () => Effect.succeed(Option.some(new TextEncoder().encode("secret-fixture"))),
     }),
-    Layer.mock(VmAgentStore)({
-      getByNameLower: (name) =>
-        Effect.succeed(name === "personal assistant" ? Option.some(agent) : Option.none()),
+    Layer.mock(OrchestrationEngineService)({
+      dispatch: (command: OrchestrationCommand) =>
+        Effect.sync(() => {
+          if (command.type === "thread.turn.start") {
+            expect(command.threadId).toBe(ORCHESTRATOR_THREAD_ID);
+            sent.push(command.message.text);
+            turns += 1;
+            latestTurn = { turnId: TurnId.make(`turn-${turns}`), state: "running" };
+            if (finishOnSend) finish();
+          }
+          return { sequence: turns };
+        }) as never,
+      streamDomainEvents: Stream.empty,
     }),
-    Layer.mock(VmAgentTaskScheduler)({ wake: () => Effect.void }),
-    Layer.mock(VmAgentCollaboration)({
-      delegate: (source, input) =>
-        Effect.sync(() => {
-          expect(source).toBe(agent.vmAgentId);
-          expect(input.target.kind).toBe("ephemeral");
-          delegates++;
-          capturedTask = input.task;
-          capturedManageAgents = input.manageAgents;
-          return { receipt: receipt(), delegation: current.delegation };
-        }),
-      getDetail: () => Effect.sync(() => current),
-      sendMessage: () =>
-        Effect.sync(() => {
-          messages++;
-          return receipt();
-        }),
-      subscribe: () => Effect.succeed(() => undefined),
+    Layer.mock(ProjectionSnapshotQuery)({
+      getThreadShellById: () =>
+        Effect.sync(() =>
+          Option.some({
+            id: ORCHESTRATOR_THREAD_ID,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            latestTurn,
+          } as never),
+        ),
+      getThreadDetailById: () =>
+        Effect.sync(() => Option.some({ messages: [...replies] } as never)),
     }),
     FetchHttpClient.layer,
   );
@@ -157,23 +110,15 @@ function fixture() {
     layer,
     fetch,
     requests,
-    get delegates() {
-      return delegates;
+    /** Requests put into the orchestrator's chat, as opposed to corrections. */
+    get requestsSent() {
+      return sent.filter((text) => text.startsWith("From your voice conversation"));
     },
-    get messages() {
-      return messages;
-    },
-    get task() {
-      return capturedTask;
-    },
-    get manageAgents() {
-      return capturedManageAgents;
+    get correctionsSent() {
+      return sent.filter((text) => text.startsWith("Updated voice conversation"));
     },
     sendOnly: () => {
-      settings = {
-        ...settings,
-        orchestrator: { ...settings.orchestrator, authority: "send" },
-      };
+      settings = { ...settings, orchestrator: { ...settings.orchestrator, authority: "send" } };
     },
     readonly: () => {
       settings = {
@@ -181,22 +126,9 @@ function fixture() {
         orchestrator: { ...settings.orchestrator, authority: "read-only" },
       };
     },
-    missingAgent: () => {
-      settings = {
-        ...settings,
-        orchestrator: { ...settings.orchestrator, liveAgentName: "Missing Agent" },
-      };
-    },
     complete: () => {
-      current = {
-        ...current,
-        delegation: {
-          ...current.delegation,
-          status: "completed",
-          revision: 2,
-          result: { summary: "Verified result", completedBy: "ephemeral-worker", completedAt: now },
-        },
-      };
+      finishOnSend = true;
+      finish();
     },
   };
 }
@@ -214,7 +146,7 @@ it.effect(
       expect(result).toMatchObject({
         sessionId: "live-opaque",
         model: "gpt-live-1",
-        agentName: "Personal Assistant",
+        agentName: "Orchestrator",
       });
       expect(JSON.stringify(result)).not.toContain("secret-fixture");
       expect(f.requests[0]).toMatchObject({
@@ -266,7 +198,7 @@ it.effect("tells the person why OpenAI refused a GPT-Live session", () => {
   );
 });
 
-it.effect("deduplicates retries and sends corrections to the active inherited worker", () => {
+it.effect("sends a voice request to the orchestrator's chat, and corrections into it", () => {
   const f = fixture();
   return Effect.gen(function* () {
     const service = yield* makeOrchestratorLive;
@@ -281,7 +213,8 @@ it.effect("deduplicates retries and sends corrections to the active inherited wo
       concurrency: "unbounded",
     });
     expect(ids[0]).toBe(ids[1]);
-    expect(f.delegates).toBe(1);
+    expect(f.requestsSent).toHaveLength(1);
+    expect(f.requestsSent[0]).toContain("request_action_approval");
     const correction = {
       ...request,
       delegationId: "opaque-correction",
@@ -290,48 +223,48 @@ it.effect("deduplicates retries and sends corrections to the active inherited wo
     };
     yield* service.delegate(correction);
     yield* service.delegate(correction);
-    expect(f.delegates).toBe(1);
-    expect(f.messages).toBe(1);
-    expect(f.task).toContain("request_action_approval");
+    expect(f.requestsSent).toHaveLength(1);
+    expect(f.correctionsSent).toHaveLength(1);
     f.complete();
     const updates = yield* Stream.runCollect(service.watch(ids[0]!));
     expect([...updates]).toMatchObject([{ status: "completed", text: "Verified result" }]);
     yield* service.release(request.sessionId);
     const released = yield* service.delegate(request).pipe(Effect.result);
     expect(released._tag).toBe("Failure");
-    expect(f.delegates).toBe(1);
+    expect(f.requestsSent).toHaveLength(1);
   }).pipe(Effect.provide(f.layer), Effect.provideService(FetchHttpClient.Fetch, f.fetch));
 });
 
-it.effect("lets the voice's worker create agents only at full authority", () => {
+it.effect("needs no custom agent: voice starts and works with none configured", () => {
+  // The fixture provides no agent store at all. Voice once required an agent
+  // named "Personal Assistant", and renaming it broke every session.
   const f = fixture();
   return Effect.gen(function* () {
     const service = yield* makeOrchestratorLive;
-    yield* service.start({ sdp: "offer", history: [] });
+    const session = yield* service.start({ sdp: "offer", history: [] });
+    expect(session.agentName).toBe("Orchestrator");
     yield* service.delegate({
       sessionId: "live-opaque",
-      delegationId: "make-an-agent",
+      delegationId: "one",
       sequence: 1,
-      context: "user: Make me an agent that builds a mileage app",
+      context: "user: What is running?",
     });
-    expect(f.manageAgents).toBe(true);
-    expect(f.task).toContain("agent_builder");
-
-    const lower = fixture();
-    lower.sendOnly();
-    yield* Effect.gen(function* () {
-      const sendOnly = yield* makeOrchestratorLive;
-      yield* sendOnly.start({ sdp: "offer", history: [] });
-      yield* sendOnly.delegate({
-        sessionId: "live-opaque",
-        delegationId: "make-an-agent",
-        sequence: 1,
-        context: "user: Make me an agent",
-      });
-    }).pipe(Effect.provide(lower.layer), Effect.provideService(FetchHttpClient.Fetch, lower.fetch));
-    expect(lower.manageAgents).toBe(false);
-    expect(lower.task).not.toContain("agent_builder");
+    expect(f.requestsSent).toHaveLength(1);
   }).pipe(Effect.provide(f.layer), Effect.provideService(FetchHttpClient.Fetch, f.fetch));
+});
+
+it("lets voice requests create agents only at full authority", () => {
+  const full = liveDelegationTask("user: Make me an agent", {
+    authority: "full",
+    confirmDestructiveActions: true,
+  });
+  expect(full).toContain("agent_builder");
+  const send = liveDelegationTask("user: Make me an agent", {
+    authority: "send",
+    confirmDestructiveActions: true,
+  });
+  expect(send).not.toContain("agent_builder");
+  expect(send).toContain("do not create, change or delete agents");
 });
 
 it("tells the voice its backend is always there, and what it can reach", () => {
@@ -340,45 +273,60 @@ it("tells the voice its backend is always there, and what it can reach", () => {
     enabled: true,
     model: "gpt-live-1",
   };
-  const full = liveVoiceInstructions(settings, "Personal Assistant");
+  const full = liveVoiceInstructions(settings);
   expect(full).toContain("Never say you have no backend, no tools or no access");
   expect(full).toContain("never turn a request down yourself");
   expect(full).toContain("including creating new agents");
+  expect(full).toContain("the orchestrator's chat");
   expect(full).toContain("say the latest progress you were given");
-  expect(
-    liveVoiceInstructions({ ...settings, authority: "send" }, "Personal Assistant"),
-  ).not.toContain("creating new agents");
+  expect(liveVoiceInstructions({ ...settings, authority: "send" })).not.toContain(
+    "creating new agents",
+  );
 });
 
-const encodeDetail = Schema.encodeSync(VmAgentDelegationDetail);
-
-it("says how far queued work got instead of only that it is queued", () => {
-  const encoded = encodeDetail(detail());
-  const queued = (messages: ReadonlyArray<Record<string, unknown>>) =>
-    liveWorkEvent(
-      decodeDetail({
-        ...encoded,
-        delegation: { ...encoded.delegation, status: "queued" },
-        messages,
-      }),
-    );
-  expect(queued([]).text).toBe("The task is queued with your assistant.");
-  const progressed = queued([
-    {
-      messageId: "m1",
-      delegationId: "work-one",
-      sequence: 1,
-      sender: "target-agent",
-      senderVmAgentId: null,
-      kind: "note",
-      delivery: "delivered",
-      text: "Found the simulator thread; it is mid-run.",
-      createdAt: now,
-    },
-  ]);
-  expect(progressed.status).toBe("queued");
-  expect(progressed.text).toBe(
-    "Still finishing the step before this one. Latest: Found the simulator thread; it is mid-run.",
+it("reads a voice request's status from the chat's turn and replies", () => {
+  const id = VmAgentDelegationId.make("voice-turn:m1");
+  const work = {
+    messageId: MessageId.make("m1"),
+    askedAt: "2026-11-04T10:00:00.000Z",
+    priorTurnId: TurnId.make("turn-old"),
+    priorTurnWasRunning: false,
+    createdAtMs: 0,
+  };
+  const at = (state: string, turnId = "turn-new") => ({ turnId: TurnId.make(turnId), state });
+  const reply = (text: string, createdAt = later) => ({ text, createdAt });
+  // The turn before the request is still the latest: not picked up yet.
+  expect(
+    voiceWorkEvent({ id, work, latestTurn: at("completed", "turn-old"), replies: [] }).status,
+  ).toBe("queued");
+  expect(
+    voiceWorkEvent({
+      id,
+      work,
+      latestTurn: at("running"),
+      replies: [reply("Checking the build.")],
+    }),
+  ).toMatchObject({ status: "running", text: "Checking the build." });
+  // A reply written before the request answered something else.
+  expect(
+    voiceWorkEvent({
+      id,
+      work,
+      latestTurn: at("completed"),
+      replies: [reply("Old answer", "2026-11-04T09:00:00.000Z")],
+    }).text,
+  ).toBe("Done. The details are in the orchestrator's chat.");
+  expect(
+    voiceWorkEvent({
+      id,
+      work,
+      latestTurn: at("completed"),
+      replies: [reply("All green. AGENT_STOP")],
+    }),
+  ).toMatchObject({ status: "completed", text: "All green." });
+  expect(voiceWorkEvent({ id, work, latestTurn: at("error"), replies: [] }).status).toBe("failed");
+  expect(voiceWorkEvent({ id, work, latestTurn: at("interrupted"), replies: [] }).status).toBe(
+    "cancelled",
   );
 });
 
@@ -400,9 +348,9 @@ it.effect("ignores an older delegation arriving after a newer voice request", ()
       context: "user: Friday",
     });
     expect(delayed).toBe(latest);
-    expect(f.delegates).toBe(1);
-    expect(f.messages).toBe(0);
-    expect(f.task).toContain("Thursday, not Friday");
+    expect(f.requestsSent).toHaveLength(1);
+    expect(f.correctionsSent).toHaveLength(0);
+    expect(f.requestsSent[0]).toContain("Thursday, not Friday");
   }).pipe(Effect.provide(f.layer), Effect.provideService(FetchHttpClient.Fetch, f.fetch));
 });
 
@@ -450,11 +398,11 @@ it("preserves session ownership across authenticated HTTP requests and closes th
       const response = await post("delegation", request);
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toContain("application/x-ndjson");
-      expect((await response.text()).trim()).toBe(
-        JSON.stringify({ delegationId: "work-one", status: "completed", text: "Verified result" }),
-      );
+      const event = JSON.parse((await response.text()).trim());
+      expect(event).toMatchObject({ status: "completed", text: "Verified result" });
+      expect(event.delegationId).toMatch(/^voice-turn:/);
     }
-    expect(f.delegates).toBe(1);
+    expect(f.requestsSent).toHaveLength(1);
     expect((await post("delegation", { ...request, sequence: 0 })).status).toBe(400);
     expect((await post("session/release", { sessionId: "live-opaque" })).status).toBe(204);
     expect((await post("delegation", request)).status).toBe(409);
@@ -463,36 +411,28 @@ it("preserves session ownership across authenticated HTTP requests and closes th
   }
 });
 
-it.effect(
-  "enforces current authority and fails missing agent configuration before opening voice",
-  () => {
-    const f = fixture();
-    return Effect.gen(function* () {
-      const service = yield* makeOrchestratorLive;
-      yield* service.start({ sdp: "offer", history: [] });
-      f.readonly();
-      expect(
-        (yield* service
-          .delegate({
-            sessionId: "live-opaque",
-            delegationId: "one",
-            sequence: 1,
-            context: "Change my calendar",
-          })
-          .pipe(Effect.result))._tag,
-      ).toBe("Failure");
-      expect(f.delegates).toBe(0);
-      f.missingAgent();
-      expect((yield* service.start({ sdp: "offer", history: [] }).pipe(Effect.result))._tag).toBe(
-        "Failure",
-      );
-      expect(f.requests).toHaveLength(1);
-      expect(
-        liveDelegationTask("Quoted content", {
-          authority: "full",
-          confirmDestructiveActions: true,
-        }),
-      ).toContain("not that approval");
-    }).pipe(Effect.provide(f.layer), Effect.provideService(FetchHttpClient.Fetch, f.fetch));
-  },
-);
+it.effect("enforces current authority", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const service = yield* makeOrchestratorLive;
+    yield* service.start({ sdp: "offer", history: [] });
+    f.readonly();
+    expect(
+      (yield* service
+        .delegate({
+          sessionId: "live-opaque",
+          delegationId: "one",
+          sequence: 1,
+          context: "Change my calendar",
+        })
+        .pipe(Effect.result))._tag,
+    ).toBe("Failure");
+    expect(f.requestsSent).toHaveLength(0);
+    expect(
+      liveDelegationTask("Quoted content", {
+        authority: "full",
+        confirmDestructiveActions: true,
+      }),
+    ).toContain("not that approval");
+  }).pipe(Effect.provide(f.layer), Effect.provideService(FetchHttpClient.Fetch, f.fetch));
+});

@@ -821,36 +821,40 @@ Calls with your agents use the same arrangement: the web call page shown inside 
 orchestrator page. While the orchestrator is open on the phone, the call waits until you close it,
 and the app rings then if the call is still ringing.
 
-## GPT-Live with Personal Assistant
+## GPT-Live
 
 GPT-Live (**OpenAI > gpt-live-1**) is the default OpenAI voice model. It needs an OpenAI API key
 with access to GPT-Live, saved in **Settings > Orchestrator**. If you were on the old default,
 `gpt-realtime`, the orchestrator now uses GPT-Live; choose a Realtime model under **Model** in
 **Settings > Orchestrator** to switch back. Any other model you picked stays as it was. GPT-Live is a
-separate, continuous voice conversation: it listens while speaking and sends work through Solla's
-agent delegation system.
+separate, continuous voice conversation: it listens while speaking and hands work to the
+orchestrator's own chat.
 
 The same GPT-Live model and key are used for voice calls with your agents, in both directions. See
 [Calling an agent](./custom-agents.md#calling-an-agent).
 
-**GPT-Live delegation > Assistant agent** defaults to **Personal Assistant** in the primary environment.
-Its delegated worker inherits that agent's configured chat model, workspace, scope and rules. Changing
-the agent's model changes the backend used by subsequent workers; GPT-Live handles the spoken exchange.
-The named agent must exist before voice can start. Typed Orchestrator chat keeps its composer model.
+Each spoken request goes into the orchestrator's chat as a message, and its reply is read back. The
+chat has every orchestrator tool and uses the model picked in its composer, so no custom agent is
+needed. (Earlier versions sent voice work to an agent named **Personal Assistant**, and stopped
+working if that agent was renamed or removed.)
 
-The conversation can continue while work runs. Corrections and answers are delivered to the active
-worker, repeated network requests are deduplicated, and results come from durable agent activity.
+The conversation can continue while work runs. Corrections and answers join the request still being
+worked on, repeated network requests are deduplicated, and progress is the chat's latest reply.
 Progress is kept separate from completion. Consequential external actions still require approval in
 Solla; speaking a request or receiving an acknowledgment does not bypass those approvals.
-At **Read only** authority, GPT-Live can converse but cannot create delegated tasks.
-At **Full** authority, the worker can also create and configure agents, so "make me an agent that
-…" by voice works; at **Send** it cannot. While a follow-up waits for the worker to finish its
-current step, GPT-Live is told the worker's latest progress rather than only that it is queued.
+At **Read only** authority, GPT-Live can converse but cannot hand off work.
+At **Full** authority, voice requests may create and configure agents, so "make me an agent that …"
+works; at **Send** the chat is told not to.
 
 Stopping voice immediately disables the microphone. The connection briefly remains open to receive
-OpenAI's final usage receipt. Delegated work survives a voice disconnect and remains visible in agent
-activity; a disconnected update stream is never reported as completed work. Check agent activity
-before starting the same task again after reconnecting.
+OpenAI's final usage receipt. Work survives a voice disconnect and carries on in the orchestrator's
+chat; a disconnected update stream is never reported as completed work.
+
+When you hang up (the stop button, or saying goodbye) with something still open, such as work the
+orchestrator said it would report on, work still under way, or a promise to get back to you, the
+orchestrator's chat receives a message saying so and carries on in text. It already has the spoken
+conversation, so it continues from where the call left off. A call that left nothing open sends
+nothing.
 
 GPT-Live's native interruption behavior keeps the microphone open with browser echo cancellation.
 Headphones give the clearest separation on handheld devices. The Realtime interruption toggle does

@@ -8,20 +8,18 @@ from received audio, not text or backend generation. Stop disables capture first
 
 Authenticated, orchestration-scoped HTTP routes create a session using the server's OpenAI secret.
 The browser receives an SDP answer and opaque session ID, never the permanent key. The server binds
-the session to the configured assistant agent and authority. Session history and transcript context
+the session to its authority. Session history and transcript context
 are bounded. Transcript fragments alone do not start work: `session.delegation.created` triggers the
 backend request and its opaque ID is retained for subsequent Live appends.
 
-`OrchestratorLive` bridges requests into `VmAgentCollaboration` and wakes `VmAgentTaskScheduler`.
-Ephemeral workers inherit the source agent's model and workspace. Per-session request IDs and ordered
-sequences suppress retries and stale corrections; a correction goes to the active worker. Durable
-idempotency keys prevent duplicate task creation. NDJSON streams follow collaboration revisions using
-subscription receipts and release their subscriptions when disconnected. Disconnecting a reader
-never cancels a task. New voice sessions do not automatically reissue earlier tasks.
-
-Corrections are accepted while a worker is queued. The scheduler supplies all pending updates in
-order in the same worker turn and marks them delivered only after dispatch. A new worker also keeps
-the original task, so an early correction cannot discard its scope. Approval gates remain enforced.
+`OrchestratorLive` puts each request into the orchestrator's own thread as a `thread.turn.start`
+message (`liveDelegationTask`), so no custom agent is involved. Its work id is `voice-turn:<message id>`;
+`voiceWorkEvent` reads progress and completion from that thread's latest turn and the assistant
+replies written after the request, the same reply rule `workspace_consult` uses. Per-session request
+IDs and ordered sequences suppress retries and stale corrections; a correction is another message,
+which steers into the running turn. NDJSON streams follow the thread's domain events and end at a
+terminal status. Disconnecting a reader never cancels the work. New voice sessions do not
+automatically reissue earlier requests.
 
 Thinking appends carry progress; commentary appends carry results and questions. An append being
 accepted is not evidence that audio played or that work finished. Session usage is cumulative seconds,

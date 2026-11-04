@@ -806,11 +806,6 @@ export const OrchestratorSettings = Schema.Struct({
   model: TrimmedString.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_REALTIME_MODEL)),
   ),
-  // Resolves the named Personal Assistant in this environment. Workers
-  // inherit its configured model and rules through the existing delegation system.
-  liveAgentName: TrimmedNonEmptyString.check(Schema.isMaxLength(64)).pipe(
-    Schema.withDecodingDefault(Effect.succeed("Personal Assistant")),
-  ),
   voice: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_VOICE))),
   language: TrimmedString.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_LANGUAGE)),
@@ -1262,7 +1257,6 @@ const OrchestratorSettingsPatch = Schema.Struct({
   xaiApiKey: Schema.optionalKey(TrimmedString),
   provider: Schema.optionalKey(OrchestratorVoiceProvider),
   model: Schema.optionalKey(TrimmedString),
-  liveAgentName: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
   voice: Schema.optionalKey(TrimmedString),
   language: Schema.optionalKey(TrimmedString),
   activation: Schema.optionalKey(OrchestratorActivationMode),

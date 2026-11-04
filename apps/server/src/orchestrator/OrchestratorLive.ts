@@ -2,15 +2,18 @@
 import { AGENT_STOP_TOKEN } from "@t3tools/shared/agentMode";
 import * as NodeCrypto from "node:crypto";
 import {
+  CommandId,
+  MessageId,
   OPENAI_LIVE_MODEL,
+  ORCHESTRATOR_THREAD_ID,
+  ORCHESTRATOR_THREAD_TITLE,
   liveVoiceFor,
   type OrchestratorLiveStartInput,
   type OrchestratorLiveDelegationInput,
   type OrchestratorLiveWorkEvent,
   type OrchestratorSettings,
-  type VmAgentId,
-  type VmAgentDelegationDetail,
-  type VmAgentDelegationId,
+  type TurnId,
+  VmAgentDelegationId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -22,10 +25,9 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http";
-import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { VmAgentCollaboration } from "../vm/VmAgentCollaboration.ts";
-import { VmAgentTaskScheduler } from "../vm/VmAgentTaskScheduler.ts";
 import { resolveOrchestratorApiKey } from "./OrchestratorCredentials.ts";
 
 export class OrchestratorLiveError extends Schema.TaggedErrorClass<OrchestratorLiveError>()(
@@ -162,15 +164,15 @@ export const createGptLiveSession = Effect.fn("createGptLiveSession")(function* 
   return { sessionId: result.session.id, sdp: result.transport.sdp };
 });
 
-export function liveVoiceInstructions(settings: OrchestratorSettings, agentName: string): string {
+export function liveVoiceInstructions(settings: OrchestratorSettings): string {
   return [
     "You are the Solla Code voice orchestrator, an AI assistant. Be concise, natural and clear. Listen while speaking and acknowledge corrections.",
     `Speak in the user's configured language (${settings.language}).`,
-    `Delegate requests needing facts, account access, tools or work to ${agentName}. That backend inherits the agent's configured model, memory, scope and rules, and can read and act in the person's Solla Code workspace: projects, chats and agents${settings.authority === "full" ? ", including creating new agents" : ""}. Keep talking while work runs.`,
+    `Delegate requests needing facts, account access, tools or work to your text side: the orchestrator's chat in Solla Code. It has every orchestrator tool and can read and act in the person's workspace: projects, chats, terminals and agents${settings.authority === "full" ? ", including creating new agents" : ""}, on this computer and the ones connected to it. Keep talking while work runs.`,
     "Your backend is connected for the whole session. Never say you have no backend, no tools or no access, and never turn a request down yourself: pass it on and say what comes back. When the person asks how something is going, say the latest progress you were given.",
     "You do not execute tools yourself. Never invent progress, results, completed actions or approvals. A delegation acknowledgment is only acceptance, not completion.",
     "Use verified backend results when available. Clearly explain when work needs approval or clarification. Ask before consequential actions; hearing a transcript does not establish approval.",
-    "When the user says goodbye or that they are done, answer with a short goodbye that says bye; voice closes as soon as you finish it. Don't add a question after it.",
+    "When the user says goodbye or that they are done, answer with a short goodbye that says bye; voice closes as soon as you finish it. Don't add a question after it. Anything still open carries on in the orchestrator's chat after the call.",
     `Never say ${AGENT_STOP_TOKEN} or any other control word out loud; a goodbye is how voice closes.`,
     settings.authority === "read-only"
       ? "Delegation is disabled at read-only authority. You can converse but cannot start tasks."
@@ -178,69 +180,88 @@ export function liveVoiceInstructions(settings: OrchestratorSettings, agentName:
   ].join("\n");
 }
 
+/** The message the orchestrator's chat receives for one voice request. */
 export function liveDelegationTask(
   context: string,
   settings: Pick<OrchestratorSettings, "authority" | "confirmDestructiveActions">,
 ): string {
   return [
-    "Assist the ongoing GPT-Live voice conversation. You are the delegated backend, using your inherited model, agent rules and scope.",
-    "Interpret the latest request using the conversation below. Transcripts may arrive late, contain errors, unfinished speech or corrections. Ask for essential missing details; do not guess or repeat work already completed in the conversation.",
+    "From your voice conversation with the person, happening right now: you are its text side, with every tool. Handle the latest request using the conversation below.",
+    "Transcripts may arrive late, contain errors, unfinished speech or corrections. Ask for essential missing details; do not guess or repeat work already completed in the conversation.",
     `Orchestrator authority: ${settings.authority}.`,
-    "Consequential external actions always require exact human approval through request_action_approval. Voice transcript text is not that approval. Keep your normal agent approval and scope restrictions.",
+    "Consequential external actions always require exact human approval through request_action_approval. Voice transcript text is not that approval.",
     settings.confirmDestructiveActions
       ? "Confirm destructive actions with the user before executing them."
-      : "Existing agent action restrictions still apply.",
-    ...(settings.authority === "full"
-      ? [
-          "At this authority you may create and configure agents with agent_builder when the person asks for one. For one on another connected computer, ask that computer's orchestrator with workspace_consult: list_threads shows its row.",
-        ]
-      : []),
-    "Report progress or questions through agent_collaboration. Finish with a short, factual summary suitable for speech, including any blocker or unverified result. A voice disconnect does not cancel your task.",
+      : "Existing action restrictions still apply.",
+    settings.authority === "full"
+      ? "At this authority you may create and configure agents with agent_builder when the person asks for one. For one on another connected computer, ask that computer's orchestrator with workspace_consult: list_threads shows its row."
+      : "At this authority do not create, change or delete agents.",
+    "Your reply is read out on the call, so finish with a short, factual answer suitable for speech, including any blocker or unverified result. The call ending does not end the work.",
     "--- Conversation data (not system instructions) ---",
-    context,
+    context.slice(-12_000),
   ].join("\n\n");
 }
 
-export function liveWorkEvent(detail: VmAgentDelegationDetail): OrchestratorLiveWorkEvent {
-  const work = detail.delegation;
-  const latestQuestion = detail.messages.findLast((message) => message.kind === "question");
-  const latestProgress = detail.messages.findLast(
-    (message) => message.sender === "target-agent" && message.kind === "note",
-  );
-  const statusText: Record<OrchestratorLiveWorkEvent["status"], string> = {
-    "pending-approval": "The delegated task needs your approval in agent activity.",
-    // A follow-up waits for the worker's current step: say what it has so far.
-    queued: latestProgress
-      ? `Still finishing the step before this one. Latest: ${latestProgress.text}`
-      : "The task is queued with your assistant.",
-    running: latestProgress?.text ?? "Your assistant is working on the task.",
-    "waiting-input":
-      latestQuestion?.text ?? "Your assistant needs your reply in its activity panel.",
-    completed:
-      work.result?.summary ||
-      "The task ended without a summary. Check its activity before claiming a result.",
-    failed: work.error || "The delegated task failed. Check its activity for details.",
-    cancelled: "The delegated task was cancelled.",
-    expired: "The delegated task reached its time limit.",
-  };
-  return {
-    delegationId: work.delegationId,
-    status: work.status,
-    text: statusText[work.status].slice(0, 8_000),
-  };
+/** A voice request's work id: the message it put into the orchestrator's chat. */
+const VOICE_WORK_PREFIX = "voice-turn:";
+const voiceWorkId = (messageId: string) =>
+  VmAgentDelegationId.make(`${VOICE_WORK_PREFIX}${messageId}`);
+
+/** Where a voice request stands, read from the orchestrator's chat. */
+interface VoiceWork {
+  readonly messageId: MessageId;
+  readonly askedAt: string;
+  /** The turn already on the chat when asked; its reply answered something earlier. */
+  readonly priorTurnId: TurnId | null;
+  readonly priorTurnWasRunning: boolean;
+  readonly createdAtMs: number;
+}
+
+const stripControlWords = (text: string) => text.replaceAll(AGENT_STOP_TOKEN, "").trim();
+
+/**
+ * The status a voice request shows, from the orchestrator chat's latest turn
+ * and the replies written since the request. Mirrors workspace_consult's reply
+ * rule: the prior turn answers only if the request steered into it while it ran.
+ */
+export function voiceWorkEvent(input: {
+  readonly id: VmAgentDelegationId;
+  readonly work: VoiceWork;
+  readonly latestTurn: { readonly turnId: TurnId; readonly state: string } | null;
+  readonly replies: ReadonlyArray<{ readonly text: string; readonly createdAt: string }>;
+}): OrchestratorLiveWorkEvent {
+  const latest = input.latestTurn;
+  const reply = input.replies
+    .filter((message) => message.createdAt >= input.work.askedAt)
+    .map((message) => stripControlWords(message.text))
+    .findLast((text) => text.length > 0);
+  const event = (status: OrchestratorLiveWorkEvent["status"], text: string) => ({
+    delegationId: input.id,
+    status,
+    text: text.slice(0, 8_000),
+  });
+  const stillPrior =
+    latest !== null && latest.turnId === input.work.priorTurnId && !input.work.priorTurnWasRunning;
+  if (latest === null || stillPrior) {
+    return event("queued", "Waiting for the orchestrator's chat to pick this up.");
+  }
+  if (latest.state === "running") return event("running", reply ?? "Working on it.");
+  if (latest.state === "error") {
+    return event("failed", reply ?? "The orchestrator's chat stopped with an error.");
+  }
+  if (latest.state === "interrupted") return event("cancelled", "The request was stopped.");
+  return event("completed", reply ?? "Done. The details are in the orchestrator's chat.");
 }
 
 export const makeOrchestratorLive = Effect.gen(function* () {
   const settingsService = yield* ServerSettingsService;
-  const agents = yield* VmAgentStore;
-  const collaboration = yield* VmAgentCollaboration;
-  const scheduler = yield* VmAgentTaskScheduler;
+  const engine = yield* OrchestrationEngineService;
+  const projection = yield* ProjectionSnapshotQuery;
   const http = yield* HttpClient.HttpClient;
   const semaphore = yield* Semaphore.make(1);
   const sessions = new Map<
     string,
     {
-      agentId: VmAgentId;
       createdAt: number;
       authority: OrchestratorSettings["authority"];
       activeWorkId?: VmAgentDelegationId;
@@ -248,11 +269,94 @@ export const makeOrchestratorLive = Effect.gen(function* () {
       lastSequence: number;
     }
   >();
+  const works = new Map<VmAgentDelegationId, VoiceWork>();
   const nowMs = Effect.map(DateTime.now, DateTime.toEpochMillis);
   const prune = (now: number) => {
     for (const [id, session] of sessions)
       if (now - session.createdAt > 2 * 60 * 60_000) sessions.delete(id);
+    for (const [id, work] of works) if (now - work.createdAtMs > 2 * 60 * 60_000) works.delete(id);
   };
+  const failed = (detail: string) => () => new OrchestratorLiveError({ status: 409, detail });
+
+  /** Puts a voice request into the orchestrator's own chat, as a message the person sent. */
+  const sendToChat = Effect.fn("OrchestratorLive.sendToChat")(function* (text: string) {
+    const shell = yield* projection
+      .getThreadShellById(ORCHESTRATOR_THREAD_ID)
+      .pipe(Effect.mapError(failed("The orchestrator's chat could not be read.")));
+    if (Option.isNone(shell)) {
+      return yield* new OrchestratorLiveError({
+        status: 409,
+        detail: "The orchestrator's chat is not ready yet. Try again in a moment.",
+      });
+    }
+    const messageId = MessageId.make(NodeCrypto.randomUUID());
+    const askedAt = DateTime.formatIso(yield* DateTime.now);
+    yield* engine
+      .dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`orchestrator-voice:${NodeCrypto.randomUUID()}`),
+        threadId: ORCHESTRATOR_THREAD_ID,
+        message: {
+          messageId,
+          role: "user",
+          text,
+          inputOrigin: "transcription",
+          attachments: [],
+        },
+        runtimeMode: shell.value.runtimeMode,
+        interactionMode: shell.value.interactionMode,
+        createdAt: askedAt,
+      })
+      .pipe(Effect.mapError(failed("The orchestrator's chat could not take this request.")));
+    const latest = shell.value.latestTurn;
+    const work: VoiceWork = {
+      messageId,
+      askedAt,
+      priorTurnId: latest?.turnId ?? null,
+      priorTurnWasRunning: latest?.state === "running",
+      createdAtMs: yield* nowMs,
+    };
+    const id = voiceWorkId(messageId);
+    works.set(id, work);
+    return id;
+  });
+
+  const readWork = (id: VmAgentDelegationId) =>
+    Effect.gen(function* () {
+      const work = works.get(id);
+      if (work === undefined) {
+        return {
+          delegationId: id,
+          status: "expired" as const,
+          text: "This voice request is no longer tracked. Its result is in the orchestrator's chat.",
+        };
+      }
+      const shell = yield* projection.getThreadShellById(ORCHESTRATOR_THREAD_ID);
+      const detail = yield* projection.getThreadDetailById(ORCHESTRATOR_THREAD_ID, {
+        messageLimit: 40,
+        activityLimit: 0,
+      });
+      return voiceWorkEvent({
+        id,
+        work,
+        latestTurn: Option.match(shell, {
+          onNone: () => null,
+          onSome: (value) => value.latestTurn,
+        }),
+        replies: Option.match(detail, {
+          onNone: () => [],
+          onSome: (value) =>
+            value.messages.filter((message) => message.role === "assistant" && !message.streaming),
+        }),
+      });
+    }).pipe(
+      Effect.orElseSucceed(() => ({
+        delegationId: id,
+        status: "running" as const,
+        text: "Working on it.",
+      })),
+    );
+
   const start = Effect.fn("OrchestratorLive.start")(function* (input: OrchestratorLiveStartInput) {
     const { orchestrator: settings } = yield* settingsService.getSettings;
     if (
@@ -265,12 +369,6 @@ export const makeOrchestratorLive = Effect.gen(function* () {
         detail: "Select GPT-Live in Orchestrator settings before starting this session.",
       });
     }
-    const agent = yield* agents.getByNameLower(settings.liveAgentName.toLowerCase());
-    if (Option.isNone(agent) || !agent.value.threadId)
-      return yield* new OrchestratorLiveError({
-        status: 409,
-        detail: `Create or select the ${settings.liveAgentName} agent before starting GPT-Live.`,
-      });
     const key = yield* resolveOrchestratorApiKey("openai");
     if (Option.isNone(key))
       return yield* new OrchestratorLiveError({
@@ -286,13 +384,12 @@ export const makeOrchestratorLive = Effect.gen(function* () {
     const voice = liveVoiceFor(settings.voice);
     const result = yield* createGptLiveSession(http, {
       key: key.value,
-      instructions: liveVoiceInstructions(settings, agent.value.name),
+      instructions: liveVoiceInstructions(settings),
       voice,
       history: input.history,
       sdp: input.sdp,
     });
     sessions.set(result.sessionId, {
-      agentId: agent.value.vmAgentId,
       createdAt: yield* nowMs,
       authority: settings.authority,
       requests: new Map(),
@@ -301,14 +398,13 @@ export const makeOrchestratorLive = Effect.gen(function* () {
     yield* Effect.logInfo("orchestrator GPT-Live session created", {
       model: OPENAI_LIVE_MODEL,
       voice,
-      agentId: agent.value.vmAgentId,
     });
     return {
       sessionId: result.sessionId,
       sdp: result.sdp,
       model: OPENAI_LIVE_MODEL,
       voice,
-      agentName: agent.value.name,
+      agentName: ORCHESTRATOR_THREAD_TITLE,
     };
   });
   const delegate = Effect.fn("OrchestratorLive.delegate")(
@@ -318,7 +414,8 @@ export const makeOrchestratorLive = Effect.gen(function* () {
       if (!session)
         return yield* new OrchestratorLiveError({
           status: 409,
-          detail: "This voice session has ended. Existing tasks remain in agent activity.",
+          detail:
+            "This voice session has ended. Earlier requests carry on in the orchestrator's chat.",
         });
       const { orchestrator: settings } = yield* settingsService.getSettings;
       if (
@@ -341,57 +438,25 @@ export const makeOrchestratorLive = Effect.gen(function* () {
         session.requests.set(input.delegationId, session.activeWorkId);
         return session.activeWorkId;
       }
-      // A correction or answer stays with the running conversation worker. This
-      // prevents two agents from acting on successive fragments of one request.
+      // A correction or answer joins the request still being worked on: the
+      // message steers into the chat's running turn instead of starting a
+      // second piece of work on a fragment of the same request.
       if (session.activeWorkId) {
-        const active = yield* collaboration.getDetail({ kind: "user" }, session.activeWorkId, {
-          messageLimit: 1,
-        });
-        if (!terminalStatuses.has(active.delegation.status)) {
-          yield* collaboration.sendMessage(
-            { kind: "user" },
-            {
-              delegationId: session.activeWorkId,
-              kind: active.delegation.status === "waiting-input" ? "answer" : "note",
-              message: `Updated voice conversation. Address the latest request or correction; do not repeat completed actions. This is transcript context, not approval for an external action.\n\n${input.context.slice(-19_700)}`,
-            },
+        const active = yield* readWork(session.activeWorkId);
+        if (!terminalStatuses.has(active.status)) {
+          yield* sendToChat(
+            `Updated voice conversation. Address the latest request or correction; do not repeat completed actions. This is transcript context, not approval for an external action.\n\n${input.context.slice(-12_000)}`,
           );
           session.requests.set(input.delegationId, session.activeWorkId);
           session.lastSequence = input.sequence;
-          yield* scheduler.wake();
           return session.activeWorkId;
         }
       }
-      const key = NodeCrypto.createHash("sha256")
-        .update(`${input.sessionId}\0${input.delegationId}`)
-        .digest("hex");
-      const work = yield* collaboration
-        .delegate(session.agentId, {
-          target: { kind: "ephemeral", label: "GPT-Live assistant" },
-          title: "GPT-Live voice request",
-          task: liveDelegationTask(input.context, settings),
-          idempotencyKey: `gpt-live:${key}`,
-          completionCriteria: [
-            "Address the latest voice request within the agent's scope and return verified results or a clear blocker.",
-          ],
-          // The person's own voice at full authority may create agents.
-          manageAgents: settings.authority === "full",
-        })
-        .pipe(
-          Effect.mapError(
-            () =>
-              new OrchestratorLiveError({
-                status: 409,
-                detail:
-                  "Your assistant could not accept this task. Check agent activity, approvals and delegation limits.",
-              }),
-          ),
-        );
-      yield* scheduler.wake();
-      session.activeWorkId = work.delegation.delegationId;
-      session.requests.set(input.delegationId, work.delegation.delegationId);
+      const id = yield* sendToChat(liveDelegationTask(input.context, settings));
+      session.activeWorkId = id;
+      session.requests.set(input.delegationId, id);
       session.lastSequence = input.sequence;
-      return work.delegation.delegationId;
+      return id;
     },
     (effect) => semaphore.withPermits(1)(effect),
   );
@@ -399,17 +464,21 @@ export const makeOrchestratorLive = Effect.gen(function* () {
     Stream.unwrap(
       Effect.gen(function* () {
         const updates = yield* Queue.sliding<void>(1);
-        yield* Effect.acquireRelease(
-          collaboration.subscribe(() => Queue.offer(updates, undefined).pipe(Effect.asVoid)),
-          (unsubscribe) => Effect.sync(unsubscribe),
+        // Subscribed before the first read, so a change in between still wakes it.
+        yield* engine.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.aggregateKind === "thread" &&
+              event.aggregateId === ORCHESTRATOR_THREAD_ID &&
+              !(event.type === "thread.message-sent" && event.payload.streaming),
+          ),
+          Stream.runForEach(() => Queue.offer(updates, undefined)),
+          Effect.forkScoped({ startImmediately: true }),
         );
         yield* Queue.offer(updates, undefined);
         return Stream.fromQueue(updates).pipe(
-          Stream.mapEffect(() =>
-            collaboration.getDetail({ kind: "user" }, id, { messageLimit: 10 }),
-          ),
-          Stream.changesWith((a, b) => a.delegation.revision === b.delegation.revision),
-          Stream.map(liveWorkEvent),
+          Stream.mapEffect(() => readWork(id)),
+          Stream.changesWith((a, b) => a.status === b.status && a.text === b.text),
           Stream.takeUntil((event) => terminalStatuses.has(event.status)),
         );
       }),

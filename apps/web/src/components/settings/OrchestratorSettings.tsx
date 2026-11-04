@@ -207,7 +207,7 @@ export function OrchestratorSettingsPanel() {
   // about the whole feature rather than a note about one setting.
   const activeModel = voice?.activeModel ?? null;
   const modelStatus = isLive
-    ? `GPT-Live delegates work to ${orchestrator.liveAgentName}, using that agent’s configured model and rules.`
+    ? "GPT-Live hands work to the orchestrator's chat, which uses the model picked in its composer."
     : activeModel === null
       ? "Used for voice only. Typed chat uses the model picked in the composer."
       : `Voice is running on ${activeModel}. Typed chat uses the model picked in the composer.`;
@@ -551,27 +551,6 @@ export function OrchestratorSettingsPanel() {
         />
       </SettingsSection>
 
-      {isLive ? (
-        <SettingsSection title="GPT-Live delegation">
-          <SettingsRow
-            title="Assistant agent"
-            description="The named agent in the primary environment handles GPT-Live requests through the delegation system. Its model, workspace, rules and approvals carry into each worker. Corrections go to the active worker."
-            control={
-              <Input
-                key={orchestrator.liveAgentName}
-                defaultValue={orchestrator.liveAgentName}
-                maxLength={64}
-                aria-label="GPT-Live assistant agent"
-                onBlur={(event) => {
-                  const name = event.currentTarget.value.trim();
-                  if (name && name !== orchestrator.liveAgentName)
-                    updateSettings({ orchestrator: { liveAgentName: name } });
-                }}
-              />
-            }
-          />
-        </SettingsSection>
-      ) : null}
       <SettingsSection title="Interruptions">
         <SettingsRow
           title="Let me interrupt by talking over it"

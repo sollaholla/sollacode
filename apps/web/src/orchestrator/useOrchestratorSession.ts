@@ -65,6 +65,7 @@ import {
   resetWakeBudget,
   type AwaitedWorkState,
 } from "./awaitedWork";
+import { buildHangUpHandoff } from "./hangUpHandoff";
 import { isEchoProneDevice, resolveInterruptWhileSpeaking } from "./echoProneDevice";
 import { resolveVoiceCuePolicy } from "./voiceCues";
 import { decideReconnect } from "./reconnect";
@@ -508,6 +509,9 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
   const stateRef = useRef<VoiceSessionState>("idle");
   /** The last line actually recorded, for the repeat guard below. */
   const lastTranscriptLineRef = useRef<TranscriptLine | null>(null);
+  // For the hang-up handoff: whether this call said anything, and its last line.
+  const callSpokeRef = useRef(false);
+  const lastAssistantLineRef = useRef<string | null>(null);
   /** A voice/model change that arrived mid-answer and is waiting to apply. */
   const pendingRestartRef = useRef(false);
   /** Attempts made for the current drop; reset once a session comes up. */
@@ -1748,28 +1752,73 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     [],
   );
 
-  const stop = useCallback(() => {
-    // Deliberate stop: a later drop must not be chased.
-    sessionWantedRef.current = false;
-    reconnectAttemptsRef.current = 0;
-    clearReconnectTimer();
-    startGenerationRef.current += 1;
-    sessionRef.current?.stop();
-    sessionRef.current = null;
-    // Stopping mid tool call would otherwise leave "working" latched: the
-    // session that was going to report false is gone, and the next session's
-    // report dedupe starts at false, so nobody ever says it again.
-    bubbleWorkingRef.current = false;
-    setWorking(false);
-    // Stopping by hand is a decision, not a lull. Anything the orchestrator was
-    // waiting on stays recorded, but nothing may reopen the microphone until
-    // the user starts it again themselves.
-    awaitedRef.current = noteSessionEnded(awaitedRef.current, "user");
-    pendingWakeLinesRef.current = [];
-    setState("idle");
-    setActiveSession(null);
-    publishBubbleStatus("idle");
-  }, [clearReconnectTimer, publishBubbleStatus]);
+  /**
+   * Tells the orchestrator's text chat the call ended with something still
+   * open, so it carries on in writing. Only when the person ends the call: a
+   * settings restart or the feature being switched off is not a hang-up.
+   */
+  const handOffToText = useCallback(() => {
+    const message = buildHangUpHandoff({
+      awaited: awaitedRef.current.items,
+      workingAtHangUp: bubbleWorkingRef.current,
+      lastAssistantLine: lastAssistantLineRef.current,
+      spokeThisCall: callSpokeRef.current,
+      nowMs: Date.now(),
+    });
+    callSpokeRef.current = false;
+    lastAssistantLineRef.current = null;
+    const target = orchestratorTargetRef.current;
+    if (message === null || target === null) return;
+    void startThreadTurn({
+      environmentId: EnvironmentId.make(target.ref.environmentId),
+      input: {
+        threadId: ThreadId.make(target.ref.threadId),
+        message: {
+          messageId: MessageId.make(randomUUID()),
+          role: "user",
+          text: message,
+          // The app wrote this, not the person.
+          inputOrigin: "agent-loop",
+          attachments: [],
+        },
+        modelSelection: target.shell.modelSelection,
+        runtimeMode: target.shell.runtimeMode,
+        interactionMode: target.shell.interactionMode,
+        createdAt: new Date().toISOString(),
+      },
+    });
+  }, [startThreadTurn]);
+
+  const stopSession = useCallback(
+    (hangUp: boolean) => {
+      if (hangUp && sessionRef.current !== null) handOffToText();
+      // Deliberate stop: a later drop must not be chased.
+      sessionWantedRef.current = false;
+      reconnectAttemptsRef.current = 0;
+      clearReconnectTimer();
+      startGenerationRef.current += 1;
+      sessionRef.current?.stop();
+      sessionRef.current = null;
+      // Stopping mid tool call would otherwise leave "working" latched: the
+      // session that was going to report false is gone, and the next session's
+      // report dedupe starts at false, so nobody ever says it again.
+      bubbleWorkingRef.current = false;
+      setWorking(false);
+      // Stopping by hand is a decision, not a lull. Anything the orchestrator was
+      // waiting on stays recorded, but nothing may reopen the microphone until
+      // the user starts it again themselves.
+      awaitedRef.current = noteSessionEnded(awaitedRef.current, "user");
+      pendingWakeLinesRef.current = [];
+      setState("idle");
+      setActiveSession(null);
+      publishBubbleStatus("idle");
+    },
+    [clearReconnectTimer, handOffToText, publishBubbleStatus],
+  );
+  /** The person ending the call. */
+  const stop = useCallback(() => stopSession(true), [stopSession]);
+  /** Ending the session for a reason of the app's own, such as a restart. */
+  const stopQuietly = useCallback(() => stopSession(false), [stopSession]);
 
   /**
    * The spoken "that's all" / "be quiet". Hands-free is the whole point of the
@@ -1819,13 +1868,13 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
         pendingRestartRef.current = true;
         return;
       }
-      stop();
+      stopQuietly();
       // The settings write has resolved, so the restart mints its token against
       // the new value. Deferred a tick so the teardown's state updates land
       // first and `start` sees no session in flight.
       setTimeout(() => startRef.current?.(), 0);
     },
-    [updatePrimarySettings, stop],
+    [updatePrimarySettings, stopQuietly],
   );
 
   const setOrchestratorVoice = useCallback(
@@ -1861,6 +1910,8 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     setError(null);
     setState("connecting");
     publishBubbleStatus("connecting");
+    callSpokeRef.current = false;
+    lastAssistantLineRef.current = null;
 
     const generation = (startGenerationRef.current += 1);
     void (async () => {
@@ -1956,6 +2007,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
             if (generation !== startGenerationRef.current) return;
             // Spoken "goodbye" is as deliberate as pressing stop, so nothing may
             // reopen the microphone afterwards.
+            handOffToText();
             sessionRef.current = null;
             awaitedRef.current = noteSessionEnded(awaitedRef.current, "user");
             pendingWakeLinesRef.current = [];
@@ -2043,6 +2095,8 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
               return;
             }
             lastTranscriptLineRef.current = { role: entry.role, text: entry.text, atMs: nowMs };
+            callSpokeRef.current = true;
+            if (entry.role === "assistant") lastAssistantLineRef.current = entry.text;
             setTranscript((previous) => [...previous, entry].slice(-MAX_TRANSCRIPT_ENTRIES));
             persistTranscriptEntry(entry);
           },
@@ -2120,6 +2174,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     publishBubbleLevels,
     publishBubbleStatus,
     sendToThread,
+    handOffToText,
   ]);
   // Published for the world-diff effect above, which needs to reopen the session
   // but must not take `start` as a dependency.
@@ -2266,9 +2321,9 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     // cancel that intent — not watch a timer reopen the microphone in a few
     // seconds with the setting already off.
     if (!orchestrator.enabled && (sessionRef.current !== null || sessionWantedRef.current)) {
-      stop();
+      stopQuietly();
     }
-  }, [orchestrator.enabled, stop]);
+  }, [orchestrator.enabled, stopQuietly]);
 
   useEffect(
     () => () => {
@@ -2346,9 +2401,9 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     if (state === "speaking" || state === "connecting") return;
     pendingRestartRef.current = false;
     if (sessionRef.current === null) return;
-    stop();
+    stopQuietly();
     setTimeout(() => startRef.current?.(), 0);
-  }, [state, stop]);
+  }, [state, stopQuietly]);
 
   const toggle = useCallback(() => {
     if (sessionRef.current !== null || state === "connecting") {

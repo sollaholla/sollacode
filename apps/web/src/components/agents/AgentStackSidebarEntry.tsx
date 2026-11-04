@@ -798,6 +798,14 @@ function MeetAgentsButton(props: { readonly onClick: () => void }) {
   );
 }
 
+/**
+ * The Threads header's + button, exactly, so the icons down the sidebar's right
+ * edge line up and sit the same distance apart. On a touch screen the tap area
+ * grows past the 28px button without moving the icon.
+ */
+const SECTION_ICON_BUTTON_CLASS_NAME =
+  "relative inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-muted-foreground/70 transition-colors after:absolute after:content-[''] pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:-inset-y-2 hover:bg-sidebar-row-hover hover:text-sidebar-foreground";
+
 function NewAgentButton(props: { readonly onClick: () => void }) {
   return (
     <Tooltip>
@@ -807,9 +815,7 @@ function NewAgentButton(props: { readonly onClick: () => void }) {
             type="button"
             aria-label="New agent"
             data-testid="agents-add"
-            // The 44px target is for touch; on a fine pointer it is just a
-            // tall band beside a one-line header.
-            className="inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground pointer-fine:min-h-7 pointer-fine:min-w-7"
+            className={SECTION_ICON_BUTTON_CLASS_NAME}
             onClick={props.onClick}
           />
         }
@@ -859,7 +865,7 @@ function BuildAgentButton(props: {
             type="button"
             aria-label={accessibleLabel}
             data-testid="agents-build"
-            className="inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground pointer-fine:min-h-7 pointer-fine:min-w-7"
+            className={SECTION_ICON_BUTTON_CLASS_NAME}
             onClick={props.onClick}
           />
         }
@@ -1010,7 +1016,7 @@ function AgentEnvironmentSection(props: {
               />
             ) : null}
           </button>
-          <div className="flex shrink-0 items-center">
+          <div className="flex shrink-0 items-center gap-1">
             <BuildAgentButton environmentId={props.environmentId} onClick={props.onOpenBuilder} />
             <NewAgentButton onClick={() => props.onCreateOpenChange(true)} />
           </div>
