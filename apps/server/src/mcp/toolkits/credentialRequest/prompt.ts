@@ -62,6 +62,20 @@ export function credentialRequestQuestion(input: CredentialRequest): UserInputQu
       multiSelect: false,
     };
   }
+  if (input.mode === "passkey") {
+    return {
+      id: CREDENTIAL_REQUEST_QUESTION_ID,
+      header: "Passkey needed",
+      question: `${site} wants a passkey. Solla can hold one for this site, encrypted on your computer. It says: ${input.reason}`,
+      options: [
+        {
+          label: CREDENTIAL_DECLINE_CHOICE,
+          description: "The agent carries on without a passkey.",
+        },
+      ],
+      multiSelect: false,
+    };
+  }
   const wanted = input.mode === "code" ? "a code" : "a login";
   return {
     id: CREDENTIAL_REQUEST_QUESTION_ID,

@@ -36,6 +36,7 @@ import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { confirmInApp } from "../ui/appConfirm";
 import { Button } from "../ui/button";
 import { AccountsSections, type AccountsSource } from "./AccountsSections";
+import { PasskeysSection, type PasskeysSource } from "./PasskeysSection";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
 /** What the settings screen needs from wherever the passwords are kept. */
@@ -55,12 +56,18 @@ export type CredentialsVault = Pick<
 export function CredentialsSettingsPanel() {
   const desktopVault = previewBridge?.credentials;
   const desktopAccounts = previewBridge?.accounts;
+  const desktopPasskeys = previewBridge?.passkeys;
   const environmentId = usePrimaryEnvironmentId();
-  if (desktopVault && desktopAccounts) {
+  if (desktopVault && desktopAccounts && desktopPasskeys) {
     return (
       <CredentialsSettingsView
         bridge={desktopVault}
-        before={<AccountsSections source={desktopAccounts} environmentId={environmentId} />}
+        before={
+          <>
+            <AccountsSections source={desktopAccounts} environmentId={environmentId} />
+            <PasskeysSection source={desktopPasskeys} />
+          </>
+        }
       />
     );
   }
@@ -79,6 +86,15 @@ function RelayedCredentialsSettings({ environmentId }: { environmentId: Environm
     reportFailure: false,
   });
   const accountsLink = useAtomCommand(previewEnvironment.accountsLink, { reportFailure: false });
+  const passkeysSnapshot = useAtomCommand(previewEnvironment.passkeysSnapshot, {
+    reportFailure: false,
+  });
+  const passkeysSetSite = useAtomCommand(previewEnvironment.passkeysSetSite, {
+    reportFailure: false,
+  });
+  const passkeysRemove = useAtomCommand(previewEnvironment.passkeysRemove, {
+    reportFailure: false,
+  });
   const vault = useMemo<CredentialsVault>(
     () => ({
       list: async () => settled(await list({ environmentId, input: {} })),
@@ -96,10 +112,23 @@ function RelayedCredentialsSettings({ environmentId }: { environmentId: Environm
     }),
     [accountsLink, accountsSignOut, accountsSnapshot, environmentId],
   );
+  const passkeysSource = useMemo<PasskeysSource>(
+    () => ({
+      snapshot: async () => settled(await passkeysSnapshot({ environmentId, input: {} })),
+      setSite: async (input) => settled(await passkeysSetSite({ environmentId, input })),
+      remove: async (input) => settled(await passkeysRemove({ environmentId, input })),
+    }),
+    [environmentId, passkeysRemove, passkeysSetSite, passkeysSnapshot],
+  );
   return (
     <CredentialsSettingsView
       bridge={vault}
-      before={<AccountsSections source={accountsSource} environmentId={environmentId} />}
+      before={
+        <>
+          <AccountsSections source={accountsSource} environmentId={environmentId} />
+          <PasskeysSection source={passkeysSource} />
+        </>
+      }
     />
   );
 }

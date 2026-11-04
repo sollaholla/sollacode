@@ -63,6 +63,7 @@ import * as BrowserArtifactsRetention from "./preview/browserArtifactsRetention.
 import * as BrowserCacheMaintenance from "./preview/browserCacheMaintenance.ts";
 import * as RuntimeMaintenance from "./storage/runtimeMaintenance.ts";
 import * as BrowserCredentialVault from "./preview/BrowserCredentialVault.ts";
+import * as BrowserPasskeyVault from "./preview/BrowserPasskeyVault.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as OrchestratorBubbleWindow from "./window/OrchestratorBubbleWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
@@ -249,7 +250,11 @@ const desktopPreviewLayer = Layer.mergeAll(
   BrowserArtifactsRetention.layer,
   BrowserCacheMaintenance.layer,
   RuntimeMaintenance.layer,
-).pipe(Layer.provideMerge(BrowserSession.layer), Layer.provideMerge(desktopFoundationLayer));
+).pipe(
+  Layer.provideMerge(BrowserSession.layer),
+  Layer.provideMerge(BrowserPasskeyVault.layer),
+  Layer.provideMerge(desktopFoundationLayer),
+);
 
 const desktopWindowLayer = Layer.mergeAll(DesktopWindow.layer, OrchestratorBubbleWindow.layer).pipe(
   Layer.provideMerge(desktopServerExposureLayer),

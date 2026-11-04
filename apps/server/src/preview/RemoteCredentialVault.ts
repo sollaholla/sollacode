@@ -2,7 +2,10 @@ import {
   PreviewAccountsSnapshot,
   PreviewCredentialSummary,
   PreviewCredentialVaultError,
+  PreviewPasskeysSnapshot,
   type EnvironmentId,
+  type PreviewPasskeyRemoveInput,
+  type PreviewPasskeySiteInput,
   type PreviewAccountLinkInput,
   type PreviewAccountSignOutInput,
   type PreviewCredentialRemoveInput,
@@ -21,6 +24,7 @@ type CredentialVaultRelay = Pick<
 const decodeSummaries = Schema.decodeUnknownEffect(Schema.Array(PreviewCredentialSummary));
 const decodeSummary = Schema.decodeUnknownEffect(PreviewCredentialSummary);
 const decodeAccounts = Schema.decodeUnknownEffect(PreviewAccountsSnapshot);
+const decodePasskeys = Schema.decodeUnknownEffect(PreviewPasskeysSnapshot);
 
 // The desktop answered with something this server cannot read, most likely a
 // different app version. Its value is not echoed: it could be anything.
@@ -111,3 +115,45 @@ export const remoteAccountsLink = (input: {
       command: { action: "accountsLink", link: input.link },
     })
     .pipe(Effect.asVoid);
+
+/** Settings → Accounts from any client: the passkeys that desktop holds. Keys never cross. */
+const relayPasskeys = (input: {
+  readonly broker: CredentialVaultRelay;
+  readonly environmentId: EnvironmentId;
+  readonly command:
+    | { readonly action: "passkeysSnapshot" }
+    | { readonly action: "passkeysSetSite"; readonly input: PreviewPasskeySiteInput }
+    | { readonly action: "passkeysRemove"; readonly input: PreviewPasskeyRemoveInput };
+}) =>
+  input.broker
+    .manageCredentials({ environmentId: input.environmentId, command: input.command })
+    .pipe(
+      Effect.flatMap((result) => decodePasskeys(result).pipe(Effect.mapError(unreadableAnswer))),
+    );
+
+export const remotePasskeysSnapshot = (input: {
+  readonly broker: CredentialVaultRelay;
+  readonly environmentId: EnvironmentId;
+}) => relayPasskeys({ ...input, command: { action: "passkeysSnapshot" } });
+
+export const remotePasskeysSetSite = (input: {
+  readonly broker: CredentialVaultRelay;
+  readonly environmentId: EnvironmentId;
+  readonly request: PreviewPasskeySiteInput;
+}) =>
+  relayPasskeys({
+    broker: input.broker,
+    environmentId: input.environmentId,
+    command: { action: "passkeysSetSite", input: input.request },
+  });
+
+export const remotePasskeysRemove = (input: {
+  readonly broker: CredentialVaultRelay;
+  readonly environmentId: EnvironmentId;
+  readonly request: PreviewPasskeyRemoveInput;
+}) =>
+  relayPasskeys({
+    broker: input.broker,
+    environmentId: input.environmentId,
+    command: { action: "passkeysRemove", input: input.request },
+  });

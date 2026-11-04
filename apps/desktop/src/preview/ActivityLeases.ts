@@ -1,6 +1,8 @@
 export const PreviewActivityConsumer = {
   Automation: "automation",
   Diagnostics: "diagnostics",
+  // The site's passkeys live in a virtual authenticator on the debugger session.
+  Passkeys: "passkeys",
   PictureInPicture: "picture-in-picture",
   Recording: "recording",
   RemoteControl: "remote-control",

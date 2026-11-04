@@ -302,15 +302,26 @@ selection and any verification still happen on the provider's own sign-in page.
 
 ### Passkeys
 
-The preview browser cannot use passkeys stored in iCloud Keychain, Google Password Manager, or on
-your phone. macOS only lets browsers that Apple has approved reach iCloud Keychain passkeys. Using
-a phone as a passkey needs the browser to show a QR code and to be within Bluetooth range of the
-phone, and the desktop engine has neither. When a site asks for one, the request fails, and the
-site usually says something like "Passkey authentication failed".
+The browser panel can use passkeys that Solla Code holds, one site at a time. It cannot use passkeys
+stored in iCloud Keychain, Google Password Manager, or on your phone: macOS only lets browsers Apple
+has approved reach iCloud Keychain, and using a phone needs a QR code and Bluetooth that the desktop
+engine doesn't have.
 
-Sign in another way, such as a password with a code from an authenticator app, or an email or text
-code. If a site only offers a passkey, add a second sign-in method in its security settings from a
-browser where your passkey works, then use that method here.
+To set one up, choose **Use passkeys on this site** from the tab's **⋯** menu, or add the site under
+**Settings → Accounts → Passkeys**. Then sign in another way and add a new passkey in the site's
+security settings, as you would on a new device. An agent that meets a passkey prompt asks with a
+card that does the same. From then on the site's passkey option works in every project's and agent's
+browser on this computer, for you and your agents, with no prompt of its own.
+
+- **Kept where.** The private key is encrypted with your computer's keychain and stays in the desktop
+  app. No client, agent, or log receives it. It doesn't sync, so it works on this computer only.
+- **Removing.** Turning a site off keeps its passkeys for if you turn it back on. **Remove** deletes one
+  for good, so keep another way to sign in to that site.
+- **Several for one site.** The newest is used. To sign in as another account, remove the newer one.
+- **Limits.** Google can't use this, since its sign-in refuses the debugging connection this needs. Sites
+  that ask from an embedded frame aren't supported. While a site is on, its tabs keep that connection
+  open, and a site that objects to it may refuse you; turn it off if so. While DevTools is open on a
+  tab, passkeys are unavailable in it.
 
 ## Inactive tabs
 

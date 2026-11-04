@@ -31,7 +31,9 @@ Solla Code does not fill Google passwords for agents, and agents don't see them.
 
 The same **I've signed in** card covers single sign-on and approving a sign-in on your phone. For a site that asks for a code, the agent can ask for just the code, used once and not saved.
 
-Passkeys still don't work in the browser panel. See [the passkey notes in the browser docs](./remote-browser-control.md).
+## Passkeys
+
+Solla Code can hold a new passkey for a site you choose, encrypted on this computer. Passkeys in iCloud Keychain, Google Password Manager or on your phone can't be used in the browser panel. See [the passkey notes in the browser docs](./remote-browser-control.md#passkeys).
 
 ## Signed-in accounts
 

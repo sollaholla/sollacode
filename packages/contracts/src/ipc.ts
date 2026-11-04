@@ -88,6 +88,9 @@ import {
   PreviewCredentialRemoveInput,
   PreviewCredentialSaveInput,
   PreviewCredentialSummary,
+  PreviewPasskeyRemoveInput,
+  PreviewPasskeySiteInput,
+  PreviewPasskeysSnapshot,
   PreviewAutomationSelectOptionInput,
   PreviewAutomationSelectOptionResult,
   PreviewAutomationUploadInput,
@@ -1167,6 +1170,8 @@ export const DesktopPreviewAccountPromptAnswerInputSchema = Schema.Struct({
 });
 
 export const DesktopPreviewCredentialSaveInputSchema = PreviewCredentialSaveInput;
+export const DesktopPreviewPasskeySiteInputSchema = PreviewPasskeySiteInput;
+export const DesktopPreviewPasskeyRemoveInputSchema = PreviewPasskeyRemoveInput;
 
 export const DesktopPreviewCredentialRemoveInputSchema = PreviewCredentialRemoveInput;
 
@@ -1591,6 +1596,12 @@ export interface DesktopPreviewBridge {
       input: PreviewAutomationCredentialFillInput,
       expiresAt?: number,
     ) => Promise<PreviewAutomationCredentialFillResult>;
+  };
+  /** Passkeys Solla holds for chosen sites. Their private keys stay in the main process. */
+  passkeys: {
+    snapshot: () => Promise<PreviewPasskeysSnapshot>;
+    setSite: (input: PreviewPasskeySiteInput) => Promise<PreviewPasskeysSnapshot>;
+    remove: (input: PreviewPasskeyRemoveInput) => Promise<PreviewPasskeysSnapshot>;
   };
   /**
    * One-shot config for mounting a preview `<webview>`. Replaces three

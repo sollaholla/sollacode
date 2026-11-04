@@ -163,6 +163,9 @@ import {
   remoteAccountsLink,
   remoteAccountsSignOut,
   remoteAccountsSnapshot,
+  remotePasskeysRemove,
+  remotePasskeysSetSite,
+  remotePasskeysSnapshot,
 } from "./preview/RemoteCredentialVault.ts";
 import { dispatchRemotePreviewInput } from "./preview/RemotePreviewInput.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -3265,6 +3268,38 @@ const makeWsRpcLayer = (
             WS_METHODS.previewCredentialsRemove,
             Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
               removeRemoteCredential({
+                broker: previewAutomationBroker,
+                environmentId,
+                request: input,
+              }),
+            ),
+            { "rpc.aggregate": "preview-credentials" },
+          ),
+        [WS_METHODS.previewPasskeysSnapshot]: () =>
+          observeRpcEffect(
+            WS_METHODS.previewPasskeysSnapshot,
+            Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
+              remotePasskeysSnapshot({ broker: previewAutomationBroker, environmentId }),
+            ),
+            { "rpc.aggregate": "preview-credentials" },
+          ),
+        [WS_METHODS.previewPasskeysSetSite]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewPasskeysSetSite,
+            Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
+              remotePasskeysSetSite({
+                broker: previewAutomationBroker,
+                environmentId,
+                request: input,
+              }),
+            ),
+            { "rpc.aggregate": "preview-credentials" },
+          ),
+        [WS_METHODS.previewPasskeysRemove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewPasskeysRemove,
+            Effect.flatMap(serverEnvironment.getEnvironmentId, (environmentId) =>
+              remotePasskeysRemove({
                 broker: previewAutomationBroker,
                 environmentId,
                 request: input,

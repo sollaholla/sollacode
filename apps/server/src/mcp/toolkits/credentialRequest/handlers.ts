@@ -8,6 +8,7 @@ import {
   isPersonOnlySignInOrigin,
   type CredentialRequestMode,
 } from "@t3tools/shared/credentialRequest";
+import { isPasskeySiteRefused, passkeySiteForUrl } from "@t3tools/shared/passkeySites";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
@@ -56,11 +57,12 @@ export const handleCredentialRequest = Effect.fn("CredentialRequest.handle")(fun
     );
   }
 
-  const mode: CredentialRequestMode = isPersonOnlySignInOrigin(origin)
-    ? "person"
-    : (input.kind ?? "password");
+  const refused =
+    isPersonOnlySignInOrigin(origin) ||
+    (input.kind === "passkey" && isPasskeySiteRefused(passkeySiteForUrl(origin) ?? ""));
+  const mode: CredentialRequestMode = refused ? "person" : (input.kind ?? "password");
 
-  if (mode !== "person" && input.retryAfterFailure !== true) {
+  if ((mode === "password" || mode === "code") && input.retryAfterFailure !== true) {
     const { credentials } = yield* invokeTargeted<PreviewAutomationCredentialListResult>(
       "credentialList",
       target,

@@ -5,7 +5,7 @@ import { Pressable, ScrollView, View } from "react-native";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { cn } from "../../lib/cn";
-import { CredentialRequestFields } from "./CredentialRequestFields";
+import { CredentialRequestFields, PasskeyRequestAction } from "./CredentialRequestFields";
 import type { PendingUserInput, PendingUserInputDraftAnswer } from "../../lib/threadActivity";
 
 export interface PendingUserInputCardProps {
@@ -54,6 +54,13 @@ function CredentialRequestCard(props: PendingUserInputCardProps) {
           Sign in on its browser tab on your computer. The agent has stopped and won't touch the
           page.
         </Text>
+      ) : request.mode === "passkey" ? (
+        <PasskeyRequestAction
+          origin={request.origin}
+          environmentId={props.environmentId}
+          disabled={isResponding}
+          onTurnedOn={(answers) => void props.onSubmit(answers)}
+        />
       ) : (
         <CredentialRequestFields
           request={{ ...request, mode: request.mode }}

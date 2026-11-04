@@ -22,7 +22,7 @@ describe("credentialRequestOrigin", () => {
 describe("credentialRequestQuestion", () => {
   // Clients drop a question with no options, which would hide the card.
   it("always carries an option", () => {
-    for (const mode of ["password", "code", "person"] as const) {
+    for (const mode of ["password", "code", "person", "passkey"] as const) {
       const question = credentialRequestQuestion({
         origin: "https://app.example.com",
         mode,

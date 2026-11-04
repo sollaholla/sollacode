@@ -43,6 +43,10 @@
       "types": "./src/endpointRedaction.ts",
       "import": "./src/endpointRedaction.ts"
     },
+    "./passkeySites": {
+      "types": "./src/passkeySites.ts",
+      "import": "./src/passkeySites.ts"
+    },
     "./credentialRequest": {
       "types": "./src/credentialRequest.ts",
       "import": "./src/credentialRequest.ts"

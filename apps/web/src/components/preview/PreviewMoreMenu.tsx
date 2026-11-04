@@ -1,7 +1,15 @@
 "use client";
 
 import type { DesktopPreviewColorScheme } from "@t3tools/contracts";
-import { KeyRound, Minus, MoreVertical, Plus as PlusIcon, RotateCcw } from "lucide-react";
+import { isPasskeySiteRefused, passkeySiteForUrl } from "@t3tools/shared/passkeySites";
+import {
+  Fingerprint,
+  KeyRound,
+  Minus,
+  MoreVertical,
+  Plus as PlusIcon,
+  RotateCcw,
+} from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
@@ -35,6 +43,8 @@ const COLOR_SCHEME_OPTIONS: ReadonlyArray<{
 interface Props {
   /** Active preview tab id. Tab-targeting actions are disabled without it. */
   tabId: string | null;
+  /** The address the active tab is on, which names the site for passkeys. */
+  url: string | null;
   /**
    * True only after the desktop bridge has registered a `webContentsId` for
    * the active tab. Tab-targeting actions throw on the desktop side until
@@ -62,6 +72,7 @@ interface Props {
  */
 export function PreviewMoreMenu({
   tabId,
+  url,
   hasWebContents,
   zoomFactor,
   colorScheme,
@@ -71,8 +82,35 @@ export function PreviewMoreMenu({
   onNativePictureInPicture,
 }: Props) {
   const [credentialsOpen, setCredentialsOpen] = useState(false);
+  const [passkeySites, setPasskeySites] = useState<readonly string[]>([]);
   if (!previewBridge) return null;
   const bridge = previewBridge;
+  const passkeySite = url ? passkeySiteForUrl(url) : null;
+  const passkeysOn = passkeySite !== null && passkeySites.includes(passkeySite);
+  const togglePasskeys = () => {
+    if (!tabId || !passkeySite) return;
+    void bridge.passkeys
+      .setSite({ site: passkeySite, enabled: !passkeysOn })
+      .then(({ sites }) => {
+        setPasskeySites(sites);
+        toastManager.add({
+          type: "success",
+          title: passkeysOn ? `Passkeys off for ${passkeySite}` : `Passkeys on for ${passkeySite}`,
+          description: passkeysOn
+            ? "Any held here are kept for if you turn this back on."
+            : "This page reloaded so it can see them. Add a passkey in the site's security settings.",
+        });
+        // A page checks for passkey support as it loads.
+        return bridge.hardReload(tabId);
+      })
+      .catch((cause: unknown) => {
+        toastManager.add({
+          type: "error",
+          title: "Could not change passkeys",
+          description: cause instanceof Error ? cause.message : undefined,
+        });
+      });
+  };
   const tabDisabled = !tabId || !hasWebContents;
   const callTab = (op: (tabId: string) => Promise<void>) => () => {
     if (!tabId) return;
@@ -82,7 +120,15 @@ export function PreviewMoreMenu({
   const zoomLabel = `${Math.round(zoomFactor * 100)}%`;
   return (
     <>
-      <Menu>
+      <Menu
+        onOpenChange={(open) => {
+          if (!open) return;
+          void bridge.passkeys
+            .snapshot()
+            .then(({ sites }) => setPasskeySites(sites))
+            .catch(() => undefined);
+        }}
+      >
         <Tooltip>
           <TooltipTrigger
             render={
@@ -185,6 +231,14 @@ export function PreviewMoreMenu({
             <KeyRound />
             Save password or PIN…
           </MenuItem>
+          {passkeySite !== null && !isPasskeySiteRefused(passkeySite) ? (
+            <MenuItem onClick={togglePasskeys} disabled={tabDisabled}>
+              <Fingerprint />
+              {passkeysOn
+                ? `Turn off passkeys for ${passkeySite}`
+                : `Use passkeys on ${passkeySite}`}
+            </MenuItem>
+          ) : null}
           <MenuItem onClick={() => void bridge.clearCookies().catch(() => undefined)}>
             Clear cookies
           </MenuItem>

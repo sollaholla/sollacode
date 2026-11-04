@@ -152,4 +152,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   for (const previewMethod of PreviewIpc.methods) {
     yield* ipc.handle(previewMethod);
   }
+  yield* ipc.handle(PreviewIpc.passkeysSnapshot);
+  yield* ipc.handle(PreviewIpc.passkeysSetSite);
+  yield* ipc.handle(PreviewIpc.passkeysRemove);
 });

@@ -823,6 +823,35 @@ export const PreviewCredentialSaveInput = Schema.Struct({
 });
 export type PreviewCredentialSaveInput = typeof PreviewCredentialSaveInput.Type;
 
+/** A passkey Solla holds, without its key: that never leaves the desktop. */
+export const PreviewPasskeySummary = Schema.Struct({
+  id: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+  /** The domain it was made for, such as `example.com`. */
+  rpId: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
+  userName: Schema.optionalKey(Schema.String),
+  userDisplayName: Schema.optionalKey(Schema.String),
+  createdAt: Schema.String,
+});
+export type PreviewPasskeySummary = typeof PreviewPasskeySummary.Type;
+
+export const PreviewPasskeysSnapshot = Schema.Struct({
+  /** Sites where the browser may create and use passkeys Solla holds. */
+  sites: Schema.Array(Schema.String),
+  passkeys: Schema.Array(PreviewPasskeySummary),
+});
+export type PreviewPasskeysSnapshot = typeof PreviewPasskeysSnapshot.Type;
+
+export const PreviewPasskeySiteInput = Schema.Struct({
+  site: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
+  enabled: Schema.Boolean,
+});
+export type PreviewPasskeySiteInput = typeof PreviewPasskeySiteInput.Type;
+
+export const PreviewPasskeyRemoveInput = Schema.Struct({
+  id: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+});
+export type PreviewPasskeyRemoveInput = typeof PreviewPasskeyRemoveInput.Type;
+
 export const PreviewCredentialRemoveInput = Schema.Struct({
   id: PreviewCredentialId,
 });
@@ -830,9 +859,9 @@ export type PreviewCredentialRemoveInput = typeof PreviewCredentialRemoveInput.T
 
 export const PreviewAutomationCredentialRequestInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
-  kind: Schema.optional(Schema.Literals(["password", "code", "person"])).annotate({
+  kind: Schema.optional(Schema.Literals(["password", "code", "person", "passkey"])).annotate({
     description:
-      "password (the default) asks for a username and password; code asks for a PIN or one-time code; person asks them to finish on the page themselves, for single sign-on, a passkey, a phone approval, or anything with nothing to type. Google sign-in pages always use person.",
+      "password (the default) asks for a username and password; code asks for a PIN or one-time code; passkey asks to turn on passkeys Solla holds for this site, when it wants a passkey; person asks them to finish on the page themselves, for single sign-on, a phone approval, or anything with nothing to type. Google sign-in pages always use person.",
   }),
   reason: TrimmedNonEmptyString.check(Schema.isMaxLength(500)).annotate({
     description:
@@ -1406,6 +1435,9 @@ export const PreviewCredentialVaultCommand = Schema.Union([
     signOut: PreviewAccountSignOutInput,
   }),
   Schema.Struct({ action: Schema.Literal("accountsLink"), link: PreviewAccountLinkInput }),
+  Schema.Struct({ action: Schema.Literal("passkeysSnapshot") }),
+  Schema.Struct({ action: Schema.Literal("passkeysSetSite"), input: PreviewPasskeySiteInput }),
+  Schema.Struct({ action: Schema.Literal("passkeysRemove"), input: PreviewPasskeyRemoveInput }),
 ]);
 export type PreviewCredentialVaultCommand = typeof PreviewCredentialVaultCommand.Type;
 

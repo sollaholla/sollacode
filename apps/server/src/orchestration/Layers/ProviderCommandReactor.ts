@@ -658,6 +658,8 @@ export function credentialRequestContinuationMessage(input: {
       return `The user entered ${request?.mode === "code" ? "the code" : "the login"} for ${site}${answer.saved ? " and saved it" : " for this sign-in only"}. You never see the secret: call preview_credentials on that tab for the username, type it with preview_type, then fill the secret with preview_fill_credential using credentialId "${answer.credentialId}". If the site rejects it, call preview_request_credentials again with retryAfterFailure true.`;
     case "signed_in":
       return `The user says they finished signing in on the tab at ${site}. Check the page, then continue the work.`;
+    case "passkeys_on":
+      return `The user turned on passkeys Solla holds for ${site}. Reload the tab, then use the site's own passkey option: prompts complete by themselves. If it has no passkey here yet, sign in another way first and add one in the site's security settings. Passkeys in iCloud Keychain, Google Password Manager, or on a phone can't be used here.`;
     case "declined":
       return `The user chose not to sign in to ${site} right now. Do not ask again for it during this work; continue with whatever does not depend on it.`;
     case "feedback":

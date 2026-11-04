@@ -804,6 +804,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
           localPreviewBridge ? (
             <PreviewMoreMenu
               tabId={runtimeTabId}
+              url={url || null}
               hasWebContents={desktopOverlay?.hasWebContents ?? false}
               zoomFactor={desktopOverlay?.zoomFactor ?? 1}
               colorScheme={desktopOverlay?.colorScheme ?? "system"}

@@ -5,6 +5,8 @@ import {
 import { credentialRequestSaveInput } from "@t3tools/client-runtime/preview/credential-form";
 import { type EnvironmentId } from "@t3tools/contracts";
 import {
+  CREDENTIAL_PASSKEYS_ON_ANSWER,
+  CREDENTIAL_REQUEST_QUESTION_ID,
   credentialProvidedAnswers,
   credentialRequestSiteName,
   type CredentialRequest,
@@ -121,6 +123,47 @@ export function CredentialRequestForm({
       ) : null}
       <Button size="sm" disabled={!canSubmit} onClick={() => void submit()} type="button">
         {saving ? "Storing…" : "Continue"}
+      </Button>
+    </div>
+  );
+}
+
+/** Turns on passkeys for the site an agent's page wants one on, then tells the agent. */
+export function PasskeyRequestAction({
+  origin,
+  environmentId,
+  disabled,
+  onTurnedOn,
+}: {
+  origin: string;
+  environmentId: EnvironmentId;
+  disabled: boolean;
+  onTurnedOn: (answers: Record<string, string>) => void;
+}) {
+  const setSite = useAtomCommand(previewEnvironment.passkeysSetSite, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const turnOn = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      settled(await setSite({ environmentId, input: { site: origin, enabled: true } }));
+      onTurnedOn({ [CREDENTIAL_REQUEST_QUESTION_ID]: CREDENTIAL_PASSKEYS_ON_ANSWER });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Passkeys could not be turned on.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-3 space-y-2">
+      {error ? (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {error}
+        </p>
+      ) : null}
+      <Button size="sm" disabled={busy || disabled} onClick={() => void turnOn()} type="button">
+        {busy ? "Turning on…" : `Use passkeys on ${credentialRequestSiteName(origin)}`}
       </Button>
     </div>
   );

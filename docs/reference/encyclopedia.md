@@ -208,10 +208,19 @@ the preview automation broker to the environment's own desktop host, which regis
 [RemoteCredentialVault.ts](../../apps/server/src/preview/RemoteCredentialVault.ts), and
 [remote-browser-control.md](../user/remote-browser-control.md#saved-passwords-and-pins-for-agents).
 
+#### Passkey vault
+
+Passkeys Solla holds for sites a person turned on, in the desktop's `browser-passkeys.json` with their
+private keys encrypted. A guest on such a site holds a `Passkeys` activity lease, which keeps its
+debugger attached, and gets a CDP virtual authenticator again at every main-frame commit, because
+Chromium keeps one per document. `WebAuthn.credential*` events are stopped before diagnostics and
+kept here. See [BrowserPasskeyVault.ts](../../apps/desktop/src/preview/BrowserPasskeyVault.ts) and
+[passkeyAuthenticator.ts](../../apps/desktop/src/preview/passkeyAuthenticator.ts).
+
 #### Credential request
 
 An agent's `preview_request_credentials` call: a durable `user-input.requested` activity carrying a
-`credentialRequest` (origin read from the tab, mode `password`, `code`, or `person`, and the agent's
+`credentialRequest` (origin read from the tab, mode `password`, `code`, `passkey`, or `person`, and the agent's
 reason), which ends the turn. The card sends the secret straight to the
 [credential vault](#credential-vault), `ephemeral` when not saved, and answers with only the entry's
 id, so the follow-up turn tells the agent what to fill without any secret entering the thread. Agent

@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.1.789",
+  "version": "0.1.790",
   "private": true,
   "files": [
     "dist"

@@ -8,7 +8,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../../pendingUserInput";
 import { CheckIcon } from "lucide-react";
-import { CredentialRequestForm } from "./CredentialRequestForm";
+import { CredentialRequestForm, PasskeyRequestAction } from "./CredentialRequestForm";
 import { cn } from "~/lib/utils";
 
 interface PendingUserInputPanelProps {
@@ -192,7 +192,9 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           <p className="text-xs text-muted-foreground/70">
             {credentialRequest.mode === "person"
               ? "Sign in on its browser tab. The agent has stopped and won't touch the page."
-              : "The agent can't sign in until you enter this."}
+              : credentialRequest.mode === "passkey"
+                ? "This site wants a passkey. Solla can hold one, encrypted on your computer. Passkeys in iCloud Keychain, Google Password Manager, or on your phone can't be used here."
+                : "The agent can't sign in until you enter this."}
           </p>
         </div>
       ) : null}
@@ -211,7 +213,16 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           ? `The agent says: ${credentialRequest.reason}`
           : activeQuestion.question}
       </p>
-      {credentialRequest && credentialRequest.mode !== "person" ? (
+      {credentialRequest?.mode === "passkey" ? (
+        <PasskeyRequestAction
+          origin={credentialRequest.origin}
+          environmentId={environmentId}
+          disabled={isResponding}
+          onTurnedOn={(answers) => onRespond(prompt.requestId, answers)}
+        />
+      ) : null}
+      {credentialRequest &&
+      (credentialRequest.mode === "password" || credentialRequest.mode === "code") ? (
         <CredentialRequestForm
           request={{ ...credentialRequest, mode: credentialRequest.mode }}
           environmentId={environmentId}

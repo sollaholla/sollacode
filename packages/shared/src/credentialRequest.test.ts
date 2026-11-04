@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   CREDENTIAL_DECLINE_CHOICE,
+  CREDENTIAL_PASSKEYS_ON_ANSWER,
   CREDENTIAL_REQUEST_QUESTION_ID,
   CREDENTIAL_SIGNED_IN_CHOICE,
   credentialProvidedAnswers,
@@ -57,6 +58,9 @@ describe("credentialRequestAnswerFromUnknown", () => {
     });
     expect(credentialRequestAnswerFromUnknown(answer(CREDENTIAL_SIGNED_IN_CHOICE))).toEqual({
       status: "signed_in",
+    });
+    expect(credentialRequestAnswerFromUnknown(answer(CREDENTIAL_PASSKEYS_ON_ANSWER))).toEqual({
+      status: "passkeys_on",
     });
     expect(credentialRequestAnswerFromUnknown(answer("use the other account"))).toEqual({
       status: "feedback",

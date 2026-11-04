@@ -44,6 +44,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import { useRemoteConnectionStatus } from "../../state/use-remote-environment-registry";
 import { SettingsSection } from "./components/SettingsSection";
+import { EnvironmentPasskeys } from "./EnvironmentPasskeys";
 
 const FIELD_LABEL_CLASS = "text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted";
 
@@ -102,6 +103,14 @@ export function SettingsCredentialsRouteScreen() {
                   connectedEnvironments.length > 1
                     ? `${environment.environmentLabel} accounts`
                     : "Signed-in accounts"
+                }
+              />
+              <EnvironmentPasskeys
+                environment={environment}
+                title={
+                  connectedEnvironments.length > 1
+                    ? `${environment.environmentLabel} passkeys`
+                    : "Passkeys"
                 }
               />
               <EnvironmentCredentials

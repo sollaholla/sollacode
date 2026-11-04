@@ -255,5 +255,26 @@ export function createPreviewEnvironmentAtoms<R, E>(
       scheduler: credentialScheduler,
       concurrency: credentialChangeConcurrency,
     }),
+    passkeysSnapshot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:passkeys-snapshot",
+      tag: WS_METHODS.previewPasskeysSnapshot,
+      scheduler: credentialScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
+    passkeysSetSite: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:passkeys-set-site",
+      tag: WS_METHODS.previewPasskeysSetSite,
+      scheduler: credentialScheduler,
+      concurrency: credentialChangeConcurrency,
+    }),
+    passkeysRemove: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:passkeys-remove",
+      tag: WS_METHODS.previewPasskeysRemove,
+      scheduler: credentialScheduler,
+      concurrency: credentialChangeConcurrency,
+    }),
   };
 }

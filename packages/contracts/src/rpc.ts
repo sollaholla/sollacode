@@ -212,6 +212,9 @@ import {
   PreviewCredentialRemoveInput,
   PreviewCredentialSaveInput,
   PreviewCredentialSummary,
+  PreviewPasskeyRemoveInput,
+  PreviewPasskeySiteInput,
+  PreviewPasskeysSnapshot,
   PreviewCredentialVaultError,
 } from "./previewAutomation.ts";
 import {
@@ -396,6 +399,9 @@ export const WS_METHODS = {
   previewAccountsSnapshot: "previewAccounts.snapshot",
   previewAccountsSignOut: "previewAccounts.signOut",
   previewAccountsLink: "previewAccounts.link",
+  previewPasskeysSnapshot: "previewPasskeys.snapshot",
+  previewPasskeysSetSite: "previewPasskeys.setSite",
+  previewPasskeysRemove: "previewPasskeys.remove",
   devicesList: "devices.list",
   devicesCatalog: "devices.catalog",
   devicesCreate: "devices.create",
@@ -1200,6 +1206,24 @@ export const WsPreviewAccountsLinkRpc = Rpc.make(WS_METHODS.previewAccountsLink,
   error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
 });
 
+export const WsPreviewPasskeysSnapshotRpc = Rpc.make(WS_METHODS.previewPasskeysSnapshot, {
+  payload: Schema.Struct({}),
+  success: PreviewPasskeysSnapshot,
+  error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
+});
+
+export const WsPreviewPasskeysSetSiteRpc = Rpc.make(WS_METHODS.previewPasskeysSetSite, {
+  payload: PreviewPasskeySiteInput,
+  success: PreviewPasskeysSnapshot,
+  error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
+});
+
+export const WsPreviewPasskeysRemoveRpc = Rpc.make(WS_METHODS.previewPasskeysRemove, {
+  payload: PreviewPasskeyRemoveInput,
+  success: PreviewPasskeysSnapshot,
+  error: Schema.Union([PreviewCredentialVaultError, EnvironmentAuthorizationError]),
+});
+
 // iOS simulators and Android emulators on the environment's machine.
 export const WsDevicesListRpc = Rpc.make(WS_METHODS.devicesList, {
   payload: Schema.Struct({}),
@@ -1879,6 +1903,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewAccountsSnapshotRpc,
   WsPreviewAccountsSignOutRpc,
   WsPreviewAccountsLinkRpc,
+  WsPreviewPasskeysSnapshotRpc,
+  WsPreviewPasskeysSetSiteRpc,
+  WsPreviewPasskeysRemoveRpc,
   WsDevicesListRpc,
   WsDevicesCatalogRpc,
   WsDevicesCreateRpc,

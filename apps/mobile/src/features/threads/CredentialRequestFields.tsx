@@ -2,6 +2,8 @@ import { credentialRequestSaveInput } from "@t3tools/client-runtime/preview/cred
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
+  CREDENTIAL_PASSKEYS_ON_ANSWER,
+  CREDENTIAL_REQUEST_QUESTION_ID,
   credentialProvidedAnswers,
   credentialRequestSiteName,
   type CredentialRequest,
@@ -128,6 +130,58 @@ export function CredentialRequestFields(props: {
       >
         <Text className="font-t3-extrabold text-sm text-white">
           {saving ? "Storing…" : "Continue"}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+/** Turns on passkeys for the site an agent's page wants one on, then tells the agent. */
+export function PasskeyRequestAction(props: {
+  readonly origin: string;
+  readonly environmentId: EnvironmentId;
+  readonly disabled: boolean;
+  readonly onTurnedOn: (answers: Record<string, string>) => void;
+}) {
+  const setSite = useAtomCommand(previewEnvironment.passkeysSetSite, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const turnOn = async () => {
+    setBusy(true);
+    setError(null);
+    const result = await setSite({
+      environmentId: props.environmentId,
+      input: { site: props.origin, enabled: true },
+    });
+    setBusy(false);
+    if (result._tag === "Failure") {
+      const cause = squashAtomCommandFailure(result);
+      setError(cause instanceof Error ? cause.message : "Passkeys could not be turned on.");
+      return;
+    }
+    props.onTurnedOn({ [CREDENTIAL_REQUEST_QUESTION_ID]: CREDENTIAL_PASSKEYS_ON_ANSWER });
+  };
+  return (
+    <View className="gap-2">
+      <Text className="font-sans text-sm text-neutral-500">
+        Solla can hold a passkey for this site, encrypted on your computer. Passkeys in iCloud
+        Keychain, Google Password Manager, or on this phone can't be used here.
+      </Text>
+      {error ? (
+        <Text accessibilityRole="alert" className="font-sans text-sm text-red-600">
+          {error}
+        </Text>
+      ) : null}
+      <Pressable
+        className={cn(
+          "min-h-11 items-center justify-center rounded-2xl px-4 py-3.5",
+          busy || props.disabled ? "bg-neutral-200 dark:bg-neutral-700/60" : "bg-blue-500",
+        )}
+        disabled={busy || props.disabled}
+        onPress={() => void turnOn()}
+      >
+        <Text className="font-t3-extrabold text-sm text-white">
+          {busy ? "Turning on…" : `Use passkeys on ${credentialRequestSiteName(props.origin)}`}
         </Text>
       </Pressable>
     </View>

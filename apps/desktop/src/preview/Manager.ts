@@ -109,7 +109,13 @@ import {
 } from "./userInputHold.ts";
 import type { BrowserAccountTracker } from "./browserAccounts.ts";
 import type { BrowserProfileInventory } from "./browserProfiles.ts";
+import * as BrowserPasskeyVault from "./BrowserPasskeyVault.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import {
+  installPasskeyAuthenticator,
+  passkeyCredentialFromEvent,
+  pickPasskeyAccount,
+} from "./passkeyAuthenticator.ts";
 import { classifyPreviewNetworkResponse } from "./CloudflareChallenge.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
@@ -526,6 +532,7 @@ export const GUEST_CLICK_SURFACE_SETTLE_MS = 1_000;
  */
 const AUTOMATION_FOREGROUND_IDLE_MS = 60_000;
 const AUTOMATION_FOREGROUND_LEASE_ID = "automation:foreground";
+const passkeyLeaseId = (webContentsId: number) => `passkeys:${webContentsId}`;
 
 /**
  * Whether automation should wait before taking keyboard focus.
@@ -1326,6 +1333,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const browserSession = yield* BrowserSession.BrowserSession;
+  const passkeyVault = yield* BrowserPasskeyVault.BrowserPasskeyVault;
   const hostPlatform = yield* HostProcessPlatform;
   const path = yield* Path.Path;
   const parentScope = yield* Scope.Scope;
@@ -1532,6 +1540,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const automationInputMutex = yield* Semaphore.make(1);
   const automationForegroundMutationMutex = yield* Semaphore.make(1);
   let automationForegroundActive = false;
+  // Guests holding a passkey authenticator, by webContents id, and their tab.
+  const passkeyGuestTabs = new Map<number, string>();
+  const passkeyPickerSessions = new WeakSet<Electron.Session>();
   let automationForegroundExpiryFiber: Fiber.Fiber<void, never> | undefined;
   const automationForegroundWebContentsIds = new Set<number>();
   const closingTabIdsRef = yield* Ref.make<ReadonlySet<string>>(new Set());
@@ -1943,6 +1954,27 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * tab: an agent typing a password is not a person who might want it remembered.
    * Removed with the guest, which takes its `ipc` listeners with it.
    */
+  /** Stores what the authenticator made or used, since it forgets with its document. */
+  const keepPasskeyFromEvent = (method: string, params: Record<string, unknown>): void => {
+    if (
+      method !== "WebAuthn.credentialAdded" &&
+      method !== "WebAuthn.credentialAsserted" &&
+      method !== "WebAuthn.credentialUpdated"
+    ) {
+      return;
+    }
+    const credential = passkeyCredentialFromEvent(params);
+    if (!credential) return;
+    runFork(
+      passkeyVault.capture(credential).pipe(
+        Effect.catchCause(() =>
+          // Says only that it failed: the cause could quote the credential.
+          Effect.logWarning("Could not keep a passkey the browser reported."),
+        ),
+      ),
+    );
+  };
+
   const installSignInListeners = (tabId: string, wc: Electron.WebContents): void => {
     const directoryOf = () => (wc.session.storagePath ?? "").split(/[\\/]/).pop() ?? "";
     const forward = (signal: SignInSignal) => {
@@ -2256,6 +2288,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const detachControlSession = Effect.fn("PreviewManager.detachControlSession")(function* (
     webContentsId: number,
   ) {
+    // The authenticator goes with the session, and whoever reattaches installs it again.
+    const passkeyTabId = passkeyGuestTabs.get(webContentsId);
+    if (passkeyTabId !== undefined) {
+      passkeyGuestTabs.delete(webContentsId);
+      activityLeases.release(passkeyTabId, passkeyLeaseId(webContentsId));
+    }
     const control = yield* SynchronizedRef.modify(controlSessionsRef, (sessions) => [
       sessions.get(webContentsId),
       replaceMap(sessions, (copy) => {
@@ -2277,6 +2315,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const hasControlActivity = (tabId: string): boolean =>
     activityLeases.has(tabId, PreviewActivityConsumer.Automation) ||
     activityLeases.has(tabId, PreviewActivityConsumer.Diagnostics) ||
+    activityLeases.has(tabId, PreviewActivityConsumer.Passkeys) ||
     // The remote frame stream is a screencast on this debugger session.
     activityLeases.has(tabId, PreviewActivityConsumer.RemoteView);
 
@@ -2420,6 +2459,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             yield* captureDiagnosticMessage(wc.id, method, params);
           });
           const onMessage: BrowserControlSession["onMessage"] = (_event, method, params) => {
+            // These carry private keys, so they stop here: past this point
+            // messages reach diagnostics.
+            if (method.startsWith("WebAuthn.")) {
+              keepPasskeyFromEvent(method, params);
+              return;
+            }
             if (method === "Runtime.executionContextDestroyed") {
               invalidateDestroyedPlaywrightExecutionContext(
                 tabId,
@@ -2481,6 +2526,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                     control.detachRequested = true;
                     yield* Scope.close(control.scope, Exit.void).pipe(Effect.ignore);
                     if (!removed) return;
+                    if (!wc.isDestroyed() && passkeyGuestTabs.has(wc.id)) {
+                      yield* syncPasskeysForGuest(tabId, wc, wc.getURL());
+                    }
                     if (!automationForegroundActive || wc.isDestroyed()) return;
                     yield* activateAutomationForegroundForTab(tabId, wc);
                     yield* recordActivityLeaseMetrics();
@@ -3271,6 +3319,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         popupWebContents.on("will-navigate", willNavigate);
         popupWebContents.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         installSignInListeners(tabId, popupWebContents);
+        popupWebContents.on("did-navigate", (_event, url) => {
+          if (!popupWebContents.isDestroyed()) {
+            runFork(syncPasskeysForGuest(tabId, popupWebContents, url));
+          }
+        });
         // "Sign in with Google" usually opens here, not in the tab itself.
         popupWebContents.on("did-start-navigation", (_event, url, _isInPlace, isMainFrame) => {
           if (isMainFrame && isPersonOnlySignInOrigin(url)) {
@@ -3876,8 +3929,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         }),
       );
     };
-    const navigationCommitted = (_event: Electron.Event, _url: string): void => {
+    const navigationCommitted = (_event: Electron.Event, url: string): void => {
       if (!listenersActive) return;
+      // A new document has no authenticator, and any sooner the old one is still there.
+      runFork(syncPasskeysForGuest(tabId, wc, url));
       invalidatePlaywrightExecutionContext(tabId, webContentsId);
       const attempt = navigationAttemptsByTab.get(tabId);
       if (attempt?.webContentsId === webContentsId && attempt.mainFrameStarted) {
@@ -4831,6 +4886,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 }),
               )
             : Exit.void;
+        // A guest mounted again after its page loaded sees no navigation.
+        if (Option.isSome(registered)) runFork(syncPasskeysForGuest(tabId, wc, wc.getURL()));
         return { activation, registration: registered };
       }),
     );
@@ -5142,6 +5199,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         runFork(
           activateAutomationForegroundIfActiveForTab(tabId, wc).pipe(
             Effect.andThen(restoreControlSession(tabId, wc)),
+            Effect.andThen(syncPasskeysForGuest(tabId, wc, wc.getURL())),
             Effect.ignore,
           ),
         );
@@ -5542,6 +5600,81 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
   });
 
+  /**
+   * Gives a guest the authenticator its site's passkeys need, or takes it away
+   * when the guest is somewhere passkeys aren't on. Holding the lease keeps the
+   * debugger attached for as long as the guest stays on that site. Sent past
+   * the control semaphore: an agent's action can hold that across this very
+   * navigation, and the page starts running as soon as it commits.
+   */
+  const syncPasskeysForGuest = Effect.fn("PreviewManager.syncPasskeysForGuest")(function* (
+    tabId: string,
+    wc: Electron.WebContents,
+    url: string,
+  ) {
+    if (wc.isDestroyed()) return;
+    const on = yield* passkeyVault.isOnForUrl(url).pipe(Effect.orElseSucceed(() => false));
+    if (!on) {
+      if (!passkeyGuestTabs.delete(wc.id)) return;
+      activityLeases.release(tabId, passkeyLeaseId(wc.id));
+      if (wc.debugger.isAttached()) {
+        yield* attemptPromise({ operation: "passkeys.disable", tabId, webContentsId: wc.id }, () =>
+          wc.debugger.sendCommand("WebAuthn.disable"),
+        ).pipe(Effect.ignore);
+      }
+      yield* detachControlSessionIfIdle(tabId, wc.id);
+      yield* recordActivityLeaseMetrics();
+      return;
+    }
+    passkeyGuestTabs.set(wc.id, tabId);
+    activityLeases.acquire(tabId, passkeyLeaseId(wc.id), PreviewActivityConsumer.Passkeys);
+    if (!passkeyPickerSessions.has(wc.session)) {
+      passkeyPickerSessions.add(wc.session);
+      wc.session.on("select-webauthn-account", (event, details, callback) => {
+        event.preventDefault();
+        callback(pickPasskeyAccount(details.accounts, passkeyVault.createdAt));
+      });
+    }
+    const installed = yield* Effect.exit(
+      Effect.gen(function* () {
+        yield* ensureControlSession(tabId, wc);
+        const credentials = yield* passkeyVault.credentialsForUrl(url);
+        yield* attemptPromise({ operation: "passkeys.install", tabId, webContentsId: wc.id }, () =>
+          installPasskeyAuthenticator(
+            (method, params) => wc.debugger.sendCommand(method, params),
+            credentials,
+          ),
+        );
+      }),
+    );
+    if (Exit.isFailure(installed)) {
+      // Open DevTools holds the debugger; its closing or the next navigation tries again.
+      passkeyGuestTabs.delete(wc.id);
+      activityLeases.release(tabId, passkeyLeaseId(wc.id));
+      yield* Effect.logWarning("Could not give a preview guest its passkeys.", { tabId });
+    }
+    yield* recordActivityLeaseMetrics();
+  });
+
+  /** Carries a change of sites or passkeys to open pages, without waiting for a navigation. */
+  const refreshPasskeyGuests = Effect.fn("PreviewManager.refreshPasskeyGuests")(function* () {
+    const tabs = yield* SynchronizedRef.get(tabsRef);
+    const guests: Array<readonly [string, Electron.WebContents]> = [];
+    for (const tab of tabs.values()) {
+      const wc = currentWebContentsForTab(tab);
+      if (wc) guests.push([tab.tabId, wc]);
+    }
+    for (const [tabId, sessions] of popupWindowsByTab) {
+      for (const session of sessions) guests.push([tabId, session.webContents]);
+    }
+    yield* Effect.forEach(
+      guests,
+      ([tabId, wc]) =>
+        wc.isDestroyed() ? Effect.void : syncPasskeysForGuest(tabId, wc, wc.getURL()),
+      { discard: true },
+    );
+  });
+
   /** Undoes what foregrounding did to one guest, down to detaching when nothing else needs it. */
   const restoreGuestFromAutomationForeground = Effect.fn(
     "PreviewManager.restoreGuestFromAutomationForeground",
@@ -5597,8 +5730,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         Effect.gen(function* () {
           automationForegroundWebContentsIds.delete(wc.id);
           activityLeases.release(tabId, AUTOMATION_FOREGROUND_LEASE_ID);
+          passkeyGuestTabs.delete(wc.id);
+          activityLeases.release(tabId, passkeyLeaseId(wc.id));
           if (wc.isDestroyed()) return;
           yield* restoreGuestFromAutomationForeground(tabId, wc);
+          // A popup shares its tab's leases, and the tab may hold on to its own session.
+          if (
+            popupTabByWebContentsId.has(wc.id) &&
+            !activityLeases.has(tabId, PreviewActivityConsumer.Automation) &&
+            !activityLeases.has(tabId, PreviewActivityConsumer.RemoteView)
+          ) {
+            yield* detachControlSession(wc.id);
+          }
         }),
       );
       yield* recordActivityLeaseMetrics();
@@ -8942,6 +9085,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       ),
     automationType,
     automationFillCredential,
+    refreshPasskeyGuests,
     fillPasswordForPerson,
     setAccountPrompts: (tabId: string, prompts: ReadonlyArray<PreviewAccountPrompt>) =>
       runFork(update(tabId, { accountPrompts: prompts }).pipe(Effect.ignore)),
@@ -9512,6 +9656,8 @@ export class PreviewManager extends Context.Service<
     };
     readonly browserProfileDirectory: (scope: string) => Effect.Effect<string, PreviewManagerError>;
     readonly subscribeAccountEvents: (listener: (event: PreviewAccountEvent) => void) => void;
+    /** Applies a change of passkey sites or passkeys to the guests open now. */
+    readonly refreshPasskeyGuests: () => Effect.Effect<void>;
     readonly automationFillCredential: (
       tabId: string,
       kind: PreviewCredentialKind,
@@ -9666,6 +9812,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     automationContextMenu: operations.automationContextMenu,
     automationType: operations.automationType,
     automationFillCredential: operations.automationFillCredential,
+    refreshPasskeyGuests: operations.refreshPasskeyGuests,
     fillPasswordForPerson: operations.fillPasswordForPerson,
     setAccountPrompts: operations.setAccountPrompts,
     subscribeSignInSignals: operations.subscribeSignInSignals,

@@ -2,7 +2,10 @@ import type {
   PreviewCredentialId,
   PreviewCredentialKind,
   PreviewCredentialSummary,
+  PreviewPasskeysSnapshot,
+  PreviewPasskeySummary,
 } from "@t3tools/contracts";
+import { passkeySiteForHost } from "@t3tools/shared/passkeySites";
 
 /** What the credential editor is doing: adding a new entry or editing a saved one. */
 export type CredentialEditorMode =
@@ -171,4 +174,34 @@ export function credentialRequestSaveInput(input: {
     secret: input.secret,
     ...(input.save ? {} : { ephemeral: true }),
   };
+}
+
+export interface PasskeySiteRow {
+  readonly site: string;
+  readonly enabled: boolean;
+  readonly passkeys: readonly PreviewPasskeySummary[];
+}
+
+/**
+ * The settings list: every site that is on or still holds a passkey. A site
+ * turned off keeps its passkeys, so turning it back on doesn't lose the account.
+ */
+export function passkeySiteRows(snapshot: PreviewPasskeysSnapshot): readonly PasskeySiteRow[] {
+  const passkeysBySite = new Map<string, PreviewPasskeySummary[]>();
+  for (const passkey of snapshot.passkeys) {
+    const site = passkeySiteForHost(passkey.rpId);
+    passkeysBySite.set(site, [...(passkeysBySite.get(site) ?? []), passkey]);
+  }
+  return [...new Set([...snapshot.sites, ...passkeysBySite.keys()])]
+    .toSorted((left, right) => left.localeCompare(right))
+    .map((site) => ({
+      site,
+      enabled: snapshot.sites.includes(site),
+      passkeys: passkeysBySite.get(site) ?? [],
+    }));
+}
+
+/** What a passkey is called in a list: the account name, or a stand-in when a site gave none. */
+export function passkeyAccountName(passkey: PreviewPasskeySummary): string {
+  return passkey.userName || passkey.userDisplayName || "Unnamed account";
 }

@@ -15,6 +15,7 @@ export const CREDENTIAL_REQUEST_CREDENTIAL_ID_KEY = "t3_credential_id";
 
 export const CREDENTIAL_DECLINE_CHOICE = "Not now";
 export const CREDENTIAL_SIGNED_IN_CHOICE = "I've signed in";
+export const CREDENTIAL_PASSKEYS_ON_ANSWER = "Turned on passkeys";
 export const CREDENTIAL_SAVED_ANSWER = "Entered and saved";
 export const CREDENTIAL_USED_ONCE_ANSWER = "Entered for this sign-in";
 
@@ -22,8 +23,9 @@ export const CREDENTIAL_USED_ONCE_ANSWER = "Entered for this sign-in";
  * `password` and `code` collect a secret on the card. `person` asks the person
  * to finish on the page themselves: for sites that refuse automation, for
  * single sign-on, and for two-step approvals that have nothing to type.
+ * `passkey` asks to turn on passkeys Solla holds for the site.
  */
-export type CredentialRequestMode = "password" | "code" | "person";
+export type CredentialRequestMode = "password" | "code" | "person" | "passkey";
 
 export interface CredentialRequest {
   /** Read from the tab by the server, never supplied by the agent. */
@@ -37,6 +39,7 @@ export interface CredentialRequest {
 export type CredentialRequestAnswer =
   | { readonly status: "provided"; readonly credentialId: string; readonly saved: boolean }
   | { readonly status: "signed_in" }
+  | { readonly status: "passkeys_on" }
   | { readonly status: "declined" }
   | { readonly status: "feedback"; readonly feedback: string };
 
@@ -86,7 +89,9 @@ export function parseCredentialRequest(payload: unknown): CredentialRequest | nu
   if (typeof request !== "object" || request === null) return null;
   const { origin, mode, reason, usernameHint } = request as Record<string, unknown>;
   if (typeof origin !== "string" || typeof reason !== "string") return null;
-  if (mode !== "password" && mode !== "code" && mode !== "person") return null;
+  if (mode !== "password" && mode !== "code" && mode !== "person" && mode !== "passkey") {
+    return null;
+  }
   return {
     origin,
     mode,
@@ -119,5 +124,6 @@ export function credentialRequestAnswerFromUnknown(
   }
   if (answer.length === 0 || answer === CREDENTIAL_DECLINE_CHOICE) return { status: "declined" };
   if (answer === CREDENTIAL_SIGNED_IN_CHOICE) return { status: "signed_in" };
+  if (answer === CREDENTIAL_PASSKEYS_ON_ANSWER) return { status: "passkeys_on" };
   return { status: "feedback", feedback: answer };
 }

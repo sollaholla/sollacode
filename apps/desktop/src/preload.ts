@@ -307,6 +307,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
           ...(expiresAt === undefined ? {} : { expiresAt }),
         }),
     },
+    passkeys: {
+      snapshot: () => ipcRenderer.invoke(IpcChannels.PREVIEW_PASSKEYS_SNAPSHOT_CHANNEL),
+      setSite: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_PASSKEYS_SET_SITE_CHANNEL, input),
+      remove: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_PASSKEYS_REMOVE_CHANNEL, input),
+    },
     getPreviewConfig: (environmentId, threadId, browserProfile) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_GET_CONFIG_CHANNEL, {
         environmentId,

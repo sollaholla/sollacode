@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as BrowserPasskeyVault from "./BrowserPasskeyVault.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import { HUMAN_INPUT_CHANNEL } from "./GuestProtocol.ts";
 import { VIDEO_SOURCE_CHANGED_CHANNEL } from "./GuestProtocol.ts";
@@ -357,8 +358,23 @@ const fileSystemLayer = FileSystem.layerNoop({
   stat: () => Effect.succeed({ type: "File", size: 1n } as never),
 });
 
+// Tests turn passkeys on for a site by adding it here.
+const passkeyTestSites = new Set<string>();
+const passkeyVaultLayer = Layer.succeed(
+  BrowserPasskeyVault.BrowserPasskeyVault,
+  BrowserPasskeyVault.BrowserPasskeyVault.of({
+    snapshot: Effect.succeed({ sites: [], passkeys: [] }),
+    setSite: () => Effect.succeed({ sites: [], passkeys: [] }),
+    remove: () => Effect.succeed({ sites: [], passkeys: [] }),
+    isOnForUrl: (url) => Effect.succeed(passkeyTestSites.has(new URL(url).hostname)),
+    credentialsForUrl: () => Effect.succeed([]),
+    capture: () => Effect.void,
+    createdAt: () => undefined,
+  }),
+);
 const layer = PreviewManager.layer.pipe(
   Layer.provideMerge(browserSessionLayer),
+  Layer.provideMerge(passkeyVaultLayer),
   Layer.provideMerge(environmentLayer),
   Layer.provideMerge(fileSystemLayer),
   Layer.provideMerge(Path.layer),
@@ -1309,6 +1325,93 @@ describe("PreviewManager", () => {
         });
       }),
     ),
+  );
+
+  effectIt.effect(
+    "gives a guest on a passkey site a new authenticator per document, holding the debugger until it leaves",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          passkeyTestSites.add("app.example.com");
+          const listeners = new Map<string, (...args: unknown[]) => void>();
+          const sendCommand = vi.fn(
+            async (method: string): Promise<unknown> =>
+              method === "WebAuthn.addVirtualAuthenticator"
+                ? { authenticatorId: "auth-1" }
+                : undefined,
+          );
+          let attached = false;
+          const detach = vi.fn(() => {
+            attached = false;
+          });
+          const webContents = {
+            id: 61,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://app.example.com/login",
+            getTitle: () => "Sign in",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            setBackgroundThrottling: vi.fn(),
+            invalidate: vi.fn(),
+            on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+              listeners.set(event, listener);
+            }),
+            off: vi.fn(),
+            session: { on: vi.fn() },
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => attached,
+              attach: vi.fn(() => {
+                attached = true;
+              }),
+              detach,
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as unknown as Electron.WebContents;
+          fromId.mockImplementation((id) => (id === 61 ? webContents : null));
+          const settle = () =>
+            Effect.forEach(
+              [1, 2, 3, 4, 5, 6],
+              () => Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve))),
+              { discard: true },
+            );
+          const authenticatorAdds = () =>
+            sendCommand.mock.calls.filter(
+              ([method]) => method === "WebAuthn.addVirtualAuthenticator",
+            ).length;
+
+          yield* manager.createTab("tab_passkeys");
+          yield* manager.registerWebview("tab_passkeys", 61);
+          yield* settle();
+          expect(authenticatorAdds()).toBe(1);
+          expect(attached).toBe(true);
+          expect(webContents.session.on).toHaveBeenCalledWith(
+            "select-webauthn-account",
+            expect.any(Function),
+          );
+
+          // Every new document loses it.
+          listeners.get("did-navigate")?.({}, "https://app.example.com/account");
+          yield* settle();
+          expect(authenticatorAdds()).toBe(2);
+          expect(detach).not.toHaveBeenCalled();
+
+          // Somewhere else, nothing needs the debugger any more.
+          listeners.get("did-navigate")?.({}, "https://other.example.org/");
+          yield* settle();
+          expect(authenticatorAdds()).toBe(2);
+          expect(detach).toHaveBeenCalled();
+          passkeyTestSites.clear();
+        }),
+      ),
   );
 
   effectIt.effect(

@@ -15,6 +15,8 @@ import {
   DesktopPreviewCredentialListForTabInputSchema,
   DesktopPreviewCredentialRemoveInputSchema,
   DesktopPreviewCredentialSaveInputSchema,
+  DesktopPreviewPasskeyRemoveInputSchema,
+  DesktopPreviewPasskeySiteInputSchema,
   DesktopPreviewAutomationSelectOptionInputSchema,
   DesktopPreviewAutomationUploadInputSchema,
   DesktopPreviewAutomationWaitForDownloadInputSchema,
@@ -43,6 +45,7 @@ import {
   PreviewBrowserProfileInventory,
   PreviewCredentialId,
   PreviewCredentialSummary,
+  PreviewPasskeysSnapshot,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -53,6 +56,7 @@ import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import { previewBrowserProfileScope } from "../../preview/browserProfileScope.ts";
 import * as PreviewManager from "../../preview/Manager.ts";
 import * as BrowserCredentialVault from "../../preview/BrowserCredentialVault.ts";
+import * as BrowserPasskeyVault from "../../preview/BrowserPasskeyVault.ts";
 import {
   BrowserSignInPrompts,
   isPersonOnlySignInOrigin,
@@ -740,6 +744,40 @@ export const saveCredential = DesktopIpc.makeIpcMethod({
   result: PreviewCredentialSummary,
   handler: Effect.fn("desktop.ipc.preview.saveCredential")(function* (input) {
     return yield* (yield* BrowserCredentialVault.BrowserCredentialVault).save(input);
+  }),
+});
+
+export const passkeysSnapshot = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_PASSKEYS_SNAPSHOT_CHANNEL,
+  payload: Schema.Void,
+  result: PreviewPasskeysSnapshot,
+  handler: Effect.fn("desktop.ipc.preview.passkeysSnapshot")(function* () {
+    return yield* (yield* BrowserPasskeyVault.BrowserPasskeyVault).snapshot;
+  }),
+});
+
+export const passkeysSetSite = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_PASSKEYS_SET_SITE_CHANNEL,
+  payload: DesktopPreviewPasskeySiteInputSchema,
+  result: PreviewPasskeysSnapshot,
+  handler: Effect.fn("desktop.ipc.preview.passkeysSetSite")(function* (input) {
+    const vault = yield* BrowserPasskeyVault.BrowserPasskeyVault;
+    const snapshot = yield* vault.setSite(input);
+    // Open tabs on that site follow at once, rather than at their next navigation.
+    yield* (yield* PreviewManager.PreviewManager).refreshPasskeyGuests();
+    return snapshot;
+  }),
+});
+
+export const passkeysRemove = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_PASSKEYS_REMOVE_CHANNEL,
+  payload: DesktopPreviewPasskeyRemoveInputSchema,
+  result: PreviewPasskeysSnapshot,
+  handler: Effect.fn("desktop.ipc.preview.passkeysRemove")(function* (input) {
+    const vault = yield* BrowserPasskeyVault.BrowserPasskeyVault;
+    const snapshot = yield* vault.remove(input.id);
+    yield* (yield* PreviewManager.PreviewManager).refreshPasskeyGuests();
+    return snapshot;
   }),
 });
 
