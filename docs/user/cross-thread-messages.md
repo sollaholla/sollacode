@@ -34,12 +34,29 @@ Some things to know:
 - Turning off **Share with connected devices and agents** under **Settings → Connections** stops this, along with sharing to your other devices.
 - `workspace_consult` is the only tool that crosses computers. `workspace_orchestration`, `thread_terminals` and `agent_collaboration` stay on this computer.
 
+## Having another computer's orchestrator act
+
+The orchestrator can create and configure custom agents on its own computer, the same as an Agent
+Builder chat. For anything on another connected computer, it asks that computer's orchestrator, so
+"make me an agent on the Windows PC" works from either machine. The agent is created and runs on that
+computer, with its folders, sign-ins and models. The other orchestrator can also report on, message
+and stop the chats and terminals there.
+
+This route is open to the orchestrator and to chats that can use `agent_builder`, and only across
+computers: other chats still can't message an orchestrator, and a chat can't reach the orchestrator on
+its own computer. Both computers need a version with this feature. A computer that can't be reached is
+reported as unreachable rather than left out silently.
+
+A request from another computer's orchestrator is not the person typing there. If the work it starts
+needs your approval, it still asks you, and it stays that way for the chats it passes the work to.
+Creating, changing and deleting agents doesn't ask, as in Agent Builder.
+
 ## Limits
 
 Chats asking chats can loop, so the server refuses an `ask` that would:
 
 - reach the asking chat’s own family: the chat itself, its main chat, and every side chat of that main chat (for an agent’s side chats and workers, the agent’s own chat too). Those talk through `thread_collaboration` instead.
-- reach the orchestrator, the Agent Builder, or a delegated worker’s chat.
+- reach the orchestrator, the Agent Builder, or a delegated worker’s chat. The one exception is [another computer's orchestrator](#having-another-computers-orchestrator-act).
 - reach a chat this one is answering for, directly or further up the chain (A asks B while answering a question from B).
 - pass one request along more than three times: you ask A, A asks B, B asks C, C asks D, and D has to answer itself. A message from you or the orchestrator starts a new chain.
 - reach a stopped agent’s chat. An agent under your control still receives it, since you see it.

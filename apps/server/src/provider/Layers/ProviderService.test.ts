@@ -19,6 +19,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionStartInput,
+  ORCHESTRATOR_THREAD_ID,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -1808,6 +1809,56 @@ routing.layer("ProviderServiceLive routing", (it) => {
           Layer.provide(
             Layer.succeed(ServerEnvironment.ServerEnvironment, {
               getEnvironmentId: Effect.succeed(EnvironmentId.make("recovery-test")),
+              getDescriptor: Effect.die("unused"),
+            }),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("the orchestrator's chat holds agent_builder and an ordinary chat does not", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
+      const capabilitiesOf = (threadId: ThreadId) =>
+        Effect.gen(function* () {
+          yield* provider.startSession(threadId, {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: codexInstanceId,
+            threadId,
+            cwd: "/tmp/project-capabilities",
+            runtimeMode: "full-access",
+          });
+          const token = McpProviderSession.readMcpProviderSession(
+            threadId,
+          )?.authorizationHeader.replace(/^Bearer\s+/, "");
+          assert.isDefined(token);
+          const scope = yield* registry.resolve(token!);
+          yield* provider.stopSession({ threadId });
+          return scope?.capabilities;
+        });
+      const orchestrator = yield* capabilitiesOf(asThreadId(ORCHESTRATOR_THREAD_ID));
+      const ordinary = yield* capabilitiesOf(asThreadId("thread-ordinary-capabilities"));
+      assert.isTrue(orchestrator?.has("agent-builder"));
+      assert.isTrue(ordinary?.has("collaboration"));
+      assert.isFalse(ordinary?.has("agent-builder"));
+    }).pipe(
+      Effect.provide(
+        McpSessionRegistry.layer.pipe(
+          Layer.provide(
+            Layer.succeed(
+              HttpServer.HttpServer,
+              HttpServer.HttpServer.of({
+                address: { _tag: "TcpAddress", hostname: "127.0.0.1", port: 43123 },
+                serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
+              }),
+            ),
+          ),
+          Layer.provide(
+            Layer.succeed(ServerEnvironment.ServerEnvironment, {
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("capabilities-test")),
               getDescriptor: Effect.die("unused"),
             }),
           ),

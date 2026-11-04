@@ -63,12 +63,19 @@ environment because the selected connection already determines its authority bou
 
 `workspace_consult` ([consult/handlers.ts](../../apps/server/src/mcp/toolkits/consult/handlers.ts))
 is the one message door between chats, open to every credential with the default `collaboration`
-capability, including terminal agent CLIs. Delegation and `agent_builder` stay agent-only and
-builder-only. The sender is stamped on the delivered message as `senderThreadId` (always the real
-calling thread) and `senderThreadTitle` (the owning agent's name for an agent's chats, the
+capability, including terminal agent CLIs. Delegation stays agent-only, and
+`agent_builder` stays with Agent Builder chats and the orchestrator. The sender is stamped on the
+delivered message as `senderThreadId` (the real calling thread, except that the orchestrator keeps
+the remote sender of a request it is carrying out, so that request never passes for the person) and `senderThreadTitle` (the owning agent's name for an agent's chats, the
 orchestrator's title only for the orchestrator thread itself, otherwise the caller's title). A thread opened with `ask` and a `projectId` records `createdByThreadId` and
 inherits the caller's browser profile; clients name the creator from that id
 ([threadProvenance.ts](../../packages/client-runtime/src/state/threadProvenance.ts)).
+
+An orchestrator takes `ask` from one kind of caller: a chat on another computer whose server declares
+`managesAgents`, meaning the orchestrator there or a chat holding `agent_builder`. That is how one
+computer's orchestrator has another act on its machine, since agents and terminals belong to the
+environment they run in. As with every remote caller, the bearer proves the machine and the caller
+fields are that machine's server's word.
 
 The guards need no new storage:
 

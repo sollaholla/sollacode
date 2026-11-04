@@ -2,6 +2,7 @@ import {
   CommandId,
   isOrchestratorThreadId,
   MessageId,
+  parseRemoteThreadId,
   ThreadId,
   type OrchestrationThreadShell,
   type TerminalSummary,
@@ -11,6 +12,7 @@ import { isThreadWorking, liveBackgroundTasks } from "@t3tools/shared/threadWork
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -404,6 +406,28 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
             }),
         ),
       );
+      // The orchestrator speaks for the person, but not while it is carrying out
+      // a request from another computer: its messages keep that sender, so the
+      // approval rules treat the work the same as if it had come directly.
+      const trigger =
+        projection.getTurnTrigger === undefined
+          ? Option.none()
+          : yield* projection.getTurnTrigger(invocation.threadId).pipe(
+              Effect.mapError(
+                () =>
+                  new WorkspaceOrchestrationOperationFailedError({
+                    operation: "checking who started this request",
+                    threadId: thread.id,
+                  }),
+              ),
+            );
+      const relayedFrom = Option.match(trigger, {
+        onNone: () => undefined,
+        onSome: ({ senderThreadId, senderThreadIds }) =>
+          (senderThreadIds ?? (senderThreadId === null ? [] : [senderThreadId])).find(
+            (id) => parseRemoteThreadId(id) !== null,
+          ),
+      });
 
       yield* engine
         .dispatch({
@@ -413,7 +437,7 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
           message: {
             messageId: MessageId.make(yield* randomId),
             role: "user",
-            senderThreadId: invocation.threadId,
+            senderThreadId: relayedFrom ?? invocation.threadId,
             senderThreadTitle: "Orchestrator",
             text: message,
             attachments: [],

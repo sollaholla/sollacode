@@ -191,6 +191,12 @@ export const RemoteConsultCaller = Schema.Struct({
   waitingThreadIds: Schema.Array(ThreadId),
   /** Whether delegated work reached the caller, which may not open new conversations. */
   delegated: Schema.Boolean,
+  /**
+   * Whether the caller manages agents on its computer: the orchestrator, or a
+   * chat holding agent_builder. Only these may reach this computer's
+   * orchestrator. Older computers leave it out, which reads as no.
+   */
+  managesAgents: Schema.optional(Schema.Boolean),
 });
 export type RemoteConsultCaller = typeof RemoteConsultCaller.Type;
 

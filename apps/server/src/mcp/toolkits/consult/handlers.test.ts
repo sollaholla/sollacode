@@ -1201,6 +1201,139 @@ it.effect("a message from another computer is never recorded as a local chat", (
   }),
 );
 
+const orchestratorRow = (threads: ReadonlyArray<{ readonly threadId: string }> | undefined) =>
+  threads?.find((thread) => thread.threadId === ORCHESTRATOR_THREAD_ID);
+
+const orchestratorThreads = () => [threadShell(), threadShell({ id: ORCHESTRATOR_THREAD_ID })];
+
+const managesAgentsCaller = () =>
+  remoteCaller({
+    threadId: ThreadId.make(ORCHESTRATOR_THREAD_ID),
+    label: "Orchestrator",
+    managesAgents: true,
+  });
+
+it.effect("another computer's orchestrator can reach this one's", () =>
+  Effect.gen(function* () {
+    const { commands, layer } = makeHarness({ threads: orchestratorThreads() });
+    const listed = yield* fromRemote({ action: "list_threads" }, managesAgentsCaller(), layer);
+    assert.isDefined(orchestratorRow(listed.threads));
+
+    yield* fromRemote(
+      { action: "read_thread", threadId: ORCHESTRATOR_THREAD_ID },
+      managesAgentsCaller(),
+      layer,
+    );
+    yield* fromRemote(ask(ORCHESTRATOR_THREAD_ID), managesAgentsCaller(), layer);
+    const message = startedMessage(commands);
+    assert.strictEqual(message.senderThreadTitle, "Orchestrator (Windows PC)");
+    // Never the orchestrator's own id, or the request would pass for the person.
+    assert.notStrictEqual(message.senderThreadId, ORCHESTRATOR_THREAD_ID);
+    assert.strictEqual(
+      parseRemoteThreadId(message.senderThreadId ?? "")?.threadId,
+      ORCHESTRATOR_THREAD_ID,
+    );
+  }),
+);
+
+it.effect("other chats on another computer cannot reach this one's orchestrator", () =>
+  Effect.gen(function* () {
+    const { commands, layer } = makeHarness({ threads: orchestratorThreads() });
+    // An older computer leaves managesAgents out; the orchestrator's id alone is not enough.
+    for (const caller of [
+      remoteCaller(),
+      remoteCaller({ threadId: ThreadId.make(ORCHESTRATOR_THREAD_ID), label: "Orchestrator" }),
+    ]) {
+      const listed = yield* fromRemote({ action: "list_threads" }, caller, layer);
+      assert.isUndefined(orchestratorRow(listed.threads));
+      const error = yield* Effect.flip(fromRemote(ask(ORCHESTRATOR_THREAD_ID), caller, layer));
+      assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+    }
+    assert.lengthOf(commands, 0);
+  }),
+);
+
+it.effect("a far orchestrator still cannot reach Agent Builder or worker chats", () =>
+  Effect.gen(function* () {
+    const builderId = ThreadId.make("agent-builder:session");
+    const workerId = ThreadId.make("delegation-worker:d-1");
+    const { commands, layer } = makeHarness({
+      threads: [threadShell({ id: builderId }), threadShell({ id: workerId })],
+    });
+    for (const threadId of [builderId, workerId]) {
+      const error = yield* Effect.flip(fromRemote(ask(threadId), managesAgentsCaller(), layer));
+      assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+    }
+    assert.lengthOf(commands, 0);
+  }),
+);
+
+it.effect("says whether the caller manages agents when it calls another computer", () =>
+  Effect.gen(function* () {
+    const { layer, remoteRequests } = makeHarness({
+      computers: [windows],
+      remote: () =>
+        answerWith({ action: "ask", status: "Sent.", threadId: ORCHESTRATOR_THREAD_ID }),
+    });
+    const input = { ...ask(ORCHESTRATOR_THREAD_ID), environmentId: windowsEnvironmentId };
+    yield* consultAnywhere(input, layer, {
+      caller: ThreadId.make(ORCHESTRATOR_THREAD_ID),
+      capabilities: new Set(["collaboration", "agent-builder"]),
+    });
+    yield* consultAnywhere(input, layer);
+    assert.deepStrictEqual(
+      remoteRequests.map((request) => sentBody(request).caller.managesAgents),
+      [true, false],
+    );
+  }),
+);
+
+it.effect("tells an orchestrator asking itself how to reach another computer", () =>
+  Effect.gen(function* () {
+    const { commands, layer } = makeHarness({ threads: orchestratorThreads() });
+    const error = yield* Effect.flip(
+      consult(ask(ORCHESTRATOR_THREAD_ID), layer, {
+        caller: ThreadId.make(ORCHESTRATOR_THREAD_ID),
+        capabilities: new Set(["collaboration", "agent-builder"]),
+      }),
+    );
+    assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
+    assert.include(error.message, "environmentId");
+    assert.lengthOf(commands, 0);
+  }),
+);
+
+it.effect("an orchestrator acting for another computer does not pass for the person", () =>
+  Effect.gen(function* () {
+    const farOrchestrator = makeRemoteThreadId(
+      windowsEnvironmentId,
+      ThreadId.make(ORCHESTRATOR_THREAD_ID),
+    );
+    const { commands, layer } = makeHarness({
+      threads: orchestratorThreads(),
+      senders: { [ORCHESTRATOR_THREAD_ID]: farOrchestrator },
+    });
+    yield* consult(ask(medicalThreadId), layer, {
+      caller: ThreadId.make(ORCHESTRATOR_THREAD_ID),
+      capabilities: new Set(["collaboration", "agent-builder"]),
+    });
+    const message = startedMessage(commands);
+    assert.strictEqual(message.senderThreadId, farOrchestrator);
+    assert.strictEqual(message.senderThreadTitle, "Orchestrator");
+  }),
+);
+
+it.effect("a turn that ended with nothing to say is not reported as still working", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({
+      shellById: threadShell({ latestTurn: turn("turn-2", "error") }),
+    });
+    const result = yield* consultAsk(ask(medicalThreadId), layer);
+    assert.strictEqual(result.answered, false);
+    assert.include(result.status, "ended without a reply");
+  }),
+);
+
 it.effect("a chat from another computer may not ask one waiting on it", () =>
   Effect.gen(function* () {
     const { commands, layer } = makeHarness({});

@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  makeRemoteThreadId,
   ORCHESTRATOR_THREAD_ID,
   ProjectId,
   ProviderInstanceId,
@@ -149,6 +150,8 @@ const makeHarness = (
     readonly terminals?: ReadonlyArray<TerminalSummary>;
     readonly snapshots?: ReadonlyArray<TerminalSessionSnapshot>;
     readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
+    /** The chats whose messages started the caller's current work. */
+    readonly senders?: ReadonlyArray<ThreadId>;
   } = {},
 ) => {
   const commands: Array<OrchestrationCommand> = [];
@@ -171,6 +174,16 @@ const makeHarness = (
       })),
     getThreadShellById: (threadId) =>
       Effect.sync(() => Option.fromNullishOr(threads.find((thread) => thread.id === threadId))),
+    getTurnTrigger: () =>
+      Effect.succeed(
+        options.senders === undefined
+          ? Option.none()
+          : Option.some({
+              senderThreadId: options.senders[0] ?? null,
+              delegationId: null,
+              senderThreadIds: options.senders,
+            }),
+      ),
   });
 
   const engineLayer = Layer.mock(OrchestrationEngineService)({
@@ -711,6 +724,32 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
       expect(command.message.text).toBe("status please");
       expect(command.message.role).toBe("user");
       expect(command.message.senderThreadId).toBe(ORCHESTRATOR_THREAD_ID);
+      expect(command.message.senderThreadTitle).toBe("Orchestrator");
+    }),
+  );
+
+  it.effect("keeps the sender of a request that came from another computer", () =>
+    Effect.gen(function* () {
+      const farOrchestrator = makeRemoteThreadId(
+        EnvironmentId.make("environment-far"),
+        ORCHESTRATOR_THREAD_ID,
+      );
+      const harness = makeHarness(DEFAULT_THREADS, { senders: [farOrchestrator] });
+      yield* runAs(
+        ORCHESTRATOR_THREAD_ID,
+        harness,
+        handleWorkspaceOrchestration({
+          action: "send_to_thread",
+          threadId: workingThreadId,
+          message: "status please",
+        }),
+      );
+      const command = harness.commands[0] as Extract<
+        OrchestrationCommand,
+        { type: "thread.turn.start" }
+      >;
+      // Recorded as the orchestrator, it would pass for the person and skip approvals.
+      expect(command.message.senderThreadId).toBe(farOrchestrator);
       expect(command.message.senderThreadTitle).toBe("Orchestrator");
     }),
   );

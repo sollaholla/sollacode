@@ -17,6 +17,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   isAgentBuilderThreadId,
+  isOrchestratorThreadId,
   type MessageId,
   EventId,
   ModelSelection,
@@ -502,11 +503,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
       // Agent Builder chats are identified by their thread-id prefix; they get
       // the agent-builder capability, so the tool that creates and deletes
-      // whole agents is unreachable from other chats. The one exception is a
-      // worker the orchestrator's voice started at full authority: the person
-      // asked it, by voice, for an agent.
+      // whole agents is unreachable from other chats. The orchestrator holds it
+      // too, since it acts for the person, and so does a worker the
+      // orchestrator's voice started at full authority: the person asked it, by
+      // voice, for an agent.
       const managesAgents =
-        isAgentBuilderThreadId(threadId) || (yield* isAgentManagingWorker(threadId));
+        isAgentBuilderThreadId(threadId) ||
+        isOrchestratorThreadId(threadId) ||
+        (yield* isAgentManagingWorker(threadId));
       const extraCapabilities = [
         ...(isVmAgent ? ["vm" as const] : []),
         ...(managesAgents ? ["agent-builder" as const] : []),

@@ -2,7 +2,13 @@ import { PreviewManager } from "../preview/Manager.ts";
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ORCHESTRATOR_THREAD_ID,
+  PreviewTabId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -141,6 +147,17 @@ it("adds scope-aware host instructions only to MCP initialize responses", () => 
   expect(providerPayload.result.instructions).toContain(T3_BROWSER_CONTROL_POLICY);
   expect(providerPayload.result.instructions).toContain("selection-required");
   expect(providerPayload.result.instructions).toContain("preview_close");
+  expect(providerPayload.result.instructions).not.toContain("this computer's orchestrator");
+
+  const orchestratorResponse = McpHttpServer.normalizeMcpHttpResponse(initialize, {
+    ...invocation,
+    threadId: ThreadId.make(ORCHESTRATOR_THREAD_ID),
+  });
+  expect(orchestratorResponse.body._tag).toBe("Uint8Array");
+  if (orchestratorResponse.body._tag !== "Uint8Array") return;
+  const orchestratorPayload = JSON.parse(new TextDecoder().decode(orchestratorResponse.body.body));
+  expect(orchestratorPayload.result.instructions).toContain(SOLLA_MCP_SERVER_INSTRUCTIONS);
+  expect(orchestratorPayload.result.instructions).toContain("this computer's orchestrator");
 
   const toolResponse = HttpServerResponse.jsonUnsafe({
     jsonrpc: "2.0",

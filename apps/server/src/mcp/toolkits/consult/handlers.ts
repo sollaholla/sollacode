@@ -121,9 +121,11 @@ interface ConsultUpstream {
 
 /** Who is calling: a chat on this computer, or one another computer's server vouches for. */
 type ConsultActor =
-  | { readonly kind: "local"; readonly threadId: ThreadId }
+  | { readonly kind: "local"; readonly threadId: ThreadId; readonly managesAgents: boolean }
   | {
       readonly kind: "remote";
+      /** Whether its server says it manages agents, which opens this computer's orchestrator. */
+      readonly managesAgents: boolean;
       /** The same across requests, so its asks and opened threads add up. */
       readonly threadId: ThreadId;
       /** What its messages record, carrying how deep the request already is. */
@@ -270,6 +272,13 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
     thread: OrchestrationThreadShell,
     family: ReadonlySet<ThreadId>,
   ): string | null => {
+    // One computer's orchestrator has another act there. A chat that may manage
+    // agents is sent on its way rather than told the orchestrator is closed.
+    if (isOrchestratorThreadId(thread.id) && actor.managesAgents) {
+      return actor.kind === "remote"
+        ? null
+        : "That is this computer's orchestrator. To have another computer's orchestrator act there, pass that computer's environmentId; list_threads shows them.";
+    }
     if (family.has(thread.id)) {
       return "That conversation is this chat or part of its own side-chat family (its parent chat, its side chats, or its agent's chat). Use thread_collaboration to work with related chats.";
     }
@@ -428,8 +437,16 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
         actor.kind === "remote"
           ? actor.label
           : senderLabelOf(actor.threadId, callerThread, caller.agent?.name);
-      const senderThreadId = actor.kind === "remote" ? actor.senderThreadId : actor.threadId;
       const upstream = yield* readUpstream();
+      // The orchestrator speaks for the person, but not while it is carrying out
+      // a request from another computer: its messages keep that sender, so the
+      // approval rules treat the work the same as if it had come directly.
+      const relayedFrom =
+        actor.kind === "local" && isOrchestratorThreadId(actor.threadId)
+          ? [...upstream.chats].find((id) => parseRemoteThreadId(id) !== null)
+          : undefined;
+      const senderThreadId =
+        actor.kind === "remote" ? actor.senderThreadId : (relayedFrom ?? actor.threadId);
 
       // Either continue an existing conversation, or open a fresh thread in a
       // project so the exchange stays self-contained.
@@ -671,16 +688,17 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
           Effect.forkScoped({ startImmediately: true }),
         );
         const first = yield* checkReply;
-        if (Option.isSome(first)) return first.value;
+        if (Option.isSome(first)) return first;
         return yield* Effect.gen(function* () {
           while (true) {
             yield* Queue.take(wake);
             const next = yield* checkReply;
             if (Option.isSome(next)) return next.value;
           }
-        }).pipe(Effect.timeoutOption(Duration.millis(waitMs)), Effect.map(Option.getOrNull));
+        }).pipe(Effect.timeoutOption(Duration.millis(waitMs)));
       }).pipe(Effect.scoped);
-      const answer = waitMs === 0 ? Option.getOrNull(yield* checkReply) : yield* awaitReply;
+      const outcome = waitMs === 0 ? yield* checkReply : yield* awaitReply;
+      const answer = Option.getOrNull(outcome);
 
       const where = destination.kind === "project" ? "a new conversation" : "that conversation";
       return {
@@ -688,7 +706,9 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
         status:
           answer !== null
             ? `Asked ${where} and received a reply.`
-            : `Asked ${where}; it is still working. Poll read_thread with this threadId for the reply.`,
+            : Option.isSome(outcome)
+              ? `Asked ${where}, but it ended without a reply, so it may have failed. read_thread shows how far it got.`
+              : `Asked ${where}; it is still working. Poll read_thread with this threadId for the reply.`,
         threadId: targetId,
         answered: answer !== null,
         ...(answer !== null ? { answer } : {}),
@@ -701,6 +721,7 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
 const callComputerAs = Effect.fn("WorkspaceConsult.callComputerAs")(function* (
   callerThreadId: ThreadId,
   callerEnvironmentId: EnvironmentId,
+  managesAgents: boolean,
   source: RelayedEnvironmentSource,
   input: WorkspaceConsultInput,
   timeoutMs: number,
@@ -716,6 +737,7 @@ const callComputerAs = Effect.fn("WorkspaceConsult.callComputerAs")(function* (
     upstreamDepth: 0,
     waitingThreadIds: [],
     delegated: false,
+    managesAgents,
   };
   // Only a question needs to say who is asking and how far it has come.
   if (input.action !== "ask") {
@@ -777,11 +799,20 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
     return yield* new WorkspaceConsultUnavailableError({ threadId: invocation.threadId });
   }
   const relays = yield* RelayedEnvironments;
+  const managesAgents = invocation.capabilities.has("agent-builder");
   const callComputer = (
     source: RelayedEnvironmentSource,
     call: WorkspaceConsultInput,
     timeoutMs: number,
-  ) => callComputerAs(invocation.threadId, invocation.environmentId, source, call, timeoutMs);
+  ) =>
+    callComputerAs(
+      invocation.threadId,
+      invocation.environmentId,
+      managesAgents,
+      source,
+      call,
+      timeoutMs,
+    );
   const tagged = (source: RelayedEnvironmentSource, result: WorkspaceConsultResult) => ({
     ...result,
     ...(result.threadId === undefined ? {} : located(source)),
@@ -811,7 +842,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
     });
   }
 
-  const actor: ConsultActor = { kind: "local", threadId: invocation.threadId };
+  const actor: ConsultActor = { kind: "local", threadId: invocation.threadId, managesAgents };
   // Named this one: nothing else is consulted.
   if (input.environmentId !== undefined) return yield* runConsult(actor, input, askLog);
 
@@ -918,6 +949,7 @@ export const handleRemoteConsult = Effect.fn("WorkspaceConsult.handleRemote")(fu
   return yield* runConsult(
     {
       kind: "remote",
+      managesAgents: caller.managesAgents === true,
       threadId: makeRemoteThreadId(caller.environmentId, caller.threadId),
       senderThreadId: makeRemoteThreadId(
         caller.environmentId,

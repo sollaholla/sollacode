@@ -192,7 +192,7 @@ export function liveDelegationTask(
       : "Existing agent action restrictions still apply.",
     ...(settings.authority === "full"
       ? [
-          "At this authority you may create and configure agents with agent_builder when the person asks for one.",
+          "At this authority you may create and configure agents with agent_builder when the person asks for one. For one on another connected computer, ask that computer's orchestrator with workspace_consult: list_threads shows its row.",
         ]
       : []),
     "Report progress or questions through agent_collaboration. Finish with a short, factual summary suitable for speech, including any blocker or unverified result. A voice disconnect does not cancel your task.",

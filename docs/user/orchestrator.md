@@ -48,6 +48,12 @@ one turn, rather than running a fixed script. Which tools it may call by voice i
 Every tool takes a `reason` - a short phrase saying why it was called. That reason is what makes the
 call log readable afterwards.
 
+Typed turns can also create and configure custom agents with `agent_builder`. For anything on another
+connected computer, the orchestrator asks that computer's orchestrator; see
+[Having another computer's orchestrator act](./cross-thread-messages.md#having-another-computers-orchestrator-act).
+By voice, the same needs **Full control**, since the voice hands the request to a worker that holds
+`agent_builder` only at that authority.
+
 Ordinary chats have the same three terminal actions on `thread_terminals`, so the
 main chat can list, read, and type into open panes without going through the
 orchestrator.
