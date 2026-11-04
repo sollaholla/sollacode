@@ -280,7 +280,7 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
         : "That is this computer's orchestrator. To have another computer's orchestrator act there, pass that computer's environmentId; list_threads shows them.";
     }
     if (family.has(thread.id)) {
-      return "That conversation is this chat or part of its own side-chat family (its parent chat, its side chats, or its agent's chat). Use thread_collaboration to work with related chats.";
+      return "That conversation is this chat or part of its own side-chat family (its parent chat, its side chats, or its agent's chat). To message it, use thread_collaboration message_related_chat; to read it, query_related_chat.";
     }
     if (isOrchestratorThreadId(thread.id)) {
       return "The orchestrator does not take questions from other chats.";

@@ -55,7 +55,7 @@ Creating, changing and deleting agents doesn't ask, as in Agent Builder.
 
 Chats asking chats can loop, so the server refuses an `ask` that would:
 
-- reach the asking chat’s own family: the chat itself, its main chat, and every side chat of that main chat (for an agent’s side chats and workers, the agent’s own chat too). Those talk through `thread_collaboration` instead.
+- reach the asking chat’s own family: the chat itself, its main chat, and every side chat of that main chat (for an agent’s side chats and workers, the agent’s own chat too). Those talk through `thread_collaboration` instead: `query_related_chat` reads one, and `message_related_chat` sends it a message without waiting for a reply, up to 20 in 10 minutes. A stopped agent's chat refuses those messages too.
 - reach the orchestrator, the Agent Builder, or a delegated worker’s chat. The one exception is [another computer's orchestrator](#having-another-computers-orchestrator-act).
 - reach a chat this one is answering for, directly or further up the chain (A asks B while answering a question from B).
 - pass one request along more than three times: you ask A, A asks B, B asks C, C asks D, and D has to answer itself. A message from you or the orchestrator starts a new chain.

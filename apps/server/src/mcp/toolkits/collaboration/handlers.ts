@@ -15,6 +15,8 @@ import { OrchestrationEngineService } from "../../../orchestration/Services/Orch
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { VmAgentCollaborationStore } from "../../../persistence/Services/VmAgentCollaborations.ts";
+import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
+import { resolveOwningVmAgent } from "../../../vm/owningAgent.ts";
 import * as ThreadHistoryQuery from "../history/ThreadHistoryQuery.ts";
 import { relatedChatSummary, resolveRelatedChats } from "./relationships.ts";
 import { ThreadCollaborationToolkit } from "./tools.ts";
@@ -22,10 +24,21 @@ import {
   ThreadCollaborationCapabilityUnavailableError,
   ThreadCollaborationModelUnavailableError,
   ThreadCollaborationOperationFailedError,
+  ThreadCollaborationRefusedError,
   ThreadCollaborationScopeError,
   ThreadCollaborationThreadNotFoundError,
   type RelatedChatSummary,
 } from "./types.ts";
+
+/** When each chat last messaged a related chat, for the rate limit. */
+type RelatedMessageLog = Map<ThreadId, ReadonlyArray<number>>;
+
+/**
+ * Two chats in Agent mode can answer each other forever, and each message
+ * starts a turn, so sending is capped the same as a workspace_consult ask.
+ */
+const MAX_RELATED_MESSAGES_PER_WINDOW = 20;
+const RELATED_MESSAGE_WINDOW_MS = 10 * 60_000;
 
 const modelSelectionsEqual = (left: ModelSelection, right: ModelSelection): boolean =>
   left.instanceId === right.instanceId &&
@@ -37,6 +50,7 @@ const toOperationError = (operation: string, threadId: ThreadId) =>
 
 export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")(function* (
   input: import("./types.ts").ThreadCollaborationInput,
+  relatedMessageLog: RelatedMessageLog,
 ) {
   const invocation = yield* McpInvocationContext.McpInvocationContext;
   if (!invocation.capabilities.has("collaboration")) {
@@ -51,6 +65,7 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
   const history = yield* ThreadHistoryQuery.ThreadHistoryQuery;
   const crypto = yield* Crypto.Crypto;
   const agentCollaboration = yield* VmAgentCollaborationStore;
+  const agents = yield* VmAgentStore;
 
   const readFamily = Effect.fn("ThreadCollaboration.readFamily")(function* () {
     const snapshot = yield* projection
@@ -305,14 +320,91 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
         history: queryResult,
       };
     }
+
+    case "message_related_chat": {
+      const family = yield* readFamily();
+      const target = family.related.find((thread) => thread.id === input.threadId);
+      if (!target || target.archivedAt !== null) {
+        return yield* new ThreadCollaborationScopeError({
+          requestedThreadId: input.threadId,
+          authorizedThreadId: invocation.threadId,
+        });
+      }
+      if (target.id === invocation.threadId) {
+        return yield* new ThreadCollaborationRefusedError({
+          reason: "That is this chat. Name its parent or a side chat from list_related_chats.",
+        });
+      }
+      // A stopped agent stays idle until the person starts it.
+      const targetAgent = yield* resolveOwningVmAgent({
+        threadId: target.id,
+        getAgentByThreadId: agents.getByThreadId,
+        getThreadShellById: projection.getThreadShellById,
+      }).pipe(Effect.mapError(() => toOperationError("checking the chat's agent", target.id)));
+      if (
+        Option.isSome(targetAgent) &&
+        (targetAgent.value.status === "stopped" || targetAgent.value.status === "stopping")
+      ) {
+        return yield* new ThreadCollaborationRefusedError({
+          reason: `${targetAgent.value.name} is stopped, so it cannot be messaged. The person can start it again from its chat.`,
+        });
+      }
+      const recent = (relatedMessageLog.get(invocation.threadId) ?? []).filter(
+        (at) => nowMs - at < RELATED_MESSAGE_WINDOW_MS,
+      );
+      if (recent.length >= MAX_RELATED_MESSAGES_PER_WINDOW) {
+        return yield* new ThreadCollaborationRefusedError({
+          reason: `This chat has sent related chats ${recent.length} messages in the last 10 minutes. Wait a few minutes before sending another.`,
+        });
+      }
+      for (const [threadId, times] of relatedMessageLog) {
+        if (times.every((at) => nowMs - at >= RELATED_MESSAGE_WINDOW_MS)) {
+          relatedMessageLog.delete(threadId);
+        }
+      }
+      relatedMessageLog.set(invocation.threadId, [...recent, nowMs]);
+
+      // The sender is what approvals read: a message inside the family counts
+      // as whatever started the sending chat's work (see getTurnTrigger).
+      yield* dispatch(
+        {
+          type: "thread.turn.start",
+          commandId: CommandId.make(yield* randomId),
+          threadId: target.id,
+          message: {
+            messageId: MessageId.make(yield* randomId),
+            role: "user",
+            senderThreadId: invocation.threadId,
+            senderThreadTitle: family.caller.title,
+            text: input.message,
+            attachments: [],
+          },
+          runtimeMode: target.runtimeMode,
+          interactionMode: target.interactionMode,
+          createdAt: now,
+        },
+        "sending the message",
+        target.id,
+      );
+      return {
+        action: "message_related_chat" as const,
+        callerThreadId: invocation.threadId,
+        target: relatedChatSummary(family.caller, target, nowMs),
+        delivered: true,
+      };
+    }
   }
 });
 
-const handlers = {
-  thread_collaboration: handleThreadCollaboration,
-} satisfies Parameters<typeof ThreadCollaborationToolkit.toLayer>[0];
-
-export const ThreadCollaborationToolkitHandlersLive = ThreadCollaborationToolkit.toLayer(handlers);
+export const ThreadCollaborationToolkitHandlersLive = ThreadCollaborationToolkit.toLayer(
+  Effect.sync(() => {
+    const relatedMessageLog: RelatedMessageLog = new Map();
+    return {
+      thread_collaboration: (input: import("./types.ts").ThreadCollaborationInput) =>
+        handleThreadCollaboration(input, relatedMessageLog),
+    } satisfies Parameters<typeof ThreadCollaborationToolkit.toLayer>[0];
+  }),
+);
 
 export const __testing = {
   modelSelectionsEqual,

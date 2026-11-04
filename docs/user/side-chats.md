@@ -17,6 +17,8 @@ version 0.1.651 that message could start without the copy. The copy then landed 
 and marked it done, so the side chat looked finished while its agent kept working in the
 background.
 
+A side chat can tell its main chat something, and the reverse: ask it to "add this to the main chat" and it sends a message there, labelled with the side chat's name. If the main chat is working, the message joins the running turn. Before version 0.1.802 side chats could read the main chat but had no way to write to it.
+
 Side-chat agents receive private concurrency guidance. They know they are working beside a main
 conversation and avoid workspace changes that could interfere with it unless the user explicitly
 asks for those changes in the side chat. The guidance exists because a side chat shares the main

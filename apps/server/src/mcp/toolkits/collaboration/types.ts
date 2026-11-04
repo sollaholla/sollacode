@@ -88,11 +88,24 @@ const QueryRelatedChatInput = Schema.Struct({
   }),
 });
 
+const MessageRelatedChatInput = Schema.Struct({
+  action: Schema.Literal("message_related_chat"),
+  threadId: ThreadId.annotate({
+    description:
+      "A thread returned by list_related_chats other than this chat: its parent, children, or sibling side chats.",
+  }),
+  message: BoundedTask.annotate({
+    description:
+      "What to tell that chat. It cannot see this chat, so include the context it needs. Delivered at once; it joins a turn already running there.",
+  }),
+});
+
 const ThreadCollaborationInputVariants = Schema.Union([
   SetModelInput,
   CreateSideChatInput,
   ListRelatedChatsInput,
   QueryRelatedChatInput,
+  MessageRelatedChatInput,
 ]);
 
 // MCP requires every tool input schema to have an object at its root. A raw
@@ -105,6 +118,7 @@ const ThreadCollaborationInputWire = Schema.Struct({
     "create_side_chat",
     "list_related_chats",
     "query_related_chat",
+    "message_related_chat",
   ]),
   modelSelection: Schema.optional(ModelSelection),
   task: Schema.optional(BoundedTask),
@@ -113,6 +127,7 @@ const ThreadCollaborationInputWire = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionMode),
   threadId: Schema.optional(ThreadId),
   history: Schema.optional(ThreadHistoryQueryOptions),
+  message: Schema.optional(BoundedTask),
 });
 
 export const ThreadCollaborationInput = ThreadCollaborationInputWire.pipe(
@@ -189,11 +204,19 @@ const QueryRelatedChatResult = Schema.Struct({
   history: ThreadHistoryQueryResult,
 });
 
+const MessageRelatedChatResult = Schema.Struct({
+  action: Schema.Literal("message_related_chat"),
+  callerThreadId: ThreadId,
+  target: RelatedChatSummary,
+  delivered: Schema.Boolean,
+});
+
 export const ThreadCollaborationResult = Schema.Union([
   SetModelResult,
   CreateSideChatResult,
   ListRelatedChatsResult,
   QueryRelatedChatResult,
+  MessageRelatedChatResult,
 ]);
 export type ThreadCollaborationResult = typeof ThreadCollaborationResult.Type;
 
@@ -242,6 +265,15 @@ export class ThreadCollaborationModelUnavailableError extends Schema.TaggedError
   }
 }
 
+export class ThreadCollaborationRefusedError extends Schema.TaggedErrorClass<ThreadCollaborationRefusedError>()(
+  "ThreadCollaborationRefusedError",
+  { reason: Schema.String },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
 export class ThreadCollaborationOperationFailedError extends Schema.TaggedErrorClass<ThreadCollaborationOperationFailedError>()(
   "ThreadCollaborationOperationFailedError",
   {
@@ -259,6 +291,7 @@ export const ThreadCollaborationError = Schema.Union([
   ThreadCollaborationThreadNotFoundError,
   ThreadCollaborationScopeError,
   ThreadCollaborationModelUnavailableError,
+  ThreadCollaborationRefusedError,
   ThreadCollaborationOperationFailedError,
 ]);
 export type ThreadCollaborationError = typeof ThreadCollaborationError.Type;

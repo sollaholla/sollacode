@@ -154,6 +154,7 @@ const makeHarness = (
     readonly lagCreatedSideChatProjection?: boolean;
     readonly delegatedThreadIds?: ReadonlySet<ThreadId>;
     readonly vmAgentThreadIds?: ReadonlySet<ThreadId>;
+    readonly stoppedAgentThreadIds?: ReadonlySet<ThreadId>;
   } = {},
 ) => {
   let threads = [...initialThreads];
@@ -319,9 +320,11 @@ const makeHarness = (
   const vmAgentLayer = Layer.mock(VmAgentStore)({
     getByThreadId: (threadId) =>
       Effect.succeed(
-        options.vmAgentThreadIds?.has(ThreadId.make(threadId)) === true
-          ? Option.some({ vmAgentId: VmAgentId.make(`agent:${threadId}`) } as never)
-          : Option.none(),
+        options.stoppedAgentThreadIds?.has(ThreadId.make(threadId)) === true
+          ? Option.some({ name: "Scout", status: "stopped" } as never)
+          : options.vmAgentThreadIds?.has(ThreadId.make(threadId)) === true
+            ? Option.some({ vmAgentId: VmAgentId.make(`agent:${threadId}`) } as never)
+            : Option.none(),
       ),
   });
 
@@ -662,3 +665,91 @@ it.effect(
     }).pipe(Effect.provide(harness.layer));
   },
 );
+
+it.effect("lets a side chat message its main chat, and the main chat answer, as themselves", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const sent = yield* callTool(
+      { action: "message_related_chat", threadId: mainThreadId, message: "Check arrivals first." },
+      invocationFor(sideThreadId),
+    );
+    expect(sent.isError).toBe(false);
+    expect(sent.structuredContent).toMatchObject({
+      action: "message_related_chat",
+      callerThreadId: sideThreadId,
+      target: { threadId: mainThreadId, relationship: "parent" },
+      delivered: true,
+    });
+    expect(harness.commands.at(-1)).toMatchObject({
+      type: "thread.turn.start",
+      threadId: mainThreadId,
+      message: {
+        role: "user",
+        senderThreadId: sideThreadId,
+        text: "Check arrivals first.",
+      },
+    });
+
+    const answered = yield* callTool(
+      { action: "message_related_chat", threadId: sideThreadId, message: "Added, thanks." },
+      invocationFor(mainThreadId),
+    );
+    expect(answered.isError).toBe(false);
+    expect(harness.commands.at(-1)).toMatchObject({
+      threadId: sideThreadId,
+      message: { senderThreadId: mainThreadId },
+    });
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("refuses to message an unrelated chat or the calling chat itself", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const unrelated = yield* callTool(
+      { action: "message_related_chat", threadId: unrelatedThreadId, message: "Hello." },
+      invocationFor(sideThreadId),
+    );
+    expect(unrelated.isError).toBe(true);
+    const self = yield* callTool(
+      { action: "message_related_chat", threadId: sideThreadId, message: "Hello." },
+      invocationFor(sideThreadId),
+    );
+    expect(self.isError).toBe(true);
+    expect(harness.commands).toEqual([]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("does not wake a stopped agent through its side chat", () => {
+  const harness = makeHarness(undefined, { stoppedAgentThreadIds: new Set([mainThreadId]) });
+  return Effect.gen(function* () {
+    const result = yield* callTool(
+      { action: "message_related_chat", threadId: mainThreadId, message: "Hello." },
+      invocationFor(sideThreadId),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: "Scout is stopped, so it cannot be messaged. The person can start it again from its chat.",
+    });
+    expect(harness.commands).toEqual([]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("caps how often a chat can message related chats, so two can't loop forever", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    for (let index = 0; index < 20; index++) {
+      const sent = yield* callTool(
+        { action: "message_related_chat", threadId: mainThreadId, message: `Note ${index}` },
+        invocationFor(sideThreadId),
+      );
+      expect(sent.isError).toBe(false);
+    }
+    const capped = yield* callTool(
+      { action: "message_related_chat", threadId: mainThreadId, message: "One more." },
+      invocationFor(sideThreadId),
+    );
+    expect(capped.isError).toBe(true);
+    expect(harness.commands).toHaveLength(20);
+  }).pipe(Effect.provide(harness.layer));
+});
