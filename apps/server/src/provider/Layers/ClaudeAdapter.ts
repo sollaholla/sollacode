@@ -4740,7 +4740,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const sourceSessionId = resumeState.resume;
       const forked = yield* Effect.tryPromise({
-        try: () => materializeFork(sourceSessionId, input.cwd ? { dir: input.cwd } : undefined),
+        // Claude files a conversation under the directory it started in. A chat
+        // whose directory changed since keeps its conversation filed under the
+        // old one, so a miss in the current directory looks everywhere.
+        try: () =>
+          input.cwd
+            ? materializeFork(sourceSessionId, { dir: input.cwd }).catch(() =>
+                materializeFork(sourceSessionId),
+              )
+            : materializeFork(sourceSessionId),
         catch: (cause) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,

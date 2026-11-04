@@ -40,4 +40,67 @@ describe("planAgentWorkingDirectoryMigration", () => {
       ).toBe(false);
     }).pipe(Effect.provide(NodePath.layer)),
   );
+
+  it.effect("keeps a renamed agent in the directory it already owns", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const threadId = ThreadId.make("thread-12345678");
+      const plan = planAgentWorkingDirectoryMigration({
+        agent: { name: "Logan" },
+        agentsWorkspaceDir: "/state/agents",
+        currentWorktreePath: "/state/agents/release-watcher--thread-12345678",
+        path,
+        threadId,
+        ownDirectories: [
+          {
+            path: "/state/agents/release-watcher--thread-12345678",
+            entries: ["AGENTS.md", "CLAUDE.md", "notes.md"],
+          },
+        ],
+      });
+      expect(plan.requiresUpdate).toBe(false);
+      expect(plan.desiredWorktreePath).toBe("/state/agents/release-watcher--thread-12345678");
+    }).pipe(Effect.provide(NodePath.layer)),
+  );
+
+  it.effect("moves an agent back from a directory that only holds its copied rules", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const plan = planAgentWorkingDirectoryMigration({
+        agent: { name: "Logan" },
+        agentsWorkspaceDir: "/state/agents",
+        currentWorktreePath: "/state/agents/logan--thread-12345678",
+        path,
+        threadId: ThreadId.make("thread-12345678"),
+        ownDirectories: [
+          {
+            path: "/state/agents/logan--thread-12345678",
+            entries: ["AGENTS.md", "CLAUDE.md"],
+          },
+          {
+            path: "/state/agents/release-watcher--thread-12345678",
+            entries: ["AGENTS.md", "CLAUDE.md", "notes.md", "scripts"],
+          },
+        ],
+      });
+      expect(plan.requiresUpdate).toBe(true);
+      expect(plan.desiredWorktreePath).toBe("/state/agents/release-watcher--thread-12345678");
+    }).pipe(Effect.provide(NodePath.layer)),
+  );
+
+  it.effect("leaves a fresh agent alone while it has only its rules", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const own = "/state/agents/logan--thread-12345678";
+      const plan = planAgentWorkingDirectoryMigration({
+        agent: { name: "Logan" },
+        agentsWorkspaceDir: "/state/agents",
+        currentWorktreePath: own,
+        path,
+        threadId: ThreadId.make("thread-12345678"),
+        ownDirectories: [{ path: own, entries: ["AGENTS.md", "CLAUDE.md"] }],
+      });
+      expect(plan.requiresUpdate).toBe(false);
+    }).pipe(Effect.provide(NodePath.layer)),
+  );
 });

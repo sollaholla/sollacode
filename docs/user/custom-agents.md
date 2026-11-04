@@ -71,7 +71,9 @@ characters pause when the app is in the background.
 
 Each newly created agent also receives its own durable working directory below the environment's
 agents folder. Its files and local instructions, including an agent-specific `AGENTS.md`, no longer
-land in the directory shared by every other agent. On upgrade, an existing agent is pointed at a
+land in the directory shared by every other agent. Renaming an agent never moves this directory: its name is part
+of the folder name only for reading when the agent was created, and the agent keeps working where its
+files and conversations already are. On upgrade, an existing agent is pointed at a
 deterministic dedicated directory and its shared-root `AGENTS.md` is copied only when the new
 directory has no rules file. Other ambiguous legacy files stay untouched at the old shared root.
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { DesktopOrchestratorBubbleState } from "@t3tools/contracts";
-import { AudioLinesIcon, LoaderIcon, MessageSquareIcon, MicIcon, MicOffIcon } from "lucide-react";
+import { AudioLinesIcon, LoaderIcon, MessageSquareIcon, MicIcon, PhoneIcon } from "lucide-react";
 
 import { BUBBLE_BASE_DIAMETER, computeBubbleGlow, computeBubbleScale } from "./bubblePresentation";
 import { GalacticOrb, type OrbTint } from "../components/orchestrator/GalacticOrb";
@@ -316,9 +316,8 @@ export function OrchestratorBubbleApp() {
           ) : listening ? (
             <MicIcon size={20} color="rgba(255,255,255,0.95)" strokeWidth={2.2} />
           ) : (
-            // Muted mic at rest, so the orb reads as a control that is currently
-            // off rather than one that is listening to everything.
-            <MicOffIcon size={20} color="rgba(255,255,255,0.62)" strokeWidth={2.2} />
+            // A phone at rest: the orb starts a call, and does not listen until then.
+            <PhoneIcon size={20} color="rgba(255,255,255,0.62)" strokeWidth={2.2} />
           )}
         </GalacticOrb>
 

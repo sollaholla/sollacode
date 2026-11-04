@@ -762,7 +762,7 @@ It used to appear nowhere at all. The listening view looks like it reports failu
 handheld it would be the obvious place - but that view only renders while a session is actually
 running, and a session that failed to start never gets there, so the message it was written to show
 could not be reached. On a desktop the view is not rendered in the first place, which left a tooltip
-on the microphone button as the only trace: readable only if you already knew to hover over the
+on the voice button as the only trace: readable only if you already knew to hover over the
 control that had just appeared to do nothing.
 
 A session ending the way you configured it - "voice stopped after 30 seconds of silence" - is shown

@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { AudioLinesIcon, MicIcon, MicOffIcon, MonitorPlayIcon } from "lucide-react";
+import { AudioLinesIcon, MonitorPlayIcon, PhoneCallIcon, PhoneIcon } from "lucide-react";
 
 import { SidebarMenuButton } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -158,7 +158,7 @@ export function OrchestratorSidebarEntry({
                 />
               }
             >
-              {voiceLive ? <MicIcon /> : <MicOffIcon />}
+              {voiceLive ? <PhoneCallIcon /> : <PhoneIcon />}
             </TooltipTrigger>
             <TooltipPopup side="right">
               {!voice.canStart

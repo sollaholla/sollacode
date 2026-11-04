@@ -5099,6 +5099,39 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("finds a conversation filed under the chat's earlier directory", () => {
+    const sourceSessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const forkedSessionId = "7368d0c7-40a3-4d8a-bcc1-ac80c49f2719";
+    const forkCalls: Array<{ readonly dir?: string } | undefined> = [];
+    const forkSession: NonNullable<ClaudeAdapterLiveOptions["forkSession"]> = async (
+      _sessionId,
+      options,
+    ) => {
+      forkCalls.push(options);
+      if (options?.dir !== undefined) {
+        throw new Error(`Session ${sourceSessionId} not found in project directory`);
+      }
+      return { sessionId: forkedSessionId };
+    };
+    const harness = makeHarness({ forkSession });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.forkSession!({
+        sourceThreadId: ThreadId.make("thread-claude-source"),
+        targetThreadId: ThreadId.make("thread-claude-moved-fork"),
+        sourceResumeCursor: { threadId: "thread-claude-source", resume: sourceSessionId },
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/claude-agent-renamed",
+      });
+      assert.deepEqual(forkCalls, [{ dir: "/tmp/claude-agent-renamed" }, undefined]);
+      assert.equal((session.resumeCursor as { resume?: string }).resume, forkedSessionId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("preserves durable resume ids across Claude resume hooks", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
