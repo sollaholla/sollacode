@@ -9,7 +9,6 @@ import { usePreparedConnection } from "../../state/session";
 import {
   buildOrchestratorUrl,
   isSameEnvironmentOrigin,
-  LIVE_INSPECTOR_ROUTE_PATH,
   ORCHESTRATOR_ROUTE_PATH,
 } from "./orchestratorUrl";
 
@@ -34,24 +33,9 @@ export function OrchestratorRouteScreen() {
 }
 
 /**
- * The Live Inspector, full screen: every thread's work as it happens, with the
- * orchestrator a chat button away. `embedded=1` hands closing and opening
- * threads to this native screen rather than the page.
- */
-export function LiveInspectorRouteScreen() {
-  return (
-    <EnvironmentWebScreen
-      routePath={LIVE_INSPECTOR_ROUTE_PATH}
-      query="embedded=1"
-      notConnected="Connect to a Solla Code environment to watch your threads from here."
-    />
-  );
-}
-
-/**
  * One of the environment's own web pages, full screen, with the microphone and
  * autoplay the voice pages need. Agent calls pass the environment the call
- * belongs to; the orchestrator views leave it out and get the first one.
+ * belongs to; the orchestrator leaves it out and gets the first one.
  * `onMessage` receives what the page posts to the app; agent calls use it to
  * learn which calls the page holds.
  */
@@ -97,7 +81,7 @@ export function EnvironmentWebScreen(props: {
       // WKWebView otherwise prompts for the microphone on every session, on top
       // of the OS prompt the app already asks for. Granting here is safe because
       // this WebView only ever loads the environment's own pages (the
-      // orchestrator, the Live Inspector, an agent call) —
+      // orchestrator or an agent call) —
       // `onShouldStartLoadWithRequest` below enforces that.
       mediaCapturePermissionGrantType="grant"
       // Android needs the app-level RECORD_AUDIO permission (declared in
@@ -114,7 +98,7 @@ export function EnvironmentWebScreen(props: {
       // the page `window.ReactNativeWebView` when it has a message handler,
       // and that is how the web client knows it is inside the phone app. It
       // then leaves agents' incoming calls to the app instead of ringing
-      // inside the orchestrator or the Live Inspector.
+      // inside the orchestrator.
       onMessage={(event) => onMessage?.(event.nativeEvent.data)}
       {...(Platform.OS === "android" ? { mixedContentMode: "always" as const } : {})}
     />

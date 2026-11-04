@@ -89,7 +89,6 @@ import {
   OrchestrationGetProjectStatisticsError,
   OrchestrationGetProjectStatisticsInput,
   OrchestrationMeasureProjectFoldersInput,
-  OrchestrationLiveFeedEvent,
   OrchestrationProjectFolders,
   OrchestrationGetTurnDiffError,
   OrchestrationGetTurnDiffInput,
@@ -1671,16 +1670,6 @@ export const WsOrchestrationMeasureProjectFoldersRpc = Rpc.make(
   },
 );
 
-export const WsOrchestrationSubscribeLiveFeedRpc = Rpc.make(
-  ORCHESTRATION_WS_METHODS.subscribeLiveFeed,
-  {
-    payload: Schema.Struct({}),
-    success: OrchestrationLiveFeedEvent,
-    error: EnvironmentAuthorizationError,
-    stream: true,
-  },
-);
-
 export const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
   {
@@ -1975,7 +1964,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetProjectStatisticsRpc,
   WsOrchestrationSubscribeProjectFoldersRpc,
   WsOrchestrationMeasureProjectFoldersRpc,
-  WsOrchestrationSubscribeLiveFeedRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
   WsOrchestrationDeleteArchivedThreadsRpc,
   WsOrchestrationSubscribeShellRpc,

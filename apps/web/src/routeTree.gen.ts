@@ -32,7 +32,6 @@ import { Route as SettingsBetaRouteImport } from './routes/settings.beta'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
 import { Route as SettingsAppearanceRouteImport } from './routes/settings.appearance'
 import { Route as SettingsAgentsRouteImport } from './routes/settings.agents'
-import { Route as OrchestratorLiveRouteImport } from './routes/orchestrator_.live'
 import { Route as CallEnvironmentIdCallIdRouteImport } from './routes/call.$environmentId.$callId'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatAgentsAgentIdRouteImport } from './routes/_chat.agents.$agentId'
@@ -154,11 +153,6 @@ const SettingsAgentsRoute = SettingsAgentsRouteImport.update({
   path: '/agents',
   getParentRoute: () => SettingsRoute,
 } as any)
-const OrchestratorLiveRoute = OrchestratorLiveRouteImport.update({
-  id: '/orchestrator_/live',
-  path: '/orchestrator/live',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const CallEnvironmentIdCallIdRoute = CallEnvironmentIdCallIdRouteImport.update({
   id: '/call/$environmentId/$callId',
   path: '/call/$environmentId/$callId',
@@ -198,7 +192,6 @@ export interface FileRoutesByFullPath {
   '/orchestrator': typeof OrchestratorRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
-  '/orchestrator/live': typeof OrchestratorLiveRoute
   '/settings/agents': typeof SettingsAgentsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -227,7 +220,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/orchestrator': typeof OrchestratorRoute
   '/pair': typeof PairRoute
-  '/orchestrator/live': typeof OrchestratorLiveRoute
   '/settings/agents': typeof SettingsAgentsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -260,7 +252,6 @@ export interface FileRoutesById {
   '/orchestrator': typeof OrchestratorRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
-  '/orchestrator_/live': typeof OrchestratorLiveRoute
   '/settings/agents': typeof SettingsAgentsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -294,7 +285,6 @@ export interface FileRouteTypes {
     | '/orchestrator'
     | '/pair'
     | '/settings'
-    | '/orchestrator/live'
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings/archived'
@@ -323,7 +313,6 @@ export interface FileRouteTypes {
   to:
     | '/orchestrator'
     | '/pair'
-    | '/orchestrator/live'
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings/archived'
@@ -355,7 +344,6 @@ export interface FileRouteTypes {
     | '/orchestrator'
     | '/pair'
     | '/settings'
-    | '/orchestrator_/live'
     | '/settings/agents'
     | '/settings/appearance'
     | '/settings/archived'
@@ -388,7 +376,6 @@ export interface RootRouteChildren {
   OrchestratorRoute: typeof OrchestratorRoute
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
-  OrchestratorLiveRoute: typeof OrchestratorLiveRoute
   CallEnvironmentIdCallIdRoute: typeof CallEnvironmentIdCallIdRoute
 }
 
@@ -555,13 +542,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsAgentsRouteImport
       parentRoute: typeof SettingsRoute
     }
-    '/orchestrator_/live': {
-      id: '/orchestrator_/live'
-      path: '/orchestrator/live'
-      fullPath: '/orchestrator/live'
-      preLoaderRoute: typeof OrchestratorLiveRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/call/$environmentId/$callId': {
       id: '/call/$environmentId/$callId'
       path: '/call/$environmentId/$callId'
@@ -679,7 +659,6 @@ const rootRouteChildren: RootRouteChildren = {
   OrchestratorRoute: OrchestratorRoute,
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,
-  OrchestratorLiveRoute: OrchestratorLiveRoute,
   CallEnvironmentIdCallIdRoute: CallEnvironmentIdCallIdRoute,
 }
 export const routeTree = rootRouteImport

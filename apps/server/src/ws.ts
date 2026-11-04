@@ -192,7 +192,6 @@ import * as DeviceManager from "./devices/DeviceManager.ts";
 import { RelayedEnvironments } from "./relay/RelayedEnvironments.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
-import * as LiveFeed from "./orchestration/LiveFeed.ts";
 import {
   diffProviderStatuses,
   rememberProviderStatuses,
@@ -708,7 +707,6 @@ const makeWsRpcLayer = (
       const relayedEnvironments = yield* RelayedEnvironments;
       const projectFolderUsage = yield* ProjectFolderUsage.ProjectFolderUsage;
       const databaseStorage = yield* DatabaseCompaction.DatabaseStorage;
-      const liveFeed = yield* LiveFeed.LiveFeed;
       const threadArtifacts = yield* ThreadArtifactService;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -1847,10 +1845,6 @@ const makeWsRpcLayer = (
             projectFolderUsage.refresh(input.projectIds).pipe(Effect.as({})),
             { "rpc.aggregate": "orchestration" },
           ),
-        [ORCHESTRATION_WS_METHODS.subscribeLiveFeed]: (_input) =>
-          observeRpcStream(ORCHESTRATION_WS_METHODS.subscribeLiveFeed, liveFeed.stream, {
-            "rpc.aggregate": "orchestration",
-          }),
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,

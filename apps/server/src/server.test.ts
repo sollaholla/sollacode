@@ -27,7 +27,6 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationProject,
-  type OrchestrationLiveFeedEvent,
   type OrchestrationProjectFolders,
   ORCHESTRATION_WS_METHODS,
   type PreviewEvent,
@@ -148,7 +147,6 @@ import { ThreadWorkObligationRepository } from "./persistence/Services/ThreadWor
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
-import * as LiveFeed from "./orchestration/LiveFeed.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as Data from "effect/Data";
 import { ProviderUsageGuardNoop } from "./orchestration/Layers/ProviderUsageGuard.ts";
@@ -396,7 +394,6 @@ const buildAppUnderTest = (options?: {
     imageThumbnails?: Partial<ImageThumbnails.ImageThumbnails["Service"]>;
     projectFolderUsage?: Partial<ProjectFolderUsage.ProjectFolderUsage["Service"]>;
     databaseStorage?: Partial<DatabaseCompaction.DatabaseStorage["Service"]>;
-    liveFeed?: Partial<LiveFeed.LiveFeed["Service"]>;
   };
 }) =>
   Effect.gen(function* () {
@@ -871,12 +868,6 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(DatabaseCompaction.DatabaseStorage)({
           ...options?.layers?.databaseStorage,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(LiveFeed.LiveFeed)({
-          stream: Stream.empty,
-          ...options?.layers?.liveFeed,
         }),
       ),
       Layer.provide(
@@ -5444,39 +5435,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
       assertInclude(String(refused), "AssetThreadFileRefusedError");
       const noThread = yield* Effect.flip(createUrl(ThreadId.make("thread-missing"), namedPath));
       assertInclude(String(noThread), "AssetWorkspaceContextNotFoundError");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("streams the live feed's recent beats and then each new one", () =>
-    Effect.gen(function* () {
-      const events: ReadonlyArray<OrchestrationLiveFeedEvent> = [
-        { type: "snapshot", beats: [] },
-        {
-          type: "beat",
-          beat: {
-            id: "beat-1",
-            threadId: ThreadId.make("thread-live"),
-            kind: "command",
-            title: "Ran",
-            detail: "pnpm test",
-            live: false,
-            at: "2026-10-11T20:00:00.000Z",
-          },
-        },
-      ];
-      yield* buildAppUnderTest({ layers: { liveFeed: { stream: Stream.fromIterable(events) } } });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const received = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeLiveFeed]({}).pipe(
-            Stream.take(2),
-            Stream.runCollect,
-          ),
-        ),
-      );
-
-      assert.deepEqual([...received], [...events]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

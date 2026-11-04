@@ -59,10 +59,6 @@
       "types": "./src/agentMode.ts",
       "import": "./src/agentMode.ts"
     },
-    "./liveFeed": {
-      "types": "./src/liveFeed.ts",
-      "import": "./src/liveFeed.ts"
-    },
     "./actionApproval": {
       "types": "./src/actionApproval.ts",
       "import": "./src/actionApproval.ts"

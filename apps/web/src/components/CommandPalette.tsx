@@ -36,7 +36,6 @@ import {
   FolderIcon,
   FolderPlusIcon,
   FoldersIcon,
-  MonitorPlayIcon,
   KeyRoundIcon,
   SmartphoneIcon,
   LinkIcon,
@@ -1748,28 +1747,6 @@ function OpenCommandPaletteDialog(props: {
     icon: <FoldersIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/settings/projects" });
-    },
-  });
-
-  actionItems.push({
-    kind: "action",
-    value: "action:live-inspector",
-    searchTerms: [
-      "live inspector",
-      "live",
-      "watch",
-      "what are the agents doing",
-      "activity",
-      "realtime",
-      "orchestrator",
-      "monitor",
-    ],
-    title: "Open Live Inspector",
-    description: "Watch every thread work as it happens",
-    icon: <MonitorPlayIcon className={ITEM_ICON_CLASS} />,
-    shortcutCommand: "orchestrator.live.toggle",
-    run: async () => {
-      await navigate({ to: "/orchestrator/live" });
     },
   });
 

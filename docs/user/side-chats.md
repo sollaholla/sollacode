@@ -23,7 +23,7 @@ asks for those changes in the side chat. The guidance exists because a side chat
 thread's workspace while both run. For the same reason, a side chat opened from a side chat joins
 the same main thread's panel instead of nesting under it.
 
-Opening a side chat from anywhere else, such as the Live Inspector, a notification or a link, opens
+Opening a side chat from anywhere else, such as a notification or a link, opens
 its main thread with the side chat's tab selected. Before 0.1.774 those links opened the side chat
 full-screen as if it were a main thread. A promoted side chat is a main chat, so its links open it
 on its own. Archived side chats, and side chats whose main thread is gone, also open on their own.

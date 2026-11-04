@@ -32,7 +32,6 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_WS_METHODS.getProjectStatistics]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.subscribeProjectFolders]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.measureProjectFolders]: AuthOrchestrationReadScope,
-  [ORCHESTRATION_WS_METHODS.subscribeLiveFeed]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.subscribeShell]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.deleteArchivedThreads]: AuthOrchestrationOperateScope,

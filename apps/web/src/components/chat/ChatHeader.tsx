@@ -1,5 +1,4 @@
 import {
-  isOrchestratorThreadId,
   type EnvironmentId,
   type EditorId,
   type ProjectScript,
@@ -8,8 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { isElectron } from "~/env";
-import { MessageSquareIcon, MonitorPlayIcon } from "lucide-react";
-import { Link } from "@tanstack/react-router";
+import { MessageSquareIcon } from "lucide-react";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
@@ -170,23 +168,6 @@ export const ChatHeader = memo(function ChatHeader({
           rightPanelOpen ? "pr-0" : "pr-[var(--workspace-titlebar-content-right)]",
         )}
       >
-        {isOrchestratorThreadId(activeThreadId) ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Link
-                  to="/orchestrator/live"
-                  aria-label="Open the Live Inspector"
-                  data-testid="chat-header-live-inspector"
-                  className="inline-flex cursor-pointer items-center rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                />
-              }
-            >
-              <MonitorPlayIcon className="size-4" aria-hidden />
-            </TooltipTrigger>
-            <TooltipPopup side="bottom">Live Inspector: watch every thread work</TooltipPopup>
-          </Tooltip>
-        ) : null}
         {mainSurface !== undefined && onMainSurfaceChange ? (
           <Tooltip>
             <TooltipTrigger

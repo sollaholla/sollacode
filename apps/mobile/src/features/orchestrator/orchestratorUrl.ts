@@ -14,9 +14,6 @@
 /** Path the web client serves the full-screen voice view from. */
 export const ORCHESTRATOR_ROUTE_PATH = "/orchestrator";
 
-/** Path of the Live Inspector: every thread's work as it happens. */
-export const LIVE_INSPECTOR_ROUTE_PATH = "/orchestrator/live";
-
 /**
  * Builds the orchestrator URL for a connected environment.
  *
@@ -26,7 +23,7 @@ export const LIVE_INSPECTOR_ROUTE_PATH = "/orchestrator/live";
  */
 export function buildOrchestratorUrl(
   httpBaseUrl: string | null | undefined,
-  /** The web route to load: the voice view, or the Live Inspector. */
+  /** The web route to load: the voice view, or an agent call. */
   routePath: string = ORCHESTRATOR_ROUTE_PATH,
   /** Appended as written, e.g. "embedded=1"; never taken from the stored base. */
   query = "",

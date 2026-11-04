@@ -83,7 +83,7 @@ function ChatThreadRouteView() {
     status: serverThreadStatus,
   });
   const serverThreadExists = serverThreadDetail !== null || serverThreadShell !== null;
-  // A side chat lives in its main chat's panel. Links from the Live Inspector,
+  // A side chat lives in its main chat's panel. Links from search,
   // notifications or anywhere else name the side chat itself, so open the
   // parent with that side chat's tab instead of showing it as a main chat.
   const sideChatParentThreadId =

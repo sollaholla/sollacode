@@ -9,14 +9,14 @@ describe("buildOrchestratorUrl", () => {
     );
   });
 
-  it("points at the Live Inspector, embedded, when asked to", () => {
+  it("points at another environment page with its query when asked to", () => {
     expect(
       buildOrchestratorUrl(
         "https://relay.example.com/solla/?token=x",
-        "/orchestrator/live",
+        "/call/environment-1/call-1",
         "embedded=1",
       ),
-    ).toBe("https://relay.example.com/solla/orchestrator/live?embedded=1");
+    ).toBe("https://relay.example.com/solla/call/environment-1/call-1?embedded=1");
   });
 
   it("does not double the slash on a base that already ends in one", () => {

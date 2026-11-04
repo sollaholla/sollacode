@@ -7,9 +7,6 @@ turns are recorded into that thread as ordinary messages.
 It manages threads; it does not do their work. It reports what each thread is doing, routes work to
 the right one, changes their settings, and stops them when asked. It never writes code itself.
 
-To watch every thread work as it happens, with the orchestrator a chat button away, open the
-[Live Inspector](./live-inspector.md).
-
 ## Tools
 
 The orchestrator calls tools the same way any thread does, as often as it needs and several within

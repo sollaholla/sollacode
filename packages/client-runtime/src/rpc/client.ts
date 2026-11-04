@@ -43,7 +43,6 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof ORCHESTRATION_WS_METHODS.subscribeShell
   | typeof ORCHESTRATION_WS_METHODS.subscribeThread
   | typeof ORCHESTRATION_WS_METHODS.subscribeProjectFolders
-  | typeof ORCHESTRATION_WS_METHODS.subscribeLiveFeed
   | typeof WS_METHODS.subscribeAuthAccess
   | typeof WS_METHODS.subscribeServerConfig
   | typeof WS_METHODS.subscribeServerLifecycle

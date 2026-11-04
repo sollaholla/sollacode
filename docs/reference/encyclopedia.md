@@ -117,10 +117,6 @@ Examples include `checkpoint.baseline.captured`, `checkpoint.diff.finalized`, an
 
 "Quiesced" means a turn has gone quiet and stable. In [the receipt schema][13], it means the follow-up work has settled, including work in [CheckpointReactor.ts][6].
 
-#### Live feed
-
-The stream behind the [Live Inspector](../user/live-inspector.md). [LiveFeed.ts](../../apps/server/src/orchestration/LiveFeed.ts) watches domain events and turns the ones a person would notice into **beats**: one plain line each (`kind`, `title`, `detail`), such as a command run, a file read or edited, the words an agent said, a question, or an error. A tool's output is never read. A running tool and its completion share one beat, as does a reply as it is written; a beat still under way is `live`. The server keeps the latest 160 in memory and sends them as one snapshot, then each new or changed beat (`orchestration.subscribeLiveFeed`). Clients fold the feed with [liveFeed.ts](../../packages/shared/src/liveFeed.ts).
-
 ### Provider runtime
 
 The live backend agent implementation and its event stream. The main service is [ProviderService.ts][14], the adapter contract is [ProviderAdapter.ts][15], and the overview is in [provider-architecture.md][16].

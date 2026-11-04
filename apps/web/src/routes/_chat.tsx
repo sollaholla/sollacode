@@ -146,13 +146,6 @@ function ChatRouteGlobalShortcuts() {
         return;
       }
 
-      if (command === "orchestrator.live.toggle") {
-        event.preventDefault();
-        event.stopPropagation();
-        void navigate({ to: "/orchestrator/live" });
-        return;
-      }
-
       if (command === "preview.toggle") {
         event.preventDefault();
         event.stopPropagation();

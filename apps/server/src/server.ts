@@ -127,7 +127,6 @@ import { relayRouteLayer } from "./relay/relayRoute.ts";
 import { remoteConsultRouteLayer } from "./mcp/toolkits/consult/remoteRoute.ts";
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
-import * as LiveFeed from "./orchestration/LiveFeed.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { ThreadWorkObligationRepositoryLive } from "./persistence/Layers/ThreadWorkObligations.ts";
@@ -256,8 +255,6 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ProviderCommandReactorWithActionApprovalLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive.pipe(Layer.provide(ThreadArtifactLayerLive))),
-  // Watches domain events like the reactors above, for the Live Inspector.
-  Layer.provideMerge(LiveFeed.layer),
   Layer.provideMerge(RuntimeReceiptBusLive),
   // Provided last so both the runtime ingestion (which feeds it usage reports
   // and token counts) and the command reactor (which gates work on it) resolve

@@ -342,7 +342,6 @@ function OrchestratorSettingsSection() {
   return (
     <SettingsSection title="Orchestrator">
       <SettingsRow icon="waveform" label="Open Orchestrator" fullScreenTarget="Orchestrator" />
-      <SettingsRow icon="play.tv" label="Live Inspector" fullScreenTarget="LiveInspector" />
     </SettingsSection>
   );
 }

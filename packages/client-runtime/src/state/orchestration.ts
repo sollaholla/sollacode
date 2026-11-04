@@ -1,6 +1,4 @@
-import { ORCHESTRATION_WS_METHODS, type OrchestrationLiveBeat } from "@t3tools/contracts";
-import { applyLiveFeedEvent, LIVE_FEED_WINDOW } from "@t3tools/shared/liveFeed";
-import * as Stream from "effect/Stream";
+import { ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
 import {
@@ -9,8 +7,6 @@ import {
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
-
-const NO_BEATS: ReadonlyArray<OrchestrationLiveBeat> = [];
 
 export function createOrchestrationEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -38,22 +34,6 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
     projectFolders: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:orchestration:project-folders",
       tag: ORCHESTRATION_WS_METHODS.subscribeProjectFolders,
-    }),
-    /**
-     * The Live Inspector's beats, oldest first: the recent ones, then each new
-     * or changed one folded in. Dropped soon after the inspector closes, and a
-     * later viewer starts again from the server's snapshot.
-     */
-    liveFeed: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:orchestration:live-feed",
-      tag: ORCHESTRATION_WS_METHODS.subscribeLiveFeed,
-      idleTtlMs: 30_000,
-      transform: (stream) =>
-        stream.pipe(
-          Stream.scan(NO_BEATS, (beats, event) =>
-            applyLiveFeedEvent(beats, event, LIVE_FEED_WINDOW),
-          ),
-        ),
     }),
     measureProjectFolders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:orchestration:measure-project-folders",

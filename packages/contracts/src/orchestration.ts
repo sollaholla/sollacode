@@ -33,7 +33,6 @@ export const ORCHESTRATION_WS_METHODS = {
   getProjectStatistics: "orchestration.getProjectStatistics",
   subscribeProjectFolders: "orchestration.subscribeProjectFolders",
   measureProjectFolders: "orchestration.measureProjectFolders",
-  subscribeLiveFeed: "orchestration.subscribeLiveFeed",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   deleteArchivedThreads: "orchestration.deleteArchivedThreads",
   subscribeShell: "orchestration.subscribeShell",
@@ -2067,55 +2066,6 @@ export const OrchestrationMeasureProjectFoldersInput = Schema.Struct({
 });
 export type OrchestrationMeasureProjectFoldersInput =
   typeof OrchestrationMeasureProjectFoldersInput.Type;
-
-/**
- * The sort of thing a Live Inspector beat shows. Tool calls are named for what
- * they did (ran a command, read or edited a file, searched), not for the tool.
- */
-export const OrchestrationLiveBeatKind = Schema.Literals([
-  "command",
-  "read",
-  "edit",
-  "search",
-  "think",
-  "tool",
-  "said",
-  "asked",
-  "task",
-  "attention",
-  "error",
-  "notice",
-]);
-export type OrchestrationLiveBeatKind = typeof OrchestrationLiveBeatKind.Type;
-
-/** One moment of an agent's work, cut down to a line a person can take in at a glance. */
-export const OrchestrationLiveBeat = Schema.Struct({
-  /** Stable while it changes: a running command and its completion share one id. */
-  id: TrimmedNonEmptyString,
-  threadId: ThreadId,
-  kind: OrchestrationLiveBeatKind,
-  /** What happened, in a few plain words: "Ran a command", "Asked you a question". */
-  title: Schema.String,
-  /** What it happened to: the command, the file, the words said. Never a tool's output. */
-  detail: Schema.NullOr(Schema.String),
-  /** Still under way: a command running, or a reply still being written. */
-  live: Schema.Boolean,
-  at: IsoDateTime,
-});
-export type OrchestrationLiveBeat = typeof OrchestrationLiveBeat.Type;
-
-/** The Live Inspector feed: the recent beats first, then each new or changed beat as it lands. */
-export const OrchestrationLiveFeedEvent = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("snapshot"),
-    beats: Schema.Array(OrchestrationLiveBeat),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("beat"),
-    beat: OrchestrationLiveBeat,
-  }),
-]);
-export type OrchestrationLiveFeedEvent = typeof OrchestrationLiveFeedEvent.Type;
 
 export const OrchestrationRpcSchemas = {
   dispatchCommand: {
