@@ -16,6 +16,8 @@ import { createEnvironmentQueryAtomFamily } from "./runtime.ts";
 const ASSET_URL_REFRESH_INTERVAL_MS = 30 * 60_000;
 const ASSET_URL_STALE_TIME_MS = 5 * 60_000;
 const ASSET_URL_IDLE_TTL_MS = 60 * 60_000;
+/** A signed link outlives the socket that fetched it; well inside its one-hour expiry. */
+const ASSET_URL_KEEP_ACROSS_RECONNECT_MS = 20 * 60_000;
 
 export class InvalidAssetCollectionKeyError extends Schema.TaggedErrorClass<InvalidAssetCollectionKeyError>()(
   "InvalidAssetCollectionKeyError",
@@ -106,6 +108,7 @@ export function createAssetEnvironmentAtoms<R, E>(
     staleTimeMs: ASSET_URL_STALE_TIME_MS,
     idleTtlMs: ASSET_URL_IDLE_TTL_MS,
     refreshIntervalMs: ASSET_URL_REFRESH_INTERVAL_MS,
+    keepAcrossReconnectMs: ASSET_URL_KEEP_ACROSS_RECONNECT_MS,
     execute: (input: AssetCreateUrlInput) => {
       const { resource } = input;
       const attachmentId = resource._tag === "attachment" ? resource.attachmentId : null;

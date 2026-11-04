@@ -157,12 +157,25 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
     },
   );
 
+  // Finding the cache key spawns git, so it needs a cache of its own: every
+  // image link in a thread resolves this, and starting a process costs seconds
+  // on Windows under Defender. 300 of them a minute stalled a server for good.
+  const cacheKeyByCwd = yield* Cache.make<string, string>({
+    lookup: (cwd) =>
+      resolveRepositoryIdentityCacheKey(cwd).pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
+      ),
+    capacity: options.cacheCapacity ?? DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY,
+    timeToLive: Duration.min(
+      Duration.fromInputUnsafe(options.positiveCacheTtl ?? DEFAULT_POSITIVE_CACHE_TTL),
+      Duration.fromInputUnsafe(options.negativeCacheTtl ?? DEFAULT_NEGATIVE_CACHE_TTL),
+    ),
+  });
+
   const resolve: RepositoryIdentityResolver["Service"]["resolve"] = Effect.fn(
     "RepositoryIdentityResolver.resolve",
   )(function* (cwd) {
-    const cacheKey = yield* resolveRepositoryIdentityCacheKey(cwd).pipe(
-      Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
-    );
+    const cacheKey = yield* Cache.get(cacheKeyByCwd, cwd);
     return yield* Cache.get(repositoryIdentityCache, cacheKey);
   });
 

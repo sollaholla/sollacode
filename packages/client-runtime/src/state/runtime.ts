@@ -1,5 +1,6 @@
 import { EnvironmentId, type EnvironmentId as EnvironmentIdType } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -50,6 +51,26 @@ interface EnvironmentQueryAtomOptions<Input, A, E, R> extends EnvironmentAtomOpt
   readonly staleTimeMs?: number;
   readonly idleTtlMs?: number;
   readonly refreshIntervalMs?: number;
+  /**
+   * Keeps a value this young when the connection comes back, for answers that
+   * don't depend on the socket that fetched them. Without it every reader asks
+   * again per reconnect, and a thread's images can load a slow host so far that
+   * it misses a heartbeat, which drops the connection and starts it over.
+   */
+  readonly keepAcrossReconnectMs?: number;
+}
+
+/** Whether a reconnect can keep the last answer instead of asking the host again. */
+export function canKeepAcrossReconnect(input: {
+  readonly last: { readonly generation: number; readonly at: number } | null;
+  readonly generation: number;
+  readonly now: number;
+  readonly keepMs: number | undefined;
+}): boolean {
+  const { last, generation, now, keepMs } = input;
+  // The same generation is a refresh or revalidation, which really wants a new one.
+  if (keepMs === undefined || last === null || last.generation === generation) return false;
+  return now - last.at < keepMs;
 }
 
 interface EnvironmentSubscriptionAtomOptions<Input, A, E, R> {
@@ -458,6 +479,7 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
   );
   const family = Atom.family((key: string) => {
     const target = parseEnvironmentRpcKey<Input>(key);
+    let last: { readonly generation: number; readonly at: number; readonly value: A } | null = null;
     const queryAtom = runtime.atom((get) => {
       const generation = Option.getOrNull(
         AsyncResult.value(get(rpcGenerationAtom(target.environmentId))),
@@ -465,7 +487,19 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
       if (generation === null) {
         return Effect.never;
       }
-      return runInEnvironment(target.environmentId, options.execute(target.input));
+      return Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        if (
+          last !== null &&
+          canKeepAcrossReconnect({ last, generation, now, keepMs: options.keepAcrossReconnectMs })
+        ) {
+          last = { ...last, generation };
+          return last.value;
+        }
+        const value = yield* runInEnvironment(target.environmentId, options.execute(target.input));
+        last = { generation, at: yield* Clock.currentTimeMillis, value };
+        return value;
+      });
     });
     return cachedQueryAtom(queryAtom, options).pipe(Atom.withLabel(`${options.label}:${key}`));
   });

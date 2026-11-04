@@ -192,6 +192,45 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       ),
   );
 
+  it.effect("starts no process for a repeat resolve of the same folder", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-repeat-test-",
+      });
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const runner = yield* ProcessRunner.ProcessRunner;
+      const commands: Array<ReadonlyArray<string>> = [];
+      const resolver = yield* RepositoryIdentityResolver.make().pipe(
+        Effect.provideService(
+          ProcessRunner.ProcessRunner,
+          ProcessRunner.ProcessRunner.of({
+            ...runner,
+            run: (input) => {
+              commands.push(input.args ?? []);
+              return runner.run(input);
+            },
+          }),
+        ),
+      );
+
+      const first = yield* resolver.resolve(cwd);
+      const spawned = commands.length;
+      expect(spawned).toBeGreaterThan(0);
+      // An image-heavy thread asks once per image, many at the same moment.
+      const repeats = yield* Effect.all(
+        Array.from({ length: 50 }, () => resolver.resolve(cwd)),
+        { concurrency: "unbounded" },
+      );
+      expect(commands.length).toBe(spawned);
+      expect(repeats.every((identity) => identity?.canonicalKey === first?.canonicalKey)).toBe(
+        true,
+      );
+    }).pipe(Effect.provide(ProcessRunner.layer)),
+  );
+
   it.effect("refreshes cached identities after the positive TTL when a remote changes", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

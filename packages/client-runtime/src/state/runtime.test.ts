@@ -12,6 +12,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import {
   cachedQueryAtom,
+  canKeepAcrossReconnect,
   environmentRpcKey,
   createAtomCommandScheduler,
   createRuntimeCommand,
@@ -506,5 +507,32 @@ describe("runtime command runner", () => {
     expect(await third).toMatchObject({ _tag: "Success", value: 3, waiting: false });
     expect(executed).toEqual([1, 3]);
     registry.dispose();
+  });
+});
+
+describe("canKeepAcrossReconnect", () => {
+  const last = { generation: 3, at: 1_000 };
+
+  it("keeps a young answer when the connection came back", () => {
+    expect(canKeepAcrossReconnect({ last, generation: 4, now: 5_000, keepMs: 10_000 })).toBe(true);
+  });
+
+  it("asks again once the answer is too old", () => {
+    expect(canKeepAcrossReconnect({ last, generation: 4, now: 11_000, keepMs: 10_000 })).toBe(
+      false,
+    );
+  });
+
+  it("asks again on a refresh over the same connection", () => {
+    expect(canKeepAcrossReconnect({ last, generation: 3, now: 5_000, keepMs: 10_000 })).toBe(false);
+  });
+
+  it("asks when there is no answer yet, or the query never opted in", () => {
+    expect(canKeepAcrossReconnect({ last: null, generation: 4, now: 5_000, keepMs: 10_000 })).toBe(
+      false,
+    );
+    expect(canKeepAcrossReconnect({ last, generation: 4, now: 5_000, keepMs: undefined })).toBe(
+      false,
+    );
   });
 });
