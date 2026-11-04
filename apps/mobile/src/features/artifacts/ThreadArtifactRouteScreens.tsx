@@ -13,7 +13,10 @@ import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, View } from "react-native";
 import { WebView } from "react-native-webview";
 
+import { deleteThreadArtifacts } from "@t3tools/client-runtime/state/thread-artifacts";
+
 import { AppText as Text } from "../../components/AppText";
+import { SymbolView } from "../../components/AppSymbol";
 import { EmptyState } from "../../components/EmptyState";
 import { useAssetUrl } from "../../state/assets";
 import { useEnvironmentQuery } from "../../state/query";
@@ -59,6 +62,49 @@ export function ThreadArtifactsRouteScreen({ route }: ThreadArtifactListRoutePro
   const threadId = ThreadId.make(route.params.threadId);
   const { result, data } = useArtifactList(environmentId, threadId);
   const artifacts = data?.artifacts ?? [];
+  // Selecting picks several to delete at once; null while just browsing.
+  const [selected, setSelected] = useState<ReadonlySet<ThreadArtifactId> | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const deleteArtifact = useAtomCommand(threadArtifactEnvironment.delete, {
+    reportFailure: false,
+  });
+  const chosen = artifacts
+    .map((summary) => summary.artifact.artifactId)
+    .filter((artifactId) => selected?.has(artifactId) === true);
+  const plural = (count: number) => (count === 1 ? "1 artifact" : `${count} artifacts`);
+  const toggle = (artifactId: ThreadArtifactId) =>
+    setSelected((current) => {
+      const next = new Set(current ?? []);
+      if (next.has(artifactId)) next.delete(artifactId);
+      else next.add(artifactId);
+      return next;
+    });
+  const deleteChosen = async () => {
+    setDeleting(true);
+    const failed = await deleteThreadArtifacts(chosen, async (artifactId) => {
+      const outcome = await deleteArtifact({ environmentId, input: { threadId, artifactId } });
+      return outcome._tag === "Success";
+    });
+    setDeleting(false);
+    if (failed.length > 0) {
+      setSelected(new Set(failed));
+      Alert.alert(
+        `${plural(failed.length)} could not be deleted`,
+        "They are still selected. Reconnect to the host and try again.",
+      );
+      return;
+    }
+    setSelected(null);
+  };
+  const confirmDelete = () =>
+    Alert.alert(
+      `Delete ${plural(chosen.length)}?`,
+      "They and every revision of them will be removed from the host. Unlike archiving, this cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: () => void deleteChosen() },
+      ],
+    );
 
   return (
     <ScrollView
@@ -67,9 +113,60 @@ export function ThreadArtifactsRouteScreen({ route }: ThreadArtifactListRoutePro
       showsHorizontalScrollIndicator={false}
       contentContainerClassName="min-w-0 gap-3 px-4 py-5"
     >
-      <Text className="text-sm text-foreground-muted">
-        Portable previews published by this thread. They stay on the connected host.
-      </Text>
+      <View className="min-w-0 flex-row items-center gap-3">
+        <Text className="min-w-0 flex-1 text-sm text-foreground-muted">
+          Portable previews published by this thread. They stay on the connected host.
+        </Text>
+        {artifacts.length > 0 ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={selected === null ? "Select artifacts" : "Done selecting"}
+            className="min-h-11 justify-center px-2"
+            disabled={deleting}
+            onPress={() => setSelected(selected === null ? new Set() : null)}
+          >
+            <Text className="text-base font-t3-bold text-primary">
+              {selected === null ? "Select" : "Done"}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {selected !== null && artifacts.length > 0 ? (
+        <View className="min-w-0 flex-row items-center gap-2">
+          <Pressable
+            accessibilityRole="button"
+            className="min-h-11 justify-center px-2"
+            disabled={deleting}
+            onPress={() =>
+              setSelected(
+                chosen.length === artifacts.length
+                  ? new Set()
+                  : new Set(artifacts.map((summary) => summary.artifact.artifactId)),
+              )
+            }
+          >
+            <Text className="text-base text-primary">
+              {chosen.length === artifacts.length ? "Select none" : "Select all"}
+            </Text>
+          </Pressable>
+          <View className="flex-1" />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ disabled: chosen.length === 0 || deleting, busy: deleting }}
+            className="min-h-11 justify-center rounded-full bg-red-600 px-4 disabled:opacity-40"
+            disabled={chosen.length === 0 || deleting}
+            onPress={confirmDelete}
+          >
+            <Text className="text-base font-t3-bold text-white">
+              {deleting
+                ? "Deleting…"
+                : chosen.length === 0
+                  ? "Delete"
+                  : `Delete ${plural(chosen.length)}`}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
       {result._tag === "Failure" ? (
         <EmptyState title="Artifacts unavailable" detail="Reconnect to this host and try again." />
       ) : data === null ? (
@@ -86,17 +183,39 @@ export function ThreadArtifactsRouteScreen({ route }: ThreadArtifactListRoutePro
         artifacts.map((summary) => (
           <Pressable
             key={summary.artifact.artifactId}
-            accessibilityLabel={`Open ${summary.artifact.title}`}
-            accessibilityRole="button"
+            accessibilityLabel={
+              selected === null
+                ? `Open ${summary.artifact.title}`
+                : `Select ${summary.artifact.title}`
+            }
+            accessibilityRole={selected === null ? "button" : "checkbox"}
+            accessibilityState={
+              selected === null ? undefined : { checked: selected.has(summary.artifact.artifactId) }
+            }
             className="min-h-14 min-w-0 flex-row items-center gap-3 rounded-2xl border border-border bg-sheet px-3 py-3 active:bg-subtle"
             onPress={() =>
-              navigation.navigate("ThreadArtifact", {
-                environmentId: String(environmentId),
-                threadId: String(threadId),
-                artifactId: String(summary.artifact.artifactId),
-              })
+              selected !== null
+                ? toggle(summary.artifact.artifactId)
+                : navigation.navigate("ThreadArtifact", {
+                    environmentId: String(environmentId),
+                    threadId: String(threadId),
+                    artifactId: String(summary.artifact.artifactId),
+                  })
             }
           >
+            {selected !== null ? (
+              <View
+                className={`size-6 items-center justify-center rounded-full border-2 ${
+                  selected.has(summary.artifact.artifactId)
+                    ? "border-primary bg-primary"
+                    : "border-border"
+                }`}
+              >
+                {selected.has(summary.artifact.artifactId) ? (
+                  <SymbolView name="checkmark" size={13} tintColor="#ffffff" />
+                ) : null}
+              </View>
+            ) : null}
             <ArtifactIcon environmentId={environmentId} summary={summary} />
             <View className="min-w-0 flex-1">
               <Text className="text-base font-t3-bold text-foreground" numberOfLines={1}>

@@ -1,5 +1,5 @@
 import { ClockIcon, TriangleAlertIcon } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -34,13 +34,36 @@ export function QueuedMessagesChip(props: {
    * back to the composer, such as Edit.
    */
   readonly children: (close: () => void) => ReactNode;
+  /**
+   * Rises each time a message joins the queue while the reader is here. The
+   * chip opens itself, as if tapped, so a message that did not send at once is
+   * seen to have gone somewhere. Zero never opens it.
+   */
+  readonly revealSeq?: number;
 }) {
   const [open, setOpen] = useState(false);
+  // Opened by a new message rather than a tap: focus stays in the composer, so
+  // typing the next message carries on.
+  const [revealed, setRevealed] = useState(false);
+  const handledReveal = useRef(0);
+  const revealSeq = props.revealSeq ?? 0;
+  useEffect(() => {
+    if (revealSeq <= handledReveal.current) return;
+    handledReveal.current = revealSeq;
+    setRevealed(true);
+    setOpen(true);
+  }, [revealSeq]);
   const failed = props.failedCount > 0;
   const summary = queuedMessagesSummary(props.count, props.failedCount);
   const rail = useComposerRailAnchor();
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setRevealed(false);
+        setOpen(next);
+      }}
+    >
       <PopoverTrigger
         ref={rail.triggerRef}
         aria-label={`${summary}. Show queued messages.`}
@@ -66,6 +89,8 @@ export function QueuedMessagesChip(props: {
         anchor={rail.anchor}
         className={COMPOSER_RAIL_POPUP_WIDE_CLASS_NAME}
         viewportClassName="py-3 [--viewport-inline-padding:--spacing(3)]"
+        initialFocus={!revealed}
+        finalFocus={!revealed}
       >
         <QueuedMessagesDetails summary={summary} status={props.status}>
           {props.children(() => setOpen(false))}

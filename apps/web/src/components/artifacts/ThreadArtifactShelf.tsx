@@ -6,15 +6,15 @@ import {
 import type { ScopedThreadRef, ThreadArtifactSummary } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { PackageIcon } from "lucide-react";
+import { PackageIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 
 import { useAssetUrl } from "~/assets/assetUrls";
 import { cn } from "~/lib/utils";
 import { threadArtifactEnvironment } from "~/state/threadArtifacts";
-import { MenuItem } from "~/components/ui/menu";
+import { MenuItem, MenuSeparator } from "~/components/ui/menu";
 
-function EnvironmentArtifactIcon(props: {
+export function EnvironmentArtifactIcon(props: {
   readonly threadRef: ScopedThreadRef;
   readonly summary: ThreadArtifactSummary;
 }) {
@@ -35,9 +35,11 @@ export interface ThreadArtifactShelfProps {
   readonly onOpen: (
     target: ThreadArtifactSelectionTarget & { readonly summary: ThreadArtifactSummary },
   ) => void;
+  /** Opens the dialog that deletes several artifacts at once. */
+  readonly onDeleteMany?: () => void;
 }
 
-function useArtifactList(threadRef: ScopedThreadRef) {
+export function useArtifactList(threadRef: ScopedThreadRef) {
   const listAtom = useMemo(
     () =>
       threadArtifactEnvironment.list({
@@ -97,7 +99,7 @@ export function ThreadArtifactMenu(props: ThreadArtifactShelfProps) {
     return <MenuItem disabled>Loading artifacts…</MenuItem>;
   }
 
-  return artifacts.map((summary) => {
+  const items = artifacts.map((summary) => {
     const artifact = summary.artifact;
     const archived = artifact.archivedAt !== null;
     const active = props.activeArtifactId === artifact.artifactId;
@@ -124,4 +126,16 @@ export function ThreadArtifactMenu(props: ThreadArtifactShelfProps) {
       </MenuItem>
     );
   });
+  if (props.onDeleteMany === undefined) return items;
+  const onDeleteMany = props.onDeleteMany;
+  return (
+    <>
+      {items}
+      <MenuSeparator />
+      <MenuItem variant="destructive" onClick={onDeleteMany}>
+        <Trash2Icon />
+        Delete artifacts…
+      </MenuItem>
+    </>
+  );
 }

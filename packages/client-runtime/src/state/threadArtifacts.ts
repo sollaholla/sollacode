@@ -76,3 +76,19 @@ export interface ThreadArtifactSelectionTarget {
   readonly environmentId: EnvironmentId;
   readonly artifactId: ThreadArtifactId;
 }
+
+/**
+ * Deletes several artifacts one after another, carrying on past a failure so
+ * one stuck artifact does not keep the rest. Returns the ones that remain.
+ */
+export async function deleteThreadArtifacts(
+  artifactIds: ReadonlyArray<ThreadArtifactId>,
+  deleteOne: (artifactId: ThreadArtifactId) => Promise<boolean>,
+): Promise<ReadonlyArray<ThreadArtifactId>> {
+  const failed: Array<ThreadArtifactId> = [];
+  for (const artifactId of artifactIds) {
+    const deleted = await deleteOne(artifactId).catch(() => false);
+    if (!deleted) failed.push(artifactId);
+  }
+  return failed;
+}

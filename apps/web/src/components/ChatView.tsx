@@ -250,6 +250,7 @@ import {
 } from "../previewMiniPlayerStore";
 import { RightPanelTabs, type SideChatTabStatus } from "./RightPanelTabs";
 import { ThreadArtifactDeepLinkOpener, ThreadArtifactMenu } from "./artifacts/ThreadArtifactShelf";
+import { ThreadArtifactBulkDeleteDialog } from "./artifacts/ThreadArtifactBulkDelete";
 import { ThreadArtifactSurface } from "./artifacts/ThreadArtifactSurface";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
@@ -4568,6 +4569,27 @@ function ChatViewContent(props: ChatViewProps) {
       error: undefined,
     })),
   ];
+  // A message joining this thread's queue opens the queued-messages chip, so
+  // the sender sees where it went. Switching threads only records the count.
+  const queuedCount = threadHeldMessages.length;
+  const queuedSeenRef = useRef({ threadKey: activeThreadKey, count: queuedCount });
+  const [queuedReveal, setQueuedReveal] = useState<{
+    readonly threadKey: string | null;
+    readonly seq: number;
+  }>({ threadKey: null, seq: 0 });
+  useEffect(() => {
+    const seen = queuedSeenRef.current;
+    queuedSeenRef.current = { threadKey: activeThreadKey, count: queuedCount };
+    if (seen.threadKey !== activeThreadKey) {
+      setQueuedReveal({ threadKey: null, seq: 0 });
+      return;
+    }
+    if (queuedCount <= seen.count) return;
+    setQueuedReveal((current) => ({
+      threadKey: activeThreadKey,
+      seq: current.threadKey === activeThreadKey ? current.seq + 1 : 1,
+    }));
+  }, [activeThreadKey, queuedCount]);
   const removeHeldMessage = async (id: string, edit = false) => {
     const message = serverHeldMessages.find((entry) => entry.id === id);
     if (!message) return edit ? heldMessageQueue.edit(id) : heldMessageQueue.remove(id);
@@ -4647,6 +4669,7 @@ function ChatViewContent(props: ChatViewProps) {
     activeThreadKey === null || threadHeldMessages.length === 0 ? null : (
       <QueuedMessagesChip
         key={activeThreadKey}
+        revealSeq={queuedReveal.threadKey === activeThreadKey ? queuedReveal.seq : 0}
         count={threadHeldMessages.length}
         failedCount={threadHeldMessages.filter((message) => message.status === "failed").length}
         status={
@@ -6015,6 +6038,7 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [embeddedSideChat, navigate, requestedArtifactId, routeKind, routeThreadRef],
   );
+  const [bulkDeleteArtifactsOpen, setBulkDeleteArtifactsOpen] = useState(false);
   const openArtifactSurface = useCallback(
     (target: { readonly summary: ThreadArtifactSummary }) => {
       if (!activeThreadRef || target.summary.artifact.threadId !== activeThreadRef.threadId) return;
@@ -9819,6 +9843,7 @@ function ChatViewContent(props: ChatViewProps) {
           activeRightPanelSurface?.kind === "artifact" ? activeRightPanelSurface.resourceId : null
         }
         onOpen={openArtifactSurface}
+        onDeleteMany={() => setBulkDeleteArtifactsOpen(true)}
       />
     ) : null;
   const rightPanelContent = activeThreadRef ? (
@@ -10869,6 +10894,14 @@ function ChatViewContent(props: ChatViewProps) {
         </RightPanelSheet>
       ) : null}
 
+      {/* Mounted only while open: its list is a live subscription. */}
+      {activeThreadRef && isServerThread && bulkDeleteArtifactsOpen ? (
+        <ThreadArtifactBulkDeleteDialog
+          threadRef={activeThreadRef}
+          open={bulkDeleteArtifactsOpen}
+          onOpenChange={setBulkDeleteArtifactsOpen}
+        />
+      ) : null}
       {expandedImage && (
         <ExpandedImageDialog
           key={expandedImagePreviewKey(expandedImage)}

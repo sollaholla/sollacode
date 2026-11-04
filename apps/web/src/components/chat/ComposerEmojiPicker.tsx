@@ -63,7 +63,8 @@ export function ComposerEmojiPicker(props: {
       data-chat-composer-emoji-picker="true"
       data-chat-composer-emoji-underlay={props.hasTextUnderlay ? "true" : "false"}
       className={cn(
-        "flex h-7 items-center rounded-md bg-background/90 px-0.5 shadow-sm ring-1 ring-border/50 transition-opacity duration-150",
+        "flex h-7 items-center rounded-md px-0.5 shadow-sm ring-1 ring-border/50 transition-opacity duration-150",
+        quickDrawerOpen ? "bg-background" : "bg-background/90",
         // Fades only while draft text runs underneath it. 12% was effectively
         // invisible on a pointer device — you had to already know it was there
         // to hover it back — while `max-sm:opacity-100` did the opposite on a
@@ -77,13 +78,27 @@ export function ComposerEmojiPicker(props: {
         // what `max-sm:opacity-100` was matching — whereas the other two are
         // assumptions about the device. A narrow desktop window fading too is
         // the cheaper mistake: hover restores it there instantly.
-        props.hasTextUnderlay && !fullPickerOpen
-          ? "opacity-45 hover:opacity-100 focus-within:opacity-100 active:opacity-100 max-sm:opacity-25"
+        //
+        // 45% (25% on a phone) still read as too faint, so it recedes less now,
+        // and an open drawer is solid: it is in use.
+        props.hasTextUnderlay && !quickDrawerOpen && !fullPickerOpen
+          ? "opacity-75 hover:opacity-100 focus-within:opacity-100 active:opacity-100 max-sm:opacity-60"
           : "opacity-100",
       )}
     >
-      {quickDrawerOpen
-        ? recentEmojis.map((emoji) => (
+      {/* The drawer stays mounted so it can slide shut as well as open; while
+          shut it is inert, so nothing in it can be reached or clicked. */}
+      <div
+        data-chat-composer-emoji-drawer={quickDrawerOpen ? "open" : "closed"}
+        aria-hidden={!quickDrawerOpen}
+        inert={!quickDrawerOpen}
+        className={cn(
+          "grid transition-[grid-template-columns,opacity] duration-200 ease-out motion-reduce:transition-none",
+          quickDrawerOpen ? "grid-cols-[1fr] opacity-100" : "grid-cols-[0fr] opacity-0",
+        )}
+      >
+        <div className="flex min-w-0 items-center overflow-hidden">
+          {recentEmojis.map((emoji) => (
             <button
               key={emoji}
               type="button"
@@ -96,72 +111,71 @@ export function ComposerEmojiPicker(props: {
             >
               {emoji}
             </button>
-          ))
-        : null}
+          ))}
 
-      {quickDrawerOpen ? (
-        <Popover
-          open={fullPickerOpen}
-          onOpenChange={(nextOpen) => {
-            setFullPickerOpen(nextOpen);
-            if (!nextOpen) setQuery("");
-          }}
-        >
-          <PopoverTrigger
-            className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
-            disabled={props.disabled}
-            aria-label="Open searchable emoji picker"
-            title="More emoji"
-            onPointerDown={(event) => event.preventDefault()}
+          <Popover
+            open={fullPickerOpen}
+            onOpenChange={(nextOpen) => {
+              setFullPickerOpen(nextOpen);
+              if (!nextOpen) setQuery("");
+            }}
           >
-            <EllipsisIcon className="size-4" />
-          </PopoverTrigger>
-          <PopoverPopup
-            side="top"
-            align="end"
-            sideOffset={8}
-            className="w-80 max-w-[calc(100vw-1rem)]"
-            viewportClassName="p-2 [--viewport-inline-padding:--spacing(2)]"
-            aria-label="Emoji picker"
-          >
-            <div className="relative mb-2">
-              <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <input
-                autoFocus
-                type="search"
-                value={query}
-                onChange={(event) => setQuery(event.currentTarget.value)}
-                placeholder="Search emoji"
-                aria-label="Search emoji"
-                className="h-9 w-full rounded-md border border-input bg-background pl-8 pr-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
-              />
-            </div>
-            <div
-              role="listbox"
-              aria-label="Emoji results"
-              className="grid max-h-64 grid-cols-8 gap-0.5 overflow-y-auto pr-1"
+            <PopoverTrigger
+              className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+              disabled={props.disabled}
+              aria-label="Open searchable emoji picker"
+              title="More emoji"
+              onPointerDown={(event) => event.preventDefault()}
             >
-              {results.map((item) => (
-                <button
-                  key={item.emoji}
-                  type="button"
-                  role="option"
-                  aria-label={item.label}
-                  title={item.label}
-                  className="flex aspect-square items-center justify-center rounded-md text-xl hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  onPointerDown={(event) => event.preventDefault()}
-                  onClick={() => selectEmoji(item.emoji)}
-                >
-                  {item.emoji}
-                </button>
-              ))}
-            </div>
-            {results.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">No emoji found</p>
-            ) : null}
-          </PopoverPopup>
-        </Popover>
-      ) : null}
+              <EllipsisIcon className="size-4" />
+            </PopoverTrigger>
+            <PopoverPopup
+              side="top"
+              align="end"
+              sideOffset={8}
+              className="w-80 max-w-[calc(100vw-1rem)]"
+              viewportClassName="p-2 [--viewport-inline-padding:--spacing(2)]"
+              aria-label="Emoji picker"
+            >
+              <div className="relative mb-2">
+                <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  autoFocus
+                  type="search"
+                  value={query}
+                  onChange={(event) => setQuery(event.currentTarget.value)}
+                  placeholder="Search emoji"
+                  aria-label="Search emoji"
+                  className="h-9 w-full rounded-md border border-input bg-background pl-8 pr-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
+                />
+              </div>
+              <div
+                role="listbox"
+                aria-label="Emoji results"
+                className="grid max-h-64 grid-cols-8 gap-0.5 overflow-y-auto pr-1"
+              >
+                {results.map((item) => (
+                  <button
+                    key={item.emoji}
+                    type="button"
+                    role="option"
+                    aria-label={item.label}
+                    title={item.label}
+                    className="flex aspect-square items-center justify-center rounded-md text-xl hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => selectEmoji(item.emoji)}
+                  >
+                    {item.emoji}
+                  </button>
+                ))}
+              </div>
+              {results.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">No emoji found</p>
+              ) : null}
+            </PopoverPopup>
+          </Popover>
+        </div>
+      </div>
 
       {/* Last, therefore rightmost: this row is anchored to the right edge and
           grows leftwards, so whatever renders last stays under the spot that

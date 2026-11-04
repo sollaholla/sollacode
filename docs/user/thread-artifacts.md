@@ -25,6 +25,11 @@ When a newer revision arrives, an update banner lets you move to it explicitly. 
 open stays pinned to its displayed revision until you choose **Use latest**. Archive marks an
 artifact inactive without deleting its revision history; **Restore** reverses it.
 
+To delete several at once on web and desktop, choose **Delete artifacts…** at the bottom of the
+**Artifacts** list, tick the ones to remove (or **Select all**), and confirm. On mobile, tap
+**Select** on the thread's Artifacts screen, tap the artifacts to remove, then **Delete**. Deleting
+removes every revision and cannot be undone; anything that fails to delete stays selected.
+
 Agents can permanently delete their own artifacts with `thread_artifact` using `action: "delete"`
 and the `artifactId` returned by **list**. Include `includeArchived: true` when listing to find
 archived artifacts too. Deletion removes every revision and its files, frees the thread's storage

@@ -8,10 +8,11 @@ describe("composer emoji picker", () => {
       <ComposerEmojiPicker disabled={false} hasTextUnderlay={false} onSelect={vi.fn()} />,
     );
 
-    expect(markup).not.toContain('aria-label="Insert ');
+    // The drawer stays mounted so it can slide shut, but closed it is inert.
+    expect(markup).toContain('data-chat-composer-emoji-drawer="closed"');
+    expect(markup).toMatch(/data-chat-composer-emoji-drawer="closed"[^>]*inert/);
     expect(markup).toContain('aria-label="Open emoji shortcuts"');
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup).not.toContain('aria-label="Open searchable emoji picker"');
     expect(markup).toContain('data-chat-composer-emoji-picker="true"');
   });
 
@@ -27,13 +28,13 @@ describe("composer emoji picker", () => {
     // this already excludes it, and naming the old class here would put it in
     // Tailwind's scan set and compile a dead `opacity:.12` rule into the
     // production stylesheet.
-    expect(markup).toContain("opacity-45");
+    expect(markup).toContain("opacity-75");
     // Phone widths are where the control actually collides with the text, so
     // it fades further there — the exact reverse of the old
     // `max-sm:opacity-100`, which pinned it opaque on that very layout. Same
     // breakpoint deliberately: that one demonstrably matched on the device
     // that reported the problem.
-    expect(markup).toContain("max-sm:opacity-25");
+    expect(markup).toContain("max-sm:opacity-60");
     expect(markup).not.toContain("max-sm:opacity-100");
     // Touch has no hover, so it has to come back some other way.
     expect(markup).toContain("hover:opacity-100");
@@ -47,6 +48,6 @@ describe("composer emoji picker", () => {
     );
 
     expect(markup).toContain('data-chat-composer-emoji-underlay="false"');
-    expect(markup).not.toContain("max-sm:opacity-25");
+    expect(markup).not.toContain("max-sm:opacity-60");
   });
 });

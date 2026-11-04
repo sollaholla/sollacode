@@ -8,6 +8,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  deleteThreadArtifacts,
   threadArtifactDeepLink,
   threadArtifactIconResource,
   threadArtifactRevisionResource,
@@ -78,5 +79,19 @@ describe("thread artifacts", () => {
         ThreadArtifactId.make("artifact one"),
       ),
     ).toBe("/remote%20host/thread%2F1?artifact=artifact%20one");
+  });
+});
+
+describe("deleteThreadArtifacts", () => {
+  it("deletes each in order, carries on past a failure and returns what remains", async () => {
+    const ids = ["one", "two", "three"].map((id) => ThreadArtifactId.make(id));
+    const attempted: Array<string> = [];
+    const failed = await deleteThreadArtifacts(ids, async (id) => {
+      attempted.push(id);
+      if (id === "two") throw new Error("host went away");
+      return id !== "three";
+    });
+    expect(attempted).toEqual(["one", "two", "three"]);
+    expect(failed).toEqual(["two", "three"]);
   });
 });
