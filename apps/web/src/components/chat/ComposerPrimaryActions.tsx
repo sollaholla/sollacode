@@ -5,7 +5,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type KeyboardEventHandler,
   type MouseEventHandler,
   type PointerEventHandler,
 } from "react";
@@ -15,11 +14,6 @@ import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { isElectron } from "../../env";
 import { shouldOfferAppVoiceCapture } from "./appVoiceCaptureAvailability";
-import {
-  beginMicrophoneHold,
-  preventMicrophoneTouchDefault,
-  type MicrophoneHold,
-} from "./microphoneHold";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Popover, PopoverPopup } from "../ui/popover";
@@ -63,8 +57,8 @@ interface ComposerPrimaryActionsProps {
   hasQueuedSendNow?: boolean;
   isPromotingQueued?: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
-  onPushToTalkStart?: () => void;
-  onPushToTalkStop?: () => void;
+  /** A tap on the microphone: starts a voice note, or ends the one being recorded. */
+  onPushToTalkToggle?: () => void;
   onApplySettings?: () => void;
   onRevertSettings?: () => void;
   onPromoteQueued?: () => void;
@@ -104,7 +98,7 @@ export const formatPushToTalkActionLabel = (
   const shortcut = platform?.toLowerCase().includes("mac") === true ? "Cmd+D" : "Ctrl+D";
   switch (status) {
     case "recording":
-      return `Release to attach voice note (${shortcut})`;
+      return `Tap to stop and attach the voice note (${shortcut})`;
     case "loading":
       return `Loading local transcription model (${shortcut})`;
     case "transcribing":
@@ -115,7 +109,7 @@ export const formatPushToTalkActionLabel = (
       if (disabledReason) {
         return `${disabledReason} (${shortcut})`;
       }
-      return `Hold to record a voice note (${shortcut})`;
+      return `Tap to record a voice note (${shortcut})`;
   }
 };
 
@@ -167,8 +161,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   hasQueuedSendNow: _hasQueuedSendNow = false,
   isPromotingQueued: _isPromotingQueued = false,
   preserveComposerFocusOnPointerDown = false,
-  onPushToTalkStart = noop,
-  onPushToTalkStop = noop,
+  onPushToTalkToggle = noop,
   onApplySettings = noop,
   onRevertSettings = noop,
   onPromoteQueued: _onPromoteQueued = noop,
@@ -198,8 +191,6 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     microphoneDisabled ? pushToTalkDisabledReason : null,
     pushToTalkAutoSend,
   );
-  const microphoneHoldRef = useRef<MicrophoneHold | null>(null);
-  const stopPushToTalkRef = useRef(onPushToTalkStop);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsHoldRef = useRef<{
     timer: ReturnType<typeof setTimeout>;
@@ -250,42 +241,14 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       cancelSettingsHold();
     }
   };
-  stopPushToTalkRef.current = onPushToTalkStop;
-  useEffect(() => () => microphoneHoldRef.current?.dispose(), []);
-  const microphoneButtonRef = useCallback((button: HTMLButtonElement | null) => {
-    if (!button) return;
-    button.addEventListener("touchstart", preventMicrophoneTouchDefault, { passive: false });
-    return () => {
-      button.removeEventListener("touchstart", preventMicrophoneTouchDefault);
-      microphoneHoldRef.current?.dispose();
-    };
-  }, []);
-  const startPushToTalkOnKey: KeyboardEventHandler<HTMLButtonElement> = (event) => {
-    if (microphoneDisabled || event.repeat || (event.key !== " " && event.key !== "Enter")) {
-      return;
-    }
-    event.preventDefault();
-    if (microphoneHoldRef.current?.isHolding()) return;
-    microphoneHoldRef.current?.dispose();
-    microphoneHoldRef.current = beginMicrophoneHold(
-      event.currentTarget,
-      { kind: "key", key: event.key },
-      () => stopPushToTalkRef.current(),
-    );
-    onPushToTalkStart();
+  // One tap starts a voice note and the next ends it. Pointer down keeps focus
+  // where it was, so the keyboard on a phone stays put while recording.
+  const keepFocusOnMicrophone: PointerEventHandler<HTMLButtonElement> = (event) => {
+    if (event.button === 0) event.preventDefault();
   };
-  const startPushToTalkOnPointer: PointerEventHandler<HTMLButtonElement> = (event) => {
-    if (microphoneDisabled || event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (microphoneHoldRef.current?.isHolding()) return;
-    microphoneHoldRef.current?.dispose();
-    microphoneHoldRef.current = beginMicrophoneHold(
-      event.currentTarget,
-      { kind: "pointer", pointerId: event.pointerId },
-      () => stopPushToTalkRef.current(),
-    );
-    onPushToTalkStart();
+  const togglePushToTalk = () => {
+    if (microphoneDisabled) return;
+    onPushToTalkToggle();
   };
   const showSettingsContextMenu: MouseEventHandler<HTMLButtonElement> = (event) => {
     event.preventDefault();
@@ -309,7 +272,6 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       <TooltipTrigger
         render={
           <button
-            ref={microphoneButtonRef}
             type="button"
             className={cn(
               "flex h-9 w-9 touch-none select-none items-center justify-center rounded-full border border-[var(--line)] text-foreground/80 transition-colors duration-150 [-webkit-touch-callout:none] [-webkit-user-select:none] enabled:cursor-pointer aria-disabled:cursor-not-allowed aria-disabled:opacity-30 sm:h-8 sm:w-8",
@@ -321,9 +283,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             aria-label={pushToTalkLabel}
             aria-pressed={pushToTalkActive}
             title={pushToTalkLabel}
-            onPointerDown={startPushToTalkOnPointer}
+            onPointerDown={keepFocusOnMicrophone}
+            onClick={togglePushToTalk}
             onContextMenu={(event) => event.preventDefault()}
-            onKeyDown={startPushToTalkOnKey}
           />
         }
       >

@@ -526,8 +526,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   hasQueuedSendNow: boolean;
   isPromotingQueued: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
-  onPushToTalkStart: () => void;
-  onPushToTalkStop: () => void;
+  onPushToTalkToggle: () => void;
   onApplySettings: () => void;
   onRevertSettings: () => void;
   onPromoteQueued: () => void;
@@ -583,8 +582,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         hasQueuedSendNow={props.hasQueuedSendNow}
         isPromotingQueued={props.isPromotingQueued}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
-        onPushToTalkStart={props.onPushToTalkStart}
-        onPushToTalkStop={props.onPushToTalkStop}
+        onPushToTalkToggle={props.onPushToTalkToggle}
         onApplySettings={props.onApplySettings}
         onRevertSettings={props.onRevertSettings}
         onPromoteQueued={props.onPromoteQueued}
@@ -747,8 +745,7 @@ export interface ChatComposerProps {
 
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
-  onPushToTalkStart: () => void;
-  onPushToTalkStop: () => void;
+  onPushToTalkToggle: () => void;
   activeProviderAccountSwitch: ProviderAccountSwitchState | null;
   onSwitchProviderAccount: (instanceId: ProviderInstanceId) => void;
   onApplySettings: (description: string) => void;
@@ -852,8 +849,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerTerminalContextsRef,
     composerElementContextsRef,
     onSend,
-    onPushToTalkStart,
-    onPushToTalkStop,
+    onPushToTalkToggle,
     activeProviderAccountSwitch,
     onSwitchProviderAccount,
     onApplySettings,
@@ -4074,8 +4070,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   hasQueuedSendNow={hasQueuedSendNow}
                   isPromotingQueued={isPromotingQueued}
                   preserveComposerFocusOnPointerDown={isMobileViewport}
-                  onPushToTalkStart={onPushToTalkStart}
-                  onPushToTalkStop={onPushToTalkStop}
+                  onPushToTalkToggle={onPushToTalkToggle}
                   onApplySettings={() => {
                     if (settingsUpdateLabel) onApplySettings(settingsUpdateLabel);
                   }}

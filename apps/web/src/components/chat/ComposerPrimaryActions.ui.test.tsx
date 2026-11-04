@@ -27,8 +27,7 @@ const actions = (overrides: Partial<ComponentProps<typeof ComposerPrimaryActions
     pushToTalkStatus={null}
     pushToTalkDisabled={false}
     pushToTalkDisabledReason={null}
-    onPushToTalkStart={vi.fn()}
-    onPushToTalkStop={vi.fn()}
+    onPushToTalkToggle={vi.fn()}
     onPreviousPendingQuestion={vi.fn()}
     onInterrupt={vi.fn()}
     onImplementPlanInNewThread={vi.fn()}
@@ -81,35 +80,26 @@ afterEach(() => {
 });
 
 describe("composer push-to-talk action", () => {
-  it("owns the page during a mic hold across recording rerenders and releases to the latest callback", async () => {
+  it("starts with one tap and ends with the next, leaving the rest of the page alone", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
-    const onStart = vi.fn();
-    const oldStop = vi.fn();
-    const currentStop = vi.fn();
-    const onSubmit = vi.fn();
+    const onToggle = vi.fn();
     const onOtherControl = vi.fn();
     const render = (recording: boolean) => (
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSubmit();
-        }}
-      >
+      <div>
         <button type="button" aria-label="Other control" onClick={onOtherControl} />
         {actions({
           pushToTalkStatus: recording ? "recording" : null,
-          onPushToTalkStart: onStart,
-          onPushToTalkStop: recording ? currentStop : oldStop,
+          onPushToTalkToggle: onToggle,
         })}
-      </form>
+      </div>
     );
     try {
       await act(async () => root.render(render(false)));
       const mic = container.querySelector<HTMLButtonElement>(
-        'button[aria-label^="Hold to record a voice note"]',
+        'button[aria-label^="Tap to record a voice note"]',
       );
       expect(mic).not.toBeNull();
       const down = new PointerEvent("pointerdown", {
@@ -120,69 +110,35 @@ describe("composer push-to-talk action", () => {
         button: 0,
       });
       await act(async () => mic?.dispatchEvent(down));
+      // Pointer down keeps focus in the composer but starts nothing on its own.
       expect(down.defaultPrevented).toBe(true);
-      expect(onStart).toHaveBeenCalledTimes(1);
+      expect(onToggle).not.toHaveBeenCalled();
+      await act(async () => mic?.click());
+      expect(onToggle).toHaveBeenCalledTimes(1);
+
       await act(async () => root.render(render(true)));
-      expect(oldStop).not.toHaveBeenCalled();
-      expect(currentStop).not.toHaveBeenCalled();
-      const select = new Event("selectstart", { bubbles: true, cancelable: true });
-      container.dispatchEvent(select);
-      expect(select.defaultPrevented).toBe(true);
+      const recordingMic = container.querySelector<HTMLButtonElement>(
+        'button[aria-label^="Tap to stop and attach the voice note"]',
+      );
+      expect(recordingMic?.getAttribute("aria-pressed")).toBe("true");
+      // Recording no longer locks the page the way holding did.
       const other = container.querySelector<HTMLButtonElement>(
         'button[aria-label="Other control"]',
       );
-      expect(other).not.toBeNull();
       await act(async () => other?.click());
-      expect(onOtherControl).not.toHaveBeenCalled();
-      await act(async () =>
-        document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 41 })),
-      );
-      expect(currentStop).toHaveBeenCalledTimes(1);
-      expect(oldStop).not.toHaveBeenCalled();
-      await act(async () => root.render(render(false)));
-      const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
-      expect(send).not.toBeNull();
-      await act(async () => send?.click());
-      expect(onSubmit).not.toHaveBeenCalled();
-      await act(async () => {
-        send?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 42 }));
-        send?.click();
-      });
-      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onOtherControl).toHaveBeenCalledTimes(1);
+      await act(async () => recordingMic?.click());
+      expect(onToggle).toHaveBeenCalledTimes(2);
     } finally {
       await act(async () => root.unmount());
       container.remove();
     }
-    expect(document.documentElement.hasAttribute("data-microphone-hold")).toBe(false);
-    expect(currentStop).toHaveBeenCalledTimes(1);
-  });
-
-  it("releases an active mic hold when the composer unmounts", async () => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    const onStop = vi.fn();
-    await act(async () => root.render(actions({ onPushToTalkStop: onStop })));
-    const mic = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Hold to record a voice note"]',
-    );
-    await act(async () =>
-      mic?.dispatchEvent(
-        new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, button: 0 }),
-      ),
-    );
-    expect(document.documentElement.hasAttribute("data-microphone-hold")).toBe(true);
-    await act(async () => root.unmount());
-    container.remove();
-    expect(document.documentElement.hasAttribute("data-microphone-hold")).toBe(false);
-    expect(onStop).toHaveBeenCalledTimes(1);
   });
 
   it("renders the microphone immediately before the send button", () => {
     const markup = renderActions();
 
-    const microphoneIndex = markup.indexOf('aria-label="Hold to record a voice note (Cmd+D)"');
+    const microphoneIndex = markup.indexOf('aria-label="Tap to record a voice note (Cmd+D)"');
     const sendIndex = markup.indexOf('aria-label="Send message"');
     expect(microphoneIndex).toBeGreaterThan(-1);
     expect(sendIndex).toBeGreaterThan(microphoneIndex);
@@ -194,8 +150,8 @@ describe("composer push-to-talk action", () => {
       pushToTalkDisabled: true,
     });
 
-    expect(markup).toContain('aria-label="Release to attach voice note (Cmd+D)"');
-    expect(markup).toContain('title="Release to attach voice note (Cmd+D)"');
+    expect(markup).toContain('aria-label="Tap to stop and attach the voice note (Cmd+D)"');
+    expect(markup).toContain('title="Tap to stop and attach the voice note (Cmd+D)"');
     expect(markup).toContain('aria-pressed="true"');
     expect(markup.match(/disabled=""/g)).toHaveLength(1);
   });
@@ -250,7 +206,7 @@ describe("composer push-to-talk action", () => {
       pushToTalkDisabledReason: null,
     });
 
-    const microphoneIndex = markup.indexOf('aria-label="Hold to record a voice note (Cmd+D)"');
+    const microphoneIndex = markup.indexOf('aria-label="Tap to record a voice note (Cmd+D)"');
     const stopIndex = markup.indexOf('aria-label="Stop generation"');
     expect(microphoneIndex).toBeGreaterThan(-1);
     expect(stopIndex).toBeGreaterThan(microphoneIndex);
@@ -384,7 +340,7 @@ describe("composer push-to-talk action", () => {
       isRunning: false,
     });
 
-    const microphoneIndex = markup.indexOf('aria-label="Hold to record a voice note (Cmd+D)"');
+    const microphoneIndex = markup.indexOf('aria-label="Tap to record a voice note (Cmd+D)"');
     const submitIndex = markup.indexOf("Submit answer");
     expect(microphoneIndex).toBeGreaterThan(-1);
     expect(submitIndex).toBeGreaterThan(microphoneIndex);
@@ -401,13 +357,13 @@ describe("composer push-to-talk action", () => {
       hasSendableContent: false,
     });
 
-    expect(refineMarkup.indexOf('aria-label="Hold to record a voice note')).toBeGreaterThan(-1);
+    expect(refineMarkup.indexOf('aria-label="Tap to record a voice note')).toBeGreaterThan(-1);
     expect(refineMarkup.indexOf(">Refine</button>")).toBeGreaterThan(
-      refineMarkup.indexOf('aria-label="Hold to record a voice note'),
+      refineMarkup.indexOf('aria-label="Tap to record a voice note'),
     );
-    expect(implementMarkup.indexOf('aria-label="Hold to record a voice note')).toBeGreaterThan(-1);
+    expect(implementMarkup.indexOf('aria-label="Tap to record a voice note')).toBeGreaterThan(-1);
     expect(implementMarkup.indexOf(">Implement</button>")).toBeGreaterThan(
-      implementMarkup.indexOf('aria-label="Hold to record a voice note'),
+      implementMarkup.indexOf('aria-label="Tap to record a voice note'),
     );
   });
 
@@ -494,13 +450,13 @@ describe("composer push-to-talk action", () => {
 
   it("shows the dedicated push-to-talk chord for each platform", () => {
     expect(formatPushToTalkActionLabel(null, "MacIntel")).toBe(
-      "Hold to record a voice note (Cmd+D)",
+      "Tap to record a voice note (Cmd+D)",
     );
     expect(formatPushToTalkActionLabel("recording", "MacIntel")).toBe(
-      "Release to attach voice note (Cmd+D)",
+      "Tap to stop and attach the voice note (Cmd+D)",
     );
     expect(formatPushToTalkActionLabel("recording", "MacIntel", null, true)).toBe(
-      "Release to attach voice note (Cmd+D)",
+      "Tap to stop and attach the voice note (Cmd+D)",
     );
     expect(formatPushToTalkActionLabel("transcribing", "Win32")).toBe(
       "Transcribing voice message (Ctrl+D)",

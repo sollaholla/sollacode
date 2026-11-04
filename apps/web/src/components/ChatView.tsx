@@ -251,6 +251,7 @@ import {
 import { RightPanelTabs, type SideChatTabStatus } from "./RightPanelTabs";
 import { ThreadArtifactDeepLinkOpener, ThreadArtifactMenu } from "./artifacts/ThreadArtifactShelf";
 import { ThreadArtifactBulkDeleteDialog } from "./artifacts/ThreadArtifactBulkDelete";
+import { VoiceNoteRecordingOverlay } from "./chat/VoiceNoteRecordingOverlay";
 import { ThreadArtifactSurface } from "./artifacts/ThreadArtifactSurface";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
@@ -2513,8 +2514,12 @@ function ChatViewContent(props: ChatViewProps) {
   const pushToTalkStatusRef = useRef(pushToTalkStatus);
   pushToTalkStatusRef.current = pushToTalkStatus;
   const pushToTalkEnabledRef = useRef(false);
-  const pushToTalkStartRef = useRef<() => void>(() => undefined);
-  const pushToTalkStopRef = useRef<() => void>(() => undefined);
+  /** A tap on the microphone: starts a voice note, or ends the one being recorded. */
+  const pushToTalkToggleRef = useRef<() => void>(() => undefined);
+  /** Ends the voice note being recorded without attaching it. */
+  const pushToTalkCancelRef = useRef<() => void>(() => undefined);
+  // The microphone while a voice note records, for the phone's full-screen waveform.
+  const [voiceNoteStream, setVoiceNoteStream] = useState<MediaStream | null>(null);
   // Captured when the chord goes down so the transcript lands where the user
   // was dictating, even if focus moves while the recording transcribes.
   const pushToTalkTerminalTargetRef = useRef<PushToTalkTerminalTarget | null>(null);
@@ -8620,8 +8625,8 @@ function ChatViewContent(props: ChatViewProps) {
     !sendInFlightRef.current;
   useEffect(() => {
     if (!appVoiceCaptureEnabled) {
-      pushToTalkStartRef.current = () => undefined;
-      pushToTalkStopRef.current = () => undefined;
+      pushToTalkToggleRef.current = () => undefined;
+      pushToTalkCancelRef.current = () => undefined;
       setPushToTalkStatus(null);
       return;
     }
@@ -8640,6 +8645,8 @@ function ChatViewContent(props: ChatViewProps) {
     let recordingTimedOut = false;
     let recordingStartedAt = 0;
     let systemAudioMuteRequested = false;
+    /** Set by Cancel: the recording stops and is thrown away. */
+    let discardRecording = false;
 
     const clearRecordingTimeout = () => {
       if (recordingTimeout === null) return;
@@ -8738,6 +8745,8 @@ function ChatViewContent(props: ChatViewProps) {
             "This browser does not expose microphone recording APIs.",
           );
         }
+        // Nothing started, so the next tap starts again rather than stopping.
+        if (!recorder) held = false;
         return;
       }
 
@@ -8768,9 +8777,17 @@ function ChatViewContent(props: ChatViewProps) {
             recorder = null;
             stream?.getTracks().forEach((track) => track.stop());
             stream = null;
-            if (!disposed) setPushToTalkStatus(null);
+            if (!disposed) {
+              setPushToTalkStatus(null);
+              setVoiceNoteStream(null);
+            }
             const reachedRecordingLimit = recordingTimedOut;
             recordingTimedOut = false;
+            if (discardRecording) {
+              discardRecording = false;
+              pushToTalkTerminalTargetRef.current = null;
+              return;
+            }
             if (
               !shouldTranscribeStoppedRecording({
                 audioByteLength: audio.size,
@@ -8872,6 +8889,7 @@ function ChatViewContent(props: ChatViewProps) {
         }
         recordingStartedAt = Date.now();
         setPushToTalkStatus("recording");
+        if (pushToTalkTerminalTargetRef.current === null) setVoiceNoteStream(nextStream);
         recordingTimeout = window.setTimeout(() => {
           if (recorder?.state !== "recording") return;
           recordingTimedOut = true;
@@ -8887,6 +8905,8 @@ function ChatViewContent(props: ChatViewProps) {
           recorder = null;
           stream?.getTracks().forEach((track) => track.stop());
           stream = null;
+          held = false;
+          setVoiceNoteStream(null);
         }
         reportError(
           "Microphone access failed",
@@ -8941,8 +8961,13 @@ function ChatViewContent(props: ChatViewProps) {
       }
       if (recorder?.state === "recording") recorder.stop();
     };
-    pushToTalkStartRef.current = () => beginHolding();
-    pushToTalkStopRef.current = endHolding;
+    pushToTalkToggleRef.current = () => (held ? endHolding() : beginHolding());
+    pushToTalkCancelRef.current = () => {
+      // Only a running recorder delivers a stop to discard; one still waiting
+      // for the microphone is simply abandoned when `held` clears.
+      if (recorder?.state === "recording") discardRecording = true;
+      endHolding();
+    };
 
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target instanceof Node ? event.target : document.activeElement;
@@ -8990,8 +9015,9 @@ function ChatViewContent(props: ChatViewProps) {
     return () => {
       disposed = true;
       setPushToTalkStatus(null);
-      pushToTalkStartRef.current = () => undefined;
-      pushToTalkStopRef.current = () => undefined;
+      setVoiceNoteStream(null);
+      pushToTalkToggleRef.current = () => undefined;
+      pushToTalkCancelRef.current = () => undefined;
       const recordingWasActive = recorder?.state === "recording";
       endHolding();
       window.removeEventListener("keydown", onKeyDown, true);
@@ -10608,8 +10634,7 @@ function ChatViewContent(props: ChatViewProps) {
                             composerTerminalContextsRef={composerTerminalContextsRef}
                             composerElementContextsRef={composerElementContextsRef}
                             onSend={onSend}
-                            onPushToTalkStart={() => pushToTalkStartRef.current()}
-                            onPushToTalkStop={() => pushToTalkStopRef.current()}
+                            onPushToTalkToggle={() => pushToTalkToggleRef.current()}
                             activeProviderAccountSwitch={providerAccountSwitch}
                             onSwitchProviderAccount={requestProviderAccountSwitch}
                             onApplySettings={onApplyComposerSettings}
@@ -10894,6 +10919,14 @@ function ChatViewContent(props: ChatViewProps) {
         </RightPanelSheet>
       ) : null}
 
+      {/* Phones and tablets: recording takes over the screen until Done or Cancel. */}
+      {voiceNoteStream !== null && hasCoarsePointer ? (
+        <VoiceNoteRecordingOverlay
+          stream={voiceNoteStream}
+          onDone={() => pushToTalkToggleRef.current()}
+          onCancel={() => pushToTalkCancelRef.current()}
+        />
+      ) : null}
       {/* Mounted only while open: its list is a live subscription. */}
       {activeThreadRef && isServerThread && bulkDeleteArtifactsOpen ? (
         <ThreadArtifactBulkDeleteDialog

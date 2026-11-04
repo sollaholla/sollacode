@@ -275,7 +275,10 @@ and days and hours after a day. Short turns retain seconds and milliseconds.
 
 ## Voice notes
 
-Hold the microphone button to record, then release it to add a playable voice attachment.
+Tap the microphone button to start recording and tap it again to add a playable voice attachment.
+On a phone or tablet, recording takes over the screen with a live waveform of what the microphone
+hears, the time so far (up to two minutes), **Done** to attach the note and **Cancel** to discard it.
+The keyboard shortcut still records while held.
 You can add text alongside the recording or remove the note before sending. Sending transcribes
 it on the connected host; the message retains its player and an expandable **Transcribed** chip.
 The AI receives the marked voice transcript and your additional text. Transcription errors keep
