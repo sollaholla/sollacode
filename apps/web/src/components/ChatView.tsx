@@ -249,11 +249,7 @@ import {
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
 import { RightPanelTabs, type SideChatTabStatus } from "./RightPanelTabs";
-import {
-  ThreadArtifactDeepLinkOpener,
-  ThreadArtifactMenu,
-  ThreadArtifactShelf,
-} from "./artifacts/ThreadArtifactShelf";
+import { ThreadArtifactDeepLinkOpener, ThreadArtifactMenu } from "./artifacts/ThreadArtifactShelf";
 import { ThreadArtifactSurface } from "./artifacts/ThreadArtifactSurface";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
@@ -9815,16 +9811,6 @@ function ChatViewContent(props: ChatViewProps) {
       {panelToggleControls}
     </div>
   );
-  const artifactShelf =
-    isServerThread && activeThreadRef ? (
-      <ThreadArtifactShelf
-        threadRef={activeThreadRef}
-        activeArtifactId={
-          activeRightPanelSurface?.kind === "artifact" ? activeRightPanelSurface.resourceId : null
-        }
-        onOpen={openArtifactSurface}
-      />
-    ) : null;
   const artifactMenu =
     isServerThread && activeThreadRef ? (
       <ThreadArtifactMenu
@@ -10835,7 +10821,6 @@ function ChatViewContent(props: ChatViewProps) {
           filesAvailable={activeProject !== null}
           sideChatAvailable={sideChatAvailable}
           agentSurfaces={agentSurfaces}
-          artifactShelf={artifactShelf}
           artifactMenu={artifactMenu}
         >
           {rightPanelContent}
@@ -10877,7 +10862,6 @@ function ChatViewContent(props: ChatViewProps) {
             filesAvailable={activeProject !== null}
             sideChatAvailable={sideChatAvailable}
             agentSurfaces={agentSurfaces}
-            artifactShelf={artifactShelf}
             artifactMenu={artifactMenu}
           >
             {rightPanelContent}

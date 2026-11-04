@@ -140,8 +140,6 @@ interface RightPanelTabsProps {
    * no visible backdrop to click and the guest webview paints over the body —
    * without this the panel can read as an unescapable takeover.
    */
-  /** Thread artifacts shown at the top of the empty surface picker. */
-  artifactShelf?: ReactNode;
   /** Artifact choices shown in the new-surface menu. */
   artifactMenu?: ReactNode;
   children: ReactNode;
@@ -346,10 +344,6 @@ export function rightPanelNewSurfaceKinds(
   ];
 }
 
-export function shouldShowArtifactShelf(activeSurfaceId: string | null): boolean {
-  return activeSurfaceId === null;
-}
-
 function DisabledReasonTooltip(props: { reason: string; trigger: ReactElement }) {
   return (
     <Tooltip>
@@ -392,7 +386,6 @@ export function RightPanelEmptyState(props: {
   filesAvailable: boolean;
   sideChatAvailable: boolean;
   agentSurfaces?: boolean;
-  artifactShelf?: ReactNode;
   /** Artifact choices behind the Artifacts card, the same ones the new-surface menu offers. */
   artifactMenu?: ReactNode;
 }) {
@@ -447,7 +440,6 @@ export function RightPanelEmptyState(props: {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {props.artifactShelf}
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
         <div className="w-full max-w-xl">
           <div className="mb-5 text-center">
@@ -1224,9 +1216,6 @@ function RightPanelTabsContent(props: RightPanelTabsProps & { onExitComplete: ()
             filesAvailable={props.filesAvailable}
             sideChatAvailable={props.sideChatAvailable}
             agentSurfaces={props.agentSurfaces === true}
-            artifactShelf={
-              shouldShowArtifactShelf(props.activeSurfaceId) ? props.artifactShelf : null
-            }
             artifactMenu={props.artifactMenu}
           />
         ) : (
