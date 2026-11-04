@@ -739,14 +739,7 @@ export const saveCredential = DesktopIpc.makeIpcMethod({
   payload: DesktopPreviewCredentialSaveInputSchema,
   result: PreviewCredentialSummary,
   handler: Effect.fn("desktop.ipc.preview.saveCredential")(function* (input) {
-    return yield* (yield* BrowserCredentialVault.BrowserCredentialVault).save({
-      label: input.label,
-      origin: input.origin,
-      ...(input.kind === undefined ? {} : { kind: input.kind }),
-      ...(input.secret === undefined ? {} : { secret: input.secret }),
-      ...(input.id === undefined ? {} : { id: input.id }),
-      ...(input.username === undefined ? {} : { username: input.username }),
-    });
+    return yield* (yield* BrowserCredentialVault.BrowserCredentialVault).save(input);
   }),
 });
 
