@@ -144,6 +144,7 @@ export const make = Effect.gen(function* () {
       threadSnooze: true,
       threadSideChats: true,
       archivedThreadBulkDelete: true,
+      pausedThreadBulkResume: true,
       databaseCompaction: true,
       remoteControlMediaChannel: true,
       remotePreviewFrames: true,

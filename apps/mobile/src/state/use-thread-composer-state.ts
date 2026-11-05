@@ -7,6 +7,7 @@ import {
   isThreadSessionWorking,
   canResumeFailedThreadSession,
   liveBackgroundTasks,
+  otherThreadsPausedOn,
   runResumeIncompleteTurn,
 } from "@t3tools/client-runtime/state/thread-activity";
 import { useAtomValue } from "@effect/atom-react";
@@ -56,6 +57,8 @@ import {
 import { setPendingConnectionError } from "../state/use-remote-environment-registry";
 import { useSelectedThreadDetailState } from "../state/use-thread-detail";
 import { useAtomCommand } from "./use-atom-command";
+import { useThreadShells } from "./entities";
+import { orchestrationEnvironment } from "./orchestration";
 import { loadThreadHistory, threadEnvironment } from "./threads";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
@@ -508,6 +511,42 @@ export function useThreadComposerState() {
     [queuedResume, selectedThread, selectedThreadShell],
   );
 
+  const threadShells = useThreadShells();
+  const otherPausedThreads = useMemo(
+    () =>
+      selectedThreadShell
+        ? otherThreadsPausedOn(
+            threadShells.filter(
+              (thread) => thread.environmentId === selectedThreadShell.environmentId,
+            ),
+            {
+              threadId: selectedThreadShell.id,
+              instanceId: selectedThreadShell.modelSelection.instanceId,
+              model: selectedThreadShell.modelSelection.model,
+            },
+          )
+        : [],
+    [selectedThreadShell, threadShells],
+  );
+  const resumePausedThreadsOnServer = useAtomCommand(orchestrationEnvironment.resumePausedThreads, {
+    reportFailure: false,
+  });
+  /** Resumes this chat, then the others one at a time once it has actually replied. */
+  const onResumeAllPaused = useCallback(async () => {
+    if (!selectedThreadShell || otherPausedThreads.length === 0) return;
+    await onResumeSession();
+    const result = await resumePausedThreadsOnServer({
+      environmentId: selectedThreadShell.environmentId,
+      input: {
+        threadIds: otherPausedThreads.map((thread) => thread.id),
+        afterThreadId: selectedThreadShell.id,
+      },
+    });
+    if (result._tag === "Failure") {
+      setPendingConnectionError("Could not resume the other chats. This chat is resuming.");
+    }
+  }, [onResumeSession, otherPausedThreads, resumePausedThreadsOnServer, selectedThreadShell]);
+
   const onSendMessage = useCallback(async () => {
     if (!selectedThreadShell) {
       return null;
@@ -823,6 +862,8 @@ export function useThreadComposerState() {
     recentlyClosedProposedPlan,
     onReopenProposedPlan,
     onResumeSession,
+    otherPausedThreadCount: otherPausedThreads.length,
+    onResumeAllPaused,
     isResumingSession: isResumingSession || queuedResume,
     onPromoteQueuedMessages,
     onUpdateModelSelection,

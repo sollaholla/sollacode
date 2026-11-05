@@ -132,6 +132,7 @@ import * as ProjectFolderRemoval from "./project/ProjectFolderRemoval.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import { PausedThreadResumerLive } from "./orchestration/PausedThreadResumer.ts";
 import { ThreadWorkObligationRepositoryLive } from "./persistence/Layers/ThreadWorkObligations.ts";
 import {
   clearPersistedServerRuntimeState,
@@ -258,6 +259,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ProviderCommandReactorWithActionApprovalLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive.pipe(Layer.provide(ThreadArtifactLayerLive))),
+  Layer.provideMerge(PausedThreadResumerLive),
   Layer.provideMerge(RuntimeReceiptBusLive),
   // Provided last so both the runtime ingestion (which feeds it usage reports
   // and token counts) and the command reactor (which gates work on it) resolve

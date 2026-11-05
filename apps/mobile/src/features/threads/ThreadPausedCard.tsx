@@ -53,6 +53,9 @@ export function ThreadPausedCard(props: {
   readonly resuming: boolean;
   readonly disabled: boolean;
   readonly onResume: (modelSelection?: ModelSelection) => void;
+  /** Other chats stopped on this model, which Resume all brings back with this one. */
+  readonly otherPausedCount: number;
+  readonly onResumeAll: () => void;
 }) {
   const navigation = useNavigation();
   const [choosingModel, setChoosingModel] = useState(false);
@@ -105,6 +108,15 @@ export function ThreadPausedCard(props: {
             </View>
           ))}
         </ScrollView>
+      ) : null}
+      {props.otherPausedCount > 0 ? (
+        <View className="flex-row">
+          <Choice
+            label={`Resume all ${props.otherPausedCount + 1} chats on this model`}
+            disabled={blocked}
+            onPress={props.onResumeAll}
+          />
+        </View>
       ) : null}
       <View className="flex-row gap-2">
         <Choice

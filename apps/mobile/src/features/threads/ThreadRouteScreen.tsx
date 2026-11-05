@@ -843,6 +843,8 @@ function ThreadRouteContent(
           onReopenProposedPlan={composer.onReopenProposedPlan}
           composerInteractionMode={composer.interactionMode}
           onResumeSession={composer.onResumeSession}
+          otherPausedThreadCount={composer.otherPausedThreadCount}
+          onResumeAllPaused={composer.onResumeAllPaused}
           isResumingSession={composer.isResumingSession}
           onPromoteQueuedMessages={composer.onPromoteQueuedMessages}
           onReconnectEnvironment={handleReconnectEnvironment}

@@ -103,6 +103,9 @@ export interface ThreadDetailScreenProps {
   /** The composer's mode, which decides what a typed reply does to the plan. */
   readonly composerInteractionMode: ProviderInteractionMode | null;
   readonly onResumeSession: (modelSelection?: ModelSelection) => Promise<void>;
+  /** Other chats in this environment stopped on the same model. */
+  readonly otherPausedThreadCount: number;
+  readonly onResumeAllPaused: () => Promise<void>;
   readonly isResumingSession: boolean;
   readonly onPromoteQueuedMessages: () => void;
   readonly onReconnectEnvironment: () => void;
@@ -506,6 +509,12 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 resuming={props.isResumingSession}
                 disabled={props.connectionStateLabel !== "connected" || props.activeThreadBusy}
                 onResume={(modelSelection) => void props.onResumeSession(modelSelection)}
+                otherPausedCount={
+                  props.serverConfig?.environment.capabilities.pausedThreadBulkResume === true
+                    ? props.otherPausedThreadCount
+                    : 0
+                }
+                onResumeAll={() => void props.onResumeAllPaused()}
               />
             ) : null}
 

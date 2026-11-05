@@ -35,6 +35,8 @@ export const ORCHESTRATION_WS_METHODS = {
   measureProjectFolders: "orchestration.measureProjectFolders",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   deleteArchivedThreads: "orchestration.deleteArchivedThreads",
+  resumePausedThreads: "orchestration.resumePausedThreads",
+  stopResumingThreads: "orchestration.stopResumingThreads",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -2006,6 +2008,29 @@ export type OrchestrationProjectStatistics = typeof OrchestrationProjectStatisti
  * before `archivedBefore` — the newest archive time the person was shown — so
  * a chat archived after they looked is left alone.
  */
+/**
+ * Resumes paused chats one at a time, each only once the last has produced
+ * output, and stops if the provider refuses again.
+ */
+export const OrchestrationResumePausedThreadsInput = Schema.Struct({
+  threadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(200)),
+  /** Moves each chat here first: the account the person just switched to. */
+  modelSelection: Schema.optional(ModelSelection),
+  /** A chat already resuming: the others wait for its first output. */
+  afterThreadId: Schema.optional(ThreadId),
+});
+export type OrchestrationResumePausedThreadsInput =
+  typeof OrchestrationResumePausedThreadsInput.Type;
+
+export const OrchestrationResumePausedThreadsResult = Schema.Struct({
+  queued: NonNegativeInt,
+});
+
+export const OrchestrationStopResumingThreadsResult = Schema.Struct({
+  /** Whether a run was going. Chats it had not reached stay paused. */
+  stopped: Schema.Boolean,
+});
+
 export const OrchestrationDeleteArchivedThreadsInput = Schema.Struct({
   archivedBefore: IsoDateTime,
 });
@@ -2095,6 +2120,14 @@ export const OrchestrationRpcSchemas = {
   deleteArchivedThreads: {
     input: OrchestrationDeleteArchivedThreadsInput,
     output: OrchestrationDeleteArchivedThreadsResult,
+  },
+  resumePausedThreads: {
+    input: OrchestrationResumePausedThreadsInput,
+    output: OrchestrationResumePausedThreadsResult,
+  },
+  stopResumingThreads: {
+    input: Schema.Struct({}),
+    output: OrchestrationStopResumingThreadsResult,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,

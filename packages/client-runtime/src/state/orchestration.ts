@@ -47,5 +47,13 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:delete-archived-threads",
       tag: ORCHESTRATION_WS_METHODS.deleteArchivedThreads,
     }),
+    resumePausedThreads: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:resume-paused-threads",
+      tag: ORCHESTRATION_WS_METHODS.resumePausedThreads,
+    }),
+    stopResumingThreads: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:stop-resuming-threads",
+      tag: ORCHESTRATION_WS_METHODS.stopResumingThreads,
+    }),
   };
 }

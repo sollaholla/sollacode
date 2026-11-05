@@ -95,6 +95,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadSubscriptionRegistryLive } from "./orchestration/Layers/ThreadSubscriptionRegistry.ts";
+import { PausedThreadResumer } from "./orchestration/PausedThreadResumer.ts";
 import * as ThreadPendingWorkSignal from "./persistence/Services/ThreadPendingWorkSignal.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { OrchestrationCommandReceiptRepository } from "./persistence/Services/OrchestrationCommandReceipts.ts";
@@ -820,6 +821,7 @@ const buildAppUnderTest = (options?: {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(WebPush)({}),
+            Layer.mock(PausedThreadResumer)({}),
             ThreadSubscriptionRegistryLive,
             Layer.mock(ThreadPendingWorkSignal.ThreadPendingWorkSignal)({
               publish: () => Effect.void,

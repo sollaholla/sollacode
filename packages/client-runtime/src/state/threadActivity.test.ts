@@ -7,6 +7,7 @@ import {
   isSideChatSessionPreparing,
   isThreadSessionWorking,
   canResumeFailedThreadSession,
+  otherThreadsPausedOn,
   describeRunningBackgroundTasks,
   liveBackgroundTasks,
 } from "./threadActivity.ts";
@@ -230,5 +231,47 @@ describe("thread pause", () => {
   it("says it in one short line", () => {
     expect(describeThreadPause("usage-limit", "Claude")).toBe("Claude is out of usage");
     expect(describeThreadPause("model-unavailable", "Claude")).toBe("This model isn't available");
+  });
+});
+
+describe("otherThreadsPausedOn", () => {
+  const paused = { threadId: "here", instanceId: "claude", model: "opus" };
+  const thread = (id: string, overrides: Record<string, unknown> = {}) => ({
+    id,
+    archivedAt: null,
+    modelSelection: { instanceId: "claude", model: "opus" },
+    session: { status: "error", activeTurnId: null, lastError: "You hit your limit" },
+    pendingWork: null,
+    ...overrides,
+  });
+
+  it("finds the other chats the same fix brings back", () => {
+    expect(
+      otherThreadsPausedOn([thread("here"), thread("a"), thread("b")], paused).map(({ id }) => id),
+    ).toEqual(["a", "b"]);
+  });
+
+  it("leaves out other models, archives, queued work, and chats still running", () => {
+    expect(
+      otherThreadsPausedOn(
+        [
+          thread("model", { modelSelection: { instanceId: "claude", model: "sonnet" } }),
+          thread("account", { modelSelection: { instanceId: "claude_work", model: "opus" } }),
+          thread("archived", { archivedAt: "2026-11-01T00:00:00.000Z" }),
+          thread("queued", { pendingWork: {} }),
+          thread("running", { session: { status: "running", activeTurnId: "t", lastError: null } }),
+        ],
+        paused,
+      ),
+    ).toEqual([]);
+  });
+
+  it("leaves a chat the person stopped themselves", () => {
+    expect(
+      otherThreadsPausedOn(
+        [thread("stopped", { session: { status: "stopped", lastError: "Stopped" } })],
+        paused,
+      ),
+    ).toEqual([]);
   });
 });

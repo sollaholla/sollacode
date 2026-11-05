@@ -137,6 +137,38 @@ export function canResumeFailedThreadSession(
   );
 }
 
+/**
+ * The other chats stopped on the same provider and model as a paused chat: the
+ * ones the same fix brings back. A chat the person stopped has no error status
+ * and is left alone.
+ */
+export function otherThreadsPausedOn<
+  T extends {
+    readonly id: string;
+    readonly archivedAt?: string | null;
+    readonly modelSelection: { readonly instanceId: string; readonly model: string };
+    readonly session?: {
+      readonly status: string;
+      readonly activeTurnId?: string | null;
+      readonly lastError?: string | null;
+    } | null;
+    readonly pendingWork?: unknown;
+  },
+>(
+  threads: ReadonlyArray<T>,
+  paused: { readonly threadId: string; readonly instanceId: string; readonly model: string },
+): ReadonlyArray<T> {
+  return threads.filter(
+    (thread) =>
+      thread.id !== paused.threadId &&
+      thread.session?.status === "error" &&
+      canResumeFailedThreadSession(thread) &&
+      (thread.archivedAt ?? null) === null &&
+      thread.modelSelection.instanceId === paused.instanceId &&
+      thread.modelSelection.model === paused.model,
+  );
+}
+
 export async function runResumeIncompleteTurn(input: {
   readonly inFlightRef: { current: boolean };
   readonly send: (message: typeof RESUME_PROMPT) => Promise<void>;

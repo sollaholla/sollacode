@@ -1690,6 +1690,24 @@ export const WsOrchestrationDeleteArchivedThreadsRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationResumePausedThreadsRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.resumePausedThreads,
+  {
+    payload: OrchestrationRpcSchemas.resumePausedThreads.input,
+    success: OrchestrationRpcSchemas.resumePausedThreads.output,
+    error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationStopResumingThreadsRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.stopResumingThreads,
+  {
+    payload: OrchestrationRpcSchemas.stopResumingThreads.input,
+    success: OrchestrationRpcSchemas.stopResumingThreads.output,
+    error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
   payload: OrchestrationRpcSchemas.subscribeShell.input,
   success: OrchestrationRpcSchemas.subscribeShell.output,
@@ -1969,6 +1987,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationMeasureProjectFoldersRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
   WsOrchestrationDeleteArchivedThreadsRpc,
+  WsOrchestrationResumePausedThreadsRpc,
+  WsOrchestrationStopResumingThreadsRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
 );

@@ -127,6 +127,7 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import { deleteArchivedThreads } from "./archivedThreadRetention.ts";
+import { PausedThreadResumer } from "./orchestration/PausedThreadResumer.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as MediaRelay from "./media/MediaRelay.ts";
@@ -631,6 +632,7 @@ const makeWsRpcLayer = (
       const threadSubscriptionRegistry =
         yield* ThreadSubscriptionRegistry.ThreadSubscriptionRegistry;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+      const pausedThreadResumer = yield* PausedThreadResumer;
       const commandReceipts = yield* OrchestrationCommandReceiptRepository;
       const threadPendingWorkSignal = yield* ThreadPendingWorkSignal.ThreadPendingWorkSignal;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
@@ -2047,6 +2049,16 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.resumePausedThreads]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.resumePausedThreads,
+            pausedThreadResumer.resume(input),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.stopResumingThreads]: () =>
+          observeRpcEffect(ORCHESTRATION_WS_METHODS.stopResumingThreads, pausedThreadResumer.stop, {
+            "rpc.aggregate": "orchestration",
+          }),
         [ORCHESTRATION_WS_METHODS.subscribeThread]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,

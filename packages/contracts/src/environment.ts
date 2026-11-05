@@ -52,6 +52,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server answers orchestration.deleteArchivedThreads. Older servers get the
       archive cleaned one chat at a time. */
   archivedThreadBulkDelete: Schema.optionalKey(Schema.Boolean),
+  /** Server answers orchestration.resumePausedThreads. Clients resume one chat at a time without it. */
+  pausedThreadBulkResume: Schema.optionalKey(Schema.Boolean),
   /** Server answers server.getDatabaseStorage and can compact its database
       at the next start. Clients hide the Storage section without it. */
   databaseCompaction: Schema.optionalKey(Schema.Boolean),

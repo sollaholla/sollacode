@@ -7,6 +7,7 @@ import { isAgentsProjectId } from "@t3tools/contracts";
 import { collectThreadFileReferencesByTurnId } from "@t3tools/client-runtime/state/turn-file-references";
 import {
   canResumeFailedThreadSession,
+  otherThreadsPausedOn,
   classifyThreadPause,
   describeThreadPause,
   describeRunningBackgroundTasks,
@@ -365,6 +366,7 @@ import {
   useTerminalMetadataLoaded,
   useThreadRunningTerminalIds,
 } from "../state/terminalSessions";
+import { orchestrationEnvironment } from "../state/orchestration";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import {
@@ -444,6 +446,7 @@ import { isHostRepairEligibleThreadError, ThreadErrorBanner } from "./chat/Threa
 import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import { ProjectFolderMissingBanner } from "./chat/ProjectFolderMissingBanner";
+import { ResumePausedThreadsDialog } from "./chat/ResumePausedThreadsDialog";
 import { ThreadPausedCard } from "./chat/ThreadPausedCard";
 import {
   pauseAccountChoices,
@@ -8385,6 +8388,7 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread?.session?.lastError !== (dismissedServerErrorsByThreadKey[routeThreadKey] ?? null)
       ? (activeThread?.session?.lastError ?? null)
       : null;
+  const signInResumeRef = useRef<{ instanceId: string; account: string | null } | null>(null);
   const usageByAccountKey = useProviderUsageStore((store) => store.byAccountKey);
   const pausedInstanceId =
     activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection.instanceId ?? null;
@@ -8425,7 +8429,15 @@ function ChatViewContent(props: ChatViewProps) {
       modelGroups: pauseModelChoices({ ...choices, currentInstanceId: pausedInstanceId }),
       accounts: pauseAccountChoices({ ...choices, current }),
       ...(current?.supportsAccountSwitch === true
-        ? { onSignInAnother: () => requestProviderAccountSwitch(current.instanceId) }
+        ? {
+            onSignInAnother: () => {
+              signInResumeRef.current = {
+                instanceId: current.instanceId,
+                account: current.auth.email ?? current.auth.label ?? null,
+              };
+              requestProviderAccountSwitch(current.instanceId);
+            },
+          }
         : {}),
     };
   }, [
@@ -8466,16 +8478,81 @@ function ChatViewContent(props: ChatViewProps) {
       updateThreadMetadata,
     ],
   );
+  const canResumeTogether = serverConfig?.environment.capabilities.pausedThreadBulkResume === true;
+  const otherPausedThreads = useMemo(() => {
+    if (!canResumeTogether || !activeServerThread || !pausedInstanceId || !pausedModel) return [];
+    return otherThreadsPausedOn(
+      allThreadShells.filter((thread) => thread.environmentId === environmentId),
+      { threadId: activeServerThread.id, instanceId: pausedInstanceId, model: pausedModel },
+    );
+  }, [
+    activeServerThread,
+    allThreadShells,
+    canResumeTogether,
+    environmentId,
+    pausedInstanceId,
+    pausedModel,
+  ]);
+  const [resumeChoiceOpen, setResumeChoiceOpen] = useState(false);
+  const resumePausedThreadsOnServer = useAtomCommand(orchestrationEnvironment.resumePausedThreads, {
+    reportFailure: false,
+  });
+  const stopResumingThreads = useAtomCommand(orchestrationEnvironment.stopResumingThreads, {
+    reportFailure: false,
+  });
+  /** Queues other chats behind this one: they start once it has actually replied. */
+  const resumeOthersBehindThisChat = useCallback(
+    async (threadIds: ReadonlyArray<ThreadId>, modelSelection?: ModelSelection) => {
+      if (threadIds.length === 0 || !activeServerThread) return;
+      const result = await resumePausedThreadsOnServer({
+        environmentId,
+        input: {
+          threadIds: [...threadIds],
+          afterThreadId: activeServerThread.id,
+          ...(modelSelection === undefined ? {} : { modelSelection }),
+        },
+      });
+      if (result._tag === "Failure") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "The other chats did not resume",
+            description: "This chat is resuming. Open the others to resume them.",
+          }),
+        );
+        return;
+      }
+      toastManager.add(
+        stackedThreadToast({
+          type: "info",
+          title:
+            threadIds.length === 1
+              ? "1 other chat resumes next"
+              : `${threadIds.length} other chats resume next`,
+          description: "One at a time, once this chat replies.",
+          actionProps: {
+            children: "Stop",
+            onClick: () => void stopResumingThreads({ environmentId, input: {} }),
+          },
+        }),
+      );
+    },
+    [activeServerThread, environmentId, resumePausedThreadsOnServer, stopResumingThreads],
+  );
+  const onResumePausedClicked = useCallback(() => {
+    if (otherPausedThreads.length > 0) setResumeChoiceOpen(true);
+    else resumePausedThread();
+  }, [otherPausedThreads.length, resumePausedThread]);
   const switchPausedThreadTo = useCallback(
     (choice: ThreadPauseModelChoice | ThreadPauseAccountChoice) => {
-      if (!activeThread) return;
+      if (!activeThread) return null;
       const model = resolveAppModelSelectionForInstance(
         choice.instanceId,
         settings,
         providerStatuses,
         choice.model,
       );
-      if (!model) return;
+      if (!model) return null;
       const selection = selectAppModelWithHighEffort(
         activeThread.modelSelection,
         { instanceId: choice.instanceId, model },
@@ -8483,6 +8560,7 @@ function ChatViewContent(props: ChatViewProps) {
       );
       setComposerDraftModelSelection(composerDraftTarget, selection, { replaceOptions: true });
       resumePausedThread(selection);
+      return selection;
     },
     [
       activeThread,
@@ -8493,6 +8571,43 @@ function ChatViewContent(props: ChatViewProps) {
       settings,
     ],
   );
+
+  /** A new account fixes every chat stopped on the old one, so the others follow this one. */
+  const switchPausedThreadAccount = useCallback(
+    (choice: ThreadPauseAccountChoice) => {
+      const selection = switchPausedThreadTo(choice);
+      if (selection === null) return;
+      void resumeOthersBehindThisChat(
+        otherPausedThreads.map((thread) => thread.id),
+        selection,
+      );
+    },
+    [otherPausedThreads, resumeOthersBehindThisChat, switchPausedThreadTo],
+  );
+
+  // Signing the same provider in to a different account changes no chat's
+  // model, so this chat and the others simply resume once the new account shows.
+  const pausedProvider = providerStatuses.find((entry) => entry.instanceId === pausedInstanceId);
+  const pausedAccount = pausedProvider?.auth.email ?? pausedProvider?.auth.label ?? null;
+  useEffect(() => {
+    const waiting = signInResumeRef.current;
+    if (waiting === null) return;
+    if (threadPause === null || waiting.instanceId !== pausedInstanceId) {
+      signInResumeRef.current = null;
+      return;
+    }
+    if (pausedAccount === null || pausedAccount === waiting.account) return;
+    signInResumeRef.current = null;
+    resumePausedThread();
+    void resumeOthersBehindThisChat(otherPausedThreads.map((thread) => thread.id));
+  }, [
+    otherPausedThreads,
+    pausedAccount,
+    pausedInstanceId,
+    resumeOthersBehindThisChat,
+    resumePausedThread,
+    threadPause,
+  ]);
 
   useEffect(() => {
     const waiter = compactionCompletionWaiterRef.current;
@@ -10495,9 +10610,9 @@ function ChatViewContent(props: ChatViewProps) {
                       {...threadPause}
                       resuming={isResumeIncompleteTurnBusy}
                       disabled={activeEnvironmentUnavailable || isWorking}
-                      onResume={() => resumePausedThread()}
+                      onResume={onResumePausedClicked}
                       onSwitchModel={switchPausedThreadTo}
-                      onSwitchAccount={switchPausedThreadTo}
+                      onSwitchAccount={switchPausedThreadAccount}
                       onDismiss={dismissThreadError}
                       onResetSession={() => void resetFailedThreadSession()}
                       {...(hostRepairErrorKey && hostRepairStartedErrorKey !== hostRepairErrorKey
@@ -10699,6 +10814,22 @@ function ChatViewContent(props: ChatViewProps) {
                 }
               />
             ) : null}
+
+            <ResumePausedThreadsDialog
+              open={resumeChoiceOpen && otherPausedThreads.length > 0}
+              modelName={
+                pausedProvider?.models.find((model) => model.slug === pausedModel)?.name ??
+                pausedModel ??
+                "this model"
+              }
+              threads={otherPausedThreads}
+              onClose={() => setResumeChoiceOpen(false)}
+              onResume={(threadIds) => {
+                setResumeChoiceOpen(false);
+                resumePausedThread();
+                void resumeOthersBehindThisChat(threadIds.map((id) => ThreadId.make(id)));
+              }}
+            />
 
             {pendingProviderAccountSwitchInstanceId !== null &&
             providerStatuses.find(
