@@ -340,6 +340,20 @@ export async function executeAtomQuery<A, E>(
   return executeAtomCommand(() => Effect.runPromiseExit(query), options, reporter);
 }
 
+/**
+ * `singleFlight` and `latest` hand one call's result to the others, which only
+ * makes sense within a command: commands sharing a scheduler and key would
+ * otherwise receive each other's results. `serial` shares no result, and
+ * commands queue together on purpose, so its key stays as given.
+ */
+const scopeSharedResults = <W>(
+  label: string,
+  concurrency: AtomCommandConcurrency<W>,
+): AtomCommandConcurrency<W> =>
+  concurrency.mode === "singleFlight" || concurrency.mode === "latest"
+    ? { ...concurrency, key: (input) => `${label}\u0000${concurrency.key(input)}` }
+    : concurrency;
+
 export function createRuntimeCommand<R, ER, W, A, E>(
   runtime: Atom.AtomRuntime<R, ER>,
   options: {
@@ -350,7 +364,10 @@ export function createRuntimeCommand<R, ER, W, A, E>(
   },
 ): AtomCommand<W, A, E | ER> {
   const scheduler = options.scheduler ?? createAtomCommandScheduler();
-  const concurrency = options.concurrency ?? { mode: "parallel" as const };
+  const concurrency = scopeSharedResults(
+    options.label,
+    options.concurrency ?? { mode: "parallel" as const },
+  );
   return {
     label: options.label,
     run: (registry, input) =>

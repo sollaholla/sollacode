@@ -481,6 +481,34 @@ describe("runtime command runner", () => {
     registry.dispose();
   });
 
+  it("never hands one command the result of another sharing a scheduler and key", async () => {
+    const latch = Latch.makeUnsafe();
+    const runtime = Atom.runtime(Layer.empty);
+    const scheduler = createAtomCommandScheduler();
+    const concurrency = { mode: "singleFlight" as const, key: (key: string) => key };
+    const accounts = createRuntimeCommand(runtime, {
+      label: "test.accounts",
+      scheduler,
+      concurrency,
+      execute: () => latch.await.pipe(Effect.as({ sessions: [] })),
+    });
+    const logins = createRuntimeCommand(runtime, {
+      label: "test.logins",
+      scheduler,
+      concurrency,
+      execute: () => latch.await.pipe(Effect.as(["a login"])),
+    });
+    const registry = AtomRegistry.make();
+
+    const first = accounts.run(registry, "same-environment");
+    const second = logins.run(registry, "same-environment");
+    latch.openUnsafe();
+
+    expect(await first).toMatchObject({ _tag: "Success", value: { sessions: [] } });
+    expect(await second).toMatchObject({ _tag: "Success", value: ["a login"] });
+    registry.dispose();
+  });
+
   it("coalesces pending latest-value commands without interrupting the active call", async () => {
     const firstLatch = Latch.makeUnsafe();
     const executed: number[] = [];
