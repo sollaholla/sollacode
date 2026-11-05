@@ -373,7 +373,7 @@ export const ThreadTerminalsToolkitRegistrationLive = McpServer.toolkit(
 
 export const WorkspaceConsultToolkitRegistrationLive = McpServer.toolkit(
   WorkspaceConsultToolkit,
-).pipe(Layer.provide(WorkspaceConsultToolkitHandlersLive));
+).pipe(Layer.provide(WorkspaceConsultToolkitHandlersLive), Layer.provide(ThreadHistoryQuery.layer));
 
 export const AgentWorkspaceToolkitRegistrationLive = McpServer.toolkit(AgentWorkspaceToolkit).pipe(
   Layer.provide(AgentWorkspaceToolkitHandlersLive),

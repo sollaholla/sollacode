@@ -369,6 +369,11 @@ export interface OrchestratorToolContext {
     readonly activities: ReadonlyArray<ThreadHistoryActivityInput>;
   }>;
   /**
+   * A host lookup: reaches every computer connected to the host and the web,
+   * which this client's own thread list cannot. Answers with JSON text.
+   */
+  readonly lookup: (name: string, args: Record<string, unknown>) => Promise<string>;
+  /**
    * Read-only project inspection. Paths are confined to the project's own
    * workspace root by the server, so nothing here can reach outside a project
    * the user already has open.
@@ -965,6 +970,13 @@ interface ToolResult {
   readonly detail: string;
 }
 
+/** The host lookup behind each orchestrator tool of a different name. */
+const HOST_LOOKUPS: Readonly<Record<string, string>> = {
+  read_thread_history: "read_thread",
+  list_all_threads: "list_threads",
+  search_all_threads: "search_threads",
+};
+
 export async function executeOrchestratorTool(
   context: OrchestratorToolContext,
   call: { readonly name: string; readonly args: Record<string, unknown> },
@@ -1177,6 +1189,14 @@ async function runTool(
         outcome: "ok",
         detail: `"${query}": ${matches.length} match${matches.length === 1 ? "" : "es"} in ${threadsWithMatches} thread${threadsWithMatches === 1 ? "" : "s"}`,
       };
+    }
+
+    case "read_thread_history":
+    case "list_all_threads":
+    case "search_all_threads":
+    case "web_search": {
+      const answer = await context.lookup(HOST_LOOKUPS[call.name] ?? call.name, call.args);
+      return { value: answer, outcome: "ok", detail: call.name };
     }
 
     case "end_voice_session": {

@@ -3,6 +3,7 @@ import {
   AgentCallGrokSessionStartResult,
   OrchestratorLiveWorkEvent,
 } from "@t3tools/contracts";
+import { VOICE_LOOKUP_TOOLS } from "@t3tools/shared/voiceLookups";
 import * as Schema from "effect/Schema";
 
 import { isEchoProneDevice } from "../orchestrator/echoProneDevice";
@@ -39,13 +40,18 @@ const MAX_DELEGATIONS = 256;
 /** Spoken if the update stream drops; a retry looks for this prefix. */
 const UPDATES_DISCONNECTED = "I lost track of that work for a moment.";
 
-/** The one tool a Grok call's voice has: start the agent's work on what the person said. */
+/**
+ * A Grok call's tools. The lookups answer on the spot from the host; `start_work`
+ * hands anything else to the agent's chat. Web and X search are Grok's own and
+ * are added with the session (see `GROK_HOSTED_TOOLS`).
+ */
 export const GROK_CALL_TOOLS: ReadonlyArray<RealtimeFunctionTool> = [
+  ...VOICE_LOOKUP_TOOLS,
   {
     type: "function",
     name: AGENT_CALL_GROK_DELEGATE_TOOL,
     description:
-      "Start your work on what the person just said: anything that needs action, information, files, tools or a decision about work, and the person's answers to questions your work asked. Returns at once; what you find reaches you later as an update.",
+      "Start your work on what the person just said: anything that needs action, files, code, accounts, long research or a decision. Not for questions the lookups or a web search can answer. It returns at once; the result arrives later.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
 ];
@@ -270,6 +276,19 @@ export function createGrokCallSession(
     };
   };
 
+  /** Asks the host, which answers while the voice keeps the person company. */
+  const lookup = async (name: string, args: Record<string, unknown>) => {
+    if (!routes.lookupPath) return { error: "Lookups are not available on this call." };
+    const response = await fetch(url(routes.lookupPath), {
+      method: "POST",
+      headers,
+      credentials,
+      body: JSON.stringify({ sessionId, name, args }),
+    });
+    if (!response.ok) return { error: "That lookup failed. Offer to look into it another way." };
+    return response.text();
+  };
+
   const noteTranscript = (role: "user" | "assistant", text: string) => {
     const at = Math.max(0, Date.now() - startedAt);
     // Leading space: the host joins fragments as they come, like GPT-Live's deltas.
@@ -458,8 +477,8 @@ export function createGrokCallSession(
     },
     {
       ...callbacks,
-      onToolCall: async ({ name }) =>
-        name === AGENT_CALL_GROK_DELEGATE_TOOL ? delegate() : { error: `Unknown tool ${name}.` },
+      onToolCall: async ({ name, args }) =>
+        name === AGENT_CALL_GROK_DELEGATE_TOOL ? delegate() : lookup(name, args),
       onTranscript: (entry) => {
         if (!stopped) noteTranscript(entry.role, entry.text);
         callbacks.onTranscript?.(entry);

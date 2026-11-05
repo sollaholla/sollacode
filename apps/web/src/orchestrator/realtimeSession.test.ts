@@ -1831,6 +1831,35 @@ async function openGrokSession(
 }
 
 describe("Grok Voice capture and turn close", () => {
+  it("leaves Grok's own web search alone, and answers only tools of ours", async () => {
+    const onToolCall = vi.fn(async () => ({}));
+    const { sockets } = installGrokVoiceGlobals(makeTrack());
+    const session = createVoiceSession(OPTIONS, { onToolCall });
+    await session.start();
+    const socket = sockets[0]!;
+    socket.fire("message", { data: JSON.stringify({ type: "session.updated" }) });
+    socket.send.mockClear();
+    const finishedCall = (callId: string, name: string) => ({
+      data: JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: callId,
+        name,
+        arguments: '{"query":"weather"}',
+      }),
+    });
+
+    socket.fire("message", finishedCall("hosted-1", "web_search"));
+    socket.fire("message", finishedCall("hosted-2", "x_search"));
+    await flush();
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(socket.send).not.toHaveBeenCalled();
+
+    socket.fire("message", finishedCall("ours-1", "read_thread"));
+    await flush();
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    session.stop();
+  });
+
   it("acknowledges one committed turn after repeated transcript frames settle", async () => {
     vi.useFakeTimers();
     try {

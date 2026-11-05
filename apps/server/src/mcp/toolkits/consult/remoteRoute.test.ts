@@ -19,6 +19,7 @@ import { ServerEnvironment } from "../../../environment/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
+import { ThreadHistoryQuery } from "../history/ThreadHistoryQuery.ts";
 import { remoteConsultRouteLayer } from "./remoteRoute.ts";
 import { REMOTE_CONSULT_PATH } from "./types.ts";
 
@@ -58,6 +59,7 @@ function fixture() {
         Effect.succeed({ snapshotSequence: 1, projects: [], threads: [], updatedAt: "" } as never),
     }),
     Layer.mock(OrchestrationEngineService)({}),
+    Layer.mock(ThreadHistoryQuery)({}),
     Layer.mock(VmAgentStore)({ list: () => Effect.succeed([]) }),
     Layer.succeed(
       Crypto.Crypto,

@@ -71,6 +71,10 @@
       "types": "./src/agentCallVoice.ts",
       "import": "./src/agentCallVoice.ts"
     },
+    "./voiceLookups": {
+      "types": "./src/voiceLookups.ts",
+      "import": "./src/voiceLookups.ts"
+    },
     "./orchestratorCaller": {
       "types": "./src/orchestratorCaller.ts",
       "import": "./src/orchestratorCaller.ts"

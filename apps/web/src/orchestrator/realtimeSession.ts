@@ -32,6 +32,7 @@ import {
   isLikelyHallucinatedTranscript,
   parseRealtimeEvent,
   parseToolArguments,
+  isGrokHostedTool,
   type RealtimeFunctionTool,
   type RecentConversationEntry,
 } from "./realtimeProtocol";
@@ -329,6 +330,8 @@ export interface LiveSessionRoutes {
   readonly releasePath: string;
   /** Client delegations; answers with an NDJSON stream of work events. */
   readonly delegationPath: string;
+  /** Host lookups a Grok call's tools run; body `{ sessionId, name, args }`. */
+  readonly lookupPath?: string;
   /**
    * Extra fields merged over the start request body. Called as the session
    * starts and awaited only just before the offer is sent, so a caller can
@@ -1705,6 +1708,7 @@ export function createVoiceSession(
         return;
       }
       case "tool-call":
+        if (voiceProvider === "xai" && isGrokHostedTool(event.name)) return;
         void handleToolCall(event.callId, event.name, event.argumentsJson);
         return;
       case "session-configured":

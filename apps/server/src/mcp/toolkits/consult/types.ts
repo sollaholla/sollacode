@@ -19,9 +19,15 @@ const LenientNumber = Schema.Union([Schema.Number, Schema.FiniteFromString]);
  * breaks the whole MCP `tools/list`; the handler validates per-action fields.
  */
 export const WorkspaceConsultInput = Schema.Struct({
-  action: Schema.Literals(["list_projects", "list_threads", "ask", "read_thread"]).annotate({
+  action: Schema.Literals([
+    "list_projects",
+    "list_threads",
+    "ask",
+    "read_thread",
+    "search_threads",
+  ]).annotate({
     description:
-      "What to do. `list_projects` and `list_threads` discover what exists; `ask` puts a question to a project or an existing thread and waits for the reply; `read_thread` reads a conversation's recent messages (use it to collect an answer that was still being written).",
+      "What to do. `list_projects` and `list_threads` discover what exists; `ask` puts a question to a project or an existing thread and waits for the reply; `read_thread` reads a conversation's messages (use it to collect an answer that was still being written); `search_threads` finds text across every conversation.",
   }),
   projectId: Schema.optional(ProjectId).annotate({
     description:
@@ -48,6 +54,17 @@ export const WorkspaceConsultInput = Schema.Struct({
   }),
   limit: Schema.optional(LenientNumber).annotate({
     description: "How many recent messages `read_thread` returns. Defaults to 10.",
+  }),
+  query: Schema.optional(Schema.String.check(Schema.isMaxLength(500))).annotate({
+    description:
+      "Text to find. Required for `search_threads`; with `read_thread`, returns only that conversation's matching messages.",
+  }),
+  paged: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "With `read_thread`: return messages newest first with a `nextCursor` for older ones. Implied by `query` and `cursor`.",
+  }),
+  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))).annotate({
+    description: "`nextCursor` from the previous page of `read_thread` or `search_threads`.",
   }),
 });
 export type WorkspaceConsultInput = typeof WorkspaceConsultInput.Type;
@@ -95,6 +112,16 @@ export const ConsultMessage = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** One message `search_threads` found, and where. */
+export const ConsultSearchMatch = Schema.Struct({
+  threadId: ThreadId,
+  title: Schema.String,
+  role: Schema.String,
+  text: Schema.String,
+  createdAt: IsoDateTime,
+  ...ConsultRemoteLocation,
+});
+
 export const WorkspaceConsultResult = Schema.Struct({
   action: Schema.String,
   /** Short human-readable summary of what happened. */
@@ -104,6 +131,9 @@ export const WorkspaceConsultResult = Schema.Struct({
   /** The connected computers a list covered. Absent when there are none. */
   computers: Schema.optional(Schema.Array(ConsultComputer)),
   messages: Schema.optional(Schema.Array(ConsultMessage)),
+  matches: Schema.optional(Schema.Array(ConsultSearchMatch)),
+  /** Pass back as `cursor` for the next page. Absent on the last one. */
+  nextCursor: Schema.optional(Schema.String),
   /** The conversation `ask` used, so a follow-up can continue or poll it. */
   threadId: Schema.optional(ThreadId),
   /** The reply, when one arrived before the wait elapsed. */

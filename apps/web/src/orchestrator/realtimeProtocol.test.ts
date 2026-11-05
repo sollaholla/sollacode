@@ -30,6 +30,10 @@ describe("toolsForAuthority", () => {
       "describe_thread",
       "read_thread",
       "search_threads",
+      "read_thread_history",
+      "list_all_threads",
+      "search_all_threads",
+      "web_search",
       "end_voice_session",
       "get_orchestrator_settings",
       "get_runtime_state",
@@ -61,6 +65,10 @@ describe("toolsForAuthority", () => {
       "describe_thread",
       "read_thread",
       "search_threads",
+      "read_thread_history",
+      "list_all_threads",
+      "search_all_threads",
+      "web_search",
       "end_voice_session",
       "set_orchestrator_voice",
       "get_orchestrator_settings",
@@ -291,6 +299,21 @@ describe("reasoning effort", () => {
 });
 
 describe("buildSessionUpdate", () => {
+  it("leaves web search to Grok itself rather than our function of the same name", () => {
+    const update = buildSessionUpdate({
+      authority: "read-only",
+      confirmDestructiveActions: true,
+      language: "en",
+      model: "grok-voice-latest",
+      provider: "xai",
+    });
+    const tools = update.session.tools as ReadonlyArray<{ type: string; name?: string }>;
+    expect(tools.some((tool) => tool.type === "function" && tool.name === "web_search")).toBe(
+      false,
+    );
+    expect(tools).toContainEqual({ type: "web_search" });
+  });
+
   it("runs an agent call's own instructions and tools on Grok, not the orchestrator's", () => {
     const tool = {
       type: "function" as const,
@@ -308,7 +331,7 @@ describe("buildSessionUpdate", () => {
       call: { instructions: "You are Gregg.", tools: [tool] },
     });
     expect(update.session.instructions).toBe("You are Gregg.");
-    expect(update.session.tools).toEqual([tool]);
+    expect(update.session.tools).toEqual([tool, { type: "web_search" }, { type: "x_search" }]);
     expect(update.session.voice).toBe("eve");
   });
 

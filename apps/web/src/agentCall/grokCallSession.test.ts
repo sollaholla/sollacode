@@ -1,6 +1,7 @@
 // @effect-diagnostics preferSchemaOverJson:off
 import {
   AGENT_CALL_DELEGATION_PATH,
+  AGENT_CALL_LOOKUP_PATH,
   AGENT_CALL_GROK_SESSION_PATH,
   AGENT_CALL_SESSION_HEARTBEAT_PATH,
   AGENT_CALL_SESSION_RELEASE_PATH,
@@ -44,7 +45,13 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function fixture(options: { readonly startStatus?: number; readonly phoneLine?: boolean } = {}) {
+function fixture(
+  options: {
+    readonly startStatus?: number;
+    readonly phoneLine?: boolean;
+    readonly lookupStatus?: number;
+  } = {},
+) {
   const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
   const work = deferred<ReadableStreamDefaultController<Uint8Array>>();
   const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
@@ -62,6 +69,10 @@ function fixture(options: { readonly startStatus?: number; readonly phoneLine?: 
         instructions: "You are Gregg.",
       });
     }
+    if (path === AGENT_CALL_LOOKUP_PATH)
+      return options.lookupStatus === undefined
+        ? new Response('{"threads":[]}')
+        : new Response(null, { status: options.lookupStatus });
     if (path === AGENT_CALL_DELEGATION_PATH)
       return new Response(
         new ReadableStream<Uint8Array>({ start: (controller) => work.resolve(controller) }),
@@ -89,6 +100,7 @@ function fixture(options: { readonly startStatus?: number; readonly phoneLine?: 
         sessionPath: AGENT_CALL_GROK_SESSION_PATH,
         releasePath: AGENT_CALL_SESSION_RELEASE_PATH,
         delegationPath: AGENT_CALL_DELEGATION_PATH,
+        lookupPath: AGENT_CALL_LOOKUP_PATH,
         startBody: async () => ({ callId: "call-1", history: [] }),
         heartbeat: { path: AGENT_CALL_SESSION_HEARTBEAT_PATH, everySeconds: 15 },
       },
@@ -135,12 +147,42 @@ describe("Grok call session", () => {
       instructions: "You are Gregg.",
       tools: GROK_CALL_TOOLS,
     });
-    expect(GROK_CALL_TOOLS.map((tool) => tool.name)).toEqual(["start_work"]);
+    expect(GROK_CALL_TOOLS.map((tool) => tool.name)).toEqual([
+      "list_threads",
+      "read_thread",
+      "search_threads",
+      "start_work",
+    ]);
     await vi.advanceTimersByTimeAsync(15_000);
     expect(f.calls.at(-1)).toEqual({
       path: AGENT_CALL_SESSION_HEARTBEAT_PATH,
       body: { sessionId: "grok-call-1" },
     });
+  });
+
+  it("runs a lookup on the host at once, without starting the chat", async () => {
+    const f = fixture();
+    await f.start();
+    const output = await f.created.callbacks.onToolCall({
+      name: "search_threads",
+      args: { query: "deploy" },
+    });
+    expect(output).toBe('{"threads":[]}');
+    expect(f.calls.find((call) => call.path === AGENT_CALL_LOOKUP_PATH)?.body).toEqual({
+      sessionId: "grok-call-1",
+      name: "search_threads",
+      args: { query: "deploy" },
+    });
+    expect(f.calls.some((call) => call.path === AGENT_CALL_DELEGATION_PATH)).toBe(false);
+    expect(f.callbacks.onWorkingChange).not.toHaveBeenCalledWith(true);
+  });
+
+  it("tells the voice when a lookup failed, so it can say so", async () => {
+    const f = fixture({ lookupStatus: 500 });
+    await f.start();
+    expect(await f.created.callbacks.onToolCall({ name: "list_threads", args: {} })).toHaveProperty(
+      "error",
+    );
   });
 
   it("hands what was said to the chat and speaks its reply when it lands", async () => {

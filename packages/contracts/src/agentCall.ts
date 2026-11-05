@@ -47,6 +47,11 @@ export const AGENT_CALL_SESSION_RELEASE_PATH = "/api/agents/call/session/release
  */
 export const AGENT_CALL_DELEGATION_PATH = "/api/agents/call/delegation";
 /**
+ * Runs one read-only lookup for a live call (`AgentCallLookupInput`), answering
+ * with JSON text for the voice. Lookups never reach the agent's chat.
+ */
+export const AGENT_CALL_LOOKUP_PATH = "/api/agents/call/lookup";
+/**
  * Keeps an active call's lease: the device holding the call POSTs `{ sessionId }`
  * every `AGENT_CALL_HEARTBEAT_SECONDS`. The host ends an active call whose lease
  * lapses (`AGENT_CALL_LEASE_SECONDS`), so a crashed tab or killed app can't
@@ -223,6 +228,13 @@ export const AgentCallSessionStartInput = Schema.Struct({
 export type AgentCallSessionStartInput = typeof AgentCallSessionStartInput.Type;
 
 /** Body of `AGENT_CALL_GROK_SESSION_PATH`. */
+export const AgentCallLookupInput = Schema.Struct({
+  sessionId: TrimmedNonEmptyString,
+  name: Schema.String.check(Schema.isMaxLength(64)),
+  args: Schema.Record(Schema.String, Schema.Unknown),
+});
+export type AgentCallLookupInput = typeof AgentCallLookupInput.Type;
+
 export const AgentCallGrokSessionStartInput = Schema.Struct({
   callId: AgentCallId,
   history: Schema.Array(OrchestratorLiveHistoryEntry).check(Schema.isMaxLength(24)),

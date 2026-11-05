@@ -2,6 +2,8 @@ import { WebPushLive, WebPushTransport } from "./notifications/WebPush.ts";
 import { WebPushReactorLive } from "./notifications/WebPushReactor.ts";
 import * as PreviewExpiry from "./preview/Expiry.ts";
 import { OrchestratorLiveLayer } from "./orchestrator/OrchestratorLive.ts";
+import * as ThreadHistoryQuery from "./mcp/toolkits/history/ThreadHistoryQuery.ts";
+import { VoiceLookupsLayer } from "./voice/VoiceLookups.ts";
 import * as AgentCalls from "./vm/AgentCalls.ts";
 import { AgentCallLiveLayer } from "./vm/AgentCallLive.ts";
 import { AgentCallReactorLive } from "./vm/AgentCallReactor.ts";
@@ -22,6 +24,7 @@ import {
   orchestratorLiveRouteLayer,
   orchestratorRunCommandRouteLayer,
   agentCallRouteLayer,
+  orchestratorLookupRouteLayer,
   assetRouteLayer,
   fileViewRouteLayer,
   serverEnvironmentHttpApiLayer,
@@ -526,6 +529,7 @@ export const makeRoutesLayer = Layer.mergeAll(
     otlpTracesProxyRouteLayer,
     orchestratorRealtimeTokenRouteLayer,
     orchestratorLiveRouteLayer,
+    orchestratorLookupRouteLayer,
     orchestratorRunCommandRouteLayer,
     agentCallRouteLayer,
     assetRouteLayer,
@@ -543,6 +547,12 @@ export const makeRoutesLayer = Layer.mergeAll(
 ).pipe(
   HttpRouter.provideRequest(ThreadArtifactLayerLive),
   HttpRouter.provideRequest(OrchestratorLiveLayer),
+  HttpRouter.provideRequest(
+    VoiceLookupsLayer.pipe(
+      Layer.provideMerge(ThreadHistoryQuery.layer),
+      Layer.provide(PersistenceLayerLive),
+    ),
+  ),
   HttpRouter.provideRequest(AgentCallLiveLayer),
   Layer.provide(ActionApprovalBroker.layer),
   Layer.provide(PreviewMediaBroker.layer),

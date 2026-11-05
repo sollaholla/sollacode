@@ -30,6 +30,7 @@ import * as Deferred from "effect/Deferred";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import { VoiceLookups } from "../voice/VoiceLookups.ts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -1840,6 +1841,9 @@ it.effect(
       const app = HttpRouter.toWebHandler(
         agentCallRouteLayer.pipe(
           HttpRouter.provideRequest(AgentCallLiveLayer.pipe(Layer.provide(provided))),
+          HttpRouter.provideRequest(
+            Layer.mock(VoiceLookups)({ quickAnswer: () => Effect.succeed(Option.none()) }),
+          ),
           HttpRouter.provideRequest(provided),
         ),
         { disableLogger: true },

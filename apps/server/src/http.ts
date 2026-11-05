@@ -1,6 +1,11 @@
 import Mime from "@effect/platform-node/Mime";
 import {
   AGENT_CALL_DELEGATION_PATH,
+  AGENT_CALL_LOOKUP_PATH,
+  AgentCallLookupInput,
+  ORCHESTRATOR_LOOKUP_PATH,
+  ORCHESTRATOR_THREAD_ID,
+  OrchestratorLookupInput,
   AGENT_CALL_SESSION_HEARTBEAT_PATH,
   AGENT_CALL_GROK_SESSION_PATH,
   AGENT_CALL_SESSION_PATH,
@@ -69,6 +74,7 @@ import {
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as OrchestratorCredentials from "./orchestrator/OrchestratorCredentials.ts";
 import { OrchestratorLive, OrchestratorLiveError } from "./orchestrator/OrchestratorLive.ts";
+import { type QuickAnswerRequest, VoiceLookups } from "./voice/VoiceLookups.ts";
 import * as ReadOnlyCommand from "./orchestrator/readOnlyCommand.ts";
 import { AgentCallLive } from "./vm/AgentCallLive.ts";
 import { sessionDeviceLabel } from "./vm/AgentCalls.ts";
@@ -421,6 +427,28 @@ const liveRouteError = (error: OrchestratorLiveError) =>
   Effect.succeed(HttpServerResponse.text(error.detail, { status: error.status }));
 
 /** NDJSON work events, with blank keepalive lines so idle proxies keep the stream open. */
+/** A voice request's answer from the fast path, when it can give one. */
+const quickWork = (request: Option.Option<QuickAnswerRequest>, delegationId: string) =>
+  Option.match(request, {
+    onNone: () => Effect.succeed(Option.none<OrchestratorLiveWorkEvent>()),
+    onSome: (quick) =>
+      VoiceLookups.pipe(
+        Effect.flatMap((voice) => voice.quickAnswer(quick)),
+        Effect.map(
+          Option.map(
+            (text): OrchestratorLiveWorkEvent => ({ delegationId, status: "completed", text }),
+          ),
+        ),
+      ),
+  });
+
+/** A lookup's JSON text, which goes straight back to the voice as a tool result. */
+const lookupResponse = (text: string) =>
+  HttpServerResponse.text(text, {
+    contentType: "application/json",
+    headers: { "cache-control": "no-store" },
+  });
+
 const liveWorkResponse = <E>(events: Stream.Stream<OrchestratorLiveWorkEvent, E>) => {
   const encoder = new TextEncoder();
   return HttpServerResponse.stream(
@@ -481,6 +509,8 @@ export const orchestratorLiveRouteLayer = Layer.mergeAll(
             }),
         ),
       );
+      const answer = yield* quickWork(yield* service.quickRequest(input), input.delegationId);
+      if (Option.isSome(answer)) return liveWorkResponse(Stream.make(answer.value));
       const id = yield* service.delegate(input);
       return liveWorkResponse(service.watch(id));
     }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
@@ -593,6 +623,8 @@ export const agentCallRouteLayer = Layer.mergeAll(
             }),
         ),
       );
+      const answer = yield* quickWork(yield* service.quickRequest(input), input.delegationId);
+      if (Option.isSome(answer)) return liveWorkResponse(Stream.make(answer.value));
       return liveWorkResponse(yield* service.delegate(input));
     }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
   ),
@@ -605,6 +637,24 @@ export const agentCallRouteLayer = Layer.mergeAll(
       const input = yield* agentCallSessionRef;
       yield* service.release(input.sessionId);
       return HttpServerResponse.empty({ status: 204 });
+    }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
+  ),
+  HttpRouter.add(
+    "POST",
+    AGENT_CALL_LOOKUP_PATH,
+    Effect.gen(function* () {
+      yield* authenticateRawRouteWithScope(AuthVmOperateScope);
+      const service = yield* AgentCallLive;
+      const voice = yield* VoiceLookups;
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const input = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(AgentCallLookupInput)),
+        Effect.mapError(
+          () => new OrchestratorLiveError({ status: 400, detail: "A valid lookup is required." }),
+        ),
+      );
+      const speaksFor = yield* service.speaksFor(input.sessionId);
+      return lookupResponse(yield* voice.lookup(speaksFor, input.name, input.args));
     }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
   ),
   // The device holding the call checks in; a call whose device stops ends.
@@ -718,6 +768,24 @@ export const orchestratorRealtimeTokenRouteLayer = HttpRouter.add(
  * of irreversible actions that a mis-transcribed sentence could otherwise
  * trigger.
  */
+/** Runs one read-only host lookup for the orchestrator's voice. */
+export const orchestratorLookupRouteLayer = HttpRouter.add(
+  "POST",
+  ORCHESTRATOR_LOOKUP_PATH,
+  Effect.gen(function* () {
+    yield* authenticateRawRouteWithScope(AuthOrchestrationOperateScope);
+    const voice = yield* VoiceLookups;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const input = yield* request.json.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(OrchestratorLookupInput)),
+      Effect.mapError(
+        () => new OrchestratorLiveError({ status: 400, detail: "A valid lookup is required." }),
+      ),
+    );
+    return lookupResponse(yield* voice.lookup(ORCHESTRATOR_THREAD_ID, input.name, input.args));
+  }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
+);
+
 export const orchestratorRunCommandRouteLayer = HttpRouter.add(
   "POST",
   ORCHESTRATOR_RUN_COMMAND_PATH,

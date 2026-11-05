@@ -214,6 +214,17 @@ function trimRecentHistory(
   return kept;
 }
 
+/**
+ * Searches Grok Voice runs itself. It reports each one as an ordinary finished
+ * function call, so the session must not answer those: Grok already has the
+ * results, and an output sent back would start a second reply.
+ */
+export const GROK_HOSTED_TOOLS = [{ type: "web_search" }, { type: "x_search" }] as const;
+const GROK_HOSTED_TOOL_NAMES: ReadonlySet<string> = new Set(
+  GROK_HOSTED_TOOLS.map((tool) => tool.type),
+);
+export const isGrokHostedTool = (name: string) => GROK_HOSTED_TOOL_NAMES.has(name);
+
 /** A function tool as the realtime APIs take it. */
 export interface RealtimeFunctionTool {
   readonly type: "function";
@@ -309,7 +320,12 @@ export function buildSessionUpdate(input: {
       type: "session.update",
       session: {
         instructions: input.call?.instructions ?? buildInstructions(input),
-        tools: input.call?.tools ?? toolsForAuthority(input.authority),
+        tools: [
+          ...(input.call?.tools ?? toolsForAuthority(input.authority)).filter(
+            (tool) => !isGrokHostedTool(tool.name),
+          ),
+          ...GROK_HOSTED_TOOLS,
+        ],
         tool_choice: "auto",
         ...(input.voice !== undefined && input.voice.length > 0 ? { voice: input.voice } : {}),
         ...(reasoningCapable ? { reasoning: { effort: REALTIME_REASONING_EFFORT } } : {}),

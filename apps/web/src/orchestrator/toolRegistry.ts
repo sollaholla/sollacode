@@ -188,6 +188,84 @@ export const ORCHESTRATOR_TOOLS: ReadonlyArray<OrchestratorToolDefinition> = [
   },
   {
     type: "function",
+    name: "read_thread_history",
+    description:
+      "Page through a long thread's older messages or find text inside one, on this computer or a connected one. read_thread shows the latest messages; use this to go further back. Follow nextCursor for the next page. Takes the thread id from list_all_threads.",
+    minAuthority: "read-only",
+    requiresConfirmation: false,
+    parameters: {
+      type: "object",
+      properties: {
+        ...REASON_PARAMETER,
+        threadId: { type: "string", description: "The thread's id." },
+        environmentId: {
+          type: "string",
+          description: "The computer it is on, from list_all_threads. Omit for this computer.",
+        },
+        query: { type: "string", description: "Only messages containing this text." },
+        cursor: { type: "string", description: "nextCursor from the previous page." },
+      },
+      required: ["threadId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "list_all_threads",
+    description:
+      "List threads on this computer and every computer connected to it, with the ids read_thread_history needs. Use it for anything on another computer.",
+    minAuthority: "read-only",
+    requiresConfirmation: false,
+    parameters: {
+      type: "object",
+      properties: {
+        ...REASON_PARAMETER,
+        query: {
+          type: "string",
+          description: "Only threads whose title, project or computer contains this text.",
+        },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "search_all_threads",
+    description:
+      "Search what threads have said on this computer and every connected computer, further back than search_threads reaches. Follow nextCursor to keep searching.",
+    minAuthority: "read-only",
+    requiresConfirmation: false,
+    parameters: {
+      type: "object",
+      properties: {
+        ...REASON_PARAMETER,
+        query: { type: "string", description: "The text to look for." },
+        cursor: { type: "string", description: "nextCursor from the previous page." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "web_search",
+    description:
+      "Search the internet for current facts: news, prices, weather, documentation, anything not in the user's workspace.",
+    minAuthority: "read-only",
+    requiresConfirmation: false,
+    parameters: {
+      type: "object",
+      properties: {
+        ...REASON_PARAMETER,
+        query: { type: "string", description: "What to find out." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
     name: "end_voice_session",
     description:
       'Stop listening, or stop talking, because the user asked you to out loud. Use mode "stop" when they are done with the conversation — "that\'s all", "goodbye", "stop listening", "you can go now" — and mode "hush" when they only want you to stop talking but keep listening — "quiet", "shut up", "stop talking", "enough". Call this instead of telling them to press a button. Do not call it for "stop" aimed at a thread; that is interrupt_thread.',

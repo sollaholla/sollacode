@@ -114,7 +114,7 @@ import {
 import { useOrchestratorThread } from "./useOrchestratorThread";
 import { isAgentCallLive, sayVoiceWaitsForCall } from "../agentCall/agentCallActivity";
 import { randomUUID } from "../lib/utils";
-import { ORCHESTRATOR_RUN_COMMAND_PATH } from "@t3tools/contracts";
+import { ORCHESTRATOR_LOOKUP_PATH, ORCHESTRATOR_RUN_COMMAND_PATH } from "@t3tools/contracts";
 import { useComposerDraftStore } from "../composerDraftStore";
 import {
   isRepeatedAssistantLine,
@@ -1203,6 +1203,24 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     [],
   );
 
+  const lookup = useCallback(async (name: string, args: Record<string, unknown>) => {
+    const environmentId = primaryEnvironmentIdRef.current;
+    const connection = environmentId === null ? null : readPreparedConnection(environmentId);
+    if (connection === null) throw new OrchestratorToolError("No environment is connected.");
+    const response = await fetch(joinUrl(connection.httpBaseUrl, ORCHESTRATOR_LOOKUP_PATH), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(connection.httpAuthorization?.token === undefined
+          ? {}
+          : { authorization: `Bearer ${connection.httpAuthorization.token}` }),
+      },
+      body: JSON.stringify({ name, args }),
+    });
+    if (!response.ok) throw new OrchestratorToolError("That lookup failed.");
+    return response.text();
+  }, []);
+
   const runCommand = useCallback(
     async (input: {
       readonly command: string;
@@ -2116,6 +2134,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
                 createSideChat,
                 setThreadSettled,
                 readThread,
+                lookup,
                 inspectProject,
                 endVoiceSession,
                 setOrchestratorVoice,

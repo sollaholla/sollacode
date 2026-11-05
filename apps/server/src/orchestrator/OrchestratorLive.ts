@@ -28,6 +28,7 @@ import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/u
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import type { QuickAnswerRequest } from "../voice/VoiceLookups.ts";
 import { resolveOrchestratorApiKey } from "./OrchestratorCredentials.ts";
 
 export class OrchestratorLiveError extends Schema.TaggedErrorClass<OrchestratorLiveError>()(
@@ -460,6 +461,30 @@ export const makeOrchestratorLive = Effect.gen(function* () {
     },
     (effect) => semaphore.withPermits(1)(effect),
   );
+  /**
+   * What the fast path needs to try this request, or none when the chat must
+   * take it: it is already on this conversation, so the words may steer that work.
+   */
+  const quickRequest = Effect.fn("OrchestratorLive.quickRequest")(function* (
+    input: OrchestratorLiveDelegationInput,
+  ) {
+    const session = sessions.get(input.sessionId);
+    if (
+      session === undefined ||
+      session.requests.has(input.delegationId) ||
+      input.sequence <= session.lastSequence
+    )
+      return Option.none<QuickAnswerRequest>();
+    if (session.activeWorkId) {
+      const active = yield* readWork(session.activeWorkId);
+      if (!terminalStatuses.has(active.status)) return Option.none<QuickAnswerRequest>();
+    }
+    return Option.some<QuickAnswerRequest>({
+      speaksFor: ORCHESTRATOR_THREAD_ID,
+      speakerName: ORCHESTRATOR_THREAD_TITLE,
+      transcript: input.context,
+    });
+  });
   const watch = (id: VmAgentDelegationId) =>
     Stream.unwrap(
       Effect.gen(function* () {
@@ -486,6 +511,7 @@ export const makeOrchestratorLive = Effect.gen(function* () {
   return {
     start,
     delegate,
+    quickRequest,
     watch,
     release: (sessionId: string) =>
       Effect.sync(() => {

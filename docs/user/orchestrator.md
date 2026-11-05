@@ -856,11 +856,17 @@ chat has every orchestrator tool and uses the model picked in its composer, so n
 needed. (Earlier versions sent voice work to an agent named **Personal Assistant**, and stopped
 working if that agent was renamed or removed.)
 
+Questions don't wait for that chat. A fast model on the server answers them first, in a few seconds:
+it can list threads, read them a page at a time, search them, and search the web, on this computer
+and on the computers connected to it. It only reads. Anything that needs real work goes to the chat
+as above, and so does anything said while the chat is working, because those words may be a
+correction. This uses your OpenAI key.
+
 The conversation can continue while work runs. Corrections and answers join the request still being
 worked on, repeated network requests are deduplicated, and progress is the chat's latest reply.
 Progress is kept separate from completion. Consequential external actions still require approval in
 Solla; speaking a request or receiving an acknowledgment does not bypass those approvals.
-At **Read only** authority, GPT-Live can converse but cannot hand off work.
+At **Read only** authority, GPT-Live can converse and answer questions but cannot hand off work.
 At **Full** authority, voice requests may create and configure agents, so "make me an agent that …"
 works; at **Send** the chat is told not to.
 

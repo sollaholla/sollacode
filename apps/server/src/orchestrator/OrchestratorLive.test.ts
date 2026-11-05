@@ -11,6 +11,7 @@ import {
   type OrchestrationCommand,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import { VoiceLookups } from "../voice/VoiceLookups.ts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -371,6 +372,9 @@ it("preserves session ownership across authenticated HTTP requests and closes th
   const app = HttpRouter.toWebHandler(
     orchestratorLiveRouteLayer.pipe(
       HttpRouter.provideRequest(OrchestratorLiveLayer.pipe(Layer.provide(dependencies))),
+      HttpRouter.provideRequest(
+        Layer.mock(VoiceLookups)({ quickAnswer: () => Effect.succeed(Option.none()) }),
+      ),
       HttpRouter.provideRequest(dependencies),
     ),
     { disableLogger: true },

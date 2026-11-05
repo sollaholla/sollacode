@@ -73,6 +73,7 @@ const makeContext = (
     createSideChat,
     setThreadSettled,
     readThread,
+    lookup: vi.fn(async () => "{}"),
     inspectProject,
     endVoiceSession,
     setOrchestratorVoice,
@@ -644,6 +645,23 @@ describe("close_proposed_plan", () => {
     expect(result.closed).toBe(false);
     expect(result.say).toContain("no plan waiting");
     expect(context.closeProposedPlan).not.toHaveBeenCalled();
+  });
+});
+
+describe("host lookups", () => {
+  it("runs each one on the host under its own name", async () => {
+    const lookup = vi.fn(async () => '{"answer":"Sunny."}');
+    const context = makeContext({ lookup });
+    for (const [tool, host] of [
+      ["web_search", "web_search"],
+      ["read_thread_history", "read_thread"],
+      ["list_all_threads", "list_threads"],
+      ["search_all_threads", "search_threads"],
+    ] as const) {
+      const result = await executeOrchestratorTool(context, { name: tool, args: { query: "x" } });
+      expect(result).toBe('{"answer":"Sunny."}');
+      expect(lookup).toHaveBeenLastCalledWith(host, { query: "x" });
+    }
   });
 });
 

@@ -36,7 +36,16 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
-import { type ConsultAskLog, handleRemoteConsult, handleWorkspaceConsult } from "./handlers.ts";
+import {
+  type ThreadHistoryQueryRequest,
+  ThreadHistoryQuery,
+} from "../history/ThreadHistoryQuery.ts";
+import {
+  type ConsultAskLog,
+  consultAs,
+  handleRemoteConsult,
+  handleWorkspaceConsult,
+} from "./handlers.ts";
 import {
   REMOTE_CONSULT_PATH,
   type RemoteConsultCaller,
@@ -172,11 +181,37 @@ const makeHarness = (options: {
   readonly computers?: ReadonlyArray<RelayedEnvironmentSource>;
   /** How those computers answer; defaults to failing the test's network. */
   readonly remote?: (request: HttpClientRequest.HttpClientRequest) => Response;
+  /** Each conversation's messages as history pages see them, and the cursor they end on. */
+  readonly history?: Readonly<
+    Record<string, { readonly texts: ReadonlyArray<string>; readonly nextCursor?: string }>
+  >;
 }) => {
   const commands: OrchestrationCommand[] = [];
   const remoteRequests: Array<HttpClientRequest.HttpClientRequest> = [];
   const renewedTokens: Array<string> = [];
   const computers = options.computers ?? [];
+  const historyQueries: Array<ThreadHistoryQueryRequest> = [];
+  const historyLayer = Layer.mock(ThreadHistoryQuery)({
+    query: (request) => {
+      historyQueries.push(request);
+      const page = options.history?.[request.threadId];
+      return Effect.succeed({
+        entries: (page?.texts ?? []).map((text, index) => ({
+          entryType: "message",
+          id: `${request.threadId}-${index}`,
+          turnId: null,
+          text,
+          textChars: text.length,
+          textTruncated: false,
+          createdAt: iso,
+          role: "assistant",
+          isStreaming: false,
+          updatedAt: iso,
+        })),
+        pagination: { nextCursor: page?.nextCursor ?? null },
+      } as never);
+    },
+  });
   const relaysLayer = Layer.mock(RelayedEnvironments)({
     get: (environmentId) =>
       Effect.succeed(
@@ -274,6 +309,7 @@ const makeHarness = (options: {
   return {
     commands,
     detailReads,
+    historyQueries,
     remoteRequests,
     renewedTokens,
     state,
@@ -285,6 +321,7 @@ const makeHarness = (options: {
       relaysLayer,
       environmentLayer,
       httpLayer,
+      historyLayer,
     ),
   };
 };
@@ -296,7 +333,8 @@ type ConsultServices =
   | Crypto.Crypto
   | RelayedEnvironments
   | ServerEnvironment
-  | HttpClient.HttpClient;
+  | HttpClient.HttpClient
+  | ThreadHistoryQuery;
 
 const consult = (
   input: WorkspaceConsultInput,
@@ -828,7 +866,7 @@ it.effect("reads conversation messages through a bounded read", () =>
         { role: "assistant", text: "Latest answer", createdAt: iso },
       ],
     });
-    const result = yield* consult(
+    const result = yield* consultAnywhere(
       { action: "read_thread", threadId: medicalThreadId, limit: 1 },
       layer,
     );
@@ -1449,5 +1487,136 @@ it.effect("what a computer answers survives the wire", () =>
       ok: false,
       error: { _tag: "WorkspaceConsultFailedError", operation: "x", detail: "y" },
     });
+  }),
+);
+
+it.effect("read_thread pages through history and hands back the next cursor", () =>
+  Effect.gen(function* () {
+    const { layer, historyQueries } = makeHarness({
+      threads: [agentThreadShell, notesThreadShell],
+      history: { [notesThreadId]: { texts: ["Newest", "Older"], nextCursor: "page-2" } },
+    });
+    const result = yield* consultAnywhere(
+      { action: "read_thread", threadId: notesThreadId, paged: true, limit: 2 },
+      layer,
+    );
+    assert.deepStrictEqual(
+      result.messages?.map((message) => message.text),
+      ["Newest", "Older"],
+    );
+    assert.strictEqual(result.nextCursor, "page-2");
+    assert.strictEqual(historyQueries[0]?.order, "desc");
+  }),
+);
+
+it.effect("read_thread looks inside a conversation with a query, from a cursor", () =>
+  Effect.gen(function* () {
+    const { layer, historyQueries } = makeHarness({
+      threads: [agentThreadShell, notesThreadShell],
+      history: { [notesThreadId]: { texts: ["The deploy passed"] } },
+    });
+    const result = yield* consultAnywhere(
+      { action: "read_thread", threadId: notesThreadId, query: "deploy", cursor: "page-2" },
+      layer,
+    );
+    assert.strictEqual(result.nextCursor, undefined);
+    assert.strictEqual(historyQueries[0]?.query, "deploy");
+    assert.strictEqual(historyQueries[0]?.cursor, "page-2");
+  }),
+);
+
+it.effect("search_threads needs something to look for", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({});
+    const error = yield* Effect.flip(consultAnywhere({ action: "search_threads" }, layer));
+    assert.strictEqual(error._tag, "WorkspaceConsultInvalidInputError");
+  }),
+);
+
+it.effect("search_threads reports matches with the conversation they came from", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({
+      threads: [agentThreadShell, notesThreadShell],
+      history: { [notesThreadId]: { texts: ["The deploy passed"] } },
+    });
+    const result = yield* consultAnywhere({ action: "search_threads", query: "deploy" }, layer);
+    assert.deepStrictEqual(
+      result.matches?.map((match) => [match.threadId, match.title, match.text]),
+      [[notesThreadId, "Release notes", "The deploy passed"]],
+    );
+    assert.strictEqual(result.nextCursor, undefined);
+  }),
+);
+
+it.effect("search_threads adds connected computers and resumes each from its own place", () =>
+  Effect.gen(function* () {
+    const { layer, remoteRequests } = makeHarness({
+      computers: [windows],
+      remote: () =>
+        answerWith({
+          action: "search_threads",
+          status: "Searched 25 of 40 remaining conversation(s).",
+          matches: [
+            {
+              threadId: remoteThreadId,
+              title: "Far chat",
+              role: "assistant",
+              text: "The deploy failed there",
+              createdAt: iso,
+            },
+          ],
+          nextCursor: "25",
+        }),
+    });
+    const first = yield* consultAnywhere({ action: "search_threads", query: "deploy" }, layer);
+    const far = first.matches?.find((match) => match.threadId === remoteThreadId);
+    assert.strictEqual(far?.environmentId, windowsEnvironmentId);
+    assert.strictEqual(far?.computer, "Windows PC");
+
+    yield* consultAnywhere(
+      { action: "search_threads", query: "deploy", cursor: first.nextCursor! },
+      layer,
+    );
+    assert.strictEqual(remoteRequests.length, 2);
+    assert.strictEqual(sentBody(remoteRequests[1]!).input.cursor, "25");
+  }),
+);
+
+it.effect("a computer that cannot be reached leaves the search answering", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({
+      computers: [windows],
+      remote: () => new Response(null, { status: 500 }),
+      threads: [agentThreadShell, notesThreadShell],
+      history: { [notesThreadId]: { texts: ["The deploy passed"] } },
+    });
+    const result = yield* consultAnywhere({ action: "search_threads", query: "deploy" }, layer);
+    assert.strictEqual(result.matches?.length, 1);
+    assert.match(result.status, /Could not reach Windows PC/);
+  }),
+);
+
+it.effect("a voice lookup may read its own chat, which a chat's own consult may not", () =>
+  Effect.gen(function* () {
+    const { layer } = makeHarness({
+      history: { [agentThreadId]: { texts: ["What I said earlier"] } },
+    });
+    const own = { action: "read_thread" as const, threadId: agentThreadId, paged: true };
+    const refused = yield* Effect.flip(consult(own, layer));
+    assert.strictEqual(refused._tag, "WorkspaceConsultRefusedError");
+    const result = yield* consultAs(
+      {
+        threadId: agentThreadId,
+        environmentId: hereEnvironmentId,
+        managesAgents: false,
+        readsEverything: true,
+      },
+      own,
+      new Map(),
+    ).pipe(
+      Effect.provide(layer),
+      Effect.map((value): WorkspaceConsultResult => value),
+    );
+    assert.strictEqual(result.messages?.[0]?.text, "What I said earlier");
   }),
 );

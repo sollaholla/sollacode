@@ -406,7 +406,11 @@ system default or an unplugged microphone by itself.
 
 During a call:
 
-- What you say goes into the agent's own chat as an ordinary message, starting with "From our
+- Questions are answered on the spot, without the agent's chat: the voice can list your threads,
+  read them a page at a time and search them, on this computer and its connected computers, and
+  search the web. These only read. A call with other chats on it, or an agent that is still
+  working, goes through the chat as below.
+- Anything else goes into the agent's own chat as an ordinary message, starting with "From our
   voice call". The agent then works with the same tools, rules and approval policy as for a typed
   message.
 - If the agent is busy, your message joins the turn it is already working on. With a provider that

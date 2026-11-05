@@ -1,5 +1,6 @@
 import {
   AGENT_CALL_DELEGATION_PATH,
+  AGENT_CALL_LOOKUP_PATH,
   AGENT_CALL_HEARTBEAT_SECONDS,
   AGENT_CALL_SESSION_HEARTBEAT_PATH,
   AGENT_CALL_GROK_SESSION_PATH,
@@ -626,6 +627,7 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
             sessionPath: grok ? AGENT_CALL_GROK_SESSION_PATH : AGENT_CALL_SESSION_PATH,
             releasePath: AGENT_CALL_SESSION_RELEASE_PATH,
             delegationPath: AGENT_CALL_DELEGATION_PATH,
+            lookupPath: AGENT_CALL_LOOKUP_PATH,
             startBody,
             // The host ends a call whose device stops renewing it.
             heartbeat: {

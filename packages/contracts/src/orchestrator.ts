@@ -1,3 +1,5 @@
+import * as Schema from "effect/Schema";
+
 import { ProjectId, ThreadId } from "./baseSchemas.ts";
 
 /**
@@ -44,6 +46,14 @@ export const ORCHESTRATOR_REALTIME_TOKEN_PATH = "/api/orchestrator/realtime-toke
  * `readOnlyCommand.ts` for why, and for the narrow catastrophic-action guard
  * that is enforced.
  */
+/** Runs one host lookup for the orchestrator's voice; body `OrchestratorLookupInput`. */
+export const ORCHESTRATOR_LOOKUP_PATH = "/api/orchestrator/lookup";
+export const OrchestratorLookupInput = Schema.Struct({
+  name: Schema.String.check(Schema.isMaxLength(64)),
+  args: Schema.Record(Schema.String, Schema.Unknown),
+});
+export type OrchestratorLookupInput = typeof OrchestratorLookupInput.Type;
+
 export const ORCHESTRATOR_RUN_COMMAND_PATH = "/api/orchestrator/run-command";
 
 export const isOrchestratorThreadId = (threadId: string): boolean =>

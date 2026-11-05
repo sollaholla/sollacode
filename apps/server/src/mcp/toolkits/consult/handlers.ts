@@ -22,11 +22,13 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { ServerEnvironment } from "../../../environment/ServerEnvironment.ts";
 import { RelayedEnvironments } from "../../../relay/RelayedEnvironments.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as ThreadHistoryQuery from "../history/ThreadHistoryQuery.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
@@ -37,6 +39,7 @@ import { WorkspaceConsultToolkit } from "./tools.ts";
 import {
   type RemoteConsultCaller,
   type RemoteConsultRequest,
+  type ConsultSearchMatch,
   WorkspaceConsultFailedError,
   WorkspaceConsultInvalidInputError,
   WorkspaceConsultNotFoundError,
@@ -71,6 +74,14 @@ const MAX_OPEN_CREATED_THREADS = 10;
 const DELEGATION_WORKER_THREAD_PREFIX = "delegation-worker:";
 /** The sender label for a chat with no usable title of its own. */
 const ANOTHER_CHAT_LABEL = "Another chat";
+/** Conversations one `search_threads` page looks through. */
+const SEARCH_THREADS_PER_PAGE = 25;
+/** Matches one `search_threads` page returns, and how many one conversation may add. */
+const SEARCH_MATCHES_PER_PAGE = 12;
+const SEARCH_MATCHES_PER_THREAD = 3;
+/** The database is read synchronously, so a page stops early rather than hold the server. */
+const SEARCH_BUDGET_MS = 1_500;
+const SEARCH_EXCERPT_CHARS = 400;
 /** How long a list waits for each connected computer before reporting it unreachable. */
 const COMPUTER_LIST_TIMEOUT_MS = 6_000;
 /** How long a read, or the network around an `ask`'s own wait, may take. */
@@ -121,7 +132,13 @@ interface ConsultUpstream {
 
 /** Who is calling: a chat on this computer, or one another computer's server vouches for. */
 type ConsultActor =
-  | { readonly kind: "local"; readonly threadId: ThreadId; readonly managesAgents: boolean }
+  | {
+      readonly kind: "local";
+      readonly threadId: ThreadId;
+      readonly managesAgents: boolean;
+      /** A live voice looking things up: reads may reach its own chat and the orchestrator's. */
+      readonly readsEverything?: boolean;
+    }
   | {
       readonly kind: "remote";
       /** Whether its server says it manages agents, which opens this computer's orchestrator. */
@@ -272,6 +289,7 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
     thread: OrchestrationThreadShell,
     family: ReadonlySet<ThreadId>,
   ): string | null => {
+    if (actor.kind === "local" && actor.readsEverything === true) return null;
     // One computer's orchestrator has another act there. A chat that may manage
     // agents is sent on its way rather than told the orchestrator is closed.
     if (isOrchestratorThreadId(thread.id) && actor.managesAgents) {
@@ -396,6 +414,35 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
       const target = yield* requireTarget(shell.threads, input.threadId, family, {
         allowArchived: true,
       });
+      if (input.paged === true || input.query !== undefined || input.cursor !== undefined) {
+        const history = yield* ThreadHistoryQuery.ThreadHistoryQuery;
+        const page = yield* history
+          .query({
+            threadId: target.id,
+            resolvedThreadIdFromInvocation: false,
+            sources: ["messages"],
+            order: "desc",
+            pageSize: limit,
+            includeAttachments: false,
+            maxTextChars: MAX_MESSAGE_CHARS,
+            ...(input.query === undefined ? {} : { query: input.query }),
+            ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+          })
+          .pipe(Effect.mapError(failed("reading the conversation")));
+        const messages = page.entries.flatMap((entry) =>
+          entry.entryType === "message" && entry.text.trim().length > 0
+            ? [{ role: entry.role, text: entry.text, createdAt: entry.createdAt }]
+            : [],
+        );
+        const { nextCursor } = page.pagination;
+        return {
+          action: "read_thread" as const,
+          status: `Read ${messages.length} message(s), newest first.${nextCursor === null ? " That is the last page." : ""}`,
+          threadId: input.threadId,
+          messages,
+          ...(nextCursor === null ? {} : { nextCursor }),
+        };
+      }
       const detail = yield* projection
         // Twice the limit leaves room for the empty tool-only rows dropped below.
         .getThreadDetailById(target.id, { messageLimit: limit * 2, activityLimit: 0 })
@@ -419,6 +466,61 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
         status: `Read the last ${messages.length} message(s).`,
         threadId: input.threadId,
         messages,
+      };
+    }
+
+    case "search_threads": {
+      const query = input.query?.trim();
+      if (!query) {
+        return yield* new WorkspaceConsultInvalidInputError({
+          action: input.action,
+          missing: "query",
+        });
+      }
+      const shell = yield* readShell();
+      const { family } = yield* resolveCaller(shell.threads);
+      const history = yield* ThreadHistoryQuery.ThreadHistoryQuery;
+      const threads = addressableThreads(shell.threads, family).toSorted((left, right) =>
+        right.updatedAt.localeCompare(left.updatedAt),
+      );
+      const start = Math.max(0, Math.trunc(Number(input.cursor ?? 0)) || 0);
+      const end = Math.min(threads.length, start + SEARCH_THREADS_PER_PAGE);
+      const startedAt = DateTime.toEpochMillis(yield* DateTime.now);
+      const matches: Array<typeof ConsultSearchMatch.Type> = [];
+      let next = start;
+      while (next < end && matches.length < SEARCH_MATCHES_PER_PAGE) {
+        const thread = threads[next]!;
+        next += 1;
+        const page = yield* history
+          .query({
+            threadId: thread.id,
+            resolvedThreadIdFromInvocation: false,
+            sources: ["messages"],
+            order: "desc",
+            pageSize: SEARCH_MATCHES_PER_THREAD,
+            includeAttachments: false,
+            maxTextChars: SEARCH_EXCERPT_CHARS,
+            query,
+          })
+          .pipe(Effect.mapError(failed("searching the conversations")));
+        for (const entry of page.entries) {
+          if (entry.entryType !== "message") continue;
+          matches.push({
+            threadId: thread.id,
+            title: thread.title,
+            role: entry.role,
+            text: entry.text,
+            createdAt: entry.createdAt,
+          });
+        }
+        yield* Effect.yieldNow;
+        if (DateTime.toEpochMillis(yield* DateTime.now) - startedAt > SEARCH_BUDGET_MS) break;
+      }
+      return {
+        action: "search_threads" as const,
+        status: `Searched ${next - start} of ${threads.length - start} remaining conversation(s).`,
+        matches,
+        ...(next < threads.length ? { nextCursor: String(next) } : {}),
       };
     }
 
@@ -785,11 +887,23 @@ const callTimeoutFor = (input: WorkspaceConsultInput): number =>
 
 const failureDetail = (error: WorkspaceConsultError): string => error.message;
 
-/**
- * Handles a call from a chat on this computer. A thread or project is reached
- * the same way wherever it lives: lists cover every connected computer, and a
- * thread or project not found here is looked for on them.
- */
+/** Who a consult runs as: a chat here. */
+export interface ConsultCaller {
+  readonly threadId: ThreadId;
+  readonly environmentId: EnvironmentId;
+  readonly managesAgents: boolean;
+  /** See `ConsultActor`. Only ever set for read-only callers. */
+  readonly readsEverything?: boolean;
+}
+
+/** A search across computers remembers where each one got to, under this key for here. */
+const HERE_CURSOR = "here";
+const SearchCursor = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
+const decodeSearchCursorOption = Schema.decodeUnknownOption(SearchCursor);
+const decodeSearchCursor = (cursor: string) => Option.getOrNull(decodeSearchCursorOption(cursor));
+const encodeSearchCursor = Schema.encodeSync(SearchCursor);
+
+/** Handles a call from a chat on this computer; see `consultAs`. */
 export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(function* (
   input: WorkspaceConsultInput,
   askLog: ConsultAskLog,
@@ -798,8 +912,29 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
   if (!invocation.capabilities.has("collaboration")) {
     return yield* new WorkspaceConsultUnavailableError({ threadId: invocation.threadId });
   }
+  return yield* consultAs(
+    {
+      threadId: invocation.threadId,
+      environmentId: invocation.environmentId,
+      managesAgents: invocation.capabilities.has("agent-builder"),
+    },
+    input,
+    askLog,
+  );
+});
+
+/**
+ * A thread or project is reached the same way wherever it lives: lists and
+ * searches cover every connected computer, and a thread or project not found
+ * here is looked for on them.
+ */
+export const consultAs = Effect.fn("WorkspaceConsult.as")(function* (
+  invocation: ConsultCaller,
+  input: WorkspaceConsultInput,
+  askLog: ConsultAskLog,
+) {
   const relays = yield* RelayedEnvironments;
-  const managesAgents = invocation.capabilities.has("agent-builder");
+  const { managesAgents } = invocation;
   const callComputer = (
     source: RelayedEnvironmentSource,
     call: WorkspaceConsultInput,
@@ -819,6 +954,9 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
     ...(result.threads === undefined
       ? {}
       : { threads: result.threads.map((thread) => ({ ...thread, ...located(source) })) }),
+    ...(result.matches === undefined
+      ? {}
+      : { matches: result.matches.map((match) => ({ ...match, ...located(source) })) }),
     ...(result.projects === undefined
       ? {}
       : { projects: result.projects.map((project) => ({ ...project, ...located(source) })) }),
@@ -842,9 +980,63 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
     });
   }
 
-  const actor: ConsultActor = { kind: "local", threadId: invocation.threadId, managesAgents };
+  const actor: ConsultActor = {
+    kind: "local",
+    threadId: invocation.threadId,
+    managesAgents,
+    ...(invocation.readsEverything === true ? { readsEverything: true } : {}),
+  };
   // Named this one: nothing else is consulted.
   if (input.environmentId !== undefined) return yield* runConsult(actor, input, askLog);
+
+  if (input.action === "search_threads") {
+    const { cursor, ...search } = input;
+    const resuming = cursor === undefined ? null : decodeSearchCursor(cursor);
+    const part = (key: string) =>
+      resuming === null || resuming[key] === undefined
+        ? search
+        : { ...search, cursor: resuming[key] };
+    const wanted = (key: string) => resuming === null || resuming[key] !== undefined;
+    const here: WorkspaceConsultResult = wanted(HERE_CURSOR)
+      ? yield* runConsult(actor, part(HERE_CURSOR), askLog)
+      : { action: "search_threads", status: "", matches: [] };
+    const sources = (yield* relays.sources).filter((source) => wanted(source.environmentId));
+    const answers = yield* Effect.forEach(
+      sources,
+      (source) =>
+        callComputer(source, part(source.environmentId), COMPUTER_LIST_TIMEOUT_MS).pipe(
+          Effect.map((result) => ({ source, result: tagged(source, result) })),
+          Effect.catch(() => Effect.succeed({ source, result: null })),
+        ),
+      { concurrency: "unbounded" },
+    );
+    const remaining = {
+      ...(here.nextCursor === undefined ? {} : { [HERE_CURSOR]: here.nextCursor }),
+      ...Object.fromEntries(
+        answers.flatMap(({ source, result }) =>
+          result?.nextCursor === undefined ? [] : [[source.environmentId, result.nextCursor]],
+        ),
+      ),
+    };
+    const unreachable = answers.flatMap(({ source, result }) =>
+      result === null ? [source.label] : [],
+    );
+    const merged: WorkspaceConsultResult = {
+      action: "search_threads",
+      status: [
+        here.status,
+        ...answers.flatMap(({ source, result }) =>
+          result === null ? [] : [`${source.label}: ${result.status}`],
+        ),
+        ...(unreachable.length > 0 ? [`Could not reach ${unreachable.join(", ")}.`] : []),
+      ]
+        .filter((line) => line.length > 0)
+        .join(" "),
+      matches: [...(here.matches ?? []), ...answers.flatMap(({ result }) => result?.matches ?? [])],
+      ...(Object.keys(remaining).length > 0 ? { nextCursor: encodeSearchCursor(remaining) } : {}),
+    };
+    return merged;
+  }
 
   if (input.action === "list_threads" || input.action === "list_projects") {
     const here = yield* runConsult(actor, input, askLog);
@@ -969,10 +1161,14 @@ export const handleRemoteConsult = Effect.fn("WorkspaceConsult.handleRemote")(fu
 });
 
 export const WorkspaceConsultToolkitHandlersLive = WorkspaceConsultToolkit.toLayer(
-  Effect.sync(() => {
+  Effect.gen(function* () {
+    const history = yield* ThreadHistoryQuery.ThreadHistoryQuery;
     const askLog: ConsultAskLog = new Map();
     return {
-      workspace_consult: (input: WorkspaceConsultInput) => handleWorkspaceConsult(input, askLog),
+      workspace_consult: (input: WorkspaceConsultInput) =>
+        handleWorkspaceConsult(input, askLog).pipe(
+          Effect.provideService(ThreadHistoryQuery.ThreadHistoryQuery, history),
+        ),
     } satisfies Parameters<typeof WorkspaceConsultToolkit.toLayer>[0];
   }),
 );

@@ -51,6 +51,7 @@ import {
   resolveOrchestratorApiKey,
 } from "../orchestrator/OrchestratorCredentials.ts";
 import { createGptLiveSession, OrchestratorLiveError } from "../orchestrator/OrchestratorLive.ts";
+import type { QuickAnswerRequest } from "../voice/VoiceLookups.ts";
 import {
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
   ThreadWorkObligationRepository,
@@ -147,7 +148,7 @@ export function agentCallInstructions(input: {
     "Your work and your voice are one agent: you have your tools, your memory and access to the person's Solla Code workspace, including their projects, chats and agents, for the whole call. Never say you have no tools or no access, and never turn a request down yourself: take it on and say how it turned out.",
     'The person hears one agent: you. Never talk about your own chat or thread, delegating, handing off, a back end or anyone else doing your work, and never say you are checking with or waiting on someone to do it. Talk about your work in the first person, as the one doing it: "Let me check", "I\'m on it", "Here\'s what I found".',
     input.engine === "grok"
-      ? `Anything beyond small talk needs your workspace, which only ${AGENT_CALL_GROK_DELEGATE_TOOL} reaches. Call it for any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role. It starts the work with what the person said and returns at once. Say one short line that you're on it, then keep talking naturally while it runs, but never invent progress, results or approvals. Results reach you as updates; they are your own work, so say them conversationally as yours, summarising long or technical parts. If an update asks a question, ask the person, then call ${AGENT_CALL_GROK_DELEGATE_TOOL} again once they answer.`
+      ? `Answer questions yourself, straight away: list_threads, read_thread and search_threads reach every chat on every connected computer, and web_search and x_search reach the internet. Say a few words while you look, and follow nextCursor when an answer is further back. Anything else needs your workspace, which only ${AGENT_CALL_GROK_DELEGATE_TOOL} reaches. Call it for any action, file, code, decision about work, or long job, including requests that seem outside your role. It starts the work with what the person said and returns at once. Say one short line that you're on it, then keep talking naturally while it runs, but never invent progress, results or approvals. Results reach you as updates; they are your own work, so say them conversationally as yours, summarising long or technical parts. If an update asks a question, ask the person, then call ${AGENT_CALL_GROK_DELEGATE_TOOL} again once they answer.`
       : "Anything beyond small talk needs your workspace, which you reach by delegating. Delegate any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role; the delegation carries what the person said. Keep talking naturally while it runs, but never invent progress, results or approvals. Results are your own work: say them conversationally as yours, summarising long or technical parts. If a result asks a question, ask the person and delegate their answer.",
     "Read back consequential actions before delegating them; hearing a transcript is not approval for an external action (approvals still happen in Solla).",
     "When the person says goodbye or asks you to hang up, answer with a short goodbye that says bye; the call hangs up as soon as you finish it. Don't add a question after it.",
@@ -866,6 +867,8 @@ type DelegationAnswer = ReadonlyArray<DelegationTarget> | OrchestratorLiveWorkEv
 interface CallSession {
   readonly callId: AgentCallId;
   readonly threadId: ThreadId;
+  /** Grok chooses its own lookups; GPT-Live's delegations try the host's fast path first. */
+  readonly engine: AgentCallEngine;
   /** The agent called, as chats added to the call hear of it. */
   readonly agentName: string;
   /** Who the voice was told it can transfer the person to or add. */
@@ -1005,6 +1008,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
   const keepSession = Effect.fnUntraced(function* (
     sessionId: string,
     callId: AgentCallId,
+    engine: AgentCallEngine,
     opened: {
       readonly threadId: ThreadId;
       readonly agent: VmAgent;
@@ -1013,6 +1017,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
   ) {
     sessions.set(sessionId, {
       callId,
+      engine,
       threadId: opened.threadId,
       agentName: opened.agent.name,
       roster: opened.roster,
@@ -1041,7 +1046,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
       history: input.history,
       sdp: input.sdp,
     }).pipe(Effect.onError(() => calls.fail(input.callId)));
-    yield* keepSession(created.sessionId, input.callId, opened);
+    yield* keepSession(created.sessionId, input.callId, "gpt-live", opened);
     yield* Effect.logInfo("agent call GPT-Live session created", {
       model: OPENAI_LIVE_MODEL,
       voice: opened.voice,
@@ -1086,7 +1091,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
       Effect.onError(() => calls.fail(input.callId)),
     );
     const sessionId = `grok-call-${NodeCrypto.randomUUID()}`;
-    yield* keepSession(sessionId, input.callId, opened);
+    yield* keepSession(sessionId, input.callId, "grok", opened);
     yield* Effect.logInfo("agent call Grok Voice session created", {
       model,
       voice: opened.voice,
@@ -1677,6 +1682,38 @@ export const makeAgentCallLive = Effect.gen(function* () {
     return yield* semaphore.withPermits(1)(delegateInOrder(input, arrivedAt));
   });
 
+  /**
+   * What the fast path needs to try this delegation, or none when the chats
+   * must take it: they are already working, the words may be for someone else
+   * on the call, or there is nothing new to answer.
+   */
+  const quickRequest = Effect.fn("AgentCallLive.quickRequest")(function* (
+    input: OrchestratorLiveDelegationInput,
+  ) {
+    const session = sessions.get(input.sessionId);
+    if (
+      session === undefined ||
+      session.engine !== "gpt-live" ||
+      session.active !== null ||
+      session.requests.has(input.delegationId) ||
+      input.sequence <= session.lastSequence ||
+      !extractCallDelta(input.context, session.forwardedFragments).userText
+    )
+      return Option.none<QuickAnswerRequest>();
+    const call = yield* calls.get(session.callId);
+    if (Option.isSome(call) && (call.value.participants ?? []).length > 0)
+      return Option.none<QuickAnswerRequest>();
+    return Option.some<QuickAnswerRequest>({
+      speaksFor: session.threadId,
+      speakerName: session.agentName,
+      transcript: input.context,
+    });
+  });
+
+  /** The chat a live call's voice speaks for; ended once the call is over. */
+  const speaksFor = (sessionId: string) =>
+    liveSession(sessionId).pipe(Effect.map((session) => session.threadId));
+
   /** The roster a live call's voice started with; ended once no session holds the call. */
   const roster = Effect.fn("AgentCallLive.roster")(function* (callId: AgentCallId) {
     yield* prune;
@@ -1707,6 +1744,8 @@ export const makeAgentCallLive = Effect.gen(function* () {
   return {
     start,
     startGrok,
+    quickRequest,
+    speaksFor,
     delegate,
     roster,
     addParticipant,
