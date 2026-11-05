@@ -122,6 +122,11 @@ desktop browser's viewer works the same way, at the pointer.
 A Right hold never opens a menu on the desktop screen. If the page would show its right-click menu
 after the hold, that menu is dismissed; use **Right-click** to see and use it.
 
+**Dropdowns.** A page's dropdowns open their list inside the page, on the desktop and in every
+viewer alike, so nothing pops up on the desktop screen outside the preview. The dropdown itself looks
+just as the page styled it. Date and color pickers still open in their own small window on the
+desktop.
+
 **The page menu.** A right-click on the desktop tab would open its menu on the desktop screen,
 where you can't see it. Instead, the viewer shows a menu for what you right-clicked:
 

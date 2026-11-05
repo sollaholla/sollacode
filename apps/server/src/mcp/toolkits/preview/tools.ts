@@ -208,7 +208,7 @@ export const PreviewUploadTool = browserTool(
 export const PreviewSelectOptionTool = browserTool(
   Tool.make("preview_select_option", {
     description:
-      "Choose an option in a <select> in the tab selected by tabId, or this thread's current tab when omitted. Use this instead of preview_click for any <select>: clicking one opens a menu Chromium draws outside the page, which no snapshot or screenshot can see and no key press can dismiss, so the click reports success while leaving a dropdown open over the user's screen. Target the <select> itself with locator or selector, then name the option with exactly one of value, label, or index; preview_snapshot lists every option and which is selected. Sets the selection and fires the page's input and change handlers, so framework state updates as it would for a person.",
+      "Choose an option in a <select> in the tab selected by tabId, or this thread's current tab when omitted. Use this instead of preview_click for any <select>: it takes one step, and preview_click refuses a <select> found by locator. Target the <select> itself with locator or selector, then name the option with exactly one of value, label, or index; preview_snapshot lists every option and which is selected. Sets the selection and fires the page's input and change handlers, so framework state updates as it would for a person.",
     parameters: PreviewAutomationSelectOptionInput,
     success: PreviewAutomationSelectOptionResult,
     failure: PreviewAutomationError,

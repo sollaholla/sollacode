@@ -66,6 +66,7 @@ import {
   nativeImage,
   shell,
   webContents,
+  webFrameMain,
 } from "electron";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -129,6 +130,7 @@ import {
   START_PICK_CHANNEL,
   VIDEO_SOURCE_CHANGED_CHANNEL,
 } from "./GuestProtocol.ts";
+import { GUEST_SELECT_MENU_SOURCE } from "./GuestSelectMenu.ts";
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { playwrightInjectedRuntimeInstallExpression } from "./PlaywrightInjectedRuntime.ts";
 import { makePreviewAutomationKeySequence } from "./PreviewKeyboard.ts";
@@ -1451,6 +1453,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    */
   const filledSecretsByTab = new Map<string, Set<string>>();
   const signInListeners = new Set<(signal: SignInSignal) => void>();
+  const guestsWithSelectMenus = new WeakSet<Electron.WebContents>();
   const pointerSequenceRef = yield* Ref.make(0);
   const frameCaptureSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<string, FrameCaptureSession>
@@ -1973,6 +1976,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ),
       ),
     );
+  };
+
+  /** Keeps every dropdown's list inside the page, in every frame. See `GuestSelectMenu.ts`. */
+  const installSelectMenus = (wc: Electron.WebContents): void => {
+    if (guestsWithSelectMenus.has(wc)) return;
+    guestsWithSelectMenus.add(wc);
+    wc.on("did-frame-navigate", (_event, _url, _code, _text, _isMain, processId, routingId) => {
+      void webFrameMain
+        .fromId(processId, routingId)
+        ?.executeJavaScript(GUEST_SELECT_MENU_SOURCE)
+        // The frame went away, or the page was replaced before it could run.
+        .catch(() => undefined);
+    });
   };
 
   const installSignInListeners = (tabId: string, wc: Electron.WebContents): void => {
@@ -3319,6 +3335,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         popupWebContents.on("will-navigate", willNavigate);
         popupWebContents.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         installSignInListeners(tabId, popupWebContents);
+        installSelectMenus(popupWebContents);
         popupWebContents.on("did-navigate", (_event, url) => {
           if (!popupWebContents.isDestroyed()) {
             runFork(syncPasskeysForGuest(tabId, popupWebContents, url));
@@ -4368,6 +4385,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         wc.ipc.on(VIDEO_SOURCE_CHANGED_CHANNEL, videoSourceChanged);
         installSignInListeners(tabId, wc);
+        installSelectMenus(wc);
         wc.on("zoom-changed", videoZoomChanged);
         wc.setWindowOpenHandler(({ url, disposition, features, frameName, postBody }) => {
           if (!listenersActive) return { action: "deny" };
@@ -7524,9 +7542,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             const parsed = injected.parseSelector(${locatorJson});
             const element = injected.querySelector(parsed, document, true);
             if (!element) return { notFound: true };
-            // Clicking one opens a menu the browser draws outside the page.
-            // Nothing can observe or dismiss it from here, so refuse rather
-            // than report a success that leaves it open on the user's screen.
+            // selectOption does this in one step. An older page document can
+            // still have the browser's own popup, which nothing here can dismiss.
             if (element instanceof HTMLSelectElement) return { nativeMenu: true };
             const visible = injected.elementState(element, "visible");
             const enabled = injected.elementState(element, "enabled");
@@ -9275,14 +9292,14 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
     tabId: Schema.String,
     selectorKind: PreviewAutomationSelectorKind,
     selectorLength: Schema.optionalKey(Schema.Number),
-    /** The target opens a menu Chromium draws outside the page. */
+    /** The target is a dropdown, which selectOption handles. */
     nativeMenu: Schema.optionalKey(Schema.Boolean),
   },
 ) {
   override get message(): string {
     const target = previewAutomationTargetLabel(this.selectorKind, this.selectorLength);
     if (this.nativeMenu === true) {
-      return `Preview automation found ${target} in tab ${this.tabId}, but it is a <select> whose menu the browser draws outside the page. Use selectOption instead.`;
+      return `Preview automation found ${target} in tab ${this.tabId}, but it is a <select>. Use selectOption instead.`;
     }
     return `Preview automation type found ${target}, but it is not editable in tab ${this.tabId}`;
   }
