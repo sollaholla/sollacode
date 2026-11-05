@@ -51,7 +51,7 @@ export const GROK_CALL_TOOLS: ReadonlyArray<RealtimeFunctionTool> = [
     type: "function",
     name: AGENT_CALL_GROK_DELEGATE_TOOL,
     description:
-      "Start your work on what the person just said: anything that needs action, files, code, accounts, long research or a decision. Not for questions the lookups or a web search can answer. It returns at once; the result arrives later.",
+      "Start your work on what the person just said: anything that needs action, files, code, accounts, long research or a decision, and the person's answers to what your work asked them, including a yes or no to an approval. Not for questions the lookups or a web search can answer. It returns at once; the result arrives later.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
 ];

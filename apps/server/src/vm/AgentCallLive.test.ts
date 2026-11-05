@@ -1,5 +1,5 @@
 // @effect-diagnostics preferSchemaOverJson:off
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import {
   AGENT_CALL_LEASE_SECONDS,
   AGENT_CALL_SESSION_PATH,
@@ -62,6 +62,8 @@ import {
   mergeCallWorkEvents,
   spokenReplies,
   spokenReply,
+  requestText,
+  spokenApprovalDecision,
   voiceAnswerableRequest,
   type AgentCallThreadView,
   type AgentCallWatchTarget,
@@ -264,7 +266,7 @@ it("builds the call persona from the agent and why it called", () => {
   assert.include(incoming, "You are Scout, one of the person's Solla Code agents");
   assert.include(incoming, "Your role: Watch the deploy dashboards.");
   assert.include(incoming, "Speak English.");
-  assert.include(incoming, "hearing a transcript is not approval");
+  assert.include(incoming, "their yes or no is what approves or declines it");
   assert.include(
     incoming,
     "You called the person because: The deploy is blocked on a login. Open by greeting them",
@@ -481,7 +483,7 @@ it("merges the replies of several chats on a call, each read out as soon as it l
     [["waiting-input", ""]],
   );
   // A request is read out as its watch framed it, never cut like a reply.
-  const approval = `I need your approval for ${"a long email draft ".repeat(60)}— please approve or decline it in Solla Code; a spoken yes can't approve it.`;
+  const approval = `I need your approval for ${"a long email draft ".repeat(60)}— Say yes to approve it, or no to turn it down.`;
   const asked = merge([
     { name: "Scout", event: work("running", "Working on it.") },
     { name: "Gregg", event: work("pending-approval", approval) },
@@ -1536,7 +1538,8 @@ it.effect("a spoken answer to the chat's open question answers it instead of que
         "From our voice call:\nYou said: And check staging.",
       );
 
-      // An action approval is never answered by voice: the words are forwarded.
+      // An action approval the call never read out is not answered by voice,
+      // however clear the yes: the words are forwarded.
       f.setThread({
         activities: [
           activity("user-input.requested", {
@@ -1558,6 +1561,240 @@ it.effect("a spoken answer to the chat's open question answers it instead of que
     }).pipe(Effect.provide(f.layer(events)));
   }).pipe(Effect.scoped);
 });
+
+describe("spokenApprovalDecision", () => {
+  it("takes a plain yes", () => {
+    for (const words of [
+      "Yes.",
+      "Yes, please.",
+      "Yeah, go ahead.",
+      "Yes, go ahead.",
+      "Yep, send it.",
+      "Approve it",
+      "Okay, thanks.",
+      "That’s fine.",
+    ])
+      assert.strictEqual(spokenApprovalDecision(words), "approve", words);
+  });
+
+  it("takes a plain no", () => {
+    for (const words of ["No.", "Nope.", "No, don't send it.", "Cancel that.", "Wait."])
+      assert.strictEqual(spokenApprovalDecision(words), "decline");
+  });
+
+  it("leaves anything unclear for the card", () => {
+    for (const words of [
+      "",
+      "Yes, but change the subject.",
+      "What does it say?",
+      "Maybe.",
+      "Yes no",
+      "Hmm",
+      "Tell me about the weather",
+      "Yes to approve it or no to turn it down",
+      "Yes I have been thinking about this for a while now",
+    ])
+      assert.isNull(spokenApprovalDecision(words), words);
+  });
+});
+
+const spokenApprovalCall = (input: {
+  readonly reason?: "approval" | "question";
+  readonly reply: string;
+  readonly topic?: string;
+  readonly request?: ReturnType<typeof activity>;
+  readonly assistant?: string;
+}) => {
+  const f = fixture();
+  const request =
+    input.request ??
+    activity("user-input.requested", {
+      requestId: "send",
+      questions: [{ id: "t3_action_approval", header: "Send", question: "Send it?", options: [] }],
+      actionApproval: { actionKind: "send_email" },
+    });
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    return yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const rung = yield* calls.ring({
+        vmAgentId,
+        reason: input.reason ?? "approval",
+        topic: input.topic ?? "Send it?",
+        key: "input:thread-scout:send",
+      });
+      if (rung.status !== "ringing") return assert.fail(rung.status);
+      yield* live.start({ callId: rung.call.callId, ...offer }, "Sol's iPhone");
+      const running = {
+        session: session("running", null, "codex"),
+        latestTurn: turn("running", null, { requestedSecond: 1 }),
+      };
+      f.setShell({
+        hasPendingUserInput: request.kind === "user-input.requested",
+        hasPendingApprovals: request.kind === "approval.requested",
+        ...running,
+      });
+      f.setThread({ activities: [request], ...running });
+      const voice = input.assistant ?? "assistant [0-900ms]: Can I send it? Yes or no?\n";
+      yield* live
+        .delegate({
+          sessionId: "live-call",
+          delegationId: "d1",
+          sequence: 1,
+          context: `${voice}user [1000-1600ms]: ${input.reply}`,
+        })
+        .pipe(Effect.asVoid);
+      return f.dispatched[0];
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+};
+
+it.effect("a yes approves the request the call rang about", () =>
+  Effect.gen(function* () {
+    const command = yield* spokenApprovalCall({ reply: "Yes, go ahead." });
+    if (command?.type !== "thread.user-input.respond") return assert.fail("expected an answer");
+    assert.strictEqual(command.requestId, "send");
+    assert.deepStrictEqual(command.answers, { t3_action_approval: "Approve" });
+  }),
+);
+
+it.effect("a no turns it down, carrying the words as the reason", () =>
+  Effect.gen(function* () {
+    const command = yield* spokenApprovalCall({ reply: "No, don't send it." });
+    if (command?.type !== "thread.user-input.respond") return assert.fail("expected an answer");
+    assert.deepStrictEqual(command.answers, { t3_action_approval: "No, don't send it." });
+  }),
+);
+
+it.effect("an unclear reply leaves the card open and reaches the chat", () =>
+  Effect.gen(function* () {
+    const command = yield* spokenApprovalCall({ reply: "Yes, but change the subject." });
+    assert.strictEqual(command?.type, "thread.turn.start");
+  }),
+);
+
+it.effect("a yes before the voice has said anything approves nothing", () =>
+  Effect.gen(function* () {
+    const command = yield* spokenApprovalCall({ reply: "Yes.", assistant: "" });
+    assert.strictEqual(command?.type, "thread.turn.start");
+  }),
+);
+
+it.effect("a yes on a call about something else does not approve this request", () =>
+  Effect.gen(function* () {
+    const other = yield* spokenApprovalCall({ reply: "Yes.", topic: "Delete the old backups?" });
+    assert.strictEqual(other?.type, "thread.turn.start");
+    const question = yield* spokenApprovalCall({ reply: "Yes.", reason: "question" });
+    assert.strictEqual(question?.type, "thread.turn.start");
+  }),
+);
+
+const approvalActivity = (requestId: string, question: string) =>
+  activity("user-input.requested", {
+    requestId,
+    questions: [{ id: "t3_action_approval", header: "Send", question, options: [] }],
+    actionApproval: { actionKind: "send_email" },
+  });
+
+/** A call where the chat raises `read` mid-call, then `open` is what is open when the yes lands. */
+const approvalReadOutCall = (read: string, open: string) => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    return yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const rung = yield* calls.ring({
+        vmAgentId,
+        reason: "question",
+        topic: "Anything to send?",
+        key: "input:thread-scout:other",
+      });
+      if (rung.status !== "ringing") return assert.fail(rung.status);
+      yield* live.start({ callId: rung.call.callId, ...offer }, "Sol's iPhone");
+      const running = {
+        session: session("running", null, "codex"),
+        latestTurn: turn("running", null, { requestedSecond: 1 }),
+      };
+      const context = "assistant [0-900ms]: Hello.\nuser [1000-1600ms]: Send the report to Ana.";
+      const updates = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d1",
+        sequence: 1,
+        context,
+      });
+      f.setShell({ hasPendingUserInput: true, ...running });
+      f.setThread({ activities: [approvalActivity("send-1", read)], ...running });
+      const heard = yield* Stream.runHead(
+        updates.pipe(Stream.filter((event) => event.status === "pending-approval")),
+      );
+      assert.include(Option.getOrUndefined(heard)?.text ?? "", read);
+      // Reading it out takes a while; a newer delegation at once would mean it went unheard.
+      yield* TestClock.adjust("10 seconds");
+      f.setThread({ activities: [approvalActivity("send-2", open)], ...running });
+      yield* live
+        .delegate({
+          sessionId: "live-call",
+          delegationId: "d2",
+          sequence: 2,
+          context: `${context}\nassistant [1700-2500ms]: Can I send it?\nuser [2600-2900ms]: Yes.`,
+        })
+        .pipe(Effect.asVoid);
+      return f.dispatched[1];
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+};
+
+it.effect("a yes approves what the call just read out", () =>
+  Effect.gen(function* () {
+    const request = "Send the report to Ana?";
+    const command = yield* approvalReadOutCall(request, request);
+    if (command?.type !== "thread.user-input.respond") return assert.fail("expected an answer");
+    assert.deepStrictEqual(command.answers, { t3_action_approval: "Approve" });
+  }),
+);
+
+it.effect("a yes never carries over to a different request than the one read out", () =>
+  Effect.gen(function* () {
+    const command = yield* approvalReadOutCall(
+      "Send the report to Ana?",
+      "Delete every file in the shared folder?",
+    );
+    assert.strictEqual(command?.type, "thread.turn.start");
+  }),
+);
+
+it.effect("a provider's approval takes the same yes", () =>
+  Effect.gen(function* () {
+    const request = activity("approval.requested", { requestId: "tool-1", detail: "rm build" });
+    const command = yield* spokenApprovalCall({
+      reply: "Yes.",
+      topic: requestText(request),
+      request,
+    });
+    if (command?.type !== "thread.approval.respond") return assert.fail("expected a decision");
+    assert.strictEqual(command.requestId, "tool-1");
+    assert.strictEqual(command.decision, "accept");
+  }),
+);
+
+it.effect("a sign-in request is never answered by voice", () =>
+  Effect.gen(function* () {
+    const command = yield* spokenApprovalCall({
+      reply: "Yes.",
+      request: activity("user-input.requested", {
+        requestId: "login",
+        questions: [{ id: "q", header: "Sign in", question: "Send it?", options: [] }],
+        credentialRequest: { origin: "https://example.com" },
+      }),
+    });
+    assert.notStrictEqual(command?.type, "thread.approval.respond");
+    assert.notDeepEqual(command?.type === "thread.user-input.respond" ? command.answers : {}, {
+      t3_action_approval: "Approve",
+    });
+  }),
+);
 
 it.effect("a question its turn left behind, or its provider forgot, gets a message instead", () => {
   const f = fixture();
@@ -2432,10 +2669,7 @@ it("cuts a merged call's request to its share but keeps what the person must do"
   const cut = asking([approval], 400);
   assert.strictEqual(cut.status, "pending-approval");
   assert.match(cut.text, /^I need your approval for Send this email\? Hi Ana/u);
-  assert.match(
-    cut.text,
-    / … — please approve or decline it in Solla Code; a spoken yes can't approve it\.$/u,
-  );
+  assert.match(cut.text, / …\. Say yes to approve it, or no to turn it down\.$/u);
   assert.notInclude(cut.text, "The rest is written up in Solla Code.");
   assert.isAtMost(cut.text.length, 400);
   // A question only Solla Code takes keeps saying so.

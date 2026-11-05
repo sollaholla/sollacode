@@ -1,10 +1,15 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import {
+  ACTION_APPROVAL_CHOICE,
+  ACTION_APPROVAL_QUESTION_ID,
+} from "@t3tools/shared/actionApproval";
 import { AGENT_STOP_TOKEN } from "@t3tools/shared/agentMode";
 import { parseCredentialRequest } from "@t3tools/shared/credentialRequest";
 import * as NodeCrypto from "node:crypto";
 import {
   AGENT_CALL_GROK_DELEGATE_TOOL,
   AGENT_CALL_MAX_PARTICIPANTS,
+  type AgentCall,
   AgentCallError,
   ApprovalRequestId,
   CommandId,
@@ -139,6 +144,8 @@ export function agentCallInstructions(input: {
   readonly language: string;
   readonly direction: AgentCallDirection;
   readonly topic: string | null;
+  /** The call rang for an approval, so `topic` is the request. */
+  readonly forApproval?: boolean;
   /** GPT-Live delegates by itself; Grok Voice delegates through the `start_work` tool. */
   readonly engine?: AgentCallEngine;
 }): string {
@@ -150,16 +157,18 @@ export function agentCallInstructions(input: {
     input.engine === "grok"
       ? `Answer questions yourself, straight away: list_threads, read_thread and search_threads reach every chat on every connected computer, and web_search and x_search reach the internet. Say a few words while you look, and follow nextCursor when an answer is further back. Anything else needs your workspace, which only ${AGENT_CALL_GROK_DELEGATE_TOOL} reaches. Call it for any action, file, code, decision about work, or long job, including requests that seem outside your role. It starts the work with what the person said and returns at once. Say one short line that you're on it, then keep talking naturally while it runs, but never invent progress, results or approvals. Results reach you as updates; they are your own work, so say them conversationally as yours, summarising long or technical parts. If an update asks a question, ask the person, then call ${AGENT_CALL_GROK_DELEGATE_TOOL} again once they answer.`
       : "Anything beyond small talk needs your workspace, which you reach by delegating. Delegate any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role; the delegation carries what the person said. Keep talking naturally while it runs, but never invent progress, results or approvals. Results are your own work: say them conversationally as yours, summarising long or technical parts. If a result asks a question, ask the person and delegate their answer.",
-    "Read back consequential actions before delegating them; hearing a transcript is not approval for an external action (approvals still happen in Solla).",
+    "Read back consequential actions before delegating them. When you read out an approval, say exactly what it is and ask for a plain yes or no, then pass the person's answer straight on: their yes or no is what approves or declines it. Nothing is approved until your work confirms it, so never say it is. A password or sign-in is never given by voice.",
     "When the person says goodbye or asks you to hang up, answer with a short goodbye that says bye; the call hangs up as soon as you finish it. Don't add a question after it.",
     `Never say ${AGENT_STOP_TOKEN} or any other control word out loud; a goodbye is how a call ends.`,
     `Speak ${languageName(input.language)}.`,
   ];
   lines.push(
     input.direction === "incoming"
-      ? input.topic
-        ? `You called the person because: ${asSentence(input.topic)} Open by greeting them, saying who you are and why you called.`
-        : "You called the person. Open by greeting them, saying who you are and asking how they'd like to proceed."
+      ? input.topic && input.forApproval
+        ? `You called the person for their approval of: ${asSentence(input.topic)} Open by greeting them, saying who you are, reading out exactly what it is and asking for a plain yes or no.`
+        : input.topic
+          ? `You called the person because: ${asSentence(input.topic)} Open by greeting them, saying who you are and why you called.`
+          : "You called the person. Open by greeting them, saying who you are and asking how they'd like to proceed."
       : "The person called you. Pick up the way you would answer a friend's call: one short, casual hello such as \"Hey, what's up?\", then let them talk.",
   );
   return lines.join("\n");
@@ -282,10 +291,9 @@ export function spokenReply(text: string, maxChars = SPOKEN_REPLY_MAX_CHARS): st
 }
 
 /**
- * A request read out in its frame ("I need your approval for … — please
- * approve or decline it in Solla Code; …"). With `maxChars` (a merged call's
- * share) only the request's own text is cut, so what the person must do, and
- * that a spoken yes can't do it, always survives.
+ * A request read out in its frame ("I need your approval for …. Say yes to
+ * approve it, …"). With `maxChars` (a merged call's share) only the request's
+ * own text is cut, so what the person must do always survives.
  */
 function framedRequest(
   frame: (request: string) => string,
@@ -400,7 +408,7 @@ const OPTION_ONLY_PROVIDERS: ReadonlySet<string> = new Set([KIMI_DRIVER_KIND]);
 
 /**
  * The question a spoken answer can fill: an open user-input request that is
- * not an action approval (approvals are never granted by voice), from a
+ * not an action approval (see `spokenApprovalDecision`), from a
  * provider that keeps free-text answers (`providerName` is the thread
  * session's). The words go to every question, as one typed answer in the
  * composer would.
@@ -423,6 +431,42 @@ export function voiceAnswerableRequest(
         ? null
         : { requestId, questionIds: questions.map((question) => question.id) },
   });
+}
+
+const SPOKEN_YES =
+  /^(?:(?:yes|yeah|yep|yup|sure|ok|okay|approve|approved|confirm|confirmed|correct|absolutely|definitely)(?: please| it| that| thanks| thank you)?|go ahead|go for it|do it|send it|please do|sounds good|that's fine|that is fine|that's right)$/u;
+const SPOKEN_NO =
+  /\b(?:no|nope|nah|don't|dont|do not|stop|wait|hold on|cancel|decline|declined|deny|reject|not now)\b/u;
+const SPOKEN_YES_WORD = /\b(?:yes|yeah|yep|yup|sure|ok|okay|approve|go ahead)\b/u;
+const POLITE_PHRASE = /^(?:please|thanks|thank you)$/u;
+const UNSURE_WORDS =
+  /\b(?:but|if|maybe|actually|instead|change|except|only|unless|first|why|what)\b/u;
+/** A reply longer than this is saying more than yes or no. */
+const MAX_DECISION_WORDS = 8;
+
+/**
+ * Whether the person's reply to an approval read out on a call decides it.
+ * Matched here rather than judged by the voice, so what the call's model
+ * believes, or was told by a page it read, cannot approve anything. Every
+ * phrase of the reply must say yes. Anything unclear is null, which leaves the
+ * card open: "yes, but change the subject", or the read-out's own "say yes
+ * ... or no" coming back through a speaker.
+ */
+export function spokenApprovalDecision(words: string): "approve" | "decline" | null {
+  const said = words
+    .toLowerCase()
+    .replaceAll("’", "'")
+    .replace(/[^\p{L}\p{N}' ,.!?]/gu, " ")
+    .trim();
+  if (!said || said.split(/\s+/u).length > MAX_DECISION_WORDS || UNSURE_WORDS.test(said))
+    return null;
+  const phrases = said
+    .split(/[,.!?]+/u)
+    .map((phrase) => phrase.trim())
+    .filter((phrase) => phrase.length > 0 && !POLITE_PHRASE.test(phrase));
+  const yes = phrases.filter((phrase) => SPOKEN_YES.test(phrase)).length;
+  if (SPOKEN_NO.test(said)) return SPOKEN_YES_WORD.test(said) ? null : "decline";
+  return yes > 0 && yes === phrases.length ? "approve" : null;
 }
 
 /** What the person is asked, from a user-input or approval activity. */
@@ -487,7 +531,7 @@ export interface AgentCallThreadView {
 const approvalText = (open: CallThreadActivity | undefined, maxChars?: number) =>
   framedRequest(
     (request) =>
-      `I need your approval for ${request} — please approve or decline it in Solla Code; a spoken yes can't approve it.`,
+      `I need your approval for ${request}. Say yes to approve it, or no to turn it down.`,
     open ? requestText(open) : "a step I want to take",
     maxChars,
   );
@@ -580,7 +624,7 @@ export function agentCallWorkEvent(input: {
     openInput === undefined &&
     openRequest(thread.activities, "user-input", { answered }) !== undefined;
   const openApproval = view.hasPendingApprovals
-    ? openRequest(thread.activities, "approval")
+    ? openRequest(thread.activities, "approval", { answered })
     : undefined;
   const raisedSince = (open: CallThreadActivity | undefined) =>
     open !== undefined && open.createdAt >= target.sentAt;
@@ -624,7 +668,8 @@ export function agentCallWorkEvent(input: {
   // leftover question; anything else is a request outside the window.
   if (view.hasPendingUserInput && target.answeredRequestId === null && !orphanedInput)
     return event("waiting-input", "I'm waiting on an answer from you in Solla Code.");
-  if (view.hasPendingApprovals)
+  // The flag can trail an approval the call just answered.
+  if (view.hasPendingApprovals && (openApproval !== undefined || target.answeredRequestId === null))
     return event("pending-approval", approvalText(openApproval, input.maxChars));
 
   if (!working && thread.session?.status === "error" && thread.session.updatedAt >= target.sentAt)
@@ -827,6 +872,12 @@ export function mergeCallWorkEvents(input: {
   };
 }
 
+/** What the person's words settle: a question, an action approval, or a provider approval. */
+type SpokenAnswer =
+  | { readonly requestId: string; readonly questionIds: ReadonlyArray<string> }
+  | { readonly requestId: string; readonly answers: Readonly<Record<string, string>> }
+  | { readonly requestId: string; readonly decision: "accept" | "decline" };
+
 /** One chat a delegation passed the person's words to. */
 interface DelegationTarget {
   readonly threadId: ThreadId;
@@ -871,6 +922,8 @@ interface CallSession {
   readonly engine: AgentCallEngine;
   /** The agent called, as chats added to the call hear of it. */
   readonly agentName: string;
+  /** The request this call rang about when it rang for an approval, as the voice was told it. */
+  readonly approvalTopic: string | null;
   /** Who the voice was told it can transfer the person to or add. */
   readonly roster: AgentCallRoster;
   readonly createdAt: number;
@@ -999,6 +1052,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
         language: settings.language,
         direction: claimed.direction,
         topic: claimed.topic,
+        forApproval: claimed.reason === "approval",
         engine,
       }),
     };
@@ -1013,6 +1067,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
       readonly threadId: ThreadId;
       readonly agent: VmAgent;
       readonly roster: AgentCallRoster;
+      readonly claimed: Pick<AgentCall, "reason" | "topic">;
     },
   ) {
     sessions.set(sessionId, {
@@ -1020,6 +1075,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
       engine,
       threadId: opened.threadId,
       agentName: opened.agent.name,
+      approvalTopic: opened.claimed.reason === "approval" ? opened.claimed.topic : null,
       roster: opened.roster,
       createdAt: yield* nowMs,
       forwardedFragments: new Set(),
@@ -1377,19 +1433,72 @@ export const makeAgentCallLive = Effect.gen(function* () {
   };
 
   /**
+   * The person's yes or no to an approval, or null unless the call said that
+   * exact request aloud: a yes to something else must not approve this one.
+   */
+  const approvalAnswer = (
+    session: CallSession,
+    threadId: ThreadId,
+    approval: CallThreadActivity,
+    spoken: { readonly words: string; readonly voiceSpoke: boolean },
+  ): SpokenAnswer | null => {
+    const decision = spokenApprovalDecision(spoken.words);
+    const requestId = requestIdOf(approval);
+    if (decision === null || requestId === null) return null;
+    const request = requestText(approval);
+    const heading = plainSpoken(request).slice(0, 40);
+    const readOut = (session.active ?? []).some(
+      (target) =>
+        target.threadId === threadId &&
+        target.heardRequest !== null &&
+        plainSpoken(target.heardRequest.text).includes(heading),
+    );
+    const rangAboutIt =
+      spoken.voiceSpoke &&
+      threadId === session.threadId &&
+      session.approvalTopic === request.slice(0, 500).trim();
+    if (!readOut && !rangAboutIt) return null;
+    if (approval.kind === "approval.requested")
+      return { requestId, decision: decision === "approve" ? "accept" : "decline" };
+    return {
+      requestId,
+      answers: {
+        [ACTION_APPROVAL_QUESTION_ID]:
+          decision === "approve" ? ACTION_APPROVAL_CHOICE : spoken.words.slice(-2_000),
+      },
+    };
+  };
+
+  /**
    * A chat's open question: `answer` when the person's words can fill it,
    * else `dismissedRequestId` when forwarding them as a message dismisses it
    * (an option-only chat, whose question turn the message interrupts).
    */
-  const openQuestion = (session: CallSession, threadId: ThreadId) =>
+  const openQuestion = (
+    session: CallSession,
+    threadId: ThreadId,
+    spoken: { readonly words: string; readonly voiceSpoke: boolean },
+  ) =>
     projections.getThreadDetailById(threadId, { messageLimit: 1, activityLimit: 80 }).pipe(
-      Effect.map((thread) => {
+      Effect.map((thread): { answer: SpokenAnswer | null; dismissedRequestId: string | null } => {
         const none = { answer: null, dismissedRequestId: null };
         if (Option.isNone(thread)) return none;
         const open = openRequest(thread.value.activities, "user-input", {
           answered: session.answeredRequestIds,
           latestTurnId: thread.value.latestTurn?.turnId,
         });
+        const approval =
+          open !== undefined && isActionApprovalRequest(open)
+            ? open
+            : open === undefined
+              ? openRequest(thread.value.activities, "approval", {
+                  answered: session.answeredRequestIds,
+                })
+              : undefined;
+        if (approval !== undefined) {
+          const answer = approvalAnswer(session, threadId, approval, spoken);
+          if (answer !== null) return { answer, dismissedRequestId: null };
+        }
         if (open === undefined) return none;
         const providerName = thread.value.session?.providerName ?? null;
         const answer = voiceAnswerableRequest(open, providerName);
@@ -1483,6 +1592,10 @@ export const makeAgentCallLive = Effect.gen(function* () {
     // only Solla Code can answer, one an earlier turn left open, or one the
     // person talked past (heard before their last words) keeps nobody's words.
     const { lastDelivery } = session;
+    const spoken = {
+      words: delta.latestUserText || delta.userText,
+      voiceSpoke: /^assistant \[/mu.test(input.context),
+    };
     const askedBy = (session.active ?? []).filter(
       (target) =>
         !target.primary &&
@@ -1496,8 +1609,12 @@ export const makeAgentCallLive = Effect.gen(function* () {
         const shell = yield* projections
           .getThreadShellById(threadId)
           .pipe(Effect.orElseSucceed(() => Option.none()));
-        if (Option.isNone(shell) || !shell.value.hasPendingUserInput) continue;
-        if ((yield* openQuestion(session, threadId)).answer !== null) asking.add(threadId);
+        if (
+          Option.isNone(shell) ||
+          (!shell.value.hasPendingUserInput && !shell.value.hasPendingApprovals)
+        )
+          continue;
+        if ((yield* openQuestion(session, threadId, spoken)).answer !== null) asking.add(threadId);
       }
     const addressing = callAddressing(
       delta.latestUserText || delta.userText,
@@ -1552,9 +1669,10 @@ export const makeAgentCallLive = Effect.gen(function* () {
       );
       const commandId = CommandId.make(`agent-call:${id}`);
       const sentAt = DateTime.formatIso(yield* DateTime.now);
-      const open = shell.value.hasPendingUserInput
-        ? yield* openQuestion(session, target.threadId)
-        : { answer: null, dismissedRequestId: null };
+      const open =
+        shell.value.hasPendingUserInput || shell.value.hasPendingApprovals
+          ? yield* openQuestion(session, target.threadId, spoken)
+          : { answer: null, dismissedRequestId: null };
       const question = open.answer;
       const messageId = MessageId.make(`agent-call:${id}`);
       const work: AgentCallWatchTarget =
@@ -1585,20 +1703,33 @@ export const makeAgentCallLive = Effect.gen(function* () {
               interactionMode: shell.value.interactionMode,
               createdAt: sentAt,
             })
-          : // The command the question card sends: the words answer every question.
-            engine.dispatch({
-              type: "thread.user-input.respond",
-              commandId,
-              threadId: target.threadId,
-              requestId: ApprovalRequestId.make(question.requestId),
-              answers: Object.fromEntries(
-                question.questionIds.map((questionId) => [
-                  questionId,
-                  delta.userText.slice(-8_000),
-                ]),
-              ),
-              createdAt: sentAt,
-            })
+          : "decision" in question
+            ? // The command the approval card sends.
+              engine.dispatch({
+                type: "thread.approval.respond",
+                commandId,
+                threadId: target.threadId,
+                requestId: ApprovalRequestId.make(question.requestId),
+                decision: question.decision,
+                createdAt: sentAt,
+              })
+            : // The command the question card sends: the words answer every question.
+              engine.dispatch({
+                type: "thread.user-input.respond",
+                commandId,
+                threadId: target.threadId,
+                requestId: ApprovalRequestId.make(question.requestId),
+                answers:
+                  "answers" in question
+                    ? question.answers
+                    : Object.fromEntries(
+                        question.questionIds.map((questionId) => [
+                          questionId,
+                          delta.userText.slice(-8_000),
+                        ]),
+                      ),
+                createdAt: sentAt,
+              })
       ).pipe(
         Effect.mapError(
           () =>
@@ -1702,6 +1833,15 @@ export const makeAgentCallLive = Effect.gen(function* () {
       return Option.none<QuickAnswerRequest>();
     const call = yield* calls.get(session.callId);
     if (Option.isSome(call) && (call.value.participants ?? []).length > 0)
+      return Option.none<QuickAnswerRequest>();
+    // Words on a chat waiting for an answer may be that answer.
+    const shell = yield* projections
+      .getThreadShellById(session.threadId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    if (
+      Option.isSome(shell) &&
+      (shell.value.hasPendingApprovals || shell.value.hasPendingUserInput)
+    )
       return Option.none<QuickAnswerRequest>();
     return Option.some<QuickAnswerRequest>({
       speaksFor: session.threadId,

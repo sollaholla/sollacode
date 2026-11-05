@@ -267,8 +267,11 @@ Otherwise each target has its own `watch`, merged by `mergeCallWorkEvents` into 
   or `queued`).
 - A question or approval from any target surfaces at once, prefixed with its name, after any
   replies not heard yet. Its watch cuts only the request's own text to the share, so the closing
-  instruction ("please approve or decline it in Solla Code; a spoken yes can't approve it") always
-  survives.
+  instruction ("Say yes to approve it, or no to turn it down") always survives.
+- A yes or no answers an approval only if the call said that exact request aloud: its read-out, or
+  the approval the call rang about. `spokenApprovalDecision` matches the person's transcribed words
+  on the host, so the voice model cannot approve anything, and anything unclear leaves the card
+  open. Sign-in requests are never answered by voice.
 - While the only targets not done wait on the person for what the call already heard, a quiet
   `waiting-input` event with no text says nobody is working.
 - Once every target is terminal, the replies not heard yet, "Name: …" each, joined by blank lines.
