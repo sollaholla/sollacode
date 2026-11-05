@@ -75,6 +75,17 @@ export function createProjectEnvironmentAtoms<R, E>(
       staleTimeMs: 10_000,
       idleTtlMs: 60_000,
     }),
+    // Fresh each time the dialog asks: a folder's standing changes with other projects.
+    checkFolderRemoval: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:project:check-folder-removal",
+      tag: WS_METHODS.projectsCheckFolderRemoval,
+    }),
+    removeWithFolder: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:project:remove-with-folder",
+      tag: WS_METHODS.projectsRemoveWithFolder,
+      scheduler: projectScheduler,
+      concurrency: projectConcurrency,
+    }),
     readFile: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:read-file",
       tag: WS_METHODS.projectsReadFile,

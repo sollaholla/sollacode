@@ -72,6 +72,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.sourceControlCloneRepository]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthOrchestrationOperateScope,
   [WS_METHODS.projectsCheckWorkspaceRoot]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectsCheckFolderRemoval]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectsRemoveWithFolder]: AuthOrchestrationOperateScope,
   [WS_METHODS.projectsListEntries]: AuthOrchestrationReadScope,
   [WS_METHODS.projectsReadFile]: AuthOrchestrationReadScope,
   [WS_METHODS.projectsSearchContents]: AuthOrchestrationReadScope,

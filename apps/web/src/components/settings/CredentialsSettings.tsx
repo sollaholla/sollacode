@@ -224,27 +224,27 @@ export function CredentialsSettingsView({
     );
   } else if (credentials.length === 0) {
     content = (
-      <div className="rounded-2xl border border-dashed border-border px-6 py-10 text-center">
-        <KeyRoundIcon className="mx-auto size-6 text-muted-foreground" />
-        <p className="mt-3 text-sm font-medium">No saved credentials</p>
+      <div className="rounded-xl border border-dashed border-border px-6 py-8 text-center">
+        <KeyRoundIcon className="mx-auto size-5 text-muted-foreground" />
+        <p className="mt-2 text-sm font-medium">No saved logins</p>
         <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
           Save a login or PIN here and agents can use it on that site in the browser panel without
           ever seeing it.
         </p>
         <Button className="mt-4" size="sm" onClick={() => setEditor({ kind: "add" })}>
           <PlusIcon />
-          Add credential
+          Add login
         </Button>
       </div>
     );
   } else {
     content = (
-      <ul className="space-y-2" aria-label="Saved credentials">
+      <ul
+        className="divide-y divide-border/50 overflow-hidden rounded-xl border border-border/70 bg-card"
+        aria-label="Saved credentials"
+      >
         {sortCredentials(credentials).map((credential) => (
-          <li
-            key={credential.id}
-            className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3"
-          >
+          <li key={credential.id} className="flex items-center gap-3 px-4 py-2.5">
             {credentialKindOf(credential) === "code" ? (
               <HashIcon className="size-4 shrink-0 text-muted-foreground" />
             ) : (
@@ -294,17 +294,14 @@ export function CredentialsSettingsView({
           bridge && credentials && credentials.length > 0 ? (
             <Button size="sm" variant="outline" onClick={() => setEditor({ kind: "add" })}>
               <PlusIcon />
-              Add credential
+              Add login
             </Button>
           ) : null
         }
       >
-        <p className="mb-4 max-w-2xl px-3 text-sm leading-relaxed text-muted-foreground sm:px-4">
-          Logins, PINs, and codes agents can use on sites in the browser panel, except saved Google
-          passwords, which only you can fill. Agents see each entry's label, type, username, and
-          site. Solla Code types the secret into the page itself, only on the exact site it was
-          saved for, so it never reaches an agent, a chat, or a log. A password fills only password
-          boxes; a PIN or code also fills the plain text and number boxes many sites use for one.
+        <p className="mb-3 max-w-2xl px-3 text-sm text-muted-foreground sm:px-4">
+          Logins, PINs, and codes agents can use on the exact site they're saved for. Agents never
+          see the secret, only the label and username. Saved Google passwords only you can fill.
         </p>
         {error ? (
           <Alert variant="error" className="mb-3">

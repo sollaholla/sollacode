@@ -54,11 +54,10 @@ export function PasskeysSection({ source }: { readonly source: PasskeysSource })
       title="Passkeys"
       icon={<FingerprintIcon className="size-5" />}
     >
-      <p className="mb-4 max-w-2xl px-3 text-sm leading-relaxed text-muted-foreground sm:px-0">
-        The browser panel can't reach passkeys in iCloud Keychain, Google Password Manager, or on
-        your phone. Instead, turn this on for a site and add a new passkey in that site's security
-        settings. Solla keeps it encrypted on this computer and uses it on that site for you and
-        your agents, without asking each time. Google can't use this.
+      <p className="mb-3 max-w-2xl px-3 text-sm text-muted-foreground sm:px-4">
+        Turn this on for a site, then add a new passkey in that site's security settings. Solla
+        keeps it encrypted here and uses it for you and your agents. Passkeys in iCloud Keychain or
+        on your phone can't be reached, and Google can't use this.
       </p>
       {error ? (
         <Alert variant="error" className="mb-3">
@@ -68,9 +67,9 @@ export function PasskeysSection({ source }: { readonly source: PasskeysSource })
         </Alert>
       ) : null}
       {rows.length > 0 ? (
-        <ul className="mb-3 space-y-2">
+        <ul className="mb-3 flex flex-col gap-3">
           {rows.map((row) => (
-            <li key={row.site} className="rounded-lg border border-border/70 px-3 py-2.5">
+            <li key={row.site} className="rounded-xl border border-border/70 bg-card px-4 py-3">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-foreground">{row.site}</p>

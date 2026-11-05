@@ -4,7 +4,9 @@ import {
   ACCOUNT_PROVIDER_LABELS,
   accountDisplayName,
   accountEventSentence,
+  accountRemovalQuestion,
   accountSignInUrl,
+  accountsRemovedAlongside,
   summarizeAccounts,
   type AccountSummary,
 } from "@t3tools/client-runtime/preview/account-summary";
@@ -23,10 +25,14 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import {
   ChevronDownIcon,
+  ChevronRightIcon,
+  EllipsisIcon,
   HardDriveIcon,
   LockKeyholeIcon,
   RefreshCwIcon,
+  Trash2Icon,
   UserRoundIcon,
+  XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -148,6 +154,8 @@ export function UseInMenu(props: {
   );
 }
 
+const placesLabel = (count: number) => (count === 1 ? "1 place" : `${count} places`);
+
 function AccountRow(props: {
   readonly account: AccountSummary;
   readonly environmentId: EnvironmentId | null;
@@ -156,6 +164,7 @@ function AccountRow(props: {
   readonly onSignOut: (session: PreviewAccountSession) => void;
   readonly onSignInAgain: (session: PreviewAccountSession) => void;
   readonly onUseIn: (session: PreviewAccountSession, to: PreviewBrowserProfile) => void;
+  readonly onRemove: (sessions: ReadonlyArray<PreviewAccountSession>, whole: boolean) => void;
 }) {
   const { account, busy } = props;
   const targets = useProfileTargets(props.environmentId);
@@ -165,17 +174,25 @@ function AccountRow(props: {
   );
   const availableProjects = targets.projects.filter((target) => !signedIn.has(target.ownerId));
   const availableAgents = targets.agents.filter((target) => !signedIn.has(target.ownerId));
+  const provider = ACCOUNT_PROVIDER_LABELS[account.provider];
   return (
-    <li className="rounded-lg border border-border/70 px-3 py-2.5">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <UserRoundIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+    <li className="overflow-hidden rounded-xl border border-border/70 bg-card">
+      <div className="flex items-center gap-3 px-4 py-3">
+        <span
+          aria-hidden
+          className="relative flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold text-foreground"
+        >
+          {provider.slice(0, 1)}
+          {account.live ? (
+            <span className="absolute right-0 bottom-0 size-2.5 rounded-full bg-success ring-2 ring-card" />
+          ) : null}
+        </span>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-foreground">
-            {account.identity ?? `${ACCOUNT_PROVIDER_LABELS[account.provider]} account`}
+            {account.identity ?? `${provider} account`}
           </p>
-          <p className="text-xs text-muted-foreground">
-            {ACCOUNT_PROVIDER_LABELS[account.provider]} ·{" "}
-            {account.live ? "Signed in" : "Signed out"}
+          <p className="truncate text-xs text-muted-foreground">
+            {provider} · {account.live ? `Signed in, ${placesLabel(signedIn.size)}` : "Signed out"}
           </p>
         </div>
         {source && availableProjects.length + availableAgents.length > 0 ? (
@@ -186,16 +203,39 @@ function AccountRow(props: {
             onPick={(profile) => props.onUseIn(source, profile)}
           />
         ) : null}
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                disabled={busy}
+                aria-label={`More for ${account.identity ?? provider}`}
+              >
+                <EllipsisIcon />
+              </Button>
+            }
+          />
+          <MenuPopup align="end" className="w-48">
+            <MenuItem variant="destructive" onClick={() => props.onRemove(account.profiles, true)}>
+              <Trash2Icon />
+              Remove account
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
       </div>
-      <ul className="mt-2 flex flex-col gap-1 border-t border-border/50 pt-2">
+      <ul className="divide-y divide-border/50 border-t border-border/50">
         {account.profiles.map((profile) => (
-          <li key={profile.directory} className="flex items-center gap-2 text-xs">
-            <span className="min-w-0 flex-1 truncate text-muted-foreground">
+          <li key={profile.directory} className="flex min-h-10 items-center gap-2 px-4 py-1.5">
+            <span className="min-w-0 flex-1 truncate text-sm text-foreground">
               {props.ownerLabel(profile.owner)}
-              {profile.owner.kind === "agent" ? " · agent" : ""}
-              {profile.linked ? " · linked" : ""}
-              {profile.live ? "" : " · signed out"}
             </span>
+            {profile.owner.kind === "agent" ? (
+              <span className="shrink-0 text-xs text-muted-foreground">Agent</span>
+            ) : null}
+            {profile.linked ? (
+              <span className="shrink-0 text-xs text-muted-foreground">Linked</span>
+            ) : null}
             {profile.live ? (
               <Button
                 size="xs"
@@ -206,14 +246,27 @@ function AccountRow(props: {
                 Sign out
               </Button>
             ) : (
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={busy}
-                onClick={() => props.onSignInAgain(profile)}
-              >
-                Sign in again
-              </Button>
+              <>
+                <span className="shrink-0 text-xs text-muted-foreground">Signed out</span>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => props.onSignInAgain(profile)}
+                >
+                  Sign in
+                </Button>
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  disabled={busy}
+                  aria-label={`Remove from ${props.ownerLabel(profile.owner)}`}
+                  title="Remove"
+                  onClick={() => props.onRemove([profile], false)}
+                >
+                  <XIcon />
+                </Button>
+              </>
             )}
           </li>
         ))}
@@ -286,6 +339,28 @@ export function AccountsSections(props: {
     [act, ownerLabel, source],
   );
 
+  const remove = useCallback(
+    async (sessions: ReadonlyArray<PreviewAccountSession>, whole: boolean) => {
+      const first = sessions[0];
+      if (!first) return;
+      const confirmed = await confirmInApp(
+        accountRemovalQuestion({
+          name: accountDisplayName(first),
+          from: whole ? null : ownerLabel(first.owner),
+          alsoSignedOut: accountsRemovedAlongside(sessions, snapshot?.sessions ?? []),
+        }),
+        { confirmLabel: "Remove" },
+      );
+      if (!confirmed) return;
+      await act(async () => {
+        for (const session of sessions) {
+          await source.signOut({ provider: session.provider, directory: session.directory });
+        }
+      }, "Could not remove that account.");
+    },
+    [act, ownerLabel, snapshot, source],
+  );
+
   const signInAgain = useCallback(
     (session: PreviewAccountSession) => {
       const threadId: ThreadId | null = threadForAccountOwner({
@@ -331,19 +406,23 @@ export function AccountsSections(props: {
     <>
       <SettingsSection
         id="setting-signed-in-accounts"
-        title="Signed-in accounts"
+        title="Accounts"
         icon={<UserRoundIcon className="size-5" />}
         headerAction={
-          <Button size="sm" variant="outline" disabled={refreshing} onClick={() => void load(true)}>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            disabled={refreshing}
+            aria-label="Check accounts again"
+            title="Check again"
+            onClick={() => void load(true)}
+          >
             <RefreshCwIcon className={refreshing ? "animate-spin" : undefined} />
-            Check again
           </Button>
         }
       >
-        <p className="mb-4 max-w-2xl px-3 text-sm leading-relaxed text-muted-foreground sm:px-0">
-          Each project has its own browser, shared by all its threads, so signing in once holds
-          across that project. Each agent has its own too, and starts signed out. Use an account in
-          another project or agent here, and it stays signed in on both.
+        <p className="mb-3 max-w-2xl px-3 text-sm text-muted-foreground sm:px-4">
+          Each project and agent has its own browser. Sign in once and it holds there.
         </p>
         {error ? (
           <Alert variant="error" className="mb-3">
@@ -353,12 +432,16 @@ export function AccountsSections(props: {
           </Alert>
         ) : null}
         {snapshot !== null && accounts.length === 0 ? (
-          <p className="px-3 text-sm text-muted-foreground sm:px-0">
-            No Google, GitHub, Microsoft, or Apple sign-ins yet. Sign in on a site in a project's
-            browser and it appears here.
-          </p>
+          <div className="rounded-xl border border-dashed border-border px-6 py-8 text-center">
+            <UserRoundIcon className="mx-auto size-5 text-muted-foreground" />
+            <p className="mt-2 text-sm font-medium">No accounts yet</p>
+            <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+              Sign in to Google, GitHub, Microsoft, or Apple in a project's browser and it appears
+              here.
+            </p>
+          </div>
         ) : null}
-        <ul className="flex flex-col gap-2">
+        <ul className="flex flex-col gap-3">
           {accounts.map((account) => (
             <AccountRow
               key={account.key}
@@ -368,6 +451,7 @@ export function AccountsSections(props: {
               busy={busy}
               onSignOut={(session) => void signOut(session)}
               onSignInAgain={signInAgain}
+              onRemove={(sessions, whole) => void remove(sessions, whole)}
               onUseIn={(session, to) => {
                 if (environmentId === null) return;
                 void act(
@@ -385,9 +469,12 @@ export function AccountsSections(props: {
           ))}
         </ul>
         {events.length > 0 ? (
-          <div className="mt-4 px-3 sm:px-0">
-            <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">Recent sign-outs</h4>
-            <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
+          <details className="group mt-3 px-3 sm:px-4">
+            <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+              <ChevronRightIcon className="size-3.5 transition-transform group-open:rotate-90" />
+              Recent sign-outs
+            </summary>
+            <ul className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground">
               {events.map((event) => (
                 <li key={`${event.at}-${event.directory}-${event.provider}`}>
                   <time dateTime={event.at} className="tabular-nums">
@@ -398,26 +485,22 @@ export function AccountsSections(props: {
                 </li>
               ))}
             </ul>
-          </div>
+          </details>
+        ) : null}
+        {snapshot !== null ? (
+          <p
+            id="setting-browser-data"
+            className="mt-3 flex items-center gap-1.5 px-3 text-xs text-muted-foreground sm:px-4"
+          >
+            <HardDriveIcon className="size-3.5 shrink-0" aria-hidden />
+            {snapshot.profileCount} browser {snapshot.profileCount === 1 ? "profile" : "profiles"},{" "}
+            {snapshot.encryptedProfileCount} encrypted
+            {snapshot.retiredProfileCount > 0
+              ? `, ${snapshot.retiredProfileCount} waiting to be deleted`
+              : ""}
+          </p>
         ) : null}
       </SettingsSection>
-      {snapshot !== null ? (
-        <SettingsSection
-          id="setting-browser-data"
-          title="Browser data"
-          icon={<HardDriveIcon className="size-5" />}
-        >
-          <p className="max-w-2xl px-3 text-sm leading-relaxed text-muted-foreground sm:px-0">
-            {snapshot.profileCount} browser {snapshot.profileCount === 1 ? "profile" : "profiles"},{" "}
-            {snapshot.encryptedProfileCount} with encrypted cookies
-            {snapshot.retiredProfileCount > 0
-              ? `, ${snapshot.retiredProfileCount} set aside for removal`
-              : ""}
-            . When a project or agent is removed, Solla Code sets its browser data aside and deletes
-            it after three days.
-          </p>
-        </SettingsSection>
-      ) : null}
     </>
   );
 }

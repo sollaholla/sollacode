@@ -114,7 +114,7 @@ function DevicesSettingsView({ environmentId }: { environmentId: EnvironmentId }
     content = (
       <Alert variant="error">
         <SmartphoneIcon />
-        <AlertTitle>Couldn't load devices</AlertTitle>
+        <AlertTitle>Couldn't load simulators</AlertTitle>
         <AlertDescription>
           <p>{error}</p>
           <Button className="mt-2" size="sm" variant="outline" onClick={() => void refresh()}>
@@ -126,7 +126,7 @@ function DevicesSettingsView({ environmentId }: { environmentId: EnvironmentId }
     );
   } else if (result === null) {
     content = (
-      <div className="py-10 text-center text-sm text-muted-foreground">Loading devices…</div>
+      <div className="py-10 text-center text-sm text-muted-foreground">Loading simulators…</div>
     );
   } else {
     content = (
@@ -178,21 +178,21 @@ function DevicesSettingsView({ environmentId }: { environmentId: EnvironmentId }
     <SettingsPageContainer>
       <SettingsSection
         id="setting-devices"
-        title="Devices"
+        title="Simulators"
         icon={<SmartphoneIcon className="size-5" />}
         headerAction={
           availablePlatforms.length > 0 ? (
             <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
               <PlusIcon />
-              Add device
+              Add simulator
             </Button>
           ) : null
         }
       >
         <p className="mb-4 max-w-2xl px-3 text-sm leading-relaxed text-muted-foreground sm:px-4">
-          iPhone, iPad, and Android devices that run on the computer running Solla Code. Open one
-          from the browser panel in any chat to see it live and use it with your mouse and keyboard,
-          from this computer or a connected phone.
+          Simulated iPhones, iPads, and Android phones that run on the computer running Solla Code.
+          Open one from the browser panel in any chat to see it live and use it with your mouse and
+          keyboard, from this computer or a connected phone.
         </p>
         {actionError ? (
           <Alert variant="error" className="mb-3">

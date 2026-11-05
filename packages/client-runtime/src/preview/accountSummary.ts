@@ -56,6 +56,38 @@ export function summarizeAccounts(
     );
 }
 
+/**
+ * Other live accounts that go too when these sessions are removed. A browser
+ * profile holds one sign-in per provider, and Google keeps several accounts in
+ * it, so clearing one clears them all. Say so before it happens.
+ */
+export function accountsRemovedAlongside(
+  removing: ReadonlyArray<PreviewAccountSession>,
+  sessions: ReadonlyArray<PreviewAccountSession>,
+): ReadonlyArray<string> {
+  const names = sessions.flatMap((session) => {
+    const sameProfile = removing.some(
+      (target) => target.provider === session.provider && target.directory === session.directory,
+    );
+    const isTarget = removing.some((target) => target.identity === session.identity);
+    return sameProfile && !isTarget && session.live ? [accountDisplayName(session)] : [];
+  });
+  return [...new Set(names)];
+}
+
+/** The question asked before removing an account from the places given. */
+export function accountRemovalQuestion(input: {
+  readonly name: string;
+  /** Where it is being removed from; null for everywhere it appears. */
+  readonly from: string | null;
+  readonly alsoSignedOut: ReadonlyArray<string>;
+}): string {
+  const question =
+    input.from === null ? `Remove ${input.name}?` : `Remove ${input.name} from ${input.from}?`;
+  if (input.alsoSignedOut.length === 0) return question;
+  return `${question} ${input.alsoSignedOut.join(", ")} will be signed out too, because they share a browser sign-in.`;
+}
+
 /** Where a person goes to sign in to this account again. */
 export function accountSignInUrl(
   provider: PreviewAccountProvider,

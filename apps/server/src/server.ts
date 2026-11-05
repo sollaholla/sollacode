@@ -126,6 +126,7 @@ import * as RelayedEnvironments from "./relay/RelayedEnvironments.ts";
 import { relayRouteLayer } from "./relay/relayRoute.ts";
 import { remoteConsultRouteLayer } from "./mcp/toolkits/consult/remoteRoute.ts";
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
+import * as ProjectFolderRemoval from "./project/ProjectFolderRemoval.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
@@ -503,6 +504,7 @@ const RuntimeDependenciesLive = AgentCallRuntimeLive.pipe(
   Layer.provideMerge(RelayedEnvironments.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
   Layer.provideMerge(ImageThumbnails.layer),
   Layer.provideMerge(ProjectFolderUsage.layer.pipe(Layer.provide(PersistenceLayerLive))),
+  Layer.provideMerge(ProjectFolderRemoval.layer.pipe(Layer.provide(ProcessRunner.layer))),
   Layer.provideMerge(DatabaseCompaction.layer.pipe(Layer.provide(PersistenceLayerLive))),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),

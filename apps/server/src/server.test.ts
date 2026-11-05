@@ -145,6 +145,7 @@ import * as RelayedEnvironments from "./relay/RelayedEnvironments.ts";
 import * as AgentCalls from "./vm/AgentCalls.ts";
 import { ThreadWorkObligationRepository } from "./persistence/Services/ThreadWorkObligations.ts";
 import * as ImageThumbnails from "./assets/ImageThumbnails.ts";
+import * as ProjectFolderRemoval from "./project/ProjectFolderRemoval.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -393,6 +394,7 @@ const buildAppUnderTest = (options?: {
     >;
     imageThumbnails?: Partial<ImageThumbnails.ImageThumbnails["Service"]>;
     projectFolderUsage?: Partial<ProjectFolderUsage.ProjectFolderUsage["Service"]>;
+    projectFolderRemoval?: Partial<ProjectFolderRemoval.ProjectFolderRemoval["Service"]>;
     databaseStorage?: Partial<DatabaseCompaction.DatabaseStorage["Service"]>;
   };
 }) =>
@@ -856,6 +858,11 @@ const buildAppUnderTest = (options?: {
         Layer.mock(ImageThumbnails.ImageThumbnails)({
           thumbnail: () => Effect.succeed(null),
           ...options?.layers?.imageThumbnails,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ProjectFolderRemoval.ProjectFolderRemoval)({
+          ...options?.layers?.projectFolderRemoval,
         }),
       ),
       Layer.provide(
@@ -3872,6 +3879,81 @@ it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server rou
       assert.equal(response.relativePath, "nested/created.txt");
       const persisted = yield* fs.readFileString(path.join(workspaceDir, "nested", "created.txt"));
       assert.equal(persisted, "written-by-rpc");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  const folderProject = {
+    ...makeDefaultOrchestrationReadModel().projects[0]!,
+    workspaceRoot: "/Users/me/code/acme",
+  };
+  const folderRemovalHarness = (removable: boolean) => {
+    const steps: Array<string> = [];
+    return {
+      steps,
+      layers: {
+        projectionSnapshotQuery: {
+          getShellSnapshot: () =>
+            Effect.succeed({
+              snapshotSequence: 1,
+              projects: [folderProject],
+              threads: [],
+              updatedAt: "2026-11-05T00:00:00.000Z",
+            }),
+        },
+        orchestrationEngine: {
+          dispatch: (command: OrchestrationCommand) =>
+            Effect.sync(() => {
+              steps.push(command.type);
+              return { sequence: steps.length };
+            }),
+        },
+        projectFolderRemoval: {
+          check: () =>
+            Effect.succeed({
+              workspaceRoot: folderProject.workspaceRoot,
+              removable,
+              reason: removable ? null : "This is your home folder, or a folder that contains it.",
+              trashName: "Trash",
+            }),
+          moveToTrash: (folder: string) =>
+            Effect.sync(() => {
+              steps.push(`trash:${folder}`);
+              return { folder: "trashed" as const, detail: null, trashName: "Trash" };
+            }),
+        },
+      },
+    };
+  };
+
+  it.effect("removes the project first, then hands its own folder to the Trash", () =>
+    Effect.gen(function* () {
+      const { layers, steps } = folderRemovalHarness(true);
+      yield* buildAppUnderTest({ layers });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.projectsRemoveWithFolder]({ projectId: folderProject.id }),
+        ),
+      );
+      assert.equal(response.folder, "trashed");
+      assert.deepEqual(steps, ["project.delete", "trash:/Users/me/code/acme"]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("touches nothing when the server refuses the folder, whatever the client asked", () =>
+    Effect.gen(function* () {
+      const { layers, steps } = folderRemovalHarness(false);
+      yield* buildAppUnderTest({ layers });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.projectsRemoveWithFolder]({ projectId: folderProject.id }).pipe(
+            Effect.result,
+          ),
+        ),
+      );
+      assertTrue(result._tag === "Failure");
+      assert.deepEqual(steps, []);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

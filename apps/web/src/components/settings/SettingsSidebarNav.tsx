@@ -144,6 +144,12 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
         description: "Git, commits and pull requests",
       },
       {
+        label: "Simulators",
+        to: "/settings/devices",
+        icon: SmartphoneIcon,
+        description: "iOS simulators and Android emulators",
+      },
+      {
         label: "Archive",
         to: "/settings/archived",
         icon: ArchiveIcon,
@@ -159,12 +165,6 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
         to: "/settings/connections",
         icon: Link2Icon,
         description: "Other computers and remote access",
-      },
-      {
-        label: "Devices",
-        to: "/settings/devices",
-        icon: SmartphoneIcon,
-        description: "Simulators and emulators",
       },
       {
         label: "Accounts",

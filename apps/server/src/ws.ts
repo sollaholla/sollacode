@@ -60,6 +60,7 @@ import {
   type ProjectFileFailure,
   type ProjectFileOperation,
   ProjectCheckWorkspaceRootError,
+  ProjectFolderRemovalError,
   ProjectListEntriesError,
   ProjectReadFileError,
   ProjectSearchContentsError,
@@ -190,6 +191,7 @@ import * as ProjectionLiveBuffer from "./stream/ProjectionLiveBuffer.ts";
 import * as HostVitalsMonitor from "./hostVitals/HostVitalsMonitor.ts";
 import * as DeviceManager from "./devices/DeviceManager.ts";
 import { RelayedEnvironments } from "./relay/RelayedEnvironments.ts";
+import * as ProjectFolderRemoval from "./project/ProjectFolderRemoval.ts";
 import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
 import {
@@ -706,6 +708,7 @@ const makeWsRpcLayer = (
       const devices = yield* DeviceManager.DeviceManager;
       const relayedEnvironments = yield* RelayedEnvironments;
       const projectFolderUsage = yield* ProjectFolderUsage.ProjectFolderUsage;
+      const projectFolderRemoval = yield* ProjectFolderRemoval.ProjectFolderRemoval;
       const databaseStorage = yield* DatabaseCompaction.DatabaseStorage;
       const threadArtifacts = yield* ThreadArtifactService;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
@@ -1406,6 +1409,27 @@ const makeWsRpcLayer = (
               return cleanupCreatedThread().pipe(Effect.flatMap(() => Effect.fail(dispatchError)));
             }),
           );
+        });
+
+      /** A project, and whether its folder may go to the Trash along with it. */
+      const checkFolderRemoval = (projectId: ProjectId) =>
+        Effect.gen(function* () {
+          const toRemovalError = (cause: { readonly message: string }) =>
+            new ProjectFolderRemovalError({ detail: cause.message });
+          const snapshot = yield* projectionSnapshotQuery
+            .getShellSnapshot()
+            .pipe(Effect.mapError(toRemovalError));
+          const project = snapshot.projects.find((candidate) => candidate.id === projectId);
+          if (project === undefined) {
+            return yield* new ProjectFolderRemovalError({
+              detail: `Unknown project: ${projectId}`,
+            });
+          }
+          const check = yield* projectFolderRemoval.check({
+            project,
+            otherProjects: snapshot.projects.filter((candidate) => candidate.id !== projectId),
+          });
+          return { check };
         });
 
       const dispatchNormalizedCommand = (
@@ -2495,6 +2519,41 @@ const makeWsRpcLayer = (
                   ),
                 );
               return { workspaceRoot: project.value.workspaceRoot, exists };
+            }),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsCheckFolderRemoval]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsCheckFolderRemoval,
+            checkFolderRemoval(input.projectId).pipe(Effect.map(({ check }) => check)),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsRemoveWithFolder]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsRemoveWithFolder,
+            Effect.gen(function* () {
+              const { check } = yield* checkFolderRemoval(input.projectId);
+              // Checked again here: a client's earlier answer proves nothing.
+              if (!check.removable) {
+                return yield* new ProjectFolderRemovalError({
+                  detail: check.reason ?? "This folder can't be moved.",
+                });
+              }
+              // The project goes first, so its chats stop using the folder.
+              yield* serverCommandId("project-remove-with-folder").pipe(
+                Effect.flatMap((commandId) =>
+                  dispatchNormalizedCommand({
+                    type: "project.delete",
+                    commandId,
+                    projectId: input.projectId,
+                    force: true,
+                  }),
+                ),
+                Effect.mapError(
+                  (cause) => new ProjectFolderRemovalError({ detail: cause.message }),
+                ),
+              );
+              return yield* projectFolderRemoval.moveToTrash(check.workspaceRoot);
             }),
             { "rpc.aggregate": "workspace" },
           ),

@@ -46,9 +46,14 @@ edit the **Name** field and tap **Save**.
 
 ## Removing a project
 
-**Remove project…** removes the project from Solla Code. Nothing in its folder is deleted: the
-confirmation says so first, with the folder's size, so a project rooted at your home folder is no
-risk to your files. It then lists what goes: the number of chats (including archived ones), the
+**Remove project…** removes the project from Solla Code. Nothing in its folder is deleted unless
+you ask: the confirmation says so first, with the folder's size, so a project rooted at your home
+folder is no risk to your files. Tick **Also move the folder to the Trash** to send the folder there
+too (the Recycle Bin on Windows). It stays recoverable until the Trash is emptied, which is also
+when the disk space comes back. Solla Code never deletes it outright, and if the Trash can't take
+it, the folder stays where it is and you're told. The box is off for a folder that holds more than
+this project: a drive, a home folder, a standard folder like Documents, a system folder, Solla
+Code's own data, or a folder another project also uses. It says why. It then lists what goes: the number of chats (including archived ones), the
 history, attachments, and artifacts they hold, and any chat that is working right now and will be
 stopped. Removing deletes the project and every one of its chats.
 

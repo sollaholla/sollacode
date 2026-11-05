@@ -55,9 +55,9 @@ const SETTINGS_PAGE_ENTRIES: ReadonlyArray<SettingsSearchEntry> = [
   ],
   [
     "/settings/devices",
-    "Devices",
-    "Simulators and emulators",
-    ["ios", "android", "phone", "simulator"],
+    "Simulators",
+    "iOS simulators and Android emulators",
+    ["devices", "ios", "android", "phone", "simulator", "emulator"],
   ],
   ["/settings/keybindings", "Keybindings", "Keyboard shortcuts", ["hotkeys", "keys", "shortcut"]],
   ["/settings/storage", "Storage", "Storage and cleanup", ["disk", "database", "space"]],
@@ -337,8 +337,8 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
   {
     title: "Simulators and emulators",
     tab: "/settings/devices",
-    tabLabel: "Devices",
-    section: "Devices",
+    tabLabel: "Simulators",
+    section: "Simulators",
     anchor: "setting-devices",
     keywords: [
       "devices",
@@ -356,10 +356,10 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     ],
   },
   {
-    title: "Signed-in accounts",
+    title: "Accounts",
     tab: "/settings/credentials",
     tabLabel: "Accounts",
-    section: "Signed-in accounts",
+    section: "Accounts",
     anchor: "setting-signed-in-accounts",
     keywords: [
       "google",
@@ -378,9 +378,17 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
     title: "Browser data",
     tab: "/settings/credentials",
     tabLabel: "Accounts",
-    section: "Browser data",
+    section: "Accounts",
     anchor: "setting-browser-data",
     keywords: ["cookies", "encrypted", "cache", "profiles", "cleanup", "project browser"],
+  },
+  {
+    title: "Passkeys",
+    tab: "/settings/credentials",
+    tabLabel: "Accounts",
+    section: "Passkeys",
+    anchor: "setting-passkeys",
+    keywords: ["passkey", "webauthn", "security key", "sign in"],
   },
   {
     title: "Saved passwords and PINs",

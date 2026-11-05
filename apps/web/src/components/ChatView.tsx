@@ -882,6 +882,7 @@ type ChatViewProps =
       embeddedSideChat?: boolean;
       hideWorkspaceHeader?: boolean;
       projectScriptsPortalTarget?: HTMLElement | null;
+      chatColumnHeader?: ReactNode;
       /** Agent threads: Browser, Terminal, and Side Chat live in the right panel. */
       agentSurfaces?: boolean;
       /** Agent alert rendered at the live end of the real chat timeline. */
@@ -900,6 +901,7 @@ type ChatViewProps =
       embeddedSideChat?: boolean;
       hideWorkspaceHeader?: boolean;
       projectScriptsPortalTarget?: HTMLElement | null;
+      chatColumnHeader?: ReactNode;
       agentSurfaces?: boolean;
       inlineTimelineNotice?: { readonly id: string; readonly content: ReactNode } | null;
       threadSyncPhase?: never;
@@ -1861,6 +1863,7 @@ function ChatViewContent(props: ChatViewProps) {
     embeddedSideChat = false,
     hideWorkspaceHeader = false,
     projectScriptsPortalTarget = null,
+    chatColumnHeader = null,
     agentSurfaces = false,
     inlineTimelineNotice = null,
   } = props;
@@ -10066,6 +10069,7 @@ function ChatViewContent(props: ChatViewProps) {
             />
           </header>
         ) : null}
+        {chatColumnHeader}
 
         <ThreadErrorBanner
           error={threadError}

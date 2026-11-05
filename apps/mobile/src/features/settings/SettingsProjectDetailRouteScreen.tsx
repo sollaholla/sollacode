@@ -15,7 +15,7 @@ import {
   type TokenSegmentKey,
 } from "@t3tools/client-runtime/state/project-statistics";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { OrchestrationProjectStatistics } from "@t3tools/contracts";
+import type { OrchestrationProjectStatistics, ProjectFolderRemovalCheck } from "@t3tools/contracts";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useEffect, useMemo, useState } from "react";
@@ -43,6 +43,7 @@ import { useServerConfigs, useThreadShells } from "../../state/entities";
 import { projectEnvironment } from "../../state/projects";
 import { useProjectOverviews } from "../../state/projectStatistics";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsSection } from "./components/SettingsSection";
 
 type SettingsProjectDetailRouteProps = StaticScreenProps<{
@@ -599,9 +600,31 @@ function RenameProject(props: { readonly entry: ProjectOverview }) {
 function DeleteProject(props: { readonly entry: ProjectOverview; readonly onDeleted: () => void }) {
   const { project, statistics } = props.entry;
   const deleteProject = useAtomCommand(projectEnvironment.delete, { reportFailure: false });
+  const removeWithFolder = useAtomCommand(projectEnvironment.removeWithFolder, {
+    reportFailure: false,
+  });
+  const checkFolderRemoval = useAtomCommand(projectEnvironment.checkFolderRemoval, {
+    reportFailure: false,
+  });
   const threadShells = useThreadShells();
   const dangerColor = useThemeColor("--color-danger-foreground");
   const [deleting, setDeleting] = useState(false);
+  const [alsoFolder, setAlsoFolder] = useState(false);
+  // Stays null on a computer too old to answer: no switch, nothing offered.
+  const [folderCheck, setFolderCheck] = useState<ProjectFolderRemovalCheck | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void checkFolderRemoval({
+      environmentId: project.environmentId,
+      input: { projectId: project.id },
+    }).then((result) => {
+      if (!cancelled && result._tag === "Success") setFolderCheck(result.value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [checkFolderRemoval, project.environmentId, project.id]);
+  const movingFolder = alsoFolder && folderCheck?.removable === true;
   const chats = statistics
     ? statistics.activeThreads + statistics.archivedThreads
     : threadShells.filter(
@@ -617,12 +640,17 @@ function DeleteProject(props: { readonly entry: ProjectOverview; readonly onDele
 
   const remove = async () => {
     setDeleting(true);
-    const result = await deleteProject({
-      environmentId: project.environmentId,
-      // Forced so chats created or unarchived since this screen loaded go too;
-      // the confirmation already said every chat would.
-      input: { projectId: project.id, force: true },
-    });
+    const result = movingFolder
+      ? await removeWithFolder({
+          environmentId: project.environmentId,
+          input: { projectId: project.id },
+        })
+      : await deleteProject({
+          environmentId: project.environmentId,
+          // Forced so chats created or unarchived since this screen loaded go too;
+          // the confirmation already said every chat would.
+          input: { projectId: project.id, force: true },
+        });
     setDeleting(false);
     if (result._tag === "Failure") {
       Alert.alert(
@@ -632,19 +660,29 @@ function DeleteProject(props: { readonly entry: ProjectOverview; readonly onDele
       return;
     }
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if (result.value !== null && typeof result.value === "object" && "folder" in result.value) {
+      if (result.value.folder === "kept") {
+        Alert.alert(
+          `Removed “${project.title}”, but its folder stayed`,
+          result.value.detail ?? undefined,
+        );
+      }
+    }
     props.onDeleted();
   };
 
+  const folderSize =
+    props.entry.folder?.bytes != null
+      ? ` (${formatByteSize(props.entry.folder.bytes)} on disk)`
+      : "";
   const confirm = () => {
     const title = `Remove “${project.title}”?`;
     const message = [
       // First, because the path above a destructive button reads like the
       // thing being destroyed.
-      `Nothing in ${project.workspaceRoot}${
-        props.entry.folder?.bytes != null
-          ? ` (${formatByteSize(props.entry.folder.bytes)} on disk)`
-          : ""
-      } is deleted. The folder and your files stay where they are.`,
+      movingFolder
+        ? `${project.workspaceRoot}${folderSize} and everything in it moves to the ${folderCheck?.trashName}. You can put it back from there until it's emptied.`
+        : `Nothing in ${project.workspaceRoot}${folderSize} is deleted. The folder and your files stay where they are.`,
       chats > 0
         ? `Its ${plural(chats, "chat")} will be deleted with their history, attachments, and artifacts.`
         : "It has no chats, so only the project entry goes.",
@@ -658,14 +696,18 @@ function DeleteProject(props: { readonly entry: ProjectOverview; readonly onDele
     if (process.env.EXPO_OS === "ios") {
       Alert.alert(title, message, [
         { text: "Cancel", style: "cancel" },
-        { text: "Remove Project", style: "destructive", onPress: () => void remove() },
+        {
+          text: movingFolder ? "Remove Project and Folder" : "Remove Project",
+          style: "destructive",
+          onPress: () => void remove(),
+        },
       ]);
       return;
     }
     showConfirmDialog({
       title,
       message,
-      confirmText: "Remove project",
+      confirmText: movingFolder ? "Remove project and folder" : "Remove project",
       destructive: true,
       onConfirm: () => void remove(),
     });
@@ -673,6 +715,19 @@ function DeleteProject(props: { readonly entry: ProjectOverview; readonly onDele
 
   return (
     <SettingsSection title="Remove" card>
+      {folderCheck ? (
+        <SettingsSwitchRow
+          icon="folder"
+          label={
+            folderCheck.removable
+              ? `Also move the folder to the ${folderCheck.trashName}`
+              : (folderCheck.reason ?? "This folder can't be moved")
+          }
+          disabled={!folderCheck.removable || deleting}
+          value={movingFolder}
+          onValueChange={setAlsoFolder}
+        />
+      ) : null}
       <Pressable
         accessibilityRole="button"
         disabled={deleting}
@@ -689,7 +744,9 @@ function DeleteProject(props: { readonly entry: ProjectOverview; readonly onDele
             {deleting ? "Removing…" : "Remove project"}
           </Text>
           <Text className="text-xs text-foreground-muted">
-            Deletes its chats and their history. Nothing in its folder is deleted.
+            {movingFolder
+              ? `Deletes its chats and moves its folder to the ${folderCheck?.trashName}.`
+              : "Deletes its chats and their history. Nothing in its folder is deleted."}
           </Text>
         </View>
       </Pressable>

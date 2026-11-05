@@ -43,6 +43,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
+import { asyncQuestionRequestId } from "../asyncQuestions.ts";
 import { makeCodexTurnUsageTracker } from "../codexTurnUsage.ts";
 import { stripSyntheticCodexRateLimitSnapshot } from "../codexRateLimitPlaceholders.ts";
 
@@ -364,6 +365,46 @@ function toCanonicalUserInputAnswers(
       return [questionId, normalizedAnswers] as const;
     }),
   );
+}
+
+/**
+ * What `request_user_input_async` leaves in the turn: an agent message carrying
+ * its questions next to a bulleted text fallback. Codex has already told the
+ * model the question was accepted and carries on, so nothing waits on the answer.
+ * Read by hand because the generated schema predates `questions`.
+ */
+const CodexAsyncQuestionNotification = Schema.Struct({
+  item: Schema.Struct({
+    type: Schema.Literal("agentMessage"),
+    id: Schema.String,
+    questions: Schema.Array(
+      Schema.Struct({
+        title: Schema.String,
+        options: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
+      }),
+    ),
+  }),
+});
+
+/**
+ * The questions as a question card, or undefined when one has no options to
+ * pick from: the card needs them, and the message's own text asks it just as well.
+ * The title doubles as the id because the answer is sent back keyed by it.
+ */
+function toAsyncUserInputQuestions(item: typeof CodexAsyncQuestionNotification.Type.item) {
+  const questions = item.questions.map((question) => {
+    const title = trimText(question.title);
+    const options = (question.options ?? []).flatMap((option) => {
+      const label = trimText(option);
+      return label ? [{ label, description: label }] : [];
+    });
+    return title && options.length > 0
+      ? { id: title, header: "Question", question: title, options, multiSelect: false }
+      : undefined;
+  });
+  return questions.length > 0 && questions.every((question) => question !== undefined)
+    ? questions.filter((question) => question !== undefined)
+    : undefined;
 }
 
 function toUserInputQuestions(questions: ReadonlyArray<CodexToolUserInputQuestion>) {
@@ -962,11 +1003,26 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "item/started") {
+    // Raised as a question when it completes; its text is only a bulleted fallback.
+    const asyncQuestions = readPayload(CodexAsyncQuestionNotification, event.payload);
+    if (asyncQuestions && toAsyncUserInputQuestions(asyncQuestions.item)) return [];
     const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
     return started ? [started] : [];
   }
 
   if (event.method === "item/completed") {
+    const asyncQuestions = readPayload(CodexAsyncQuestionNotification, event.payload);
+    const questions = asyncQuestions ? toAsyncUserInputQuestions(asyncQuestions.item) : undefined;
+    if (asyncQuestions && questions) {
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          requestId: asRuntimeRequestId(asyncQuestionRequestId(asyncQuestions.item.id)),
+          type: "user-input.requested",
+          payload: { questions },
+        },
+      ];
+    }
     const payload = readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
     const item = payload?.item;
     if (!item) {

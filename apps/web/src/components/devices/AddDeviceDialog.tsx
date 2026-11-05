@@ -256,7 +256,7 @@ function AddDeviceForm(props: {
       }}
     >
       <DialogHeader>
-        <DialogTitle>Add a device</DialogTitle>
+        <DialogTitle>Add a simulator</DialogTitle>
         <DialogDescription>
           Creates a new simulator or emulator on the computer running Solla Code. It starts the
           first time you open it.
@@ -296,7 +296,7 @@ function AddDeviceForm(props: {
         </Button>
         <Button type="submit" disabled={busy || problem !== null || draft === null}>
           {busy ? <Spinner className="size-4" /> : null}
-          {busy ? "Adding…" : "Add device"}
+          {busy ? "Adding…" : "Add simulator"}
         </Button>
       </DialogFooter>
     </form>

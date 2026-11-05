@@ -101,6 +101,40 @@ export class ProjectCheckWorkspaceRootError extends Schema.TaggedErrorClass<Proj
   }
 }
 
+/** Keyed by project id, never a raw path: only a project's own folder can be named. */
+export const ProjectFolderRemovalInput = Schema.Struct({
+  projectId: ProjectId,
+});
+export type ProjectFolderRemovalInput = typeof ProjectFolderRemovalInput.Type;
+
+/** Whether a project's folder can go to the Trash along with the project. */
+export const ProjectFolderRemovalCheck = Schema.Struct({
+  workspaceRoot: TrimmedNonEmptyString,
+  removable: Schema.Boolean,
+  /** Why it can't, in a sentence for the person. */
+  reason: Schema.NullOr(Schema.String),
+  /** What this computer calls it: Trash, or Recycle Bin. */
+  trashName: Schema.String,
+});
+export type ProjectFolderRemovalCheck = typeof ProjectFolderRemovalCheck.Type;
+
+export const ProjectRemoveWithFolderResult = Schema.Struct({
+  /** The project is gone either way; `kept` means its folder stayed where it was. */
+  folder: Schema.Literals(["trashed", "kept"]),
+  detail: Schema.NullOr(Schema.String),
+  trashName: Schema.String,
+});
+export type ProjectRemoveWithFolderResult = typeof ProjectRemoveWithFolderResult.Type;
+
+export class ProjectFolderRemovalError extends Schema.TaggedErrorClass<ProjectFolderRemovalError>()(
+  "ProjectFolderRemovalError",
+  { detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export const ProjectListEntriesResult = Schema.Struct({
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,

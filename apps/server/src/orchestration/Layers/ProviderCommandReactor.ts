@@ -75,6 +75,7 @@ import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { ServerConfig } from "../../config.ts";
 import { boundProviderTurnInput } from "../providerInputBounding.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
+import { isAsyncQuestionRequestId } from "../../provider/asyncQuestions.ts";
 import { ProviderAdapterRequestError, ProviderValidationError } from "../../provider/Errors.ts";
 import { isHistoryUnusableFailure } from "../../provider/historyUnusableFailure.ts";
 import { historyResetReminderBlock } from "../../provider/contextRecovery.ts";
@@ -4188,6 +4189,14 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
 
         if (hasResolvedProviderRequest(thread.activities, resolvedRequest)) {
           return;
+        }
+        if (isAsyncQuestionRequestId(event.payload.requestId)) {
+          return yield* deliverUnroutableUserInputAnswers({
+            threadId: event.payload.threadId,
+            requestId: event.payload.requestId,
+            answers: event.payload.answers,
+            createdAt: event.payload.createdAt,
+          });
         }
         const hasSession = thread.session && thread.session.status !== "stopped";
         if (!hasSession) {

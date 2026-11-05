@@ -35,13 +35,15 @@ The same **I've signed in** card covers single sign-on and approving a sign-in o
 
 Solla Code can hold a new passkey for a site you choose, encrypted on this computer. Passkeys in iCloud Keychain, Google Password Manager or on your phone can't be used in the browser panel. See [the passkey notes in the browser docs](./remote-browser-control.md#passkeys).
 
-## Signed-in accounts
+## Accounts
 
 Each account lists the projects and agents using it. Google's status comes from Google, because its cookies can outlast the session; GitHub, Microsoft and Apple are read from the cookies those sites keep while you are signed in. Solla Code checks once an hour, and when you open this page or press **Check again**.
 
 If a site signs you out, a notice says so with **Sign in again**, at most once an hour per account. **Recent sign-outs** shows when it happened and the cause the browser reported, such as the session expiring or Google ending it.
 
 **Sign out** ends the session at Google and clears that provider's cookies from that profile. Other sites in the profile stay signed in.
+
+To clear out an account you no longer use, select the **×** beside a signed-out project or agent, or **Remove account** in the account's **…** menu to remove it everywhere it appears. Removing does the same as signing out, so if Google keeps another signed-in account in that same project or agent, it goes too; the confirmation names it first.
 
 ## What is kept, and for how long
 

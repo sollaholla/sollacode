@@ -108,9 +108,9 @@ async function submitEditor() {
 it("adds a login with its password and lists it without the password", async () => {
   const bridge = fakeBridge([]);
   await act(async () => root.render(<CredentialsSettingsView bridge={bridge} />));
-  expect(container.textContent).toContain("No saved credentials");
+  expect(container.textContent).toContain("No saved logins");
 
-  await act(async () => button("Add credential").click());
+  await act(async () => button("Add login").click());
   act(() => {
     type("Label", "Work GitHub");
     type("Website", "github.com");
@@ -156,7 +156,7 @@ it("adds a PIN with no username and marks it in the list", async () => {
   const bridge = fakeBridge([]);
   await act(async () => root.render(<CredentialsSettingsView bridge={bridge} />));
 
-  await act(async () => button("Add credential").click());
+  await act(async () => button("Add login").click());
   await act(async () => chooseKind("PIN or code"));
   // A PIN has no username, so the form stops asking for one.
   expect(() => field("Username or email")).toThrow();
@@ -189,7 +189,7 @@ it("deletes only after the in-app confirmation", async () => {
   confirmInApp.mockResolvedValueOnce(true);
   await act(async () => button("Delete Work GitHub").click());
   expect(bridge.remove).toHaveBeenCalledWith("cred-github");
-  expect(container.textContent).toContain("No saved credentials");
+  expect(container.textContent).toContain("No saved logins");
 });
 
 it("says the passwords could not be reached instead of claiming there are none", async () => {
@@ -205,8 +205,8 @@ it("says the passwords could not be reached instead of claiming there are none",
 
   expect(container.textContent).toContain("Couldn't load saved credentials");
   expect(container.textContent).toContain("isn't connected");
-  expect(container.textContent).not.toContain("No saved credentials");
-  expect(container.textContent).not.toContain("Add credential");
+  expect(container.textContent).not.toContain("No saved logins");
+  expect(container.textContent).not.toContain("Add login");
 
   await act(async () => button("Try again").click());
   expect(bridge.list).toHaveBeenCalledTimes(2);

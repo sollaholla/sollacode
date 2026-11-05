@@ -90,7 +90,7 @@ OpenCode and Antigravity are asked to put the final plan in one
 `<proposed_plan>` block, which becomes the plan card. The card shows the plan,
 so the message that carried it no longer repeats it.
 
-Codex can stop and ask you a question in any mode, not only Plan mode. It shows as the same question card as other providers, with options to pick. Before version 0.1.803 Codex was refused this outside Plan mode, so it wrote its questions out as a bulleted list instead. A chat already open picks this up the next time its Codex session starts.
+Codex can ask you a question in any mode, not only Plan mode. It shows as the same question card as other providers, with options to pick. Codex has two kinds of question. One stops and waits for you. The other keeps working while it waits: your answer is sent as a message, which joins the turn if it is still running, or starts a new one if not. A question with no options to pick stays as a plain message. Before version 0.1.805 Codex's questions could show up as a bulleted list instead.
 
 - **Plan Ready** names the waiting plan above the composer, in any mode
   (Claude can switch itself into plan mode while you are in Build). Tap its

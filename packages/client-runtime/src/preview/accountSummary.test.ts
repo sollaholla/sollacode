@@ -2,6 +2,8 @@ import type { PreviewAccountEvent, PreviewAccountSession } from "@t3tools/contra
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  accountRemovalQuestion,
+  accountsRemovedAlongside,
   ACCOUNT_EVENT_CAUSE_ACCOUNTS_PAGE,
   ACCOUNT_EVENT_CAUSE_LINKED,
   accountEventSentence,
@@ -103,5 +105,46 @@ describe("accountEventSentence", () => {
         label,
       ),
     ).toBe("Signed in to your Apple account.");
+  });
+});
+
+describe("accountsRemovedAlongside", () => {
+  const session = (identity: string, directory: string, live: boolean) => ({
+    provider: "google" as const,
+    identity,
+    live,
+    directory,
+    owner: { environmentId: "env", kind: "project" as const, ownerId: directory },
+    linked: false,
+  });
+
+  it("names a live account sharing the profile, and nobody else", () => {
+    const gone = session("old@example.com", "acme", false);
+    const sessions = [
+      gone,
+      session("work@example.com", "acme", true),
+      session("elsewhere@example.com", "beta", true),
+      session("asleep@example.com", "acme", false),
+    ];
+    expect(accountsRemovedAlongside([gone], sessions)).toEqual(["work@example.com"]);
+  });
+
+  it("does not count the account being removed", () => {
+    const here = session("work@example.com", "acme", true);
+    const there = session("work@example.com", "beta", true);
+    expect(accountsRemovedAlongside([here, there], [here, there])).toEqual([]);
+  });
+
+  it("warns in the question only when something else goes", () => {
+    expect(accountRemovalQuestion({ name: "a@example.com", from: "Acme", alsoSignedOut: [] })).toBe(
+      "Remove a@example.com from Acme?",
+    );
+    expect(
+      accountRemovalQuestion({
+        name: "a@example.com",
+        from: null,
+        alsoSignedOut: ["b@example.com"],
+      }),
+    ).toContain("b@example.com will be signed out too");
   });
 });

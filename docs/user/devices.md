@@ -12,7 +12,7 @@ from a connected phone.
 - **Android:** Android Studio with the Android Emulator and at least one system image, installed
   from Android Studio's SDK Manager. Adding emulators also needs the SDK Command-line Tools.
 
-When a tool is missing, **Settings → Devices** says what to install instead of the device list.
+When a tool is missing, **Settings → Simulators** says what to install instead of the device list.
 
 ## Open a device
 
@@ -35,10 +35,10 @@ other browsers see them through the browser panel, as with any other tab.
 
 ## Manage devices
 
-**Settings → Devices** lists every simulator and emulator, with a **Start** or **Shut down** button
+**Settings → Simulators** lists every simulator and emulator, with a **Start** or **Shut down** button
 and **Remove**.
 
-Select **Add device** to create one:
+Select **Add simulator** to create one:
 
 - Choose **iPhone & iPad** or **Android** when both are available.
 - **Model** lists every phone and tablet the installed tools offer, newest first, such as

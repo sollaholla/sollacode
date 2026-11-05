@@ -1273,6 +1273,94 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("raises a non-blocking question as a question card, not its bulleted text", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      // The shape `codex app-server` 0.166 sends for request_user_input_async.
+      const item = {
+        type: "agentMessage",
+        id: "call_1",
+        text: "Which one?\n- Alpha\n- Beta",
+        delivery: "async",
+        phase: "final_answer",
+        questions: [{ title: "Which one?", options: ["Alpha", "Beta"] }],
+      };
+      const base = {
+        kind: "notification" as const,
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        turnId: asTurnId("turn-1"),
+      };
+      yield* runtime.emit({
+        ...base,
+        id: asEventId("evt-async-started"),
+        method: "item/started",
+        payload: { threadId: "thread-1", turnId: "turn-1", item },
+      });
+      yield* runtime.emit({
+        ...base,
+        id: asEventId("evt-async-completed"),
+        method: "item/completed",
+        payload: { threadId: "thread-1", turnId: "turn-1", item },
+      });
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      // First out is the card: item/started left nothing that would show the bullets.
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "user-input.requested") {
+        return NodeAssert.fail("expected a question card");
+      }
+      NodeAssert.equal(firstEvent.value.requestId, "async-question:call_1");
+      NodeAssert.deepEqual(firstEvent.value.payload.questions, [
+        {
+          id: "Which one?",
+          header: "Question",
+          question: "Which one?",
+          options: [
+            { label: "Alpha", description: "Alpha" },
+            { label: "Beta", description: "Beta" },
+          ],
+          multiSelect: false,
+        },
+      ]);
+    }),
+  );
+
+  it.effect("keeps a non-blocking question with no options as the message it is", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      yield* runtime.emit({
+        id: asEventId("evt-async-open"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        turnId: asTurnId("turn-1"),
+        method: "item/completed",
+        itemId: asItemId("call_2"),
+        payload: {
+          completedAtMs: 1_778_000_000_000,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            type: "agentMessage",
+            id: "call_2",
+            text: "What should it be called?",
+            questions: [{ title: "What should it be called?", options: null }],
+          },
+        },
+      });
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") return;
+      NodeAssert.equal(firstEvent.value.type, "item.completed");
+    }),
+  );
+
   it.effect("preserves explicit empty multi-select user-input answers", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

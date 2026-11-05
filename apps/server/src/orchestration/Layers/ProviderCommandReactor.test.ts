@@ -14202,6 +14202,55 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("sends the answer to a non-blocking question as a message, leaving the session alone", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-for-async-question"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.respond",
+        commandId: CommandId.make("cmd-async-question-respond"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: asApprovalRequestId("async-question:call_1"),
+        answers: { "Which one?": "Beta" },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+      return thread?.messages.some((message) => message.text.includes("Which one?\nBeta")) === true;
+    });
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(harness.respondToUserInput).not.toHaveBeenCalled();
+    expect(
+      thread?.activities.some(
+        (activity) =>
+          activity.kind === "user-input.resolved" &&
+          (activity.payload as { readonly requestId?: string }).requestId ===
+            "async-question:call_1",
+      ),
+    ).toBe(true);
+    expect(thread?.session?.status).not.toBe("stopped");
+  });
+
   it("routes Solla-owned action approval responses without calling the provider adapter", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

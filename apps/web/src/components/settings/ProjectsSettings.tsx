@@ -26,7 +26,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { OrchestrationProjectStatistics } from "@t3tools/contracts";
+import type { OrchestrationProjectStatistics, ProjectFolderRemovalCheck } from "@t3tools/contracts";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
@@ -41,7 +41,7 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -55,6 +55,7 @@ import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
   DialogDescription,
@@ -105,6 +106,9 @@ function errorDescription(cause: unknown): string {
 function useProjectActions() {
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
   const deleteProject = useAtomCommand(projectEnvironment.delete, { reportFailure: false });
+  const removeWithFolder = useAtomCommand(projectEnvironment.removeWithFolder, {
+    reportFailure: false,
+  });
 
   const rename = useCallback(
     async (project: EnvironmentProject, nextTitle: string): Promise<boolean> => {
@@ -136,16 +140,21 @@ function useProjectActions() {
   );
 
   const remove = useCallback(
-    async (project: EnvironmentProject): Promise<boolean> => {
+    async (project: EnvironmentProject, withFolder = false): Promise<boolean> => {
       const draftStore = useComposerDraftStore.getState();
       const projectRef = scopeProjectRef(project.environmentId, project.id);
       const draftThread = draftStore.getDraftThreadByProjectRef(projectRef);
-      const result = await deleteProject({
-        environmentId: project.environmentId,
-        // Forced so chats created or unarchived since this page loaded go too;
-        // the confirmation already said every chat would.
-        input: { projectId: project.id, force: true },
-      });
+      const result = withFolder
+        ? await removeWithFolder({
+            environmentId: project.environmentId,
+            input: { projectId: project.id },
+          })
+        : await deleteProject({
+            environmentId: project.environmentId,
+            // Forced so chats created or unarchived since this page loaded go too;
+            // the confirmation already said every chat would.
+            input: { projectId: project.id, force: true },
+          });
       if (result._tag === "Failure") {
         if (!isAtomCommandInterrupted(result)) {
           toastManager.add(
@@ -160,10 +169,27 @@ function useProjectActions() {
       }
       if (draftThread) draftStore.clearDraftThread(draftThread.draftId);
       draftStore.clearProjectDraftThreadId(projectRef);
-      toastManager.add({ type: "success", title: `Removed “${project.title}”` });
+      const folder =
+        withFolder && typeof result.value === "object" && "folder" in result.value
+          ? result.value
+          : null;
+      if (folder?.folder === "kept") {
+        toastManager.add({
+          type: "warning",
+          title: `Removed “${project.title}”, but its folder stayed`,
+          description: folder.detail ?? undefined,
+        });
+      } else {
+        toastManager.add({
+          type: "success",
+          title: folder
+            ? `Removed “${project.title}” and moved its folder to the ${folder.trashName}`
+            : `Removed “${project.title}”`,
+        });
+      }
       return true;
     },
-    [deleteProject],
+    [deleteProject, removeWithFolder],
   );
 
   return { rename, remove };
@@ -274,7 +300,8 @@ export function ProjectsSettingsPanel() {
       >
         <p className="mb-4 max-w-2xl px-3 text-sm leading-relaxed text-muted-foreground sm:px-4">
           Rename or remove projects, and see what each one keeps on disk and how many tokens its
-          chats have used. Removing a project deletes its chats; nothing in its folder is deleted.
+          chats have used. Removing a project deletes its chats; its folder stays unless you choose
+          to move it to the Trash.
         </p>
 
         <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -617,8 +644,31 @@ function DeleteProjectDialog({
 }) {
   const { remove } = useProjectActions();
   const threadShells = useThreadShells();
+  const checkFolderRemoval = useAtomCommand(projectEnvironment.checkFolderRemoval, {
+    reportFailure: false,
+  });
   const [deleting, setDeleting] = useState(false);
+  const [alsoFolder, setAlsoFolder] = useState(false);
+  // Stays null on a computer too old to answer: no box, nothing offered.
+  const [folderCheck, setFolderCheck] = useState<ProjectFolderRemovalCheck | null>(null);
   const project = target?.project ?? null;
+  const environmentId = project?.environmentId ?? null;
+  const projectId = project?.id ?? null;
+  useEffect(() => {
+    setAlsoFolder(false);
+    setFolderCheck(null);
+    if (environmentId === null || projectId === null) return;
+    let cancelled = false;
+    void checkFolderRemoval({ environmentId, input: { projectId } }).then((result) => {
+      if (!cancelled && result._tag === "Success") setFolderCheck(result.value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [checkFolderRemoval, environmentId, projectId]);
+  const movingFolder = alsoFolder && folderCheck?.removable === true;
+  const folderSize =
+    target?.folder?.bytes != null ? ` (${formatByteSize(target.folder.bytes)} on disk)` : "";
   const statistics = target?.statistics ?? null;
   const liveThreads = useMemo(
     () =>
@@ -638,7 +688,7 @@ function DeleteProjectDialog({
   const confirm = async () => {
     if (project === null || deleting) return;
     setDeleting(true);
-    const deleted = await remove(project);
+    const deleted = await remove(project, movingFolder);
     setDeleting(false);
     if (deleted) {
       onClose();
@@ -661,17 +711,50 @@ function DeleteProjectDialog({
         <DialogPanel className="space-y-3 text-sm">
           {/* First, because the path above a destructive button reads like
               the thing being destroyed. */}
-          <p className="flex items-start gap-2 rounded-lg border border-[var(--line)] bg-surface-tile px-3 py-2.5 text-foreground">
-            <FolderCheckIcon className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
-            <span>
-              Nothing in{" "}
-              <span className="font-mono text-xs break-all">{project?.workspaceRoot}</span>
-              {target?.folder?.bytes != null
-                ? ` (${formatByteSize(target.folder.bytes)} on disk)`
-                : ""}{" "}
-              is deleted. The folder and your files stay where they are.
-            </span>
-          </p>
+          {movingFolder ? (
+            <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/8 px-3 py-2.5 text-foreground">
+              <Trash2Icon className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+              <span>
+                <span className="font-mono text-xs break-all">{project?.workspaceRoot}</span>
+                {folderSize} and everything in it moves to the {folderCheck?.trashName}. You can put
+                it back from there until it's emptied.
+              </span>
+            </p>
+          ) : (
+            <p className="flex items-start gap-2 rounded-lg border border-[var(--line)] bg-surface-tile px-3 py-2.5 text-foreground">
+              <FolderCheckIcon className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
+              <span>
+                Nothing in{" "}
+                <span className="font-mono text-xs break-all">{project?.workspaceRoot}</span>
+                {folderSize} is deleted. The folder and your files stay where they are.
+              </span>
+            </p>
+          )}
+          {folderCheck ? (
+            <label
+              className={cn(
+                "flex items-start gap-2.5 rounded-lg px-1 py-0.5",
+                folderCheck.removable ? "cursor-pointer" : "cursor-not-allowed",
+              )}
+            >
+              <Checkbox
+                className="mt-0.5"
+                checked={movingFolder}
+                disabled={!folderCheck.removable || deleting}
+                onCheckedChange={(checked) => setAlsoFolder(checked === true)}
+              />
+              <span className="min-w-0">
+                <span
+                  className={folderCheck.removable ? "text-foreground" : "text-muted-foreground"}
+                >
+                  Also move the folder to the {folderCheck.trashName}
+                </span>
+                {folderCheck.reason ? (
+                  <span className="block text-xs text-muted-foreground">{folderCheck.reason}</span>
+                ) : null}
+              </span>
+            </label>
+          ) : null}
           <ul className="space-y-2 text-muted-foreground">
             <li>
               {chats > 0 ? (
@@ -701,7 +784,7 @@ function DeleteProjectDialog({
           </Button>
           <Button variant="destructive" disabled={deleting} onClick={() => void confirm()}>
             <Trash2Icon />
-            {deleting ? "Removing…" : "Remove project"}
+            {deleting ? "Removing…" : movingFolder ? "Remove project and folder" : "Remove project"}
           </Button>
         </DialogFooter>
       </DialogPopup>

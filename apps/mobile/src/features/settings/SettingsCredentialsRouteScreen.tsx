@@ -19,10 +19,12 @@ import {
 import {
   ACCOUNT_PROVIDER_LABELS,
   accountDisplayName,
+  accountsRemovedAlongside,
   summarizeAccounts,
 } from "@t3tools/client-runtime/preview/account-summary";
 import type {
   PreviewAccountOwner,
+  PreviewAccountSession,
   PreviewAccountsSnapshot,
   PreviewCredentialId,
   PreviewCredentialSummary,
@@ -170,6 +172,56 @@ function EnvironmentAccounts(props: {
         } (agent)`;
 
   const summaries = accounts ? summarizeAccounts(accounts.sessions) : [];
+  // Forgetting an account clears its sign-in where it was, the same as signing out.
+  const removeAccountButton = (button: {
+    readonly label: string;
+    readonly armedKey: string;
+    readonly sessions: ReadonlyArray<PreviewAccountSession>;
+  }) => {
+    const armed = confirming === button.armedKey;
+    const alongside = accountsRemovedAlongside(button.sessions, accounts?.sessions ?? []);
+    return (
+      <Pressable
+        accessibilityRole="button"
+        disabled={busy}
+        className="min-h-8 justify-center px-2"
+        onPress={() => {
+          // A second tap confirms: no native dialogs here.
+          if (!armed) {
+            setConfirming(button.armedKey);
+            return;
+          }
+          setConfirming(null);
+          setBusy(true);
+          void (async () => {
+            try {
+              for (const session of button.sessions) {
+                settled(
+                  await signOut({
+                    environmentId,
+                    input: { provider: session.provider, directory: session.directory },
+                  }),
+                );
+              }
+              await load();
+            } catch (cause) {
+              setError(credentialErrorMessage(cause, "Could not remove that account."));
+            } finally {
+              setBusy(false);
+            }
+          })();
+        }}
+      >
+        <Text className="text-xs font-t3-bold text-danger-foreground">
+          {!armed
+            ? button.label
+            : alongside.length > 0
+              ? `Tap again: also signs out ${alongside.join(", ")}`
+              : "Tap again to remove"}
+        </Text>
+      </Pressable>
+    );
+  };
   return (
     <SettingsSection title={props.title}>
       <View className="gap-3 rounded-[24px] bg-card px-5 py-4">
@@ -188,10 +240,17 @@ function EnvironmentAccounts(props: {
               <Text className="text-sm font-t3-bold text-foreground" numberOfLines={1}>
                 {accountDisplayName(account)}
               </Text>
-              <Text className="text-xs text-foreground-muted">
-                {ACCOUNT_PROVIDER_LABELS[account.provider]} ·{" "}
-                {account.live ? "Signed in" : "Signed out"}
-              </Text>
+              <View className="flex-row items-center gap-2">
+                <Text className="flex-1 text-xs text-foreground-muted">
+                  {ACCOUNT_PROVIDER_LABELS[account.provider]} ·{" "}
+                  {account.live ? "Signed in" : "Signed out"}
+                </Text>
+                {removeAccountButton({
+                  label: "Remove account",
+                  armedKey: `whole\u0000${account.key}`,
+                  sessions: account.profiles,
+                })}
+              </View>
               {account.profiles.map((profile) => {
                 const key = `${account.key}\u0000${profile.directory}`;
                 return (
@@ -237,7 +296,9 @@ function EnvironmentAccounts(props: {
                           {confirming === key ? "Tap again to sign out" : "Sign out"}
                         </Text>
                       </Pressable>
-                    ) : null}
+                    ) : (
+                      removeAccountButton({ label: "Remove", armedKey: key, sessions: [profile] })
+                    )}
                   </View>
                 );
               })}

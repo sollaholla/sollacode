@@ -114,6 +114,10 @@ import {
   ProjectCheckWorkspaceRootError,
   ProjectCheckWorkspaceRootInput,
   ProjectCheckWorkspaceRootResult,
+  ProjectFolderRemovalCheck,
+  ProjectFolderRemovalError,
+  ProjectFolderRemovalInput,
+  ProjectRemoveWithFolderResult,
 } from "./project.ts";
 import {
   TerminalAttachInput,
@@ -319,6 +323,8 @@ export const WS_METHODS = {
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
   projectsCheckWorkspaceRoot: "projects.checkWorkspaceRoot",
+  projectsCheckFolderRemoval: "projects.checkFolderRemoval",
+  projectsRemoveWithFolder: "projects.removeWithFolder",
   projectsListEntries: "projects.listEntries",
   projectsReadFile: "projects.readFile",
   projectsSearchContents: "projects.searchContents",
@@ -831,6 +837,18 @@ export const WsProjectsCheckWorkspaceRootRpc = Rpc.make(WS_METHODS.projectsCheck
   payload: ProjectCheckWorkspaceRootInput,
   success: ProjectCheckWorkspaceRootResult,
   error: Schema.Union([ProjectCheckWorkspaceRootError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectsCheckFolderRemovalRpc = Rpc.make(WS_METHODS.projectsCheckFolderRemoval, {
+  payload: ProjectFolderRemovalInput,
+  success: ProjectFolderRemovalCheck,
+  error: Schema.Union([ProjectFolderRemovalError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectsRemoveWithFolderRpc = Rpc.make(WS_METHODS.projectsRemoveWithFolder, {
+  payload: ProjectFolderRemovalInput,
+  success: ProjectRemoveWithFolderResult,
+  error: Schema.Union([ProjectFolderRemovalError, EnvironmentAuthorizationError]),
 });
 
 export const WsProjectsListEntriesRpc = Rpc.make(WS_METHODS.projectsListEntries, {
@@ -1823,6 +1841,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,
   WsProjectsCheckWorkspaceRootRpc,
+  WsProjectsCheckFolderRemovalRpc,
+  WsProjectsRemoveWithFolderRpc,
   WsProjectsListEntriesRpc,
   WsProjectsReadFileRpc,
   WsProjectsSearchContentsRpc,

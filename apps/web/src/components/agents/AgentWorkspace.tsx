@@ -215,8 +215,12 @@ function AgentWorkspaceResolved(props: {
     </ToolbarControl>
   ) : null;
 
-  return (
-    <div className="flex h-full min-w-0 flex-col overflow-hidden">
+  // Over the chat it sits inside the chat column, so an open right panel runs
+  // the full height beside it and keeps its own controls in the top corner.
+  const headerInChatColumn = view === "chat" && Boolean(agent.threadId);
+  const panelOwnsTitleBar = headerInChatColumn && panelOpen;
+  const headerBand = (
+    <>
       {/* Folded, the card closes to nothing (its contents keep their layout,
           clipped) and its avatar and panel toggle wait in the top bar. */}
       <div
@@ -233,22 +237,21 @@ function AgentWorkspaceResolved(props: {
           reserve it lands on top of the agent's name and purpose. */}
           <header
             className={cn(
-              "@container/header-actions flex min-w-0 flex-col gap-2 px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3 md:border-b",
+              "@container/header-actions flex min-w-0 flex-col gap-2 px-3 py-2 sm:px-4 md:min-h-[var(--workspace-topbar-height)] md:flex-row md:items-center md:justify-between md:gap-3 md:border-b md:py-1.5",
               // On a phone the header is the project card from the mockup: a
               // rounded turn-box card under the top bar rather than a full-width
               // band. The floating sidebar control is hidden there too, so the
               // collapsed-sidebar reserve is only wanted from `md` up.
               "max-md:mx-3 max-md:mt-2 max-md:rounded-[14px] max-md:border max-md:border-[var(--line)] max-md:bg-card max-md:p-3",
               "md:" + COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
-              // This header spans the window even when the right panel is open,
-              // so unlike ChatHeader the reserve cannot ever drop to pr-0: on
-              // Windows the native window controls overlay this row's right edge,
-              // and with them the parked panel toggle. Container-level only from
-              // `md` up, where the header is a single row. Stacked (phones), the
-              // overlay occupies the first row's band alone — padding the whole
-              // header pushed the actions row ~3.5rem off the right edge for
-              // nothing, which read as a broken gap under the title.
-              "md:pr-[var(--workspace-titlebar-content-right)]",
+              // Reaching the window's right edge, this row sits under Windows'
+              // native controls, so it keeps their reserve; an open right panel
+              // takes that corner instead. Container-level only from `md` up,
+              // where the header is a single row. Stacked (phones), the overlay
+              // occupies the first row's band alone — padding the whole header
+              // pushed the actions row ~3.5rem off the right edge for nothing,
+              // which read as a broken gap under the title.
+              !panelOwnsTitleBar && "md:pr-[var(--workspace-titlebar-content-right)]",
               // This row is the desktop title bar, so it has to drag the window
               // like every other header that owns that band. Unprefixed on
               // purpose: `.drag-region` is a plain rule in index.css, not a
@@ -295,7 +298,7 @@ function AgentWorkspaceResolved(props: {
                   agentId={agent.vmAgentId}
                   avatarColor={agent.avatarColor}
                   online={agentOnline}
-                  className="size-10"
+                  className="size-10 md:size-8"
                 />
               </div>
               <div className="min-w-0">
@@ -305,7 +308,7 @@ function AgentWorkspaceResolved(props: {
                       <button
                         type="button"
                         aria-label="Agent tools"
-                        title="Agent tools"
+                        title={agent.purpose}
                         className="flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-sm text-left outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                       />
                     }
@@ -366,14 +369,12 @@ function AgentWorkspaceResolved(props: {
                 ) : null}
                 {/* Not selectable: it is one line of chrome in a drag region, and
                 a click-drag across it selected the text instead of moving the
-                window. */}
-                <p className="truncate text-xs leading-4 text-muted-foreground select-none">
-                  {view !== "chat"
-                    ? VIEW_LABELS[view]
-                    : agent.status === "stopped"
-                      ? `Stopped · scheduled tasks paused · ${agent.purpose}`
-                      : agent.purpose}
-                </p>
+                window. Only said when there is something to say. */}
+                {view !== "chat" || agent.status === "stopped" ? (
+                  <p className="truncate text-xs leading-4 text-muted-foreground select-none">
+                    {view !== "chat" ? VIEW_LABELS[view] : "Stopped · scheduled tasks paused"}
+                  </p>
+                ) : null}
               </div>
             </div>
             <div
@@ -395,11 +396,18 @@ function AgentWorkspaceResolved(props: {
                 className="h-7 rounded-lg border-[var(--line)] px-2.5 text-[12px]"
               />
               <AgentCallButton environmentId={environmentId} agent={agent} />
-              {panelToggle}
+              {/* An open panel has this same toggle in its own corner. */}
+              {panelOwnsTitleBar ? <span className="md:hidden">{panelToggle}</span> : panelToggle}
             </div>
           </header>
         </div>
       </div>
+    </>
+  );
+
+  return (
+    <div className="flex h-full min-w-0 flex-col overflow-hidden">
+      {headerInChatColumn ? null : headerBand}
       {headerFolded && topBarSlot
         ? createPortal(
             <>
@@ -445,6 +453,7 @@ function AgentWorkspaceResolved(props: {
                 environmentId={environmentId}
                 threadId={agent.threadId}
                 projectScriptsPortalTarget={projectScriptsPortalTarget}
+                chatColumnHeader={headerBand}
                 inlineNotice={
                   inlineAttention.items.length === 0
                     ? null

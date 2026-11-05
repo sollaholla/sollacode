@@ -16,6 +16,8 @@ export function AgentChatSurface(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly projectScriptsPortalTarget?: HTMLElement | null;
+  /** The agent's header, shown over the chat alone rather than across the right panel. */
+  readonly chatColumnHeader?: ReactNode;
   readonly inlineNotice?: { readonly id: string; readonly content: ReactNode } | null;
 }) {
   const threadRef = useMemo(
@@ -38,6 +40,7 @@ export function AgentChatSurface(props: {
       routeKind="server"
       threadSyncPhase={threadSyncPhase}
       hideWorkspaceHeader
+      chatColumnHeader={props.chatColumnHeader}
       projectScriptsPortalTarget={props.projectScriptsPortalTarget ?? null}
       agentSurfaces
       inlineTimelineNotice={props.inlineNotice ?? null}
