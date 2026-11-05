@@ -76,6 +76,22 @@ const TestHttpClientLive = Layer.succeed(
   ),
 );
 
+/**
+ * Waits for a cached snapshot with this `checkedAt`. The write is real disk I/O
+ * on another fiber, so this sleeps in real time; counting virtual-clock ticks
+ * lost the race on slow CI machines.
+ */
+const awaitCachedProvider = (filePath: string, checkedAt: string) =>
+  Effect.gen(function* () {
+    let cached = yield* readProviderStatusCache(filePath);
+    for (let attempt = 0; attempt < 500 && cached?.checkedAt !== checkedAt; attempt += 1) {
+      yield* TestClock.adjust("10 millis");
+      yield* TestClock.withLive(Effect.sleep("10 millis"));
+      cached = yield* readProviderStatusCache(filePath);
+    }
+    return cached;
+  });
+
 const BackgroundPolicyAlwaysRunLayer = Layer.mock(BackgroundPolicy.BackgroundPolicy)({
   reportClientActivity: () => Effect.void,
   removeRpcClient: () => Effect.void,
@@ -1253,16 +1269,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             ]);
             yield* PubSub.publish(changes, refreshedProvider);
 
-            let cachedProvider = yield* readProviderStatusCache(filePath);
-            for (
-              let attempt = 0;
-              attempt < 50 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
-              attempt += 1
-            ) {
-              yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
-              cachedProvider = yield* readProviderStatusCache(filePath);
-            }
+            const cachedProvider = yield* awaitCachedProvider(
+              filePath,
+              refreshedProvider.checkedAt,
+            );
 
             assert.deepStrictEqual(cachedProvider, {
               ...refreshedProvider,
@@ -1378,29 +1388,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
 
               yield* PubSub.publish(changes, authoritativeProvider);
 
-              let cachedProvider = yield* readProviderStatusCache(filePath);
-              for (
-                let attempt = 0;
-                attempt < 50 && cachedProvider?.checkedAt !== authoritativeProvider.checkedAt;
-                attempt += 1
-              ) {
-                yield* TestClock.adjust("10 millis");
-                yield* Effect.yieldNow;
-                cachedProvider = yield* readProviderStatusCache(filePath);
-              }
+              let cachedProvider = yield* awaitCachedProvider(
+                filePath,
+                authoritativeProvider.checkedAt,
+              );
 
               assert.deepStrictEqual(cachedProvider?.models, [authoritativeProvider.models[0]!]);
 
               yield* PubSub.publish(changes, failedProvider);
-              for (
-                let attempt = 0;
-                attempt < 50 && cachedProvider?.checkedAt !== failedProvider.checkedAt;
-                attempt += 1
-              ) {
-                yield* TestClock.adjust("10 millis");
-                yield* Effect.yieldNow;
-                cachedProvider = yield* readProviderStatusCache(filePath);
-              }
+              cachedProvider = yield* awaitCachedProvider(filePath, failedProvider.checkedAt);
 
               assert.deepStrictEqual(cachedProvider?.models, [authoritativeProvider.models[0]!]);
               assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
