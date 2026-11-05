@@ -39,7 +39,7 @@ import { openUrlInThreadPreview } from "../preview/openUrlInThreadPreview";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { confirmInApp } from "../ui/appConfirm";
-import { Menu, MenuGroupLabel, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { SettingsSection } from "./settingsLayout";
 
 /** What the page needs, from the desktop directly or relayed through the server. */
@@ -105,6 +105,49 @@ function useProfileTargets(environmentId: EnvironmentId | null) {
   }, [environmentId, projects, threadShells]);
 }
 
+interface UseInTarget {
+  readonly key: string;
+  readonly label: string;
+  readonly profile: PreviewBrowserProfile;
+}
+
+/** Picks a project or agent to sign in with an account. A group label needs its group. */
+export function UseInMenu(props: {
+  readonly projects: ReadonlyArray<UseInTarget>;
+  readonly agents: ReadonlyArray<UseInTarget>;
+  readonly disabled: boolean;
+  readonly defaultOpen?: boolean;
+  readonly onPick: (profile: PreviewBrowserProfile) => void;
+}) {
+  const group = (label: string, targets: ReadonlyArray<UseInTarget>) =>
+    targets.length > 0 ? (
+      <MenuGroup>
+        <MenuGroupLabel>{label}</MenuGroupLabel>
+        {targets.map((target) => (
+          <MenuItem key={target.key} onClick={() => props.onPick(target.profile)}>
+            {target.label}
+          </MenuItem>
+        ))}
+      </MenuGroup>
+    ) : null;
+  return (
+    <Menu {...(props.defaultOpen === undefined ? {} : { defaultOpen: props.defaultOpen })}>
+      <MenuTrigger
+        render={
+          <Button size="sm" variant="outline" disabled={props.disabled}>
+            Use in…
+            <ChevronDownIcon />
+          </Button>
+        }
+      />
+      <MenuPopup align="end" className="w-64">
+        {group("Projects", props.projects)}
+        {group("Agents", props.agents)}
+      </MenuPopup>
+    </Menu>
+  );
+}
+
 function AccountRow(props: {
   readonly account: AccountSummary;
   readonly environmentId: EnvironmentId | null;
@@ -136,30 +179,12 @@ function AccountRow(props: {
           </p>
         </div>
         {source && availableProjects.length + availableAgents.length > 0 ? (
-          <Menu>
-            <MenuTrigger
-              render={
-                <Button size="sm" variant="outline" disabled={busy}>
-                  Use in…
-                  <ChevronDownIcon />
-                </Button>
-              }
-            />
-            <MenuPopup align="end" className="w-64">
-              {availableProjects.length > 0 ? <MenuGroupLabel>Projects</MenuGroupLabel> : null}
-              {availableProjects.map((target) => (
-                <MenuItem key={target.key} onClick={() => props.onUseIn(source, target.profile)}>
-                  {target.label}
-                </MenuItem>
-              ))}
-              {availableAgents.length > 0 ? <MenuGroupLabel>Agents</MenuGroupLabel> : null}
-              {availableAgents.map((target) => (
-                <MenuItem key={target.key} onClick={() => props.onUseIn(source, target.profile)}>
-                  {target.label}
-                </MenuItem>
-              ))}
-            </MenuPopup>
-          </Menu>
+          <UseInMenu
+            projects={availableProjects}
+            agents={availableAgents}
+            disabled={busy}
+            onPick={(profile) => props.onUseIn(source, profile)}
+          />
         ) : null}
       </div>
       <ul className="mt-2 flex flex-col gap-1 border-t border-border/50 pt-2">
