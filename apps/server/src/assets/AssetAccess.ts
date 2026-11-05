@@ -59,6 +59,12 @@ export const ASSET_ROUTE_PREFIX = "/api/assets";
 
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
+/**
+ * Long enough to leave an artifact open. A page keeps the link it loaded with,
+ * so a video's next byte range needs it to still work, and a revision never
+ * changes, so the link has nothing to go stale against.
+ */
+const ARTIFACT_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 // A link to an arbitrary host file works for whoever holds it, so it outlives the
 // tap by minutes. It stays longer than the client's five-minute reuse of a result.
 const THREAD_FILE_TOKEN_TTL_MS = 15 * 60 * 1000;
@@ -415,7 +421,7 @@ export const issueArtifactAssetUrl = Effect.fn("AssetAccess.issueArtifactAssetUr
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
-  const expiresAt = (yield* Clock.currentTimeMillis) + ASSET_TOKEN_TTL_MS;
+  const expiresAt = (yield* Clock.currentTimeMillis) + ARTIFACT_TOKEN_TTL_MS;
   const revisionRoot = path.join(
     config.artifactsDir,
     resource.artifactId,

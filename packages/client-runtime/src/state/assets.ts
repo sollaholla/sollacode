@@ -19,6 +19,33 @@ const ASSET_URL_IDLE_TTL_MS = 60 * 60_000;
 /** A signed link outlives the socket that fetched it; well inside its one-hour expiry. */
 const ASSET_URL_KEEP_ACROSS_RECONNECT_MS = 20 * 60_000;
 
+/** An artifact page's link, kept while the page is open. */
+export interface HeldArtifactUrl {
+  readonly url: string;
+  readonly expiresAt: number;
+  /** The revision and connection it belongs to; a change means a different page. */
+  readonly scope: string;
+}
+
+const ARTIFACT_URL_RENEW_BEFORE_EXPIRY_MS = 5 * 60_000;
+
+/**
+ * Which link an open artifact page should use. Links are re-signed on a timer
+ * and every one is a new URL, so handing each to the frame reloads the page and
+ * throws away a playing video. The first link stays until it nearly expires.
+ */
+export function holdArtifactUrl(
+  held: HeldArtifactUrl | null,
+  next: HeldArtifactUrl,
+  nowMs: number,
+): HeldArtifactUrl {
+  return held !== null &&
+    held.scope === next.scope &&
+    nowMs < held.expiresAt - ARTIFACT_URL_RENEW_BEFORE_EXPIRY_MS
+    ? held
+    : next;
+}
+
 export class InvalidAssetCollectionKeyError extends Schema.TaggedErrorClass<InvalidAssetCollectionKeyError>()(
   "InvalidAssetCollectionKeyError",
   {

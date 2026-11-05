@@ -23,12 +23,14 @@ import {
   parseRelayPath,
   relayPathIsPublic,
   relayRequestHeaders,
+  relayedContentSecurityPolicy,
   relayResponseHeaders,
   relayRouteLayer,
   relayUpstreamUrl,
 } from "./relayRoute.ts";
 
 const windows = EnvironmentId.make("windows-env");
+const ASSET_ROOT = "https://studio.example.com/api/relay/windows-env/api/assets/";
 
 describe("relay paths", () => {
   it("splits the machine from the path it asks for", () => {
@@ -63,13 +65,48 @@ describe("relay paths", () => {
 
   it("drops cookies and encodings the relay cannot vouch for", () => {
     expect(
-      relayResponseHeaders({
-        "content-type": "application/json",
-        "content-encoding": "gzip",
-        "set-cookie": "a=b",
-        "content-range": "bytes 0-9/100",
-      }),
+      relayResponseHeaders(
+        {
+          "content-type": "application/json",
+          "content-encoding": "gzip",
+          "content-length": "20",
+          "set-cookie": "a=b",
+          "content-range": "bytes 0-9/100",
+        },
+        ASSET_ROOT,
+      ),
     ).toEqual({ "content-type": "application/json", "content-range": "bytes 0-9/100" });
+  });
+
+  it("keeps the length of a video range, which Safari checks against the range", () => {
+    expect(
+      relayResponseHeaders(
+        {
+          "content-type": "video/mp4",
+          "content-length": "10",
+          "content-range": "bytes 0-9/100",
+        },
+        ASSET_ROOT,
+      ),
+    ).toEqual({
+      "content-type": "video/mp4",
+      "content-length": "10",
+      "content-range": "bytes 0-9/100",
+    });
+  });
+
+  it("points an artifact's policy at the address the page was really opened from", () => {
+    const policy =
+      "default-src 'none'; media-src http://10.0.0.5:3773/api/assets/token/ " +
+      "https://win.ts.net/api/assets/token/; style-src 'unsafe-inline'";
+    expect(relayedContentSecurityPolicy(policy, ASSET_ROOT)).toBe(
+      `default-src 'none'; media-src ${ASSET_ROOT}token/ ${ASSET_ROOT}token/; style-src 'unsafe-inline'`,
+    );
+    expect(
+      relayResponseHeaders({ "content-security-policy": policy }, ASSET_ROOT)[
+        "content-security-policy"
+      ],
+    ).toContain(`media-src ${ASSET_ROOT}token/`);
   });
 
   it("addresses the same path on the other machine, as HTTP or websocket", () => {

@@ -19,7 +19,8 @@ import { useEffect, useMemo, useState } from "react";
 
 import ChatMarkdown from "~/components/ChatMarkdown";
 
-import { useAssetUrl, useAssetUrlState } from "~/assets/assetUrls";
+import { holdArtifactUrl, type HeldArtifactUrl } from "@t3tools/client-runtime/state/assets";
+import { type AssetUrlState, useAssetUrl, useAssetUrlState } from "~/assets/assetUrls";
 import type { RightPanelSurface } from "~/rightPanelStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { threadArtifactEnvironment } from "~/state/threadArtifacts";
@@ -93,6 +94,30 @@ function ArtifactPreview(props: {
   return <ResolvedArtifactPreview {...props} resource={props.resource} />;
 }
 
+/** The link an open page keeps; see `holdArtifactUrl`. */
+function useHeldArtifactUrl(content: AssetUrlState, revisionKey: string): string | null {
+  const [held, setHeld] = useState<(HeldArtifactUrl & { revisionKey: string }) | null>(null);
+  const next = content._tag === "Success" ? content : null;
+  const nextUrl = next?.url ?? null;
+  const nextExpiresAt = next?.expiresAt ?? 0;
+  const nextBaseUrl = next?.baseUrl ?? null;
+  useEffect(() => {
+    if (nextUrl === null) return;
+    const candidate = {
+      url: nextUrl,
+      expiresAt: nextExpiresAt,
+      scope: `${revisionKey}\u0000${nextBaseUrl}`,
+      revisionKey,
+    };
+    setHeld((current) => {
+      const kept = holdArtifactUrl(current, candidate, Date.now());
+      return kept === current ? current : candidate;
+    });
+  }, [nextBaseUrl, nextExpiresAt, nextUrl, revisionKey]);
+  if (held !== null && held.revisionKey === revisionKey) return held.url;
+  return nextUrl;
+}
+
 function ResolvedArtifactPreview(props: {
   readonly environmentId: ScopedThreadRef["environmentId"];
   readonly resource: AssetResource;
@@ -101,17 +126,15 @@ function ResolvedArtifactPreview(props: {
   readonly revisionKey: string;
 }) {
   const content = useAssetUrlState(props.environmentId, props.resource, "artifact");
-  if (content._tag === "Failure") {
+  // Only the first look at a page waits on the link. Once open it keeps playing
+  // through a re-signed link or a dropped socket: its files come over HTTP.
+  const url = useHeldArtifactUrl(content, props.revisionKey);
+  if (url === null) {
     return (
       <div className="m-3 rounded-lg border p-3 text-sm text-muted-foreground">
-        The signed artifact URL could not be created. Refresh the connection and try again.
-      </div>
-    );
-  }
-  if (content._tag === "Loading") {
-    return (
-      <div className="m-3 rounded-lg border p-3 text-sm text-muted-foreground">
-        Loading artifact…
+        {content._tag === "Failure"
+          ? "The signed artifact URL could not be created. Refresh the connection and try again."
+          : "Loading artifact…"}
       </div>
     );
   }
@@ -119,7 +142,7 @@ function ResolvedArtifactPreview(props: {
     return (
       <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3">
         <img
-          src={content.url}
+          src={url}
           alt={props.title}
           className="mx-auto block h-auto max-w-full rounded-lg object-contain"
         />
@@ -127,12 +150,12 @@ function ResolvedArtifactPreview(props: {
     );
   }
   if (props.kind === "markdown") {
-    return <MarkdownArtifactPreview key={props.revisionKey} url={content.url} />;
+    return <MarkdownArtifactPreview key={props.revisionKey} url={url} />;
   }
   return (
     <iframe
       key={props.revisionKey}
-      src={content.url}
+      src={url}
       title={props.title}
       sandbox={artifactFrameSandbox(props.kind)}
       // Lets a video in the page go full screen and start when it is tapped.

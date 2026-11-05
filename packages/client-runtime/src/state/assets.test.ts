@@ -6,6 +6,7 @@ import { Atom } from "effect/unstable/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
   assetThumbnailUrl,
+  holdArtifactUrl,
   createAssetEnvironmentAtoms,
   createMissingAttachmentMemory,
   InvalidAssetCollectionKeyError,
@@ -148,5 +149,35 @@ describe("createMissingAttachmentMemory", () => {
     expect(memory.isMissing("a")).toBe(false);
     expect(memory.isMissing("b")).toBe(true);
     expect(memory.isMissing("c")).toBe(true);
+  });
+});
+
+describe("holdArtifactUrl", () => {
+  const link = (url: string, expiresAt: number, scope = "revision-1") => ({
+    url,
+    expiresAt,
+    scope,
+  });
+  const hour = 60 * 60_000;
+
+  it("keeps an open page on its first link when a new one is signed", () => {
+    const first = link("first", 12 * hour);
+    expect(holdArtifactUrl(first, link("second", 13 * hour), hour)).toBe(first);
+  });
+
+  it("moves on just before the link expires, so the page can't lose its files", () => {
+    const first = link("first", hour);
+    const second = link("second", 2 * hour);
+    expect(holdArtifactUrl(first, second, hour - 60_000)).toBe(second);
+  });
+
+  it("takes the new link for another revision or connection", () => {
+    const next = link("second", 13 * hour, "revision-2");
+    expect(holdArtifactUrl(link("first", 12 * hour), next, hour)).toBe(next);
+  });
+
+  it("takes the first link there is", () => {
+    const first = link("first", hour);
+    expect(holdArtifactUrl(null, first, 0)).toBe(first);
   });
 });

@@ -102,7 +102,12 @@ export function withAssetRevision(url: string, revision: string): string {
 export type AssetUrlState =
   | { readonly _tag: "Loading" }
   | { readonly _tag: "Failure" }
-  | { readonly _tag: "Success"; readonly url: string };
+  | {
+      readonly _tag: "Success";
+      readonly url: string;
+      readonly expiresAt: number;
+      readonly baseUrl: string;
+    };
 
 export function useAssetUrlState(
   environmentId: EnvironmentId,
@@ -126,7 +131,14 @@ export function useAssetUrlState(
     display === "artifact"
       ? resolveDisplayArtifactUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl)
       : resolveDisplayAssetUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl);
-  return url === null ? { _tag: "Failure" } : { _tag: "Success", url };
+  return url === null
+    ? { _tag: "Failure" }
+    : {
+        _tag: "Success",
+        url,
+        expiresAt: result.value.expiresAt,
+        baseUrl: preparedConnection.value.httpBaseUrl,
+      };
 }
 
 export function useAssetUrl(environmentId: EnvironmentId, resource: AssetResource): string | null {

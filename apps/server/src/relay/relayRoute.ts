@@ -92,7 +92,6 @@ const DROPPED_RESPONSE_HEADERS = new Set([
   "upgrade",
   // The body arrives decoded, and this host compresses its own responses.
   "content-encoding",
-  "content-length",
   "set-cookie",
   // This host answers CORS for its own origin.
   "access-control-allow-origin",
@@ -103,13 +102,35 @@ const DROPPED_RESPONSE_HEADERS = new Set([
   "access-control-max-age",
 ]);
 
+/**
+ * An artifact's policy names the address the other machine was reached on, but
+ * the browser loads the page from this host, under the relay's path. Left alone
+ * the policy refuses the page's own files: a video stays black with "Media load
+ * rejected by URL safety check". `assetRoot` is where those files really are.
+ */
+export function relayedContentSecurityPolicy(policy: string, assetRoot: string): string {
+  return policy.replaceAll(/https?:\/\/[^\s/]+\/api\/assets\//gu, assetRoot);
+}
+
 export function relayResponseHeaders(
   upstream: Readonly<Record<string, string | undefined>>,
+  /** Where this machine's assets appear to the browser, through the relay. */
+  assetRoot: string,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(upstream)) {
     if (value !== undefined && !DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) {
-      headers[name] = value;
+      headers[name] =
+        name.toLowerCase() === "content-security-policy"
+          ? relayedContentSecurityPolicy(value, assetRoot)
+          : value;
+    }
+  }
+  // Decoded bytes no longer match a compressed length. Otherwise it stays:
+  // Safari wants it on the byte ranges a video is read in.
+  if (upstream["content-encoding"] !== undefined) {
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === "content-length") delete headers[name];
     }
   }
   return headers;
@@ -220,7 +241,10 @@ const relayHttp = Effect.fn("relay.http")(function* (
     }
   }
 
-  const headers = relayResponseHeaders(response.headers);
+  const headers = relayResponseHeaders(
+    response.headers,
+    `${url.origin}/api/relay/${environmentId}/api/assets/`,
+  );
   if (request.method === "HEAD" || response.status === 204 || response.status === 304) {
     return HttpServerResponse.empty({ status: response.status, headers });
   }

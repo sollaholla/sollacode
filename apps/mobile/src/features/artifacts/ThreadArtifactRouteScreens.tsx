@@ -18,7 +18,7 @@ import { deleteThreadArtifacts } from "@t3tools/client-runtime/state/thread-arti
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import { EmptyState } from "../../components/EmptyState";
-import { useAssetUrl } from "../../state/assets";
+import { useAssetUrl, useHeldArtifactUrl } from "../../state/assets";
 import { useEnvironmentQuery } from "../../state/query";
 import { threadArtifactEnvironment } from "../../state/threadArtifacts";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -338,7 +338,7 @@ export function ThreadArtifactRouteScreen({ route }: ThreadArtifactRouteProps) {
       path: revision.entryPath,
     };
   }, [artifactId, detail.data, pinnedRevision, revision, summary, threadId]);
-  const uri = useAssetUrl(environmentId, resource);
+  const uri = useHeldArtifactUrl(environmentId, resource, `${artifactId}/${pinnedRevision}`);
   const archive = useAtomCommand(threadArtifactEnvironment.archive, { reportFailure: false });
   const restore = useAtomCommand(threadArtifactEnvironment.restore, { reportFailure: false });
   const updateAvailable =

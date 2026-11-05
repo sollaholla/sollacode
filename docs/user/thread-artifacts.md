@@ -45,6 +45,10 @@ web, desktop, and the mobile app, can seek, and can go full screen. Clips a page
 (`blob:` URLs) or inlines as `data:` URIs play too. Before 0.1.750 artifacts refused all media, so
 every player stayed black at 0:00.
 
+An open artifact keeps playing while your connection comes and goes: it holds its link for up to 12
+hours and is not reloaded when a fresh one is issued. The same goes for viewing through another
+computer, as a phone does when it reaches a second computer through the one it is connected to.
+
 ## Preview boundary
 
 Web bundles run in an opaque, script-only sandbox. Popups, downloads, forms, modal dialogs,
