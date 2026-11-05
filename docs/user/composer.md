@@ -139,8 +139,9 @@ surface containing the exact destination and proposed content. Choose **Approve*
 continue, or type corrections in the composer; the agent receives that feedback, revises the
 proposal, and asks again. The approval covers only the proposal shown in the card.
 
-In Agent mode these action-approval requests are approved automatically, except in delegated work
-and in turns that received a message from another chat, which always ask you; see
+In Agent mode these action-approval requests are approved automatically. Delegated work and turns
+that received a message from another chat show the card instead, and Agent mode approves that card
+too while the chat is open in an app; see
 [Messages between chats](./cross-thread-messages.md#approvals). Other interaction modes keep the
 explicit approval step. Sending the request pauses the agent until you answer; a second
 identical request reuses the same card instead of stacking another. Once you approve a proposal,

@@ -1,4 +1,5 @@
 import type { OrchestrationThreadPendingWork, ProviderInteractionMode } from "@t3tools/contracts";
+import { ACTION_APPROVAL_CHOICE, isActionApprovalQuestion } from "@t3tools/shared/actionApproval";
 import { AGENT_CONTINUE_PROMPT, isAgentContinuePrompt } from "@t3tools/shared/agentMode";
 
 export { AGENT_CONTINUE_PROMPT, isAgentContinuePrompt };
@@ -95,6 +96,12 @@ export function buildAgentAnswers(
 ): Record<string, string | string[]> {
   const answers: Record<string, string | string[]> = {};
   for (const question of questions) {
+    // An approval card takes one word. Anything else reads as a correction, and
+    // "use the recommended answer" sent the agent back to ask again, forever.
+    if (isActionApprovalQuestion(question)) {
+      answers[question.id] = ACTION_APPROVAL_CHOICE;
+      continue;
+    }
     const answer = agentAnswerForQuestion(question.options);
     if (answer.kind === "option") {
       answers[question.id] = question.multiSelect ? [answer.option.label] : answer.option.label;

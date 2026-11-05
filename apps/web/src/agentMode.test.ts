@@ -13,6 +13,11 @@ import {
   shouldAnnounceAgentAutoResume,
   selectRecommendedOption,
 } from "./agentMode";
+import {
+  ACTION_APPROVAL_CHOICE,
+  ACTION_APPROVAL_QUESTION_ID,
+  actionApprovalAnswerFromUnknown,
+} from "@t3tools/shared/actionApproval";
 
 describe("isAgentContinuePrompt", () => {
   it("only identifies the app-authored Agent mode continuation", () => {
@@ -93,6 +98,17 @@ describe("agent question answering", () => {
 });
 
 describe("buildAgentAnswers", () => {
+  it("approves an action approval card rather than sending it a correction", () => {
+    expect(
+      buildAgentAnswers([
+        { id: ACTION_APPROVAL_QUESTION_ID, options: [{ label: ACTION_APPROVAL_CHOICE }] },
+      ]),
+    ).toEqual({ [ACTION_APPROVAL_QUESTION_ID]: ACTION_APPROVAL_CHOICE });
+    expect(
+      actionApprovalAnswerFromUnknown({ [ACTION_APPROVAL_QUESTION_ID]: ACTION_APPROVAL_CHOICE }),
+    ).toEqual({ status: "approved" });
+  });
+
   it("answers with the recommended option when one is marked", () => {
     expect(
       buildAgentAnswers([
