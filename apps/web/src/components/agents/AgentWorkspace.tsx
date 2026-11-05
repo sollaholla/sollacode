@@ -18,8 +18,12 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { PanelLayoutControls } from "../chat/PanelLayoutControls";
+import { HostVitalsChip } from "../chat/HostVitalsChip";
+import { shortcutLabelForCommand } from "../../keybindings";
 import { RemoteConnectionControl } from "../remoteControl/RemoteConnectionControl";
 import { usePrimaryEnvironmentId } from "../../state/environments";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { isElectron } from "../../env";
@@ -158,6 +162,7 @@ function AgentWorkspaceResolved(props: {
       : false,
   );
   const dashboardAvailable = hasAgentDashboard(workspace);
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const togglePanel = () => {
     if (!agentThreadId) return;
     const threadRef = { environmentId, threadId: agentThreadId };
@@ -237,7 +242,7 @@ function AgentWorkspaceResolved(props: {
           reserve it lands on top of the agent's name and purpose. */}
           <header
             className={cn(
-              "@container/header-actions flex min-w-0 flex-col gap-2 px-3 py-2 sm:px-4 md:min-h-[var(--workspace-topbar-height)] md:flex-row md:items-center md:justify-between md:gap-3 md:border-b md:py-1.5",
+              "@container/header-actions flex min-w-0 flex-col gap-2 px-3 py-2 md:relative sm:px-4 md:min-h-[var(--workspace-topbar-height)] md:flex-row md:items-center md:justify-between md:gap-3 md:border-b md:py-1.5",
               // On a phone the header is the project card from the mockup: a
               // rounded turn-box card under the top bar rather than a full-width
               // band. The floating sidebar control is hidden there too, so the
@@ -377,28 +382,37 @@ function AgentWorkspaceResolved(props: {
                 ) : null}
               </div>
             </div>
+            {/* The same controls, order and spacing as a thread's header. */}
             <div
               data-chat-header-actions
-              className="flex min-w-0 items-center justify-end gap-2 md:shrink-0"
+              className="flex min-w-0 items-center justify-end gap-2 @3xl/header-actions:gap-3 md:shrink-0"
             >
+              <AgentCallButton environmentId={environmentId} agent={agent} />
               {view === "chat" && agentThreadId ? (
-                <div
-                  ref={setProjectScriptsPortalTarget}
-                  className="flex shrink-0 items-center [&_button]:bg-transparent [&_button]:before:shadow-none"
-                />
+                <div ref={setProjectScriptsPortalTarget} className="flex shrink-0 items-center" />
               ) : null}
               <AgentPowerToggle agent={agent} environmentId={environmentId} />
               {/* Agent threads reach the same remote machines as ordinary threads,
               so the control that connects to one belongs here too — a device
               driving an agent had no way to start a session from this header. */}
-              <RemoteConnectionControl
-                activeEnvironmentId={environmentId}
-                className="h-7 rounded-lg border-[var(--line)] px-2.5 text-[12px]"
-              />
-              <AgentCallButton environmentId={environmentId} agent={agent} />
-              {/* An open panel has this same toggle in its own corner. */}
-              {panelOwnsTitleBar ? <span className="md:hidden">{panelToggle}</span> : panelToggle}
+              <RemoteConnectionControl activeEnvironmentId={environmentId} />
+              <HostVitalsChip environmentId={environmentId} className="max-md:hidden" />
+              <span className="md:hidden">{panelToggle}</span>
             </div>
+            {/* Pinned to the title bar's corner like a thread's; an open panel has its own. */}
+            {agentThreadId && !panelOwnsTitleBar ? (
+              <div className="workspace-titlebar-controls pointer-events-auto z-50 gap-1 max-md:hidden [-webkit-app-region:no-drag]">
+                <PanelLayoutControls
+                  rightPanelAvailable
+                  rightPanelOpen={view === "chat" && panelOpen}
+                  rightPanelShortcutLabel={shortcutLabelForCommand(
+                    keybindings,
+                    "rightPanel.toggle",
+                  )}
+                  onToggleRightPanel={togglePanel}
+                />
+              </div>
+            ) : null}
           </header>
         </div>
       </div>

@@ -108,7 +108,7 @@ export function AgentCallButton(props: {
       className={cn(
         onThisCall
           ? "border-success text-success hover:border-success"
-          : "text-foreground hover:border-foreground/40",
+          : "border-transparent text-muted-foreground hover:text-foreground",
         !onThisCall && elsewhere === null && !available && "opacity-60",
       )}
     >
