@@ -15,10 +15,13 @@ jobs:
   rerun:
     name: Rerun jobs no runner picked up
     # Only the first attempt starts a watcher; this one follows every rerun.
+    # Scheduled nightlies are left alone: the next one retries in three hours,
+    # and every failed attempt here would email the maintainer.
     if: >-
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.run_attempt == 1 &&
-      github.event.workflow_run.event != 'pull_request'
+      github.event.workflow_run.event != 'pull_request' &&
+      github.event.workflow_run.event != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     steps:

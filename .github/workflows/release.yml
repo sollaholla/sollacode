@@ -309,7 +309,9 @@ jobs:
       matrix:
         include:
           - label: macOS arm64
-            runner: macos-26
+            # macos-26 arm64 often has no free runner, and each miss emails a
+            # failed run. macos-15 carries Xcode 26 for the speech helper's SDK.
+            runner: macos-15
             platform: mac
             target: dmg
             arch: arm64
@@ -346,6 +348,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
+
+      - name: Select Xcode 26
+        if: matrix.runner == 'macos-15'
+        run: echo "DEVELOPER_DIR=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1

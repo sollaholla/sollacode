@@ -22,6 +22,6 @@ macOS Intel is now the slowest job. Building it on an arm64 runner would save ab
 
 ## Jobs no runner picked up
 
-GitHub sometimes has no macOS arm64 runner free. The job then ends `cancelled` with no steps after 15 minutes, and the run counts as failed. `rerun-unassigned-jobs.yml` reruns those jobs until a runner takes them, up to 16 times. It leaves a run alone if any job really failed, and it does not act on pull requests.
+GitHub sometimes has no `macos-26` arm64 runner free. The job then ends `cancelled` with no steps after 15 minutes, and the run counts as failed. `rerun-unassigned-jobs.yml` reruns those jobs until a runner takes them, up to 16 times. It leaves a run alone if any job really failed, and it does not act on pull requests or scheduled nightlies. Each failed attempt emails the maintainer, and the next nightly retries three hours later anyway.
 
-Only the macOS arm64 build has to take that risk, because the speech helper needs the macOS 26 SDK and the job launches the app it built. Mobile linting runs on Intel to stay out of it.
+The macOS arm64 build runs on `macos-15` to stay out of that pool. It needs an arm64 host because the job launches the app it built, and the speech helper needs the macOS 26 SDK, so the job selects the newest Xcode 26 on the image rather than that image's default. Mobile linting runs on Intel for the same reason.
