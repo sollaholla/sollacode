@@ -3605,18 +3605,22 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <div className="min-w-0 flex-1 overflow-hidden">
-            <p className="flex min-w-0 w-full items-center gap-2 text-[12.5px] leading-6">
-              <span className={cn("min-w-0 shrink truncate", headingClass)}>{heading}</span>
-              {showStoppedIndicator && (
-                <span
-                  className="shrink-0 text-[10px] text-muted-foreground"
-                  aria-label="Task stopped before completion"
-                >
-                  Stopped
-                </span>
-              )}
+            {/* One visible line: a preview that can't have half the row wraps to
+                the clipped second line rather than shrinking to an empty sliver. */}
+            <p className="flex h-6 min-w-0 w-full flex-wrap content-start items-center gap-x-2 overflow-hidden text-[12.5px] leading-6">
+              <span className="flex min-w-0 max-w-full items-center gap-2">
+                <span className={cn("min-w-0 shrink truncate", headingClass)}>{heading}</span>
+                {showStoppedIndicator && (
+                  <span
+                    className="shrink-0 text-[10px] text-muted-foreground"
+                    aria-label="Task stopped before completion"
+                  >
+                    Stopped
+                  </span>
+                )}
+              </span>
               {preview && (
-                <span className="min-w-0 flex-1 truncate rounded-md bg-surface-tile px-1.5 py-px font-mono text-[11px] leading-5 text-gold-700 dark:text-gold-300/85">
+                <span className="min-w-0 grow basis-[calc(50%-0.25rem)] truncate rounded-md bg-surface-tile px-1.5 py-px font-mono text-[11px] leading-5 text-gold-700 dark:text-gold-300/85">
                   {preview}
                 </span>
               )}
