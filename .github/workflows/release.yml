@@ -309,9 +309,9 @@ jobs:
       matrix:
         include:
           - label: macOS arm64
-            # macos-26 arm64 often has no free runner, and each miss emails a
-            # failed run. macos-15 carries Xcode 26 for the speech helper's SDK.
-            runner: macos-15
+            # Cross-built: GitHub's arm64 Mac runners run out for hours at a
+            # time, on every image, and each miss emails a failed run.
+            runner: macos-26-intel
             platform: mac
             target: dmg
             arch: arm64
@@ -348,10 +348,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-
-      - name: Select Xcode 26
-        if: matrix.runner == 'macos-15'
-        run: echo "DEVELOPER_DIR=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -571,6 +567,8 @@ jobs:
       # server and a terminal through the shipped runtime, then launches the
       # whole app. A build that cannot start never reaches the release.
       - name: Smoke-test the packaged app
+        # An Intel runner cannot start an arm64 app; the next step checks it instead.
+        if: matrix.platform != 'mac' || matrix.arch != 'arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -579,6 +577,11 @@ jobs:
             sudo apt-get install -y xvfb
           fi
           node scripts/smoke-packaged-desktop.ts --platform "${{ matrix.platform }}" --artifacts release-publish
+
+      - name: Check the cross-built app is arm64
+        if: matrix.platform == 'mac' && matrix.arch == 'arm64'
+        shell: bash
+        run: node scripts/check-mac-arm64-artifact.ts release-publish
 
       - name: Collect resource monitor
         shell: bash

@@ -18,10 +18,12 @@ A release publishes when its slowest job finishes, so these keep that job short:
 - **The Windows job installs no MSVC components.** node-pty ships Windows binaries and nothing compiles there; the package smoke test spawns a real shell, so a missing binary fails the job.
 - **macOS zips use a light compression level.** It halves packaging time for 2% more size. Windows keeps the default, because level 1 makes the installer 38% larger.
 
-macOS Intel is now the slowest job. Building it on an arm64 runner would save about ten minutes, but it would tie both Mac downloads to the runner pool that runs out.
+macOS Intel is now the slowest job. Both Mac builds run on Intel runners, because GitHub's arm64 Mac runners run out for hours at a time.
 
 ## Jobs no runner picked up
 
-GitHub sometimes has no `macos-26` arm64 runner free. The job then ends `cancelled` with no steps after 15 minutes, and the run counts as failed. `rerun-unassigned-jobs.yml` reruns those jobs until a runner takes them, up to 16 times. It leaves a run alone if any job really failed, and it does not act on pull requests or scheduled nightlies. Each failed attempt emails the maintainer, and the next nightly retries three hours later anyway.
+GitHub's macOS arm64 runners run out, on every image: a job ends `cancelled` with no steps after 15 minutes, the run counts as failed, and each attempt emails the maintainer. So no job that runs on its own depends on them. The arm64 app is cross-built on an Intel runner, and mobile linting runs on Intel too.
 
-The macOS arm64 build runs on `macos-15` to stay out of that pool. It needs an arm64 host because the job launches the app it built, and the speech helper needs the macOS 26 SDK, so the job selects the newest Xcode 26 on the image rather than that image's default. Mobile linting runs on Intel for the same reason.
+An Intel runner cannot start an arm64 app, so that build skips the launch test and `scripts/check-mac-arm64-artifact.ts` proves its binaries are arm64 instead. The x64 build runs the launch test from the same source.
+
+`rerun-unassigned-jobs.yml` remains for any other job no runner takes. It reruns those jobs up to 16 times, leaves a run alone if any job really failed, and does not act on pull requests or scheduled nightlies, whose next run is three hours later anyway.
