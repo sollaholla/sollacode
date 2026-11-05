@@ -1,5 +1,4 @@
 import { canResumeFailedThreadSession } from "@t3tools/client-runtime/state/thread-activity";
-import { AppText as Text } from "../../components/AppText";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
@@ -19,7 +18,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, View, type GestureResponderEvent } from "react-native";
+import { Platform, View, type GestureResponderEvent } from "react-native";
 import { KeyboardController, KeyboardStickyView } from "react-native-keyboard-controller";
 import Animated, { FadeInDown, FadeOut } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -44,6 +43,7 @@ import {
   ThreadComposer,
 } from "./ThreadComposer";
 import { ThreadFeed } from "./ThreadFeed";
+import { ThreadPausedCard } from "./ThreadPausedCard";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 
 export interface ThreadDetailScreenProps {
@@ -102,7 +102,7 @@ export interface ThreadDetailScreenProps {
   readonly onReopenProposedPlan: () => Promise<void>;
   /** The composer's mode, which decides what a typed reply does to the plan. */
   readonly composerInteractionMode: ProviderInteractionMode | null;
-  readonly onResumeSession: () => Promise<void>;
+  readonly onResumeSession: (modelSelection?: ModelSelection) => Promise<void>;
   readonly isResumingSession: boolean;
   readonly onPromoteQueuedMessages: () => void;
   readonly onReconnectEnvironment: () => void;
@@ -498,26 +498,15 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             </View>
 
             {canResumeFailedThreadSession(props.selectedThread) ? (
-              <View className="mx-4 mb-3 rounded-xl border border-red-300 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950">
-                <Text className="text-sm text-red-900 dark:text-red-100">
-                  {props.selectedThread.session?.lastError}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Resume thread"
-                  disabled={
-                    props.isResumingSession ||
-                    props.connectionStateLabel !== "connected" ||
-                    props.activeThreadBusy
-                  }
-                  onPress={() => void props.onResumeSession()}
-                  className="mt-2 min-h-11 items-center justify-center rounded-lg bg-red-700 px-4"
-                >
-                  <Text className="font-t3-bold text-sm text-white">
-                    {props.isResumingSession ? "Resuming…" : "Resume"}
-                  </Text>
-                </Pressable>
-              </View>
+              <ThreadPausedCard
+                lastError={props.selectedThread.session?.lastError ?? ""}
+                providers={props.serverConfig?.providers ?? []}
+                currentInstanceId={props.selectedThread.modelSelection.instanceId}
+                currentModel={props.selectedThread.modelSelection.model}
+                resuming={props.isResumingSession}
+                disabled={props.connectionStateLabel !== "connected" || props.activeThreadBusy}
+                onResume={(modelSelection) => void props.onResumeSession(modelSelection)}
+              />
             ) : null}
 
             <ThreadComposer

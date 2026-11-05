@@ -1,6 +1,5 @@
 import { repairMuseActivityChronology } from "./repairMuseActivityChronology.ts";
 import { repairPromotedAgentSideChats } from "./repairPromotedAgentSideChats.ts";
-import { isUsageGuardYield } from "../usageGuardYield.ts";
 import {
   ApprovalRequestId,
   type ChatAttachment,
@@ -1640,8 +1639,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       if (
         Option.isNone(obligation) ||
         obligation.value.state === "completed" ||
-        obligation.value.state === "cancelled" ||
-        isUsageGuardYield(obligation.value.blockedReason)
+        obligation.value.state === "cancelled"
       ) {
         return;
       }
@@ -2039,7 +2037,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
               // The provider session is the authoritative liveness signal.
-              // Failover/reconnect can briefly project ready or stopped before
+              // A reconnect can briefly project ready or stopped before
               // the same provider turn is adopted again; preserving that old
               // terminal state leaves an actively streaming turn marked as
               // completed and later produces a false Resume affordance.
@@ -3221,7 +3219,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             blocked_reason = NULL,
             updated_at = ${settledAt}
         WHERE work.kind = 'active-turn-recovery'
-          AND COALESCE(work.blocked_reason, '') NOT LIKE 'usage-guard-yield:%'
           AND work.state != 'cancelled'
           AND (
             work.state != 'completed'
@@ -3476,7 +3473,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             blocked_reason = NULL,
             updated_at = ${settledAt}
         WHERE kind IN ('startup-resume', 'agent-continuation')
-          AND COALESCE(blocked_reason, '') NOT LIKE 'usage-guard-yield:%'
           AND state NOT IN ('completed', 'cancelled')
           AND EXISTS (
             SELECT 1

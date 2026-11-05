@@ -12,14 +12,11 @@ import { modelAccessPoliciesAllow } from "@t3tools/shared/modelAccessPolicy";
 /** Resolve live ancestry on every admission so changes cover existing side chats too. */
 export const resolveThreadModelPolicies = <E>(input: {
   threadId: ThreadId;
-  settings: Pick<ServerSettings, "threadModelPolicies" | "fallbackModelPolicy">;
-  fallback?: boolean;
+  settings: Pick<ServerSettings, "threadModelPolicies">;
   getThread: (id: ThreadId) => Effect.Effect<Option.Option<OrchestrationThreadShell>, E>;
 }) =>
   Effect.gen(function* () {
-    const policies: ModelAccessPolicy[] = input.fallback
-      ? [input.settings.fallbackModelPolicy]
-      : [];
+    const policies: ModelAccessPolicy[] = [];
     if (Object.keys(input.settings.threadModelPolicies).length === 0) return policies;
     const visited = new Set<string>();
     let id: ThreadId | null = input.threadId;

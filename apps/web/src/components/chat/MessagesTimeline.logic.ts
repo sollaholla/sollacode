@@ -273,8 +273,6 @@ export type MessagesTimelineRow = MessagesTimelineRowContent & {
 function isProviderTransitionWorkEntry(entry: WorkLogEntry): boolean {
   return (
     entry.sourceActivityKind === "provider.handoff.completed" ||
-    entry.sourceActivityKind === "provider.failover.completed" ||
-    entry.sourceActivityKind === "provider.failover.restored" ||
     entry.sourceActivityKind === "thread.settings.applied"
   );
 }

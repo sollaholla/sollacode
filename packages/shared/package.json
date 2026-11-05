@@ -299,10 +299,6 @@
       "types": "./src/remoteFrameGestures.ts",
       "import": "./src/remoteFrameGestures.ts"
     },
-    "./usageGuardCurve": {
-      "types": "./src/usageGuardCurve.ts",
-      "import": "./src/usageGuardCurve.ts"
-    },
     "./heldMessages": "./src/heldMessages.ts",
     "./backgroundTasks": {
       "types": "./src/backgroundTasks.ts",

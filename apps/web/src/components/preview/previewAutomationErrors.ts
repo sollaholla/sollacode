@@ -392,7 +392,7 @@ const desktopFailureReason = (cause: unknown): string | undefined => {
       return `${target()} is not a valid selector. Use a Playwright locator such as role=button[name='Send'] or text=Continue, or a plain CSS selector`;
     case "PreviewAutomationTargetNotEditableError":
       return record.nativeMenu === true
-        ? `${target()} is a <select> whose menu the browser draws outside the page. Use preview_select_option instead`
+        ? `${target()} is a <select>. Use preview_select_option instead`
         : `${target()} is not editable. Focus or locate a textbox/textarea/contenteditable and retry`;
     case "PreviewAutomationDevToolsOpenError":
       return "preview DevTools are open on this tab; browser control cannot attach until they are closed. Ask the user to close DevTools, then retry";

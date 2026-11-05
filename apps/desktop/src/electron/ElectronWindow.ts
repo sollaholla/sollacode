@@ -99,6 +99,8 @@ export class ElectronWindow extends Context.Service<
      * on a fiber.
      */
     readonly isAuxiliaryWindowId: (windowId: number) => boolean;
+    /** Synchronous, for the `close` event, which must decide before it returns. */
+    readonly isMainWindowId: (windowId: number) => boolean;
     readonly setMain: (window: Electron.BrowserWindow) => Effect.Effect<void>;
     readonly clearMain: (window: Option.Option<Electron.BrowserWindow>) => Effect.Effect<void>;
     readonly reveal: (window: Electron.BrowserWindow) => Effect.Effect<void>;
@@ -115,6 +117,7 @@ export const make = Effect.gen(function* () {
   const mainWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
   // Window ids never repeat within a session, so tagged ids are simply left
   // behind after their window closes.
+  let mainWindowId: number | null = null;
   const auxiliaryWindowIds = new Set<number>();
 
   const listWindows = Effect.try({
@@ -223,12 +226,20 @@ export const make = Effect.gen(function* () {
     main: liveMain,
     currentMainOrFirst,
     focusedMainOrFirst,
-    setMain: (window) => Ref.set(mainWindowRef, Option.some(window)),
+    setMain: (window) =>
+      Ref.set(mainWindowRef, Option.some(window)).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            mainWindowId = window.id;
+          }),
+        ),
+      ),
     markAuxiliary: (window) =>
       Effect.sync(() => {
         auxiliaryWindowIds.add(window.id);
       }),
     isAuxiliaryWindowId: (windowId) => auxiliaryWindowIds.has(windowId),
+    isMainWindowId: (windowId) => windowId === mainWindowId,
     clearMain: (window) =>
       Ref.update(mainWindowRef, (current) => {
         if (Option.isNone(current)) {

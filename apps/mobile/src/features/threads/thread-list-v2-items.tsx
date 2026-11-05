@@ -402,11 +402,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               "flex-1 text-xs",
               selected
                 ? "text-user-bubble-foreground-muted"
-                : "text-red-600/80 dark:text-red-400/80",
+                : "text-amber-700/80 dark:text-amber-300/80",
             )}
             numberOfLines={1}
           >
-            {thread.session.lastError}
+            Paused
           </Text>
         ) : thread.branch || props.environmentLabel ? (
           /* "branch · machine" share one truncating line. The machine sits

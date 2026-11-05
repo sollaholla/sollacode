@@ -40,9 +40,8 @@ describe("diffProviderStatuses", () => {
   });
 
   it("patches only the usage fields that moved, and always carries checkedAt", () => {
-    const before = provider("codex", { usageGuard: { state: "ok" }, accountUsage: { used: 1 } });
+    const before = provider("codex", { accountUsage: { used: 1 } });
     const after = provider("codex", {
-      usageGuard: { state: "ok" },
       accountUsage: { used: 2 },
       checkedAt: "2026-09-30T00:00:30.000Z",
     });
@@ -65,7 +64,7 @@ describe("diffProviderStatuses", () => {
   });
 
   it("sends the whole provider when a volatile field disappears, so it cannot linger", () => {
-    const before = provider("codex", { usageGuard: { state: "ok" } });
+    const before = provider("codex", { accountUsage: { used: 1 } });
     const after = provider("codex");
     const diff = diffProviderStatuses(rememberProviderStatuses([before]), [after])!;
     expect(diff.upserted).toEqual([after]);

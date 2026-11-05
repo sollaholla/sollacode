@@ -105,11 +105,11 @@ export function resolveThreadStatus(
   if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
     return {
       kind: "error",
-      label: "Error",
-      pillClassName: "bg-rose-500/12 dark:bg-rose-500/16",
-      textClassName: "text-rose-700 dark:text-rose-300",
-      iconColor: "#ff453a",
-      iconBackground: "rgba(255,69,58,0.22)",
+      label: "Paused",
+      pillClassName: "bg-amber-500/12 dark:bg-amber-500/16",
+      textClassName: "text-amber-700 dark:text-amber-300",
+      iconColor: "#ff9f0a",
+      iconBackground: "rgba(255,159,10,0.22)",
       pulse: false,
     };
   }

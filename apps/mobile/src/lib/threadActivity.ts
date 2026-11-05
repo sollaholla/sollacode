@@ -7,8 +7,8 @@ import {
   describeRunningBackgroundTasks,
   isReasoningStatusPlaceholder,
   isRoutineMusePollingNotice,
+  isPausedProviderFailureActivity,
   isProviderInterruptionErrorActivity,
-  recoveredRuntimeErrorIds,
 } from "@t3tools/client-runtime/state/thread-activity";
 import {
   inlineToolImageDataUrl,
@@ -297,10 +297,9 @@ function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): DerivedWorkLogEntry[] {
   const ordered = Arr.sort(activities, activityOrder);
-  const recoveredErrors = recoveredRuntimeErrorIds(activities);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
-    if (activity.kind === "runtime.error" && recoveredErrors.has(activity.id)) continue;
+    if (isPausedProviderFailureActivity(activity)) continue;
     if (isProviderInterruptionErrorActivity(activity)) continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;

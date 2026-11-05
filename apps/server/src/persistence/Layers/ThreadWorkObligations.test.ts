@@ -90,57 +90,6 @@ const insertThread = (threadId: ThreadId) =>
   });
 
 repositoryLayer("ThreadWorkObligationRepository", (it) => {
-  for (const mode of ["user-stop", "user-supersede"] as const)
-    it.effect(`preserves a usage yield through recovery and claim, while ${mode} cancels it`, () =>
-      Effect.gen(function* () {
-        const repository = yield* ThreadWorkObligationRepository;
-        const threadId = ThreadId.make(`usage-yield-restart-${mode}`);
-        yield* insertThread(threadId);
-        yield* repository.insert({
-          obligationId: `usage-yield-owner-${mode}`,
-          threadId,
-          sourceTurnId: TurnId.make("turn-start:message"),
-          kind: "active-turn-recovery",
-          state: "sleeping",
-          providerInstanceId,
-          attempt: 2,
-          nextAttemptAt: later,
-          claimedAt: null,
-          leaseExpiresAt: null,
-          blockedReason: "usage-guard-yield:provider-turn",
-          createdAt: now,
-          updatedAt: now,
-        });
-        yield* repository.recoverOrphanedClaims({ updatedAt: later, limit: 10 });
-        const claimed = yield* repository.claim({
-          obligationId: `usage-yield-owner-${mode}`,
-          now: later,
-          leaseExpiresAt: "2026-08-04T12:02:00.000Z",
-        });
-        assert.strictEqual(
-          Option.getOrNull(claimed)?.blockedReason,
-          "usage-guard-yield:provider-turn",
-        );
-        yield* repository.cancelByThread({
-          threadId,
-          updatedAt: later,
-          blockedReason: "thread.turn-interrupt-requested",
-          mode,
-        });
-        const stopped = yield* repository.getById(`usage-yield-owner-${mode}`);
-        assert.strictEqual(Option.getOrNull(stopped)?.state, "cancelled");
-        assert.isTrue(
-          Option.isNone(
-            yield* repository.claim({
-              obligationId: `usage-yield-owner-${mode}`,
-              now: later,
-              leaseExpiresAt: later,
-            }),
-          ),
-        );
-      }),
-    );
-
   it.effect("normalizes provider timestamps to the trigger's millisecond contract", () =>
     Effect.gen(function* () {
       // An external bridge stamps events at microsecond precision (27
@@ -522,7 +471,7 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
         kind: "active-turn-recovery",
         state: "sleeping",
         nextAttemptAt: later,
-        blockedReason: "usage guard cooldown",
+        blockedReason: "waiting to retry",
       });
       yield* repository.cancelByThread({
         threadId: heldThread,

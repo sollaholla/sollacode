@@ -468,42 +468,45 @@ export function useThreadComposerState() {
   const queuedResume = selectedThreadQueuedMessages.some((message) => isResumePrompt(message.text));
   const resumeInFlightRef = useRef(false);
   const [isResumingSession, setIsResumingSession] = useState(false);
-  const onResumeSession = useCallback(async () => {
-    if (
-      !selectedThreadShell ||
-      !canResumeFailedThreadSession(selectedThread) ||
-      queuedResume ||
-      resumeInFlightRef.current
-    )
-      return;
-    const metadata = makeQueuedMessageMetadata();
-    setIsResumingSession(true);
-    try {
-      await runResumeIncompleteTurn({
-        inFlightRef: resumeInFlightRef,
-        send: async (text) => {
-          await enqueueThreadOutboxMessage({
-            environmentId: selectedThreadShell.environmentId,
-            threadId: selectedThreadShell.id,
-            messageId: MessageId.make(metadata.messageId),
-            commandId: CommandId.make(metadata.commandId),
-            text,
-            attachments: [],
-            modelSelection: selectedThreadShell.modelSelection,
-            runtimeMode: selectedThreadShell.runtimeMode,
-            interactionMode: selectedThreadShell.interactionMode,
-            createdAt: metadata.createdAt,
-          });
-        },
-      });
-    } catch (error) {
-      setPendingConnectionError(
-        error instanceof Error ? error.message : "Could not resume this thread.",
-      );
-    } finally {
-      setIsResumingSession(false);
-    }
-  }, [queuedResume, selectedThread, selectedThreadShell]);
+  const onResumeSession = useCallback(
+    async (modelSelection?: ModelSelection) => {
+      if (
+        !selectedThreadShell ||
+        !canResumeFailedThreadSession(selectedThread) ||
+        queuedResume ||
+        resumeInFlightRef.current
+      )
+        return;
+      const metadata = makeQueuedMessageMetadata();
+      setIsResumingSession(true);
+      try {
+        await runResumeIncompleteTurn({
+          inFlightRef: resumeInFlightRef,
+          send: async (text) => {
+            await enqueueThreadOutboxMessage({
+              environmentId: selectedThreadShell.environmentId,
+              threadId: selectedThreadShell.id,
+              messageId: MessageId.make(metadata.messageId),
+              commandId: CommandId.make(metadata.commandId),
+              text,
+              attachments: [],
+              modelSelection: modelSelection ?? selectedThreadShell.modelSelection,
+              runtimeMode: selectedThreadShell.runtimeMode,
+              interactionMode: selectedThreadShell.interactionMode,
+              createdAt: metadata.createdAt,
+            });
+          },
+        });
+      } catch (error) {
+        setPendingConnectionError(
+          error instanceof Error ? error.message : "Could not resume this thread.",
+        );
+      } finally {
+        setIsResumingSession(false);
+      }
+    },
+    [queuedResume, selectedThread, selectedThreadShell],
+  );
 
   const onSendMessage = useCallback(async () => {
     if (!selectedThreadShell) {

@@ -59,6 +59,7 @@ import {
   setOrchestratorBubbleVisible,
   toggleOrchestratorVoiceFromBubble,
 } from "./methods/orchestratorBubble.ts";
+import { publishMenuBarStats } from "./methods/menuBar.ts";
 import {
   activateRemoteControlHost,
   captureRemoteControlFrame,
@@ -141,6 +142,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(readRemoteControlPointerLock);
   yield* ipc.handle(resetRemoteControlInput);
   yield* ipc.handle(startFileDrag);
+  yield* ipc.handle(publishMenuBarStats);
   yield* ipc.handle(setOrchestratorBubbleVisible);
   yield* ipc.handle(publishOrchestratorBubbleState);
   yield* ipc.handle(beginOrchestratorBubbleDrag);

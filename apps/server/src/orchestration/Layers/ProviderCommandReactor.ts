@@ -1,5 +1,4 @@
 import { resolveThreadModelPolicies, modelPolicyError } from "../modelAccessPolicy.ts";
-import { selectedUsageGuardEffort, userPinnedEffortDuringHold } from "../ProviderUsageGuard.ts";
 import { isHeldMessageId, removedHeldMessageIds } from "@t3tools/shared/heldMessages";
 import {
   type ChatAttachment,
@@ -16,7 +15,6 @@ import {
   type OrchestrationSession,
   ThreadId,
   type ProviderPendingContextRecovery,
-  type ProviderInstanceId,
   type ProviderLiveSteerTarget,
   type ProviderSession,
   type ServerProvider,
@@ -109,18 +107,6 @@ import {
 } from "../Services/ProjectionSnapshotQuery.ts";
 import { THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT } from "./ProjectionSnapshotQuery.ts";
 import {
-  USAGE_GUARD_PAUSED_ACTIVITY_KIND,
-  USAGE_GUARD_PAUSED_REASON,
-} from "../ProviderUsageGuard.ts";
-import { ProviderUsageGuard } from "../Services/ProviderUsageGuard.ts";
-import {
-  canResumeUsageGuardYield,
-  isUsageGuardYield,
-  shouldYieldUsageGuardTurn,
-  usageGuardYieldReason,
-  usageGuardWorkStartedAtMs,
-} from "../usageGuardYield.ts";
-import {
   ThreadWorkScheduler,
   type ThreadWorkExecutionOutcome,
   type ThreadWorkHandler,
@@ -137,23 +123,12 @@ import {
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { ActionApprovalBroker } from "../../mcp/toolkits/actionApproval/ActionApprovalBroker.ts";
+import { classifyDeferredRecoveryFailure } from "../deferredRecovery.ts";
 import {
   buildProviderHandoffSummary,
   buildProviderHandoffTurnInput,
-  classifyDeferredRecoveryFailure,
-  decideDeferredRecoveryOutcome,
   deriveProviderHandoffContinuity,
-  detectProviderUnusableRefusal,
-  detectProviderUsageLimitRefusal,
-  isAccountWideProviderExhaustion,
-  isAccountWideUnusableRefusal,
-  PROVIDER_FAILOVER_COMPLETED_ACTIVITY_KIND,
-  PROVIDER_FAILOVER_RESTORED_ACTIVITY_KIND,
-  providerFailoverModelKey,
-  resolveUsageLimitFailoverRestore,
-  type ProviderFailoverTarget,
-  selectProviderFailoverTarget,
-} from "../ProviderUsageLimitFailover.ts";
+} from "../ProviderHandoff.ts";
 import {
   activeTurnMessageIdFromSourceTurnId,
   activeTurnWorkSourceId,
@@ -943,7 +918,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     const providerRegistry = yield* ProviderRegistry;
     const threadWorkObligations = yield* ThreadWorkObligationRepository;
     const threadWorkScheduler = yield* ThreadWorkScheduler;
-    const usageGuard = yield* ProviderUsageGuard;
     const gitWorkflow = yield* GitWorkflowService;
     const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
     const textGeneration = yield* TextGeneration;
@@ -1268,12 +1242,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     const checkModelPolicy = Effect.fn("checkModelPolicy")(function* (
       threadId: ThreadId,
       selection: ModelSelection,
-      fallback = false,
     ) {
       const policies = yield* resolveThreadModelPolicies({
         threadId,
         settings: yield* serverSettingsService.getSettings,
-        fallback,
         getThread: projectionSnapshotQuery.getThreadShellById,
       });
       const detail = modelPolicyError(policies, selection);
@@ -1290,16 +1262,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     const sendTurnWithModelPolicy = Effect.fn("sendTurnWithModelPolicy")(function* (
       request: Parameters<typeof providerService.sendTurn>[0],
       options?: Parameters<typeof providerService.sendTurn>[1],
-      fallback = false,
     ) {
       const thread = yield* resolveThread(request.threadId);
       if (!thread)
         return yield* Effect.die(new Error(`Thread '${request.threadId}' was not found.`));
-      yield* checkModelPolicy(
-        request.threadId,
-        request.modelSelection ?? thread.modelSelection,
-        fallback,
-      );
+      yield* checkModelPolicy(request.threadId, request.modelSelection ?? thread.modelSelection);
       return yield* providerService.sendTurn(request, options);
     });
 
@@ -1729,12 +1696,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       readonly liveSteerTarget?: ProviderLiveSteerTarget;
       /** Projected synthetic prompt to omit from a bounded recovery digest. */
       readonly historyMessageId?: MessageId;
-      /**
-       * The person chose this effort explicitly (usage-guard chip) while the
-       * work was held. The guard's optimizer must not lower it back to its own
-       * target, or Apply silently reverts on resume.
-       */
-      readonly honorRequestedEffort?: boolean;
       readonly createdAt: string;
     }) {
       const thread = yield* resolveThread(input.threadId);
@@ -1829,10 +1790,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             driver: desiredInfo.driverKind,
             modelSelection: requestedModelSelection,
           },
-          exhaustion: {
-            reason: instanceChanged ? "manual_provider_switch" : "manual_model_switch",
-            resetsAt: null,
-          },
+          reason: instanceChanged ? "manual_provider_switch" : "manual_model_switch",
           generatedAt: input.createdAt,
           immediateRequirement: input.messageText.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX)
             ? deriveProviderHandoffContinuity(historyMessages).immediateRequirement
@@ -1895,10 +1853,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             driver: desiredInfo.driverKind,
             modelSelection: effectiveModelSelection,
           },
-          exhaustion: {
-            reason: "native_resume_timeout_recovery",
-            resetsAt: null,
-          },
+          reason: "native_resume_timeout_recovery",
           generatedAt: input.createdAt,
           immediateRequirement: continuity.immediateRequirement,
           inProgressWork: continuity.inProgressWork,
@@ -1956,23 +1911,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       const { autoCompactionThresholdPercentage, claudeTokenOptimizerEnabled } =
         yield* serverSettingsService.getSettings;
 
-      // The usage guard never changes a turn's effort on its own. It paces
-      // (holds and waits) and *recommends* a cheaper effort on the hold card;
-      // the person applies it there or in the composer. Every silent
-      // downgrade here — the "gentle tier" optimizer that ran on each send —
-      // overwrote explicit choices (chip Apply, Settings-update messages) and
-      // read as "it forces low no matter what". `honorRequestedEffort` and the
-      // pinned-effort rule are kept for callers that still reason about them.
-      void input.honorRequestedEffort;
-      void userPinnedEffortDuringHold;
-      const guardedModelForTurn = modelForTurn;
-
       return {
         threadId: input.threadId,
         ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
         ...(normalizedInput ? { input: normalizedInput } : {}),
         ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
-        ...(guardedModelForTurn !== undefined ? { modelSelection: guardedModelForTurn } : {}),
+        ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(input.liveSteerTarget !== undefined ? { liveSteerTarget: input.liveSteerTarget } : {}),
         ...(pendingContextRecovery !== undefined && input.liveSteerTarget === undefined
@@ -2196,8 +2140,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       readonly message: OrchestrationThread["messages"][number];
       readonly context: TurnStartRequestedPayload;
       readonly sendOptions?: ProviderServiceSendTurnOptions;
-      readonly automaticModelChange?: boolean;
-      /** Failover already posted the "Switched" notice for this provider change. */
+      /** The transcript already says this message moved to another provider. */
       readonly switchAnnounced?: boolean;
     }) {
       // Delivery records only exist for the claudeAgent driver; other drivers
@@ -2241,23 +2184,14 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           }),
         );
       }
-      const effortUpdate = input.thread.activities.findLast(
-        (activity) =>
-          activity.kind === "usage-guard.effort-selected" &&
-          activity.createdAt >= input.context.createdAt,
-      );
-      const effortPayload = effortUpdate?.payload as { modelSelection?: unknown } | undefined;
-      const appliedSelection =
-        effortPayload && Schema.is(ModelSelection)(effortPayload.modelSelection)
-          ? effortPayload.modelSelection
-          : input.context.modelSelection;
       const sendTurnRequest = yield* buildSendTurnRequestForThread({
         threadId: input.context.threadId,
         messageId: input.message.id,
         messageText: outgoingText,
         ...(carriedAttachments.length > 0 ? { attachments: carriedAttachments } : {}),
-        ...(appliedSelection !== undefined ? { modelSelection: appliedSelection } : {}),
-        ...(effortUpdate !== undefined ? { honorRequestedEffort: true } : {}),
+        ...(input.context.modelSelection !== undefined
+          ? { modelSelection: input.context.modelSelection }
+          : {}),
         // Agent mode is a server-owned turn loop; providers still receive the
         // normal interactive mode until the next continuation is scheduled.
         interactionMode: providerInteractionMode(input.context.interactionMode),
@@ -2272,11 +2206,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         requestedModelSelection !== undefined &&
         requestedModelSelection.instanceId !== sourceInstanceId;
       const settingsUpdateRequested = input.message.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX);
-      return yield* sendTurnWithModelPolicy(
-        sendTurnRequest,
-        input.sendOptions,
-        input.automaticModelChange,
-      ).pipe(
+      return yield* sendTurnWithModelPolicy(sendTurnRequest, input.sendOptions).pipe(
         Effect.tap((turn) =>
           !heldReleasable
             ? Effect.void
@@ -2322,7 +2252,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             if (
               modelSelectionStillRequested(
                 input.thread.id,
-                appliedSelection ?? input.thread.modelSelection,
+                input.context.modelSelection ?? input.thread.modelSelection,
               )
             ) {
               yield* orchestrationEngine.dispatch({
@@ -2579,118 +2509,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       },
     );
 
-    /**
-     * Undo a usage-limit failover once the window that caused it has reset.
-     *
-     * The failover rewrites the thread's selection so the replacement turn
-     * can run, and until now nothing wrote it back: a thread that fell over
-     * to Antigravity at 22:38 was still on Antigravity at midnight unless the
-     * user noticed (2026-09-04, twice). This runs at the next turn start on an
-     * idle thread — a live turn is never yanked to another provider — and
-     * hands back the selection the turn should use. Everything about it is
-     * best-effort: a failed lookup or dispatch logs and the turn proceeds on
-     * the selection the client sent.
-     */
-    const restoreUsageLimitFailoverSelection = Effect.fn("restoreUsageLimitFailoverSelection")(
-      function* (input: {
-        readonly thread: OrchestrationThread;
-        readonly requestedModelSelection: ModelSelection | undefined;
-        readonly createdAt: string;
-      }) {
-        const lookup = projectionSnapshotQuery.getLatestThreadActivityByKind;
-        if (lookup === undefined) return null;
-        const threadId = input.thread.id;
-        if (input.thread.session?.status === "running") return null;
-        const liveSession = (yield* providerService.listSessions()).find(
-          (session) => session.threadId === threadId,
-        );
-        if (liveSession?.status === "running") return null;
-        const failover = yield* lookup(threadId, PROVIDER_FAILOVER_COMPLETED_ACTIVITY_KIND).pipe(
-          Effect.map(Option.getOrNull),
-        );
-        if (failover === null) return null;
-        const restored = yield* lookup(threadId, PROVIDER_FAILOVER_RESTORED_ACTIVITY_KIND).pipe(
-          Effect.map(Option.getOrNull),
-        );
-        const latestClientSelection = projectionSnapshotQuery.getLatestClientModelSelection
-          ? yield* projectionSnapshotQuery
-              .getLatestClientModelSelection(threadId)
-              .pipe(Effect.map(Option.getOrNull))
-          : null;
-        const providers = yield* providerRegistry.getProviders;
-        const nowEpochMs = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
-        const restore = resolveUsageLimitFailoverRestore({
-          failover,
-          restored,
-          latestClientSelection,
-          currentSelection: input.requestedModelSelection ?? input.thread.modelSelection,
-          providers,
-          nowEpochMs,
-        });
-        if (restore === null) return null;
-        const modelPolicies = yield* resolveThreadModelPolicies({
-          threadId,
-          settings: yield* serverSettingsService.getSettings,
-          fallback: true,
-          getThread: projectionSnapshotQuery.getThreadShellById,
-        });
-        if (modelPolicyError(modelPolicies, restore.modelSelection)) return null;
-
-        const createdAt = input.createdAt;
-        threadModelSelections.set(threadId, restore.modelSelection);
-        yield* serverCommandId("provider-failover-restore-model-selection").pipe(
-          Effect.flatMap((commandId) =>
-            orchestrationEngine.dispatch({
-              type: "thread.meta.update",
-              commandId,
-              threadId,
-              modelSelection: restore.modelSelection,
-            }),
-          ),
-        );
-        yield* Effect.all({
-          commandId: serverCommandId("provider-failover-restored-activity"),
-          eventId: serverEventId(),
-        }).pipe(
-          Effect.flatMap(({ commandId, eventId }) =>
-            orchestrationEngine.dispatch({
-              type: "thread.activity.append",
-              commandId,
-              threadId,
-              activity: {
-                id: eventId,
-                tone: "info",
-                kind: PROVIDER_FAILOVER_RESTORED_ACTIVITY_KIND,
-                summary: `${restore.sourceLabel} usage window reset · switched back from ${restore.targetLabel} to ${restore.sourceLabel}`,
-                payload: {
-                  detail: `${restore.targetLabel} / ${restore.targetModel} → ${restore.sourceLabel} / ${restore.modelSelection.model}`,
-                  sourceInstanceId: restore.targetInstanceId,
-                  sourceModel: restore.targetModel,
-                  targetInstanceId: restore.sourceInstanceId,
-                  targetProvider: restore.sourceDriver,
-                  targetModel: restore.modelSelection.model,
-                  targetOptions: restore.modelSelection.options ?? null,
-                  failoverActivityId: restore.failoverActivityId,
-                  reason: "usage_window_reset",
-                  resetsAt: restore.resetsAtEpochMs,
-                },
-                turnId: null,
-                createdAt,
-              },
-              createdAt,
-            }),
-          ),
-        );
-        yield* Effect.logInfo("provider.failover.restored", {
-          threadId,
-          from: restore.targetInstanceId,
-          to: restore.sourceInstanceId,
-          model: restore.modelSelection.model,
-        });
-        return restore;
-      },
-    );
-
     const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
       event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
       liveSteerDispatchStarted?: Effect.Effect<void>,
@@ -2777,8 +2595,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       //
       // Completions go missing routinely: the app updates or restarts mid-task
       // (the orphan sweep's late `task.completed` was measured landing 4h47m
-      // after the restart that stranded it), a provider process dies, a
-      // failover or the DeepCode stall watchdog reaps the CLI. Observed
+      // after the restart that stranded it), a provider process dies, the
+      // DeepCode stall watchdog reaps the CLI. Observed
       // 2026-09-14 on thread 3112ffe4, which carried eight such phantoms — the
       // newest a `codex-subagent:` task started 17:47 — and whose queued
       // messages "never reached Muse" until 862 later activities pushed that
@@ -4740,24 +4558,13 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     const historyRecoveriesByThread = new Map<string, Array<number>>();
 
     /**
-     * Instances this thread has already been moved off during the current run
-     * of failures. Without it, A fails and we move to B, B fails and nothing
-     * remembers A was broken, so the thread ping-pongs until the retry budget
-     * runs out. Cleared whenever the thread starts a turn successfully.
-     */
-    const failedOverInstancesByThread = new Map<string, Set<string>>();
-
-    /**
      * Queued messages whose delivery goes to the thread's current selection
      * rather than the provider their persisted turn-start names, by thread,
      * each with whether the move was already announced in the transcript.
      *
-     * Two things put a message here: failover moving the thread while the
-     * message was being delivered, and "Send again" on a delivery that was
-     * cancelled. Without this the retry went back to the broken provider, and
-     * its second failure was read as a failed manual switch and dropped the
-     * message (2026-09-23: a retired Grok model moved the thread to Claude and
-     * the message never reached either). Cleared with the exclusions above.
+     * "Send again" on a cancelled delivery puts a message here. Without this
+     * the retry went back to the broken provider, and its second failure was
+     * read as a failed manual switch and dropped the message.
      */
     const messagesFollowingThreadSelection = new Map<string, Map<string, boolean>>();
     const followThreadSelection = (
@@ -4909,9 +4716,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     /**
      * A structured transient upstream failure (5xx, socket error, or the
      * provider's own `isRetryable`) is retried silently with exponential
-     * backoff, without limit (2026-09-17: every bounded budget ended in a
-     * paused thread and a card to dismiss). The error never lands on the
-     * session; Stop, a provider switch, or a new user message end the loop.
+     * backoff for a couple of minutes. After that the thread pauses and the
+     * person chooses: resume, another model, or another account.
      */
     const retryTransientUpstreamWork = (
       input: { readonly threadId: ThreadId },
@@ -4919,7 +4725,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       attempt: number,
     ): Effect.Effect<ThreadWorkExecutionOutcome> =>
       Effect.gen(function* () {
-        void shouldRetryTransientUpstream(attempt);
+        if (!shouldRetryTransientUpstream(attempt)) {
+          return {
+            state: "cancelled" as const,
+            reason: `Gave up after ${attempt} failed attempts: ${reason}`,
+          };
+        }
         const now = yield* DateTime.now;
         return {
           state: "sleeping" as const,
@@ -5041,19 +4852,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       readonly requireTurnOutput?: boolean;
       readonly obligation: ThreadWorkObligation;
     }) {
-      let lastGuardCheckAtMs = 0;
-      const guardRunStartedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
-      let startingTokens: number | undefined;
-      let yieldedReason = canResumeUsageGuardYield(
-        input.obligation.blockedReason,
-        String(input.turnId),
-      )
-        ? input.obligation.blockedReason!
-        : undefined;
-      let yieldedWakeAt =
-        yieldedReason === undefined
-          ? undefined
-          : DateTime.formatIso(DateTime.add(yield* DateTime.now, { minutes: 1 }));
       let lastShellFingerprint = "";
       let lastShellChangeAtMs = Number.NaN;
       // Whether this wait has handed its provider slot back while a person
@@ -5069,8 +4867,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         }
 
         const latestTurn = shell.latestTurn;
-        // Failover can start a successor before the obligation supervising the
-        // original turn observes its completion. Once that happens
+        // A successor turn can start before the obligation supervising the
+        // original observes its completion. Once that happens
         // `shell.latestTurn` points at the successor forever. Read the exact
         // awaited row only on that uncommon mismatch path; the normal 100ms
         // poll remains a single lightweight shell query.
@@ -5081,13 +4879,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                 Effect.map(Option.getOrUndefined),
               );
         if (awaitedTurn !== undefined) {
-          if (yieldedReason && yieldedWakeAt && awaitedTurn.state !== "running") {
-            return {
-              state: "sleeping" as const,
-              nextAttemptAt: yieldedWakeAt,
-              reason: yieldedReason,
-            };
-          }
           if (awaitedTurn.state === "completed") {
             if (input.requireTurnOutput === true) {
               // Runs once, when the turn settles — not on every 100ms poll.
@@ -5102,13 +4893,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             return { state: "completed" as const };
           }
           if (awaitedTurn.state === "interrupted") {
-            if (yieldedReason && yieldedWakeAt) {
-              return {
-                state: "sleeping" as const,
-                nextAttemptAt: yieldedWakeAt,
-                reason: yieldedReason,
-              };
-            }
             return { state: "cancelled" as const, reason: "turn was interrupted" };
           }
           if (awaitedTurn.state === "incomplete" || awaitedTurn.state === "error") {
@@ -5238,81 +5022,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         }
         const midTurn =
           shell.session?.status === "running" && shell.session.activeTurnId === input.turnId;
-        if (midTurn && yieldedReason === undefined && nowMs - lastGuardCheckAtMs >= 1_000) {
-          lastGuardCheckAtMs = nowMs;
-          const decision = yield* usageGuard.evaluate({
-            instanceId: shell.modelSelection.instanceId,
-            threadId: input.threadId,
-            purpose: "running",
-            model: shell.modelSelection.model,
-            effort: selectedUsageGuardEffort(shell.modelSelection),
-            fast:
-              shell.modelSelection.options?.some(
-                (option) => option.id === "serviceTier" && option.value === "priority",
-              ) ?? false,
-          });
-          const observedTokens = decision.evaluation.observedTokens ?? 0;
-          startingTokens ??= observedTokens;
-          const runtime = (yield* threadWorkScheduler.snapshot).runtimeByThread[
-            String(input.threadId)
-          ];
-          if (
-            shouldYieldUsageGuardTurn({
-              action: decision.action,
-              phase: runtime?.phase,
-              awaitingHuman,
-              observedTokens,
-              startingTokens,
-              elapsedMs:
-                nowMs -
-                usageGuardWorkStartedAtMs({
-                  supervisorStartedAtMs: guardRunStartedAtMs,
-                  turnStartedAt: latestTurn?.startedAt,
-                  turnRequestedAt: latestTurn?.requestedAt,
-                  sessionUpdatedAt: shell.session?.updatedAt,
-                }),
-            })
-          ) {
-            const reason = usageGuardYieldReason(String(input.turnId));
-            // Persist before interrupting: a restart must never turn a pacing
-            // yield into a user's Stop or lose the obligation to resume.
-            const marked = yield* threadWorkObligations.markExecutingReason({
-              obligationId: input.obligation.obligationId,
-              expectedAttempt: input.obligation.attempt,
-              blockedReason: reason,
-              updatedAt: yield* nowIso,
-            });
-            if (marked) {
-              yieldedReason = reason;
-              yieldedWakeAt = decision.wakeAtIso;
-              yield* providerService.interruptTurn({
-                threadId: input.threadId,
-                turnId: input.turnId,
-              });
-              yield* orchestrationEngine.dispatch({
-                type: "thread.activity.append",
-                commandId: CommandId.make(`usage-guard-yield:${input.threadId}:${input.turnId}`),
-                threadId: input.threadId,
-                activity: {
-                  id: EventId.make(`usage-guard-yield:${input.threadId}:${input.turnId}`),
-                  tone: "info",
-                  kind: USAGE_GUARD_PAUSED_ACTIVITY_KIND,
-                  summary: "Cooling down · work resumes automatically",
-                  payload: {
-                    effortEstimates: decision.effortEstimates,
-                    detail: decision.evaluation.summary,
-                    instanceId: shell.modelSelection.instanceId,
-                    resumeAt: decision.wakeAtIso,
-                    reportedAt: decision.reportedAt,
-                  },
-                  turnId: input.turnId,
-                  createdAt: yield* nowIso,
-                },
-                createdAt: yield* nowIso,
-              });
-            }
-          }
-        }
         const silenceRestartMs = midTurn
           ? PROVIDER_MID_TURN_SILENCE_RESTART_MS
           : PROVIDER_SILENCE_RESTART_MS;
@@ -5414,131 +5123,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       },
     );
 
-    /**
-     * Point the thread at a replacement provider before its next attempt.
-     *
-     * Quota exhaustion has always been able to move a thread, but that move
-     * lives in the ingestion path and only runs for a provider failure that
-     * arrives as a runtime event. A turn that never starts — an exhausted Grok
-     * balance, a model the gateway dropped, a host that idles out — reached
-     * the reactor instead and had nowhere to go, so the thread sat behind a
-     * Resume banner while other providers were idle (reported 2026-09-18).
-     */
-    const moveThreadToFailoverTarget = Effect.fn("moveThreadToFailoverTarget")(function* (input: {
-      readonly threadId: ThreadId;
-      /** The queued message whose failed delivery triggered the move. */
-      readonly messageId: MessageId;
-      readonly target: ProviderFailoverTarget;
-      readonly detail: string;
-    }) {
-      const thread = yield* resolveThread(input.threadId);
-      if (!thread) return;
-      const policies = yield* resolveThreadModelPolicies({
-        threadId: input.threadId,
-        settings: yield* serverSettingsService.getSettings,
-        fallback: true,
-        getThread: projectionSnapshotQuery.getThreadShellById,
-      });
-      const policyDetail = modelPolicyError(policies, input.target.modelSelection);
-      if (policyDetail)
-        return yield* new ProviderAdapterRequestError({
-          provider: input.target.driver,
-          method: "model.policy",
-          detail: policyDetail,
-        });
-      const threadKey = String(input.threadId);
-      const followThread = () => followThreadSelection(input.threadId, input.messageId, true);
-      const sourceInstanceId = thread.modelSelection.instanceId;
-      if (
-        sourceInstanceId === input.target.instanceId &&
-        thread.modelSelection.model === input.target.modelSelection.model
-      ) {
-        // An earlier failure already moved the thread here; this message
-        // follows it too.
-        followThread();
-        return;
-      }
-      const [sourceInfo, targetInfo] = yield* Effect.all([
-        providerService.getInstanceInfo(sourceInstanceId),
-        providerService.getInstanceInfo(input.target.instanceId),
-      ]);
-      const sourceProviderLabel = providerDisplayLabel(
-        sourceInfo.displayName,
-        sourceInfo.driverKind,
-      );
-      const targetProviderLabel = providerDisplayLabel(
-        targetInfo.displayName,
-        targetInfo.driverKind,
-      );
-      // "Switched from grok to grok" reads as a no-op. When the move stays on
-      // one provider, the models are the part that actually changed.
-      const sameProvider = sourceProviderLabel === targetProviderLabel;
-      const sourceLabel = sameProvider
-        ? (thread.modelSelection.model ?? sourceProviderLabel)
-        : sourceProviderLabel;
-      const targetLabel = sameProvider
-        ? (input.target.modelSelection.model ?? targetProviderLabel)
-        : targetProviderLabel;
-      const alreadyTried = failedOverInstancesByThread.get(threadKey) ?? new Set<string>();
-      alreadyTried.add(String(sourceInstanceId));
-      failedOverInstancesByThread.set(threadKey, alreadyTried);
-      const createdAt = yield* nowIso;
-      const { metaCommandId, activityCommandId, eventId } = yield* Effect.all({
-        metaCommandId: serverCommandId("provider-unusable-failover-selection"),
-        activityCommandId: serverCommandId("provider-unusable-failover-activity"),
-        eventId: serverEventId(),
-      });
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.meta.update",
-          commandId: metaCommandId,
-          threadId: input.threadId,
-          modelSelection: input.target.modelSelection,
-        })
-        .pipe(
-          Effect.tap(() => Effect.sync(followThread)),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("provider.unusable-failover.selection-failed", {
-              threadId: input.threadId,
-              cause,
-            }),
-          ),
-        );
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.activity.append",
-          commandId: activityCommandId,
-          threadId: input.threadId,
-          activity: {
-            id: eventId,
-            tone: "info",
-            kind: "provider.handoff.completed",
-            summary: `Switched from ${sourceLabel} to ${targetLabel}`,
-            payload: {
-              detail: `${sourceLabel} could not run this turn, so the thread moved to ${targetLabel}.`,
-              sourceInstanceId,
-              sourceProvider: sourceInfo.driverKind,
-              sourceLabel,
-              targetInstanceId: input.target.instanceId,
-              targetProvider: input.target.driver,
-              targetLabel,
-              reason: input.detail,
-            },
-            turnId: null,
-            createdAt,
-          },
-          createdAt,
-        })
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("provider.unusable-failover.notice-failed", {
-              threadId: input.threadId,
-              cause,
-            }),
-          ),
-        );
-    });
-
     const recordActiveTurnFailure = Effect.fn("recordActiveTurnFailure")(function* (input: {
       readonly threadId: ThreadId;
       /** The user message whose delivery failed, for clients to relabel it. */
@@ -5584,95 +5168,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       );
     });
 
-    /**
-     * What a sendTurn failure wants: fail over when usage exhaustion names a
-     * plausible target, retry silently when the failure recovers on a fresh
-     * attempt, or fall through to today's record-and-recover path.
-     *
-     * The target check is advisory. Ingestion owns the real attempt with its
-     * exclusion cache; this only decides whether the obligation retries
-     * quietly or records once and stops. When in doubt it retries: the
-     * attempt cap still bounds the loop, and the give-up records.
-     */
-    const resolveDeferredRecoveryAction = Effect.fn("resolveDeferredRecoveryAction")(
-      function* (input: {
-        readonly threadId: ThreadId;
-        readonly instanceId: ProviderInstanceId;
-        readonly currentModel?: string | null;
-        readonly detail: string;
-      }) {
-        const providers = yield* providerRegistry.getProviders;
-        const current = providers.find((provider) => provider.instanceId === input.instanceId);
-        if (!current) return null;
-        const nowEpochMs = DateTime.toEpochMillis(yield* DateTime.now);
-        const kind = classifyDeferredRecoveryFailure({
-          driver: current.driver,
-          message: input.detail,
-          accountUsage: current.accountUsage,
-          nowEpochMs,
-        });
-        // A provider that cannot serve this thread is a move, not a retry, even
-        // when the generic classifier has no opinion about the message.
-        const unusable = detectProviderUnusableRefusal(input.detail) !== null;
-        if (kind === null && !unusable) return null;
-        if (!unusable && kind !== "usage-exhaustion") return { kind: "silent-retry" } as const;
-        const exhaustion =
-          detectProviderUsageLimitRefusal(
-            current.driver,
-            input.detail,
-            current.accountUsage,
-            nowEpochMs,
-          ) ?? detectProviderUnusableRefusal(input.detail);
-        if (!exhaustion) return null;
-        const excludedModels = new Set<string>();
-        if (input.currentModel) {
-          excludedModels.add(providerFailoverModelKey(input.instanceId, input.currentModel));
-        }
-        const excludedInstanceIds = new Set<string>(
-          failedOverInstancesByThread.get(String(input.threadId)) ?? [],
-        );
-        if (
-          isAccountWideProviderExhaustion(
-            current.driver,
-            exhaustion,
-            current.accountUsage,
-            nowEpochMs,
-          ) ||
-          isAccountWideUnusableRefusal(input.detail)
-        ) {
-          excludedInstanceIds.add(String(input.instanceId));
-        }
-        const modelPolicies = yield* Effect.gen(function* () {
-          return yield* resolveThreadModelPolicies({
-            threadId: input.threadId,
-            settings: yield* serverSettingsService.getSettings,
-            fallback: true,
-            getThread: projectionSnapshotQuery.getThreadShellById,
-          });
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning(
-              "Fallback model policy could not be resolved; no model is permitted",
-              { cause },
-            ).pipe(Effect.as([{ mode: "allow" as const, models: [] }])),
-          ),
-        );
-        return {
-          kind: "exhaustion",
-          target: selectProviderFailoverTarget({
-            modelPolicies,
-            providers,
-            currentInstanceId: input.instanceId,
-            currentDriver: current.driver,
-            currentModel: input.currentModel ?? null,
-            excludedInstanceIds,
-            excludedModels,
-            nowEpochMs,
-          }),
-        } as const;
-      },
-    );
-
     const recoverActiveTurnFailure = (input: {
       readonly context: TurnStartRequestedPayload;
       readonly cause: Cause.Cause<unknown>;
@@ -5699,12 +5194,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const thread = yield* resolveThread(input.context.threadId).pipe(
           Effect.orElseSucceed(() => undefined),
         );
-        // A message failover already moved was sent on the thread's selection,
-        // not the one its turn-start recorded.
-        const followsFailover =
+        // A message sent again goes on the thread's selection, not the one its
+        // turn-start recorded.
+        const followsThread =
           deliveryFollowsThreadSelection(input.context.threadId, input.context.messageId) !==
           undefined;
-        const requestedInstanceId = followsFailover
+        const requestedInstanceId = followsThread
           ? thread?.modelSelection.instanceId
           : input.context.modelSelection?.instanceId;
         // The accepted provider selection is persisted only after sendTurn
@@ -5726,59 +5221,31 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             input.attempt,
           );
         }
-        // Failures whose recovery owns the outcome stay silent while it is
-        // live, and record exactly once when it gives up. Manual switch
-        // failures keep their terminal handling below regardless.
+        // A failure a fresh attempt repairs stays silent while the attempts
+        // last, and pauses the thread exactly once when they run out.
         const attemptedInstanceId = requestedInstanceId ?? thread?.modelSelection.instanceId;
         if (!manualProviderSwitchFailed && attemptedInstanceId !== undefined) {
-          const deferredRecovery = yield* resolveDeferredRecoveryAction({
-            threadId: input.context.threadId,
-            instanceId: attemptedInstanceId,
-            currentModel: thread?.modelSelection.model ?? null,
-            detail,
-          });
-          const decision = decideDeferredRecoveryOutcome(deferredRecovery, input.attempt, {
-            maxAttempts: MAX_FAILURE_RETRY_ATTEMPTS,
-            silentRetryMaxAttempts: DEFERRED_RETRY_MAX_ATTEMPTS,
-          });
-          if (decision === "retry") {
-            if (deferredRecovery?.kind === "exhaustion" && deferredRecovery.target !== null) {
-              // Best effort: if the move itself fails, the ordinary retry below
-              // still runs on the original provider.
-              yield* moveThreadToFailoverTarget({
-                threadId: input.context.threadId,
-                messageId: input.context.messageId,
-                target: deferredRecovery.target,
-                detail,
-              }).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("provider.unusable-failover.move-failed", {
-                    threadId: input.context.threadId,
-                    cause,
-                  }),
-                ),
-              );
+          const attempted = (yield* providerRegistry.getProviders).find(
+            (provider) => provider.instanceId === attemptedInstanceId,
+          );
+          const deferred =
+            attempted === undefined
+              ? null
+              : classifyDeferredRecoveryFailure({ driver: attempted.driver, message: detail });
+          if (deferred !== null) {
+            if (input.attempt < DEFERRED_RETRY_MAX_ATTEMPTS) {
+              return yield* retryFailureWork(detail, input.attempt);
             }
-            return yield* retryFailureWork(detail, input.attempt);
-          }
-          if (decision === "record-and-cancel") {
-            const failedAt = yield* nowIso;
             yield* recordActiveTurnFailure({
               threadId: input.context.threadId,
               messageId: input.context.messageId,
               deliveryCancelled: true,
               detail,
               failureKind: null,
-              createdAt: failedAt,
+              createdAt: yield* nowIso,
               originalDetail: Cause.pretty(input.cause),
             });
-            return deferredRecovery?.kind === "exhaustion" &&
-              input.attempt >= MAX_FAILURE_RETRY_ATTEMPTS
-              ? {
-                  state: "cancelled" as const,
-                  reason: `Gave up after ${input.attempt} failed attempts: ${detail}`,
-                }
-              : { state: "cancelled" as const, reason: detail };
+            return { state: "cancelled" as const, reason: detail };
           }
         }
         const outcome: ThreadWorkExecutionOutcome = manualProviderSwitchFailed
@@ -6188,50 +5655,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             }
           : undefined;
 
-        // This is where an idle thread's turn is actually materialised — the
-        // persisted turn-start payload carries whatever selection the client
-        // could see, which after a usage-limit failover is the stopgap
-        // provider. Undo the failover here, once its window has reset, so the
-        // turn (and the thread) go back to what the user chose. Best-effort:
-        // a failure logs and the turn runs on the persisted selection.
-        const failoverRestore = sourceTurnAlreadyStarted
-          ? null
-          : yield* restoreUsageLimitFailoverSelection({
-              thread,
-              requestedModelSelection: context.payload.modelSelection,
-              createdAt: context.payload.createdAt,
-            }).pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.failCause(cause)
-                  : Effect.logWarning("provider.failover.restore-failed", {
-                      threadId: obligation.threadId,
-                      cause: Cause.pretty(cause),
-                    }).pipe(Effect.as(null)),
-              ),
-            );
-        const dispatchThread =
-          failoverRestore === null
-            ? thread
-            : { ...thread, modelSelection: failoverRestore.modelSelection };
-        const followingSelection =
-          failoverRestore === null
-            ? deliveryFollowsThreadSelection(obligation.threadId, messageId)
-            : undefined;
+        const followingSelection = deliveryFollowsThreadSelection(obligation.threadId, messageId);
         const dispatchContext =
-          failoverRestore !== null
-            ? { ...context.payload, modelSelection: failoverRestore.modelSelection }
-            : followingSelection !== undefined
-              ? { ...context.payload, modelSelection: thread.modelSelection }
-              : context.payload;
-
-        // Recheck global restrictions after session startup as well as at candidate
-        // selection. An explicit user choice of the current model stays manual.
-        const automaticModelChange =
-          failoverRestore !== null ||
-          (failedOverInstancesByThread.has(String(obligation.threadId)) &&
-            (context.payload.modelSelection?.instanceId !== thread.modelSelection.instanceId ||
-              context.payload.modelSelection?.model !== thread.modelSelection.model));
+          followingSelection !== undefined
+            ? { ...context.payload, modelSelection: thread.modelSelection }
+            : context.payload;
 
         yield* Effect.logDebug("thread-work.active-turn.dispatch", {
           obligationId: obligation.obligationId,
@@ -6255,15 +5683,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               interactionMode: providerInteractionMode(thread.interactionMode),
               createdAt: yield* nowIso,
             }).pipe(
-              Effect.flatMap((request) =>
-                sendTurnWithModelPolicy(request, resumeSendOptions, automaticModelChange),
-              ),
+              Effect.flatMap((request) => sendTurnWithModelPolicy(request, resumeSendOptions)),
             )
           : yield* sendProjectedUserTurn({
-              thread: dispatchThread,
+              thread,
               message: sourceMessage,
               context: dispatchContext,
-              automaticModelChange,
               switchAnnounced: followingSelection === true,
               ...(resumeSendOptions === undefined ? {} : { sendOptions: resumeSendOptions }),
             });
@@ -7224,11 +6649,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         case "thread.forked":
           yield* processThreadForked(event);
           return;
-        case "thread.meta-updated":
-          if (event.payload.modelSelection !== undefined) {
-            threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
-          }
-          return;
         case "thread.runtime-mode-set": {
           const thread = yield* resolveThread(event.payload.threadId);
           if (!thread?.session || thread.session.status === "stopped") {
@@ -7405,22 +6825,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     const domainEventsSeen = yield* TxRef.make(0);
 
     /**
-     * Threads already told about the hold they are under, keyed by the hold
-     * episode (instance + window + reset). Held work is re-checked every few
-     * minutes; without this the feed would collect one identical notice per
-     * re-check.
+     * Retires work that no longer applies before it claims a provider: a queued
+     * message the person removed or that already went out, and a resume the
+     * agent signed off from. A turn already running always goes through.
      */
-    const usageGuardNoticesByThread = new Map<string, string>();
-    const MAX_USAGE_GUARD_NOTICES = 512;
-
-    /**
-     * Admit background work through the usage guard. When the guard says
-     * hold, the obligation sleeps briefly — the durable queue keeps it, the
-     * guard releases it the moment a report or an idle thread makes room,
-     * and the thread shows a notice whose Resume button lifts the hold by
-     * hand (`ProviderUsageGuard.resumeThread`).
-     */
-    const withUsageGuard =
+    const withStaleWorkCheck =
       (handler: ThreadWorkHandler): ThreadWorkHandler =>
       (obligation) =>
         Effect.gen(function* () {
@@ -7435,10 +6844,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             ) {
               return { state: "completed" as const };
             }
-            // No background-task deferral here: that gate exists so agent
-            // CONTINUATIONS do not wake the agent early out of a wait it chose.
-            // A queued message the person typed is the opposite case — they are
-            // waiting on us — and steering into a live turn does not stop tasks.
           }
           const live = (yield* providerService.listSessions()).find(
             (session) =>
@@ -7448,191 +6853,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           );
           if (live) return yield* handler(obligation);
           const autonomousResume =
-            obligation.kind === "agent-continuation" ||
-            obligation.kind === "startup-resume" ||
-            (isUsageGuardYield(obligation.blockedReason) &&
-              !(heldSourceId && isHeldMessageId(heldSourceId)));
+            obligation.kind === "agent-continuation" || obligation.kind === "startup-resume";
           if (thread && autonomousResume && agentLoopSignedOffSinceUserIntent(thread.messages)) {
             return { state: "cancelled" as const, reason: "agent already signed off" };
           }
-
-          // Holds re-check on a timer with no turn running, and turns are what
-          // report usage. Refresh a stale reading first so the re-check — and
-          // the notice it writes — reflect the account now, not at the last turn.
-          // The turn runs on the thread's *current* provider. A hold created
-          // under one provider must be judged against the provider the person
-          // has since switched to, or it waits on a window that no longer applies.
-          const guardInstanceId =
-            thread?.modelSelection.instanceId ?? obligation.providerInstanceId;
-          yield* usageGuard.refreshUsage({ instanceId: guardInstanceId }).pipe(Effect.ignore);
-          const decision = yield* usageGuard
-            .evaluate({
-              instanceId: guardInstanceId,
-              threadId: obligation.threadId,
-              // A queued message the person typed is user work: it sends as
-              // soon as the thread is free, never paced like background work.
-              // Only agent continuations and yields answer to the pace budget.
-              purpose: isUsageGuardYield(obligation.blockedReason)
-                ? "running"
-                : heldSourceId && isHeldMessageId(heldSourceId)
-                  ? "user-turn"
-                  : "background",
-              model: thread?.modelSelection.model ?? null,
-              effort: selectedUsageGuardEffort(thread?.modelSelection),
-              fast:
-                thread?.modelSelection.options?.some(
-                  (option) => option.id === "serviceTier" && option.value === "priority",
-                ) ?? false,
-            })
-            .pipe(Effect.orElseSucceed(() => null));
-          if (decision === null || decision.action !== "pause") {
-            if (
-              isUsageGuardYield(obligation.blockedReason) &&
-              !(heldSourceId && isHeldMessageId(heldSourceId))
-            ) {
-              const fresh = yield* resolveThread(obligation.threadId);
-              const sourceTurnId = fresh?.latestTurn?.turnId;
-              if (
-                !fresh ||
-                !fresh.session ||
-                !sourceTurnId ||
-                !canResumeUsageGuardYield(obligation.blockedReason, String(sourceTurnId)) ||
-                fresh.settledOverride === "settled" ||
-                agentLoopSignedOffSinceUserIntent(fresh.messages)
-              ) {
-                return {
-                  state: "cancelled" as const,
-                  reason: "cooldown work was stopped or superseded",
-                };
-              }
-              const sourceTurn = yield* getPersistedProviderTurnById(
-                obligation.threadId,
-                sourceTurnId,
-              );
-              if (Option.isSome(sourceTurn) && sourceTurn.value.sourceMessageId) {
-                const sourceContext = yield* getPersistedTurnStartContext(
-                  obligation.threadId,
-                  sourceTurn.value.sourceMessageId,
-                );
-                if (Option.isSome(sourceContext) && sourceContext.value.hasLaterRealUserTurn) {
-                  return {
-                    state: "cancelled" as const,
-                    reason: "newer user work superseded this cooldown",
-                  };
-                }
-              }
-              const owner = yield* threadWorkObligations.getById(obligation.obligationId);
-              if (
-                Option.isNone(owner) ||
-                owner.value.state !== "executing" ||
-                owner.value.attempt !== obligation.attempt
-              ) {
-                return {
-                  state: "cancelled" as const,
-                  reason: "cooldown resume no longer owns this work",
-                };
-              }
-              const createdAt = yield* nowIso;
-              const resumeIds = startupAutoResumeIds({
-                threadId: obligation.threadId,
-                incompleteTurnId: sourceTurnId,
-              });
-              yield* orchestrationEngine.dispatch({
-                type: "thread.turn.start",
-                commandId: CommandId.make(`${resumeIds.commandId}:${fresh.session.updatedAt}`),
-                threadId: obligation.threadId,
-                expectedResumeSource: {
-                  turnId: sourceTurnId,
-                  latestUserMessageId:
-                    fresh.messages.findLast((message) => message.role === "user")?.id ?? null,
-                  sessionUpdatedAt: fresh.session.updatedAt,
-                },
-                message: {
-                  messageId: resumeIds.messageId,
-                  role: "user",
-                  text: RESUME_PROMPT,
-                  inputOrigin: "agent-loop",
-                  attachments: [],
-                },
-                modelSelection: fresh.modelSelection,
-                runtimeMode: fresh.runtimeMode,
-                interactionMode: fresh.interactionMode,
-                createdAt,
-              });
-              const confirmed = yield* resolveThread(obligation.threadId);
-              if (!confirmed?.messages.some((message) => message.id === resumeIds.messageId)) {
-                return {
-                  state: "sleeping" as const,
-                  nextAttemptAt: decision?.wakeAtIso ?? createdAt,
-                  reason: obligation.blockedReason,
-                };
-              }
-              return { state: "completed" as const };
-            }
-            return yield* handler(obligation);
-          }
-
-          const threadKey = String(obligation.threadId);
-          const episode = `${String(obligation.providerInstanceId)}:${decision.evaluation.windowKey ?? "-"}:${decision.evaluation.resetsAtMs ?? "-"}:${decision.wakeAtIso.slice(0, 16)}:${thread?.modelSelection.model}:${selectedUsageGuardEffort(thread?.modelSelection)}`;
-          if (usageGuardNoticesByThread.get(threadKey) !== episode) {
-            if (usageGuardNoticesByThread.size >= MAX_USAGE_GUARD_NOTICES) {
-              const oldest = usageGuardNoticesByThread.keys().next().value;
-              if (oldest !== undefined) usageGuardNoticesByThread.delete(oldest);
-            }
-            usageGuardNoticesByThread.set(threadKey, episode);
-            const [commandId, eventId, createdAt] = yield* Effect.all([
-              serverCommandId("usage-guard-paused"),
-              serverEventId(),
-              DateTime.now.pipe(Effect.map(DateTime.formatIso)),
-            ]).pipe(Effect.orDie);
-            const tier = decision.evaluation.tier;
-            yield* orchestrationEngine
-              .dispatch({
-                type: "thread.activity.append",
-                commandId,
-                threadId: obligation.threadId,
-                activity: {
-                  id: eventId,
-                  tone: "info",
-                  kind: USAGE_GUARD_PAUSED_ACTIVITY_KIND,
-                  summary:
-                    tier === "pause"
-                      ? `Held · ${decision.providerLabel} usage guard`
-                      : `Waiting for room · ${decision.providerLabel} usage guard`,
-                  payload: {
-                    effortEstimates: decision.effortEstimates,
-                    detail: decision.evaluation.summary,
-                    providerLabel: decision.providerLabel,
-                    instanceId: guardInstanceId,
-                    workKind: obligation.kind,
-                    tier,
-                    model: decision.evaluation.model,
-                    estimatedPercent: decision.evaluation.estimatedPercent,
-                    reportedPercent: decision.evaluation.reportedPercent,
-                    windowLabel: decision.evaluation.windowLabel,
-                    resetsAt: decision.evaluation.resetsAtMs,
-                    headroomPercent: decision.evaluation.headroomPercent,
-                    turnCostPercent: decision.evaluation.turnCostPercent,
-                    backgroundBudget: decision.evaluation.backgroundBudget,
-                    activeThreads: decision.evaluation.activeThreads,
-                    retryAt: decision.wakeAtIso,
-                    reportedAt: decision.reportedAt,
-                  },
-                  turnId: null,
-                  createdAt,
-                },
-                createdAt,
-              })
-              .pipe(Effect.ignore);
-          }
-
-          return {
-            state: "sleeping" as const,
-            nextAttemptAt: decision.wakeAtIso,
-            reason: isUsageGuardYield(obligation.blockedReason)
-              ? obligation.blockedReason
-              : USAGE_GUARD_PAUSED_REASON,
-          };
+          return yield* handler(obligation);
         }).pipe(
           Effect.catchCause((cause) =>
             recoverThreadWorkFailure(obligation.threadId, cause, obligation.attempt),
@@ -7647,10 +6872,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       (obligation) =>
         handler(obligation).pipe(
           Effect.tap((outcome) => {
-            // A completed run means the thread is healthy again, so the
-            // providers it moved off are eligible next time something breaks.
             if (outcome.state === "completed") {
-              failedOverInstancesByThread.delete(String(obligation.threadId));
               messagesFollowingThreadSelection.delete(String(obligation.threadId));
               return Effect.void;
             }
@@ -7800,19 +7022,19 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
       yield* threadWorkScheduler.registerHandler(
         "active-turn-recovery",
-        withRecoveryFailureNotice(withUsageGuard(executeActiveTurnRecovery)),
+        withRecoveryFailureNotice(withStaleWorkCheck(executeActiveTurnRecovery)),
       );
       yield* threadWorkScheduler.registerHandler(
         "startup-resume",
-        withRecoveryFailureNotice(withUsageGuard(executeStartupResume)),
+        withRecoveryFailureNotice(withStaleWorkCheck(executeStartupResume)),
       );
       yield* threadWorkScheduler.registerHandler(
         "agent-continuation",
-        withRecoveryFailureNotice(withUsageGuard(executeAgentContinuation)),
+        withRecoveryFailureNotice(withStaleWorkCheck(executeAgentContinuation)),
       );
       yield* threadWorkScheduler.registerHandler(
         "authentication-resume",
-        withRecoveryFailureNotice(withUsageGuard(executeAuthenticationResume)),
+        withRecoveryFailureNotice(withStaleWorkCheck(executeAuthenticationResume)),
       );
       yield* Effect.addFinalizer(() =>
         Effect.all([
@@ -7944,12 +7166,19 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         ) {
           return yield* controlDispatcher.enqueue(event);
         }
+        // Recorded on arrival, not behind the worker's queue: a send accepted in
+        // the meantime compares against this and must see the newest choice.
+        if (event.type === "thread.meta-updated") {
+          if (event.payload.modelSelection !== undefined) {
+            threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+          }
+          return;
+        }
         if (event.type === "thread.turn-start-requested" && (yield* isLiveUserSteer(event))) {
           return yield* steerDispatcher.enqueue(event);
         }
         if (
           event.type === "thread.runtime-mode-set" ||
-          event.type === "thread.meta-updated" ||
           event.type === "thread.forked" ||
           event.type === "thread.message-sent" ||
           event.type === "thread.session-set" ||

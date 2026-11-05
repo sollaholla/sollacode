@@ -370,12 +370,19 @@ describe("isTerminalProviderRefusal", () => {
     expect(isTerminalProviderRefusal("")).toBe(false);
   });
 
-  it("lets AGY quota rejections fail over instead of retiring", () => {
+  it("retires a usage limit, so the thread pauses instead of retrying into it", () => {
+    expect(isTerminalProviderRefusal("You've hit your usage limit. Upgrade to Pro.")).toBe(true);
+    expect(isTerminalProviderRefusal("You\u2019ve hit your session limit · resets 4pm")).toBe(true);
+    expect(isTerminalProviderRefusal("model not found: grok-retired")).toBe(true);
+    expect(isTerminalProviderRefusal("Invalid params")).toBe(true);
+  });
+
+  it("retires an AGY quota rejection but not a plain rate limit", () => {
     expect(
       isTerminalProviderRefusal(
         "Antigravity was rejected by Google with RESOURCE_EXHAUSTED (429). Check the account quota or switch accounts before retrying.",
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(isTerminalProviderRefusal("HTTP 429: retry in one second")).toBe(false);
   });
 

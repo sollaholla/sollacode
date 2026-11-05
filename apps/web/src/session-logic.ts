@@ -2,8 +2,8 @@ import { parseCredentialRequest, type CredentialRequest } from "@t3tools/shared/
 import {
   isReasoningStatusPlaceholder,
   isRoutineMusePollingNotice,
+  isPausedProviderFailureActivity,
   isProviderInterruptionErrorActivity,
-  recoveredRuntimeErrorIds,
 } from "@t3tools/client-runtime/state/thread-activity";
 import {
   ApprovalRequestId,
@@ -765,18 +765,14 @@ export function findPanelProposedPlan(input: {
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
-  const recoveredErrors = recoveredRuntimeErrorIds(activities);
   const shown = activities
-    .filter((activity) => isWorkLogActivity(activity, recoveredErrors))
+    .filter((activity) => isWorkLogActivity(activity))
     .toSorted(compareActivitiesByOrder);
   return collapseDerivedWorkLogEntries(shown.map((activity) => toDerivedWorkLogEntry(activity)));
 }
 
-function isWorkLogActivity(
-  activity: OrchestrationThreadActivity,
-  recoveredErrors: ReadonlySet<string>,
-): boolean {
-  if (activity.kind === "runtime.error" && recoveredErrors.has(activity.id)) return false;
+function isWorkLogActivity(activity: OrchestrationThreadActivity): boolean {
+  if (isPausedProviderFailureActivity(activity)) return false;
   if (isProviderInterruptionErrorActivity(activity)) return false;
   if (activity.kind === "tool.started") return false;
   if (activity.kind === "task.started") return false;

@@ -119,12 +119,6 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
 import * as ActionApprovalBroker from "../../mcp/toolkits/actionApproval/ActionApprovalBroker.ts";
-import { ProviderUsageGuardNoop } from "./ProviderUsageGuard.ts";
-import {
-  ProviderUsageGuard,
-  type ProviderUsageGuardShape,
-  type UsageGuardDecision,
-} from "../Services/ProviderUsageGuard.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -580,10 +574,6 @@ describe("ProviderCommandReactor", () => {
 
   async function createHarness(input?: {
     readonly serverSettings?: Partial<import("@t3tools/contracts").ServerSettings>;
-    readonly usageGuardEvaluate?: (
-      input: Parameters<ProviderUsageGuardShape["evaluate"]>[0],
-      base: UsageGuardDecision,
-    ) => Effect.Effect<UsageGuardDecision>;
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
     /** Extra registry entries beside the thread's own provider. */
@@ -1015,22 +1005,6 @@ describe("ProviderCommandReactor", () => {
       ),
       Layer.provideMerge(ServerSettingsService.layerTest(input?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
-      Layer.provideMerge(
-        input?.usageGuardEvaluate === undefined
-          ? ProviderUsageGuardNoop
-          : Layer.effect(
-              ProviderUsageGuard,
-              Effect.map(ProviderUsageGuard, (base) => ({
-                ...base,
-                evaluate: (request: Parameters<ProviderUsageGuardShape["evaluate"]>[0]) =>
-                  base
-                    .evaluate(request)
-                    .pipe(
-                      Effect.flatMap((decision) => input.usageGuardEvaluate!(request, decision)),
-                    ),
-              })),
-            ).pipe(Layer.provide(ProviderUsageGuardNoop)),
-      ),
       Layer.provideMerge(NodeServices.layer),
     );
     const layer = Layer.mergeAll(
@@ -1407,225 +1381,7 @@ describe("ProviderCommandReactor", () => {
     expect(needsMuseTranscriptReplay({ ...thread, archivedAt: completedAt }, now)).toBe(false);
   });
 
-  it("usage guard yields a running turn and durably resumes it without another user message", async () => {
-    const now = "2026-09-06T16:00:00.000Z";
-    const threadId = ThreadId.make("thread-1");
-    const turnId = TurnId.make("paced-provider-turn");
-    const messageId = MessageId.make("paced-user-message");
-    let runningChecks = 0;
-    let allowResume = false;
-    const harness = await createHarness({
-      startReactor: false,
-      usageGuardEvaluate: (request, base) =>
-        Effect.sync(() => ({
-          ...base,
-          action:
-            request.purpose === "running" && !allowResume ? ("pause" as const) : ("allow" as const),
-          evaluation: {
-            ...base.evaluation,
-            observedTokens: request.purpose === "running" ? runningChecks++ * 100 : 0,
-          },
-        })),
-      sendTurnEffect: (_request, sessions) =>
-        Effect.gen(function* () {
-          const session = sessions.find((entry) => entry.threadId === threadId)!;
-          sessions.splice(sessions.indexOf(session), 1, {
-            ...session,
-            status: "running",
-            activeTurnId: turnId,
-          });
-          yield* harness.engine
-            .dispatch({
-              type: "thread.session.set",
-              commandId: CommandId.make("paced-running"),
-              threadId,
-              session: {
-                threadId,
-                status: "running",
-                providerName: "codex",
-                providerInstanceId: ProviderInstanceId.make("codex"),
-                runtimeMode: "approval-required",
-                activeTurnId: turnId,
-                lastError: null,
-                updatedAt: now,
-              },
-              createdAt: now,
-            })
-            .pipe(Effect.orDie);
-          return { threadId, turnId };
-        }),
-      interruptTurnEffect: () =>
-        Effect.gen(function* () {
-          const session = harness.runtimeSessions.find((entry) => entry.threadId === threadId)!;
-          harness.runtimeSessions.splice(harness.runtimeSessions.indexOf(session), 1, {
-            ...session,
-            status: "ready",
-            activeTurnId: undefined,
-          });
-          yield* harness.engine
-            .dispatch({
-              type: "thread.session.set",
-              commandId: CommandId.make("paced-yielded"),
-              threadId,
-              session: {
-                threadId,
-                status: "ready",
-                providerName: "codex",
-                providerInstanceId: ProviderInstanceId.make("codex"),
-                runtimeMode: "approval-required",
-                activeTurnId: null,
-                lastError: null,
-                updatedAt: now,
-              },
-              createdAt: now,
-            })
-            .pipe(Effect.orDie);
-        }),
-    });
-    const handlers = new Map<string, ThreadWorkHandler>();
-    vi.spyOn(harness.threadWorkScheduler, "registerHandler").mockImplementation((kind, handler) =>
-      Effect.sync(() => {
-        handlers.set(kind, handler);
-      }),
-    );
-    vi.spyOn(harness.threadWorkScheduler, "start").mockReturnValue(Effect.void);
-    Object.defineProperty(harness.threadWorkScheduler, "snapshot", {
-      value: Effect.succeed({
-        activeGlobal: 1,
-        activeByProvider: { codex: 1 },
-        activeRecoveryByProvider: {},
-        activeThreads: [threadId],
-        schedulerWindowSize: 10,
-        runtimeByThread: { [threadId]: { activeTurnId: turnId, phase: "provider-running" } },
-      }),
-    });
-    await harness.startReactor();
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("paced-start"),
-        threadId,
-        message: { messageId, role: "user", text: "Finish the work", attachments: [] },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
-    );
-    await harness.drain();
-    const row = Option.getOrThrow(
-      await Effect.runPromise(
-        harness.threadWorkObligations.getByKey({
-          threadId,
-          sourceTurnId: activeTurnWorkSourceId(messageId),
-          kind: "active-turn-recovery",
-        }),
-      ),
-    );
-    const claimed = Option.getOrThrow(
-      await Effect.runPromise(
-        harness.threadWorkObligations.claim({
-          obligationId: row.obligationId,
-          now,
-          leaseExpiresAt: "2099-01-01T00:00:00.000Z",
-        }),
-      ),
-    );
-    await Effect.runPromise(
-      harness.threadWorkObligations.transition({
-        obligationId: row.obligationId,
-        expectedState: "claimed",
-        expectedAttempt: claimed.attempt,
-        state: "executing",
-        nextAttemptAt: null,
-        claimedAt: now,
-        leaseExpiresAt: "2099-01-01T00:00:00.000Z",
-        blockedReason: null,
-        updatedAt: now,
-      }),
-    );
-    const handler = handlers.get("active-turn-recovery")!;
-    const yielded = await Effect.runPromise(handler({ ...claimed, state: "executing" }));
-    expect(yielded.state).toBe("sleeping");
-    expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
-    const marked = Option.getOrThrow(
-      await Effect.runPromise(harness.threadWorkObligations.getById(row.obligationId)),
-    );
-    expect(marked.blockedReason).toBe(`usage-guard-yield:${turnId}`);
-    allowResume = true;
-    const resumed = await Effect.runPromise(handler(marked));
-    expect(resumed.state).toBe("completed");
-    const model = await harness.readModel();
-    const resumeId = startupAutoResumeIds({ threadId, incompleteTurnId: turnId }).messageId;
-    expect(
-      model.threads
-        .find((thread) => thread.id === threadId)
-        ?.messages.filter((message) => message.id === resumeId),
-    ).toHaveLength(1);
-    await Effect.runPromise(handler(marked));
-    const replayed = await harness.readModel();
-    expect(
-      replayed.threads
-        .find((thread) => thread.id === threadId)
-        ?.messages.filter((message) => message.id === resumeId),
-    ).toHaveLength(1);
-  });
-
   type RoutedReceiptWorkKind = "agent-continuation" | "authentication-resume";
-
-  it("retires a signed-off continuation before consulting the cooldown", async () => {
-    const evaluate = vi.fn((_request, base: UsageGuardDecision) =>
-      Effect.succeed({ ...base, action: "pause" as const }),
-    );
-    const harness = await createHarness({ startReactor: false, usageGuardEvaluate: evaluate });
-    const work = await seedRoutedReceiptWork(harness, {
-      kind: "agent-continuation",
-      suffix: "signed-off-cooldown",
-      obligationProviderInstanceId: ProviderInstanceId.make("codex"),
-    });
-    const messageId = MessageId.make("signed-off-final");
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.message.assistant.delta",
-        commandId: CommandId.make("signed-off-delta"),
-        threadId: work.threadId,
-        messageId,
-        delta: "Finished.\n\n" + ["AGENT", "STOP"].join("_"),
-        turnId: work.sourceTurnId,
-        createdAt: "2026-01-01T00:01:00.000Z",
-      }),
-    );
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.message.assistant.complete",
-        commandId: CommandId.make("signed-off-complete"),
-        threadId: work.threadId,
-        messageId,
-        turnId: work.sourceTurnId,
-        createdAt: "2026-01-01T00:01:01.000Z",
-      }),
-    );
-    const handlers = new Map<string, ThreadWorkHandler>();
-    vi.spyOn(harness.threadWorkScheduler, "registerHandler").mockImplementation((kind, handler) =>
-      Effect.sync(() => {
-        handlers.set(kind, handler);
-      }),
-    );
-    vi.spyOn(harness.threadWorkScheduler, "start").mockReturnValue(Effect.void);
-    await harness.startReactor();
-    const row = Option.getOrThrow(
-      await Effect.runPromise(
-        harness.threadWorkObligations.getByKey({
-          threadId: work.threadId,
-          sourceTurnId: work.sourceTurnId,
-          kind: "agent-continuation",
-        }),
-      ),
-    );
-    const outcome = await Effect.runPromise(handlers.get("agent-continuation")!(row));
-    expect(outcome).toMatchObject({ state: "cancelled", reason: "agent already signed off" });
-    expect(evaluate).not.toHaveBeenCalled();
-    expect(harness.sendTurn).not.toHaveBeenCalled();
-  });
 
   async function seedRoutedReceiptWork(
     harness: Awaited<ReturnType<typeof createHarness>>,
@@ -1938,253 +1694,6 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.status).toBe("ready");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
-  });
-
-  effectIt.effect.each([
-    { explicitChoice: false, blocked: false, lateBlock: false },
-    { explicitChoice: true, blocked: false, lateBlock: false },
-    { explicitChoice: false, blocked: true, lateBlock: false },
-    { explicitChoice: false, blocked: false, lateBlock: true },
-  ])(
-    "restores an expired failover only without a later client selection (policy case: %j)",
-    ({ explicitChoice, blocked, lateBlock }) =>
-      Effect.gen(function* () {
-        // A usage-limit failover rewrites the thread's selection so the handoff
-        // turn can run, and nothing ever wrote it back (2026-09-04: four threads
-        // left on Antigravity until the user switched each one by hand). The next
-        // turn start on an idle thread undoes it once the window has reset.
-        const antigravity = ProviderInstanceId.make("antigravity");
-        const claudeAgent = ProviderInstanceId.make("claudeAgent");
-        const failoverTarget: ModelSelection = {
-          instanceId: antigravity,
-          model: "gemini-3.8-flash-high",
-        };
-        const originalSelection: ModelSelection = {
-          instanceId: claudeAgent,
-          model: "claude-fable-5-1",
-          options: [{ id: "effort", value: "max" }],
-        };
-        const started = yield* Deferred.make<void>();
-        let changePolicy: () => Effect.Effect<
-          unknown,
-          import("@t3tools/contracts").ServerSettingsError
-        > = () => Effect.void;
-        const harness = yield* Effect.promise(() =>
-          createHarness({
-            startSessionEffect: (session) =>
-              changePolicy().pipe(
-                Effect.orDie,
-                Effect.andThen(Deferred.succeed(started, undefined)),
-                Effect.as(session),
-              ),
-            threadModelSelection: failoverTarget,
-            serverSettings: {
-              fallbackModelPolicy: { mode: blocked ? "block" : "all", models: [originalSelection] },
-            },
-            extraProviders: [
-              {
-                instanceId: claudeAgent,
-                driver: ProviderDriverKind.make("claudeAgent"),
-                displayName: "Claude",
-                enabled: true,
-                installed: true,
-                version: "test",
-                status: "ready",
-                auth: { status: "authenticated" },
-                checkedAt: "2026-01-01T00:00:00.000Z",
-                availability: "available",
-                models: [
-                  {
-                    slug: "claude-fable-5-1",
-                    name: "Claude Fable 5.1",
-                    isCustom: false,
-                    isDefault: true,
-                    capabilities: null,
-                  },
-                ],
-                slashCommands: [],
-                skills: [],
-              },
-            ],
-          }),
-        );
-        if (lateBlock)
-          changePolicy = () =>
-            harness.policySettings.updateSettings({
-              fallbackModelPolicy: { mode: "block", models: [originalSelection] },
-            });
-        const failureReceipt = yield* Stream.toQueue(
-          harness.engine.streamDomainEvents.pipe(
-            Stream.filter(
-              (event) =>
-                event.type === "thread.activity-appended" &&
-                event.payload.activity.kind === "provider.turn.start.failed",
-            ),
-          ),
-          { capacity: "unbounded" },
-        ).pipe(Scope.provide(scope!));
-        const threadId = ThreadId.make("thread-1");
-
-        yield* harness.engine.dispatch({
-          type: "thread.activity.append",
-          commandId: CommandId.make("cmd-failover-completed"),
-          threadId,
-          activity: {
-            id: EventId.make("activity-failover-completed"),
-            tone: "info",
-            kind: "provider.failover.completed",
-            summary: "claude-fable-5-1 usage exhausted · switched from Claude to Antigravity",
-            payload: {
-              sourceInstanceId: "claudeAgent",
-              sourceProvider: "claudeAgent",
-              sourceLabel: "Claude",
-              sourceModel: "claude-fable-5-1",
-              sourceOptions: [{ id: "effort", value: "max" }],
-              targetInstanceId: "antigravity",
-              targetProvider: "antigravity",
-              targetLabel: "Antigravity",
-              targetModel: "gemini-3.8-flash-high",
-              targetOptions: null,
-              reason: "rate_limit_rejected:five_hour",
-              // Long past: the window has reset by the time the next turn starts.
-              resetsAt: 1_700_000_000,
-            },
-            turnId: null,
-            createdAt: "2026-01-01T00:00:01.000Z",
-          },
-          createdAt: "2026-01-01T00:00:01.000Z",
-        });
-
-        if (explicitChoice) {
-          yield* harness.engine.dispatch({
-            type: "thread.meta.update",
-            commandId: CommandId.make("client-reselects-antigravity"),
-            threadId,
-            modelSelection: failoverTarget,
-          });
-        }
-
-        yield* harness.engine.dispatch({
-          type: "thread.turn.start",
-          commandId: CommandId.make("cmd-turn-start-after-failover"),
-          threadId,
-          message: {
-            messageId: asMessageId("user-message-after-failover"),
-            role: "user",
-            text: "keep going",
-            attachments: [],
-          },
-          // The client sends the selection it can see: the failover target.
-          modelSelection: failoverTarget,
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "approval-required",
-          createdAt: "2026-01-01T00:00:02.000Z",
-        });
-
-        yield* Deferred.await(started);
-        if (lateBlock) {
-          yield* Queue.take(failureReceipt);
-          yield* Effect.promise(harness.drain);
-          expect(harness.startSession).toHaveBeenCalledTimes(1);
-          expect(harness.sendTurn).not.toHaveBeenCalled();
-          return;
-        }
-        yield* Effect.promise(harness.drain);
-        if (explicitChoice || blocked) {
-          expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-            providerInstanceId: antigravity,
-            modelSelection: failoverTarget,
-          });
-          const thread = (yield* Effect.promise(harness.readModel)).threads.find(
-            (entry) => entry.id === threadId,
-          );
-          expect(thread?.modelSelection).toEqual(failoverTarget);
-          expect(
-            thread?.activities.some((activity) => activity.kind === "provider.failover.restored"),
-          ).toBe(false);
-          return;
-        }
-        expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-          providerInstanceId: claudeAgent,
-          modelSelection: originalSelection,
-        });
-        const thread = (yield* Effect.promise(harness.readModel)).threads.find(
-          (entry) => entry.id === threadId,
-        );
-        expect(thread?.modelSelection).toEqual(originalSelection);
-        const restored = thread?.activities.find(
-          (activity) => activity.kind === "provider.failover.restored",
-        );
-        expect(restored?.summary).toBe(
-          "Claude usage window reset · switched back from Antigravity to Claude",
-        );
-        expect(restored?.payload).toMatchObject({
-          failoverActivityId: "activity-failover-completed",
-          targetInstanceId: "claudeAgent",
-          reason: "usage_window_reset",
-        });
-      }),
-  );
-
-  it("leaves a failed-over thread alone while its usage window is still closed", async () => {
-    const antigravity = ProviderInstanceId.make("antigravity");
-    const failoverTarget: ModelSelection = {
-      instanceId: antigravity,
-      model: "gemini-3.8-flash-high",
-    };
-    const harness = await createHarness({ threadModelSelection: failoverTarget });
-    const threadId = ThreadId.make("thread-1");
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.activity.append",
-        commandId: CommandId.make("cmd-failover-completed-open"),
-        threadId,
-        activity: {
-          id: EventId.make("activity-failover-completed-open"),
-          tone: "info",
-          kind: "provider.failover.completed",
-          summary: "claude-fable-5-1 usage exhausted · switched from Claude to Antigravity",
-          payload: {
-            sourceInstanceId: "claudeAgent",
-            sourceModel: "claude-fable-5-1",
-            targetInstanceId: "antigravity",
-            targetModel: "gemini-3.8-flash-high",
-            reason: "rate_limit_rejected:five_hour",
-            // Far in the future: the window is still closed.
-            resetsAt: 4_102_444_800,
-          },
-          turnId: null,
-          createdAt: "2026-01-01T00:00:01.000Z",
-        },
-        createdAt: "2026-01-01T00:00:01.000Z",
-      }),
-    );
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-window-open"),
-        threadId,
-        message: {
-          messageId: asMessageId("user-message-window-open"),
-          role: "user",
-          text: "still here",
-          attachments: [],
-        },
-        modelSelection: failoverTarget,
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: "2026-01-01T00:00:02.000Z",
-      }),
-    );
-    await waitFor(() => harness.startSession.mock.calls.length === 1);
-    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      modelSelection: failoverTarget,
-    });
-    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-    expect(thread?.modelSelection).toEqual(failoverTarget);
-    expect(
-      thread?.activities.some((activity) => activity.kind === "provider.failover.restored"),
-    ).toBe(false);
   });
 
   it("sends a message past the provider input ceiling instead of failing the turn", async () => {
@@ -3816,131 +3325,6 @@ describe("ProviderCommandReactor", () => {
     expect(oldTurn?.state).toBe("interrupted");
   });
 
-  it("delivers a queued user message under user-turn admission, not background pacing", async () => {
-    const threadId = ThreadId.make("thread-1");
-    const messageId = MessageId.make("held-user-message:paced");
-    let sent = () => {};
-    const delivery = new Promise<void>((resolve) => {
-      sent = resolve;
-    });
-    const purposes: string[] = [];
-    const harness = await createHarness({
-      startReactor: false,
-      // The pace budget is spent: background work pauses, user work runs.
-      usageGuardEvaluate: (request, base) =>
-        Effect.sync(() => {
-          purposes.push(request.purpose);
-          return {
-            ...base,
-            action: request.purpose === "background" ? ("pause" as const) : ("allow" as const),
-          };
-        }),
-      sendTurnEffect: () =>
-        Effect.sync(() => {
-          sent();
-          return { threadId, turnId: TurnId.make("held-user-turn") };
-        }),
-    });
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("held-paced"),
-        threadId,
-        message: {
-          messageId,
-          role: "user",
-          text: "Send me when the thread is free",
-          attachments: [],
-        },
-        runtimeMode: "approval-required",
-        interactionMode: "default",
-        createdAt: "2026-09-06T17:00:00.000Z",
-      }),
-    );
-    await harness.startReactor();
-    await delivery;
-    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
-    const request = harness.sendTurn.mock.calls[0]?.[0] as { input: string };
-    expect(request.input).toContain("Send me when the thread is free");
-    expect(purposes).toContain("user-turn");
-    expect(purposes.filter((purpose) => purpose === "background")).toHaveLength(0);
-  });
-
-  it("lets a queued message be cancelled while the usage guard holds its delivery", async () => {
-    const threadId = ThreadId.make("thread-1");
-    const messageId = MessageId.make("held-user-message:held");
-    const now = "2026-09-06T17:00:00.000Z";
-    const harness = await createHarness({
-      startReactor: false,
-      usageGuardEvaluate: (_request, base) => Effect.succeed({ ...base, action: "pause" as const }),
-    });
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("held-start"),
-        threadId,
-        message: { messageId, role: "user", text: "Held behind the guard", attachments: [] },
-        runtimeMode: "approval-required",
-        interactionMode: "default",
-        createdAt: now,
-      }),
-    );
-    const row = Option.getOrThrow(
-      await Effect.runPromise(
-        harness.threadWorkObligations.getByKey({
-          threadId,
-          sourceTurnId: activeTurnWorkSourceId(messageId),
-          kind: "active-turn-recovery",
-        }),
-      ),
-    );
-    const claimed = Option.getOrThrow(
-      await Effect.runPromise(
-        harness.threadWorkObligations.claim({
-          obligationId: row.obligationId,
-          now,
-          leaseExpiresAt: "2099-01-01T00:00:00.000Z",
-        }),
-      ),
-    );
-    await Effect.runPromise(
-      harness.threadWorkObligations.transition({
-        obligationId: row.obligationId,
-        expectedState: "claimed",
-        expectedAttempt: claimed.attempt,
-        state: "executing",
-        nextAttemptAt: null,
-        claimedAt: now,
-        leaseExpiresAt: "2099-01-01T00:00:00.000Z",
-        blockedReason: null,
-        updatedAt: now,
-      }),
-    );
-    await harness.drain();
-    const held = await harness.readModel();
-    const shell = held.threads.find((thread) => thread.id === threadId)!;
-    expect(shell.pendingWork?.state).toBe("executing");
-    expect(shell.session?.status ?? "ready").not.toBe("running");
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.queued-message.remove",
-        commandId: CommandId.make("cancel-held"),
-        threadId,
-        messageId,
-        createdAt: "2026-09-06T17:00:05.000Z",
-      }),
-    );
-    const after = await harness.readModel();
-    const activities = after.threads.find((thread) => thread.id === threadId)!.activities;
-    expect(
-      activities.some(
-        (activity) =>
-          activity.kind === "queue.message-removed" &&
-          (activity.payload as { messageId?: string }).messageId === messageId,
-      ),
-    ).toBe(true);
-  });
-
   it("lets Remove discard a queued message that Stop parked", async () => {
     // A parked row is `cancelled` as scheduler work but its message is still
     // shown as queued, so Remove is the only way the person can ever get rid
@@ -4837,76 +4221,6 @@ describe("ProviderCommandReactor", () => {
           (activity.payload as { messageId?: string }).messageId === messageId,
       ),
     ).toBe(true);
-  });
-
-  it("applies a later effort choice to already-persisted queued work", async () => {
-    const threadId = ThreadId.make("thread-1");
-    const selection = {
-      instanceId: ProviderInstanceId.make("codex"),
-      model: "gpt-6-astra",
-      options: [{ id: "reasoningEffort", value: "high" }],
-    };
-    let sent = () => {};
-    const delivery = new Promise<void>((resolve) => {
-      sent = resolve;
-    });
-    const harness = await createHarness({
-      startReactor: false,
-      threadModelSelection: selection,
-      sendTurnEffect: () =>
-        Effect.sync(() => {
-          sent();
-          return { threadId, turnId: TurnId.make("effort-turn") };
-        }),
-    });
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("queue-effort"),
-        threadId,
-        message: {
-          messageId: MessageId.make("held-user-message:effort"),
-          role: "user",
-          text: "Queued task",
-          attachments: [],
-        },
-        modelSelection: selection,
-        runtimeMode: "approval-required",
-        interactionMode: "default",
-        createdAt: "2026-09-06T17:00:00.000Z",
-      }),
-    );
-    const lowered = { ...selection, options: [{ id: "reasoningEffort", value: "low" }] };
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.meta.update",
-        commandId: CommandId.make("apply-effort-meta"),
-        threadId,
-        modelSelection: lowered,
-      }),
-    );
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.activity.append",
-        commandId: CommandId.make("apply-effort"),
-        threadId,
-        activity: {
-          id: EventId.make("apply-effort"),
-          kind: "usage-guard.effort-selected",
-          tone: "info",
-          summary: "Applied Low",
-          payload: { modelSelection: lowered },
-          turnId: null,
-          createdAt: "2026-09-06T17:01:00.000Z",
-        },
-        createdAt: "2026-09-06T17:01:00.000Z",
-      }),
-    );
-    await harness.startReactor();
-    await delivery;
-    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
-      modelSelection: { options: [{ id: "reasoningEffort", value: "low" }] },
-    });
   });
 
   it("does not re-carry a steered predecessor that already has a delivery receipt", async () => {
@@ -7988,27 +7302,14 @@ describe("ProviderCommandReactor", () => {
           }),
         );
 
+        // The stop's own final session write must land before the handshake.
+        yield* Effect.promise(() => harness.drain());
         harness.sendTurn.mockClear();
         const startupIds = startupAutoResumeIds({ threadId, incompleteTurnId: sourceTurnId });
         const obligationId = threadWorkObligationId({
           threadId,
           sourceTurnId,
           kind: "startup-resume",
-        });
-        yield* harness.threadWorkObligations.insert({
-          obligationId,
-          threadId,
-          sourceTurnId,
-          kind: "startup-resume",
-          state: "pending",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          attempt: 0,
-          nextAttemptAt: null,
-          claimedAt: null,
-          leaseExpiresAt: null,
-          blockedReason: null,
-          createdAt: stoppedAt,
-          updatedAt: stoppedAt,
         });
         yield* harness.engine.dispatch({
           type: "thread.session.set",
@@ -8025,6 +7326,21 @@ describe("ProviderCommandReactor", () => {
             updatedAt: stoppedAt,
           },
           createdAt: stoppedAt,
+        });
+        yield* harness.threadWorkObligations.insert({
+          obligationId,
+          threadId,
+          sourceTurnId,
+          kind: "startup-resume",
+          state: "pending",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          attempt: 0,
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          createdAt: stoppedAt,
+          updatedAt: stoppedAt,
         });
         yield* harness.threadWorkScheduler.wake();
         const held = yield* Effect.gen(function* () {
@@ -8308,23 +7624,20 @@ describe("ProviderCommandReactor", () => {
       return thread?.session?.lastError === CLAUDE_CODE_NOT_INSTALLED_MESSAGE;
     });
 
-    const cancelled = await Effect.runPromise(
-      harness.threadWorkObligations
-        .getByKey({ threadId, sourceTurnId, kind: "active-turn-recovery" })
-        .pipe(Effect.map(Option.getOrUndefined)),
-    );
-    expect(cancelled?.state).toBe("cancelled");
+    const readWork = () =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({ threadId, sourceTurnId, kind: "active-turn-recovery" })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+    await waitFor(async () => (await readWork())?.state === "cancelled");
+    const cancelled = await readWork();
     expect(cancelled?.blockedReason).toBe(CLAUDE_CODE_NOT_INSTALLED_MESSAGE);
     expect(cancelled?.blockedReason).not.toContain("Gave up after");
     expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
   it.each([
-    {
-      label: "AGY quota rejection",
-      recoverableFailure:
-        "Antigravity was rejected by Google with RESOURCE_EXHAUSTED (429). Check the account quota or switch accounts before retrying.",
-    },
     {
       label: "Muse progress watchdog",
       recoverableFailure:
@@ -8413,7 +7726,7 @@ describe("ProviderCommandReactor", () => {
   });
 
   for (const runtimeStatus of ["running", "error", "ready"] as const) {
-    it(`retries a terminal API timeout with a ${runtimeStatus} runtime and keeps retrying past fifteen`, async () => {
+    it(`retries a terminal API timeout with a ${runtimeStatus} runtime, then pauses when its budget ends`, async () => {
       const threadId = ThreadId.make("thread-1");
       const turnId = TurnId.make("terminal-api-timeout");
       const messageId = MessageId.make("timeout-user-message");
@@ -8489,7 +7802,7 @@ describe("ProviderCommandReactor", () => {
         Effect.gen(function* () {
           const outcome = yield* handlers.get("active-turn-recovery")!({
             ...obligation,
-            attempt: 15,
+            attempt: 5,
           });
           if (runtimeStatus === "ready") {
             // The first failure is only half the recovery contract. Exercise the
@@ -8531,23 +7844,13 @@ describe("ProviderCommandReactor", () => {
       expect(harness.sendTurn).toHaveBeenCalledTimes(runtimeStatus === "ready" ? 2 : 1);
 
       if (runtimeStatus !== "running") return;
-      // 2026-09-17: the budget is unbounded. Attempt 16 (and 400) still sleeps
-      // for the capped 15 s backoff instead of pausing the thread.
-      for (const attempt of [16, 400]) {
-        const later = await Effect.runPromise(
-          handlers.get("active-turn-recovery")!({ ...obligation, attempt }),
-        );
-        expect(later).toMatchObject({
-          state: "sleeping",
-          reason: "Request timed out",
-          retainedRuntimePhase: "provider-retrying",
-        });
-        const sleepingUntil =
-          later.state === "sleeping" ? Date.parse(later.nextAttemptAt) : Number.NaN;
-        expect(Number.isFinite(sleepingUntil)).toBe(true);
-      }
-      const surfaced = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-      expect(surfaced?.session?.lastError ?? null).not.toContain("Gave up");
+      const pausing = await Effect.runPromise(
+        handlers.get("active-turn-recovery")!({ ...obligation, attempt: 12 }),
+      );
+      expect(pausing).toMatchObject({
+        state: "cancelled",
+        reason: expect.stringContaining("Gave up after 12"),
+      });
     });
   }
 
@@ -8598,7 +7901,7 @@ describe("ProviderCommandReactor", () => {
       if (work.state === "cancelled") {
         throw new Error(`Transient obligation was cancelled: ${work.blockedReason ?? "unknown"}`);
       }
-      if (work.state === "sleeping" && work.attempt >= 15) return true;
+      if (work.state === "sleeping" && work.attempt >= 6) return true;
       if (work.state === "sleeping") {
         const retryDelayMs = Date.parse(work.nextAttemptAt ?? "") - Date.parse(work.updatedAt);
         expect(retryDelayMs).toBeGreaterThanOrEqual(0);
@@ -8625,9 +7928,9 @@ describe("ProviderCommandReactor", () => {
 
     const sleeping = await readObligation();
     expect(sleeping?.state).toBe("sleeping");
-    expect(sleeping?.attempt).toBe(15);
+    expect(sleeping?.attempt).toBe(6);
     expect(sleeping?.blockedReason).toContain("pxpipe upstream unreachable");
-    expect(observedDelaysMs).toHaveLength(14);
+    expect(observedDelaysMs).toHaveLength(5);
     for (const [index, delay] of observedDelaysMs.entries()) {
       expect(delay).toBeGreaterThan(0);
       expect(delay).toBeLessThanOrEqual(Math.min(1_000 * 2 ** index, 15_000));
@@ -8642,51 +7945,6 @@ describe("ProviderCommandReactor", () => {
       const retrying = readModelWhileRetrying.threads.find((entry) => entry.id === threadId);
       expect(retrying?.session?.lastError ?? null).toBeNull();
     }
-
-    // One more wake past the old ceiling: still sleeping, still hidden.
-    await Effect.runPromise(
-      harness.threadWorkObligations
-        .transition({
-          obligationId: sleeping!.obligationId,
-          expectedState: "sleeping",
-          expectedAttempt: sleeping!.attempt,
-          state: "pending",
-          nextAttemptAt: null,
-          claimedAt: null,
-          leaseExpiresAt: null,
-          blockedReason: null,
-          updatedAt: "2026-01-01T00:00:59.000Z",
-        })
-        .pipe(Effect.andThen(harness.threadWorkScheduler.wake()), Effect.ignore),
-    );
-    await waitFor(async () => {
-      const work = await readObligation();
-      return work?.state === "sleeping" && work.attempt >= 16;
-    }, 30_000);
-    const stillRetrying = await readObligation();
-    expect(stillRetrying?.state).toBe("sleeping");
-    expect(stillRetrying?.blockedReason ?? "").not.toContain("Gave up");
-    const surfaced = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-    expect(surfaced?.session?.lastError ?? null).toBeNull();
-
-    const readModel = await harness.readModel();
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
-    expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
-    expect(thread?.messages.filter((message) => message.inputOrigin === "agent-loop")).toHaveLength(
-      0,
-    );
-    expect(
-      thread?.activities.filter((activity) => activity.kind === "provider.turn.start.failed"),
-    ).toHaveLength(0);
-
-    await Effect.runPromise(
-      harness.threadWorkObligations.cancelByThread({
-        threadId,
-        updatedAt: "2026-01-01T00:01:00.000Z",
-        blockedReason: "test cleanup",
-        mode: "thread-terminal",
-      }),
-    );
   });
 
   // First coverage for the silence watchdog, which had none: it is the last
@@ -12466,114 +11724,6 @@ describe("ProviderCommandReactor", () => {
       threadId,
       modelSelection: { instanceId: ProviderInstanceId.make("codex") },
     });
-  });
-
-  it("delivers a message on the provider failover moved its thread to", async () => {
-    // 2026-09-23: Grok rejected a retired model with "Invalid params", failover
-    // moved the thread to Claude, and the retry resent the message to Grok as
-    // its turn-start recorded. That second rejection read as a failed manual
-    // switch and dropped the message without either provider running it.
-    const claudeAgent = ProviderInstanceId.make("claudeAgent");
-    const harness = await createHarness({
-      extraProviders: [
-        {
-          instanceId: claudeAgent,
-          driver: ProviderDriverKind.make("claudeAgent"),
-          displayName: "Claude",
-          enabled: true,
-          installed: true,
-          version: "test",
-          status: "ready",
-          auth: { status: "authenticated" },
-          checkedAt: "2026-01-01T00:00:00.000Z",
-          availability: "available",
-          models: [
-            {
-              slug: "claude-fable-5-1",
-              name: "Claude Fable 5.1",
-              isCustom: false,
-              isDefault: true,
-              capabilities: null,
-            },
-          ],
-          slashCommands: [],
-          skills: [],
-        },
-      ],
-    });
-    harness.sendTurn.mockImplementationOnce(
-      () =>
-        Effect.fail(
-          new ProviderAdapterRequestError({
-            provider: "codex",
-            method: "session/prompt",
-            detail: "Invalid params",
-          }),
-        ) as never,
-    );
-    const threadId = ThreadId.make("thread-1");
-    const messageId = asMessageId("user-message-failover-delivery");
-    const sourceTurnId = activeTurnWorkSourceId(messageId);
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-failover-delivery"),
-        threadId,
-        message: { messageId, role: "user", text: "let's do Moose", attachments: [] },
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      }),
-    );
-
-    // Skip the retry backoff, as production's wake would after it elapses.
-    let settledState: string | undefined;
-    const settleDelivery = Effect.gen(function* () {
-      const work = Option.getOrUndefined(
-        yield* harness.threadWorkObligations.getByKey({
-          threadId,
-          sourceTurnId,
-          kind: "active-turn-recovery",
-        }),
-      );
-      if (work?.state === "sleeping") {
-        yield* harness.threadWorkObligations
-          .transition({
-            obligationId: work.obligationId,
-            expectedState: "sleeping",
-            expectedAttempt: work.attempt,
-            state: "pending",
-            nextAttemptAt: null,
-            claimedAt: null,
-            leaseExpiresAt: null,
-            blockedReason: null,
-            updatedAt: "2026-01-01T00:00:01.000Z",
-          })
-          .pipe(Effect.andThen(harness.threadWorkScheduler.wake()), Effect.ignore);
-      }
-      settledState = work?.state;
-      return work?.state === "completed" || work?.state === "cancelled";
-    });
-    await waitFor(() => Effect.runPromise(settleDelivery));
-
-    expect(settledState).toBe("completed");
-    expect(harness.sendTurn).toHaveBeenCalledTimes(2);
-    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
-      threadId,
-      modelSelection: { instanceId: claudeAgent, model: "claude-fable-5-1" },
-    });
-    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-    expect(thread?.modelSelection).toMatchObject({ instanceId: claudeAgent });
-    // Failover already announced the move; the delivery does not repeat it.
-    expect(
-      thread?.activities
-        .filter((activity) => activity.kind === "provider.handoff.completed")
-        .map((activity) => activity.summary),
-    ).toEqual(["Switched from Codex to Claude"]);
-    expect(
-      thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
-    ).toBe(false);
   });
 
   it("continues a stopped projected thread on another provider with a JSON handoff", async () => {

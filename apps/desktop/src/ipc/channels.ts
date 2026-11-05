@@ -138,6 +138,7 @@ export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
 export const PREVIEW_NEW_TAB_REQUEST_CHANNEL = "desktop:preview-new-tab-request";
 export const PREVIEW_HUMAN_VERIFICATION_SIGNAL_CHANNEL =
   "desktop:preview-human-verification-signal";
+export const MENU_BAR_PUBLISH_STATS_CHANNEL = "desktop:menu-bar-publish-stats";
 export const ORCHESTRATOR_BUBBLE_SET_VISIBLE_CHANNEL = "desktop:orchestrator-bubble-set-visible";
 export const ORCHESTRATOR_BUBBLE_PUBLISH_STATE_CHANNEL =
   "desktop:orchestrator-bubble-publish-state";

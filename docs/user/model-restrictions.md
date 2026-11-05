@@ -13,26 +13,5 @@ Unavailable saved models remain listed so you can remove them.
 Child rules can narrow a parent's permission but cannot override a parent block. The picker
 disables models excluded by these rules and marks them with a lock. If the current selection becomes blocked, choose
 an allowed model before sending. The server also checks direct requests, queued work,
-recovery attempts, and automatic handoffs. Changing a rule does not interrupt an already
+and recovery attempts. Changing a rule does not interrupt an already
 running turn; it applies before the next provider request.
-
-## Automatic fallback
-
-Go to **Settings → Providers → Automatic fallback models** to set the environment-wide
-rule. In the native mobile app, use **Settings → Automatic fallback models** and select
-the environment. This rule covers automatic fallback, same-provider model downshifts,
-and automatic return to an earlier model after its quota resets. It does not restrict
-manual selection unless a thread or parent rule also excludes that model.
-
-On phone-sized web screens, the model checklist starts collapsed behind **Models · N selected**.
-Tap it to search or change selections, then save. The information icon beside **Automatic fallback
-models** opens the full explanation. An empty allowlist warning stays visible even when collapsed.
-
-Every applicable rule must allow a fallback candidate. If none qualify, Solla stops and
-shows an actionable notice instead of switching to an excluded model. Allow a suitable
-model and resume the work. To remove a restriction, save **Allow all models** at the scope
-where it was set; parent and environment rules still apply.
-
-Rules are stored by the server and shared across connected devices. Saving requires a
-connection and reports success only after the server acknowledges it. These controls govern
-the model Solla requests; they do not control undocumented model routing inside a provider.

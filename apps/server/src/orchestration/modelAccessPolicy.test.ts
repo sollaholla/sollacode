@@ -33,19 +33,6 @@ it.effect("resolves existing nested side chats against the live parent rule", ()
     expect(modelPolicyError(policies, model)).toContain("blocked");
   }),
 );
-it.effect("the global rule affects fallback only", () =>
-  Effect.gen(function* () {
-    const input = {
-      threadId: ThreadId.make("root"),
-      settings: { ...DEFAULT_SERVER_SETTINGS, fallbackModelPolicy: block },
-      getThread: makeLookup({ root: null }),
-    };
-    expect(modelPolicyError(yield* resolveThreadModelPolicies(input), model)).toBeNull();
-    expect(
-      modelPolicyError(yield* resolveThreadModelPolicies({ ...input, fallback: true }), model),
-    ).toContain("blocked");
-  }),
-);
 for (const parents of [{ side: "missing" }, { side: "side" }]) {
   it.effect(`fails closed for broken inheritance ${parents.side}`, () =>
     Effect.gen(function* () {

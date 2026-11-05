@@ -2,7 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   isReasoningStatusPlaceholder,
   isRoutineMusePollingNotice,
-  recoveredRuntimeErrorIds,
+  classifyThreadPause,
+  describeThreadPause,
   isSideChatSessionPreparing,
   isThreadSessionWorking,
   canResumeFailedThreadSession,
@@ -215,16 +216,19 @@ describe("routine Muse polling notice", () => {
   });
 });
 
-describe("recovered runtime errors", () => {
-  it("matches the exact successful recovery receipt even when its error text was truncated", () => {
-    const recovered = recoveredRuntimeErrorIds([
-      { id: "agy:277:provider.failover.completed", kind: "provider.failover.completed" },
-      { id: "agy:300:provider.failover.completed", kind: "provider.failover.completed" },
-      { id: "failed:provider.failover.unavailable", kind: "provider.failover.unavailable" },
-      { id: "pretend:provider.failover.completed", kind: "tool.completed" },
-    ]);
-    expect([...recovered]).toEqual(["agy:277", "agy:300"]);
-    expect(recovered.has("unrelated-error-same-turn")).toBe(false);
-    expect(recovered.has("failed")).toBe(false);
+describe("thread pause", () => {
+  it("reads why a provider stopped from its own words", () => {
+    expect(classifyThreadPause("You've hit your usage limit")).toBe("usage-limit");
+    expect(classifyThreadPause("HTTP 429: too many requests")).toBe("usage-limit");
+    expect(classifyThreadPause("HTTP 402 Payment Required")).toBe("out-of-credits");
+    expect(classifyThreadPause("403 Forbidden")).toBe("access-refused");
+    expect(classifyThreadPause("model not found: grok-retired")).toBe("model-unavailable");
+    expect(classifyThreadPause("API error: 503 service unavailable")).toBe("provider-unavailable");
+    expect(classifyThreadPause("something else went wrong")).toBe("stopped");
+  });
+
+  it("says it in one short line", () => {
+    expect(describeThreadPause("usage-limit", "Claude")).toBe("Claude is out of usage");
+    expect(describeThreadPause("model-unavailable", "Claude")).toBe("This model isn't available");
   });
 });

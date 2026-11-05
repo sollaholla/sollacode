@@ -14,7 +14,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 
 export function ModelPolicyModal(props: {
   environmentId: EnvironmentId;
-  threadId?: ThreadId;
+  threadId: ThreadId;
   parentThreadId?: ThreadId | null;
   visible: boolean;
   onClose: () => void;
@@ -25,9 +25,7 @@ export function ModelPolicyModal(props: {
   const providers = useAtomValue(serverEnvironment.providersValueAtom(props.environmentId)) ?? [];
   const [parent, setParent] = useState(false);
   const target = parent && props.parentThreadId ? props.parentThreadId : props.threadId;
-  const policy = target
-    ? (settings.threadModelPolicies[target] ?? DEFAULT_MODEL_ACCESS_POLICY)
-    : settings.fallbackModelPolicy;
+  const policy = settings.threadModelPolicies[target] ?? DEFAULT_MODEL_ACCESS_POLICY;
   const [draft, setDraft] = useState(policy);
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
@@ -56,19 +54,14 @@ export function ModelPolicyModal(props: {
     >
       <View className="flex-1 bg-sheet px-5 pt-8">
         <View className="mb-4 flex-row items-center justify-between">
-          <Text className="text-xl font-semibold">
-            {props.threadId ? "Model restrictions" : "Automatic fallback models"}
-          </Text>
+          <Text className="text-xl font-semibold">Model restrictions</Text>
           <Pressable accessibilityRole="button" onPress={props.onClose} className="p-3">
             <Text>Done</Text>
           </Pressable>
         </View>
         <ScrollView contentContainerClassName="gap-4 pb-12" keyboardShouldPersistTaps="handled">
           <Text>
-            {props.threadId
-              ? "Applies to this chat and its side chats. Parent agent restrictions also apply."
-              : "Controls automatic fallback and quota-reset restoration in this environment. Manual selection is unaffected."}{" "}
-            When no allowed model is available, work waits.
+            Applies to this chat and its side chats. Parent agent restrictions also apply.
           </Text>
           {props.parentThreadId && (
             <View className="flex-row items-center justify-between">
@@ -156,9 +149,7 @@ export function ModelPolicyModal(props: {
                 const result = await update({
                   environmentId: props.environmentId,
                   input: {
-                    patch: target
-                      ? { threadModelPolicies: { [target]: draft } }
-                      : { fallbackModelPolicy: draft },
+                    patch: { threadModelPolicies: { [target]: draft } },
                   },
                 });
                 if (result._tag === "Failure") throw squashAtomCommandFailure(result);

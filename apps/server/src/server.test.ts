@@ -150,7 +150,6 @@ import * as ProjectFolderUsage from "./project/ProjectFolderUsage.ts";
 import * as DatabaseCompaction from "./persistence/DatabaseCompaction.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as Data from "effect/Data";
-import { ProviderUsageGuardNoop } from "./orchestration/Layers/ProviderUsageGuard.ts";
 
 const defaultProjectId = ProjectId.make("project-default");
 const defaultThreadId = ThreadId.make("thread-default");
@@ -1325,7 +1324,7 @@ const getWsServerUrl = (
     );
   });
 
-it.layer(Layer.mergeAll(NodeServices.layer, ProviderUsageGuardNoop))("server router seam", (it) => {
+it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("serves static index content for GET / when staticDir is configured", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

@@ -19,7 +19,6 @@ const allow: ModelAccessPolicy = { mode: "allow", models: [selection] };
 describe("model restrictions", () => {
   it("decodes old settings as unrestricted", () => {
     const settings = decodeSettings({});
-    expect(settings.fallbackModelPolicy).toEqual({ mode: "all", models: [] });
     expect(settings.threadModelPolicies).toEqual({});
   });
   it.each([undefined, { mode: "all", models: [] }, { mode: "block", models: [] }] as const)(
@@ -74,12 +73,5 @@ describe("model restrictions", () => {
       threadModelPolicies: { a: { mode: "all", models: [] } },
     });
     expect(modelAccessPolicyAllows(reset.threadModelPolicies.a, selection)).toBe(true);
-  });
-  it("replaces the global list without merging old selections back", () => {
-    const first = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { fallbackModelPolicy: allow });
-    expect(
-      applyServerSettingsPatch(first, { fallbackModelPolicy: { mode: "allow", models: [] } })
-        .fallbackModelPolicy.models,
-    ).toEqual([]);
   });
 });

@@ -91,22 +91,22 @@ describe("buildThreadFeed", () => {
     expect(group.activities[0]?.getFullDetail()).toContain("test failure output");
   });
 
-  it("removes recovered error cards from the native feed while retaining the switch notice", () => {
+  it("leaves provider failures to the pause card, old rows included", () => {
     const entries = buildThreadFeed(
       makeThread({
-        id: ThreadId.make("recovered-thread"),
+        id: ThreadId.make("paused-thread"),
         projectId: ProjectId.make("project-1"),
-        title: "Recovered",
+        title: "Paused",
         activities: [
           makeActivity({
-            id: EventId.make("agy:277"),
+            id: EventId.make("failed-turn"),
             kind: "runtime.error",
             tone: "error",
             summary: "Runtime error",
             createdAt: "2026-04-01T00:00:01.000Z",
           }),
           makeActivity({
-            id: EventId.make("agy:277:provider.failover.completed"),
+            id: EventId.make("old-switch"),
             kind: "provider.failover.completed",
             summary: "usage exhausted · switched to Codex",
             createdAt: "2026-04-01T00:00:01.000Z",
@@ -114,44 +114,7 @@ describe("buildThreadFeed", () => {
         ],
       }),
     );
-    const activities = entries.flatMap((entry) =>
-      entry.type === "activity-group" ? entry.activities : [],
-    );
-    expect(activities.map((activity) => activity.id)).toEqual([
-      "agy:277:provider.failover.completed",
-    ]);
-  });
-
-  it("hides a persisted 'Aborted' runtime error from the native feed", () => {
-    const entries = buildThreadFeed(
-      makeThread({
-        id: ThreadId.make("aborted-thread"),
-        projectId: ProjectId.make("project-1"),
-        title: "Aborted",
-        activities: [
-          makeActivity({
-            id: EventId.make("opencode-aborted"),
-            kind: "runtime.error",
-            tone: "error",
-            summary: "Runtime error",
-            payload: { message: "Aborted" },
-            createdAt: "2026-04-01T00:00:01.000Z",
-          }),
-          makeActivity({
-            id: EventId.make("real-error"),
-            kind: "runtime.error",
-            tone: "error",
-            summary: "Runtime error",
-            payload: { message: "permission denied" },
-            createdAt: "2026-04-01T00:00:02.000Z",
-          }),
-        ],
-      }),
-    );
-    const activities = entries.flatMap((entry) =>
-      entry.type === "activity-group" ? entry.activities : [],
-    );
-    expect(activities.map((activity) => activity.id)).toEqual(["real-error"]);
+    expect(entries.filter((entry) => entry.type === "activity-group")).toEqual([]);
   });
 
   it("previews projected image-view rows even when their display path is truncated", () => {

@@ -16,7 +16,6 @@ export function isReasoningStatusPlaceholder(activity: {
   return isPlaceholder(title) && isPlaceholder(detail);
 }
 
-/** A completed failover receipt answers for its exact triggering runtime error. */
 /**
  * A persisted "Runtime error: Aborted" is the provider acknowledging our own
  * interrupt (OpenCode answers `session.abort` with a MessageAbortedError), not
@@ -34,17 +33,65 @@ export function isProviderInterruptionErrorActivity(activity: {
   return typeof message === "string" && message.trim().toLowerCase() === "aborted";
 }
 
-export function recoveredRuntimeErrorIds(
-  activities: ReadonlyArray<{ readonly id: string; readonly kind: string }>,
-): ReadonlySet<string> {
-  const recovered = new Set<string>();
-  const suffix = ":provider.failover.completed";
-  for (const activity of activities) {
-    if (activity.kind === "provider.failover.completed" && activity.id.endsWith(suffix)) {
-      recovered.add(activity.id.slice(0, -suffix.length));
-    }
+/**
+ * Failures a provider reported. The thread pauses for them and says so once, in
+ * the pause card, so these rows stay out of the transcript, old ones included.
+ */
+export function isPausedProviderFailureActivity(activity: { readonly kind: string }): boolean {
+  return (
+    activity.kind === "runtime.error" ||
+    activity.kind === "provider.turn.start.failed" ||
+    activity.kind.startsWith("provider.failover.") ||
+    activity.kind.startsWith("usage-guard.")
+  );
+}
+
+/** What stopped a paused thread, as far as the provider's own words can tell. */
+export type ThreadPauseReason =
+  | "usage-limit"
+  | "out-of-credits"
+  | "access-refused"
+  | "model-unavailable"
+  | "provider-unavailable"
+  | "stopped";
+
+const THREAD_PAUSE_PATTERNS: ReadonlyArray<readonly [ThreadPauseReason, RegExp]> = [
+  [
+    "out-of-credits",
+    /\b402\b|payment required|billing|no credit|credit balance|balance exhausted/i,
+  ],
+  [
+    "usage-limit",
+    /usage limit|rate[- ]?limit|session limit|hit your|quota|resource_exhausted|\b429\b|too many requests/i,
+  ],
+  ["access-refused", /\b40[13]\b|forbidden|unauthori[sz]ed|permission denied|access denied/i],
+  ["model-unavailable", /model (?:not found|is (?:no longer |not )available)|unknown model/i],
+  [
+    "provider-unavailable",
+    /\b5\d\d\b|overloaded|unavailable|timed? ?out|econn|socket|network|upstream|stalled/i,
+  ],
+];
+
+export function classifyThreadPause(lastError: string): ThreadPauseReason {
+  return THREAD_PAUSE_PATTERNS.find(([, pattern]) => pattern.test(lastError))?.[0] ?? "stopped";
+}
+
+/** One short line for the pause card. `provider` is the name the person knows it by. */
+export function describeThreadPause(reason: ThreadPauseReason, provider: string): string {
+  switch (reason) {
+    case "usage-limit":
+      return `${provider} is out of usage`;
+    case "out-of-credits":
+      return `${provider} is out of credits`;
+    case "access-refused":
+      return `${provider} refused this request`;
+    case "model-unavailable":
+      return "This model isn't available";
+    case "provider-unavailable":
+      return `${provider} isn't responding`;
+    case "stopped":
+      return `${provider} stopped`;
   }
-  return recovered;
 }
 
 export {
@@ -63,7 +110,11 @@ export function describeRunningBackgroundTasks(count: number): string {
   return count === 1 ? "1 background task running" : `${count} background tasks running`;
 }
 
-/** A persisted session failure is actionable even when no turn or output survived. */
+/**
+ * A persisted session failure is actionable even when no turn or output
+ * survived. This is what a paused thread is: every provider failure ends here,
+ * and the person chooses what happens next.
+ */
 export function canResumeFailedThreadSession(
   thread:
     | {

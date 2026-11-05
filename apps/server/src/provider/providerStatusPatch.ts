@@ -71,7 +71,6 @@ export function diffProviderStatuses(
       ...(changed.has("accountUsageStatus")
         ? { accountUsageStatus: provider.accountUsageStatus }
         : {}),
-      ...(changed.has("usageGuard") ? { usageGuard: provider.usageGuard } : {}),
       ...(changed.has("versionAdvisory") ? { versionAdvisory: provider.versionAdvisory } : {}),
     });
   }

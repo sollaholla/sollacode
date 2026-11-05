@@ -905,10 +905,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       // Only a delivery that is actually in flight is off limits: an executing
-      // obligation on a thread whose provider session is running a turn. A
-      // usage-guard hold keeps the obligation "executing"/"claimed" for the
-      // whole wait with no turn running, and refusing there left queued
-      // messages that could not be cancelled until the hold lifted.
+      // obligation on a thread whose provider session is running a turn.
       const delivering =
         (thread.pendingWork?.state === "executing" || thread.pendingWork?.state === "claimed") &&
         thread.session?.status === "running" &&

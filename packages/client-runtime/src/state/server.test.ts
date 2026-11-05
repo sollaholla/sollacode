@@ -155,7 +155,7 @@ describe("server state projection", () => {
       }) as unknown as ServerConfigStreamEvent;
 
     it("lays volatile fields over the provider already held, leaving its catalogue alone", () => {
-      const held = provider("codex", { usageGuard: { state: "ok" } });
+      const held = provider("codex", { accountUsage: { used: 1 } });
       const next = applyServerConfigProjection(
         withProviders([held]),
         patchEvent({
@@ -170,7 +170,6 @@ describe("server state projection", () => {
       expect(after).toMatchObject({
         checkedAt: "t1",
         accountUsage: { used: 2 },
-        usageGuard: { state: "ok" },
         slashCommands: [{ name: "big-catalogue" }],
       });
     });

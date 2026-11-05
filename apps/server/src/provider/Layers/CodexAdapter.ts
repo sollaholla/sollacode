@@ -1317,7 +1317,7 @@ function mapToRuntimeEvents(
     }
     // The same unfilled stand-in a cold `account/rateLimits/read` returns can
     // arrive as an update. It is not a report; dropping it keeps the last real
-    // reading on the card and out of the usage guard.
+    // reading on the card.
     const receivedAt = DateTime.make(event.createdAt);
     const rateLimits = Option.isSome(receivedAt)
       ? stripSyntheticCodexRateLimitSnapshot(

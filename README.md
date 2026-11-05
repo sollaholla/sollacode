@@ -43,7 +43,7 @@ Solla Code is an independently maintained fork of [T3 Code](https://github.com/p
 | **Custom agents**                  | Give a named agent one durable conversation, tasks, an inbox, and a structured workspace artifact. Agents stay scoped to their connected environment and remain visible from remote clients.                                                                     |
 | **Bounded collaboration**          | A root agent can ask another named agent for help or create a short-lived worker. Capabilities, delivery, questions, approvals, results, and cancellation stay visible without turning collaboration into unrestricted management.                               |
 | **Thread artifacts**               | Publish revisioned web bundles, Markdown, images, PDFs, SVGs, or structured data from an ordinary chat. Signed host URLs make the same artifact available to authorized local, LAN, relay, and Tailscale clients.                                                |
-| **Provider reliability**           | Typed provider status, usage reporting, scoped approvals, queued follow-ups, interruption, and usage-limit failover keep failures visible and recoverable.                                                                                                       |
+| **Provider reliability**           | Typed provider status, usage reporting, scoped approvals, queued follow-ups, interruption, and pausing keep failures recoverable.                                                                                                                                |
 | **External MCP providers**         | Connect a separately installed provider over the versioned `solla.provider-bridge/1` MCP contract, with negotiated models, health, capabilities, resumable sessions, and structured request handling.                                                            |
 | **Remote-first clients**           | Operate the same environment through the Electron desktop app, the responsive web client, or the native mobile client. Environment-qualified routes prevent an agent or artifact from silently switching hosts.                                                  |
 
@@ -83,14 +83,6 @@ The examples below illustrate Solla Code workflows. Feature overlap with upstrea
 
 <p align="center"><sub><b>Thread artifacts.</b> Open a dashboard revision beside its conversation, expand it for a closer look, and restore the panel.</sub></p>
 
-<p align="center">
-  <a href="./docs/media/readme/provider-failover.gif">
-    <img src="./docs/media/readme/provider-failover.gif" alt="A Solla Code provider reaching its usage limit and the queued turn resuming automatically on a standby provider" width="1100" />
-  </a>
-</p>
-
-<p align="center"><sub><b>Provider reliability.</b> The real server and client handle a controlled quota-exhaustion event, switch from Grok primary to Grok backup, and continue the thread. Provider responses are fixtures; this is not a recording of a customer account hitting its limit.</sub></p>
-
 <p align="center"><sub>These are production-client recordings with illustrative project content and synchronized cursor overlays. The capture scripts, source footage, original film, and verification boundaries are documented in <a href="./tools/motion/README.md">tools/motion</a>.</sub></p>
 
 ## Providers
@@ -110,7 +102,7 @@ Solla Code controls provider software that is already installed and authenticate
 
 Antigravity has a built-in driver, model discovery, streamed tool activity, native conversation resume, and interruption. Its headless transport currently accepts text only and does not inject Solla's thread-scoped MCP tools. See the [provider guide](./docs/providers/README.md) for setup, limits, and verification status.
 
-Provider-specific features are enabled only when an adapter or bridge advertises support. For example, typed automatic usage-limit failover currently recognizes explicit limit events from Codex, Claude Code, and Grok. Cursor and OpenCode remain available as providers, but ordinary errors do not trigger automatic failover.
+Provider-specific features are enabled only when an adapter or bridge advertises support.
 
 ## Clients and remote access
 
@@ -193,11 +185,11 @@ Thread artifacts are named, revisioned bundles owned by a thread. Web bundles re
 
 This is separate from a custom agent's Artifact Dashboard, which can be a structured schedule, metrics, checklist, table, timeline, or cards model, or an HTML/CSS web view in the same sandbox as a thread web artifact. Read [Thread artifacts](./docs/user/thread-artifacts.md) and [Artifact architecture](./docs/architecture/thread-artifacts.md).
 
-### Provider status, approvals, and failover
+### Provider status, approvals, and pausing
 
 Provider adapters normalize native events into one typed orchestration model. Health, authentication, model availability, quota signals, approval requests, structured input, interruptions, and completion remain associated with their provider instance, session, and turn.
 
-Automatic failover responds only to explicit account-limit events. It first uses another remaining model on the same instance when one still has quota, then walks other configured and eligible providers, preserves a compact handoff, and records when no target is available. Read [Provider failover](./docs/user/provider-failover.md), [Provider account switching](./docs/user/provider-account-switching.md), and [Provider architecture](./docs/architecture/providers.md).
+Solla Code runs the model you picked. When a provider stops a turn, for a usage limit, a refused request, or an outage, the thread pauses with its context intact and you choose: resume, switch model, or switch account.
 
 ## Architecture
 

@@ -152,7 +152,7 @@ interface HostAssignment {
    *
    * Keyed by thread id rather than `providerSessionId` on purpose: a provider
    * session is a fresh UUID from every `prepareMcpSession`, so a model switch,
-   * a usage-limit failover or a resume would rotate it and lose the pointer
+   * a resume would rotate it and lose the pointer
    * mid-work. It also matches the invariant this file's own tests assert —
    * host ownership belongs to the thread, not to whichever provider session
    * issued the first request.

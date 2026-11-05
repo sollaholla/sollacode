@@ -385,7 +385,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         );
 
         // Keep clearing sessions that lose their live adapter mid-life (e.g.
-        // after a provider failover or an adapter crash): the projection can be
+        // after an adapter crash): the projection can be
         // left at "running" with an active turn, which the UI renders as a
         // "working" spinner that never resolves. The startup reconcile above
         // only catches sessions already stranded when the server booted; this

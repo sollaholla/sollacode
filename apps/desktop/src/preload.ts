@@ -526,6 +526,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         );
     },
   },
+  publishMenuBarStats: (stats) =>
+    ipcRenderer.invoke(IpcChannels.MENU_BAR_PUBLISH_STATS_CHANNEL, stats),
   orchestratorBubble: {
     setVisible: (visible) =>
       ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_SET_VISIBLE_CHANNEL, visible),

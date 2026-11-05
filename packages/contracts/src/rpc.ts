@@ -468,7 +468,6 @@ export const WS_METHODS = {
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
   serverConsumeProviderUsageReset: "server.consumeProviderUsageReset",
-  serverResumeUsageGuard: "server.resumeUsageGuard",
   serverStartProviderAccountSwitch: "server.startProviderAccountSwitch",
   serverGetProviderAccountSwitch: "server.getProviderAccountSwitch",
   serverOpenProviderAccountSwitchAuthLink: "server.openProviderAccountSwitchAuthLink",
@@ -568,21 +567,6 @@ export const WsServerConsumeProviderUsageResetRpc = Rpc.make(
     error: Schema.Union([ProviderUsageResetError, EnvironmentAuthorizationError]),
   },
 );
-
-/**
- * Lift the usage guard's hold on one thread: put its sleeping deliveries back
- * on the queue and let its work through until the window resets.
- */
-export const WsServerResumeUsageGuardRpc = Rpc.make(WS_METHODS.serverResumeUsageGuard, {
-  payload: Schema.Struct({
-    threadId: ThreadIdSchema,
-    recheckOnly: Schema.optional(Schema.Boolean),
-    modelSelection: Schema.optional(ModelSelection),
-  }),
-  /** `reason` is set when the resume was refused because the provider itself reports the account exhausted. */
-  success: Schema.Struct({ resumed: Schema.Boolean, reason: Schema.optional(Schema.String) }),
-  error: EnvironmentAuthorizationError,
-});
 
 export const WsServerStartProviderAccountSwitchRpc = Rpc.make(
   WS_METHODS.serverStartProviderAccountSwitch,
@@ -1809,7 +1793,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsServerConsumeProviderUsageResetRpc,
-  WsServerResumeUsageGuardRpc,
   WsServerStartProviderAccountSwitchRpc,
   WsServerGetProviderAccountSwitchRpc,
   WsServerOpenProviderAccountSwitchAuthLinkRpc,

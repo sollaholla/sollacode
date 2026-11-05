@@ -25,15 +25,7 @@ vi.mock("../../rpc/atomRegistry", () => ({
               // session has no provider instance, so a detail without one is
               // not a shape this code ever sees.
               modelSelection: { model: "claude-opus-5", instanceId: "claude-primary" },
-              activities: [
-                {
-                  id: "pause",
-                  kind: "usage-guard.paused",
-                  summary: "Cooling down",
-                  createdAt: "2026-09-06T16:00:00.000Z",
-                  payload: {},
-                },
-              ],
+              activities: [],
             },
     subscribe: (atom: string, callback: () => void) => {
       fixture.listeners.set(atom, callback);
@@ -58,18 +50,18 @@ vi.mock("../../providerTaskDismissalStore", () => ({
 }));
 import { watchHeldMessageThread } from "./watchHeldMessageThread";
 
-describe("held message cooldown subscription", () => {
-  it("holds against live shell work even when the detail is stale, and reacts to release", async () => {
+describe("held message thread subscription", () => {
+  it("reports an idle thread as ready and follows the shell", async () => {
     const notify = vi.fn();
     const unsubscribe = watchHeldMessageThread(
       scopeThreadRef(EnvironmentId.make("env"), ThreadId.make("thread")),
       notify,
     );
     await Promise.resolve();
-    expect(notify).toHaveBeenLastCalledWith(false, true);
+    expect(notify).toHaveBeenLastCalledWith(true, true);
     fixture.shell = { ...fixture.shell, pendingWork: null };
     fixture.listeners.get("shell")!();
-    expect(notify).toHaveBeenLastCalledWith(true, true);
+    expect(notify).toHaveBeenCalledTimes(2);
     unsubscribe();
     expect(fixture.listeners.size).toBe(0);
   });

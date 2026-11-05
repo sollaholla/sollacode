@@ -7,9 +7,10 @@ import { isAgentsProjectId } from "@t3tools/contracts";
 import { collectThreadFileReferencesByTurnId } from "@t3tools/client-runtime/state/turn-file-references";
 import {
   canResumeFailedThreadSession,
+  classifyThreadPause,
+  describeThreadPause,
   describeRunningBackgroundTasks,
 } from "@t3tools/client-runtime/state/thread-activity";
-import { QueuedMessageCountdown } from "./chat/QueuedMessageCountdown";
 import {
   OfflineOutboxChip,
   type OfflineOutboxMessage,
@@ -443,13 +444,15 @@ import { isHostRepairEligibleThreadError, ThreadErrorBanner } from "./chat/Threa
 import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import { ProjectFolderMissingBanner } from "./chat/ProjectFolderMissingBanner";
-import { UsageGuardPausedBanner } from "./chat/UsageGuardPausedBanner";
-import { ProviderFailoverBanner } from "./chat/ProviderFailoverBanner";
+import { ThreadPausedCard } from "./chat/ThreadPausedCard";
 import {
-  findProviderFailoverNotice,
-  isProviderFailoverActive,
-} from "./chat/providerFailoverNotice";
-import { findUsageGuardPauseNotice, isUsageGuardPauseActive } from "./chat/usageGuardPause";
+  pauseAccountChoices,
+  pauseModelChoices,
+  formatThreadPauseReset,
+  pauseResetAt,
+  type ThreadPauseAccountChoice,
+  type ThreadPauseModelChoice,
+} from "./chat/threadPauseChoices";
 import {
   isProviderAuthenticationPauseActive,
   resolveThreadProviderAuthStatus,
@@ -457,7 +460,9 @@ import {
 import { ThreadSyncOverlay } from "./chat/ThreadSyncStatusPill";
 import {
   deriveProviderUsageReports,
+  deriveProviderUsageSummaries,
   ProviderUsageBar,
+  providerUsageName,
   ProviderUsagePlacementRow,
   providerUsageDetailsSide,
   resolveProviderUsagePlacement,
@@ -1927,9 +1932,6 @@ function ChatViewContent(props: ChatViewProps) {
   const consumeProviderUsageReset = useAtomCommand(serverEnvironment.consumeProviderUsageReset, {
     reportFailure: false,
   });
-  const resumeUsageGuard = useAtomCommand(serverEnvironment.resumeUsageGuard, {
-    reportFailure: false,
-  });
   const startProviderAccountSwitch = useAtomCommand(serverEnvironment.startProviderAccountSwitch, {
     reportFailure: false,
   });
@@ -2824,18 +2826,17 @@ function ChatViewContent(props: ChatViewProps) {
     sessionLastError: activeThread?.session?.lastError,
     providerAuthStatus: activeThreadProviderAuthStatus,
   });
+  // Only this client's own failures are errors. A provider's lands on the
+  // session, and the thread shows it as a pause.
   const threadError = activeProviderAuthenticationPaused
     ? null
     : isServerThread
-      ? resolveVisibleServerThreadError(
-          localServerErrorEntry,
-          activeServerThread?.session?.lastError,
-          dismissedServerErrorsByThreadKey[routeThreadKey] ?? null,
-        )
+      ? resolveVisibleServerThreadError(localServerErrorEntry, null)
       : localDraftError;
+  const hostRepairFailure = threadError ?? activeServerThread?.session?.lastError ?? null;
   const hostRepairErrorKey =
-    isServerThread && threadError && isHostRepairEligibleThreadError(threadError)
-      ? `${routeThreadKey}:${activeServerThread?.session?.updatedAt ?? "local"}:${threadError}`
+    isServerThread && hostRepairFailure && isHostRepairEligibleThreadError(hostRepairFailure)
+      ? `${routeThreadKey}:${activeServerThread?.session?.updatedAt ?? "local"}:${hostRepairFailure}`
       : null;
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
@@ -4160,30 +4161,6 @@ function ChatViewContent(props: ChatViewProps) {
     isSendBusy ||
     isConnecting ||
     isRevertingCheckpoint;
-  const providerFailoverNotice = useMemo(
-    () => findProviderFailoverNotice(threadActivities),
-    [threadActivities],
-  );
-  const providerFailoverActive = isProviderFailoverActive({
-    notice: providerFailoverNotice,
-    currentModel: activeServerThread?.modelSelection.model ?? null,
-  });
-  const usageGuardCurrentInstanceId =
-    activeServerThread?.session?.providerInstanceId ??
-    activeServerThread?.modelSelection.instanceId ??
-    null;
-  const usageGuardPauseNotice = useMemo(
-    () => findUsageGuardPauseNotice(threadActivities, usageGuardCurrentInstanceId),
-    [threadActivities, usageGuardCurrentInstanceId],
-  );
-  const usageGuardPaused = isUsageGuardPauseActive({
-    notice: usageGuardPauseNotice,
-    pendingWork: routeServerThreadShell?.pendingWork,
-    isWorking,
-  });
-  const [usageGuardResuming, setUsageGuardResuming] = useState(false);
-  const usageGuardEffortSelection =
-    activeServerThread?.modelSelection ?? activeThread?.modelSelection ?? null;
 
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
@@ -4530,10 +4507,7 @@ function ChatViewContent(props: ChatViewProps) {
   // waiting, not the work on screen, and backdates the elapsed clock to when
   // the resume was queued rather than when this turn began.
   const visibleStartupAutoResumePending =
-    startupAutoResumePending &&
-    !activeProviderAuthenticationPaused &&
-    !usageGuardPaused &&
-    !isWorking;
+    startupAutoResumePending && !activeProviderAuthenticationPaused && !isWorking;
   // A backgrounded task keeps running after the turn that launched it ends —
   // that is the point of backgrounding one — and the harness re-invokes the
   // agent when it exits. The server knows this and parks the continuation
@@ -4681,18 +4655,11 @@ function ChatViewContent(props: ChatViewProps) {
         count={threadHeldMessages.length}
         failedCount={threadHeldMessages.filter((message) => message.status === "failed").length}
         status={
-          usageGuardPaused
-            ? "Waiting for usage budget"
-            : phase === "running"
-              ? "Joining the running turn"
-              : "Sends when the current work finishes"
+          phase === "running" ? "Joining the running turn" : "Sends when the current work finishes"
         }
       >
         {(closeQueuedMessages) => (
           <>
-            {usageGuardPaused && usageGuardPauseNotice && (
-              <QueuedMessageCountdown notice={usageGuardPauseNotice} />
-            )}
             {threadHeldMessages.map((message, index) => (
               <div
                 key={message.id}
@@ -4707,9 +4674,7 @@ function ChatViewContent(props: ChatViewProps) {
                     ? "Sending"
                     : message.status === "failed"
                       ? "Send failed"
-                      : usageGuardPaused
-                        ? "Queued · waiting for credits"
-                        : "Queued"}
+                      : "Queued"}
                 </span>
                 <span
                   className="min-w-0 flex-1 whitespace-pre-wrap break-words text-xs leading-relaxed line-clamp-3"
@@ -4793,7 +4758,7 @@ function ChatViewContent(props: ChatViewProps) {
       </QueuedMessagesChip>
     );
   const visibleAgentAutoResumePending = shouldAnnounceAgentAutoResume({
-    pending: agentAutoResumePending && !usageGuardPaused,
+    pending: agentAutoResumePending,
     isWorking,
     hasRunningBackgroundTask,
   });
@@ -5223,99 +5188,6 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeServerThread, draftId, routeThreadKey, routeThreadRef],
   );
-  const onResumeUsageGuard = useCallback(
-    async (selection?: ModelSelection) => {
-      const threadId = activeServerThread?.id;
-      if (threadId === undefined || usageGuardResuming) return;
-      setUsageGuardResuming(true);
-      try {
-        const result = await resumeUsageGuard({
-          environmentId,
-          input: { threadId, ...(selection ? { modelSelection: selection } : {}) },
-        });
-        if (result._tag === "Failure") {
-          setThreadError(threadId, "Could not resume queued work. Please try again.");
-          return;
-        }
-        if (!result.value.resumed && result.value.reason) {
-          setThreadError(threadId, result.value.reason);
-          return;
-        }
-        if (selection)
-          setComposerDraftModelSelection(composerDraftTarget, selection, { replaceOptions: true });
-      } catch {
-        setThreadError(threadId, "Could not resume queued work. Please try again.");
-      } finally {
-        setUsageGuardResuming(false);
-      }
-    },
-    [
-      activeServerThread?.id,
-      usageGuardResuming,
-      environmentId,
-      resumeUsageGuard,
-      setThreadError,
-      setComposerDraftModelSelection,
-      composerDraftTarget,
-    ],
-  );
-
-  const [usageGuardRefreshing, setUsageGuardRefreshing] = useState(false);
-  const onRefreshUsageGuardReading = useCallback(async () => {
-    const provider = providerStatuses.find(
-      (entry) => entry.instanceId === usageGuardEffortSelection?.instanceId,
-    );
-    if (!provider || usageGuardRefreshing) return;
-    setUsageGuardRefreshing(true);
-    try {
-      await refreshProviderUsage(provider);
-    } finally {
-      setUsageGuardRefreshing(false);
-    }
-  }, [
-    providerStatuses,
-    usageGuardEffortSelection?.instanceId,
-    usageGuardRefreshing,
-    refreshProviderUsage,
-  ]);
-
-  const onApplyUsageGuardEffort = useCallback(
-    async (selection: ModelSelection) => {
-      if (!activeServerThread || usageGuardResuming) return;
-      setUsageGuardResuming(true);
-      try {
-        const result = await resumeUsageGuard({
-          environmentId,
-          input: { threadId: activeServerThread.id, recheckOnly: true, modelSelection: selection },
-        });
-        if (result._tag === "Failure") {
-          setThreadError(
-            activeServerThread.id,
-            "Could not apply the thinking effort. Please try again.",
-          );
-          return;
-        }
-        setComposerDraftModelSelection(composerDraftTarget, selection, { replaceOptions: true });
-      } catch {
-        setThreadError(
-          activeServerThread.id,
-          "Could not apply the thinking effort. Please try again.",
-        );
-      } finally {
-        setUsageGuardResuming(false);
-      }
-    },
-    [
-      activeServerThread,
-      usageGuardResuming,
-      resumeUsageGuard,
-      environmentId,
-      composerDraftTarget,
-      setComposerDraftModelSelection,
-      setThreadError,
-    ],
-  );
-
   useEffect(() => {
     if (
       !activeThread ||
@@ -7905,8 +7777,7 @@ function ChatViewContent(props: ChatViewProps) {
       activeThreadKey !== null &&
       isServerThread &&
       shouldHoldComposerSend({
-        backgroundTasksRunning:
-          usageGuardPaused || hasRunningBackgroundTask || threadHeldMessages.length > 0,
+        backgroundTasksRunning: hasRunningBackgroundTask || threadHeldMessages.length > 0,
         hasSendableContent,
         sendNow: sendOptions?.sendNow === true,
       })
@@ -8317,13 +8188,15 @@ function ChatViewContent(props: ChatViewProps) {
         preserveExactText?: boolean;
         /** The plan this turn carries out, marked implemented when it starts. */
         sourceProposedPlanId?: string;
+        /** Runs the turn here instead of on the composer's selection. */
+        modelSelection?: ModelSelection;
       },
     ) => {
       if (!activeThread || !isServerThread || sendInFlightRef.current) {
         throw new Error("This thread is not ready to send another turn.");
       }
       const sendCtx = composerRef.current?.getSendContext();
-      if (!sendCtx?.providerAvailable) {
+      if (!sendCtx || (!sendCtx.providerAvailable && options?.modelSelection === undefined)) {
         throw new Error("The active provider is unavailable.");
       }
 
@@ -8373,7 +8246,7 @@ function ChatViewContent(props: ChatViewProps) {
             text: messageText,
             attachments: [],
           },
-          modelSelection: sendCtx.selectedModelSelection,
+          modelSelection: options?.modelSelection ?? sendCtx.selectedModelSelection,
           titleSeed: activeThread.title,
           runtimeMode,
           interactionMode,
@@ -8451,53 +8324,175 @@ function ChatViewContent(props: ChatViewProps) {
   );
 
   const resumableSessionFailure = canResumeFailedThreadSession(activeThread);
-  const onResumeIncompleteTurn = useCallback(() => {
-    if (
-      !activeThread ||
-      (resumableAssistantMessageId === null &&
-        resumableRuntimeErrorActivityId === null &&
-        !resumableSessionFailure) ||
-      isWorking ||
-      activeEnvironmentUnavailable ||
-      resumeIncompleteTurnInFlightRef.current ||
-      sendInFlightRef.current
-    ) {
-      return;
-    }
+  const onResumeIncompleteTurn = useCallback(
+    (modelSelection?: ModelSelection) => {
+      if (
+        !activeThread ||
+        (resumableAssistantMessageId === null &&
+          resumableRuntimeErrorActivityId === null &&
+          !resumableSessionFailure) ||
+        isWorking ||
+        activeEnvironmentUnavailable ||
+        resumeIncompleteTurnInFlightRef.current ||
+        sendInFlightRef.current
+      ) {
+        return;
+      }
 
-    setIsResumeIncompleteTurnBusy(true);
-    void runResumeIncompleteTurn({
-      inFlightRef: resumeIncompleteTurnInFlightRef,
-      send: (message) =>
-        sendAutomatedConversationTurn(message, {
-          preserveExactText: true,
-        }),
-    })
-      .catch((error: unknown) => {
-        const message =
-          error instanceof Error ? error.message : "Failed to resume the incomplete response.";
-        setThreadError(activeThread.id, message);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not resume response",
-            description: message,
+      setIsResumeIncompleteTurnBusy(true);
+      void runResumeIncompleteTurn({
+        inFlightRef: resumeIncompleteTurnInFlightRef,
+        send: (message) =>
+          sendAutomatedConversationTurn(message, {
+            preserveExactText: true,
+            ...(modelSelection === undefined ? {} : { modelSelection }),
           }),
-        );
       })
-      .finally(() => {
-        setIsResumeIncompleteTurnBusy(false);
-      });
+        .catch((error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : "Failed to resume the incomplete response.";
+          setThreadError(activeThread.id, message);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not resume response",
+              description: message,
+            }),
+          );
+        })
+        .finally(() => {
+          setIsResumeIncompleteTurnBusy(false);
+        });
+    },
+    [
+      activeThread,
+      activeEnvironmentUnavailable,
+      isWorking,
+      resumableAssistantMessageId,
+      resumableRuntimeErrorActivityId,
+      resumableSessionFailure,
+      sendAutomatedConversationTurn,
+      setThreadError,
+    ],
+  );
+
+  // A provider failure pauses the thread. Nothing moves until the person picks:
+  // the card's choices are read only while it is on screen.
+  const pausedFailure =
+    isServerThread &&
+    resumableSessionFailure &&
+    !activeProviderAuthenticationPaused &&
+    activeThread?.session?.lastError !== (dismissedServerErrorsByThreadKey[routeThreadKey] ?? null)
+      ? (activeThread?.session?.lastError ?? null)
+      : null;
+  const usageByAccountKey = useProviderUsageStore((store) => store.byAccountKey);
+  const pausedInstanceId =
+    activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection.instanceId ?? null;
+  const pausedModel = activeThread?.modelSelection.model ?? null;
+  const threadPause = useMemo(() => {
+    if (pausedFailure === null) return null;
+    const nowMs = Date.now();
+    const summaries = deriveProviderUsageSummaries(
+      providerStatuses,
+      threadActivities,
+      usageByAccountKey,
+      nowMs,
+      environmentId,
+    );
+    const current = providerStatuses.find((entry) => entry.instanceId === pausedInstanceId);
+    const reason = classifyThreadPause(pausedFailure);
+    const resetAt =
+      reason === "usage-limit" || reason === "out-of-credits"
+        ? pauseResetAt(
+            summaries.find((summary) => summary.provider === current)?.windows ?? [],
+            nowMs,
+          )
+        : null;
+    const choices = {
+      providers: providerStatuses,
+      summaries,
+      currentModel: pausedModel,
+      labelOf: providerUsageName,
+      nowMs,
+    };
+    return {
+      title: describeThreadPause(reason, current ? providerUsageName(current) : "The provider"),
+      note:
+        resetAt === null
+          ? null
+          : `This chat is paused. Usage comes back ${formatThreadPauseReset(resetAt, nowMs)}.`,
+      detail: pausedFailure,
+      modelGroups: pauseModelChoices({ ...choices, currentInstanceId: pausedInstanceId }),
+      accounts: pauseAccountChoices({ ...choices, current }),
+      ...(current?.supportsAccountSwitch === true
+        ? { onSignInAnother: () => requestProviderAccountSwitch(current.instanceId) }
+        : {}),
+    };
   }, [
-    activeThread,
-    activeEnvironmentUnavailable,
-    isWorking,
-    resumableAssistantMessageId,
-    resumableRuntimeErrorActivityId,
-    resumableSessionFailure,
-    sendAutomatedConversationTurn,
-    setThreadError,
+    environmentId,
+    pausedFailure,
+    pausedInstanceId,
+    pausedModel,
+    providerStatuses,
+    requestProviderAccountSwitch,
+    threadActivities,
+    usageByAccountKey,
   ]);
+  const resumePausedThread = useCallback(
+    (modelSelection?: ModelSelection) => {
+      // A message that never reached the provider has to go itself: a resume
+      // only tells the provider to carry on with what it already has.
+      if (unsentMessage === null) {
+        onResumeIncompleteTurn(modelSelection);
+        return;
+      }
+      void (async () => {
+        if (modelSelection !== undefined && activeServerThread) {
+          const moved = await updateThreadMetadata({
+            environmentId,
+            input: { threadId: activeServerThread.id, modelSelection },
+          });
+          if (moved._tag === "Failure") return;
+        }
+        sendUnsentMessageAgain(MessageId.make(unsentMessage.messageId));
+      })();
+    },
+    [
+      activeServerThread,
+      environmentId,
+      onResumeIncompleteTurn,
+      sendUnsentMessageAgain,
+      unsentMessage,
+      updateThreadMetadata,
+    ],
+  );
+  const switchPausedThreadTo = useCallback(
+    (choice: ThreadPauseModelChoice | ThreadPauseAccountChoice) => {
+      if (!activeThread) return;
+      const model = resolveAppModelSelectionForInstance(
+        choice.instanceId,
+        settings,
+        providerStatuses,
+        choice.model,
+      );
+      if (!model) return;
+      const selection = selectAppModelWithHighEffort(
+        activeThread.modelSelection,
+        { instanceId: choice.instanceId, model },
+        providerStatuses,
+      );
+      setComposerDraftModelSelection(composerDraftTarget, selection, { replaceOptions: true });
+      resumePausedThread(selection);
+    },
+    [
+      activeThread,
+      composerDraftTarget,
+      providerStatuses,
+      resumePausedThread,
+      setComposerDraftModelSelection,
+      settings,
+    ],
+  );
 
   useEffect(() => {
     const waiter = compactionCompletionWaiterRef.current;
@@ -10071,25 +10066,7 @@ function ChatViewContent(props: ChatViewProps) {
         ) : null}
         {chatColumnHeader}
 
-        <ThreadErrorBanner
-          error={threadError}
-          {...(resumableSessionFailure ? { onResume: onResumeIncompleteTurn } : {})}
-          resuming={isResumeIncompleteTurnBusy}
-          resumeDisabled={activeEnvironmentUnavailable || isWorking}
-          occurredAt={activeServerThread?.session?.updatedAt ?? null}
-          onDismiss={dismissThreadError}
-          {...(isServerThread && activeServerThread?.session?.lastError
-            ? { onResetSession: () => void resetFailedThreadSession() }
-            : {})}
-          resettingSession={resettingSessionThreadKey === routeThreadKey}
-          resetSessionDisabled={activeEnvironmentUnavailable || isWorking}
-          {...(hostRepairErrorKey && hostRepairStartedErrorKey !== hostRepairErrorKey
-            ? { onFixWithAi: () => void startHostRepairForThreadError() }
-            : {})}
-          fixingWithAi={
-            hostRepairErrorKey !== null && hostRepairStartingErrorKey === hostRepairErrorKey
-          }
-        />
+        <ThreadErrorBanner error={threadError} occurredAt={null} onDismiss={dismissThreadError} />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
@@ -10215,41 +10192,39 @@ function ChatViewContent(props: ChatViewProps) {
                   visibleAgentAutoResumePending || visibleStartupAutoResumePending
                 }
                 workingStatusLabel={
-                  usageGuardPaused
-                    ? "Waiting for credits"
-                    : steerWaitingBehindSubagent
-                      ? "Finishing subagent before your message"
-                      : compactionOperationStage === "compacting"
-                        ? "Compacting context"
-                        : compactionOperationStage === "continuing"
-                          ? "Continuing conversation"
-                          : visibleStartupAutoResumePending
-                            ? "Auto-resuming thread"
-                            : visibleAgentAutoResumePending
-                              ? "Agent auto-resuming"
-                              : showsBackgroundWork
-                                ? describeRunningBackgroundTasks(runningBackgroundTasks.length)
-                                : !timelineIsWorking && isThreadInterruptible
-                                  ? // Reached only via the branch above: nothing is
-                                    // streaming, but a queued send is being started
-                                    // or an interrupted turn recovered. "Working for
-                                    // X" would be wrong — no work is going out — so
-                                    // say what it is.
-                                    (describePendingTurnStart({
-                                      pendingWork: serverPendingWork,
-                                      latestTurnState: activeLatestTurn?.state ?? null,
-                                      sessionProviderInstanceId:
-                                        activeThread.session?.providerInstanceId ?? null,
-                                      requestedProviderInstanceId:
-                                        activeThread.modelSelection.instanceId,
-                                      providerName: deliveryProvider.requestedName,
-                                    }) ?? "Recovering the interrupted response")
-                                  : // A turn that happens to have compacted earlier is just a
-                                    // turn; labelling the rest of it "Continuing after
-                                    // compaction" pins an implementation detail to the status
-                                    // line long after it stopped being what is happening. The
-                                    // default elapsed "Working for X" is the honest read.
-                                    null
+                  steerWaitingBehindSubagent
+                    ? "Finishing subagent before your message"
+                    : compactionOperationStage === "compacting"
+                      ? "Compacting context"
+                      : compactionOperationStage === "continuing"
+                        ? "Continuing conversation"
+                        : visibleStartupAutoResumePending
+                          ? "Auto-resuming thread"
+                          : visibleAgentAutoResumePending
+                            ? "Agent auto-resuming"
+                            : showsBackgroundWork
+                              ? describeRunningBackgroundTasks(runningBackgroundTasks.length)
+                              : !timelineIsWorking && isThreadInterruptible
+                                ? // Reached only via the branch above: nothing is
+                                  // streaming, but a queued send is being started
+                                  // or an interrupted turn recovered. "Working for
+                                  // X" would be wrong — no work is going out — so
+                                  // say what it is.
+                                  (describePendingTurnStart({
+                                    pendingWork: serverPendingWork,
+                                    latestTurnState: activeLatestTurn?.state ?? null,
+                                    sessionProviderInstanceId:
+                                      activeThread.session?.providerInstanceId ?? null,
+                                    requestedProviderInstanceId:
+                                      activeThread.modelSelection.instanceId,
+                                    providerName: deliveryProvider.requestedName,
+                                  }) ?? "Recovering the interrupted response")
+                                : // A turn that happens to have compacted earlier is just a
+                                  // turn; labelling the rest of it "Continuing after
+                                  // compaction" pins an implementation detail to the status
+                                  // line long after it stopped being what is happening. The
+                                  // default elapsed "Working for X" is the honest read.
+                                  null
                 }
                 activeTurnInProgress={timelineIsWorking || !latestTurnSettled}
                 activeTurnStartedAt={timelineWorkStartedAt}
@@ -10515,26 +10490,23 @@ function ChatViewContent(props: ChatViewProps) {
                       project={activeProject}
                     />
                   ) : null}
-                  {providerFailoverActive && providerFailoverNotice ? (
-                    <ProviderFailoverBanner notice={providerFailoverNotice} />
-                  ) : null}
-                  {usageGuardPaused && usageGuardPauseNotice ? (
-                    <UsageGuardPausedBanner
-                      notice={usageGuardPauseNotice}
-                      onResume={onResumeUsageGuard}
-                      onCancel={() => {
-                        void onInterrupt();
-                      }}
-                      onRefresh={() => {
-                        void onRefreshUsageGuardReading();
-                      }}
-                      refreshing={usageGuardRefreshing}
-                      resuming={usageGuardResuming}
-                      selection={usageGuardEffortSelection}
-                      provider={providerStatuses.find(
-                        (provider) => provider.instanceId === usageGuardEffortSelection?.instanceId,
-                      )}
-                      onApplyEffort={onApplyUsageGuardEffort}
+                  {threadPause !== null ? (
+                    <ThreadPausedCard
+                      {...threadPause}
+                      resuming={isResumeIncompleteTurnBusy}
+                      disabled={activeEnvironmentUnavailable || isWorking}
+                      onResume={() => resumePausedThread()}
+                      onSwitchModel={switchPausedThreadTo}
+                      onSwitchAccount={switchPausedThreadTo}
+                      onDismiss={dismissThreadError}
+                      onResetSession={() => void resetFailedThreadSession()}
+                      {...(hostRepairErrorKey && hostRepairStartedErrorKey !== hostRepairErrorKey
+                        ? { onFixWithAi: () => void startHostRepairForThreadError() }
+                        : {})}
+                      fixingWithAi={
+                        hostRepairErrorKey !== null &&
+                        hostRepairStartingErrorKey === hostRepairErrorKey
+                      }
                     />
                   ) : null}
                   {waitingOnYouAttachment && activeThreadKey ? (

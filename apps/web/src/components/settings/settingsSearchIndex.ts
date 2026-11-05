@@ -82,21 +82,6 @@ const SETTINGS_PAGE_ENTRIES: ReadonlyArray<SettingsSearchEntry> = [
 }));
 
 export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
-  ...entries("/settings/providers", "Providers", "Models", [
-    {
-      title: "Automatic fallback models",
-      anchor: "setting-fallback-models",
-      keywords: [
-        "whitelist",
-        "allowlist",
-        "block",
-        "model restrictions",
-        "fallback",
-        "agent",
-        "side chat",
-      ],
-    },
-  ]),
   ...entries("/settings/general", "General", "Threads", [
     { title: "New threads", keywords: ["worktree", "local", "default mode", "draft"] },
     { title: "Start from origin", keywords: ["worktree", "branch", "remote"] },
@@ -452,9 +437,7 @@ export const SETTINGS_SEARCH_INDEX: ReadonlyArray<SettingsSearchEntry> = [
   ...entries("/settings/source-control", "Source Control", "Version Control", [
     { title: "Source Control Providers", keywords: ["github", "gitlab", "bitbucket", "azure"] },
   ]),
-  ...entries("/settings/providers", "Providers", "Models", [
-    { title: "Usage guard", keywords: ["limit", "failover", "pace", "fallback"] },
-  ]),
+  ...entries("/settings/providers", "Providers", "Models", []),
   ...entries("/settings/diagnostics", "Diagnostics", "Resources", [
     { title: "Resource monitor", keywords: ["cpu", "memory", "performance"] },
     { title: "Resource History", keywords: ["cpu", "memory", "chart"] },

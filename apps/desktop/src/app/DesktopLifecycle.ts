@@ -20,6 +20,7 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import {
   observeDetachedPromise,
   sendIntentionalShutdownToLiveWindows,
+  shouldHideWindowOnClose,
   shouldInterceptWindowCloseForQuit,
   withDesktopRelaunchArguments,
 } from "./DesktopLifecycle.logic.ts";
@@ -289,6 +290,23 @@ export const make = DesktopLifecycle.of({
       "browser-window-created",
       (_event: Electron.Event, window: Electron.BrowserWindow) => {
         window.on("close", (closeEvent) => {
+          if (
+            shouldHideWindowOnClose({
+              platform: environment.platform,
+              quitAllowed,
+              windowIsMain: electronWindow.isMainWindowId(window.id),
+            })
+          ) {
+            closeEvent.preventDefault();
+            // A full-screen window hides to a black Space unless it leaves first.
+            if (window.isFullScreen()) {
+              window.once("leave-full-screen", () => window.hide());
+              window.setFullScreen(false);
+            } else {
+              window.hide();
+            }
+            return;
+          }
           const windowIsAuxiliary = electronWindow.isAuxiliaryWindowId(window.id);
           const intercept = shouldInterceptWindowCloseForQuit({
             platform: environment.platform,

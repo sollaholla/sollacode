@@ -1,6 +1,5 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useServerConfigs } from "../../state/entities";
-import { ModelPolicyModal } from "./ModelPolicyModal";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import Constants from "expo-constants";
 import * as Updates from "expo-updates";
@@ -93,7 +92,6 @@ function LocalSettingsRouteScreen() {
   const { savedConnectionsById } = useSavedRemoteConnections();
   const environmentCount = Object.keys(savedConnectionsById).length;
   const configs = useServerConfigs();
-  const [policyEnvironment, setPolicyEnvironment] = useState<EnvironmentId | null>(null);
   const [query, setQuery] = useState("");
   const mutedColor = useThemeColor("--color-foreground-muted");
 
@@ -135,28 +133,6 @@ function LocalSettingsRouteScreen() {
       category: "AI",
       terms: ["orchestrator", "voice", "microphone", "talk"],
       content: <OrchestratorSettingsSection />,
-    },
-    {
-      id: "fallback-models",
-      category: "AI",
-      terms: ["automatic fallback models", "model restrictions", "failover", "allowlist", "block"],
-      content: (
-        <SettingsSection title="Automatic fallback models">
-          {[...configs.entries()].map(([environmentId, config]) => (
-            <Pressable
-              key={environmentId}
-              accessibilityRole="button"
-              className="p-4"
-              onPress={() => setPolicyEnvironment(environmentId)}
-            >
-              <Text>{config.cwd} — Model restrictions</Text>
-            </Pressable>
-          ))}
-          {configs.size === 0 && (
-            <Text className="p-4">Connect an environment to manage its fallback models.</Text>
-          )}
-        </SettingsSection>
-      ),
     },
     {
       id: "projects",
@@ -278,13 +254,6 @@ function LocalSettingsRouteScreen() {
             </View>
           );
         })}
-        {policyEnvironment && (
-          <ModelPolicyModal
-            environmentId={policyEnvironment}
-            visible
-            onClose={() => setPolicyEnvironment(null)}
-          />
-        )}
       </ScrollView>
     </View>
   );

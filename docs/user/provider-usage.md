@@ -76,8 +76,7 @@ tokens never cross to the client.
 Deep Code appears in the composer usage pill and **Settings > Providers** when its CLI is installed.
 For a direct DeepSeek account, the server reads the official balance endpoint and displays remaining
 USD/CNY credit, including granted and topped-up balances. These are credit amounts, not subscription
-percentages: DeepSeek supplies neither a quota denominator nor a reset date. An insufficient-credit
-response makes that account unavailable as an automatic fallback target while the report is fresh.
+percentages: DeepSeek supplies neither a quota denominator nor a reset date.
 The composer pill still shows the reported credit balance when it is zero or negative; API access
 status remains available in the usage details.
 

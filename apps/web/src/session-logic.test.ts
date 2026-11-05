@@ -803,52 +803,29 @@ describe("deriveWorkLogEntries", () => {
     expect(workEntryIndicatesToolFailure(entry!)).toBe(true);
   });
 
-  it("hides only the runtime error with a successful failover receipt", () => {
+  it("leaves provider failures to the pause card, old rows included", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
-        id: "agy:277",
-        kind: "runtime.error",
-        tone: "error",
-        summary: "Runtime error",
-        payload: { message: "truncated provider logs..." },
-      }),
-      makeActivity({
-        id: "agy:277:provider.failover.completed",
-        kind: "provider.failover.completed",
-        summary: "usage exhausted · switched to Codex",
-      }),
-      makeActivity({
-        id: "unrelated",
+        id: "failed-turn",
         kind: "runtime.error",
         tone: "error",
         summary: "Runtime error",
         payload: { message: "permission denied" },
       }),
-    ]);
-    expect(entries.map((entry) => entry.id).sort()).toEqual([
-      "agy:277:provider.failover.completed",
-      "unrelated",
-    ]);
-  });
-
-  it("hides a persisted 'Aborted' runtime error: it is our own interrupt, not a failure", () => {
-    const entries = deriveWorkLogEntries([
       makeActivity({
-        id: "opencode-aborted",
-        kind: "runtime.error",
+        id: "failed-start",
+        kind: "provider.turn.start.failed",
         tone: "error",
-        summary: "Runtime error",
-        payload: { message: "Aborted" },
+        summary: "Provider turn start failed",
       }),
       makeActivity({
-        id: "real-error",
-        kind: "runtime.error",
-        tone: "error",
-        summary: "Runtime error",
-        payload: { message: "Aborted by policy: file too large" },
+        id: "old-switch",
+        kind: "provider.failover.completed",
+        summary: "usage exhausted · switched to Codex",
       }),
+      makeActivity({ id: "old-hold", kind: "usage-guard.paused", summary: "Cooling down" }),
     ]);
-    expect(entries.map((entry) => entry.id)).toEqual(["real-error"]);
+    expect(entries).toEqual([]);
   });
 
   it("keeps the provider retry marker out of the log — the Working row already says it", () => {

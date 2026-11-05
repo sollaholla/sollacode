@@ -29,6 +29,7 @@ import {
   GitBranchIcon,
   EllipsisIcon,
   MessageSquareIcon,
+  PauseIcon,
   PlusIcon,
   SearchIcon,
   ServerIcon,
@@ -378,9 +379,9 @@ function SidebarV2ThreadTooltip({
             </div>
           ) : null}
           {thread.session?.lastError ? (
-            <div className="flex min-w-0 items-center gap-2 text-red-600 dark:text-red-400">
-              <CircleAlertIcon className="size-3 shrink-0 stroke-current" />
-              <div className="min-w-0 truncate">Error occurred</div>
+            <div className="flex min-w-0 items-center gap-2 text-amber-700 dark:text-amber-300">
+              <PauseIcon className="size-3 shrink-0 stroke-current" />
+              <div className="min-w-0 truncate">Paused</div>
             </div>
           ) : null}
         </div>
@@ -639,9 +640,9 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
             }
           : status === "failed"
             ? {
-                label: "Failed",
+                label: "Paused",
                 icon: null,
-                className: "text-red-700 dark:text-red-300",
+                className: "text-amber-700 dark:text-amber-300",
               }
             : isWoke
               ? {

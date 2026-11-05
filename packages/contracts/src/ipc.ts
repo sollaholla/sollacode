@@ -1470,6 +1470,24 @@ export interface DesktopBridge {
    * preloads, so every caller feature-detects.
    */
   orchestratorBubble?: DesktopOrchestratorBubbleBridge;
+  /** Keeps the macOS menu bar item current. `undefined` in web builds and old preloads. */
+  publishMenuBarStats?: (stats: DesktopMenuBarStats) => Promise<void>;
+}
+
+/** One chat the macOS menu bar names. */
+export interface DesktopMenuBarChat {
+  readonly environmentId: string;
+  readonly threadId: string;
+  readonly title: string;
+  readonly status: "working" | "waiting" | "paused";
+}
+
+/** What the app window reports about every computer's chats. */
+export interface DesktopMenuBarStats {
+  readonly working: number;
+  readonly waiting: number;
+  readonly paused: number;
+  readonly chats: ReadonlyArray<DesktopMenuBarChat>;
 }
 
 /**
@@ -1719,7 +1737,7 @@ export interface DesktopPreviewBridge {
       tabId: string,
       input: PreviewAutomationUploadInput,
     ) => Promise<PreviewAutomationUploadResult>;
-    /** Chooses in a `<select>` without opening the menu Chromium draws outside the page. */
+    /** Chooses in a `<select>` without opening its list. */
     selectOption: (
       tabId: string,
       input: PreviewAutomationSelectOptionInput,

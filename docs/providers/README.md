@@ -31,4 +31,4 @@ Every built-in provider that is a CLI can be installed from Settings: an instanc
 
 Installing never signs the CLI in. Each provider's authentication is its own step, described in its page above.
 
-For user-facing behavior, see [usage and resets](../user/provider-usage.md), [usage-limit failover](../user/provider-failover.md), [account switching](../user/provider-account-switching.md), and [composer controls](../user/composer.md).
+For user-facing behavior, see [usage and resets](../user/provider-usage.md), [paused threads](../user/paused-threads.md), [account switching](../user/provider-account-switching.md), and [composer controls](../user/composer.md).

@@ -439,7 +439,7 @@ const make = Effect.gen(function* () {
         next_attempt_at = NULL,
         claimed_at = ${isoOrNull(now)},
         lease_expires_at = ${isoOrNull(leaseExpiresAt)},
-        blocked_reason = CASE WHEN blocked_reason LIKE 'usage-guard-yield:%' THEN blocked_reason ELSE NULL END,
+        blocked_reason = NULL,
         updated_at = ${iso(now)}
       WHERE obligation_id = ${obligationId}
         AND (
@@ -755,12 +755,10 @@ const make = Effect.gen(function* () {
         AND (
           ${input.mode} = 'thread-terminal'
           OR ${input.mode} = 'user-stop'
-          OR blocked_reason LIKE 'usage-guard-yield:%'
           OR NOT (state = 'pending' AND kind = 'active-turn-recovery')
         )
         AND (
           ${input.mode} <> 'user-supersede'
-          OR blocked_reason LIKE 'usage-guard-yield:%'
           OR state NOT IN ('claimed', 'executing')
           -- A claimed-but-not-yet-running synthetic resume is work a user
           -- reply must beat: the handler's own CAS to 'executing' fails on the
@@ -792,7 +790,7 @@ const make = Effect.gen(function* () {
         next_attempt_at = NULL,
         claimed_at = NULL,
         lease_expires_at = NULL,
-        blocked_reason = CASE WHEN blocked_reason LIKE 'usage-guard-yield:%' THEN blocked_reason ELSE 'recovered after scheduler restart' END,
+        blocked_reason = 'recovered after scheduler restart',
         updated_at = ${iso(updatedAt)}
       WHERE obligation_id IN (
         SELECT obligation_id

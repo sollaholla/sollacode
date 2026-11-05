@@ -30,7 +30,6 @@ import {
   type ProviderUsageResetOutcome,
   type ServerProvider,
   type ServerProviderUpdateState,
-  type ServerProviderUsageGuardState,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -365,10 +364,6 @@ export const ProviderRegistryLive = Layer.effect(
         Partial<Record<ProviderMaintenanceActionKind, ServerProviderUpdateState>>
       >
     >(new Map());
-    const usageGuardStatesRef = yield* Ref.make<
-      ReadonlyMap<ProviderInstanceId, ServerProviderUsageGuardState>
-    >(new Map());
-
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
     // reference is used for identity equality so "no-op" reconciles
@@ -427,25 +422,6 @@ export const ProviderRegistryLive = Layer.effect(
      * rebuilt wholesale by health probes, so without this the guard's tier
      * would blink off the UI every refresh interval.
      */
-    const applyProviderUsageGuardState = Effect.fn("applyProviderUsageGuardState")(function* (
-      provider: ServerProvider,
-    ) {
-      const usageGuard = (yield* Ref.get(usageGuardStatesRef)).get(provider.instanceId);
-      if (!usageGuard) {
-        const { usageGuard: _usageGuard, ...providerWithoutUsageGuard } = provider;
-        return providerWithoutUsageGuard;
-      }
-      return { ...provider, usageGuard };
-    });
-
-    /**
-     * Advertise whether this instance can be signed in from inside the app.
-     *
-     * Read from the live instance's `accountAuth` capability rather than a
-     * driver allow-list in the web bundle, so a driver that gains the
-     * capability starts offering the in-app flow immediately instead of
-     * continuing to print a command for the person to run themselves.
-     */
     const applyAccountSwitchSupport = Effect.fn("applyAccountSwitchSupport")(function* (
       provider: ServerProvider,
     ) {
@@ -463,9 +439,7 @@ export const ProviderRegistryLive = Layer.effect(
       provider: ServerProvider,
     ) {
       return withProviderSignInCommand(
-        yield* applyAccountSwitchSupport(
-          yield* applyProviderUsageGuardState(yield* applyProviderUpdateState(provider)),
-        ),
+        yield* applyAccountSwitchSupport(yield* applyProviderUpdateState(provider)),
       );
     });
 
@@ -574,32 +548,6 @@ export const ProviderRegistryLive = Layer.effect(
       },
     );
 
-    const setProviderUsageGuardState = Effect.fn("setProviderUsageGuardState")(function* (input: {
-      readonly instanceId: ProviderInstanceId;
-      readonly state: ServerProviderUsageGuardState | null;
-    }) {
-      yield* Ref.update(usageGuardStatesRef, (previous) => {
-        const next = new Map(previous);
-        if (input.state === null) {
-          next.delete(input.instanceId);
-        } else {
-          next.set(input.instanceId, input.state);
-        }
-        return next;
-      });
-
-      const existingProviders = yield* Ref.get(providersRef);
-      const matchingProvider = existingProviders.find(
-        (candidate) => candidate.instanceId === input.instanceId,
-      );
-      if (!matchingProvider) {
-        return existingProviders;
-      }
-
-      const nextProvider = yield* applyVolatileProviderState(matchingProvider);
-      return yield* upsertProviders([nextProvider], { persist: false });
-    });
-
     const refreshOneSource = Effect.fn("refreshOneSource")(function* (
       providerSource: ProviderSnapshotSource,
     ) {
@@ -697,8 +645,7 @@ export const ProviderRegistryLive = Layer.effect(
       // Codex emits both account-wide and model-specific rate-limit events.
       // The provider card is account-wide state; recording a model bucket here
       // overwrites that state until the next health refresh and makes usage
-      // appear to reset. The usage guard still receives every raw event from
-      // ProviderRuntimeIngestion, so model-specific enforcement is preserved.
+      // appear to reset.
       if (
         input.driver === ProviderDriverKind.make("codex") &&
         isCodexModelScopedUsage(input.accountUsage)
@@ -937,7 +884,6 @@ export const ProviderRegistryLive = Layer.effect(
       recordAccountUsage,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
-      setProviderUsageGuardState,
       get streamChanges() {
         return Stream.fromPubSub(changesPubSub);
       },

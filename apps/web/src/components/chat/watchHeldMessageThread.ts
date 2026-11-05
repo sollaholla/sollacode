@@ -1,5 +1,4 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { findUsageGuardPauseNotice, isUsageGuardPauseActive } from "./usageGuardPause";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentThreadDetails, environmentThreadShells } from "../../state/threads";
 import { deriveProviderTasks, isProviderTaskActive } from "../../providerTasks";
@@ -31,15 +30,7 @@ export function watchHeldMessageThread(
       current.session?.status !== "running" &&
       current.session?.status !== "starting" &&
       current.latestTurn?.state !== "running";
-    const usagePaused = isUsageGuardPauseActive({
-      notice: findUsageGuardPauseNotice(
-        thread.activities,
-        thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
-      ),
-      pendingWork: current.pendingWork,
-      isWorking: !idle,
-    });
-    notify(!usagePaused && !tasks.some(isProviderTaskActive), idle);
+    notify(!tasks.some(isProviderTaskActive), idle);
   };
   const unsubscribe = appAtomRegistry.subscribe(stateAtom, check);
   const unsubscribeShell = appAtomRegistry.subscribe(shellAtom, check);

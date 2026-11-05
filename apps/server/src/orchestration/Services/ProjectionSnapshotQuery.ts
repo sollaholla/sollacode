@@ -315,8 +315,8 @@ export interface ProjectionSnapshotQueryShape {
 
   /**
    * Read one exact provider turn independently of the thread's latest-turn
-   * pointer. Durable work uses this when provider failover has already made a
-   * successor turn the latest while the original delivery is still settling.
+   * pointer. Durable work uses this when a successor turn has already become
+   * the latest while the original delivery is still settling.
    */
   readonly getThreadProviderTurnById?: (
     threadId: ThreadId,
@@ -365,17 +365,6 @@ export interface ProjectionSnapshotQueryShape {
     threadId: ThreadId,
     terms: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<OrchestrationMessage>, ProjectionRepositoryError>;
-
-  /**
-   * The newest activity of one kind on a thread, read through the
-   * `(thread_id, kind)` index rather than the bounded detail window — a
-   * failover record can sit behind hundreds of tool rows by the time the
-   * next turn asks about it.
-   */
-  readonly getLatestThreadActivityByKind?: (
-    threadId: ThreadId,
-    kind: string,
-  ) => Effect.Effect<Option.Option<OrchestrationThreadActivity>, ProjectionRepositoryError>;
 
   /** Latest explicit client selection, including reselecting the same model. */
   readonly getLatestClientModelSelection?: (

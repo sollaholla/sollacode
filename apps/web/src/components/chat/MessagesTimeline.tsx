@@ -2302,7 +2302,7 @@ function MessageDeliveryIndicator({
 /**
  * Replaces the delivery indicator when a message's turn failed for good, so
  * the row stops promising it is queued. Send again delivers the same message
- * with the thread's current model, which after a failover is the new provider.
+ * with the thread's current model.
  */
 function UnsentMessageIndicator({ messageId, detail }: { messageId: MessageId; detail: string }) {
   const ctx = use(TimelineRowCtx);
@@ -2314,7 +2314,7 @@ function UnsentMessageIndicator({ messageId, detail }: { messageId: MessageId; d
         <TooltipTrigger
           render={
             <span
-              className="flex items-center gap-1 text-[11px] font-medium text-destructive-foreground"
+              className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground"
               aria-label={`Not sent: ${detail}`}
               role="status"
             />

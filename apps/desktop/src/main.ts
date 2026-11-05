@@ -38,6 +38,7 @@ import { disabledCaptureFeatures } from "./app/DesktopCaptureCompatibility.ts";
 import * as DesktopAppIdentity from "./app/DesktopAppIdentity.ts";
 import * as DesktopConnectionCatalogStore from "./app/DesktopConnectionCatalogStore.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
+import * as DesktopMenuBar from "./window/DesktopMenuBar.ts";
 import * as DesktopAssets from "./app/DesktopAssets.ts";
 import * as DesktopBackendConfiguration from "./backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./backend/DesktopBackendPool.ts";
@@ -256,7 +257,8 @@ const desktopPreviewLayer = Layer.mergeAll(
   Layer.provideMerge(desktopFoundationLayer),
 );
 
-const desktopWindowLayer = Layer.mergeAll(DesktopWindow.layer, OrchestratorBubbleWindow.layer).pipe(
+const desktopWindowLayer = DesktopMenuBar.layer.pipe(
+  Layer.provideMerge(Layer.mergeAll(DesktopWindow.layer, OrchestratorBubbleWindow.layer)),
   Layer.provideMerge(desktopServerExposureLayer),
   Layer.provideMerge(desktopPreviewLayer),
 );

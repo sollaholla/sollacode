@@ -24,6 +24,7 @@ import { primaryServerKeybindingsAtom } from "../state/server";
 import { readDocumentSelection, useComposerQuoteStore } from "../composerQuote";
 import { useOrchestratorThread } from "../orchestrator/useOrchestratorThread";
 import { buildThreadRouteParams } from "../threadRoutes";
+import { DesktopMenuBarStats } from "./DesktopMenuBarStats";
 import { useEnvironmentIdentificationMode, useSidebarV2Enabled } from "../hooks/useSettings";
 import ThreadSidebar from "./Sidebar";
 import ThreadSidebarV2 from "./SidebarV2";
@@ -312,6 +313,14 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         useComposerQuoteStore.getState().requestQuote(quote.selection, quote.targetKey);
         return;
       }
+      // Sent by a chat row in the macOS menu bar.
+      if (action.startsWith("open-thread:")) {
+        const [environmentId, threadId] = action.slice("open-thread:".length).split("/");
+        if (environmentId && threadId) {
+          void navigate({ to: "/$environmentId/$threadId", params: { environmentId, threadId } });
+        }
+        return;
+      }
       if (action === "open-settings") {
         const isSettingsRoute = /^\/settings(\/|$)/.test(pathname);
         if (!isSettingsRoute) {
@@ -344,6 +353,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       <CloseMobileSidebarOnNavigate />
       <OrchestratorSidebarAutoCollapse />
       <OrchestratorVoiceIssueAnnouncer />
+      {window.desktopBridge?.publishMenuBarStats ? <DesktopMenuBarStats /> : null}
       <Sidebar
         side="left"
         collapsible="offcanvas"

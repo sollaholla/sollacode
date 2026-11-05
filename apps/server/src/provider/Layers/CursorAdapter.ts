@@ -1088,7 +1088,7 @@ export function makeCursorAdapter(
           yield* requireExactLiveSteerTarget();
 
           // The prompt RPC resolves only when the turn ends; callers that need
-          // the admission boundary (usage-limit failover) get it from the
+          // the admission boundary get it from the
           // ACP runtime's request-enqueued hook instead.
           const result = yield* ctx.acp
             .prompt(

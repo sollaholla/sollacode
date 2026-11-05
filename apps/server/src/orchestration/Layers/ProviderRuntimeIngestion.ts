@@ -1,5 +1,3 @@
-import { resolveThreadModelPolicies, modelPolicyError } from "../modelAccessPolicy.ts";
-import { selectedUsageGuardEffort } from "../ProviderUsageGuard.ts";
 import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
@@ -19,27 +17,19 @@ import {
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
   type OrchestrationThreadActivity,
-  type ProviderInstanceId,
   type ProviderRuntimeEvent,
-  type ProviderSession,
-  type ServerProvider,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
-import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
-import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { providerDisplayLabel } from "@t3tools/shared/model";
 import { TURN_USAGE_ACTIVITY_KIND } from "@t3tools/shared/turnUsage";
 import {
   consumeAgentStopStreamDelta,
@@ -53,10 +43,7 @@ import {
   normalizeBrowserTabSet,
 } from "@t3tools/shared/browserTabCleanup";
 
-import {
-  ProviderService,
-  type ProviderServiceShape,
-} from "../../provider/Services/ProviderService.ts";
+import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { isHistoryUnusableFailure } from "../../provider/historyUnusableFailure.ts";
 import { sanitizeProviderFailureText } from "../../provider/providerFailureMessage.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -76,21 +63,11 @@ import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
-import { ProviderUsageGuard } from "../Services/ProviderUsageGuard.ts";
 import { ThreadWorkScheduler } from "../Services/ThreadWorkScheduler.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ServerConfig } from "../../config.ts";
 import { storeSnapshotImages } from "../snapshotImageAttachments.ts";
-import {
-  buildProviderHandoffSummary,
-  classifyDeferredRecoveryFailure,
-  detectProviderUsageLimitExhaustion,
-  detectProviderUnusableRefusal,
-  detectProviderUsageLimitRefusal,
-  isAccountWideProviderExhaustion,
-  providerFailoverModelKey,
-  selectProviderFailoverTarget,
-} from "../ProviderUsageLimitFailover.ts";
+import { classifyDeferredRecoveryFailure } from "../deferredRecovery.ts";
 import { PROVIDER_OVERLOAD_RETRY_REASON_PREFIX } from "../../provider/providerOverloadRetry.ts";
 import {
   backgroundContextCompactionDuration,
@@ -120,22 +97,6 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
-/**
- * Bounded because it only has to outlive the gap between a failover replacing
- * a turn and that turn's own error arriving — seconds in practice.
- */
-const FAILOVER_SUPERSEDED_TURNS_CAPACITY = 512;
-const FAILOVER_SUPERSEDED_TURNS_TTL = Duration.minutes(30);
-
-const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_CAPACITY = 10_000;
-const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_TTL = Duration.hours(24);
-/**
- * How long a usage-limit failover waits for the replacement provider to admit
- * the handoff prompt before treating the target as unusable. Admission is the
- * prompt entering the provider's native transport (or `sendTurn` resolving),
- * never the turn finishing — a handoff turn is a full agentic turn.
- */
-const PROVIDER_FAILOVER_HANDOFF_ADMISSION_TIMEOUT = Duration.seconds(120);
 /**
  * A single runtime event holding the ingestion worker longer than this is
  * logged: the worker is one global FIFO, so one slow event delays every
@@ -1038,33 +999,13 @@ export function runtimeEventToActivities(
   return [];
 }
 
-export interface ProviderRuntimeIngestionOptionsShape {
-  /**
-   * How long a usage-limit failover waits for the replacement provider to
-   * admit the handoff prompt. Production uses two minutes; tests shorten it.
-   */
-  readonly failoverHandoffAdmissionTimeoutMs?: number;
-}
-
-export const ProviderRuntimeIngestionOptions =
-  Context.Reference<ProviderRuntimeIngestionOptionsShape>(
-    "@t3tools/server/orchestration/ProviderRuntimeIngestionOptions",
-    { defaultValue: () => ({}) },
-  );
-
 const make = Effect.gen(function* () {
-  const options = yield* ProviderRuntimeIngestionOptions;
-  const failoverHandoffAdmissionTimeout =
-    options.failoverHandoffAdmissionTimeoutMs === undefined
-      ? PROVIDER_FAILOVER_HANDOFF_ADMISSION_TIMEOUT
-      : Duration.millis(options.failoverHandoffAdmissionTimeoutMs);
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
   const threadWorkScheduler = yield* ThreadWorkScheduler;
-  const usageGuard = yield* ProviderUsageGuard;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const browserTabCleanupStateStore = yield* BrowserTabCleanupStateStore;
   const previewManager = yield* PreviewManager;
@@ -1173,44 +1114,6 @@ const make = Effect.gen(function* () {
     capacity: TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY,
     timeToLive: TASK_DESCRIPTION_BY_TASK_TTL,
     lookup: () => Effect.succeed(""),
-  });
-
-  /**
-   * Turns a usage-limit failover has already taken over, keyed
-   * `threadId:turnId`.
-   *
-   * A failover replaces the running turn and immediately points the session at
-   * the new handoff turn. The dying turn's `runtime.error` almost always lands
-   * *after* that, so by the time it is classified it no longer belongs to the
-   * session's active turn — and `isDeferredRecoveryError` declined to suppress
-   * it on exactly that mismatch. The result was the thing the user has now
-   * reported twice: a red "Runtime error" card sitting directly under
-   * "<model> usage exhausted · switched to <model>", for an exhaustion the
-   * system had already handled perfectly.
-   *
-   * Remembering the superseded turn is what lets the late error be recognised
-   * as the old turn's death rattle rather than a new failure. The rule the
-   * user stated is that an exhausted model must produce no error output at
-   * all; an error appears only when there is nowhere left to fall back to, and
-   * that case has its own `provider.failover.unavailable` /
-   * `provider.failover.start.failed` activities.
-   */
-  const failoverSupersededTurns = yield* Cache.make<string, boolean>({
-    capacity: FAILOVER_SUPERSEDED_TURNS_CAPACITY,
-    timeToLive: FAILOVER_SUPERSEDED_TURNS_TTL,
-    lookup: () => Effect.succeed(false),
-  });
-
-  const exhaustedProviderInstancesByThread = yield* Cache.make<
-    string,
-    {
-      readonly instances: ReadonlySet<string>;
-      readonly models: ReadonlySet<string>;
-    }
-  >({
-    capacity: EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_CAPACITY,
-    timeToLive: EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_TTL,
-    lookup: () => Effect.succeed({ instances: new Set<string>(), models: new Set<string>() }),
   });
 
   const contextCompactionStartedAt = yield* Cache.make<string, string>({
@@ -1930,327 +1833,10 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * The events that can trigger a usage-limit failover: a typed quota update
-   * carrying an exhaustion signal, or a provider error carrying a refusal the
-   * latest quota snapshot corroborates. Both funnel through the same attempt
-   * path with a precomputed exhaustion.
-   */
-  type ProviderFailoverTriggerEvent = Extract<
-    ProviderRuntimeEvent,
-    { type: "account.rate-limits.updated" | "runtime.error" }
-  >;
-
-  const appendProviderFailoverActivity = Effect.fn("appendProviderFailoverActivity")(
-    function* (input: {
-      readonly event: ProviderFailoverTriggerEvent;
-      readonly tone: "info" | "error";
-      readonly kind: string;
-      readonly summary: string;
-      readonly payload: Readonly<Record<string, unknown>>;
-    }) {
-      yield* orchestrationEngine.dispatch({
-        type: "thread.activity.append",
-        commandId: yield* providerCommandId(input.event, input.kind),
-        threadId: input.event.threadId,
-        activity: {
-          id: EventId.make(`${input.event.eventId}:${input.kind}`),
-          tone: input.tone,
-          kind: input.kind,
-          summary: input.summary,
-          payload: input.payload,
-          turnId: toTurnId(input.event.turnId) ?? null,
-          createdAt: input.event.createdAt,
-        },
-        createdAt: input.event.createdAt,
-      });
-    },
-  );
-
-  // The ingestion worker is one global FIFO shared by every provider and
-  // every thread. A usage-limit failover starts a replacement session and
-  // sends it a handoff turn — and for ACP providers (Grok, Cursor) `sendTurn`
-  // does not resolve until that turn ENDS. Run inline, one failover froze
-  // ingestion for the whole app: observed 2026-09-01, a Claude→Grok handoff
-  // turn ran 13m26s inside this worker, so ~1,100 runtime events from six
-  // threads (assistant text, turn.started, delivery receipts) were persisted
-  // up to 13 minutes late. Every affected chat showed "Queued" with no reply,
-  // the fallback thread showed the exhausted provider still "Working", and
-  // Stop — which the user pressed repeatedly because nothing moved — killed
-  // live turns that were in fact answering. Detection stays here; the
-  // handoff runs in its own fiber and only ever waits for prompt ADMISSION.
-  const ingestionScope = yield* Effect.scope;
-  const providerFailoversInFlight = new Set<string>();
-
-  type ProviderFailoverHandoffOutcome =
-    | { readonly _tag: "Accepted"; readonly turnId: TurnId | null }
-    | { readonly _tag: "Rejected"; readonly cause: Cause.Cause<unknown> };
-
-  /**
-   * Send the handoff turn and return as soon as the target provider has
-   * admitted it. `sendTurn` may resolve at admission (Claude, Codex,
-   * OpenCode, mcpBridge) or only at turn end (ACP: Grok, Cursor); the prompt
-   * entering the native transport is reported through `onNativeDispatch`
-   * either way, so whichever signal lands first is the acceptance boundary.
-   * The send fiber keeps running in the ingestion scope afterwards — the turn
-   * belongs to the provider now and its lifecycle arrives as ordinary runtime
-   * events.
-   */
-  const sendProviderFailoverHandoffTurn = Effect.fn("sendProviderFailoverHandoffTurn")(
-    function* (input: {
-      readonly threadId: ThreadId;
-      readonly targetInstanceId: ProviderInstanceId;
-      readonly request: Parameters<ProviderServiceShape["sendTurn"]>[0];
-    }) {
-      const policies = yield* resolveThreadModelPolicies({
-        threadId: input.threadId,
-        settings: yield* serverSettingsService.getSettings,
-        fallback: true,
-        getThread: projectionSnapshotQuery.getThreadShellById,
-      });
-      const detail = input.request.modelSelection
-        ? modelPolicyError(policies, input.request.modelSelection)
-        : "Fallback requires an explicit allowed model.";
-      if (detail)
-        return {
-          _tag: "Rejected",
-          cause: Cause.fail(new Error(detail)),
-        } satisfies ProviderFailoverHandoffOutcome;
-      const nativelyDispatched = yield* Deferred.make<void>();
-      const sendFiber = yield* providerService
-        .sendTurn(input.request, {
-          onNativeDispatch: Deferred.succeed(nativelyDispatched, undefined).pipe(Effect.asVoid),
-        })
-        .pipe(Effect.forkIn(ingestionScope));
-
-      const outcome = yield* Effect.raceAll([
-        Fiber.await(sendFiber).pipe(Effect.map((exit) => ({ _tag: "Settled" as const, exit }))),
-        Deferred.await(nativelyDispatched).pipe(Effect.as({ _tag: "Dispatched" as const })),
-        Effect.sleep(failoverHandoffAdmissionTimeout).pipe(
-          Effect.as({ _tag: "TimedOut" as const }),
-        ),
-      ]);
-
-      switch (outcome._tag) {
-        case "Settled": {
-          if (Exit.isSuccess(outcome.exit)) {
-            return {
-              _tag: "Accepted",
-              turnId: outcome.exit.value.turnId,
-            } satisfies ProviderFailoverHandoffOutcome;
-          }
-          return {
-            _tag: "Rejected",
-            cause: outcome.exit.cause,
-          } satisfies ProviderFailoverHandoffOutcome;
-        }
-        case "Dispatched": {
-          // The turn now runs detached; a failure after admission reaches
-          // the projection as turn.completed(failed), but name it in the
-          // log too so the handoff can be tied back to this failover.
-          yield* Fiber.await(sendFiber).pipe(
-            Effect.flatMap((exit) =>
-              Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
-                ? Effect.logWarning("provider failover handoff turn failed after admission", {
-                    threadId: input.threadId,
-                    targetInstanceId: input.targetInstanceId,
-                    cause: Cause.pretty(exit.cause),
-                  })
-                : Effect.void,
-            ),
-            Effect.forkIn(ingestionScope),
-          );
-          // The adapter binds its active turn id before crossing the native
-          // boundary, so the live session already names the handoff turn.
-          const liveSession = (yield* providerService.listSessions()).find(
-            (session) =>
-              session.threadId === input.threadId &&
-              session.providerInstanceId === input.targetInstanceId,
-          );
-          return {
-            _tag: "Accepted",
-            turnId: liveSession?.activeTurnId ?? null,
-          } satisfies ProviderFailoverHandoffOutcome;
-        }
-        case "TimedOut": {
-          yield* Fiber.interrupt(sendFiber);
-          return {
-            _tag: "Rejected",
-            cause: Cause.fail(
-              new Error(
-                `The replacement provider did not admit the handoff turn within ${Duration.toSeconds(failoverHandoffAdmissionTimeout)}s.`,
-              ),
-            ),
-          } satisfies ProviderFailoverHandoffOutcome;
-        }
-      }
-    },
-  );
-
-  const attemptProviderUsageLimitFailover = Effect.fn("attemptProviderUsageLimitFailover")(
-    function* (input: {
-      readonly event: ProviderFailoverTriggerEvent;
-      readonly exhaustion: NonNullable<ReturnType<typeof detectProviderUsageLimitExhaustion>>;
-    }) {
-      const { event, exhaustion } = input;
-      const sourceInstanceId = event.providerInstanceId;
-      if (sourceInstanceId === undefined) {
-        return false;
-      }
-
-      const [thread, ingestionContext] = yield* Effect.all([
-        resolveThreadShell(event.threadId),
-        resolveThreadIngestionContext(event.threadId),
-      ]);
-      if (
-        !thread ||
-        !ingestionContext ||
-        thread.session?.providerInstanceId !== sourceInstanceId ||
-        thread.session.providerName !== event.provider
-      ) {
-        return false;
-      }
-
-      if (
-        event.turnId !== undefined &&
-        thread.session.activeTurnId !== null &&
-        event.turnId !== thread.session.activeTurnId
-      ) {
-        return false;
-      }
-
-      const currentModel = thread.modelSelection.model;
-      const sourceModelKey = providerFailoverModelKey(sourceInstanceId, currentModel);
-      const exhaustedOption = yield* Cache.getOption(
-        exhaustedProviderInstancesByThread,
-        String(thread.id),
-      );
-      const exhausted = Option.getOrElse(exhaustedOption, () => ({
-        instances: new Set<string>(),
-        models: new Set<string>(),
-      }));
-      if (
-        exhausted.models.has(sourceModelKey) ||
-        exhausted.instances.has(String(sourceInstanceId))
-      ) {
-        return false;
-      }
-      const threadKey = String(thread.id);
-      if (providerFailoversInFlight.has(threadKey)) {
-        return true;
-      }
-
-      const providers = yield* providerRegistry.getProviders;
-      const excludedInstances = new Set(exhausted.instances);
-      const excludedModels = new Set(exhausted.models);
-      excludedModels.add(sourceModelKey);
-      const sourceProvider = providers.find((provider) => provider.instanceId === sourceInstanceId);
-      const exhaustionNowMs = Number.isFinite(Date.parse(event.createdAt))
-        ? Date.parse(event.createdAt)
-        : null;
-      if (
-        isAccountWideProviderExhaustion(
-          event.provider,
-          exhaustion,
-          sourceProvider?.accountUsage,
-          exhaustionNowMs,
-        )
-      ) {
-        excludedInstances.add(String(sourceInstanceId));
-        for (const model of sourceProvider?.models ?? []) {
-          excludedModels.add(providerFailoverModelKey(sourceInstanceId, model.slug));
-        }
-      }
-      yield* Cache.set(exhaustedProviderInstancesByThread, String(thread.id), {
-        instances: excludedInstances,
-        models: excludedModels,
-      });
-
-      const activeSession = (yield* providerService.listSessions()).find(
-        (session) =>
-          session.threadId === thread.id &&
-          session.providerInstanceId === sourceInstanceId &&
-          session.provider === event.provider,
-      );
-
-      providerFailoversInFlight.add(threadKey);
-      yield* runProviderUsageLimitFailover({
-        event,
-        thread,
-        ingestionContext,
-        exhaustion,
-        sourceInstanceId,
-        providers,
-        excludedInstances,
-        excludedModels,
-        activeSession,
-      }).pipe(
-        Effect.ensuring(Effect.sync(() => providerFailoversInFlight.delete(threadKey))),
-        Effect.catchCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.void
-            : Effect.logWarning("provider usage-limit failover failed", {
-                threadId: thread.id,
-                sourceInstanceId,
-                cause: Cause.pretty(cause),
-              }).pipe(
-                Effect.andThen(
-                  appendProviderFailoverActivity({
-                    event,
-                    tone: "error",
-                    kind: "provider.failover.start.failed",
-                    summary: "Provider failover could not start",
-                    payload: { sourceInstanceId, detail: Cause.pretty(cause) },
-                  }),
-                ),
-              ),
-        ),
-        Effect.forkIn(ingestionScope),
-      );
-      return true;
-    },
-  );
-
-  const attemptProviderUsageLimitRefusalFailover = Effect.fn(
-    "attemptProviderUsageLimitRefusalFailover",
-  )(function* (event: Extract<ProviderRuntimeEvent, { type: "runtime.error" }>) {
-    const sourceInstanceId = event.providerInstanceId;
-    if (sourceInstanceId === undefined) {
-      return false;
-    }
-    // The classifier requires quota corroboration where the provider needs
-    // it. Antigravity's explicit 429 and Deep Code's measured stall are
-    // authoritative even when no account snapshot has arrived yet.
-    const providers = yield* providerRegistry.getProviders;
-    const accountUsage = providers.find(
-      (provider) => provider.instanceId === sourceInstanceId,
-    )?.accountUsage;
-    const nowEpochMs = Number.isFinite(Date.parse(event.createdAt))
-      ? Date.parse(event.createdAt)
-      : null;
-    const exhaustion =
-      detectProviderUsageLimitRefusal(
-        event.provider,
-        event.payload.message,
-        accountUsage,
-        nowEpochMs,
-      ) ??
-      // Not a quota wall, but a provider that cannot serve this thread until a
-      // human intervenes. Moving beats parking: same machinery, same handoff
-      // summary, same activity rows.
-      detectProviderUnusableRefusal(event.payload.message);
-    if (!exhaustion) {
-      return false;
-    }
-    return yield* attemptProviderUsageLimitFailover({ event, exhaustion });
-  });
-
-  /**
-   * Whether an error event belongs to a failure whose recovery owns the
-   * outcome. While a failover is moving the thread, or an obligation is
-   * executing that will retry it, recording the error would only flash a
-   * banner the system immediately contradicts — so these stay silent. Every
-   * deferred kind records exactly once if recovery gives up; anything stale,
-   * unowned, or unclassified keeps today's behavior.
+   * Whether an error event belongs to a failure an executing obligation is
+   * about to retry. Recording it would only flash a pause the system
+   * immediately contradicts, so these stay silent; recovery records exactly
+   * once if it gives up. Anything stale, unowned or unclassified is recorded.
    */
   const isDeferredRecoveryError = Effect.fn("isDeferredRecoveryError")(function* (input: {
     readonly event: Extract<ProviderRuntimeEvent, { type: "runtime.error" | "turn.completed" }>;
@@ -2258,27 +1844,6 @@ const make = Effect.gen(function* () {
   }) {
     const { event, thread } = input;
     const session = thread.session;
-    // A turn a usage-limit failover already took over is answered for: the
-    // thread has moved to another model and said so. Its error is the old
-    // turn dying, not news, and it is checked before every guard below
-    // because a failover invalidates all of them -- it replaces the session's
-    // provider instance AND its active turn id, so an error from the turn it
-    // superseded can match neither. That mismatch is precisely what put a red
-    // "Runtime error" under "usage exhausted · switched to ..." (reported
-    // twice). When there is nowhere left to fall back to, no failover takes
-    // over, nothing is recorded here, and the failover's own
-    // `provider.failover.unavailable` / `.start.failed` activities report it.
-    if (
-      event.turnId !== undefined &&
-      Option.isSome(
-        yield* Cache.getOption(
-          failoverSupersededTurns,
-          `${String(thread.id)}:${String(event.turnId)}`,
-        ),
-      )
-    ) {
-      return true;
-    }
     if (session === null || session === undefined) return false;
     if (event.providerInstanceId === undefined) return false;
     if (session.providerInstanceId !== event.providerInstanceId) return false;
@@ -2292,411 +1857,14 @@ const make = Effect.gen(function* () {
     const message =
       event.type === "runtime.error" ? event.payload.message : (event.payload.errorMessage ?? "");
     if (message.length === 0) return false;
-    const providers = yield* providerRegistry.getProviders;
-    const accountUsage = providers.find(
-      (provider) => provider.instanceId === event.providerInstanceId,
-    )?.accountUsage;
-    const nowEpochMs = Number.isFinite(Date.parse(event.createdAt))
-      ? Date.parse(event.createdAt)
-      : null;
-    // Replays rebuild state; they never surface errors the live pass owned.
-    if (event.historicalReplay) {
-      return (
-        classifyDeferredRecoveryFailure({
-          driver: event.provider,
-          message,
-          accountUsage,
-          nowEpochMs,
-        }) !== null
-      );
-    }
-    if (
-      classifyDeferredRecoveryFailure({
-        driver: event.provider,
-        message,
-        accountUsage,
-        nowEpochMs,
-      }) === null
-    ) {
+    if (classifyDeferredRecoveryFailure({ driver: event.provider, message }) === null) {
       return false;
     }
-    // A failover already moving this thread owns handoff-turn failures,
-    // which have no supervising obligation.
-    if (providerFailoversInFlight.has(String(thread.id))) return true;
+    // Replays rebuild state; they never surface errors the live pass owned.
+    if (event.historicalReplay) return true;
     const snapshot = yield* threadWorkScheduler.snapshot;
     return snapshot.activeThreads.some((active) => active === thread.id);
   });
-
-  const runProviderUsageLimitFailover = Effect.fn("runProviderUsageLimitFailover")(
-    function* (input: {
-      readonly event: ProviderFailoverTriggerEvent;
-      readonly thread: OrchestrationThreadShell;
-      readonly ingestionContext: ProjectionThreadIngestionContext;
-      readonly exhaustion: NonNullable<ReturnType<typeof detectProviderUsageLimitExhaustion>>;
-      readonly sourceInstanceId: ProviderInstanceId;
-      readonly providers: ReadonlyArray<ServerProvider>;
-      readonly excludedInstances: Set<string>;
-      readonly excludedModels: Set<string>;
-      readonly activeSession: ProviderSession | undefined;
-    }) {
-      const {
-        event,
-        thread,
-        ingestionContext,
-        exhaustion,
-        sourceInstanceId,
-        providers,
-        excludedInstances,
-        excludedModels,
-        activeSession,
-      } = input;
-      const currentModel = thread.modelSelection.model;
-      const nowEpochMs = Number.isFinite(Date.parse(event.createdAt))
-        ? Date.parse(event.createdAt)
-        : null;
-      const persistExhausted = () =>
-        Cache.set(exhaustedProviderInstancesByThread, String(thread.id), {
-          instances: excludedInstances,
-          models: excludedModels,
-        });
-
-      const { autoCompactionThresholdPercentage } = yield* serverSettingsService.getSettings;
-      const sourceLabel = providerDisplayLabel(
-        providers.find((provider) => provider.instanceId === sourceInstanceId)?.displayName,
-        event.provider,
-      );
-      const attemptedTargets = new Set<string>();
-      let replacedSourceSession: ProviderSession | null = null;
-      let lastHandoffCause: Cause.Cause<unknown> | null = null;
-      let lastFailedTargetInstanceId = sourceInstanceId;
-
-      while (true) {
-        const modelPolicies = yield* resolveThreadModelPolicies({
-          threadId: thread.id,
-          settings: yield* serverSettingsService.getSettings,
-          fallback: true,
-          getThread: projectionSnapshotQuery.getThreadShellById,
-        });
-        const target = selectProviderFailoverTarget({
-          modelPolicies,
-          providers,
-          currentInstanceId: sourceInstanceId,
-          currentDriver: event.provider,
-          currentModel,
-          excludedInstanceIds: excludedInstances,
-          excludedModels,
-          nowEpochMs,
-        });
-        if (!target) {
-          break;
-        }
-        if (!activeSession) {
-          return;
-        }
-
-        const targetKey = providerFailoverModelKey(target.instanceId, target.modelSelection.model);
-        if (attemptedTargets.has(targetKey)) {
-          break;
-        }
-        attemptedTargets.add(targetKey);
-
-        const targetLabel = providerDisplayLabel(
-          providers.find((provider) => provider.instanceId === target.instanceId)?.displayName,
-          target.driver,
-        );
-        const handoffSummary = buildProviderHandoffSummary({
-          threadId: thread.id,
-          threadTitle: thread.title,
-          messages: ingestionContext.messages,
-          from: {
-            instanceId: sourceInstanceId,
-            driver: event.provider,
-          },
-          to: target,
-          exhaustion,
-          generatedAt: event.createdAt,
-        });
-
-        const replacementSession = yield* providerService
-          .startSession(thread.id, {
-            threadId: thread.id,
-            provider: target.driver,
-            providerInstanceId: target.instanceId,
-            ...(activeSession.cwd ? { cwd: activeSession.cwd } : {}),
-            modelSelection: target.modelSelection,
-            autoCompactionThresholdPercentage,
-            runtimeMode: thread.runtimeMode,
-          })
-          .pipe(
-            Effect.catchCause((cause) =>
-              appendProviderFailoverActivity({
-                event,
-                tone: "error",
-                kind: "provider.failover.start.failed",
-                summary: "Provider failover failed",
-                payload: {
-                  detail: Cause.pretty(cause),
-                  sourceInstanceId,
-                  targetInstanceId: target.instanceId,
-                  reason: exhaustion.reason,
-                },
-              }).pipe(Effect.as(null)),
-            ),
-          );
-        if (replacementSession === null) {
-          excludedModels.add(targetKey);
-          if (target.instanceId !== sourceInstanceId) {
-            excludedInstances.add(String(target.instanceId));
-          }
-          yield* persistExhausted();
-          continue;
-        }
-        replacedSourceSession = activeSession;
-
-        const handoffOutcome = yield* sendProviderFailoverHandoffTurn({
-          threadId: thread.id,
-          targetInstanceId: target.instanceId,
-          request: {
-            threadId: thread.id,
-            input: handoffSummary,
-            modelSelection: target.modelSelection,
-            interactionMode: thread.interactionMode,
-          },
-        });
-        const handoffTurn = yield* Effect.gen(function* () {
-          if (handoffOutcome._tag === "Accepted") {
-            return Option.some<Extract<ProviderFailoverHandoffOutcome, { _tag: "Accepted" }>>(
-              handoffOutcome,
-            );
-          }
-          lastHandoffCause = handoffOutcome.cause;
-          lastFailedTargetInstanceId = target.instanceId;
-          yield* appendProviderFailoverActivity({
-            event,
-            tone: "error",
-            kind: "provider.failover.handoff.failed",
-            summary: "Provider failover handoff failed",
-            payload: {
-              detail: Cause.pretty(handoffOutcome.cause),
-              sourceInstanceId,
-              targetInstanceId: target.instanceId,
-              rolledBack: false,
-            },
-          });
-          return Option.none<Extract<ProviderFailoverHandoffOutcome, { _tag: "Accepted" }>>();
-        });
-        if (Option.isNone(handoffTurn)) {
-          excludedModels.add(targetKey);
-          if (target.instanceId !== sourceInstanceId) {
-            excludedInstances.add(String(target.instanceId));
-          }
-          yield* persistExhausted();
-          continue;
-        }
-
-        if (target.instanceId !== sourceInstanceId) {
-          excludedInstances.add(String(sourceInstanceId));
-        }
-        yield* persistExhausted();
-
-        // Only make the new selection durable after the replacement provider
-        // admitted the bounded handoff turn. Admission, not completion: the
-        // turn is still running, and its own turn.started/turn.completed
-        // events keep the session row current from here on.
-        yield* orchestrationEngine.dispatch({
-          type: "thread.meta.update",
-          commandId: yield* providerCommandId(event, "provider-failover-model-selection"),
-          threadId: thread.id,
-          modelSelection: target.modelSelection,
-        });
-        const handoffTurnId = handoffTurn.value.turnId;
-        yield* orchestrationEngine.dispatch({
-          type: "thread.session.set",
-          commandId: yield* providerCommandId(event, "provider-failover-session-set"),
-          threadId: thread.id,
-          session: {
-            threadId: thread.id,
-            // An adapter that reports admission before binding a turn id has
-            // the turn in flight but not yet named; "starting" keeps the
-            // thread busy without asserting a turn the projection cannot see.
-            status: handoffTurnId === null ? "starting" : "running",
-            providerName: replacementSession.provider,
-            providerInstanceId: target.instanceId,
-            runtimeMode: thread.runtimeMode,
-            activeTurnId: handoffTurnId,
-            lastError: null,
-            updatedAt: event.createdAt,
-          },
-          createdAt: event.createdAt,
-        });
-        // Only now are these turns genuinely superseded: a replacement provider
-        // has admitted the handoff. Recording it earlier — at the point the
-        // failover was merely attempted — would have silenced the dying turn's
-        // error even when the failover then found no target and gave up, which
-        // is the one case the user does want an error for.
-        for (const supersededTurnId of new Set(
-          [event.turnId, thread.session?.activeTurnId, activeSession?.activeTurnId].filter(
-            (turnId): turnId is NonNullable<typeof turnId> =>
-              turnId !== undefined && turnId !== null,
-          ),
-        )) {
-          yield* Cache.set(
-            failoverSupersededTurns,
-            `${String(thread.id)}:${String(supersededTurnId)}`,
-            true,
-          );
-        }
-        yield* appendProviderFailoverActivity({
-          event,
-          tone: "info",
-          kind: "provider.failover.completed",
-          summary:
-            sourceInstanceId === target.instanceId
-              ? `${thread.modelSelection.model} usage exhausted · switched to ${target.modelSelection.model}`
-              : `${thread.modelSelection.model} usage exhausted · switched from ${sourceLabel} to ${targetLabel}`,
-          payload: {
-            detail: [
-              `${sourceLabel} / ${thread.modelSelection.model} → ${targetLabel} / ${target.modelSelection.model}`,
-              (() => {
-                const effort = target.modelSelection.options?.find(
-                  (option) => option.id === "effort" || option.id === "reasoningEffort",
-                )?.value;
-                return typeof effort === "string" ? `${effort} effort` : null;
-              })(),
-              thread.interactionMode === "plan" ? "Plan" : "Build",
-              thread.runtimeMode === "full-access" ? "Full access" : "Approval required",
-            ]
-              .filter((part): part is string => typeof part === "string" && part.length > 0)
-              .join(" · "),
-            sourceInstanceId,
-            sourceProvider: event.provider,
-            sourceLabel,
-            sourceModel: thread.modelSelection.model,
-            sourceOptions: thread.modelSelection.options ?? null,
-            targetInstanceId: target.instanceId,
-            targetProvider: target.driver,
-            targetLabel,
-            targetModel: target.modelSelection.model,
-            targetOptions: target.modelSelection.options ?? null,
-            runtimeMode: thread.runtimeMode,
-            interactionMode: thread.interactionMode,
-            reason: exhaustion.reason,
-            resetsAt: exhaustion.resetsAt,
-            handoffSerializedChars: handoffSummary.length,
-          },
-        });
-        return;
-      }
-
-      const rollbackPolicies = yield* resolveThreadModelPolicies({
-        threadId: thread.id,
-        settings: yield* serverSettingsService.getSettings,
-        fallback: true,
-        getThread: projectionSnapshotQuery.getThreadShellById,
-      });
-      if (
-        replacedSourceSession !== null &&
-        !modelPolicyError(rollbackPolicies, thread.modelSelection)
-      ) {
-        const rolledBack = yield* providerService
-          .startSession(thread.id, {
-            threadId: thread.id,
-            provider: event.provider,
-            providerInstanceId: sourceInstanceId,
-            ...(replacedSourceSession.cwd ? { cwd: replacedSourceSession.cwd } : {}),
-            modelSelection: thread.modelSelection,
-            ...(replacedSourceSession.resumeCursor !== undefined
-              ? { resumeCursor: replacedSourceSession.resumeCursor }
-              : {}),
-            autoCompactionThresholdPercentage,
-            runtimeMode: thread.runtimeMode,
-          })
-          .pipe(
-            Effect.as(true),
-            Effect.catchCause((rollbackCause) =>
-              Effect.logWarning("provider usage-limit failover rollback failed", {
-                threadId: thread.id,
-                sourceInstanceId,
-                targetInstanceId: lastFailedTargetInstanceId,
-                ...(lastHandoffCause ? { handoffCause: Cause.pretty(lastHandoffCause) } : {}),
-                rollbackCause: Cause.pretty(rollbackCause),
-              }).pipe(Effect.as(false)),
-            ),
-          );
-        if (lastHandoffCause !== null) {
-          yield* appendProviderFailoverActivity({
-            event,
-            tone: "error",
-            kind: "provider.failover.handoff.failed",
-            summary: "Provider failover handoff failed",
-            payload: {
-              detail: Cause.pretty(lastHandoffCause),
-              sourceInstanceId,
-              targetInstanceId: lastFailedTargetInstanceId,
-              rolledBack,
-            },
-          });
-        }
-        return;
-      }
-
-      excludedInstances.add(String(sourceInstanceId));
-      yield* persistExhausted();
-      yield* appendProviderFailoverActivity({
-        event,
-        tone: "error",
-        kind: "provider.failover.unavailable",
-        summary: "Provider usage limit reached",
-        payload: {
-          detail:
-            "No configured, authenticated provider has an available model permitted by the fallback and thread model restrictions.",
-          sourceInstanceId,
-          sourceProvider: event.provider,
-          reason: exhaustion.reason,
-          resetsAt: exhaustion.resetsAt,
-        },
-      });
-      // Recording the activity is not the same as ending the turn. Every
-      // provider is spent, so nothing is going to move this thread until a
-      // quota window rolls over — but the session row was left exactly as it
-      // was, still claiming to run. The silence watchdog then reads a frozen
-      // feed, restarts the turn, and the replacement is rejected within
-      // seconds by the same exhausted account, forever.
-      //
-      // Observed 2026-08-06: Claude's five-hour window closed, failover chose
-      // an already-spent Codex, and the pair re-ran that cycle five times at
-      // ~4m36s intervals before the thread went quiet still wearing a working
-      // spinner nobody could clear.
-      //
-      // Release the thread instead. `error` is the honest status: it stops
-      // the spinner (`derivePhase` maps it to "disconnected"), keeps the
-      // watchdog from restarting a session that is not running, and declines
-      // agent continuation so a failing account is never hammered.
-      const exhaustedAt = event.createdAt;
-      yield* orchestrationEngine.dispatch({
-        type: "thread.session.set",
-        commandId: yield* providerCommandId(event, "usage-limit-session-release"),
-        threadId: thread.id,
-        session: {
-          threadId: thread.id,
-          status: "error",
-          providerName: event.provider,
-          ...(event.providerInstanceId !== undefined
-            ? { providerInstanceId: event.providerInstanceId }
-            : {}),
-          runtimeMode: thread.session?.runtimeMode ?? "full-access",
-          activeTurnId: null,
-          // The reset timestamp is already on the failover activity above;
-          // this string only has to explain why the thread stopped.
-          lastError:
-            "Provider usage limit reached, and no permitted fallback model is available. Check Model restrictions in the model picker or Settings → Providers, or send again after quota resets.",
-          failureKind: null,
-          updatedAt: exhaustedAt,
-        },
-        createdAt: exhaustedAt,
-      });
-    },
-  );
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
@@ -2897,10 +2065,9 @@ const make = Effect.gen(function* () {
             : event.type === "turn.completed" &&
                 normalizeRuntimeTurnState(event.payload.state) === "failed"
               ? event.payload.failureKind === "retryable-upstream"
-                ? // The reactor retries this silently and without limit; the
-                  // session's `failureKind` routes it there. A lastError here
-                  // drew the red "provider remained overloaded" banner during
-                  // every backoff (2026-09-17 16:03).
+                ? // The reactor retries this silently; the session's `failureKind`
+                  // routes it there. A lastError here would pause the thread
+                  // during every backoff.
                   null
                 : (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
               : status === "ready"
@@ -2918,9 +2085,9 @@ const make = Effect.gen(function* () {
               : (thread.session?.failureKind ?? null);
 
         if (shouldApplyThreadLifecycle) {
-          // A failed turn whose recovery owns the outcome (failover moving,
-          // obligation retrying) leaves no session error behind: the spinner
-          // keeps spinning and the recovery writes the next session.
+          // A failed turn an obligation is retrying leaves no session error
+          // behind: the spinner keeps spinning and the retry writes the next
+          // session.
           const failedTurnIsDeferredRecovery =
             event.type === "turn.completed" &&
             normalizeRuntimeTurnState(event.payload.state) === "failed"
@@ -3404,37 +2571,11 @@ const make = Effect.gen(function* () {
         yield* clearTurnStateForSession(thread.id);
       }
 
-      // Admit refusal-driven recovery before deciding whether to render its
-      // error. Handoff turns have no scheduler obligation, so starting this
-      // after the activity write left an error card before every successful
-      // switch. The attempt owns its success or unavailable/failure notice.
-      const usageRefusalRecoveryStarted =
-        event.type === "runtime.error" &&
-        !event.historicalReplay &&
-        eventMatchesSession &&
-        !lifecycleWasStopped
-          ? yield* attemptProviderUsageLimitRefusalFailover(event)
-          : false;
-
-      // A runtime error whose recovery owns the outcome leaves neither a
-      // session error nor a work-log card behind; the failover or retry writes
-      // the next session. Computed once for the lifecycle write and the
+      // A runtime error a retry owns leaves neither a session error nor a
+      // work-log card behind. Computed once for the lifecycle write and the
       // activity fan-out below.
-      //
-      // Deliberately NOT gated on `eventMatchesSession`. A usage-limit failover
-      // repoints the session at the replacement provider, so the exhausted
-      // turn's own error — which arrives afterwards — no longer matches the
-      // session it came from. Requiring a match here meant the one error most
-      // certainly owned by recovery was the one error never tested for it, and
-      // the red "Runtime error" card landed directly under "usage exhausted ·
-      // switched to ...". `isDeferredRecoveryError` carries its own session,
-      // instance and turn guards, so asking it unconditionally only adds the
-      // superseded-turn case and leaves every other event's answer unchanged.
       const runtimeErrorIsDeferredRecovery =
-        usageRefusalRecoveryStarted ||
-        (event.type === "runtime.error"
-          ? yield* isDeferredRecoveryError({ event, thread })
-          : false);
+        event.type === "runtime.error" ? yield* isDeferredRecoveryError({ event, thread }) : false;
 
       if (event.type === "runtime.error") {
         // Providers hand us their own wording, and it lands straight on the
@@ -3607,50 +2748,6 @@ const make = Effect.gen(function* () {
           accountUsage: event.payload.rateLimits,
           reportedAt: event.createdAt,
         });
-        // The guard prices usage between reports, so it needs every report the
-        // provider sends — including ones that carry no exhaustion at all.
-        yield* usageGuard
-          .recordRateLimits({
-            instanceId: usageInstanceId,
-            driver: event.provider,
-            rateLimits: event.payload.rateLimits,
-            reportedAt: event.createdAt,
-          })
-          .pipe(Effect.ignore);
-        if (!lifecycleWasStopped) {
-          const exhaustion = detectProviderUsageLimitExhaustion(
-            event.provider,
-            event.payload.rateLimits,
-          );
-          if (exhaustion) {
-            yield* attemptProviderUsageLimitFailover({ event, exhaustion });
-          }
-        }
-      }
-
-      if (event.type === "thread.token-usage.updated") {
-        // `usedTokens` is the full context of one provider call — the figure
-        // the tokens-per-percent ratio is measured against. The model matters:
-        // the guard weights tokens by how expensive the model is against the
-        // quota, and learns what a turn on each model costs.
-        const tokenThread = yield* resolveThreadShell(event.threadId).pipe(
-          Effect.orElseSucceed(() => undefined),
-        );
-        yield* usageGuard
-          .recordTokens({
-            instanceId: event.providerInstanceId ?? defaultInstanceIdForDriver(event.provider),
-            driver: event.provider,
-            tokens: event.payload.usage.usedTokens,
-            usage: event.payload.usage,
-            threadKey: String(event.threadId),
-            effort: selectedUsageGuardEffort(tokenThread?.modelSelection),
-            fast:
-              tokenThread?.modelSelection.options?.some(
-                (option) => option.id === "serviceTier" && option.value === "priority",
-              ) ?? false,
-            model: tokenThread?.modelSelection.model ?? null,
-          })
-          .pipe(Effect.ignore);
       }
     });
 

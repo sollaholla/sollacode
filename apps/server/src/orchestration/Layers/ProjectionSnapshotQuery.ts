@@ -2114,29 +2114,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     `,
   });
 
-  const getLatestThreadActivityRowByKind = SqlSchema.findOneOption({
-    Request: ThreadActivityKindLookupInput,
-    Result: ProjectionThreadActivityDbRowSchema,
-    execute: ({ threadId, kind }) =>
-      sql`
-        SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM projection_thread_activities
-        WHERE thread_id = ${threadId}
-          AND kind = ${kind}
-        ORDER BY created_at DESC, activity_id DESC
-        LIMIT 1
-      `,
-  });
-
   const listRecentThreadActivityRowsByThread = SqlSchema.findAll({
     Request: ThreadActivityWindowLookupInput,
     Result: ProjectionThreadActivityDbRowSchema,
@@ -4528,19 +4505,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
-  const getLatestThreadActivityByKind: NonNullable<
-    ProjectionSnapshotQueryShape["getLatestThreadActivityByKind"]
-  > = (threadId, kind) =>
-    getLatestThreadActivityRowByKind({ threadId, kind }).pipe(
-      Effect.mapError(
-        toPersistenceSqlOrDecodeError(
-          "ProjectionSnapshotQuery.getLatestThreadActivityByKind:query",
-          "ProjectionSnapshotQuery.getLatestThreadActivityByKind:decodeRow",
-        ),
-      ),
-      Effect.map(Option.map(mapActivityRow)),
-    );
-
   return {
     getCommandReadModel,
     getSnapshot,
@@ -4567,7 +4531,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadIngestionContext,
     getThreadAssetSource,
     listThreadAssistantMessagesMentioning,
-    getLatestThreadActivityByKind,
     getLatestClientModelSelection,
     getThreadDetailById,
     getThreadDetailSnapshot,

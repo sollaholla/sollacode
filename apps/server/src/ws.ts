@@ -120,7 +120,6 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
-import { ProviderUsageGuard } from "./orchestration/Services/ProviderUsageGuard.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderAccountSwitch from "./provider/providerAccountSwitch.ts";
 import * as ServerSelfUpdate from "./service/selfUpdate.ts";
@@ -653,7 +652,6 @@ const makeWsRpcLayer = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-      const usageGuard = yield* ProviderUsageGuard;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const providerAccountSwitch = yield* ProviderAccountSwitch.ProviderAccountSwitch;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
@@ -2217,10 +2215,6 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "server" },
           ),
-        [WS_METHODS.serverResumeUsageGuard]: (input) =>
-          observeRpcEffect(WS_METHODS.serverResumeUsageGuard, usageGuard.resumeThread(input), {
-            "rpc.aggregate": "server",
-          }),
         [WS_METHODS.serverStartProviderAccountSwitch]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverStartProviderAccountSwitch,

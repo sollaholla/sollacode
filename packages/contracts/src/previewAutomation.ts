@@ -996,11 +996,8 @@ export type PreviewAutomationUploadResult = typeof PreviewAutomationUploadResult
 /**
  * Choosing from a `<select>`.
  *
- * Clicking one opens a menu Chromium draws outside the page: it is in no DOM,
- * no screenshot, and no CDP input queue, so an agent that clicks gets a
- * success, an unchanged snapshot, and a menu left sitting over the user's
- * screen. Choosing by value/label/index sets the selection and fires the
- * page's own `input` and `change` handlers without a popup ever existing.
+ * Choosing by value/label/index sets the selection and fires the page's own
+ * `input` and `change` handlers in one step, without opening the list.
  */
 export const PreviewAutomationSelectOptionInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
@@ -1732,16 +1729,14 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
     ...PreviewAutomationRemoteDiagnosticFields,
     selectorKind: Schema.optional(Schema.Literals(["focused-element", "locator", "selector"])),
     selectorLength: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-    /** The target opens a menu Chromium draws outside the page. */
+    /** The target is a dropdown, which selectOption handles. */
     nativeMenu: Schema.optional(Schema.Boolean),
   },
 ) {
   override get message(): string {
     if (this.nativeMenu === true) {
-      // Say what to call instead. A click here reports success and leaves a
-      // menu open over the user's screen that no snapshot can see, so an agent
-      // told only "not editable" retries the thing that caused it.
-      return `Preview automation ${this.operation} cannot drive a <select>: it opens a menu the browser draws outside the page, which no snapshot or screenshot can see and no key press can dismiss. Use preview_select_option with value, label, or index instead; preview_snapshot lists the options.`;
+      // Say what to call instead: told only "not editable", an agent retries.
+      return `Preview automation ${this.operation} cannot drive a <select>. Use selectOption instead.`;
     }
     if (this.selectorKind === "focused-element") {
       return `Preview automation ${this.operation} requires an editable focused element.`;

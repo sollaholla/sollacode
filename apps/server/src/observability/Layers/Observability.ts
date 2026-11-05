@@ -48,12 +48,9 @@ const HIGH_FREQUENCY_LOCAL_SPANS = new Set([
   "applyThreadActivitiesProjection",
   "applyPendingApprovalsProjection",
   "applyThreadWorkProjection",
-  // Settings reads and the usage guard's per-second check of each running turn.
+  // Settings reads.
   "ServerSecretStore.get",
   "ServerSettings.overlayOrchestratorKeyPresence",
-  "ProviderUsageGuard.decide",
-  "ProviderUsageGuard.readInstance",
-  "ProviderUsageGuard.overrideActive",
 ]);
 
 export function shouldPersistServerEffectSpan(

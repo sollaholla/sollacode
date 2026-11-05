@@ -84,7 +84,6 @@ import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
 import * as PreviewManager from "../src/preview/Manager.ts";
-import { ProviderUsageGuardNoop } from "../src/orchestration/Layers/ProviderUsageGuard.ts";
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
@@ -404,7 +403,6 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
       Layer.provideMerge(ThreadSubscriptionRegistryLive),
       Layer.provideMerge(providerSessionDirectoryLayer.pipe(Layer.provide(persistenceLayer))),
-      Layer.provideMerge(ProviderUsageGuardNoop),
       Layer.provideMerge(NodeServices.layer),
     );
 

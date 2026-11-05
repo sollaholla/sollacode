@@ -1,7 +1,6 @@
 import { AgentNameSettings } from "../agents/AgentNameSettings";
 import { WebPushSettings } from "./WebPushSettings";
 import { openWelcomeTourReplay } from "../onboarding/welcomeTourStore";
-import { ModelPolicyEditor, useSaveModelPolicy } from "./ModelPolicyEditor";
 import {
   ArchiveIcon,
   ArchiveX,
@@ -126,10 +125,8 @@ import { isThemeChoice, THEME_CHOICE_GROUPS, themeChoiceLabel } from "../../them
 import { Switch } from "../ui/switch";
 import { ThreadListSettingsSection } from "./ThreadListSettings";
 import { DatabaseStorageSettingsSection } from "./DatabaseStorageSettings";
-import { ProviderUsageGuardControls, UsageGuardMasterRow } from "./UsageGuardSettings";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import {
   canOneClickUpdateProviderCandidate,
@@ -1955,7 +1952,6 @@ export function ProviderSettingsPanel() {
   const setShowProviderUsageBar = useUiStateStore((state) => state.setShowProviderUsageBar);
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
   const primaryEnvironment = usePrimaryEnvironment();
-  const saveModelPolicy = useSaveModelPolicy(primaryEnvironment?.environmentId ?? null);
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -2579,12 +2575,6 @@ export function ProviderSettingsPanel() {
                           }
                         : {})}
                     />
-                    {liveProvider ? (
-                      <ProviderUsageGuardControls
-                        provider={liveProvider}
-                        displayName={providerDisplayName}
-                      />
-                    ) : null}
                   </>
                 ) : undefined
               }
@@ -2654,48 +2644,7 @@ export function ProviderSettingsPanel() {
           }
         />
       </SettingsSection>
-      <SettingsSection
-        id="setting-fallback-models"
-        title="Automatic fallback models"
-        headerAction={
-          <div className="sm:hidden">
-            <Popover>
-              <PopoverTrigger
-                render={
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    aria-label="About automatic fallback models"
-                  />
-                }
-              >
-                <InfoIcon aria-hidden className="size-4" />
-              </PopoverTrigger>
-              <PopoverPopup side="bottom" align="end" className="w-[min(20rem,calc(100vw-2rem))]">
-                <p className="text-sm">
-                  Choose which models automatic fallback and quota-reset restoration may use. Thread
-                  and agent restrictions also apply. When no allowed model is available, work waits
-                  instead of switching. Manual model selection is unaffected by this global rule.
-                </p>
-              </PopoverPopup>
-            </Popover>
-          </div>
-        }
-      >
-        <p className="mb-4 hidden text-sm text-muted-foreground sm:block">
-          Choose which models automatic fallback and quota-reset restoration may use. Thread and
-          agent restrictions also apply. When no allowed model is available, work waits instead of
-          switching. Manual model selection is unaffected by this global rule.
-        </p>
-        <ModelPolicyEditor
-          policy={settings.fallbackModelPolicy}
-          providers={serverProviders}
-          onSave={(policy) => saveModelPolicy({ fallbackModelPolicy: policy })}
-        />
-      </SettingsSection>
-
       <SettingsSection title="Provider preferences">
-        <UsageGuardMasterRow />
         <SettingsRow
           title="Provider usage bar"
           description="Show provider-reported usage windows and quotas at the bottom of chat. Unsupported or not-yet-reported usage stays labeled as unavailable."

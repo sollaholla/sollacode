@@ -151,6 +151,7 @@ describe("getWindowFullscreenState", () => {
           currentMainOrFirst: Effect.succeed(Option.some(window)),
           // Plain function rather than an Effect, so `Layer.mock` cannot stub it.
           isAuxiliaryWindowId: () => false,
+          isMainWindowId: () => false,
         }),
       ),
     );

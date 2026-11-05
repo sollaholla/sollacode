@@ -368,8 +368,8 @@ export function shouldAgentContinueAfterReply(text: string): boolean {
  * provider bridge ("this session has failed 5 turns in a row; refusing to start
  * another until the cause is fixed").
  *
- * Retirement is the honest response: the resume stops, the error stays on
- * screen, and the next real user message starts a turn normally.
+ * Retirement is the honest response: the resume stops, the thread pauses with
+ * its choices on screen, and the next real user message starts a turn normally.
  */
 const PROVIDER_TERMINAL_REFUSAL_SIGNATURES = [
   /\brefus(?:es|ing|ed) to start\b/i,
@@ -388,10 +388,25 @@ const PROVIDER_TERMINAL_REFUSAL_SIGNATURES = [
   // […]: Billing verification failed. Please check your payment method.
   // (billing_error)". Only the account owner can clear it (2026-10-12).
   /\bbilling_error\b/i,
-  // Antigravity 429s and Muse progress timeouts used to retire here. They no
-  // longer do: a 429 fails over to the surviving pool or provider, and a
-  // stalled turn restarts on a fresh host. Both stay silent while recovery is
-  // live and record exactly once if it gives up.
+  // Usage limits. Claude and Codex name the limit in these words; a refusal
+  // lasts until the window resets, so the thread pauses for the person.
+  /\byou(?:'|\u2019)?ve hit your\b.*\b(?:limit|quota|cap)\b/is,
+  /\bsession limit\b/i,
+  /\busage limit\b.*\bpurchase more credits\b/is,
+  /\brejected by Google with RESOURCE_EXHAUSTED \(429\)/i,
+  /\bno credit left\b/i,
+  /\bpayment required\b/i,
+  // The same request fails the same way every time.
+  /\bstream idle timeout after \d+\s*ms\b/i,
+  /\bmodel not found\b/i,
+  /\bmodel is (?:no longer |not )available\b/i,
+  /\binvalid params\b/i,
+  /\binvalid request\b/i,
+  /\bmethod not found\b/i,
+  // Deep Code's own stall watchdog stopped a wedged request.
+  /\bthe stalled request was stopped\b/i,
+  // A stalled Muse turn is not here: it restarts on a fresh host, and stays
+  // silent until that gives up.
 ];
 
 /** Cap for the same reason as the authentication check: prose is not a status. */
