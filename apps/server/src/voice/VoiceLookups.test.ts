@@ -20,6 +20,7 @@ import {
   makeVoiceLookups,
   narrowThreadList,
   parseLookupArguments,
+  type QuickAnswerRequest,
   speakable,
 } from "./VoiceLookups.ts";
 
@@ -118,10 +119,13 @@ describe("speakable", () => {
 });
 
 describe("quickAnswer", () => {
-  const speak = {
+  const speak: QuickAnswerRequest = {
     speaksFor: ThreadId.make("thread-agent"),
     speakerName: "Scout",
     transcript: "user [0-900ms]: What is the weather?",
+    working: false,
+    canWorkAlongside: true,
+    latestUpdate: null,
   };
   const message = (text: string) => ({
     type: "message",
@@ -142,10 +146,15 @@ describe("quickAnswer", () => {
     }) as typeof globalThis.fetch;
     return { bodies, fetch };
   };
-  const quick = (fetch: typeof globalThis.fetch, key: Option.Option<string> = Option.some("k")) =>
+  const chatTakesIt = { kind: "work", alongside: false };
+  const quick = (
+    fetch: typeof globalThis.fetch,
+    key: Option.Option<string> = Option.some("k"),
+    request: Partial<QuickAnswerRequest> = {},
+  ) =>
     Effect.gen(function* () {
       const lookups = yield* makeVoiceLookups;
-      return yield* lookups.quickAnswer(speak);
+      return yield* lookups.quickAnswer({ ...speak, ...request });
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -168,17 +177,17 @@ describe("quickAnswer", () => {
 
   it("speaks what the model answered", async () => {
     const { fetch } = respondWith([message("It is sunny.")]);
-    expect(await quick(fetch)).toEqual(Option.some("It is sunny."));
+    expect(await quick(fetch)).toEqual({ kind: "answer", text: "It is sunny." });
   });
 
   it("hands anything needing work to the chat", async () => {
     const { fetch } = respondWith([call("start_work")]);
-    expect(await quick(fetch)).toEqual(Option.none());
+    expect(await quick(fetch)).toEqual(chatTakesIt);
   });
 
   it("feeds a lookup's result back and answers from it", async () => {
     const { bodies, fetch } = respondWith([call("no_such_lookup")], [message("Nothing there.")]);
-    expect(await quick(fetch)).toEqual(Option.some("Nothing there."));
+    expect(await quick(fetch)).toEqual({ kind: "answer", text: "Nothing there." });
     expect(JSON.stringify(bodies[1]?.input)).toContain("function_call_output");
     expect(JSON.stringify(bodies[1]?.input)).toContain("There is no lookup called no_such_lookup");
   });
@@ -196,11 +205,30 @@ describe("quickAnswer", () => {
     ]);
   });
 
+  it("starts a new job alongside a busy chat, and tells the model what the chat is doing", async () => {
+    const { bodies, fetch } = respondWith([call("start_separate_work")]);
+    expect(
+      await quick(fetch, Option.some("k"), {
+        working: true,
+        latestUpdate: "Checking the first-launch picker.",
+      }),
+    ).toEqual({ kind: "work", alongside: true });
+    expect(bodies[0]?.instructions).toContain("Checking the first-launch picker.");
+    expect(bodies[0]?.instructions).toContain("Never say you have to finish something first.");
+    expect(JSON.stringify(bodies[0]?.tools)).toContain("start_separate_work");
+  });
+
+  it("offers no separate job when the chat is free", async () => {
+    const { bodies, fetch } = respondWith([message("Fine.")]);
+    await quick(fetch);
+    expect(JSON.stringify(bodies[0]?.tools)).not.toContain("start_separate_work");
+  });
+
   it("falls back to the chat when OpenAI refuses or no key is saved", async () => {
     const refused = respondWith(new Response("nope", { status: 500 }));
-    expect(await quick(refused.fetch)).toEqual(Option.none());
+    expect(await quick(refused.fetch)).toEqual(chatTakesIt);
     const unused = respondWith([message("Never asked.")]);
-    expect(await quick(unused.fetch, Option.none())).toEqual(Option.none());
+    expect(await quick(unused.fetch, Option.none())).toEqual(chatTakesIt);
     expect(unused.bodies).toHaveLength(0);
   });
 });

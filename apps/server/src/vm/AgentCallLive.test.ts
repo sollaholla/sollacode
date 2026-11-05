@@ -1765,6 +1765,111 @@ it.effect("a yes never carries over to a different request than the one read out
   }),
 );
 
+/** A call on a chat that is mid-turn, with `run` driving it. */
+const busyCall = <A, E, R>(
+  run: (
+    live: Effect.Success<typeof makeAgentCallLive>,
+    f: ReturnType<typeof fixture>,
+  ) => Effect.Effect<A, E, R>,
+) => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    return yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const rung = yield* calls.ring({
+        vmAgentId,
+        reason: "request",
+        topic: "Checking in",
+        key: "input:thread-scout:busy",
+      });
+      if (rung.status !== "ringing") return assert.fail(rung.status);
+      yield* live.start({ callId: rung.call.callId, ...offer }, "Sol's iPhone");
+      const running = {
+        session: session("running", null, "codex"),
+        latestTurn: turn("running", null, { requestedSecond: 1 }),
+      };
+      f.setShell(running);
+      f.setThread({
+        ...running,
+        messages: [message("update", "assistant", "Reading the first-launch picker.", 2)],
+      });
+      return yield* run(live, f);
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+};
+
+const asked = (delegationId: string, sequence: number, words: string) => ({
+  sessionId: "live-call",
+  delegationId,
+  sequence,
+  context: `assistant [0-900ms]: Hello.\nuser [1000-1600ms]: ${words}`,
+});
+
+it.effect("a busy chat does not stop the voice answering, or saying what it is doing", () =>
+  busyCall((live) =>
+    Effect.gen(function* () {
+      const quick = yield* live.quickRequest(asked("d1", 1, "What are you working on?"));
+      if (Option.isNone(quick)) return assert.fail("expected the fast path");
+      assert.isTrue(quick.value.working);
+      assert.strictEqual(quick.value.latestUpdate, "Reading the first-launch picker.");
+    }),
+  ),
+);
+
+it.effect("a new job on a busy chat starts at once in a side chat", () =>
+  busyCall((live, f) =>
+    Effect.gen(function* () {
+      yield* live
+        .delegate({ ...asked("d1", 1, "Book the flights."), alongside: true })
+        .pipe(Effect.asVoid);
+      const [fork, started] = f.dispatched;
+      if (fork?.type !== "thread.fork") return assert.fail("expected a side chat");
+      assert.strictEqual(fork.sourceThreadId, threadId);
+      assert.isTrue(fork.isSideChat);
+      if (started?.type !== "thread.turn.start") return assert.fail("expected its turn");
+      assert.strictEqual(started.threadId, fork.threadId);
+      assert.include(started.message.text, "Book the flights.");
+    }),
+  ),
+);
+
+it.effect("a correction to running work still joins that work", () =>
+  busyCall((live, f) =>
+    Effect.gen(function* () {
+      yield* live.delegate(asked("d1", 1, "Use the other branch.")).pipe(Effect.asVoid);
+      assert.strictEqual(f.dispatched[0]?.type, "thread.turn.start");
+      assert.strictEqual(
+        f.dispatched[0]?.type === "thread.turn.start" ? f.dispatched[0].threadId : undefined,
+        threadId,
+      );
+    }),
+  ),
+);
+
+it.effect("an answer given beside running work keeps following that work's reply", () =>
+  busyCall((live) =>
+    Effect.gen(function* () {
+      yield* live.delegate(asked("d1", 1, "Fix the home screen.")).pipe(Effect.asVoid);
+      const updates = yield* live.spokenBeside(asked("d2", 2, "What time is it?"), "It's noon.");
+      const first = Option.getOrUndefined(yield* Stream.runHead(updates));
+      assert.strictEqual(first?.status, "waiting-input");
+      assert.strictEqual(first?.text, "It's noon.");
+    }),
+  ),
+);
+
+it.effect("with nothing owed a reply, an answer ends the delegation", () =>
+  busyCall((live) =>
+    Effect.gen(function* () {
+      const updates = yield* live.spokenBeside(asked("d1", 1, "What time is it?"), "It's noon.");
+      const first = Option.getOrUndefined(yield* Stream.runHead(updates));
+      assert.strictEqual(first?.status, "completed");
+    }),
+  ),
+);
+
 it.effect("a provider's approval takes the same yes", () =>
   Effect.gen(function* () {
     const request = activity("approval.requested", { requestId: "tool-1", detail: "rm build" });
@@ -2079,7 +2184,9 @@ it.effect(
         agentCallRouteLayer.pipe(
           HttpRouter.provideRequest(AgentCallLiveLayer.pipe(Layer.provide(provided))),
           HttpRouter.provideRequest(
-            Layer.mock(VoiceLookups)({ quickAnswer: () => Effect.succeed(Option.none()) }),
+            Layer.mock(VoiceLookups)({
+              quickAnswer: () => Effect.succeed({ kind: "work", alongside: false }),
+            }),
           ),
           HttpRouter.provideRequest(provided),
         ),

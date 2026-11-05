@@ -45,6 +45,8 @@ export const OrchestratorLiveDelegationInput = Schema.Struct({
     Schema.isLessThanOrEqualTo(256),
   ),
   context: TrimmedNonEmptyString.check(Schema.isMaxLength(24_000)),
+  /** A new job, not a change to running work: a busy chat need not hold it up. */
+  alongside: Schema.optional(Schema.Boolean),
 });
 export type OrchestratorLiveDelegationInput = typeof OrchestratorLiveDelegationInput.Type;
 /** One NDJSON event per durable work revision, ending with a terminal status. */

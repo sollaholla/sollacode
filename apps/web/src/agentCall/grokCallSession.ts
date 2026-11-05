@@ -52,7 +52,17 @@ export const GROK_CALL_TOOLS: ReadonlyArray<RealtimeFunctionTool> = [
     name: AGENT_CALL_GROK_DELEGATE_TOOL,
     description:
       "Start your work on what the person just said: anything that needs action, files, code, accounts, long research or a decision, and the person's answers to what your work asked them, including a yes or no to an approval. Not for questions the lookups or a web search can answer. It returns at once; the result arrives later.",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
+    parameters: {
+      type: "object",
+      properties: {
+        alongside: {
+          type: "boolean",
+          description:
+            "True for a new job, which starts at once even if earlier work is still running. False for a correction, an addition to running work, or an answer to what your work asked.",
+        },
+      },
+      additionalProperties: false,
+    },
   },
 ];
 
@@ -102,6 +112,8 @@ export function createGrokCallSession(
   let sequence = 0;
   let latestDelegationId: string | null = null;
   const workStreams = new Set<AbortController>();
+  /** Delegations the voice called new jobs, which a busy chat need not hold up. */
+  const alongsideJobs = new Set<string>();
   const delegationTimers = new Set<ReturnType<typeof setTimeout>>();
   let working = false;
   let voiceLine: PhoneLine | null = null;
@@ -356,7 +368,13 @@ export function createGrokCallSession(
         headers,
         credentials,
         signal: abort.signal,
-        body: JSON.stringify({ sessionId, delegationId, sequence: at, context: context.context() }),
+        body: JSON.stringify({
+          sessionId,
+          delegationId,
+          sequence: at,
+          context: context.context(),
+          ...(alongsideJobs.has(delegationId) ? { alongside: true } : {}),
+        }),
       });
       if (response.status === 409) {
         await response.body?.cancel();
@@ -441,13 +459,14 @@ export function createGrokCallSession(
     }
   };
 
-  const delegate = () => {
+  const delegate = (alongside: boolean) => {
     if (stopped || !sessionId) return { error: "The call has ended." };
     if (sequence >= MAX_DELEGATIONS)
       return { error: "I can't take on anything more on this call." };
     sequence += 1;
     const delegationId = `${sessionId}:${sequence}`;
     latestDelegationId = delegationId;
+    if (alongside) alongsideJobs.add(delegationId);
     void runDelegation(delegationId, sequence);
     return { status: "You're working on it now." };
   };
@@ -478,7 +497,9 @@ export function createGrokCallSession(
     {
       ...callbacks,
       onToolCall: async ({ name, args }) =>
-        name === AGENT_CALL_GROK_DELEGATE_TOOL ? delegate() : lookup(name, args),
+        name === AGENT_CALL_GROK_DELEGATE_TOOL
+          ? delegate(args.alongside === true)
+          : lookup(name, args),
       onTranscript: (entry) => {
         if (!stopped) noteTranscript(entry.role, entry.text);
         callbacks.onTranscript?.(entry);

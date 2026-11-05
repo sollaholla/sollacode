@@ -177,6 +177,17 @@ describe("Grok call session", () => {
     expect(f.callbacks.onWorkingChange).not.toHaveBeenCalledWith(true);
   });
 
+  it("says when a job is new, so a busy chat need not hold it up", async () => {
+    const f = fixture();
+    await f.start();
+    f.created.callbacks.onTranscript?.({ role: "user", text: "Book the flights." });
+    await f.created.callbacks.onToolCall({ name: "start_work", args: { alongside: true } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.calls.find((call) => call.path === AGENT_CALL_DELEGATION_PATH)?.body).toMatchObject({
+      alongside: true,
+    });
+  });
+
   it("tells the voice when a lookup failed, so it can say so", async () => {
     const f = fixture({ lookupStatus: 500 });
     await f.start();

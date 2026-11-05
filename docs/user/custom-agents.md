@@ -406,16 +406,18 @@ system default or an unplugged microphone by itself.
 
 During a call:
 
-- Questions are answered on the spot, without the agent's chat: the voice can list your threads,
-  read them a page at a time and search them, on this computer and its connected computers, and
-  search the web. These only read. A call with other chats on it, or an agent that is still
-  working, goes through the chat as below.
+- Questions are answered on the spot, without the agent's chat, even while the chat is working: the
+  voice can tell you what the agent is doing, list your threads, read them a page at a time and
+  search them, on this computer and its connected computers, and search the web. These only read.
+  A call with other chats on it goes through the chat as below.
+- A new job starts straight away, even if the agent is busy: it gets its own side chat, which has
+  the conversation so far, and the agent tells you the result when it's done.
 - Anything else goes into the agent's own chat as an ordinary message, starting with "From our
   voice call". The agent then works with the same tools, rules and approval policy as for a typed
   message.
-- If the agent is busy, your message joins the turn it is already working on. With a provider that
-  can't take new input mid-turn, Solla Code stops the current turn and starts a new one with your
-  message.
+- A correction or addition to the work in progress joins the turn it is already working on. With a
+  provider that can't take new input mid-turn, Solla Code stops the current turn and starts a new
+  one with your message.
 - The agent keeps talking with you while its chat works. When the chat replies, the agent tells
   you the result in a few sentences. A long reply is shortened, and the agent tells you the full
   reply is in its chat.

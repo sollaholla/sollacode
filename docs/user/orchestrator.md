@@ -859,8 +859,8 @@ working if that agent was renamed or removed.)
 Questions don't wait for that chat. A fast model on the server answers them first, in a few seconds:
 it can list threads, read them a page at a time, search them, and search the web, on this computer
 and on the computers connected to it. It only reads. Anything that needs real work goes to the chat
-as above, and so does anything said while the chat is working, because those words may be a
-correction. This uses your OpenAI key.
+as above. Questions are still answered while the chat works, and corrections join the running
+work. This uses your OpenAI key.
 
 The conversation can continue while work runs. Corrections and answers join the request still being
 worked on, repeated network requests are deduplicated, and progress is the chat's latest reply.

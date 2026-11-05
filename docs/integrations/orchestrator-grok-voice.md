@@ -32,7 +32,7 @@ Model is a query parameter on the WebSocket. Voice, instructions, tools, turn de
 
 Grok Voice searches the web and X itself, through its `web_search` and `x_search` tools, on orchestrator sessions and agent calls alike. Grok reports each search as a finished function call, so the client ignores those two names rather than answering them.
 
-On an agent call the voice also has `list_threads`, `read_thread` and `search_threads`, which the host answers straight away from every chat on this computer and its connected computers. `start_work` remains the way to hand anything else to the agent's chat.
+On an agent call the voice also has `list_threads`, `read_thread` and `search_threads`, which the host answers straight away from every chat on this computer and its connected computers. `start_work` remains the way to hand anything else to the agent's chat. With `alongside`, a new job starts in a side chat when that chat is busy rather than waiting for it.
 
 ## Limitations
 

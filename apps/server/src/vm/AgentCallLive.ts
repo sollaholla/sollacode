@@ -27,7 +27,8 @@ import {
   type OrchestrationThread,
   type OrchestratorLiveDelegationInput,
   type OrchestratorLiveWorkEvent,
-  type ThreadId,
+  type OrchestrationThreadShell,
+  ThreadId,
   type TurnId,
   type VmAgent,
 } from "@t3tools/contracts";
@@ -157,6 +158,7 @@ export function agentCallInstructions(input: {
     input.engine === "grok"
       ? `Answer questions yourself, straight away: list_threads, read_thread and search_threads reach every chat on every connected computer, and web_search and x_search reach the internet. Say a few words while you look, and follow nextCursor when an answer is further back. Anything else needs your workspace, which only ${AGENT_CALL_GROK_DELEGATE_TOOL} reaches. Call it for any action, file, code, decision about work, or long job, including requests that seem outside your role. It starts the work with what the person said and returns at once. Say one short line that you're on it, then keep talking naturally while it runs, but never invent progress, results or approvals. Results reach you as updates; they are your own work, so say them conversationally as yours, summarising long or technical parts. If an update asks a question, ask the person, then call ${AGENT_CALL_GROK_DELEGATE_TOOL} again once they answer.`
       : "Anything beyond small talk needs your workspace, which you reach by delegating. Delegate any action, question, file, tool, decision about work, or anything you don't know, including requests that seem outside your role; the delegation carries what the person said. Keep talking naturally while it runs, but never invent progress, results or approvals. Results are your own work: say them conversationally as yours, summarising long or technical parts. If a result asks a question, ask the person and delegate their answer.",
+    "You never have to finish something before talking or taking something new: earlier work carries on by itself and reports back when it is done, so never tell the person they must wait for it.",
     "Read back consequential actions before delegating them. When you read out an approval, say exactly what it is and ask for a plain yes or no, then pass the person's answer straight on: their yes or no is what approves or declines it. Nothing is approved until your work confirms it, so never say it is. A password or sign-in is never given by voice.",
     "When the person says goodbye or asks you to hang up, answer with a short goodbye that says bye; the call hangs up as soon as you finish it. Don't add a question after it.",
     `Never say ${AGENT_STOP_TOKEN} or any other control word out loud; a goodbye is how a call ends.`,
@@ -674,8 +676,7 @@ export function agentCallWorkEvent(input: {
 
   if (!working && thread.session?.status === "error" && thread.session.updatedAt >= target.sentAt)
     return event("failed", thread.session.lastError ?? "I ran into an error.");
-  if (inBusyTurn && view.delivery === "pending")
-    return event("queued", "I'll get to that as soon as I finish what I'm on.");
+  if (inBusyTurn && view.delivery === "pending") return event("queued", "");
   // An unconfirmed steer is already in the running turn's hands, even when that
   // turn looks finished before the provider's acceptance lands.
   return event("running", working || view.delivery === "unconfirmed" ? "Working on it." : "On it.");
@@ -1530,6 +1531,64 @@ export const makeAgentCallLive = Effect.gen(function* () {
   };
 
   /**
+   * Starts a new job from a call in a side chat of the agent's busy chat, so it
+   * runs now instead of queueing behind that chat's turn. The side chat has
+   * the conversation so far and acts as the agent.
+   */
+  const startAlongside = Effect.fnUntraced(function* (
+    source: OrchestrationThreadShell,
+    job: {
+      readonly id: string;
+      readonly sentAt: string;
+      readonly text: string;
+      readonly words: string;
+    },
+  ) {
+    const threadId = ThreadId.make(NodeCrypto.randomUUID());
+    const title = `Call: ${job.words.slice(0, 60)}`;
+    const messageId = MessageId.make(`agent-call:${job.id}:alongside`);
+    yield* engine.dispatch({
+      type: "thread.fork",
+      commandId: CommandId.make(`agent-call:${job.id}:fork`),
+      threadId,
+      sourceThreadId: source.id,
+      title,
+      createdByThreadId: source.id,
+      browserProfileThreadId: source.browserProfileThreadId ?? source.id,
+      modelSelection: source.modelSelection,
+      runtimeMode: source.runtimeMode,
+      interactionMode: "agent",
+      isSideChat: true,
+      sideChatParentThreadId: source.id,
+      createdAt: job.sentAt,
+    });
+    yield* engine.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make(`agent-call:${job.id}:alongside`),
+      threadId,
+      message: {
+        messageId,
+        role: "user",
+        text: job.text,
+        inputOrigin: "transcription",
+        attachments: [],
+      },
+      modelSelection: source.modelSelection,
+      titleSeed: title,
+      runtimeMode: source.runtimeMode,
+      interactionMode: "agent",
+      createdAt: job.sentAt,
+    });
+    const work: AgentCallWatchTarget = {
+      messageId,
+      answeredRequestId: null,
+      sentAt: job.sentAt,
+      busyTurnId: null,
+    };
+    return { threadId, work };
+  });
+
+  /**
    * Passes what was said since the last delegation to the chats it is for —
    * the agent called, unless the person's latest words named chats added to
    * the call or addressed everyone (see `callAddressing`) — each as the
@@ -1669,6 +1728,23 @@ export const makeAgentCallLive = Effect.gen(function* () {
       );
       const commandId = CommandId.make(`agent-call:${id}`);
       const sentAt = DateTime.formatIso(yield* DateTime.now);
+      if (
+        input.alongside === true &&
+        target.primary &&
+        participants.length === 0 &&
+        !shell.value.hasPendingApprovals &&
+        !shell.value.hasPendingUserInput &&
+        runningTurnOf(shell.value) !== null
+      ) {
+        const side = yield* startAlongside(shell.value, {
+          id,
+          sentAt,
+          text: messageFor(target),
+          words: delta.latestUserText || delta.userText,
+        }).pipe(Effect.option);
+        if (Option.isSome(side))
+          return { ...target, ...side.value, reported: null, heardRequest: null };
+      }
       const open =
         shell.value.hasPendingUserInput || shell.value.hasPendingApprovals
           ? yield* openQuestion(session, target.threadId, spoken)
@@ -1813,10 +1889,24 @@ export const makeAgentCallLive = Effect.gen(function* () {
     return yield* semaphore.withPermits(1)(delegateInOrder(input, arrivedAt));
   });
 
+  /** What the chat last wrote, so the voice can say what it is doing without reading it first. */
+  const latestChatUpdate = (threadId: ThreadId) =>
+    projections.getThreadDetailById(threadId, { messageLimit: 6, activityLimit: 0 }).pipe(
+      Effect.map((thread) =>
+        Option.match(thread, {
+          onNone: () => null,
+          onSome: ({ messages }) =>
+            messages.findLast((message) => message.role === "assistant")?.text.slice(0, 800) ??
+            null,
+        }),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+
   /**
    * What the fast path needs to try this delegation, or none when the chats
-   * must take it: they are already working, the words may be for someone else
-   * on the call, or there is nothing new to answer.
+   * must take it: the words may be for someone else on the call, may answer
+   * something a chat asked, or there is nothing new to answer.
    */
   const quickRequest = Effect.fn("AgentCallLive.quickRequest")(function* (
     input: OrchestratorLiveDelegationInput,
@@ -1825,7 +1915,6 @@ export const makeAgentCallLive = Effect.gen(function* () {
     if (
       session === undefined ||
       session.engine !== "gpt-live" ||
-      session.active !== null ||
       session.requests.has(input.delegationId) ||
       input.sequence <= session.lastSequence ||
       !extractCallDelta(input.context, session.forwardedFragments).userText
@@ -1847,7 +1936,34 @@ export const makeAgentCallLive = Effect.gen(function* () {
       speaksFor: session.threadId,
       speakerName: session.agentName,
       transcript: input.context,
+      working: Option.isSome(shell) && runningTurnOf(shell.value) !== null,
+      canWorkAlongside: true,
+      latestUpdate: yield* latestChatUpdate(session.threadId),
     });
+  });
+
+  /**
+   * Says a fast-path answer on this delegation's stream, then keeps following
+   * work still owed a reply: the device has dropped older streams by now, so
+   * those replies would otherwise be lost.
+   */
+  const spokenBeside = Effect.fn("AgentCallLive.spokenBeside")(function* (
+    input: OrchestratorLiveDelegationInput,
+    text: string,
+  ) {
+    const arrivedAt = yield* nowMs;
+    const session = yield* liveSession(input.sessionId);
+    if (input.sequence > (session.newest?.sequence ?? 0))
+      session.newest = { delegationId: input.delegationId, sequence: input.sequence };
+    reopenUnheard(session, input.delegationId, arrivedAt);
+    const { delegationId } = input;
+    const owed = (session.active ?? []).filter(
+      (target) => target.reported === null && target.heardRequest === null,
+    );
+    const said = (status: OrchestratorLiveWorkEvent["status"]) =>
+      Stream.succeed<OrchestratorLiveWorkEvent>({ delegationId, status, text });
+    if (owed.length === 0) return said("completed");
+    return said("waiting-input").pipe(Stream.concat(follow(session, owed, delegationId)));
   });
 
   /** The chat a live call's voice speaks for; ended once the call is over. */
@@ -1885,6 +2001,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
     start,
     startGrok,
     quickRequest,
+    spokenBeside,
     speaksFor,
     delegate,
     roster,

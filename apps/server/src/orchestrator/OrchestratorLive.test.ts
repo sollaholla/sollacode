@@ -373,7 +373,9 @@ it("preserves session ownership across authenticated HTTP requests and closes th
     orchestratorLiveRouteLayer.pipe(
       HttpRouter.provideRequest(OrchestratorLiveLayer.pipe(Layer.provide(dependencies))),
       HttpRouter.provideRequest(
-        Layer.mock(VoiceLookups)({ quickAnswer: () => Effect.succeed(Option.none()) }),
+        Layer.mock(VoiceLookups)({
+          quickAnswer: () => Effect.succeed({ kind: "work", alongside: false }),
+        }),
       ),
       HttpRouter.provideRequest(dependencies),
     ),

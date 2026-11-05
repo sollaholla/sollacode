@@ -244,7 +244,7 @@ export function voiceWorkEvent(input: {
   const stillPrior =
     latest !== null && latest.turnId === input.work.priorTurnId && !input.work.priorTurnWasRunning;
   if (latest === null || stillPrior) {
-    return event("queued", "Waiting for the orchestrator's chat to pick this up.");
+    return event("queued", "");
   }
   if (latest.state === "running") return event("running", reply ?? "Working on it.");
   if (latest.state === "error") {
@@ -463,7 +463,7 @@ export const makeOrchestratorLive = Effect.gen(function* () {
   );
   /**
    * What the fast path needs to try this request, or none when the chat must
-   * take it: it is already on this conversation, so the words may steer that work.
+   * take it. It runs while the chat works; the model sends corrections on to it.
    */
   const quickRequest = Effect.fn("OrchestratorLive.quickRequest")(function* (
     input: OrchestratorLiveDelegationInput,
@@ -475,16 +475,19 @@ export const makeOrchestratorLive = Effect.gen(function* () {
       input.sequence <= session.lastSequence
     )
       return Option.none<QuickAnswerRequest>();
-    if (session.activeWorkId) {
-      const active = yield* readWork(session.activeWorkId);
-      if (!terminalStatuses.has(active.status)) return Option.none<QuickAnswerRequest>();
-    }
+    const shell = yield* projection
+      .getThreadShellById(ORCHESTRATOR_THREAD_ID)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
     return Option.some<QuickAnswerRequest>({
       speaksFor: ORCHESTRATOR_THREAD_ID,
       speakerName: ORCHESTRATOR_THREAD_TITLE,
       transcript: input.context,
+      working: Option.isSome(shell) && shell.value.latestTurn?.state === "running",
+      canWorkAlongside: false,
+      latestUpdate: null,
     });
   });
+
   const watch = (id: VmAgentDelegationId) =>
     Stream.unwrap(
       Effect.gen(function* () {
@@ -508,10 +511,28 @@ export const makeOrchestratorLive = Effect.gen(function* () {
         );
       }),
     );
+  /**
+   * Says a fast-path answer, then keeps following work still running: the
+   * device has dropped its older stream, so that reply would otherwise be lost.
+   */
+  const spokenBeside = Effect.fn("OrchestratorLive.spokenBeside")(function* (
+    input: OrchestratorLiveDelegationInput,
+    text: string,
+  ) {
+    const { delegationId } = input;
+    const session = sessions.get(input.sessionId);
+    const active = session?.activeWorkId;
+    const running = active !== undefined && !terminalStatuses.has((yield* readWork(active)).status);
+    const said = (status: OrchestratorLiveWorkEvent["status"]) =>
+      Stream.succeed<OrchestratorLiveWorkEvent>({ delegationId, status, text });
+    if (!running) return said("completed");
+    return said("waiting-input").pipe(Stream.concat(watch(active)));
+  });
   return {
     start,
     delegate,
     quickRequest,
+    spokenBeside,
     watch,
     release: (sessionId: string) =>
       Effect.sync(() => {

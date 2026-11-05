@@ -74,7 +74,7 @@ import {
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as OrchestratorCredentials from "./orchestrator/OrchestratorCredentials.ts";
 import { OrchestratorLive, OrchestratorLiveError } from "./orchestrator/OrchestratorLive.ts";
-import { type QuickAnswerRequest, VoiceLookups } from "./voice/VoiceLookups.ts";
+import { type QuickAnswerRequest, type QuickOutcome, VoiceLookups } from "./voice/VoiceLookups.ts";
 import * as ReadOnlyCommand from "./orchestrator/readOnlyCommand.ts";
 import { AgentCallLive } from "./vm/AgentCallLive.ts";
 import { sessionDeviceLabel } from "./vm/AgentCalls.ts";
@@ -427,19 +427,11 @@ const liveRouteError = (error: OrchestratorLiveError) =>
   Effect.succeed(HttpServerResponse.text(error.detail, { status: error.status }));
 
 /** NDJSON work events, with blank keepalive lines so idle proxies keep the stream open. */
-/** A voice request's answer from the fast path, when it can give one. */
-const quickWork = (request: Option.Option<QuickAnswerRequest>, delegationId: string) =>
+/** What the fast path made of a voice request; with none to try, the chat takes it. */
+const quickWork = (request: Option.Option<QuickAnswerRequest>) =>
   Option.match(request, {
-    onNone: () => Effect.succeed(Option.none<OrchestratorLiveWorkEvent>()),
-    onSome: (quick) =>
-      VoiceLookups.pipe(
-        Effect.flatMap((voice) => voice.quickAnswer(quick)),
-        Effect.map(
-          Option.map(
-            (text): OrchestratorLiveWorkEvent => ({ delegationId, status: "completed", text }),
-          ),
-        ),
-      ),
+    onNone: () => Effect.succeed<QuickOutcome>({ kind: "work", alongside: false }),
+    onSome: (quick) => VoiceLookups.pipe(Effect.flatMap((voice) => voice.quickAnswer(quick))),
   });
 
 /** A lookup's JSON text, which goes straight back to the voice as a tool result. */
@@ -509,8 +501,9 @@ export const orchestratorLiveRouteLayer = Layer.mergeAll(
             }),
         ),
       );
-      const answer = yield* quickWork(yield* service.quickRequest(input), input.delegationId);
-      if (Option.isSome(answer)) return liveWorkResponse(Stream.make(answer.value));
+      const outcome = yield* quickWork(yield* service.quickRequest(input));
+      if (outcome.kind === "answer")
+        return liveWorkResponse(yield* service.spokenBeside(input, outcome.text));
       const id = yield* service.delegate(input);
       return liveWorkResponse(service.watch(id));
     }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
@@ -623,9 +616,12 @@ export const agentCallRouteLayer = Layer.mergeAll(
             }),
         ),
       );
-      const answer = yield* quickWork(yield* service.quickRequest(input), input.delegationId);
-      if (Option.isSome(answer)) return liveWorkResponse(Stream.make(answer.value));
-      return liveWorkResponse(yield* service.delegate(input));
+      const outcome = yield* quickWork(yield* service.quickRequest(input));
+      if (outcome.kind === "answer")
+        return liveWorkResponse(yield* service.spokenBeside(input, outcome.text));
+      return liveWorkResponse(
+        yield* service.delegate(outcome.alongside ? { ...input, alongside: true } : input),
+      );
     }).pipe(Effect.catchTag("OrchestratorLiveError", liveRouteError)),
   ),
   HttpRouter.add(
