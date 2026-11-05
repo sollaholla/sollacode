@@ -872,11 +872,12 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         yield* Effect.yieldNow;
       }
       yield* Fiber.interrupt(sendTurnFiber);
-      for (let yieldAttempt = 0; yieldAttempt < 4; yieldAttempt += 1) {
-        yield* Effect.yieldNow;
+      // The mock agent is a real process, so its reply lands in real time.
+      let snapshot = yield* adapter.readThread(threadId);
+      for (let attempt = 0; attempt < 500 && snapshot.turns.length === 0; attempt += 1) {
+        yield* TestClock.withLive(Effect.sleep("10 millis"));
+        snapshot = yield* adapter.readThread(threadId);
       }
-
-      const snapshot = yield* adapter.readThread(threadId);
       assert.equal(snapshot.turns.length, 1);
       assert.equal(snapshot.turns[0]?.items.length, 1);
 
