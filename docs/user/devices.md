@@ -17,7 +17,7 @@ When a tool is missing, **Settings → Simulators** says what to install instead
 ## Open a device
 
 1. Open the browser panel in any chat and start a new tab.
-2. Under **Devices**, select a simulator or emulator. Running devices are listed first.
+2. Under **Simulators**, select a simulator or emulator. Running devices are listed first.
 3. The device starts if it is off. A brand-new simulator's first start can take about a minute.
 
 The tab then shows the device screen:

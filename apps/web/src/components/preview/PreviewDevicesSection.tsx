@@ -84,7 +84,7 @@ export function PreviewDevicesSection({ environmentId, onOpenUrl }: Props) {
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <SmartphoneIcon className="size-4 shrink-0" />
         <h2 id="preview-devices-heading" className="flex-1 font-medium">
-          Devices
+          Simulators
         </h2>
         <Button size="xs" variant="ghost" onClick={manage}>
           Manage
