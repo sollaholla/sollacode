@@ -13768,6 +13768,9 @@ describe("ProviderCommandReactor", () => {
           (activity.payload as Record<string, unknown>).requestId === "user-input-request-1",
       );
     });
+    // The resolved activity lands first; the same worker then starts the turn
+    // that delivers the answer.
+    await harness.drain();
 
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
