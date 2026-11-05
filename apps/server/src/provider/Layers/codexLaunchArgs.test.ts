@@ -3,6 +3,7 @@ import * as NodeAssert from "node:assert/strict";
 import { describe, it } from "vite-plus/test";
 
 import {
+  CODEX_APP_SERVER_CONFIG_ARGS,
   codexAppServerArgs,
   codexExecLaunchArgs,
   resolveCodexLaunchArgs,
@@ -32,20 +33,41 @@ describe("codexAppServerArgs", () => {
   it("preserves escaped TOML quotes in config values", () => {
     NodeAssert.deepStrictEqual(
       codexAppServerArgs(String.raw`--config model=\"gpt-6.1-sol\" --strict-config`),
-      ["app-server", "--config", 'model="gpt-6.1-sol"', "--strict-config"],
+      [
+        "app-server",
+        ...CODEX_APP_SERVER_CONFIG_ARGS,
+        "--config",
+        'model="gpt-6.1-sol"',
+        "--strict-config",
+      ],
     );
   });
 
   it("returns the app-server command for empty launch args", () => {
-    NodeAssert.deepStrictEqual(codexAppServerArgs(""), ["app-server"]);
+    NodeAssert.deepStrictEqual(codexAppServerArgs(""), [
+      "app-server",
+      ...CODEX_APP_SERVER_CONFIG_ARGS,
+    ]);
   });
 
   it("appends parsed launch args after app-server", () => {
     NodeAssert.deepStrictEqual(codexAppServerArgs("--strict-config --enable foo"), [
       "app-server",
+      ...CODEX_APP_SERVER_CONFIG_ARGS,
       "--strict-config",
       "--enable",
       "foo",
+    ]);
+  });
+});
+
+describe("CODEX_APP_SERVER_CONFIG_ARGS", () => {
+  it("turns on Codex's question card outside Plan mode, without its warning", () => {
+    NodeAssert.deepStrictEqual(CODEX_APP_SERVER_CONFIG_ARGS, [
+      "-c",
+      "features.default_mode_request_user_input=true",
+      "-c",
+      "suppress_unstable_features_warning=true",
     ]);
   });
 });

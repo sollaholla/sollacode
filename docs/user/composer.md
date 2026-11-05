@@ -90,6 +90,8 @@ OpenCode and Antigravity are asked to put the final plan in one
 `<proposed_plan>` block, which becomes the plan card. The card shows the plan,
 so the message that carried it no longer repeats it.
 
+Codex can stop and ask you a question in any mode, not only Plan mode. It shows as the same question card as other providers, with options to pick. Before version 0.1.803 Codex was refused this outside Plan mode, so it wrote its questions out as a bulleted list instead. A chat already open picks this up the next time its Codex session starts.
+
 - **Plan Ready** names the waiting plan above the composer, in any mode
   (Claude can switch itself into plan mode while you are in Build). Tap its
   title to open the plan. Pressing **Implement** — or sending an empty

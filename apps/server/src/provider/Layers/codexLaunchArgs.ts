@@ -10,8 +10,23 @@ export const resolveCodexLaunchArgs = (
 export const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> =>
   tokenizeCliArgs(launchArgs);
 
+/**
+ * Lets Codex ask its question card outside Plan mode. Without this,
+ * `request_user_input` is still offered to the model but fails with "unavailable
+ * in Default mode", so it writes the question out as a list. The feature counts
+ * as under development, and Codex warns in every thread unless told not to.
+ * Set first so a person's own launch args win.
+ */
+export const CODEX_APP_SERVER_CONFIG_ARGS = [
+  "-c",
+  "features.default_mode_request_user_input=true",
+  "-c",
+  "suppress_unstable_features_warning=true",
+] as const;
+
 export const codexAppServerArgs = (launchArgs?: string) => [
   "app-server",
+  ...CODEX_APP_SERVER_CONFIG_ARGS,
   ...codexLaunchArgv(launchArgs),
 ];
 

@@ -15,7 +15,7 @@ import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
-import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
+import { CODEX_APP_SERVER_CONFIG_ARGS, codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
   CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS,
@@ -442,6 +442,7 @@ describe("codexSessionAppServerArgs", () => {
   it("keeps the app-server subcommand when explicit args are provided", () => {
     NodeAssert.deepStrictEqual(codexSessionAppServerArgs(["-c", "model=gpt-5"], undefined), [
       "app-server",
+      ...CODEX_APP_SERVER_CONFIG_ARGS,
       "-c",
       "model=gpt-5",
     ]);
@@ -455,6 +456,7 @@ describe("codexSessionAppServerArgs", () => {
       ),
       [
         "app-server",
+        ...CODEX_APP_SERVER_CONFIG_ARGS,
         "--strict-config",
         "--enable",
         "foo",
