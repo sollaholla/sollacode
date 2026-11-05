@@ -76,6 +76,9 @@ const TestHttpClientLive = Layer.succeed(
   ),
 );
 
+/** Lets real work on other fibers (probes, disk writes) finish; virtual time cannot. */
+const liveTick = TestClock.withLive(Effect.sleep("10 millis"));
+
 /**
  * Waits for a cached snapshot with this `checkedAt`. The write is real disk I/O
  * on another fiber, so this sleeps in real time; counting virtual-clock ticks
@@ -86,7 +89,7 @@ const awaitCachedProvider = (filePath: string, checkedAt: string) =>
     let cached = yield* readProviderStatusCache(filePath);
     for (let attempt = 0; attempt < 500 && cached?.checkedAt !== checkedAt; attempt += 1) {
       yield* TestClock.adjust("10 millis");
-      yield* TestClock.withLive(Effect.sleep("10 millis"));
+      yield* liveTick;
       cached = yield* readProviderStatusCache(filePath);
     }
     return cached;
@@ -1569,7 +1572,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const changes = yield* PubSub.unbounded<void>();
           const instancesRef = yield* Ref.make<ReadonlyArray<ProviderInstance>>([codexInstance]);
           const failNextList = yield* Ref.make(false);
-          const wait = () => Effect.yieldNow;
+          const wait = () => liveTick;
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
@@ -1620,7 +1623,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             let providers = yield* registry.getProviders;
             for (
               let attempt = 0;
-              attempt < 50 &&
+              attempt < 500 &&
               !providers.some((provider) => provider.instanceId === claudeInstanceId);
               attempt += 1
             ) {
@@ -1723,12 +1726,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             let providers = yield* registry.getProviders;
             for (
               let attempts = 0;
-              attempts < 50 &&
+              attempts < 500 &&
               providers.find((provider) => provider.instanceId === "codex_personal")?.status !==
                 "error";
               attempts += 1
             ) {
-              yield* Effect.yieldNow;
+              yield* liveTick;
               providers = yield* registry.getProviders;
             }
             const codexPersonal = providers.find(
@@ -1833,13 +1836,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             let initialProviders = yield* registry.getProviders;
             for (
               let attempts = 0;
-              attempts < 50 &&
+              attempts < 500 &&
               initialProviders.find((provider) => provider.instanceId === "codex")?.status !==
                 "error";
               attempts += 1
             ) {
               yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
+              yield* liveTick;
               initialProviders = yield* registry.getProviders;
             }
             const initialCodex = initialProviders.find(
@@ -1867,7 +1870,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             // executable. This verifies the public settings-to-probe behavior
             // without depending on timestamps assigned by TestClock.
             const refreshed = yield* Effect.gen(function* () {
-              for (let attempts = 0; attempts < 60; attempts += 1) {
+              for (let attempts = 0; attempts < 500; attempts += 1) {
                 const providers = yield* registry.getProviders;
                 const codex = providers.find((provider) => provider.instanceId === "codex");
                 if (
@@ -1878,7 +1881,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   return providers;
                 }
                 yield* TestClock.adjust("50 millis");
-                yield* Effect.yieldNow;
+                yield* liveTick;
               }
               return yield* registry.getProviders;
             });

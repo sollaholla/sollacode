@@ -4,7 +4,7 @@
  * cannot start one, so this proves each binary the app needs is really arm64.
  * Run by `.github/workflows/release.yml`.
  */
-import { spawnSync } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -21,7 +21,7 @@ export const REQUIRED_ARM64_BINARIES = [
 export const hasArm64Slice = (archs: string) => archs.trim().split(/\s+/u).includes("arm64");
 
 const archsOf = (binary: string) => {
-  const result = spawnSync("lipo", ["-archs", binary], { encoding: "utf8" });
+  const result = NodeChildProcess.spawnSync("lipo", ["-archs", binary], { encoding: "utf8" });
   return result.status === 0 ? result.stdout : "";
 };
 
@@ -31,7 +31,12 @@ function main(): number {
   const zip = NodeFS.readdirSync(directory).find((name) => name.endsWith("-arm64.zip"));
   if (!zip) throw new Error(`No arm64 zip in ${directory}.`);
   const unpacked = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "arm64-check-"));
-  const ditto = spawnSync("ditto", ["-x", "-k", NodePath.join(directory, zip), unpacked]);
+  const ditto = NodeChildProcess.spawnSync("ditto", [
+    "-x",
+    "-k",
+    NodePath.join(directory, zip),
+    unpacked,
+  ]);
   if (ditto.status !== 0) throw new Error(`Could not unpack ${zip}.`);
   const app = NodeFS.readdirSync(unpacked).find((name) => name.endsWith(".app"));
   if (!app) throw new Error(`${zip} holds no app.`);
