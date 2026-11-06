@@ -230,8 +230,6 @@ export function VoiceOrb({
         ref={orbRef}
         size={112}
         tint={speaker}
-        spinning={speaker !== "idle"}
-        breathing={speaker === "waiting" || speaker === "connecting"}
         className="transition-opacity duration-300"
         style={{ willChange: "transform, opacity" }}
       >

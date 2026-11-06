@@ -299,8 +299,6 @@ export function OrchestratorBubbleApp() {
           // The resting always-on-top renderer is still. A live voice session
           // gets the complete flowing-cloud, star and reflection animation.
           animated={state.status !== "idle" && state.status !== "error"}
-          spinning={state.status !== "idle" && state.status !== "error"}
-          breathing={state.status === "connecting"}
         >
           {speaking ? (
             <AudioLinesIcon size={20} color="rgba(255,255,255,0.92)" strokeWidth={2.2} />

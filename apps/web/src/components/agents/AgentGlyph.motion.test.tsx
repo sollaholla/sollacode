@@ -108,3 +108,36 @@ it("moves only by transform: no reduced motion, offline or hidden gestures, no i
     container.remove();
   }
 });
+
+it("leaves a playing clip alone when the mood changes", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  document.body.append(container);
+  const render = async (mood: "idle" | "working") => {
+    await act(async () => {
+      root.render(<AgentGlyph agentId="agent-0" online live mood={mood} />);
+    });
+  };
+  try {
+    await render("idle");
+    const clip = container.querySelector("video");
+    expect(clip).not.toBeNull();
+    const rate = clip?.playbackRate;
+    await render("working");
+    await render("idle");
+    expect(container.querySelector("video")).toBe(clip);
+    expect(clip?.playbackRate).toBe(rate);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});

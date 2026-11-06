@@ -54,26 +54,16 @@ function call(id: string, overrides: Partial<AgentCall> = {}): AgentCall {
 }
 
 describe("agentCallMood", () => {
-  it("follows the call: waiting while connecting, smiling while speaking, working while its chat works", () => {
-    expect(agentCallMood({ phase: "placing", sessionState: "idle", working: false })).toBe(
-      "waiting",
-    );
-    expect(agentCallMood({ phase: "connecting", sessionState: "connecting", working: false })).toBe(
-      "waiting",
-    );
-    expect(agentCallMood({ phase: "live", sessionState: "speaking", working: true })).toBe(
-      "speaking",
-    );
-    expect(agentCallMood({ phase: "live", sessionState: "listening", working: true })).toBe(
-      "working",
-    );
-    expect(agentCallMood({ phase: "live", sessionState: "listening", working: false })).toBe(
-      "idle",
-    );
-    expect(agentCallMood({ phase: "failed", sessionState: "error", working: false })).toBe(
-      "blocked",
-    );
-    expect(agentCallMood({ phase: "ended", sessionState: "idle", working: false })).toBe("idle");
+  it("follows the stages of the call", () => {
+    expect(agentCallMood({ phase: "placing", sessionState: "idle" })).toBe("waiting");
+    expect(agentCallMood({ phase: "connecting", sessionState: "connecting" })).toBe("waiting");
+    expect(agentCallMood({ phase: "failed", sessionState: "error" })).toBe("blocked");
+    expect(agentCallMood({ phase: "ended", sessionState: "idle" })).toBe("idle");
+  });
+
+  it("holds still while people talk, so the orb never flickers with speech", () => {
+    expect(agentCallMood({ phase: "live", sessionState: "speaking" })).toBe("idle");
+    expect(agentCallMood({ phase: "live", sessionState: "listening" })).toBe("idle");
   });
 });
 

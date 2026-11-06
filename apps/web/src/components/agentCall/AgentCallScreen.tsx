@@ -252,6 +252,22 @@ function CallParticipants(props: {
 }
 
 /** What the call surfaces need from the agent, live record or captured. */
+const WORKING_LINE_LINGER_MS = 4_000;
+
+/** Stays true a while after `value` clears, so a quick lookup doesn't flash on and off. */
+function useLingering(value: boolean, lingerMs: number): boolean {
+  const [held, setHeld] = useState(value);
+  useEffect(() => {
+    if (value) {
+      setHeld(true);
+      return;
+    }
+    const timer = setTimeout(() => setHeld(false), lingerMs);
+    return () => clearTimeout(timer);
+  }, [lingerMs, value]);
+  return value || held;
+}
+
 export interface CallScreenAgent {
   readonly vmAgentId: string;
   readonly name: string;
@@ -291,8 +307,8 @@ export function AgentCallScreen(props: {
   const mood = agentCallMood({
     phase: call.phase,
     sessionState: live.sessionState,
-    working: live.working,
   });
+  const working = useLingering(live.working, WORKING_LINE_LINGER_MS);
 
   return (
     <div
@@ -357,9 +373,10 @@ export function AgentCallScreen(props: {
         {open && call.participantError ? (
           <p className="max-w-md text-sm text-destructive-foreground">{call.participantError}</p>
         ) : null}
-        {open && live.working ? (
-          <p className="text-sm text-muted-foreground">Working on it in the chat. Keep talking.</p>
-        ) : null}
+        {/* Keeps its space, so the caption below never jumps when this comes and goes. */}
+        <p className={cn("text-sm text-muted-foreground", !(open && working) && "invisible")}>
+          Working on it in the chat. Keep talking.
+        </p>
         <p
           className={cn(
             "line-clamp-2 min-h-10 max-w-md text-sm",

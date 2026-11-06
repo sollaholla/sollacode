@@ -41,21 +41,16 @@ export function agentCallKey(environmentId: string, callId: string): string {
 }
 
 /**
- * The face the agent wears on the call screen.
- *
- * Driven by call and session state only, never audio levels: every mood
- * change rebuilds the avatar image, so it may change a few times per turn,
- * not per frame. Speaking smiles, the agent's chat working looks down at its
- * work, connecting looks up expectantly, and trouble wears the blocked face.
+ * The orb's mood on the call screen. Only the call's own stages change it, never
+ * who is talking or whether the chat is busy: those flip many times a minute, and
+ * each flip would swell the orb and swap its corner mark. The caption and the
+ * status line say that instead.
  */
 export function agentCallMood(input: {
   readonly phase: AgentCallPhase;
   readonly sessionState: VoiceSessionState;
-  /** The agent's chat is handling something said on the call. */
-  readonly working: boolean;
 }): AgentAvatarMood {
   if (input.phase === "failed" || input.sessionState === "error") return "blocked";
-  if (input.phase === "ended") return "idle";
   if (
     input.phase === "placing" ||
     input.phase === "connecting" ||
@@ -63,8 +58,6 @@ export function agentCallMood(input: {
   ) {
     return "waiting";
   }
-  if (input.sessionState === "speaking") return "speaking";
-  if (input.working) return "working";
   return "idle";
 }
 

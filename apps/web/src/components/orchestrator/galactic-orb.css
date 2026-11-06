@@ -61,9 +61,6 @@
   animation: galactic-orb-corona 48s linear infinite;
   will-change: transform;
 }
-.galactic-orb[data-orb-moving] .galactic-orb__corona {
-  animation-duration: 22s;
-}
 
 .galactic-orb__glyph {
   position: absolute;

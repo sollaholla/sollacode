@@ -18,9 +18,6 @@ const HALOS: Record<OrbTint, string> = {
   error: "#fb4a6d",
 };
 
-/** How much faster the galaxy turns while a session is busy. */
-const BUSY_RATE = 1.9;
-
 /**
  * The orchestrator: black glass and gold, a burning eye in a sphere. At rest it
  * is stacked stills and costs nothing; while `animated`, a pre-rendered clip of
@@ -29,9 +26,7 @@ const BUSY_RATE = 1.9;
 export function GalacticOrb({
   size,
   tint,
-  spinning = false,
   animated = true,
-  breathing = false,
   intensity = 0,
   scale = 1,
   className,
@@ -42,10 +37,8 @@ export function GalacticOrb({
   /** Sphere diameter. The corona and halo extend only 12% beyond each edge. */
   readonly size: number;
   readonly tint: OrbTint;
-  readonly spinning?: boolean;
   /** Pause every decorative layer, for previews and reduced motion. */
   readonly animated?: boolean;
-  readonly breathing?: boolean;
   readonly intensity?: number;
   readonly scale?: number;
   readonly className?: string;
@@ -54,7 +47,6 @@ export function GalacticOrb({
   readonly children?: ReactNode;
 }) {
   const clipRef = useRef<HTMLVideoElement>(null);
-  const moving = spinning || breathing;
   const vars = {
     "--orb-size": `${size}px`,
     "--orb-edge": HALOS[tint],
@@ -63,14 +55,15 @@ export function GalacticOrb({
     ...style,
   } as CSSProperties;
 
+  // Only `animated` touches the clip. It changes when a session starts or ends;
+  // anything following speech would change many times a minute and show as a jump.
   useEffect(() => {
     const clip = clipRef.current;
     if (!clip) return;
-    clip.playbackRate = moving ? BUSY_RATE : 1;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    void clip.play().catch(() => undefined);
-    return () => clip.pause();
-  }, [animated, moving]);
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (animated && !reduced) void clip.play().catch(() => undefined);
+    else clip.pause();
+  }, [animated]);
 
   return (
     <div
@@ -79,7 +72,6 @@ export function GalacticOrb({
       style={vars}
       data-orb-tint={tint}
       data-orb-animated={animated || undefined}
-      data-orb-moving={moving || undefined}
     >
       <div className="galactic-orb__halo" aria-hidden />
       <img
@@ -91,9 +83,15 @@ export function GalacticOrb({
       <div className="galactic-orb__sphere" aria-hidden>
         <img src={orbLayerUrl(ORCHESTRATOR_ORB, "deep")} alt="" draggable={false} />
         <img src={orbLayerUrl(ORCHESTRATOR_ORB, "dust")} alt="" draggable={false} />
-        {animated ? (
-          <video ref={clipRef} src={orbClipUrl(ORCHESTRATOR_ORB)} muted loop playsInline />
-        ) : null}
+        {/* Always here, so pausing keeps its place. Nothing loads until it first plays. */}
+        <video
+          ref={clipRef}
+          src={orbClipUrl(ORCHESTRATOR_ORB)}
+          muted
+          loop
+          playsInline
+          preload="none"
+        />
         <img src={orbLayerUrl(ORCHESTRATOR_ORB, "glass")} alt="" draggable={false} />
       </div>
       <div className="galactic-orb__glyph">{children}</div>

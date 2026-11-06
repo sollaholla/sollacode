@@ -38,15 +38,12 @@ const prefersReducedMotion = () =>
 
 const BADGE_ORIGIN = `${AGENT_AVATAR_BADGE_ORIGIN[0] * 100}% ${AGENT_AVATAR_BADGE_ORIGIN[1] * 100}%`;
 
-/** How much faster the clip runs while the agent is busy. */
-const clipRate = (mood: AgentAvatarMood) => (mood === "working" || mood === "speaking" ? 2.2 : 1);
-
 /**
  * Decorative identity; the adjacent agent name and presence label supply
  * accessible text. Stacked images, so at list sizes every move is a transform on
  * the compositor and nothing repaints. `live` is for the one or two large orbs on
  * a screen: a pre-rendered clip of the galaxy turning in 3D plays between the
- * stills and the glass, only while it can be seen.
+ * stills and the glass, only while it can be seen, and at one steady speed.
  */
 export const AgentGlyph = memo(function AgentGlyph(props: {
   readonly agentId: string;
@@ -115,10 +112,6 @@ export const AgentGlyph = memo(function AgentGlyph(props: {
     const gesture = agentAvatarMoodGesture(mood);
     if (gesture) play(gesture);
   }, [mood, online, play]);
-
-  useEffect(() => {
-    if (clipRef.current) clipRef.current.playbackRate = clipRate(mood);
-  }, [mood, live]);
 
   useEffect(() => {
     const root = rootRef.current;

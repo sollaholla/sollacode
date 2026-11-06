@@ -40,14 +40,7 @@ function Preview() {
         </p>
       </section>
       <section className="stage">
-        <GalacticOrb
-          size={128}
-          tint={tint}
-          animated={active}
-          spinning={tint !== "idle"}
-          intensity={level}
-          scale={scale}
-        >
+        <GalacticOrb size={128} tint={tint} animated={active} intensity={level} scale={scale}>
           <Icon size={28} strokeWidth={1.6} />
         </GalacticOrb>
         <span className="caption">

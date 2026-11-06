@@ -92,8 +92,6 @@ function OrchestratorFullScreenView() {
           <GalacticOrb
             size={orbDiameter}
             tint={resolveVoiceOrbTint(session.state, session.working, presentation.live)}
-            spinning={presentation.live}
-            breathing={session.state === "connecting" || session.working}
             intensity={presentation.live ? 0.6 : 0}
           >
             <span className="text-2xl font-medium">{presentation.live ? "Stop" : "Talk"}</span>
