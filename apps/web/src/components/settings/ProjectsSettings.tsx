@@ -3,6 +3,8 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import {
   dailyTokenSeries,
   filterProjectOverviews,
+  agentStorageBytes,
+  filterAgentOverviews,
   folderUsageNotes,
   formatByteSize,
   formatTokenCount,
@@ -10,6 +12,7 @@ import {
   PROJECT_SORT_OPTIONS,
   projectStorageBytes,
   providerUsageRows,
+  sollaOwnStorageBytes,
   sortProjectOverviews,
   storageSegments,
   summarizeProjectOverviews,
@@ -17,6 +20,7 @@ import {
   tokenTrackingNote,
   totalStorageBytes,
   totalTokens,
+  type AgentOverview,
   type ProjectOverview,
   type ProjectSortKey,
   type StorageSegmentKey,
@@ -265,7 +269,8 @@ function TrackingNote({ since }: { since: string | null }) {
 
 export function ProjectsSettingsPanel() {
   const navigate = useNavigate();
-  const { overviews, isLoading, error, tokenTrackingSince, refresh } = useProjectOverviews();
+  const { overviews, agents, isLoading, error, tokenTrackingSince, refresh } =
+    useProjectOverviews();
   const environments = useEnvironmentLabels();
   const { rename } = useProjectActions();
   const [query, setQuery] = useState("");
@@ -273,16 +278,24 @@ export function ProjectsSettingsPanel() {
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<ProjectOverview | null>(null);
 
+  const listed = useMemo(() => overviews.filter((entry) => !entry.builtIn), [overviews]);
   const visible = useMemo(
-    () => sortProjectOverviews(filterProjectOverviews(overviews, query), sortKey),
-    [overviews, query, sortKey],
+    () => sortProjectOverviews(filterProjectOverviews(listed, query), sortKey),
+    [listed, query, sortKey],
   );
+  const visibleAgents = useMemo(() => filterAgentOverviews(agents, query), [agents, query]);
   const summary = useMemo(() => summarizeProjectOverviews(overviews), [overviews]);
   const hasStatistics = overviews.some((entry) => entry.statistics !== null);
   const largestStorage = useMemo(
-    () => Math.max(1, ...overviews.map((entry) => projectStorageBytes(entry))),
-    [overviews],
+    () =>
+      Math.max(
+        1,
+        ...listed.map((entry) => projectStorageBytes(entry)),
+        ...agents.map((entry) => agentStorageBytes(entry)),
+      ),
+    [agents, listed],
   );
+  const ownStorage = useMemo(() => sollaOwnStorageBytes(overviews), [overviews]);
 
   const openProject = (project: EnvironmentProject) =>
     void navigate({
@@ -384,7 +397,7 @@ export function ProjectsSettingsPanel() {
           </Select>
         </div>
 
-        {overviews.length === 0 ? (
+        {listed.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-border px-6 py-10 text-center">
             <FoldersIcon className="mx-auto size-6 text-muted-foreground" />
             <p className="mt-3 text-sm font-medium">No projects yet</p>
@@ -424,12 +437,104 @@ export function ProjectsSettingsPanel() {
             })}
           </ul>
         )}
-        <div className="pt-2">
+        {visibleAgents.length > 0 ? (
+          <div className="pt-4">
+            <h3 className="mb-2 px-1 text-xs font-medium text-muted-foreground">Agents</h3>
+            <ul className="space-y-2" aria-label="Agents">
+              {visibleAgents.map((entry) => (
+                <AgentListRow
+                  key={`${entry.environmentId}:${entry.statistics.threadId}`}
+                  entry={entry}
+                  environmentLabel={
+                    environments.multiple
+                      ? (environments.labels.get(entry.environmentId) ?? null)
+                      : null
+                  }
+                  largestStorage={largestStorage}
+                />
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        <div className="space-y-1 pt-2">
+          {ownStorage > 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Total storage includes {formatByteSize(ownStorage)} for the Orchestrator and Storage
+              cleanup.
+            </p>
+          ) : null}
           <TrackingNote since={tokenTrackingSince} />
         </div>
       </SettingsSection>
       <DeleteProjectDialog target={deleting} onClose={() => setDeleting(null)} />
     </SettingsPageContainer>
+  );
+}
+
+/** One agent's chats and folder. Agents are managed from their own screens, so it only reports. */
+function AgentListRow({
+  entry,
+  environmentLabel,
+  largestStorage,
+}: {
+  entry: AgentOverview;
+  environmentLabel: string | null;
+  largestStorage: number;
+}) {
+  const { statistics, folder } = entry;
+  const storage = agentStorageBytes(entry);
+  const chats = statistics.activeThreads + statistics.archivedThreads;
+  const storageDetail = [
+    folder?.bytes != null ? `${formatByteSize(folder.bytes)} folder` : null,
+    `${formatByteSize(totalStorageBytes(statistics.storage))} chats`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <li className="flex items-center gap-3 rounded-xl border border-[var(--line)] bg-card px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-medium text-foreground">{statistics.name}</span>
+          {environmentLabel ? (
+            <Badge variant="outline" className="max-w-40 truncate">
+              {environmentLabel}
+            </Badge>
+          ) : null}
+        </div>
+        <div className="mt-0.5 truncate text-xs text-muted-foreground">
+          {[
+            plural(chats, "chat"),
+            statistics.lastActivityAt
+              ? `active ${formatRelativeTimeLabel(statistics.lastActivityAt)}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+      </div>
+      <div className="flex shrink-0 gap-4 text-right">
+        <div className="w-16 min-w-0 sm:w-[5.5rem]">
+          <div className="text-[11px] text-muted-foreground">
+            {folder?.measuring ? "Measuring…" : "Storage"}
+          </div>
+          <div className="text-sm font-medium text-foreground tabular-nums" title={storageDetail}>
+            {formatByteSize(storage)}
+          </div>
+          <div className="mt-1 ms-auto h-1 w-full overflow-hidden rounded-full bg-[var(--line)]">
+            <div
+              className="ms-auto h-full rounded-full bg-gold-500"
+              style={{ width: `${(storage / largestStorage) * 100}%` }}
+            />
+          </div>
+        </div>
+        <div className="hidden w-[5.5rem] min-w-0 sm:block">
+          <div className="text-[11px] text-muted-foreground">Tokens · 30d</div>
+          <div className="text-sm font-medium text-foreground tabular-nums">
+            {formatTokenCount(totalTokens(statistics.tokensLast30Days))}
+          </div>
+        </div>
+      </div>
+    </li>
   );
 }
 
@@ -489,7 +594,6 @@ function ProjectListRow({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-medium text-foreground">{project.title}</span>
-            {builtIn ? <Badge variant="secondary">Built-in</Badge> : null}
             {environmentLabel ? (
               <Badge variant="outline" className="max-w-40 truncate">
                 {environmentLabel}

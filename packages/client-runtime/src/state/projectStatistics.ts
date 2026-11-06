@@ -2,6 +2,7 @@ import {
   isAgentsProjectId,
   isOrchestratorProjectId,
   type EnvironmentId,
+  type OrchestrationAgentStatistics,
   type OrchestrationGetProjectStatisticsResult,
   type OrchestrationProjectDailyTokens,
   type OrchestrationProjectFolders,
@@ -31,6 +32,8 @@ export interface ProjectStatisticsEnvironmentState {
   readonly result: OrchestrationGetProjectStatisticsResult | null;
   /** Each project folder's size on disk; null until the environment sends them. */
   readonly folders: ReadonlyArray<OrchestrationProjectFolderUsage> | null;
+  /** Each agent's folder by its main chat; empty until the environment sends them. */
+  readonly agentFolders: NonNullable<OrchestrationProjectFolders["agents"]>;
   readonly error: string | null;
   readonly isLoading: boolean;
 }
@@ -51,12 +54,14 @@ export function createProjectStatisticsAtomFamily<E, F>(options: {
         parseArchivedThreadsEnvironmentKey(environmentKey).map((environmentId) => {
           const result = get(options.getStatisticsAtom(environmentId));
           const folders = get(options.getFoldersAtom(environmentId));
+          const folderValue = Option.getOrNull(AsyncResult.value(folders));
           return {
             environmentId,
             // A refresh keeps the last answer on screen rather than blanking it.
             result: Option.getOrNull(AsyncResult.value(result)),
             // An environment older than folder sizes fails this stream: no sizes, no error.
-            folders: Option.getOrNull(AsyncResult.value(folders))?.folders ?? null,
+            folders: folderValue?.folders ?? null,
+            agentFolders: folderValue?.agents ?? [],
             error: result._tag === "Failure" ? "Couldn't load project statistics." : null,
             isLoading: result.waiting,
           };
@@ -90,12 +95,103 @@ export interface ProjectOverview {
   readonly statistics: OrchestrationProjectStatistics | null;
   /** The project folder's size on disk; null until the environment sends it. */
   readonly folder: OrchestrationProjectFolderUsage | null;
-  /** The orchestrator's and agents' own projects: counted, never renamed or deleted here. */
+  /** Solla Code's own, not the person's: counted in totals, never listed as a project. */
   readonly builtIn: boolean;
 }
 
-export function isBuiltInProject(projectId: string): boolean {
-  return isOrchestratorProjectId(projectId) || isAgentsProjectId(projectId);
+/** One agent's share of the Agents project, for the list beside the projects. */
+export interface AgentOverview {
+  readonly environmentId: EnvironmentId;
+  readonly statistics: OrchestrationAgentStatistics;
+  /** The agent's own folder; null until the environment sends it. */
+  readonly folder: OrchestrationProjectFolderUsage | null;
+}
+
+type ProjectIdentity = { readonly id: string; readonly workspaceRoot: string };
+
+/**
+ * Storage cleanup's workspace, which the server creates under its base folder
+ * with a generated id, so the folder is what identifies it.
+ */
+function isStorageCleanupProject(project: ProjectIdentity): boolean {
+  return /[\\/]maintenance[\\/]storage-cleanup[\\/]?$/u.test(project.workspaceRoot);
+}
+
+/** A workspace Solla Code keeps for itself: never a project to list, pick or remove. */
+export function isBuiltInProject(project: ProjectIdentity): boolean {
+  return (
+    isOrchestratorProjectId(project.id) ||
+    isAgentsProjectId(project.id) ||
+    isStorageCleanupProject(project)
+  );
+}
+
+/** Chats in Storage cleanup's workspace, which no project list shows, newest first. */
+export function storageCleanupThreads<
+  T extends {
+    readonly environmentId: string;
+    readonly projectId: string;
+    readonly archivedAt?: string | null;
+    readonly updatedAt?: string | undefined;
+  },
+>(
+  threads: ReadonlyArray<T>,
+  projects: ReadonlyArray<EnvironmentProject>,
+  environmentId: string,
+): ReadonlyArray<T> {
+  const cleanupIds = new Set(
+    projects
+      .filter((project) => project.environmentId === environmentId)
+      .filter(isStorageCleanupProject)
+      .map((project) => project.id as string),
+  );
+  return threads
+    .filter(
+      (thread) =>
+        thread.environmentId === environmentId &&
+        cleanupIds.has(thread.projectId) &&
+        (thread.archivedAt ?? null) === null,
+    )
+    .toSorted((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""));
+}
+
+/** Every agent across environments, largest first. */
+export function joinAgentStatistics(
+  environments: ReadonlyArray<ProjectStatisticsEnvironmentState>,
+): ReadonlyArray<AgentOverview> {
+  return environments
+    .flatMap((environment) =>
+      (environment.result?.agents ?? []).map((statistics) => ({
+        environmentId: environment.environmentId,
+        statistics,
+        folder:
+          environment.agentFolders.find((entry) => entry.threadId === statistics.threadId)
+            ?.folder ?? null,
+      })),
+    )
+    .toSorted((left, right) => agentStorageBytes(right) - agentStorageBytes(left));
+}
+
+/** Everything an agent takes: its chats and its own folder, as far as each is known. */
+export function agentStorageBytes(entry: Pick<AgentOverview, "statistics" | "folder">): number {
+  return totalStorageBytes(entry.statistics.storage) + (entry.folder?.bytes ?? 0);
+}
+
+/** The agents whose names match every word of the filter. */
+export function filterAgentOverviews(
+  entries: ReadonlyArray<AgentOverview>,
+  query: string,
+): ReadonlyArray<AgentOverview> {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = (name: string) => words.every((word) => name.toLowerCase().includes(word));
+  return entries.filter((entry) => matches(entry.statistics.name));
+}
+
+/** What the orchestrator and Storage cleanup take; totals count it, the list does not. */
+export function sollaOwnStorageBytes(entries: ReadonlyArray<ProjectOverview>): number {
+  return entries
+    .filter((entry) => entry.builtIn && !isAgentsProjectId(entry.project.id))
+    .reduce((total, entry) => total + projectStorageBytes(entry), 0);
 }
 
 export function joinProjectStatistics(
@@ -116,7 +212,7 @@ export function joinProjectStatistics(
     project,
     statistics: statisticsByKey.get(`${project.environmentId}:${project.id}`) ?? null,
     folder: foldersByKey.get(`${project.environmentId}:${project.id}`) ?? null,
-    builtIn: isBuiltInProject(project.id),
+    builtIn: isBuiltInProject(project),
   }));
 }
 
@@ -265,7 +361,12 @@ export function summarizeProjectOverviews(
     costLast30DaysUsd += statistics.tokens.last30Days.costUsd;
   }
   storageBytes += distinctFolderBytes(entries);
-  return { projects: entries.length, storageBytes, tokensLast30Days, costLast30DaysUsd };
+  return {
+    projects: entries.filter((entry) => !entry.builtIn).length,
+    storageBytes,
+    tokensLast30Days,
+    costLast30DaysUsd,
+  };
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

@@ -17,6 +17,8 @@ export interface ProjectStatisticsThreadRow {
   readonly archivedAt: string | null;
   readonly updatedAt: string;
   readonly worktreePath: string | null;
+  /** Set on a side chat, which belongs to whoever owns this chat. */
+  readonly sideChatParentThreadId?: string | null;
   readonly historyBytes: number;
   readonly messages: number;
   readonly turns: number;
@@ -42,6 +44,8 @@ export interface ProjectStatisticsRows {
   readonly projectIds: ReadonlyArray<string>;
   readonly threads: ReadonlyArray<ProjectStatisticsThreadRow>;
   readonly usage: ReadonlyArray<ProjectStatisticsUsageRow>;
+  /** Every agent, by its main chat. */
+  readonly agents?: ReadonlyArray<{ readonly threadId: string; readonly name: string }>;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -114,8 +118,9 @@ export function assembleProjectStatistics(input: {
     if (tokenTrackingSince === null || row.day < tokenTrackingSince) tokenTrackingSince = row.day;
   }
 
-  const projects: Array<OrchestrationProjectStatistics> = input.rows.projectIds.map((projectId) => {
-    const threads = threadsByProject.get(projectId) ?? [];
+  const foldThreads = (
+    threads: ReadonlyArray<ProjectStatisticsThreadRow>,
+  ): Omit<OrchestrationProjectStatistics, "projectId"> => {
     const allTime = emptyTotals();
     const last30Days = emptyTotals();
     const daily = new Map<string, number>();
@@ -170,7 +175,6 @@ export function assembleProjectStatistics(input: {
     });
 
     return {
-      projectId: ProjectId.make(projectId),
       activeThreads: threads.filter((thread) => thread.archivedAt === null).length,
       archivedThreads: threads.filter((thread) => thread.archivedAt !== null).length,
       turns,
@@ -209,13 +213,63 @@ export function assembleProjectStatistics(input: {
         )
         .slice(0, PROJECT_STATISTICS_THREAD_LIMIT),
     };
+  };
+
+  const projects: Array<OrchestrationProjectStatistics> = input.rows.projectIds.map(
+    (projectId) => ({
+      projectId: ProjectId.make(projectId),
+      ...foldThreads(threadsByProject.get(projectId) ?? []),
+    }),
+  );
+
+  const threadsByAgent = groupThreadsByAgent(input.rows);
+  const agents = (input.rows.agents ?? []).map(({ threadId, name }) => {
+    const folded = foldThreads(threadsByAgent.get(threadId) ?? []);
+    return {
+      threadId: ThreadId.make(threadId),
+      name,
+      activeThreads: folded.activeThreads,
+      archivedThreads: folded.archivedThreads,
+      lastActivityAt: folded.lastActivityAt,
+      storage: folded.storage,
+      tokensLast30Days: folded.tokens.last30Days,
+    };
   });
 
   return {
     generatedAt: isoAt(input.nowEpochMs),
     tokenTrackingSince: tokenTrackingSince === null ? null : `${tokenTrackingSince}T00:00:00.000Z`,
     projects,
+    agents,
   };
+}
+
+/** Each agent's main chat and every side chat under it, however deep. */
+function groupThreadsByAgent(
+  rows: ProjectStatisticsRows,
+): ReadonlyMap<string, ReadonlyArray<ProjectStatisticsThreadRow>> {
+  const agentThreadIds = new Set((rows.agents ?? []).map((agent) => agent.threadId));
+  const threadById = new Map(rows.threads.map((thread) => [thread.threadId, thread]));
+  const ownerOf = (thread: ProjectStatisticsThreadRow): string | null => {
+    const visited = new Set<string>();
+    let current: ProjectStatisticsThreadRow | undefined = thread;
+    while (current !== undefined && !visited.has(current.threadId)) {
+      if (agentThreadIds.has(current.threadId)) return current.threadId;
+      visited.add(current.threadId);
+      const parent: string | null | undefined = current.sideChatParentThreadId;
+      current = parent == null ? undefined : threadById.get(parent);
+    }
+    return null;
+  };
+  const grouped = new Map<string, Array<ProjectStatisticsThreadRow>>();
+  for (const thread of rows.threads) {
+    const owner = ownerOf(thread);
+    if (owner === null) continue;
+    const list = grouped.get(owner) ?? [];
+    list.push(thread);
+    grouped.set(owner, list);
+  }
+  return grouped;
 }
 
 /**

@@ -20,9 +20,14 @@ its storage (with a bar sized against your largest project), and its tokens over
 days. In a narrow browser window, such as a phone's, rows keep storage and leave out tokens;
 open the project to see them.
 
-Filter by name or folder, and sort by recent activity, name, storage, or tokens. The orchestrator's
-and agents' own projects are marked **Built-in** and always sort last. If you use more than one
-environment, each row names the environment it belongs to.
+Filter by name or folder, and sort by recent activity, name, storage, or tokens. If you use more
+than one environment, each row names the environment it belongs to.
+
+Only your own projects are listed. Below them, **Agents** shows each agent's storage, counting its
+chats and its own folder. The Orchestrator and Storage cleanup aren't projects, so they don't appear
+here or in the thread list, but the total storage still counts them and a note says how much they
+use. Reach a cleanup chat from **Open last cleanup thread** beside the storage reading, or in Settings
+on the phone. On the phone, the thread list keeps its Agents group.
 
 The **⋯** menu on a row renames the project in place or removes it. Refresh (↻, or pull down on
 the phone) re-reads the numbers and measures the folders again; what is on screen stays put until

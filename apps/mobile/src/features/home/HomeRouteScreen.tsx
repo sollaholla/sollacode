@@ -4,7 +4,7 @@ import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useState } from "react";
 
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
-import { useProjects, useThreadShells } from "../../state/entities";
+import { useListedProjects, useThreadShells } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -24,7 +24,7 @@ import { deriveHomeEmptyState } from "./home-empty-state";
 
 export function HomeRouteScreen() {
   const { layout } = useAdaptiveWorkspaceLayout();
-  const projects = useProjects();
+  const projects = useListedProjects();
   const threads = useThreadShells();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();

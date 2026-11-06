@@ -1,14 +1,18 @@
 import {
   filterProjectOverviews,
+  agentStorageBytes,
+  filterAgentOverviews,
   formatByteSize,
   formatTokenCount,
   formatUsdAmount,
   PROJECT_SORT_OPTIONS,
+  sollaOwnStorageBytes,
   sortProjectOverviews,
   summarizeProjectOverviews,
   tokenTrackingNote,
   projectStorageBytes,
   totalTokens,
+  type AgentOverview,
   type ProjectOverview,
   type ProjectSortKey,
 } from "@t3tools/client-runtime/state/project-statistics";
@@ -36,16 +40,20 @@ import { SettingsSection } from "./components/SettingsSection";
 export function SettingsProjectsRouteScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const { overviews, isLoading, error, tokenTrackingSince, refresh } = useProjectOverviews();
+  const { overviews, agents, isLoading, error, tokenTrackingSince, refresh } =
+    useProjectOverviews();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<ProjectSortKey>("recent");
   const mutedColor = useThemeColor("--color-icon-subtle");
 
+  const listed = useMemo(() => overviews.filter((entry) => !entry.builtIn), [overviews]);
   const visible = useMemo(
-    () => sortProjectOverviews(filterProjectOverviews(overviews, query), sortKey),
-    [overviews, query, sortKey],
+    () => sortProjectOverviews(filterProjectOverviews(listed, query), sortKey),
+    [listed, query, sortKey],
   );
+  const visibleAgents = useMemo(() => filterAgentOverviews(agents, query), [agents, query]);
+  const ownStorage = useMemo(() => sollaOwnStorageBytes(overviews), [overviews]);
   const summary = useMemo(() => summarizeProjectOverviews(overviews), [overviews]);
   const hasStatistics = overviews.some((entry) => entry.statistics !== null);
   const multipleEnvironments =
@@ -150,7 +158,7 @@ export function SettingsProjectsRouteScreen() {
         </View>
 
         <SettingsSection title={query.trim() ? "Matching projects" : "All projects"} card>
-          {overviews.length === 0 ? (
+          {listed.length === 0 ? (
             <Text className="p-4 text-sm leading-normal text-foreground-muted">
               No projects yet. Add one and it will show up here with its storage and token usage.
             </Text>
@@ -183,7 +191,27 @@ export function SettingsProjectsRouteScreen() {
           )}
         </SettingsSection>
 
+        {visibleAgents.length > 0 ? (
+          <SettingsSection title="Agents" card>
+            {visibleAgents.map((entry, index) => (
+              <AgentRow
+                key={`${entry.environmentId}:${entry.statistics.threadId}`}
+                entry={entry}
+                first={index === 0}
+                environmentLabel={
+                  multipleEnvironments
+                    ? (savedConnectionsById[entry.environmentId]?.environmentLabel ?? null)
+                    : null
+                }
+              />
+            ))}
+          </SettingsSection>
+        ) : null}
+
         <Text className="px-2 text-xs leading-normal text-foreground-muted">
+          {ownStorage > 0
+            ? `Total storage includes ${formatByteSize(ownStorage)} for the Orchestrator and Storage cleanup. `
+            : ""}
           {tokenTrackingNote(tokenTrackingSince)}
         </Text>
       </ScrollView>
@@ -207,6 +235,33 @@ function SummaryTile(props: { readonly label: string; readonly value: string }) 
   );
 }
 
+/** One agent's chats and folder. Agents are managed from their own screens, so it only reports. */
+function AgentRow(props: {
+  readonly entry: AgentOverview;
+  readonly first: boolean;
+  readonly environmentLabel: string | null;
+}) {
+  const { statistics, folder } = props.entry;
+  const chats = statistics.activeThreads + statistics.archivedThreads;
+  const detail = [
+    `${chats.toLocaleString()} ${chats === 1 ? "chat" : "chats"}`,
+    folder?.measuring && folder.bytes === null
+      ? "measuring…"
+      : formatByteSize(agentStorageBytes(props.entry)),
+    `${formatTokenCount(totalTokens(statistics.tokensLast30Days))} tokens`,
+  ].join(" · ");
+  return (
+    <View className={cn("gap-0.5 px-4 py-3", !props.first && "border-t border-separator")}>
+      <Text className="text-base font-t3-medium text-foreground" numberOfLines={1}>
+        {statistics.name}
+      </Text>
+      <Text className="text-xs text-foreground-muted" numberOfLines={1}>
+        {props.environmentLabel ? `${props.environmentLabel} · ${detail}` : detail}
+      </Text>
+    </View>
+  );
+}
+
 function ProjectRow(props: {
   readonly entry: ProjectOverview;
   readonly first: boolean;
@@ -214,7 +269,7 @@ function ProjectRow(props: {
   readonly onPress: () => void;
 }) {
   const chevron = useThemeColor("--color-chevron");
-  const { project, statistics, folder, builtIn } = props.entry;
+  const { project, statistics, folder } = props.entry;
   const chats = statistics ? statistics.activeThreads + statistics.archivedThreads : null;
   const detail =
     statistics === null || chats === null
@@ -248,11 +303,6 @@ function ProjectRow(props: {
           <Text className="shrink text-base font-t3-medium text-foreground" numberOfLines={1}>
             {project.title}
           </Text>
-          {builtIn ? (
-            <Text className="rounded-md bg-subtle px-1.5 py-0.5 text-2xs text-foreground-muted">
-              Built-in
-            </Text>
-          ) : null}
         </View>
         <Text className="text-xs text-foreground-muted" numberOfLines={1}>
           {props.environmentLabel ? `${props.environmentLabel} · ${detail}` : detail}

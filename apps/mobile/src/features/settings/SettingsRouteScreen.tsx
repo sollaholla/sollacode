@@ -1,5 +1,6 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useServerConfigs } from "../../state/entities";
+import { storageCleanupThreads } from "@t3tools/client-runtime/state/project-statistics";
+import { useProjects, useServerConfigs, useThreadShells } from "../../state/entities";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import Constants from "expo-constants";
 import * as Updates from "expo-updates";
@@ -92,6 +93,10 @@ function LocalSettingsRouteScreen() {
   const { savedConnectionsById } = useSavedRemoteConnections();
   const environmentCount = Object.keys(savedConnectionsById).length;
   const configs = useServerConfigs();
+  const navigation = useNavigation();
+  // Storage cleanup is not a project in the thread lists, so its chats are reached here.
+  const projects = useProjects();
+  const threads = useThreadShells();
   const [query, setQuery] = useState("");
   const mutedColor = useThemeColor("--color-foreground-muted");
 
@@ -183,6 +188,23 @@ function LocalSettingsRouteScreen() {
             Clears inactive desktop browser caches and obsolete update files on each computer.
             Cookies, logins, site data, chats, and projects are kept.
           </Text>
+          {[...configs.keys()].map((environmentId) => {
+            const lastCleanup = storageCleanupThreads(threads, projects, environmentId)[0];
+            return lastCleanup ? (
+              <SettingsRow
+                key={environmentId}
+                icon="internaldrive"
+                label="Open last cleanup thread"
+                value={savedConnectionsById[environmentId]?.environmentLabel}
+                onPress={() =>
+                  navigation.navigate("Thread", {
+                    environmentId: String(environmentId),
+                    threadId: String(lastCleanup.id),
+                  })
+                }
+              />
+            ) : null;
+          })}
         </SettingsSection>
       ),
     },

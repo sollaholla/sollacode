@@ -2,8 +2,10 @@ import { useAtomValue } from "@effect/atom-react";
 import { makeArchivedThreadsEnvironmentKey } from "@t3tools/client-runtime/state/threads";
 import {
   createProjectStatisticsAtomFamily,
+  joinAgentStatistics,
   joinProjectStatistics,
   projectStatisticsStatus,
+  type AgentOverview,
   type ProjectOverview,
   type ProjectStatisticsEnvironmentState,
 } from "@t3tools/client-runtime/state/project-statistics";
@@ -31,6 +33,7 @@ const projectStatisticsAtom = createProjectStatisticsAtomFamily({
 
 export interface ProjectOverviewsView {
   readonly overviews: ReadonlyArray<ProjectOverview>;
+  readonly agents: ReadonlyArray<AgentOverview>;
   readonly environments: ReadonlyArray<ProjectStatisticsEnvironmentState>;
   readonly isLoading: boolean;
   readonly error: string | null;
@@ -56,6 +59,7 @@ export function useProjectOverviews(): ProjectOverviewsView {
     () => joinProjectStatistics(projects, environments),
     [environments, projects],
   );
+  const agents = useMemo(() => joinAgentStatistics(environments), [environments]);
   const measureFolders = useAtomCommand(orchestrationEnvironment.measureProjectFolders, {
     reportFailure: false,
   });
@@ -77,7 +81,7 @@ export function useProjectOverviews(): ProjectOverviewsView {
   );
 
   return useMemo(
-    () => ({ overviews, environments, ...projectStatisticsStatus(environments), refresh }),
-    [environments, overviews, refresh],
+    () => ({ overviews, agents, environments, ...projectStatisticsStatus(environments), refresh }),
+    [agents, environments, overviews, refresh],
   );
 }

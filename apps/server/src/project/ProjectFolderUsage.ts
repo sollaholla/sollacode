@@ -3,7 +3,9 @@ import * as NodeOS from "node:os";
 import * as NodeWorkerThreads from "node:worker_threads";
 
 import {
+  AGENTS_PROJECT_ID,
   ProjectId,
+  ThreadId,
   type OrchestrationProjectFolderUsage,
   type OrchestrationProjectFolders,
 } from "@t3tools/contracts";
@@ -339,6 +341,22 @@ export const layer = Layer.effect(
       Effect.orElseSucceed((): ReadonlyArray<LiveProject> => []),
     );
 
+    // An agent's folder is its main chat's working directory, inside the Agents
+    // project's folder, so measuring it costs that folder's walk nothing.
+    const listAgents = sql<{ readonly threadId: string; readonly workspaceRoot: string }>`
+      SELECT agents.thread_id AS "threadId", threads.worktree_path AS "workspaceRoot"
+      FROM vm_agents AS agents
+      JOIN projection_threads AS threads ON threads.thread_id = agents.thread_id
+      WHERE threads.deleted_at IS NULL AND threads.worktree_path IS NOT NULL
+    `.pipe(
+      Effect.tapError((cause) =>
+        Effect.logWarning("project folder usage could not list agents", { cause }),
+      ),
+      Effect.orElseSucceed(
+        (): ReadonlyArray<{ readonly threadId: string; readonly workspaceRoot: string }> => [],
+      ),
+    );
+
     // Opening the privacy database read-only forces the macOS check without
     // reading anything (see DesktopPermissions' probe).
     const fullDiskAccess = Effect.scoped(
@@ -455,16 +473,23 @@ export const layer = Layer.effect(
     const stream: Stream.Stream<OrchestrationProjectFolders> = Stream.unwrap(
       Effect.gen(function* () {
         yield* ensure(
-          (yield* listProjects).map((project) => project.workspaceRoot),
+          [...(yield* listProjects), ...(yield* listAgents)].map((entry) => entry.workspaceRoot),
           false,
         );
         return SubscriptionRef.changes(state).pipe(
           Stream.mapEffect((entries) =>
-            listProjects.pipe(
-              Effect.map((projects) => ({
+            Effect.all([listProjects, listAgents]).pipe(
+              Effect.map(([projects, agents]) => ({
                 folders: projects.map((project) =>
                   toUsage(project, entries.get(project.workspaceRoot)),
                 ),
+                agents: agents.map((agent) => ({
+                  threadId: ThreadId.make(agent.threadId),
+                  folder: toUsage(
+                    { projectId: AGENTS_PROJECT_ID, workspaceRoot: agent.workspaceRoot },
+                    entries.get(agent.workspaceRoot),
+                  ),
+                })),
               })),
             ),
           ),
@@ -476,10 +501,11 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         const wanted = new Set(projectIds);
         const projects = yield* listProjects;
+        const agents = wanted.has(AGENTS_PROJECT_ID) ? yield* listAgents : [];
         yield* ensure(
-          projects
-            .filter((project) => wanted.has(project.projectId))
-            .map((project) => project.workspaceRoot),
+          [...projects.filter((project) => wanted.has(project.projectId)), ...agents].map(
+            (entry) => entry.workspaceRoot,
+          ),
           true,
         );
       });

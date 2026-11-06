@@ -76,6 +76,54 @@ const rows: ProjectStatisticsRows = {
   ],
 };
 
+describe("agent statistics", () => {
+  const thread = rows.threads[0]!;
+  const result = assembleProjectStatistics({
+    rows: {
+      projectIds: ["solla-agents"],
+      threads: [
+        { ...thread, threadId: "agent-a", projectId: "solla-agents", historyBytes: 100 },
+        {
+          ...thread,
+          threadId: "side-a",
+          projectId: "solla-agents",
+          historyBytes: 20,
+          sideChatParentThreadId: "agent-a",
+        },
+        {
+          ...thread,
+          threadId: "side-of-side-a",
+          projectId: "solla-agents",
+          historyBytes: 3,
+          sideChatParentThreadId: "side-a",
+        },
+        { ...thread, threadId: "agent-b", projectId: "solla-agents", historyBytes: 7 },
+        { ...thread, threadId: "builder", projectId: "solla-agents", historyBytes: 1000 },
+      ],
+      usage: [],
+      agents: [
+        { threadId: "agent-a", name: "Acme Engineer" },
+        { threadId: "agent-b", name: "Writer" },
+      ],
+    },
+    attachmentBytes: () => 0,
+    nowEpochMs: now,
+  });
+
+  it("gives each agent its main chat and every side chat under it", () => {
+    const [first, second] = result.agents ?? [];
+    expect(first?.name).toBe("Acme Engineer");
+    expect(first?.storage.historyBytes).toBe(123);
+    expect(first?.activeThreads).toBe(3);
+    expect(second?.storage.historyBytes).toBe(7);
+  });
+
+  it("leaves chats that belong to no agent out of every agent", () => {
+    expect(result.projects[0]?.storage.historyBytes).toBe(1130);
+    expect(result.agents?.length).toBe(2);
+  });
+});
+
 describe("assembleProjectStatistics", () => {
   const result = assembleProjectStatistics({
     rows,

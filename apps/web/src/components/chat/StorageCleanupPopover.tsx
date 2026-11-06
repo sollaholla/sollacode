@@ -1,5 +1,6 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { STORAGE_CLEANUP_DESCRIPTION } from "@t3tools/client-runtime/operations/storage-cleanup";
+import { storageCleanupThreads } from "@t3tools/client-runtime/state/project-statistics";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -13,9 +14,9 @@ import type {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { HardDriveIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn, newCommandId, newMessageId, newThreadId } from "~/lib/utils";
-import { useProject, useThreadShell } from "~/state/entities";
+import { useProject, useProjects, useThreadShell, useThreadShells } from "~/state/entities";
 import { useEnvironment } from "~/state/environments";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -69,6 +70,13 @@ export function StorageCleanupPopover({
   const start = useAtomCommand(serverEnvironment.startStorageCleanup, { reportFailure: false });
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
+  // Storage cleanup is not a project in the sidebar, so its chats are reached here.
+  const projects = useProjects();
+  const threads = useThreadShells();
+  const lastCleanup = useMemo(
+    () => storageCleanupThreads(threads, projects, environmentId)[0] ?? null,
+    [environmentId, projects, threads],
+  );
 
   const create = async () => {
     if (inFlight.current || !connected || !supported) return;
@@ -178,6 +186,21 @@ export function StorageCleanupPopover({
                   : "Opening thread…"
                 : "Create cleanup thread"}
           </Button>
+          {lastCleanup && !created ? (
+            <Button
+              className="w-full"
+              variant="outline"
+              onClick={() => {
+                setOpen(false);
+                void navigate({
+                  to: "/$environmentId/$threadId",
+                  params: { environmentId, threadId: lastCleanup.id },
+                });
+              }}
+            >
+              Open last cleanup thread
+            </Button>
+          ) : null}
         </div>
       </PopoverPopup>
     </Popover>

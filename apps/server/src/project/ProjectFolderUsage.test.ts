@@ -114,6 +114,50 @@ describe("walkFolder", () => {
 });
 
 describe("ProjectFolderUsage", () => {
+  it.effect("measures each agent's own folder beside the projects", () =>
+    Effect.gen(function* () {
+      const root = yield* makeTree;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        CREATE TABLE projection_projects (
+          project_id TEXT PRIMARY KEY,
+          workspace_root TEXT NOT NULL,
+          deleted_at TEXT
+        )
+      `;
+      yield* sql`CREATE TABLE vm_agents (thread_id TEXT, name TEXT)`;
+      yield* sql`
+        CREATE TABLE projection_threads (
+          thread_id TEXT PRIMARY KEY,
+          worktree_path TEXT,
+          deleted_at TEXT
+        )
+      `;
+      yield* sql`INSERT INTO vm_agents (thread_id, name) VALUES ('agent', 'Acme'), ('gone', 'Old')`;
+      yield* sql`
+        INSERT INTO projection_threads (thread_id, worktree_path, deleted_at) VALUES
+          ('agent', ${root}, NULL),
+          ('gone', ${root}, '2026-10-11T00:00:00.000Z')
+      `;
+      const usage = yield* ProjectFolderUsage;
+      const settled = yield* usage.stream.pipe(
+        Stream.filter(({ agents }) => (agents ?? []).every((entry) => !entry.folder.measuring)),
+        Stream.filter(({ agents }) => (agents ?? []).length > 0),
+        Stream.runHead,
+      );
+      const agents = settled._tag === "Some" ? (settled.value.agents ?? []) : [];
+      expect(agents.map((entry) => entry.threadId)).toEqual(["agent"]);
+      expect(agents[0]?.folder.bytes).toBeGreaterThan(8_000);
+    }).pipe(
+      Effect.provide(
+        layer.pipe(
+          Layer.provideMerge(NodeSqliteClient.layerMemory()),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("measures each live project's folder and sends the result as it lands", () =>
     Effect.gen(function* () {
       const root = yield* makeTree;

@@ -2003,6 +2003,19 @@ export const OrchestrationProjectStatistics = Schema.Struct({
 });
 export type OrchestrationProjectStatistics = typeof OrchestrationProjectStatistics.Type;
 
+/** One agent's share of the reserved Agents project: its main chat and its side chats. */
+export const OrchestrationAgentStatistics = Schema.Struct({
+  /** The agent's main chat, which names it across statistics and folder sizes. */
+  threadId: ThreadId,
+  name: TrimmedNonEmptyString,
+  activeThreads: NonNegativeInt,
+  archivedThreads: NonNegativeInt,
+  lastActivityAt: Schema.NullOr(IsoDateTime),
+  storage: OrchestrationProjectStorage,
+  tokensLast30Days: OrchestrationTokenUsageTotals,
+});
+export type OrchestrationAgentStatistics = typeof OrchestrationAgentStatistics.Type;
+
 /**
  * Settings → Archive cleanup. The server deletes every chat archived at or
  * before `archivedBefore` — the newest archive time the person was shown — so
@@ -2054,6 +2067,8 @@ export const OrchestrationGetProjectStatisticsResult = Schema.Struct({
   /** When this environment recorded its first turn's usage; earlier turns are not counted. */
   tokenTrackingSince: Schema.NullOr(IsoDateTime),
   projects: Schema.Array(OrchestrationProjectStatistics),
+  /** Absent from environments older than per-agent statistics. */
+  agents: Schema.optional(Schema.Array(OrchestrationAgentStatistics)),
 });
 export type OrchestrationGetProjectStatisticsResult =
   typeof OrchestrationGetProjectStatisticsResult.Type;
@@ -2082,6 +2097,10 @@ export type OrchestrationProjectFolderUsage = typeof OrchestrationProjectFolderU
 /** Every live project's folder, sent again whenever a measurement starts or ends. */
 export const OrchestrationProjectFolders = Schema.Struct({
   folders: Schema.Array(OrchestrationProjectFolderUsage),
+  /** Each agent's own folder, by its main chat. Absent from older environments. */
+  agents: Schema.optional(
+    Schema.Array(Schema.Struct({ threadId: ThreadId, folder: OrchestrationProjectFolderUsage })),
+  ),
 });
 export type OrchestrationProjectFolders = typeof OrchestrationProjectFolders.Type;
 

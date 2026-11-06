@@ -26,6 +26,8 @@ import {
   sortProjectOverviews,
   storageSegments,
   summarizeProjectOverviews,
+  isBuiltInProject,
+  storageCleanupThreads,
 } from "./projectStatistics.ts";
 
 const environmentId = EnvironmentId.make("env-1");
@@ -117,6 +119,7 @@ const overviews = joinProjectStatistics(
         ],
       },
       folders: [folder("alpha", 1_000), { ...folder("beta", null), measuring: true }],
+      agentFolders: [],
       error: null,
       isLoading: false,
     },
@@ -172,7 +175,7 @@ describe("project overviews", () => {
 
   it("totals what it can count", () => {
     expect(summarizeProjectOverviews(overviews)).toEqual({
-      projects: 4,
+      projects: 3,
       // Chats, then Alpha's folder: beta's is still being measured.
       storageBytes: 5_910 + 1_000,
       tokensLast30Days: 9_550,
@@ -189,6 +192,7 @@ describe("project overviews", () => {
           environmentId,
           result: null,
           folders: [folder("home", 100_000), folder("alpha", 1_000), folder("beta", null)],
+          agentFolders: [],
           error: null,
           isLoading: false,
         },
@@ -218,6 +222,54 @@ describe("project overviews", () => {
   });
 });
 
+describe("Solla Code's own workspaces", () => {
+  const cleanupRoot = {
+    id: "generated-id",
+    workspaceRoot: "/Users/me/.solla/maintenance/storage-cleanup",
+  };
+
+  it("treats the Orchestrator, Agents and Storage cleanup as not projects", () => {
+    expect(isBuiltInProject({ id: "solla-orchestrator", workspaceRoot: "/a" })).toBe(true);
+    expect(isBuiltInProject({ id: "solla-agents", workspaceRoot: "/a" })).toBe(true);
+    expect(isBuiltInProject(cleanupRoot)).toBe(true);
+    expect(
+      isBuiltInProject({
+        id: "generated-id",
+        workspaceRoot: "C:\\Users\\me\\.solla\\maintenance\\storage-cleanup",
+      }),
+    ).toBe(true);
+  });
+
+  it("leaves a person's project alone, even with a similar name", () => {
+    expect(isBuiltInProject({ id: "p", workspaceRoot: "/work/storage-cleanup" })).toBe(false);
+  });
+
+  it("finds cleanup chats on one computer, newest first, leaving archived ones out", () => {
+    const projects = [
+      { ...project("generated-id", "Storage cleanup"), workspaceRoot: cleanupRoot.workspaceRoot },
+      project("alpha", "Alpha"),
+    ];
+    const thread = (id: string, projectId: string, updatedAt: string, archivedAt?: string) => ({
+      id,
+      environmentId: projects[0]!.environmentId,
+      projectId,
+      updatedAt,
+      archivedAt: archivedAt ?? null,
+    });
+    const found = storageCleanupThreads(
+      [
+        thread("old", "generated-id", "2026-10-01T00:00:00.000Z"),
+        thread("new", "generated-id", "2026-10-02T00:00:00.000Z"),
+        thread("gone", "generated-id", "2026-10-03T00:00:00.000Z", "2026-10-04T00:00:00.000Z"),
+        thread("other", "alpha", "2026-10-05T00:00:00.000Z"),
+      ],
+      projects,
+      projects[0]!.environmentId,
+    );
+    expect(found.map((entry) => entry.id)).toEqual(["new", "old"]);
+  });
+});
+
 describe("projectStatisticsStatus", () => {
   it("reports loading and failure from any environment, and the earliest tracking start", () => {
     const answered = (since: string | null) => ({
@@ -231,6 +283,7 @@ describe("projectStatisticsStatus", () => {
           environmentId,
           result: answered("2026-10-09T00:00:00.000Z"),
           folders: null,
+          agentFolders: [],
           error: null,
           isLoading: false,
         },
@@ -238,6 +291,7 @@ describe("projectStatisticsStatus", () => {
           environmentId: EnvironmentId.make("env-2"),
           result: answered("2026-10-02T00:00:00.000Z"),
           folders: null,
+          agentFolders: [],
           error: null,
           isLoading: true,
         },
@@ -245,6 +299,7 @@ describe("projectStatisticsStatus", () => {
           environmentId: EnvironmentId.make("env-3"),
           result: null,
           folders: null,
+          agentFolders: [],
           error: "Couldn't load project statistics.",
           isLoading: false,
         },

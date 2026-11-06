@@ -10,6 +10,9 @@ import type {
   ServerConfig,
 } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
+import { isBuiltInProject } from "@t3tools/client-runtime/state/project-statistics";
+import { isAgentsProjectId } from "@t3tools/contracts";
+import { useMemo } from "react";
 
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom, serverEnvironment } from "./server";
@@ -27,6 +30,19 @@ const EMPTY_SERVER_CONFIG_ATOM = Atom.make<ServerConfig | null>(null).pipe(
 
 export function useProjects(): ReadonlyArray<EnvironmentProject> {
   return useAtomValue(environmentProjects.projectsAtom);
+}
+
+/**
+ * Projects the thread lists group by. The Orchestrator and Storage cleanup are
+ * Solla Code's own workspaces, not projects. Agents stays: its chats have no
+ * other place in the phone's lists.
+ */
+export function useListedProjects(): ReadonlyArray<EnvironmentProject> {
+  const projects = useProjects();
+  return useMemo(
+    () => projects.filter((project) => !isBuiltInProject(project) || isAgentsProjectId(project.id)),
+    [projects],
+  );
 }
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {

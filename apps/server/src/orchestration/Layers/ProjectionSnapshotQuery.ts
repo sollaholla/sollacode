@@ -3581,6 +3581,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.archived_at AS "archivedAt",
           threads.updated_at AS "updatedAt",
           threads.worktree_path AS "worktreePath",
+          threads.side_chat_parent_thread_id AS "sideChatParentThreadId",
           COALESCE(storage.activity_bytes, 0) + COALESCE(storage.message_bytes, 0)
             AS "historyBytes",
           COALESCE(storage.message_count, 0) AS "messages",
@@ -3631,10 +3632,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           AND json_type(activities.payload_json, '$.provider') = 'text'
         GROUP BY activities.thread_id, "providerInstanceId", "provider", "day"
       `;
+      const agents = yield* sql<{ readonly threadId: string; readonly name: string }>`
+        SELECT agents.thread_id AS "threadId", agents.name AS "name"
+        FROM vm_agents AS agents
+        JOIN projection_threads AS threads ON threads.thread_id = agents.thread_id
+        WHERE threads.deleted_at IS NULL
+      `;
       return {
         projectIds: projects.map((project) => project.projectId),
         threads,
         usage,
+        agents,
       } satisfies ProjectStatisticsRows;
     }).pipe(
       Effect.mapError(
