@@ -64,6 +64,7 @@ import {
   spokenReply,
   requestText,
   spokenApprovalDecision,
+  spokenApprovalDecisionAmong,
   voiceAnswerableRequest,
   type AgentCallThreadView,
   type AgentCallWatchTarget,
@@ -220,6 +221,7 @@ it("forwards each transcript fragment once, whenever its transcript arrives", ()
   assert.deepStrictEqual(extractCallDelta("user: no timestamps", new Set()), {
     userText: "",
     latestUserText: "",
+    repliesToAsk: [],
     assistantText: "",
     fragments: [],
   });
@@ -1562,6 +1564,42 @@ it.effect("a spoken answer to the chat's open question answers it instead of que
   }).pipe(Effect.scoped);
 });
 
+it("keeps what the person said after the voice asked for a yes", () => {
+  const delta = extractCallDelta(
+    [
+      "user [0-300ms]: Sounds good, yes.",
+      "assistant [400-900ms]: I need your approval. Say yes to approve it, or no to turn it down.",
+      "user [1000-1200ms]: Approve",
+      "assistant [1300-1500ms]: Okay, approving that now.",
+      "user [1600-2400ms]: It says it's still waiting on approval",
+    ].join("\n"),
+    new Set(),
+  );
+  assert.deepStrictEqual(delta.repliesToAsk, ["Approve", "It says it's still waiting on approval"]);
+  assert.strictEqual(delta.latestUserText, "It says it's still waiting on approval");
+});
+
+describe("spokenApprovalDecisionAmong", () => {
+  it("takes one clear answer among other words", () => {
+    assert.strictEqual(
+      spokenApprovalDecisionAmong(["Approve", "It says it's still waiting on approval"]),
+      "approve",
+    );
+    assert.strictEqual(spokenApprovalDecisionAmong(["Hmm.", "No."]), "decline");
+  });
+
+  it("leaves the card open when any stretch hesitates or disagrees", () => {
+    for (const replies of [
+      [],
+      ["Is it finished yet"],
+      ["Yes.", "No."],
+      ["Approve", "Wait, what does it do?"],
+      ["Yes.", "But change the subject."],
+    ])
+      assert.strictEqual(spokenApprovalDecisionAmong(replies), null, replies.join(" / "));
+  });
+});
+
 describe("spokenApprovalDecision", () => {
   it("takes a plain yes", () => {
     for (const words of [
@@ -1880,6 +1918,27 @@ it.effect("a provider's approval takes the same yes", () =>
     });
     if (command?.type !== "thread.approval.respond") return assert.fail("expected a decision");
     assert.strictEqual(command.requestId, "tool-1");
+    assert.strictEqual(command.decision, "accept");
+  }),
+);
+
+it.effect("a yes reaches a Codex approval past the voice's own reply and later words", () =>
+  Effect.gen(function* () {
+    const request = activity("approval.requested", {
+      requestId: "scan-1",
+      detail: '"C:\\Windows\\System32\\powershell.exe" -NoProfile -Command "du C:\\"',
+    });
+    const command = yield* spokenApprovalCall({
+      reply: [
+        "Approve",
+        "assistant [1700-1800ms]: Okay, approving that now.",
+        "user [1900-2400ms]: It says it's still waiting on approval",
+      ].join("\n"),
+      topic: requestText(request),
+      request,
+    });
+    if (command?.type !== "thread.approval.respond") return assert.fail("expected a decision");
+    assert.strictEqual(command.requestId, "scan-1");
     assert.strictEqual(command.decision, "accept");
   }),
 );

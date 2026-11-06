@@ -622,6 +622,40 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect("keeps reading the app server while a server request waits on the person", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const decision = yield* Deferred.make<{ readonly decision: string }>();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        onRequest: () => Deferred.await(decision),
+      });
+
+      yield* Queue.offer(
+        input,
+        encodeJsonl({
+          id: 7,
+          method: "item/commandExecution/requestApproval",
+          params: { itemId: "item-1" },
+        }),
+      );
+
+      // An approval can stay open for minutes. Replies and notifications behind
+      // it must still arrive, or a healthy app server looks like it stopped
+      // answering and the session is closed under the open approval.
+      const steered = yield* transport.request("turn/steer", {}).pipe(Effect.forkScoped);
+      assert.include(yield* Queue.take(output), '"turn/steer"');
+      yield* Queue.offer(input, encodeJsonl({ id: 1, result: { turnId: "turn-1" } }));
+      assert.deepEqual(yield* Fiber.join(steered), { turnId: "turn-1" });
+
+      yield* Deferred.succeed(decision, { decision: "accept" });
+      assert.deepEqual(yield* decodeJson((yield* Queue.take(output)).trim()), {
+        id: 7,
+        result: { decision: "accept" },
+      });
+    }),
+  );
+
   it.effect("answers in time are unaffected and late answers are discarded", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();

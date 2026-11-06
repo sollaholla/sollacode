@@ -196,10 +196,19 @@ export interface CallConversationDelta {
    * but never decides who these words are for.
    */
   readonly latestUserText: string;
+  /**
+   * New user fragments, one per stretch of speech, said after the voice last
+   * asked for a yes (every new one when it didn't ask in this stretch). The
+   * voice's own "okay" often lands between a person's yes and whatever they say
+   * next, which is why a yes is judged on its own and not from the latest words.
+   */
+  readonly repliesToAsk: ReadonlyArray<string>;
   readonly assistantText: string;
   /** Every timed fragment in the context; once forwarded, none of them is sent again. */
   readonly fragments: ReadonlyArray<string>;
 }
+
+const VOICE_ASKS_FOR_YES = /\byes\b/iu;
 
 /**
  * What was said on the call that has not reached the chat yet, from a
@@ -236,9 +245,18 @@ export function extractCallDelta(
   const latest: string[] = [];
   for (let index = timed.findLastIndex((_, at) => isNewWords(at)); isNewWords(index); index--)
     latest.unshift(timed[index]?.text ?? "");
+  const askedAt = timed.findLastIndex(
+    (fragment, index) =>
+      fragment.role !== "user" &&
+      !forwarded.has(fragments[index] ?? "") &&
+      VOICE_ASKS_FOR_YES.test(fragment.text),
+  );
   return {
     userText: joinFragments(user),
     latestUserText: joinFragments(latest),
+    repliesToAsk: timed.flatMap((fragment, index) =>
+      index > askedAt && isNewWords(index) ? [fragment.text] : [],
+    ),
     assistantText: joinFragments(assistant),
     fragments,
   };
@@ -446,6 +464,13 @@ const UNSURE_WORDS =
 /** A reply longer than this is saying more than yes or no. */
 const MAX_DECISION_WORDS = 8;
 
+const normalizedSpeech = (words: string) =>
+  words
+    .toLowerCase()
+    .replaceAll("’", "'")
+    .replace(/[^\p{L}\p{N}' ,.!?]/gu, " ")
+    .trim();
+
 /**
  * Whether the person's reply to an approval read out on a call decides it.
  * Matched here rather than judged by the voice, so what the call's model
@@ -455,11 +480,7 @@ const MAX_DECISION_WORDS = 8;
  * ... or no" coming back through a speaker.
  */
 export function spokenApprovalDecision(words: string): "approve" | "decline" | null {
-  const said = words
-    .toLowerCase()
-    .replaceAll("’", "'")
-    .replace(/[^\p{L}\p{N}' ,.!?]/gu, " ")
-    .trim();
+  const said = normalizedSpeech(words);
   if (!said || said.split(/\s+/u).length > MAX_DECISION_WORDS || UNSURE_WORDS.test(said))
     return null;
   const phrases = said
@@ -469,6 +490,26 @@ export function spokenApprovalDecision(words: string): "approve" | "decline" | n
   const yes = phrases.filter((phrase) => SPOKEN_YES.test(phrase)).length;
   if (SPOKEN_NO.test(said)) return SPOKEN_YES_WORD.test(said) ? null : "decline";
   return yes > 0 && yes === phrases.length ? "approve" : null;
+}
+
+/**
+ * The decision in several stretches of speech. One clear yes or no decides it,
+ * so "Approve" then "it says it's still waiting" approves, but any stretch that
+ * hesitates or pulls the other way leaves the card open.
+ */
+export function spokenApprovalDecisionAmong(
+  replies: ReadonlyArray<string>,
+): "approve" | "decline" | null {
+  const decisions = new Set(replies.map(spokenApprovalDecision));
+  const approved = decisions.has("approve");
+  const declined = decisions.has("decline");
+  if (approved === declined) return null;
+  if (declined) return "decline";
+  const hesitates = (reply: string) => {
+    const said = normalizedSpeech(reply);
+    return SPOKEN_NO.test(said) || UNSURE_WORDS.test(said);
+  };
+  return replies.some(hesitates) ? null : "approve";
 }
 
 /** What the person is asked, from a user-input or approval activity. */
@@ -871,6 +912,13 @@ export function mergeCallWorkEvents(input: {
     reported,
     asked,
   };
+}
+
+/** What the person said since a delegation, as `openQuestion` reads it. */
+interface SpokenReply {
+  readonly words: string;
+  readonly replies: ReadonlyArray<string>;
+  readonly voiceSpoke: boolean;
 }
 
 /** What the person's words settle: a question, an action approval, or a provider approval. */
@@ -1441,9 +1489,9 @@ export const makeAgentCallLive = Effect.gen(function* () {
     session: CallSession,
     threadId: ThreadId,
     approval: CallThreadActivity,
-    spoken: { readonly words: string; readonly voiceSpoke: boolean },
+    spoken: SpokenReply,
   ): SpokenAnswer | null => {
-    const decision = spokenApprovalDecision(spoken.words);
+    const decision = spokenApprovalDecisionAmong(spoken.replies);
     const requestId = requestIdOf(approval);
     if (decision === null || requestId === null) return null;
     const request = requestText(approval);
@@ -1475,11 +1523,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
    * else `dismissedRequestId` when forwarding them as a message dismisses it
    * (an option-only chat, whose question turn the message interrupts).
    */
-  const openQuestion = (
-    session: CallSession,
-    threadId: ThreadId,
-    spoken: { readonly words: string; readonly voiceSpoke: boolean },
-  ) =>
+  const openQuestion = (session: CallSession, threadId: ThreadId, spoken: SpokenReply) =>
     projections.getThreadDetailById(threadId, { messageLimit: 1, activityLimit: 80 }).pipe(
       Effect.map((thread): { answer: SpokenAnswer | null; dismissedRequestId: string | null } => {
         const none = { answer: null, dismissedRequestId: null };
@@ -1653,6 +1697,7 @@ export const makeAgentCallLive = Effect.gen(function* () {
     const { lastDelivery } = session;
     const spoken = {
       words: delta.latestUserText || delta.userText,
+      replies: delta.repliesToAsk,
       voiceSpoke: /^assistant \[/mu.test(input.context),
     };
     const askedBy = (session.active ?? []).filter(

@@ -163,6 +163,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     options: CodexAppServerPatchedProtocolOptions,
   ): Effect.fn.Return<CodexAppServerPatchedProtocol, never, Scope.Scope> {
     const outgoing = yield* Queue.unbounded<string, Cause.Done<void>>();
+    const requestScope = yield* Scope.Scope;
     const incomingNotifications = yield* Queue.unbounded<CodexAppServerIncomingNotification>();
     const incomingRequests = yield* Queue.unbounded<CodexAppServerIncomingRequest>();
     const pending = yield* Ref.make(new Map<string, CodexAppServerPendingRequest>());
@@ -279,25 +280,38 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       );
     };
 
+    /**
+     * Answers a server request on its own fiber. An approval waits on the
+     * person for as long as they take, and this runs inside the reader: awaited
+     * here, every reply and notification behind it stops arriving, so a healthy
+     * app server looks dead and is closed under the open approval.
+     */
+    const answerRequest = (
+      request: CodexAppServerIncomingRequest,
+      onRequest: NonNullable<CodexAppServerPatchedProtocolOptions["onRequest"]>,
+    ) =>
+      onRequest(request).pipe(
+        Effect.matchEffect({
+          onFailure: (error) =>
+            respondError(
+              request.id,
+              CodexError.CodexAppServerRequestError.fromAppServerError(error, request.method),
+            ),
+          onSuccess: (result) => respond(request.id, result),
+        }),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : handleTermination(() =>
+                Effect.succeed(normalizeIncomingError(cause, "read-input-stream")),
+              ),
+        ),
+        Effect.forkIn(requestScope),
+      );
+
     const handleRequest = (request: CodexAppServerIncomingRequest) =>
       Queue.offer(incomingRequests, request).pipe(
-        Effect.andThen(
-          options.onRequest
-            ? options.onRequest(request).pipe(
-                Effect.matchEffect({
-                  onFailure: (error) =>
-                    respondError(
-                      request.id,
-                      CodexError.CodexAppServerRequestError.fromAppServerError(
-                        error,
-                        request.method,
-                      ),
-                    ),
-                  onSuccess: (result) => respond(request.id, result),
-                }),
-              )
-            : Effect.void,
-        ),
+        Effect.andThen(options.onRequest ? answerRequest(request, options.onRequest) : Effect.void),
         Effect.asVoid,
       );
 

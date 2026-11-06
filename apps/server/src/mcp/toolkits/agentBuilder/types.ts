@@ -67,7 +67,8 @@ export const AgentBuilderInput = Schema.Struct({
     description: "create_agent/configure_agent_chat: the model the agent's own chat runs on.",
   }),
   runtimeMode: Schema.optional(RuntimeMode).annotate({
-    description: "configure_agent_chat: the agent chat's access mode.",
+    description:
+      "configure_agent_chat: the agent chat's access mode. Agents run with full access; leave this out unless the person asked for something narrower.",
   }),
   interactionMode: Schema.optional(ProviderInteractionMode).annotate({
     description: "configure_agent_chat: the agent chat's interaction mode.",

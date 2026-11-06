@@ -50,7 +50,9 @@ import { TextGenerationError } from "@t3tools/contracts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
+  ProviderAdapterSessionClosedError,
   type ProviderAdapterError,
+  type ProviderServiceError,
 } from "../../provider/Errors.ts";
 import { CLAUDE_CODE_NOT_INSTALLED_MESSAGE } from "../../provider/providerFailureMessage.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
@@ -13582,6 +13584,114 @@ describe("ProviderCommandReactor", () => {
     expect(text).toContain("https://app.example.com");
     expect(text).toContain('credentialId "vault-entry-1"');
     expect(text).toContain("preview_fill_credential");
+  });
+
+  const answerApproval = async (input: {
+    readonly failure: ProviderServiceError;
+    readonly requestTurnId: string | null;
+    readonly activeTurnId: string | null;
+  }) => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    harness.respondToRequest.mockImplementation(() => Effect.fail(input.failure));
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-for-codex-approval"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: input.activeTurnId === null ? null : asTurnId(input.activeTurnId),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-codex-approval-requested"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-codex-approval-requested"),
+          tone: "approval",
+          kind: "approval.requested",
+          summary: "Command approval requested",
+          payload: { requestId: "codex-approval-1", requestKind: "command" },
+          turnId: input.requestTurnId === null ? null : asTurnId(input.requestTurnId),
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.approval.respond",
+        commandId: CommandId.make("cmd-codex-approval-respond"),
+        threadId,
+        requestId: asApprovalRequestId("codex-approval-1"),
+        decision: "accept",
+        createdAt: now,
+      }),
+    );
+    const failed = async () =>
+      (await harness.readModel()).threads
+        .find((entry) => entry.id === threadId)
+        ?.activities.find((activity) => activity.kind === "provider.approval.respond.failed");
+    await waitFor(async () => (await failed()) !== undefined);
+    await harness.drain();
+    return { harness, failure: await failed() };
+  };
+
+  it("marks a Codex approval its session no longer knows as stale", async () => {
+    const { failure } = await answerApproval({
+      failure: new ProviderAdapterRequestError({
+        provider: ProviderDriverKind.make("codex"),
+        method: "item/requestApproval/decision",
+        detail: "Unknown pending Codex approval request: codex-approval-1",
+      }),
+      requestTurnId: "turn-open",
+      activeTurnId: "turn-open",
+    });
+    expect(failure?.payload).toMatchObject({
+      detail: expect.stringContaining("Stale pending approval request: codex-approval-1"),
+    });
+  });
+
+  it("marks an approval stale when its provider session has closed", async () => {
+    const { failure } = await answerApproval({
+      failure: new ProviderAdapterSessionClosedError({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: "thread-1",
+      }),
+      requestTurnId: "turn-open",
+      activeTurnId: "turn-open",
+    });
+    expect(failure?.payload).toMatchObject({
+      detail: expect.stringContaining("Stale pending approval request: codex-approval-1"),
+    });
+  });
+
+  it("answering an earlier turn's stale card leaves the running turn alone", async () => {
+    const { harness } = await answerApproval({
+      failure: new ProviderAdapterRequestError({
+        provider: ProviderDriverKind.make("codex"),
+        method: "item/requestApproval/decision",
+        detail: "Unknown pending Codex approval request: codex-approval-1",
+      }),
+      requestTurnId: "turn-before-restart",
+      activeTurnId: "turn-after-restart",
+    });
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.session?.status).toBe("running");
+    expect(harness.stopSession).not.toHaveBeenCalled();
   });
 
   it("surfaces stale provider approval request failures without faking approval resolution", async () => {

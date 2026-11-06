@@ -74,7 +74,12 @@ import { ServerConfig } from "../../config.ts";
 import { boundProviderTurnInput } from "../providerInputBounding.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { isAsyncQuestionRequestId } from "../../provider/asyncQuestions.ts";
-import { ProviderAdapterRequestError, ProviderValidationError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  ProviderAdapterSessionClosedError,
+  ProviderAdapterSessionNotFoundError,
+  ProviderValidationError,
+} from "../../provider/Errors.ts";
 import { isHistoryUnusableFailure } from "../../provider/historyUnusableFailure.ts";
 import { historyResetReminderBlock } from "../../provider/contextRecovery.ts";
 import {
@@ -311,6 +316,8 @@ export const FRESH_SESSION_OVERFLOW_REASON =
   "The provider rejected even a fresh session before it could do anything, so the text it loads at the start is too large on its own — usually an instruction file such as CLAUDE.md or AGENTS.md (and anything it imports), or a very long message. Shorten that, or switch to a model with a larger context window, then resume.";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderAdapterSessionClosedError = Schema.is(ProviderAdapterSessionClosedError);
+const isProviderAdapterSessionNotFoundError = Schema.is(ProviderAdapterSessionNotFoundError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const SYNTHETIC_DISPATCH_SUPERSEDED_METHOD = "thread-work/synthetic-dispatch-superseded";
 
@@ -496,19 +503,29 @@ const isProviderContextRecoveryRequired = (cause: Cause.Cause<unknown>): boolean
 const isSyntheticDispatchSuperseded = (cause: Cause.Cause<unknown>): boolean =>
   findProviderAdapterRequestError(cause)?.method === SYNTHETIC_DISPATCH_SUPERSEDED_METHOD;
 
+/** The provider session answering this thread has closed or was never there. */
+const isProviderSessionGone = (cause: Cause.Cause<ProviderServiceError>): boolean =>
+  cause.reasons.some(
+    (reason) =>
+      Cause.isFailReason(reason) &&
+      (isProviderAdapterSessionClosedError(reason.error) ||
+        isProviderAdapterSessionNotFoundError(reason.error)),
+  );
+
+/**
+ * Nothing is waiting on this approval any more. Without this the failure is
+ * recorded but the request stays open, and the card it belongs to reads
+ * "Resolving…" for good: the client's retry repeats the same command id.
+ */
 function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
-  const error = findProviderAdapterRequestError(cause);
-  if (error) {
-    const detail = error.detail.toLowerCase();
-    return (
-      detail.includes("unknown pending approval request") ||
-      detail.includes("unknown pending permission request")
-    );
-  }
-  const message = Cause.pretty(cause);
+  if (isProviderSessionGone(cause)) return true;
+  const detail = (
+    findProviderAdapterRequestError(cause)?.detail ?? Cause.pretty(cause)
+  ).toLowerCase();
   return (
-    message.includes("unknown pending approval request") ||
-    message.includes("unknown pending permission request")
+    detail.includes("unknown pending approval request") ||
+    detail.includes("unknown pending codex approval request") ||
+    detail.includes("unknown pending permission request")
   );
 }
 
@@ -535,6 +552,26 @@ function stalePendingRequestDetail(
   requestId: string,
 ): string {
   return `Stale pending ${requestKind} request: ${requestId}. Provider callback state does not survive app restarts or recovered sessions. Restart the turn to continue.`;
+}
+
+function requestBelongsToEarlierTurn(
+  activities: ReadonlyArray<{
+    readonly kind: string;
+    readonly payload: unknown;
+    readonly turnId: TurnId | null;
+  }>,
+  requestId: string,
+  activeTurnId: TurnId | null,
+): boolean {
+  if (activeTurnId === null) return false;
+  const requestTurnId = activities.find(
+    (activity) =>
+      (activity.kind === "approval.requested" || activity.kind === "user-input.requested") &&
+      typeof activity.payload === "object" &&
+      activity.payload !== null &&
+      (activity.payload as { readonly requestId?: unknown }).requestId === requestId,
+  )?.turnId;
+  return requestTurnId !== undefined && requestTurnId !== null && requestTurnId !== activeTurnId;
 }
 
 function hasResolvedProviderRequest(
@@ -3784,6 +3821,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       const alreadyResolved = hasResolvedProviderRequest(thread.activities, input);
       if (alreadyResolved) return;
 
+      // A card left by an earlier turn says nothing about the turn running now,
+      // which a fresh session may well be: answering it must not stop that work.
+      if (requestBelongsToEarlierTurn(thread.activities, input.requestId, session.activeTurnId))
+        return;
+
       // Best-effort: the point is to release the thread, so a provider that
       // cannot be stopped (already gone — the usual case here) must not stop
       // the projection update that actually unblocks the user.
@@ -3825,7 +3867,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             threadId: event.payload.threadId,
             kind: "provider.approval.respond.failed",
             summary: "Provider approval response failed",
-            detail: "No active provider session is bound to this thread.",
+            detail: stalePendingRequestDetail("approval", event.payload.requestId),
             turnId: null,
             createdAt: event.payload.createdAt,
             requestId: event.payload.requestId,

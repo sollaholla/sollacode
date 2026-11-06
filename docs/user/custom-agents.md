@@ -422,9 +422,12 @@ During a call:
   agent tells you so, and what you said still goes to the chat as a message.
 - If the chat needs an approval, the agent reads out exactly what it is and asks for a yes or no.
   Saying yes approves it and saying no turns it down, the same as using the card. Only a plain answer
-  counts: "yes, but change the subject" leaves the card open and the agent hears what you said. A yes
-  only counts for a request the call read out, so it can't approve something you haven't heard. The
-  card stays available in Solla Code, and sign-ins are never done by voice.
+  counts: "yes, but change the subject" leaves the card open and the agent hears what you said. A
+  clear yes still counts when you say something else afterwards, such as "Approve", then "it says
+  it's still waiting", unless what you add hesitates or changes your mind. A yes only counts for a
+  request the call read out, so it can't approve something you haven't heard. The card stays
+  available in Solla Code, and sign-ins are never done by voice. Anything else you say while an
+  approval is open still reaches the chat, and the chat carries on once the approval is answered.
 - Talking over the agent cuts it off, on both GPT-Live and Grok voices. On a phone without
   headphones, a Grok voice finishes its sentence instead, so that it doesn't answer its own echo.
 - Say goodbye and the agent says it back, then the call hangs up.

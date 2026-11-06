@@ -13,6 +13,7 @@ import {
 
 import {
   buildThreadFeed,
+  derivePendingApprovals,
   deriveThreadFeedPresentation,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
@@ -54,6 +55,34 @@ function makeThread(
     settledAt: input.settledAt ?? null,
   };
 }
+
+describe("derivePendingApprovals", () => {
+  it("clears a Codex approval whose session no longer knows it", () => {
+    const activities = [
+      makeActivity({
+        id: EventId.make("codex-approval-open"),
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Command approval requested",
+        tone: "approval",
+        payload: { requestId: "req-codex-1", requestKind: "command" },
+      }),
+      makeActivity({
+        id: EventId.make("codex-approval-failed"),
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "provider.approval.respond.failed",
+        summary: "Provider approval response failed",
+        tone: "error",
+        payload: {
+          requestId: "req-codex-1",
+          detail: "Unknown pending Codex approval request: req-codex-1",
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([]);
+  });
+});
 
 describe("buildThreadFeed", () => {
   it("shows saved OpenCode command input and its actual failure status", () => {

@@ -203,6 +203,7 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
   return (
     detail.includes("stale pending approval request") ||
     detail.includes("unknown pending approval request") ||
+    detail.includes("unknown pending codex approval request") ||
     detail.includes("unknown pending permission request")
   );
 }
