@@ -57,7 +57,7 @@ it("moves only by transform: no reduced motion, offline or hidden gestures, no i
     await render(true);
     const sources = () => [...container.querySelectorAll("img")].map((image) => image.src);
     const before = sources();
-    expect(before).toHaveLength(2);
+    expect(before).toHaveLength(3);
     await act(async () => {
       vi.advanceTimersByTime(20_000);
     });

@@ -42,7 +42,7 @@ it("walks from meeting the cast to a named, created agent", async () => {
   );
   hooks.create.mockResolvedValue({
     _tag: "Success",
-    value: { vmAgentId: "agent-1", name: "Lantern", avatarColor: 3 },
+    value: { vmAgentId: "agent-1", name: "Aurora", avatarColor: 3 },
   });
   const onOpenChange = vi.fn();
   const container = document.createElement("div");
@@ -66,23 +66,23 @@ it("walks from meeting the cast to a named, created agent", async () => {
   await click(buttonNamed("Pick your first agent"));
 
   const characters = document.querySelectorAll("[data-testid=agent-intro-character]");
-  expect(characters).toHaveLength(14);
+  expect(characters).toHaveLength(16);
   await click(characters[3]);
   expect(characters[3]?.getAttribute("aria-checked")).toBe("true");
-  await click(buttonNamed("Choose Lantern"));
+  await click(buttonNamed("Choose Aurora"));
 
   const name = document.querySelector<HTMLInputElement>("#agent-intro-name");
-  expect(name?.value).toBe("Lantern");
-  expect(buttonNamed("Bring Lantern to life")?.hasAttribute("disabled")).toBe(true);
+  expect(name?.value).toBe("Aurora");
+  expect(buttonNamed("Bring Aurora to life")?.hasAttribute("disabled")).toBe(true);
   await click(buttonNamed("Research scout"));
-  await click(buttonNamed("Bring Lantern to life"));
+  await click(buttonNamed("Bring Aurora to life"));
 
   expect(hooks.create).toHaveBeenCalledWith({
     environmentId: "env-1",
-    input: expect.objectContaining({ name: "Lantern", avatarColor: 3 }),
+    input: expect.objectContaining({ name: "Aurora", avatarColor: 3 }),
   });
-  expect(document.body.textContent).toContain("Lantern is ready");
-  await click(buttonNamed("Say hello to Lantern"));
+  expect(document.body.textContent).toContain("Aurora is ready");
+  await click(buttonNamed("Say hello to Aurora"));
   expect(onOpenChange).toHaveBeenCalledWith(false);
   expect(hooks.navigate).toHaveBeenCalledWith({
     to: "/agents/$environmentId/$agentId",

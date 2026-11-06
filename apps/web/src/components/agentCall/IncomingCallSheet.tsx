@@ -45,6 +45,7 @@ export function IncomingCallSheet(props: {
             avatarColor={agent.avatarColor}
             online
             mood="waiting"
+            live
             className="size-32"
           />
         </div>

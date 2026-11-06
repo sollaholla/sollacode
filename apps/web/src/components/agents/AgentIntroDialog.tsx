@@ -252,14 +252,14 @@ export function AgentIntroDialog(props: {
           {step === "pick" ? (
             <>
               <div className="flex flex-col items-center gap-2 text-center">
-                <DialogTitle className="text-2xl">Pick a character</DialogTitle>
+                <DialogTitle className="text-2xl">Pick an orb</DialogTitle>
                 <DialogDescription>
                   It keeps this look everywhere you use Solla Code.
                 </DialogDescription>
               </div>
               <div
                 role="radiogroup"
-                aria-label="Character"
+                aria-label="Orb"
                 className="grid grid-cols-4 gap-2 sm:grid-cols-6"
               >
                 {AGENT_INTRO_CAST.map((avatarColor, index) => {
@@ -320,6 +320,7 @@ export function AgentIntroDialog(props: {
                     avatarColor={picked}
                     online
                     mood={previewMood}
+                    live
                     className="size-full"
                   />
                 </span>
@@ -423,6 +424,7 @@ export function AgentIntroDialog(props: {
                     avatarColor={created.avatarColor}
                     online
                     mood="happy"
+                    live
                     className="size-full"
                   />
                 </span>

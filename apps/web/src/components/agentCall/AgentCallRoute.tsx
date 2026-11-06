@@ -138,6 +138,7 @@ export function AgentCallRoute() {
               agentId={call.vmAgentId}
               avatarColor={agent?.avatarColor ?? null}
               online
+              live
               className="size-24"
             />
           </div>

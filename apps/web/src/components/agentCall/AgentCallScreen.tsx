@@ -8,7 +8,7 @@ import {
   UserPlusIcon,
   XIcon,
 } from "lucide-react";
-import { agentAvatarTraits } from "@t3tools/client-runtime/state/agent-appearance";
+import { agentOrb } from "@t3tools/client-runtime/state/agent-appearance";
 import {
   AGENT_CALL_MAX_PARTICIPANTS,
   type AgentCallParticipant,
@@ -113,7 +113,7 @@ export function CallRoundButton(props: {
  * tints a call with the contact's photo. Static on purpose — nothing repaints.
  */
 export function CallBackdrop(props: { readonly agent: CallScreenAgent }) {
-  const color = agentAvatarTraits(props.agent.vmAgentId, props.agent.avatarColor).color;
+  const { color } = agentOrb(props.agent.vmAgentId, props.agent.avatarColor);
   const style = {
     backgroundImage: [
       `radial-gradient(120% 70% at 50% 28%, color-mix(in srgb, ${color} 34%, transparent), transparent 72%)`,
@@ -335,6 +335,7 @@ export function AgentCallScreen(props: {
             avatarColor={agent.avatarColor}
             online
             mood={mood}
+            live
             className="size-32"
           />
         </div>

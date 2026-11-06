@@ -1,16 +1,42 @@
 import {
-  agentAvatarSvg,
+  agentMoodBadgeSvg,
+  agentOrb,
   type AgentAvatarMood,
 } from "@t3tools/client-runtime/state/agent-appearance";
 import {
-  agentAvatarMotion,
   scheduleAgentAvatarMotion,
+  type AgentAvatarGesture,
 } from "@t3tools/client-runtime/state/agent-avatar-motion";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { AccessibilityInfo, Animated, AppState, Easing } from "react-native";
+import { memo, useEffect, useMemo, useRef } from "react";
+import { AccessibilityInfo, Animated, AppState, Easing, Image, View } from "react-native";
 import { SvgXml } from "react-native-svg";
 
-/** Same static artwork as desktop; the containing row owns its accessible name. */
+import { AGENT_ORB_IMAGES } from "./agentOrbImages";
+
+/** Rotation in degrees, tracked here so the next turn starts where this one ended. */
+function turnBy(value: Animated.Value, angle: { current: number }, by: number, duration: number) {
+  angle.current += by;
+  Animated.timing(value, {
+    toValue: angle.current,
+    duration,
+    easing: Easing.inOut(Easing.ease),
+    useNativeDriver: true,
+  }).start();
+}
+
+const spin = (value: Animated.Value) => ({
+  transform: [
+    {
+      rotate: value.interpolate({
+        inputRange: [0, 360],
+        outputRange: ["0deg", "360deg"],
+        extrapolate: "extend",
+      }),
+    },
+  ],
+});
+
+/** Same orb as desktop; the containing row owns its accessible name. */
 export const AgentAvatar = memo(function AgentAvatar(props: {
   readonly agentId: string;
   readonly online: boolean;
@@ -20,9 +46,11 @@ export const AgentAvatar = memo(function AgentAvatar(props: {
   readonly size: number;
 }) {
   const mood = props.mood ?? "idle";
-  const progress = useRef(new Animated.Value(0)).current;
-  const motion = useMemo(() => agentAvatarMotion(props.agentId), [props.agentId]);
-  const [blinking, setBlinking] = useState(false);
+  const deep = useRef(new Animated.Value(0)).current;
+  const dust = useRef(new Animated.Value(0)).current;
+  const swell = useRef(new Animated.Value(1)).current;
+  const deepAngle = useRef(0);
+  const dustAngle = useRef(0);
   const moodRef = useRef(mood);
   moodRef.current = mood;
   useEffect(() => {
@@ -31,12 +59,31 @@ export const AgentAvatar = memo(function AgentAvatar(props: {
     let reduced = true;
     let disposed = false;
     let cancel: (() => void) | undefined;
-    let blinkTimer: ReturnType<typeof setTimeout> | undefined;
+    const play = (gesture: AgentAvatarGesture) => {
+      if (gesture.turn) {
+        turnBy(deep, deepAngle, gesture.turn.deep, gesture.duration);
+        turnBy(dust, dustAngle, gesture.turn.dust, gesture.duration);
+      }
+      if (gesture.root) {
+        Animated.sequence([
+          Animated.timing(swell, {
+            toValue: 1.07,
+            duration: gesture.duration * 0.4,
+            useNativeDriver: true,
+          }),
+          Animated.timing(swell, {
+            toValue: 1,
+            duration: gesture.duration * 0.6,
+            useNativeDriver: true,
+          }),
+        ]).start();
+      }
+    };
     const rest = () => {
-      if (blinkTimer !== undefined) clearTimeout(blinkTimer);
-      setBlinking(false);
-      progress.stopAnimation();
-      progress.setValue(0);
+      deep.stopAnimation();
+      dust.stopAnimation();
+      swell.stopAnimation();
+      swell.setValue(1);
     };
     const update = () => {
       if (disposed) return;
@@ -45,27 +92,9 @@ export const AgentAvatar = memo(function AgentAvatar(props: {
         cancel = undefined;
         return;
       }
-      if (cancel) return;
-      cancel = scheduleAgentAvatarMotion(
+      cancel ??= scheduleAgentAvatarMotion(
         props.agentId,
-        {
-          rest,
-          play: (gesture) => {
-            // One drawing here, so a blink swaps it and any other gesture moves it whole.
-            if (gesture.root === undefined) {
-              setBlinking(true);
-              blinkTimer = setTimeout(() => setBlinking(false), gesture.duration);
-              return;
-            }
-            rest();
-            Animated.timing(progress, {
-              toValue: 1,
-              duration: motion.duration,
-              easing: Easing.inOut(Easing.ease),
-              useNativeDriver: true,
-            }).start();
-          },
-        },
+        { rest, play },
         { avatarColor: props.avatarColor, mood: () => moodRef.current },
       );
     };
@@ -94,53 +123,30 @@ export const AgentAvatar = memo(function AgentAvatar(props: {
       cancel?.();
       rest();
     };
-  }, [props.agentId, props.avatarColor, props.online, motion, progress]);
-  const xml = useMemo(
-    () =>
-      agentAvatarSvg(
-        props.agentId,
-        props.online,
-        props.avatarColor,
-        props.online && blinking,
-        mood,
-      ),
-    [props.agentId, props.online, props.avatarColor, blinking, mood],
-  );
+  }, [props.agentId, props.avatarColor, props.online, deep, dust, swell]);
+
+  const layers = AGENT_ORB_IMAGES[agentOrb(props.agentId, props.avatarColor).name];
+  const badge = useMemo(() => agentMoodBadgeSvg(mood, props.online), [mood, props.online]);
+  const fill = { position: "absolute", width: props.size, height: props.size } as const;
   return (
     <Animated.View
       style={{
         width: props.size,
         height: props.size,
         flexShrink: 0,
-        transform: [
-          {
-            translateY: progress.interpolate({
-              inputRange: [0, 0.2, 0.4, 0.6, 0.8, 1],
-              outputRange: [...motion.y],
-            }),
-          },
-          {
-            rotate: progress.interpolate({
-              inputRange: [0, 0.2, 0.4, 0.6, 0.8, 1],
-              outputRange: motion.rotate.map((value) => `${value}deg`),
-            }),
-          },
-          {
-            scaleX: progress.interpolate({
-              inputRange: [0, 0.2, 0.4, 0.6, 0.8, 1],
-              outputRange: motion.scaleX,
-            }),
-          },
-          {
-            scaleY: progress.interpolate({
-              inputRange: [0, 0.2, 0.4, 0.6, 0.8, 1],
-              outputRange: motion.scaleY,
-            }),
-          },
-        ],
+        transform: [{ scale: swell }],
       }}
     >
-      <SvgXml xml={xml} width={props.size} height={props.size} accessible={false} />
+      <View style={[fill, props.online ? null : { opacity: 0.5 }]}>
+        <Animated.Image source={layers.deep} style={[fill, spin(deep)]} accessible={false} />
+        <Animated.Image source={layers.dust} style={[fill, spin(dust)]} accessible={false} />
+      </View>
+      <Image source={layers.glass} style={fill} accessible={false} />
+      {badge ? (
+        <View style={fill}>
+          <SvgXml xml={badge} width={props.size} height={props.size} accessible={false} />
+        </View>
+      ) : null}
     </Animated.View>
   );
 });

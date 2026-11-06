@@ -1,11 +1,6 @@
 // @effect-diagnostics globalTimers:off globalDate:off
 // This client animation scheduler uses one native timer owned by its synchronous cancellation.
-import {
-  agentAvatarHue,
-  agentAvatarTraits,
-  type AgentAvatarMood,
-  type AgentAvatarShape,
-} from "./agentAppearance.ts";
+import { agentAvatarHue, type AgentAvatarMood } from "./agentAppearance.ts";
 
 /** A transform at one moment. Translations are percent of the avatar, so any size works. */
 export type AgentAvatarKeyframe = {
@@ -15,393 +10,125 @@ export type AgentAvatarKeyframe = {
 };
 
 /**
- * One short gesture: transforms only, so it runs on the compositor and leaves
- * nothing active when it ends. `eyes` moves the eye layer alone.
+ * One short move: transforms only, so it runs on the compositor and leaves
+ * nothing active when it ends. `turn` rotates the inside of the orb behind its
+ * still glass, by degrees added to wherever each layer last came to rest. The
+ * gas and the stars turn opposite ways, which is what gives the ball its depth.
  */
 export interface AgentAvatarGesture {
   readonly name: string;
   readonly duration: number;
-  readonly origin: readonly [number, number];
+  readonly turn?: { readonly deep: number; readonly dust: number };
   readonly root?: ReadonlyArray<AgentAvatarKeyframe>;
-  readonly eyes?: ReadonlyArray<AgentAvatarKeyframe>;
-  /** The corner status mark, which pops in just after the body has moved. */
+  /** The corner status mark, which pops in just after the orb has moved. */
   readonly badge?: ReadonlyArray<AgentAvatarKeyframe>;
 }
 
 /** The middle of the corner slot every status mark sits in, as fractions of the frame. */
 export const AGENT_AVATAR_BADGE_ORIGIN = [0.81, 0.16] as const;
 
-const OUT = "cubic-bezier(.2,.8,.3,1)";
-const IN = "cubic-bezier(.6,0,.8,.4)";
-const IN_OUT = "cubic-bezier(.45,0,.55,1)";
+export const AGENT_AVATAR_TURN_EASING = "cubic-bezier(.45,0,.55,1)";
 
-/** Every frame lists the same functions, so the browser interpolates each number. */
-const pose = (y = 0, rotate = 0, scaleX = 1, scaleY = 1, x = 0) =>
-  `translate(${x}%, ${y}%) rotate(${rotate}deg) scale(${scaleX}, ${scaleY})`;
+const OUT = "cubic-bezier(.2,.8,.3,1)";
+const IN_OUT = AGENT_AVATAR_TURN_EASING;
+
 const frames = (
   ...list: ReadonlyArray<readonly [number, string, string?]>
 ): ReadonlyArray<AgentAvatarKeyframe> =>
   list.map(([offset, transform, easing]) =>
     easing === undefined ? { offset, transform } : { offset, transform, easing },
   );
-const bend = (skew: number, scaleX = 1, scaleY = 1) =>
-  `skewX(${skew}deg) scale(${scaleX}, ${scaleY})`;
-const FEET = [0.5, 0.92] as const;
 
-function body(
-  name: string,
-  duration: number,
-  root: ReadonlyArray<AgentAvatarKeyframe>,
-  origin: readonly [number, number] = FEET,
-): AgentAvatarGesture {
-  return { name, duration, origin, root };
-}
-
-/** Squash, leap, land, recover: the anticipation and overshoot are what sell it. */
-const hop = body(
-  "hop",
-  760,
-  frames(
-    [0, pose(), OUT],
-    [0.16, pose(0, 0, 1.1, 0.87), OUT],
-    [0.42, pose(-17, 0, 0.94, 1.09), IN],
-    [0.62, pose(0, 0, 1.13, 0.85), OUT],
-    [0.8, pose(-2.5, 0, 0.97, 1.04), IN_OUT],
-    [1, pose()],
-  ),
-);
-const SHAPE_GESTURES: Record<AgentAvatarShape, AgentAvatarGesture> = {
-  mochi: hop,
-  capsule: body(
-    "rock",
-    900,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.25, pose(0, -11), IN_OUT],
-      [0.55, pose(0, 8), IN_OUT],
-      [0.8, pose(0, -3), IN_OUT],
-      [1, pose()],
-    ),
-  ),
-  // Rung from its knob, so it swings from the top.
-  bell: body(
-    "swing",
-    960,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.2, pose(0, 14), IN_OUT],
-      [0.46, pose(0, -11), IN_OUT],
-      [0.7, pose(0, 6), IN_OUT],
-      [0.87, pose(0, -2.5), IN_OUT],
-      [1, pose()],
-    ),
-    [0.5, 0.08],
-  ),
-  acorn: body(
-    "wiggle",
-    700,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.2, pose(-2, -9, 1.03, 0.97), IN_OUT],
-      [0.45, pose(-2, 8, 1.03, 0.97), IN_OUT],
-      [0.7, pose(0, -4), IN_OUT],
-      [1, pose()],
-    ),
-  ),
-  onion: body(
-    "wiggle",
-    700,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.2, pose(0, 9, 0.97, 1.04), IN_OUT],
-      [0.45, pose(0, -8, 0.97, 1.04), IN_OUT],
-      [0.7, pose(0, 4), IN_OUT],
-      [1, pose()],
-    ),
-  ),
-  lantern: body(
-    "bob",
-    980,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.35, pose(-8, 3), IN_OUT],
-      [0.7, pose(2, -2), IN_OUT],
-      [1, pose()],
-    ),
-    [0.5, 0.5],
-  ),
-  // Leaps, rocks hard one way and then the other, and lands squashed. It never
-  // turns over, because an upside-down face reads as a glitch at this size.
-  sunburst: body(
-    "rock-out",
-    860,
-    frames(
-      [0, pose(), OUT],
-      [0.16, pose(0, -10, 1.12, 0.84), IN_OUT],
-      [0.36, pose(-16, 34, 0.96, 1.06), IN_OUT],
-      [0.56, pose(-12, -26, 0.96, 1.06), IN],
-      [0.7, pose(0, 0, 1.16, 0.82), OUT],
-      [0.86, pose(-2, 0, 0.97, 1.05), IN_OUT],
-      [1, pose()],
-    ),
-    [0.5, 0.6],
-  ),
-  gumdrop: body(
-    "perk",
-    760,
-    frames(
-      [0, pose(), OUT],
-      [0.2, pose(0, 0, 1.08, 0.9), OUT],
-      [0.46, pose(-5, 0, 0.93, 1.12), IN_OUT],
-      [0.72, pose(0, 0, 1.03, 0.98), IN_OUT],
-      [1, pose()],
-    ),
-  ),
-  pebble: body(
-    "scoot",
-    820,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.3, pose(-3, -4, 1, 1, -8), IN_OUT],
-      [0.65, pose(-3, 4, 1, 1, 8), IN_OUT],
-      [1, pose()],
-    ),
-  ),
-  dango: body(
-    "bobble",
-    780,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.25, pose(0, 8, 1.02, 0.97), IN_OUT],
-      [0.55, pose(0, -7, 1.02, 0.97), IN_OUT],
-      [0.8, pose(0, 3), IN_OUT],
-      [1, pose()],
-    ),
-  ),
-  cloud: body(
-    "drift",
-    1200,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.12, pose(0, 0, 1.08, 0.92), IN_OUT],
-      [0.36, pose(-10, -6, 0.98, 1.04, -14), IN_OUT],
-      [0.62, pose(-6, 6, 0.98, 1.04, 14), IN_OUT],
-      [0.84, pose(1, 0, 1.05, 0.95), IN_OUT],
-      [1, pose()],
-    ),
-    [0.5, 0.5],
-  ),
-  // Bends from the base rather than tipping, so the pot stays planted.
-  cactus: body(
-    "sway",
-    1000,
-    frames(
-      [0, bend(0), IN_OUT],
-      [0.12, bend(0, 1.05, 0.94), IN_OUT],
-      [0.36, bend(14, 1, 1.02), IN_OUT],
-      [0.64, bend(-11, 1, 1.02), IN_OUT],
-      [0.86, bend(4), IN_OUT],
-      [1, bend(0)],
-    ),
-  ),
-  saucer: body(
-    "hover",
-    1100,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.12, pose(3, 0, 1.03, 0.96), OUT],
-      [0.36, pose(-18, -14, 1, 1, -5), IN_OUT],
-      [0.62, pose(-13, 12, 1, 1, 5), IN_OUT],
-      [0.82, pose(-3, -3), IN_OUT],
-      [1, pose()],
-    ),
-    [0.5, 0.6],
-  ),
-  star: body(
-    "pop",
-    800,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.16, pose(0, -6, 0.86, 0.86), OUT],
-      [0.4, pose(-4, 14, 1.2, 1.2), IN_OUT],
-      [0.66, pose(0, -5, 0.94, 0.94), IN_OUT],
-      [0.84, pose(0, 2, 1.03, 1.03), IN_OUT],
-      [1, pose()],
-    ),
-    [0.5, 0.55],
-  ),
+/** A slow turn at rest. */
+export const AGENT_AVATAR_DRIFT: AgentAvatarGesture = {
+  name: "drift",
+  duration: 2_400,
+  turn: { deep: 18, dust: -30 },
 };
 
-const EYES_REST = "translate(0%, 0%) scale(1, 1)";
-const eyesAt = (x: number, y: number, scaleY = 1) => `translate(${x}%, ${y}%) scale(1, ${scaleY})`;
-
-const BLINK: AgentAvatarGesture = {
-  name: "blink",
-  duration: 170,
-  origin: FEET,
-  eyes: frames(
-    [0, EYES_REST, IN],
-    [0.42, eyesAt(0, 0, 0.08)],
-    [0.58, eyesAt(0, 0, 0.08), OUT],
-    [1, EYES_REST],
-  ),
-};
-const DOUBLE_BLINK: AgentAvatarGesture = {
-  name: "double-blink",
-  duration: 420,
-  origin: FEET,
-  eyes: frames(
-    [0, EYES_REST, IN],
-    [0.17, eyesAt(0, 0, 0.08)],
-    [0.24, eyesAt(0, 0, 0.08), OUT],
-    [0.42, EYES_REST],
-    [0.58, EYES_REST, IN],
-    [0.75, eyesAt(0, 0, 0.08)],
-    [0.82, eyesAt(0, 0, 0.08), OUT],
-    [1, EYES_REST],
-  ),
+/** Busy: the galaxy winds up. */
+export const AGENT_AVATAR_SWIRL: AgentAvatarGesture = {
+  name: "swirl",
+  duration: 2_400,
+  turn: { deep: 52, dust: -84 },
 };
 
-function glance(direction: number): AgentAvatarGesture {
-  return {
-    name: "glance",
-    duration: 1300,
-    origin: FEET,
-    // The eyes get there first and the head follows, so they never press on the edge.
-    root: frames(
-      [0, pose(), IN_OUT],
-      [0.08, pose(), IN_OUT],
-      [0.3, pose(0, direction * 14, 1, 1, direction * 6), IN_OUT],
-      [0.42, pose(0, direction * 11, 1, 1, direction * 5), IN_OUT],
-      [0.8, pose(0, direction * 11, 1, 1, direction * 5), IN_OUT],
-      [1, pose()],
-    ),
-    eyes: frames(
-      [0, EYES_REST, OUT],
-      [0.12, eyesAt(direction * 5, -0.5), IN_OUT],
-      [0.84, eyesAt(direction * 5, -0.5), OUT],
-      [1, EYES_REST],
-    ),
-  };
-}
-
-/** Heads-down: two small nods while the eyes stay on the work. */
-const NOD: AgentAvatarGesture = {
-  name: "nod",
-  duration: 880,
-  origin: FEET,
+/** Wants attention: the whole orb swells once. */
+export const AGENT_AVATAR_PULSE: AgentAvatarGesture = {
+  name: "pulse",
+  duration: 900,
   root: frames(
-    [0, pose(), IN_OUT],
-    [0.25, pose(3.5, 5, 1.03, 0.95), IN_OUT],
-    [0.5, pose(), IN_OUT],
-    [0.75, pose(3.5, -5, 1.03, 0.95), IN_OUT],
-    [1, pose()],
-  ),
-  eyes: frames(
-    [0, EYES_REST, IN_OUT],
-    [0.25, eyesAt(3, 2.5)],
-    [0.75, eyesAt(-3, 2.5), IN_OUT],
-    [1, EYES_REST],
+    [0, "scale(1)", OUT],
+    [0.38, "scale(1.07)", IN_OUT],
+    [0.72, "scale(0.985)", IN_OUT],
+    [1, "scale(1)"],
   ),
 };
 
-/** Plays once as a mood arrives; no mood keeps moving because of what it is. */
-const MOOD_ENTRANCES: Partial<Record<AgentAvatarMood, AgentAvatarGesture>> = {
-  working: body(
-    "get-to-it",
-    640,
-    frames(
-      [0, pose(), OUT],
-      [0.3, pose(0, 0, 1.08, 0.9), IN_OUT],
-      [0.62, pose(1, 5, 0.99, 1.02), IN_OUT],
-      [1, pose()],
-    ),
-  ),
-  happy: body(
-    "cheer",
-    980,
-    frames(
-      [0, pose(), OUT],
-      [0.12, pose(0, 0, 1.08, 0.88), OUT],
-      [0.32, pose(-16, -7, 0.95, 1.08), IN],
-      [0.5, pose(0, 0, 1.1, 0.88), OUT],
-      [0.68, pose(-9, 6, 0.97, 1.05), IN],
-      [0.84, pose(0, 0, 1.05, 0.94), OUT],
-      [1, pose()],
-    ),
-  ),
-  blocked: body(
-    "shake",
-    820,
-    frames(
-      [0, pose(), IN_OUT],
-      [0.14, pose(0, -5, 1, 1, -8), IN_OUT],
-      [0.3, pose(0, 5, 1, 1, 8), IN_OUT],
-      [0.46, pose(0, -3, 1, 1, -5), IN_OUT],
-      [0.66, pose(6, 0, 1.12, 0.84), IN_OUT],
-      [0.86, pose(5, 0, 1.1, 0.87), IN_OUT],
-      [1, pose()],
-    ),
-  ),
-  waiting: body(
-    "tilt",
-    1100,
-    frames(
-      [0, pose(), OUT],
-      [0.12, pose(0, 0, 1.05, 0.93), OUT],
-      [0.32, pose(-11, 20, 0.97, 1.05), IN_OUT],
-      [0.5, pose(-6, 12), IN_OUT],
-      [0.78, pose(-7, 13), IN_OUT],
-      [1, pose()],
-    ),
-  ),
-  sleeping: body(
-    "settle",
-    1200,
-    frames([0, pose(), IN_OUT], [0.45, pose(1.5, 0, 1.05, 0.93), IN_OUT], [1, pose()]),
+/** Stuck: a small shake, the one move here that reads as a problem. */
+const SHAKE: AgentAvatarGesture = {
+  name: "shake",
+  duration: 620,
+  root: frames(
+    [0, "translate(0%, 0%)"],
+    [0.2, "translate(-3%, 0%)", IN_OUT],
+    [0.45, "translate(3%, 0%)", IN_OUT],
+    [0.7, "translate(-1.5%, 0%)", IN_OUT],
+    [1, "translate(0%, 0%)"],
   ),
 };
 
-/** Overshoot and settle, held back so the mark lands after the body has moved. */
+/** Done: one fast turn with a swell, then still. */
+const SURGE: AgentAvatarGesture = {
+  name: "surge",
+  duration: 1_300,
+  turn: { deep: 150, dust: -220 },
+  root: AGENT_AVATAR_PULSE.root!,
+};
+
 const BADGE_POP = frames(
-  [0, "scale(0)"],
-  [0.22, "scale(0)", OUT],
-  [0.44, "scale(1.3)", IN_OUT],
-  [0.6, "scale(0.9)", IN_OUT],
-  [0.76, "scale(1.05)", IN_OUT],
-  [0.9, "scale(1)"],
+  [0, "scale(0)", OUT],
+  [0.55, "scale(0)", OUT],
+  [0.78, "scale(1.18)", IN_OUT],
   [1, "scale(1)"],
 );
+
+const MOOD_ENTRANCES: Record<AgentAvatarMood, AgentAvatarGesture | null> = {
+  idle: null,
+  working: AGENT_AVATAR_SWIRL,
+  waiting: AGENT_AVATAR_PULSE,
+  blocked: SHAKE,
+  happy: SURGE,
+  speaking: AGENT_AVATAR_PULSE,
+  sleeping: null,
+};
 
 export function agentAvatarMoodGesture(mood: AgentAvatarMood): AgentAvatarGesture | null {
   const gesture = MOOD_ENTRANCES[mood];
   return gesture ? { ...gesture, badge: BADGE_POP } : null;
 }
 
-export function agentAvatarIdleGesture(
-  agentId: string,
-  avatarColor?: number | null,
-): AgentAvatarGesture {
-  return SHAPE_GESTURES[agentAvatarTraits(agentId, avatarColor).shape];
+/** The move a mood keeps coming back to, and roughly how long it leaves between them. */
+function restingMove(mood: AgentAvatarMood, seed: number) {
+  switch (mood) {
+    case "working":
+    case "speaking":
+      return { gesture: AGENT_AVATAR_SWIRL, wait: 2_600 + (seed % 1_400) };
+    case "waiting":
+    case "blocked":
+      return { gesture: AGENT_AVATAR_PULSE, wait: 5_000 + (seed % 2_000) };
+    case "sleeping":
+      return null;
+    default:
+      return { gesture: AGENT_AVATAR_DRIFT, wait: 9_000 + (seed % 6_000) };
+  }
 }
-
-export function agentAvatarGlance(agentId: string, avatarColor?: number | null) {
-  return glance(agentAvatarTraits(agentId, avatarColor).glance[0] >= 0 ? 1 : -1);
-}
-
-export const AGENT_AVATAR_BLINK = BLINK;
-export const AGENT_AVATAR_DOUBLE_BLINK = DOUBLE_BLINK;
-export const AGENT_AVATAR_WORK_NOD = NOD;
-
-/** Whether this mood shows open eyes, which are the only eyes that can blink or glance. */
-const eyesOpen = (mood: AgentAvatarMood) => mood !== "happy" && mood !== "sleeping";
 
 // ---------------------------------------------------------------------------
 // One director for the whole client. Each avatar asks for its next move and a
 // single timer serves them, at most one every MIN_GAP_MS. So the cost of motion
 // stays flat however many avatars are on screen, nothing runs between moves, and
-// no timer exists at all once none are showing. Blinks want more turns than the
-// budget has in a long list, so every third turn goes to an overdue move.
+// no timer exists at all once none are showing.
 
 const MIN_GAP_MS = 2_500;
 
@@ -413,46 +140,14 @@ export interface AgentAvatarStage {
 
 interface Registered {
   readonly seed: number;
-  readonly agentId: string;
-  readonly avatarColor: number | null | undefined;
   readonly mood: () => AgentAvatarMood;
   readonly stage: AgentAvatarStage;
-  nextBlinkAt: number;
   nextMoveAt: number;
-  moves: number;
 }
 
 const registered = new Set<Registered>();
 let timer: ReturnType<typeof setTimeout> | undefined;
 let lastPlayedAt = Number.NEGATIVE_INFINITY;
-let turns = 0;
-
-function earliestDue(entry: Registered): number {
-  return eyesOpen(entry.mood()) ? Math.min(entry.nextBlinkAt, entry.nextMoveAt) : entry.nextMoveAt;
-}
-
-function playNext(entry: Registered, now: number, preferMove: boolean): void {
-  const mood = entry.mood();
-  if (!preferMove && eyesOpen(mood) && entry.nextBlinkAt <= entry.nextMoveAt) {
-    entry.stage.play(entry.seed % 5 === 0 ? DOUBLE_BLINK : BLINK);
-    entry.nextBlinkAt = now + 4_200 + ((entry.seed + entry.moves) % 3_100);
-    entry.moves += 1;
-    return;
-  }
-  if (mood === "working") {
-    entry.stage.play(NOD);
-    entry.nextMoveAt = now + 2_600 + (entry.seed % 1_400);
-  } else {
-    entry.stage.play(
-      // Mostly a look around; every third move is the character's own gesture.
-      eyesOpen(mood) && entry.moves % 3 !== 2
-        ? agentAvatarGlance(entry.agentId, entry.avatarColor)
-        : agentAvatarIdleGesture(entry.agentId, entry.avatarColor),
-    );
-    entry.nextMoveAt = now + 9_000 + (entry.seed % 6_000);
-  }
-  entry.moves += 1;
-}
 
 function arm(): void {
   if (timer !== undefined) clearTimeout(timer);
@@ -460,7 +155,7 @@ function arm(): void {
   if (registered.size === 0) return;
   const now = Date.now();
   let due = Number.POSITIVE_INFINITY;
-  for (const entry of registered) due = Math.min(due, earliestDue(entry));
+  for (const entry of registered) due = Math.min(due, entry.nextMoveAt);
   // Bounded, so a clock set backwards cannot stall every avatar.
   const gapLeft = Math.min(MIN_GAP_MS, lastPlayedAt + MIN_GAP_MS - now);
   timer = setTimeout(tick, Math.max(0, due - now, gapLeft));
@@ -469,19 +164,17 @@ function arm(): void {
 function tick(): void {
   timer = undefined;
   const now = Date.now();
-  const soonest = (due: (entry: Registered) => number) => {
-    let found: Registered | undefined;
-    for (const entry of registered) {
-      if (found === undefined || due(entry) < due(found)) found = entry;
+  let next: Registered | undefined;
+  for (const entry of registered) {
+    if (next === undefined || entry.nextMoveAt < next.nextMoveAt) next = entry;
+  }
+  if (next && next.nextMoveAt <= now) {
+    const move = restingMove(next.mood(), next.seed);
+    if (move) {
+      lastPlayedAt = now;
+      next.stage.play(move.gesture);
     }
-    return found && due(found) <= now ? found : undefined;
-  };
-  const move = turns % 3 === 2 ? soonest((entry) => entry.nextMoveAt) : undefined;
-  const next = move ?? soonest(earliestDue);
-  if (next) {
-    lastPlayedAt = now;
-    turns += 1;
-    playNext(next, now, next === move);
+    next.nextMoveAt = now + (move?.wait ?? 10_000);
   }
   arm();
 }
@@ -496,16 +189,11 @@ export function scheduleAgentAvatarMotion(
   } = {},
 ): () => void {
   const seed = Math.floor(agentAvatarHue(agentId, options.avatarColor) * 1000);
-  const now = Date.now();
   const entry: Registered = {
     seed,
-    agentId,
-    avatarColor: options.avatarColor,
     mood: options.mood ?? (() => "idle"),
     stage,
-    nextBlinkAt: now + 800 + (seed % 3_000),
-    nextMoveAt: now + 3_000 + (seed % 7_000),
-    moves: seed % 3,
+    nextMoveAt: Date.now() + 800 + (seed % 6_000),
   };
   registered.add(entry);
   arm();
@@ -513,27 +201,5 @@ export function scheduleAgentAvatarMotion(
     registered.delete(entry);
     stage.rest();
     arm();
-  };
-}
-
-const POSES = [
-  { y: [0, 0.3, -2.5, 0, -0.8, 0], rotate: [0, 0, -2, 1, 0, 0] },
-  { y: [0, -0.3, -0.6, -0.4, 0, 0], rotate: [0, -5, 4, -2, 1, 0] },
-  { y: [0, 0.4, -1.8, -0.4, 0.2, 0], rotate: [0, 2, 3, -2, 0, 0] },
-  { y: [0, -1.8, 0.2, -1.3, 0, 0], rotate: [0, -2, 0, 2, 0, 0] },
-] as const;
-
-/** Six evenly spaced poses for a client animating one drawing rather than layers. */
-export function agentAvatarMotion(agentId: string) {
-  const seed = Math.floor(agentAvatarHue(agentId) * 1000);
-  const variant = seed % POSES.length;
-  const pose = POSES[variant]!;
-  return {
-    variant,
-    duration: 820 + variant * 90,
-    y: pose.y,
-    rotate: pose.rotate,
-    scaleX: [1, 1.012, 0.995, 1.005, 1, 1],
-    scaleY: [1, 1.012, 0.995, 1.005, 1, 1],
   };
 }

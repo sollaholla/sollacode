@@ -815,7 +815,7 @@ speech; even at full voice, its glow stays under 90 pixels. Gold highlights indi
 violet the orchestrator's, and cyan a pending response. Clouds drift and fold independently, stars shimmer, and a reflection travels along the rim.
 Motion becomes livelier during voice and pauses for reduced-motion preferences. The voice overlay, phone view, and Settings preview share the same design.
 
-Drag the orb anywhere. Tapping it starts or stops recording; the small button in its corner opens
+The orb is black glass and gold, the orchestrator's alone: a burning eye in a sphere, with gold fire around it. It rests still until a session starts, then turns in 3D and burns brighter with the voice. Drag the orb anywhere. Tapping it starts or stops recording; the small button in its corner opens
 the orchestrator thread. A brief hover hint replaces the native HTML tooltip. It closes when you
 leave, press, drag, switch windows, or press Escape, and expires after two seconds even if the OS
 misses the pointer leaving. Canceling a drag does not toggle the microphone.

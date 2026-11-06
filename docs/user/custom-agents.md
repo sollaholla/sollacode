@@ -16,16 +16,15 @@ section, and its **New agent** button opens the plain dialog.
 
 1. **Meet your agents** introduces what agents do: scheduled jobs, their own browser, and
    checking in with you.
-2. **Pick a character** shows the whole cast. Each character looks up when you point at it and
-   smiles when chosen; the character's name ("Mochi", "Lantern", …) becomes the suggested agent
-   name.
+2. **Pick an orb** shows all sixteen. Each orb is a different galaxy sealed in glass, and its name
+   ("Orion", "Maelstrom", …) becomes the suggested agent name.
 3. **What should it do?** takes a name and a purpose. Starter buttons fill in a purpose (Research
    scout, Release watcher, PR babysitter, Daily digest), or you can write your own. The preview
-   character reacts while you type. **Build one with AI instead** opens the Agent Builder chat.
+   orb turns in 3D as you type. **Build one with AI instead** opens the Agent Builder chat.
 4. The new agent cheers once, and **Say hello** opens its chat.
 
 The animations play once and are off when the device asks for reduced motion. Later agents use the
-plain **New agent** dialog, and the server gives each one the next free character. The phone app
+plain **New agent** dialog, and the server gives each one the next free orb. The phone app
 can't create agents yet; its empty Agents screen points to the computer.
 
 ## Renaming an agent
@@ -40,34 +39,31 @@ the command palette also offers renaming while that agent is open. On mobile, us
 list menu or its details screen. You can also ask Agent Builder to rename an agent.
 
 Renaming changes the display name across connected clients. The agent keeps its original
-`@handle`, character, conversation, files, instructions, scheduled work, and collaboration history.
+`@handle`, orb, conversation, files, instructions, scheduled work, and collaboration history.
 Existing mentions continue to work. The agent receives its current display name in the context
 for its next turn; renaming does not interrupt work already running.
 
-## Characters
+## Orbs
 
-Each agent gets its own character: a vivid body shape (mochi, bell, acorn, lantern, sunburst,
-gumdrop, onion, capsule, pebble, dango, star, cloud, cactus or saucer), a face, and sometimes an
-ink accessory: goggles, a scarf, a monocle or a bow tie. Your first fourteen agents each get a
-different shape and a different color. The character follows the agent's
-permanent identity across web, desktop and mobile, including renames and changes to its
-conversation or coding provider.
+Each agent gets its own orb: a galaxy sealed in a glass sphere. Your first sixteen agents each get a
+different one, from nebulae and spiral galaxies to ringed discs, veils of light and bursting stars.
+The orb follows the agent's permanent identity across web, desktop and mobile, including renames
+and changes to its conversation or coding provider.
 
-The face shows what the agent is doing: focused while it works, looking up when it is waiting
-for your approval or answer, worried after a failed turn, and smiling when it has finished work
-you haven't opened yet. Offline characters turn a muted grey and fall asleep. The phone shows
-the working and waiting faces.
+The orb shows what the agent is doing. It drifts slowly at rest, winds up while it works, swells when
+it is waiting for you, shakes when something failed, and spins once when it finishes. An offline orb
+goes dim and still. In lists the inside of the orb turns behind its glass, a few at a time, so a long
+list costs no more than a short one. Large orbs, on a call or while creating an agent, show the
+galaxy turning in 3D. Motion stops when the device asks for reduced motion.
+
 A green dot means the agent is running and this client is connected to its environment;
 a gray dot means it is stopped, starting, failed, or the environment is disconnected.
 Work-in-progress and unread-alert indicators remain separate from online status.
-Each state also has its own mark in the character's top-right corner, so a list of small avatars
+Each state also has its own mark in the orb's top-right corner, so a list of small avatars
 reads at a glance: a typing bubble while working, a yellow **?** when waiting on you, a blue drop
 when something went wrong, a green check when it has finished work you haven't opened, and a **Z** when
-sleeping. On a call, the character's mouth opens while it talks.
-Online characters blink, look around and do a short gesture of their own, one character at a time.
-They rest between gestures, stay still offline, and respect the device's reduced-motion
-setting. Web characters also pause when offscreen or when the page is hidden; mobile
-characters pause when the app is in the background.
+sleeping. Orbs also pause when offscreen, when the page is hidden, or when the phone app is in the
+background.
 
 Each newly created agent also receives its own durable working directory below the environment's
 agents folder. Its files and local instructions, including an agent-specific `AGENTS.md`, no longer

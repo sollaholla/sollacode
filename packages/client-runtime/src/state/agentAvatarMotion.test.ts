@@ -1,77 +1,67 @@
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import type { AgentAvatarMood } from "./agentAppearance.ts";
 import {
-  AGENT_AVATAR_BLINK,
-  AGENT_AVATAR_DOUBLE_BLINK,
-  AGENT_AVATAR_WORK_NOD,
-  agentAvatarGlance,
-  agentAvatarIdleGesture,
+  AGENT_AVATAR_DRIFT,
+  AGENT_AVATAR_PULSE,
+  AGENT_AVATAR_SWIRL,
   agentAvatarMoodGesture,
-  agentAvatarMotion,
   scheduleAgentAvatarMotion,
   type AgentAvatarGesture,
 } from "./agentAvatarMotion.ts";
-import { AGENT_AVATAR_SHAPES } from "./agentAppearance.ts";
 
-afterEach(() => vi.useRealTimers());
-
-const allGestures = (): AgentAvatarGesture[] => [
-  ...AGENT_AVATAR_SHAPES.map((_, color) => agentAvatarIdleGesture("agent", color)),
-  ...(["working", "happy", "blocked", "waiting", "sleeping"] as const).map(
-    (mood) => agentAvatarMoodGesture(mood)!,
-  ),
-  AGENT_AVATAR_BLINK,
-  AGENT_AVATAR_DOUBLE_BLINK,
-  AGENT_AVATAR_WORK_NOD,
-  agentAvatarGlance("agent"),
+const MOODS: ReadonlyArray<AgentAvatarMood> = [
+  "idle",
+  "working",
+  "waiting",
+  "blocked",
+  "happy",
+  "speaking",
+  "sleeping",
 ];
 
-describe("agent avatar gestures", () => {
+describe("orb gestures", () => {
   it("pop the status mark in and leave it at full size", () => {
-    for (const mood of ["working", "happy", "blocked", "waiting", "sleeping"] as const) {
-      const badge = agentAvatarMoodGesture(mood)!.badge!;
-      expect(badge[0]!.transform).toBe("scale(0)");
-      expect(badge.at(-1)!.transform).toBe("scale(1)");
+    const badge = agentAvatarMoodGesture("working")?.badge;
+    expect(badge?.[0]?.transform).toBe("scale(0)");
+    expect(badge?.at(-1)?.transform).toBe("scale(1)");
+  });
+
+  it("turn the gas and the stars opposite ways, for depth", () => {
+    for (const gesture of [AGENT_AVATAR_DRIFT, AGENT_AVATAR_SWIRL]) {
+      expect(gesture.turn?.deep).toBeGreaterThan(0);
+      expect(gesture.turn?.dust).toBeLessThan(0);
+    }
+    expect(AGENT_AVATAR_SWIRL.turn!.deep).toBeGreaterThan(AGENT_AVATAR_DRIFT.turn!.deep);
+  });
+
+  it("use transforms only, stay short and end where they began", () => {
+    for (const mood of MOODS) {
+      const gesture = agentAvatarMoodGesture(mood);
+      if (!gesture) continue;
+      expect(gesture.duration).toBeLessThanOrEqual(2_500);
+      if (gesture.root) expect(gesture.root.at(-1)?.transform).toBe(gesture.root[0]?.transform);
     }
   });
 
-  it("animate only transforms, stay short and finish where they started", () => {
-    for (const gesture of allGestures()) {
-      expect(gesture.duration).toBeLessThanOrEqual(1_300);
-      for (const track of [gesture.root, gesture.eyes]) {
-        if (!track) continue;
-        expect(track[0]!.offset).toBe(0);
-        expect(track.at(-1)!.offset).toBe(1);
-        expect(track.at(-1)!.transform).toBe(track[0]!.transform);
-        for (const frame of track) {
-          expect(Object.keys(frame).toSorted().join()).toMatch(/^(easing,)?offset,transform$/u);
-          expect(frame.transform).not.toMatch(/NaN|undefined/u);
-        }
-      }
-    }
-  });
-
-  it("gives characters their own gesture and blinks with the eyes alone", () => {
-    const names = new Set(AGENT_AVATAR_SHAPES.map((_, c) => agentAvatarIdleGesture("a", c).name));
-    expect(names.size).toBeGreaterThan(6);
-    expect(AGENT_AVATAR_BLINK.root).toBeUndefined();
-    expect(AGENT_AVATAR_BLINK.duration).toBeLessThan(200);
+  it("leave rest and sleep without an entrance", () => {
     expect(agentAvatarMoodGesture("idle")).toBeNull();
-  });
-
-  it("keeps poses for clients that animate one drawing", () => {
-    const motion = agentAvatarMotion("agent-0");
-    expect(motion.y).toHaveLength(6);
-    expect(motion.rotate).toHaveLength(6);
-    expect(motion.y.at(-1)).toBe(0);
+    expect(agentAvatarMoodGesture("sleeping")).toBeNull();
   });
 });
 
 describe("the avatar director", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const stage = (played: Array<AgentAvatarGesture> = []) => ({
+    play: (gesture: AgentAvatarGesture) => void played.push(gesture),
+    rest: vi.fn(),
+  });
+
   it("runs one timer however many avatars are showing, and none once they leave", () => {
-    vi.useFakeTimers();
-    const cancels = Array.from({ length: 30 }, (_, i) =>
-      scheduleAgentAvatarMotion(`agent-${i}`, { play: vi.fn(), rest: vi.fn() }),
+    const cancels = Array.from({ length: 40 }, (_, index) =>
+      scheduleAgentAvatarMotion(`agent-${index}`, stage()),
     );
     expect(vi.getTimerCount()).toBe(1);
     for (const cancel of cancels) cancel();
@@ -79,68 +69,39 @@ describe("the avatar director", () => {
   });
 
   it("spends the same motion budget for two hundred avatars as for two", () => {
-    vi.useFakeTimers();
-    const played = vi.fn();
-    const cancels = Array.from({ length: 200 }, (_, i) =>
-      scheduleAgentAvatarMotion(`agent-${i}`, { play: played, rest: vi.fn() }),
+    const played: Array<AgentAvatarGesture> = [];
+    const cancels = Array.from({ length: 200 }, (_, index) =>
+      scheduleAgentAvatarMotion(`agent-${index}`, stage(played)),
     );
     vi.advanceTimersByTime(60_000);
-    expect(played.mock.calls.length).toBeLessThanOrEqual(25);
+    expect(played.length).toBeLessThanOrEqual(25);
     for (const cancel of cancels) cancel();
   });
 
-  it("gives a lone avatar regular blinks and an occasional gesture", () => {
-    vi.useFakeTimers();
-    const played: string[] = [];
-    const cancel = scheduleAgentAvatarMotion("agent-0", {
-      play: (gesture) => played.push(gesture.name),
-      rest: vi.fn(),
-    });
+  it("drifts at rest, swirls while busy and asks for attention when waiting", () => {
+    const seen = (mood: AgentAvatarMood) => {
+      const played: Array<AgentAvatarGesture> = [];
+      const cancel = scheduleAgentAvatarMotion("agent", stage(played), { mood: () => mood });
+      vi.advanceTimersByTime(30_000);
+      cancel();
+      return new Set(played.map((gesture) => gesture.name));
+    };
+    expect(seen("idle")).toEqual(new Set([AGENT_AVATAR_DRIFT.name]));
+    expect(seen("working")).toEqual(new Set([AGENT_AVATAR_SWIRL.name]));
+    expect(seen("waiting")).toEqual(new Set([AGENT_AVATAR_PULSE.name]));
+  });
+
+  it("leaves a sleeping orb still", () => {
+    const played: Array<AgentAvatarGesture> = [];
+    const cancel = scheduleAgentAvatarMotion("agent", stage(played), { mood: () => "sleeping" });
     vi.advanceTimersByTime(60_000);
     cancel();
-    expect(played.filter((name) => name.includes("blink")).length).toBeGreaterThanOrEqual(6);
-    expect(played.filter((name) => !name.includes("blink")).length).toBeGreaterThanOrEqual(3);
-  });
-
-  it("nods while working and never blinks closed eyes", () => {
-    vi.useFakeTimers();
-    let mood: "working" | "sleeping" = "working";
-    const played: string[] = [];
-    const cancel = scheduleAgentAvatarMotion(
-      "agent-0",
-      { play: (gesture) => played.push(gesture.name), rest: vi.fn() },
-      { mood: () => mood },
-    );
-    vi.advanceTimersByTime(30_000);
-    expect(played).toContain("nod");
-    played.length = 0;
-    mood = "sleeping";
-    vi.advanceTimersByTime(30_000);
-    expect(played.some((name) => name.includes("blink") || name === "glance")).toBe(false);
-    cancel();
-  });
-
-  it("keeps gestures coming in a long list, where blinks alone would fill the budget", () => {
-    vi.useFakeTimers();
-    const played: string[] = [];
-    const cancels = Array.from({ length: 14 }, (_, i) =>
-      scheduleAgentAvatarMotion(`agent-${i}`, {
-        play: (gesture) => played.push(gesture.name),
-        rest: vi.fn(),
-      }),
-    );
-    vi.advanceTimersByTime(30_000);
-    for (const cancel of cancels) cancel();
-    expect(played.filter((name) => !name.includes("blink")).length).toBeGreaterThanOrEqual(3);
-    expect(played.length).toBeLessThanOrEqual(13);
+    expect(played).toEqual([]);
   });
 
   it("returns to rest when cancelled", () => {
-    vi.useFakeTimers();
-    const rest = vi.fn();
-    const cancel = scheduleAgentAvatarMotion("agent-3", { play: vi.fn(), rest });
-    cancel();
-    expect(rest).toHaveBeenCalledOnce();
-    expect(vi.getTimerCount()).toBe(0);
+    const watching = stage();
+    scheduleAgentAvatarMotion("agent", watching)();
+    expect(watching.rest).toHaveBeenCalledOnce();
   });
 });

@@ -1,11 +1,11 @@
 import {
-  AGENT_AVATAR_SHAPES,
-  agentAvatarTraits,
+  AGENT_ORBS,
+  agentOrb,
   type AgentAvatarMood,
 } from "@t3tools/client-runtime/state/agent-appearance";
 
-/** The intro offers the designed cast: one character per body shape. */
-export const AGENT_INTRO_CAST: ReadonlyArray<number> = AGENT_AVATAR_SHAPES.map((_, index) => index);
+/** The intro offers every orb. */
+export const AGENT_INTRO_CAST: ReadonlyArray<number> = AGENT_ORBS.map((_, index) => index);
 
 /** Characters that pop in on the welcome step, in order. */
 export const AGENT_INTRO_WELCOME_CAST: ReadonlyArray<number> = [0, 4, 2, 3, 1, 5, 10];
@@ -20,10 +20,10 @@ export function agentIntroCastLayer(index: number): number {
   return AGENT_INTRO_WELCOME_CAST.length - Math.abs(index - middle);
 }
 
-/** A character's suggested name: its shape, capitalized ("Mochi", "Lantern"). */
+/** An orb's suggested name: its own, capitalized ("Orion", "Maelstrom"). */
 export function agentIntroDefaultName(avatarColor: number): string {
-  const shape = agentAvatarTraits("agent-intro", avatarColor).shape;
-  return shape.charAt(0).toUpperCase() + shape.slice(1);
+  const { name } = agentOrb("agent-intro", avatarColor);
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 export interface AgentIntroStarter {

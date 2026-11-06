@@ -1,4 +1,4 @@
-import { agentAvatarTraits } from "@t3tools/client-runtime/state/agent-appearance";
+import { agentOrb } from "@t3tools/client-runtime/state/agent-appearance";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -11,12 +11,12 @@ import {
 } from "./agentIntro";
 
 describe("agent intro", () => {
-  it("offers one character per body shape, each with its own name", () => {
-    const shapes = AGENT_INTRO_CAST.map((color) => agentAvatarTraits("intro", color).shape);
-    expect(new Set(shapes).size).toBe(AGENT_INTRO_CAST.length);
+  it("offers every orb, each with its own name", () => {
+    const orbs = AGENT_INTRO_CAST.map((color) => agentOrb("intro", color).name);
+    expect(new Set(orbs).size).toBe(AGENT_INTRO_CAST.length);
     const names = AGENT_INTRO_CAST.map(agentIntroDefaultName);
     expect(new Set(names).size).toBe(names.length);
-    expect(agentIntroDefaultName(0)).toBe("Mochi");
+    expect(agentIntroDefaultName(0)).toBe("Orion");
     for (const color of AGENT_INTRO_WELCOME_CAST) expect(AGENT_INTRO_CAST).toContain(color);
   });
 
