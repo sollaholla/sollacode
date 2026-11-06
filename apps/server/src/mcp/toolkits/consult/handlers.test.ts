@@ -42,6 +42,7 @@ import {
 } from "../history/ThreadHistoryQuery.ts";
 import {
   type ConsultAskLog,
+  type ConsultWaitRegistry,
   consultAs,
   handleRemoteConsult,
   handleWorkspaceConsult,
@@ -343,9 +344,11 @@ const consult = (
     readonly caller?: ThreadId;
     readonly capabilities?: Set<McpInvocationContext.McpCapability>;
     readonly askLog?: ConsultAskLog;
+    /** Chats blocked in a waiting ask right now; defaults to nobody waiting. */
+    readonly waits?: ConsultWaitRegistry;
   } = {},
 ) =>
-  handleWorkspaceConsult(input, options.askLog ?? new Map()).pipe(
+  handleWorkspaceConsult(input, options.askLog ?? new Map(), options.waits ?? new Map()).pipe(
     Effect.provideService(
       McpInvocationContext.McpInvocationContext,
       invocation(
@@ -376,6 +379,10 @@ const ask = (threadId: ThreadId, waitMs = 0): WorkspaceConsultInput => ({
   question: "Does Example Studio gate exports?",
   waitMs,
 });
+
+/** A registry where each of these chats is blocked in one live waiting ask. */
+const waiting = (...threadIds: ReadonlyArray<ThreadId>): ConsultWaitRegistry =>
+  new Map(threadIds.map((threadId) => [threadId, 1]));
 
 it.effect("refuses a call without the collaboration capability", () =>
   Effect.gen(function* () {
@@ -560,12 +567,26 @@ it.effect("refuses Agent Builder, delegated-worker and orchestrator targets", ()
 
 it.effect("refuses to ask back a chat that is waiting on this one", () =>
   Effect.gen(function* () {
-    // Export review asked Scout; Scout asking Export review now would loop.
+    // Export review asked Scout and is blocked on the reply; Scout asking
+    // Export review back now would loop.
     const { commands, layer } = makeHarness({ senders: { [agentThreadId]: medicalThreadId } });
-    const error = yield* Effect.flip(consult(ask(medicalThreadId), layer));
+    const error = yield* Effect.flip(
+      consult(ask(medicalThreadId), layer, { waits: waiting(medicalThreadId) }),
+    );
     assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
     assert.include(error.message, "waiting on this chat's answer");
     assert.deepStrictEqual(commands, []);
+  }),
+);
+
+it.effect("a sender that is no longer waiting can be asked back", () =>
+  Effect.gen(function* () {
+    // Export review once messaged Scout (send-only, or its wait has returned):
+    // nothing is blocked, so Scout may now put its own question to it.
+    const { commands, layer } = makeHarness({ senders: { [agentThreadId]: medicalThreadId } });
+    const result = yield* consult(ask(medicalThreadId), layer);
+    assert.strictEqual(result.action, "ask");
+    assert.strictEqual(startedMessage(commands).senderThreadId, agentThreadId);
   }),
 );
 
@@ -577,24 +598,25 @@ it.effect("refuses to ask back a chat whose question was steered into this one's
       threads: [threadShell(), notesThreadShell, agentThreadShell],
       senders: { [agentThreadId]: [ORCHESTRATOR_THREAD_ID, notesThreadId] },
     });
-    const error = yield* Effect.flip(consult(ask(notesThreadId), layer));
+    const waits = waiting(notesThreadId);
+    const error = yield* Effect.flip(consult(ask(notesThreadId), layer, { waits }));
     assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
     assert.include(error.message, "waiting on this chat's answer");
     assert.deepStrictEqual(commands, []);
 
     // Any other conversation is still fine.
-    yield* consult(ask(medicalThreadId), layer);
+    yield* consult(ask(medicalThreadId), layer, { waits });
     assert.strictEqual(startedMessage(commands).senderThreadId, agentThreadId);
   }),
 );
 
-it.effect("counts depth through every chat that reached this one's work", () =>
+it.effect("counts depth through every waiting chat that reached this one's work", () =>
   Effect.gen(function* () {
     const first = ThreadId.make("thread-first");
     const second = ThreadId.make("thread-second");
     const third = ThreadId.make("thread-third");
     // The person's own sender is shallow, but a steered question came from
-    // a chat that is itself two chats deep.
+    // a chat that is itself two waiting chats deep.
     const { commands, layer } = makeHarness({
       senders: {
         [agentThreadId]: [ORCHESTRATOR_THREAD_ID, third],
@@ -602,14 +624,16 @@ it.effect("counts depth through every chat that reached this one's work", () =>
         [second]: first,
       },
     });
-    const error = yield* Effect.flip(consult(ask(medicalThreadId), layer));
+    const error = yield* Effect.flip(
+      consult(ask(medicalThreadId), layer, { waits: waiting(first, second, third) }),
+    );
     assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
     assert.include(error.message, "already 3 chats deep");
     assert.deepStrictEqual(commands, []);
   }),
 );
 
-it.effect("refuses a request that has already passed through three chats", () =>
+it.effect("refuses a request with three chats still waiting along its chain", () =>
   Effect.gen(function* () {
     const first = ThreadId.make("thread-first");
     const second = ThreadId.make("thread-second");
@@ -617,7 +641,9 @@ it.effect("refuses a request that has already passed through three chats", () =>
     const deep = makeHarness({
       senders: { [agentThreadId]: third, [third]: second, [second]: first },
     });
-    const error = yield* Effect.flip(consult(ask(medicalThreadId), deep.layer));
+    const error = yield* Effect.flip(
+      consult(ask(medicalThreadId), deep.layer, { waits: waiting(first, second, third) }),
+    );
     assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
     assert.include(error.message, "already 3 chats deep");
     assert.deepStrictEqual(deep.commands, []);
@@ -626,7 +652,42 @@ it.effect("refuses a request that has already passed through three chats", () =>
     const shallow = makeHarness({
       senders: { [agentThreadId]: second, [second]: first, [first]: ORCHESTRATOR_THREAD_ID },
     });
-    const result = yield* consult(ask(medicalThreadId), shallow.layer);
+    const result = yield* consult(ask(medicalThreadId), shallow.layer, {
+      waits: waiting(first, second),
+    });
+    assert.strictEqual(result.action, "ask");
+  }),
+);
+
+it.effect("a chain nobody is waiting on does not count toward the relay limit", () =>
+  Effect.gen(function* () {
+    const first = ThreadId.make("thread-first");
+    const second = ThreadId.make("thread-second");
+    const third = ThreadId.make("thread-third");
+    // A long-running chat's work was reached by three chats over time, but
+    // every wait has returned (or they only ever sent): it may still ask.
+    const { commands, layer } = makeHarness({
+      senders: { [agentThreadId]: third, [third]: second, [second]: first },
+    });
+    const result = yield* consult(ask(medicalThreadId), layer);
+    assert.strictEqual(result.action, "ask");
+    assert.strictEqual(startedMessage(commands).senderThreadId, agentThreadId);
+  }),
+);
+
+it.effect("a break in the waiting chain stops the count there", () =>
+  Effect.gen(function* () {
+    const first = ThreadId.make("thread-first");
+    const second = ThreadId.make("thread-second");
+    const third = ThreadId.make("thread-third");
+    // first and second are blocked, but third's own wait has returned, so
+    // nothing upstream of third hangs on this chat's answer.
+    const { layer } = makeHarness({
+      senders: { [agentThreadId]: third, [third]: second, [second]: first },
+    });
+    const result = yield* consult(ask(medicalThreadId), layer, {
+      waits: waiting(first, second),
+    });
     assert.strictEqual(result.action, "ask");
   }),
 );
@@ -966,6 +1027,49 @@ it.effect("hands back the thread to poll once the wait runs out", () =>
   }),
 );
 
+it.effect("a waiting ask marks its sender as blocked, and only while it waits", () =>
+  Effect.gen(function* () {
+    const waits: ConsultWaitRegistry = new Map();
+    const openWaitsPerCheck: Array<number> = [];
+    const firstWaitedCheck = yield* Deferred.make<void>();
+    const { layer } = makeHarness({
+      shellById: threadShell({ latestTurn: turn("turn-2", "running") }),
+      onReplyCheck: Effect.sync(() => {
+        openWaitsPerCheck.push(waits.get(agentThreadId) ?? 0);
+      }).pipe(Effect.andThen(Deferred.succeed(firstWaitedCheck, undefined)), Effect.asVoid),
+    });
+    const asking = yield* Effect.forkChild(
+      consultAsk(ask(medicalThreadId, 5_000), layer, { waits }),
+    );
+    yield* Deferred.await(firstWaitedCheck);
+    yield* TestClock.adjust("5 seconds");
+    yield* Fiber.join(asking);
+    // The reply check inside the wait saw this chat registered as blocked;
+    // once the wait ran out, nothing hangs on it any more.
+    assert.strictEqual(openWaitsPerCheck.at(-1), 1);
+    assert.strictEqual(waits.size, 0);
+  }),
+);
+
+it.effect("a send-only ask never marks its sender as waiting", () =>
+  Effect.gen(function* () {
+    const waits: ConsultWaitRegistry = new Map();
+    const sizesDuringReplyCheck: Array<number> = [];
+    const { layer } = makeHarness({
+      shellById: threadShell({ latestTurn: turn("turn-2", "running") }),
+      onReplyCheck: Effect.sync(() => {
+        sizesDuringReplyCheck.push(waits.size);
+      }),
+    });
+    const result = yield* consultAsk(ask(medicalThreadId, 0), layer, { waits });
+    assert.strictEqual(result.answered, false);
+    // However often the asked thread was read, nothing was ever registered.
+    assert.isAbove(sizesDuringReplyCheck.length, 0);
+    assert.isTrue(sizesDuringReplyCheck.every((size) => size === 0));
+    assert.strictEqual(waits.size, 0);
+  }),
+);
+
 // ── Between computers ───────────────────────────────────────────────
 
 const decodeRemoteRequest = Schema.decodeUnknownSync(RemoteConsultRequest);
@@ -1020,7 +1124,8 @@ const fromRemote = (
   caller: RemoteConsultCaller,
   layer: Layer.Layer<ConsultServices>,
   askLog: ConsultAskLog = new Map(),
-) => handleRemoteConsult({ input, caller }, askLog).pipe(Effect.provide(layer));
+  waits: ConsultWaitRegistry = new Map(),
+) => handleRemoteConsult({ input, caller }, askLog, waits).pipe(Effect.provide(layer));
 
 it.effect("list_threads adds every connected computer's chats, labelled by computer", () =>
   Effect.gen(function* () {
@@ -1209,6 +1314,7 @@ it.effect("an ask says who is asking and how far the request has come", () =>
     const result = yield* consultAnywhere(
       { ...ask(remoteThreadId), environmentId: windowsEnvironmentId },
       layer,
+      { waits: waiting(senderOnWindows) },
     );
     assert.strictEqual(result.environmentId, windowsEnvironmentId);
     const { caller } = sentBody(remoteRequests[0]!);
@@ -1219,6 +1325,12 @@ it.effect("an ask says who is asking and how far the request has come", () =>
     // The Windows chat it is answering, plus the one chat already behind that.
     assert.strictEqual(caller.upstreamDepth, 2);
     assert.deepStrictEqual(caller.waitingThreadIds, [remoteThreadId]);
+
+    // Once that chat's wait has returned, the request carries no depth at all.
+    yield* consultAnywhere({ ...ask(remoteThreadId), environmentId: windowsEnvironmentId }, layer);
+    const settled = sentBody(remoteRequests[1]!).caller;
+    assert.strictEqual(settled.upstreamDepth, 0);
+    assert.deepStrictEqual(settled.waitingThreadIds, []);
   }),
 );
 
@@ -1400,14 +1512,50 @@ it.effect("the relay limit counts chats on the other computer", () =>
   }),
 );
 
-it.effect("depth carried in by another computer counts on this one", () =>
+it.effect("depth carried in by another computer counts while its chat still waits", () =>
   Effect.gen(function* () {
-    const { layer } = makeHarness({
-      senders: { [agentThreadId]: makeRemoteThreadId(windowsEnvironmentId, remoteThreadId, 2) },
-    });
-    const error = yield* Effect.flip(consult(ask(medicalThreadId), layer));
+    const senderOnWindows = makeRemoteThreadId(windowsEnvironmentId, remoteThreadId, 2);
+    const { layer } = makeHarness({ senders: { [agentThreadId]: senderOnWindows } });
+    const error = yield* Effect.flip(
+      consult(ask(medicalThreadId), layer, { waits: waiting(senderOnWindows) }),
+    );
     assert.strictEqual(error._tag, "WorkspaceConsultRefusedError");
     assert.match(error.message, /3 chats deep/);
+
+    // Its wait has returned: the chain it carried no longer hangs on this chat.
+    const result = yield* consult(ask(medicalThreadId), layer);
+    assert.strictEqual(result.action, "ask");
+  }),
+);
+
+it.effect("a waiting ask from another computer registers its remote sender", () =>
+  Effect.gen(function* () {
+    const waits: ConsultWaitRegistry = new Map();
+    // The sender id its message records, carried depth included, so a walk
+    // of the asked thread's senders finds the same key.
+    const senderOnWindows = makeRemoteThreadId(windowsEnvironmentId, remoteThreadId, 1);
+    const openWaitsPerCheck: Array<number> = [];
+    const firstCheck = yield* Deferred.make<void>();
+    const { layer } = makeHarness({
+      shellById: threadShell({ latestTurn: turn("turn-2", "running") }),
+      onReplyCheck: Effect.sync(() => {
+        openWaitsPerCheck.push(waits.get(senderOnWindows) ?? 0);
+      }).pipe(Effect.andThen(Deferred.succeed(firstCheck, undefined)), Effect.asVoid),
+    });
+    const asking = yield* Effect.forkChild(
+      fromRemote(
+        ask(medicalThreadId, 5_000),
+        remoteCaller({ upstreamDepth: 1 }),
+        layer,
+        new Map(),
+        waits,
+      ),
+    );
+    yield* Deferred.await(firstCheck);
+    yield* TestClock.adjust("5 seconds");
+    yield* Fiber.join(asking);
+    assert.strictEqual(openWaitsPerCheck.at(-1), 1);
+    assert.strictEqual(waits.size, 0);
   }),
 );
 

@@ -59,7 +59,7 @@ const MAX_MESSAGE_LIMIT = 50;
 const REPLY_READ_LIMIT = 20;
 /** Replies are for reading, not archiving: keep them well inside a tool result. */
 const MAX_MESSAGE_CHARS = 4_000;
-/** Chats one request may already have passed through before the next must answer itself. */
+/** Chats that may be blocked waiting on one request before the next must answer itself. */
 const MAX_RELAY_DEPTH = 3;
 /** Longest sender chain walked looking for the person who started a request. */
 const MAX_CHAIN_HOPS = 4;
@@ -93,6 +93,23 @@ const COMPUTER_CALL_TIMEOUT_MS = 15_000;
  */
 export type ConsultAskLog = Map<ThreadId, ReadonlyArray<number>>;
 
+/**
+ * Chats currently blocked in a waiting `ask`, by the sender id their message
+ * records, counting overlapping waits. A wait blocks the sender's turn inside
+ * this very server process (for at most {@link MAX_WAIT_MS}), so being absent
+ * here means nobody is waiting: the entry is added before the question is
+ * dispatched and removed when the reply lands, the wait runs out, or the
+ * asking fiber dies. A send-only ask (`waitMs` 0) never registers.
+ */
+export type ConsultWaitRegistry = Map<ThreadId, number>;
+
+/**
+ * The one registry this server process keeps. Unlike the ask logs, which keep
+ * separate budgets per entry point, every entry point must share this: a walk
+ * answering a remote or voice call has to see a wait a local chat registered.
+ */
+export const processConsultWaits: ConsultWaitRegistry = new Map();
+
 const truncate = (text: string): string =>
   text.length <= MAX_MESSAGE_CHARS ? text : `${text.slice(0, MAX_MESSAGE_CHARS)}…[truncated]`;
 
@@ -122,9 +139,11 @@ const failed = (operation: string) => (cause: unknown) =>
   });
 
 interface ConsultUpstream {
-  /** Every chat waiting on the caller's current work. */
+  /** Chats on an unbroken chain of live waits behind the caller's current work. */
   readonly chats: ReadonlySet<ThreadId>;
-  /** The longest chain of chats behind that work. */
+  /** Every chat the walk saw, waiting or not: who the work answers to. */
+  readonly senders: ReadonlySet<ThreadId>;
+  /** The longest chain of chats each still waiting on the next one's answer. */
   readonly depth: number;
   /** Whether delegated work reached it. */
   readonly delegated: boolean;
@@ -159,9 +178,17 @@ type ConsultActor =
  * sender on another computer ends it too, adding how deep the request already
  * was when it left there; chats further back on that computer are not known
  * here, so only the depth limit covers them.
+ *
+ * Every sender is walked and reported (`senders`, for attribution), but only
+ * senders blocked in a live waiting `ask` — reached through an unbroken chain
+ * of such waits — count toward `depth` and the ask-back guard (`chats`). A
+ * send-only message, and an ask whose wait has since returned, leave their
+ * trace in the work's history without holding the chain open, so a
+ * long-running chat recovers its right to ask the moment nobody waits on it.
  */
 const readLocalUpstream = Effect.fn("WorkspaceConsult.readUpstream")(function* (
   callerThreadId: ThreadId,
+  waits: ConsultWaitRegistry,
 ) {
   const projection = yield* ProjectionSnapshotQuery;
   const getTurnTrigger = projection.getTurnTrigger;
@@ -186,36 +213,50 @@ const readLocalUpstream = Effect.fn("WorkspaceConsult.readUpstream")(function* (
         }),
       ),
     );
+  const isWaiting = (id: ThreadId) => (waits.get(id) ?? 0) > 0;
   const own = yield* readSenders(callerThreadId);
-  const upstream = new Set<ThreadId>();
+  const seen = new Set<ThreadId>();
+  const waiting = new Set<ThreadId>();
   let depth = 0;
   let carriedDepth = 0;
+  let level = 0;
   let lookups = 0;
-  let frontier = own.senders;
-  while (depth < MAX_CHAIN_HOPS) {
-    const next = new Set(
-      frontier.filter(
-        (id) => !isOrchestratorThreadId(id) && id !== callerThreadId && !upstream.has(id),
-      ),
-    );
+  // Each hop knows whether every hop between it and the caller is a live wait.
+  let frontier: ReadonlyArray<{ readonly id: ThreadId; readonly chained: boolean }> =
+    own.senders.map((id) => ({ id, chained: true }));
+  while (level < MAX_CHAIN_HOPS) {
+    const next = new Map<ThreadId, boolean>();
+    for (const hop of frontier) {
+      if (isOrchestratorThreadId(hop.id) || hop.id === callerThreadId || seen.has(hop.id)) continue;
+      next.set(hop.id, (next.get(hop.id) ?? false) || (hop.chained && isWaiting(hop.id)));
+    }
     if (next.size === 0) break;
-    depth += 1;
-    for (const id of next) upstream.add(id);
-    const nextFrontier: Array<ThreadId> = [];
-    for (const id of next) {
+    level += 1;
+    const nextFrontier: Array<{ readonly id: ThreadId; readonly chained: boolean }> = [];
+    for (const [id, chained] of next) {
+      seen.add(id);
+      if (chained) {
+        waiting.add(id);
+        depth = level;
+      }
       const remote = parseRemoteThreadId(id);
       if (remote !== null) {
-        carriedDepth = Math.max(carriedDepth, depth + remote.upstreamDepth);
+        // Chats further back on the other computer were waiting when it asked;
+        // they count only while its own wait here is still open.
+        if (chained) carriedDepth = Math.max(carriedDepth, level + remote.upstreamDepth);
         continue;
       }
-      if (depth >= MAX_CHAIN_HOPS || lookups >= MAX_CHAIN_LOOKUPS) break;
+      if (level >= MAX_CHAIN_HOPS || lookups >= MAX_CHAIN_LOOKUPS) break;
       lookups += 1;
-      nextFrontier.push(...(yield* readSenders(id)).senders);
+      for (const sender of (yield* readSenders(id)).senders) {
+        nextFrontier.push({ id: sender, chained });
+      }
     }
     frontier = nextFrontier;
   }
   return {
-    chats: upstream,
+    chats: waiting,
+    senders: seen,
     depth: Math.max(depth, carriedDepth),
     delegated: own.delegated,
   } satisfies ConsultUpstream;
@@ -238,6 +279,7 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
   actor: ConsultActor,
   input: WorkspaceConsultInput,
   askLog: ConsultAskLog,
+  waits: ConsultWaitRegistry,
 ) {
   const store = yield* VmAgentStore;
   const projection = yield* ProjectionSnapshotQuery;
@@ -336,7 +378,9 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
   });
 
   const readUpstream = () =>
-    actor.kind === "remote" ? Effect.succeed(actor.upstream) : readLocalUpstream(actor.threadId);
+    actor.kind === "remote"
+      ? Effect.succeed(actor.upstream)
+      : readLocalUpstream(actor.threadId, waits);
 
   switch (input.action) {
     case "list_projects": {
@@ -545,7 +589,7 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
       // approval rules treat the work the same as if it had come directly.
       const relayedFrom =
         actor.kind === "local" && isOrchestratorThreadId(actor.threadId)
-          ? [...upstream.chats].find((id) => parseRemoteThreadId(id) !== null)
+          ? [...upstream.senders].find((id) => parseRemoteThreadId(id) !== null)
           : undefined;
       const senderThreadId =
         actor.kind === "remote" ? actor.senderThreadId : (relayedFrom ?? actor.threadId);
@@ -615,8 +659,11 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
         destination = { kind: "project", project };
       }
 
-      // Loop guard: a request travels at most MAX_RELAY_DEPTH chats, and never
-      // back into a chat that is waiting on it (A asking B while answering B).
+      // Loop guard: at most MAX_RELAY_DEPTH chats may be blocked waiting along
+      // one chain, and a chat never asks back one that is waiting on it
+      // (A asking B while answering B). Only live waits count: a sender whose
+      // ask was send-only, or whose wait has already returned, holds nothing
+      // open, so a long-running chat is not locked out by its own history.
       if (destination.kind === "thread" && upstream.chats.has(destination.thread.id)) {
         return yield* new WorkspaceConsultRefusedError({
           reason: `"${destination.thread.title}" is waiting on this chat's answer, so asking it back would loop. Reply in this chat instead.`,
@@ -624,7 +671,7 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
       }
       if (upstream.depth >= MAX_RELAY_DEPTH) {
         return yield* new WorkspaceConsultRefusedError({
-          reason: `This request is already ${upstream.depth} chats deep. Answer with what you have instead of asking another chat.`,
+          reason: `This request is already ${upstream.depth} chats deep, each waiting on the next. Answer with what you have instead of asking another chat.`,
         });
       }
 
@@ -643,163 +690,187 @@ const runConsult = Effect.fn("WorkspaceConsult.run")(function* (
       }
       askLog.set(actor.threadId, [...recentAsks, nowMs]);
 
-      const askedAt = DateTime.formatIso(now);
-      let targetId: ThreadId;
-      // The turn already on the thread before we ask. Its reply answered an
-      // earlier message, unless it was running and our question joined it.
-      let priorTurnId: TurnId | null = null;
-      let priorTurnWasRunning = false;
-      if (destination.kind === "thread") {
-        const target = destination.thread;
-        targetId = target.id;
-        priorTurnId = target.latestTurn?.turnId ?? null;
-        priorTurnWasRunning = target.latestTurn?.state === "running";
-        yield* engine
-          .dispatch({
-            type: "thread.turn.start",
-            commandId: CommandId.make(yield* randomId),
-            threadId: targetId,
-            message: {
-              messageId: MessageId.make(yield* randomId),
-              role: "user",
-              senderThreadId,
-              senderThreadTitle,
-              text: question,
-              attachments: [],
-            },
-            runtimeMode: target.runtimeMode,
-            interactionMode: target.interactionMode,
-            createdAt: askedAt,
-          })
-          .pipe(Effect.mapError(failed("asking the conversation")));
-      } else {
-        const project = destination.project;
-        // Inherit the project's own default model rather than the caller's:
-        // the thread belongs to that project and should behave like its others.
-        const modelSelection =
-          project.defaultModelSelection ?? shell.threads[0]?.modelSelection ?? null;
-        if (modelSelection === null) {
-          return yield* new WorkspaceConsultFailedError({
-            operation: "choosing a model for the new conversation",
-            detail: "the project has no default model",
-          });
-        }
-        targetId = ThreadId.make(yield* randomId);
-        yield* engine
-          .dispatch({
-            type: "thread.create",
-            commandId: CommandId.make(yield* randomId),
-            threadId: targetId,
-            projectId: project.id,
-            title: input.title ?? titleFromQuestion(question),
-            createdByThreadId: actor.threadId,
-            // A chat on another computer has no browser here: the project's is used.
-            ...(actor.kind === "local"
-              ? { browserProfileThreadId: callerThread?.browserProfileThreadId ?? actor.threadId }
-              : {}),
-            modelSelection,
-            interactionMode: "default",
-            // `auto` rather than the app default `full-access`: a consulted
-            // thread must be able to investigate without a human approving each
-            // step (or `ask` would always time out), but a thread another chat
-            // opened in someone's real project should not silently receive the
-            // highest privilege tier.
-            runtimeMode: "auto",
-            branch: null,
-            worktreePath: null,
-            createdAt: askedAt,
-          })
-          .pipe(Effect.mapError(failed("opening a conversation")));
-        yield* engine
-          .dispatch({
-            type: "thread.turn.start",
-            commandId: CommandId.make(yield* randomId),
-            threadId: targetId,
-            message: {
-              messageId: MessageId.make(yield* randomId),
-              role: "user",
-              senderThreadId,
-              senderThreadTitle,
-              text: question,
-              attachments: [],
-            },
-            modelSelection,
-            titleSeed: input.title ?? titleFromQuestion(question),
-            runtimeMode: "auto",
-            interactionMode: "default",
-            createdAt: askedAt,
-          })
-          .pipe(Effect.mapError(failed("asking the question")));
-      }
-
-      /**
-       * One look at the asked thread: `some(text)` once its reply has settled,
-       * `some(null)` when it settled with nothing to say, `none` while it is
-       * still working. A reply counts once the turn carrying it settles and it
-       * was written after the question, so a question steered into a running
-       * turn is answered by that turn.
-       */
-      const checkReply = Effect.gen(function* () {
-        const current = yield* projection
-          .getThreadShellById(targetId)
-          .pipe(Effect.mapError(failed("waiting for the reply")));
-        if (Option.isNone(current)) return Option.some(null);
-        const latest = current.value.latestTurn;
-        if (latest === null || latest.state === "running") return Option.none();
-        // The prior turn carries the answer only when it was running when we
-        // asked and finished normally; an interrupted one handed our question
-        // to a turn of its own.
-        const priorTurn = latest.turnId === priorTurnId;
-        if (priorTurn && (!priorTurnWasRunning || latest.state !== "completed")) {
-          return Option.none();
-        }
-        const detail = yield* projection
-          .getThreadDetailById(targetId, { messageLimit: REPLY_READ_LIMIT, activityLimit: 0 })
-          .pipe(Effect.mapError(failed("reading the reply")));
-        if (Option.isNone(detail)) return Option.none();
-        const replies = detail.value.messages.filter(
-          (message) =>
-            message.role === "assistant" &&
-            !message.streaming &&
-            message.text.trim().length > 0 &&
-            message.createdAt >= askedAt,
-        );
-        const reply =
-          replies.findLast((message) => message.turnId === latest.turnId) ?? replies.at(-1);
-        if (reply) return Option.some(truncate(reply.text));
-        // Settled with nothing to say (interrupted, errored): stop waiting.
-        if (!priorTurn && (latest.state === "error" || latest.state === "interrupted")) {
-          return Option.some(null);
-        }
-        return Option.none();
-      });
-
       // Wait for the reply, but never indefinitely: the caller gets the thread
-      // id either way and can poll `read_thread`. Each event on the thread
-      // wakes one re-check; nothing polls on a timer.
+      // id either way and can poll `read_thread`.
       const waitMs = Math.min(
         MAX_WAIT_MS,
         Math.max(0, Math.trunc(input.waitMs ?? DEFAULT_WAIT_MS)),
       );
-      const awaitReply = Effect.gen(function* () {
-        const wake = yield* Queue.sliding<void>(1);
-        // Subscribe before the first check so a reply landing in between still wakes us.
-        yield* engine.streamDomainEvents.pipe(
-          Stream.filter((event) => wakesReplyWait(event, targetId)),
-          Stream.runForEach(() => Queue.offer(wake, undefined)),
-          Effect.forkScoped({ startImmediately: true }),
-        );
-        const first = yield* checkReply;
-        if (Option.isSome(first)) return first;
-        return yield* Effect.gen(function* () {
-          while (true) {
-            yield* Queue.take(wake);
-            const next = yield* checkReply;
-            if (Option.isSome(next)) return next.value;
+      // A waiting ask blocks this chat's turn right here in this process, so
+      // the block is registered where every depth walk can see it, under the
+      // sender id the question's message records, and released however the
+      // wait ends: a reply, the timeout, or the asking fiber dying. A
+      // send-only ask registers nothing.
+      const registeredAsWaiting = <A, E, R>(self: Effect.Effect<A, E, R>) =>
+        waitMs === 0
+          ? self
+          : Effect.suspend(() => {
+              waits.set(senderThreadId, (waits.get(senderThreadId) ?? 0) + 1);
+              return self;
+            }).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  const open = waits.get(senderThreadId) ?? 0;
+                  if (open > 1) waits.set(senderThreadId, open - 1);
+                  else waits.delete(senderThreadId);
+                }),
+              ),
+            );
+      const askAndAwaitReply = Effect.gen(function* () {
+        const askedAt = DateTime.formatIso(now);
+        let targetId: ThreadId;
+        // The turn already on the thread before we ask. Its reply answered an
+        // earlier message, unless it was running and our question joined it.
+        let priorTurnId: TurnId | null = null;
+        let priorTurnWasRunning = false;
+        if (destination.kind === "thread") {
+          const target = destination.thread;
+          targetId = target.id;
+          priorTurnId = target.latestTurn?.turnId ?? null;
+          priorTurnWasRunning = target.latestTurn?.state === "running";
+          yield* engine
+            .dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make(yield* randomId),
+              threadId: targetId,
+              message: {
+                messageId: MessageId.make(yield* randomId),
+                role: "user",
+                senderThreadId,
+                senderThreadTitle,
+                text: question,
+                attachments: [],
+              },
+              runtimeMode: target.runtimeMode,
+              interactionMode: target.interactionMode,
+              createdAt: askedAt,
+            })
+            .pipe(Effect.mapError(failed("asking the conversation")));
+        } else {
+          const project = destination.project;
+          // Inherit the project's own default model rather than the caller's:
+          // the thread belongs to that project and should behave like its others.
+          const modelSelection =
+            project.defaultModelSelection ?? shell.threads[0]?.modelSelection ?? null;
+          if (modelSelection === null) {
+            return yield* new WorkspaceConsultFailedError({
+              operation: "choosing a model for the new conversation",
+              detail: "the project has no default model",
+            });
           }
-        }).pipe(Effect.timeoutOption(Duration.millis(waitMs)));
-      }).pipe(Effect.scoped);
-      const outcome = waitMs === 0 ? yield* checkReply : yield* awaitReply;
+          targetId = ThreadId.make(yield* randomId);
+          yield* engine
+            .dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(yield* randomId),
+              threadId: targetId,
+              projectId: project.id,
+              title: input.title ?? titleFromQuestion(question),
+              createdByThreadId: actor.threadId,
+              // A chat on another computer has no browser here: the project's is used.
+              ...(actor.kind === "local"
+                ? { browserProfileThreadId: callerThread?.browserProfileThreadId ?? actor.threadId }
+                : {}),
+              modelSelection,
+              interactionMode: "default",
+              // `auto` rather than the app default `full-access`: a consulted
+              // thread must be able to investigate without a human approving each
+              // step (or `ask` would always time out), but a thread another chat
+              // opened in someone's real project should not silently receive the
+              // highest privilege tier.
+              runtimeMode: "auto",
+              branch: null,
+              worktreePath: null,
+              createdAt: askedAt,
+            })
+            .pipe(Effect.mapError(failed("opening a conversation")));
+          yield* engine
+            .dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make(yield* randomId),
+              threadId: targetId,
+              message: {
+                messageId: MessageId.make(yield* randomId),
+                role: "user",
+                senderThreadId,
+                senderThreadTitle,
+                text: question,
+                attachments: [],
+              },
+              modelSelection,
+              titleSeed: input.title ?? titleFromQuestion(question),
+              runtimeMode: "auto",
+              interactionMode: "default",
+              createdAt: askedAt,
+            })
+            .pipe(Effect.mapError(failed("asking the question")));
+        }
+
+        /**
+         * One look at the asked thread: `some(text)` once its reply has settled,
+         * `some(null)` when it settled with nothing to say, `none` while it is
+         * still working. A reply counts once the turn carrying it settles and it
+         * was written after the question, so a question steered into a running
+         * turn is answered by that turn.
+         */
+        const checkReply = Effect.gen(function* () {
+          const current = yield* projection
+            .getThreadShellById(targetId)
+            .pipe(Effect.mapError(failed("waiting for the reply")));
+          if (Option.isNone(current)) return Option.some(null);
+          const latest = current.value.latestTurn;
+          if (latest === null || latest.state === "running") return Option.none();
+          // The prior turn carries the answer only when it was running when we
+          // asked and finished normally; an interrupted one handed our question
+          // to a turn of its own.
+          const priorTurn = latest.turnId === priorTurnId;
+          if (priorTurn && (!priorTurnWasRunning || latest.state !== "completed")) {
+            return Option.none();
+          }
+          const detail = yield* projection
+            .getThreadDetailById(targetId, { messageLimit: REPLY_READ_LIMIT, activityLimit: 0 })
+            .pipe(Effect.mapError(failed("reading the reply")));
+          if (Option.isNone(detail)) return Option.none();
+          const replies = detail.value.messages.filter(
+            (message) =>
+              message.role === "assistant" &&
+              !message.streaming &&
+              message.text.trim().length > 0 &&
+              message.createdAt >= askedAt,
+          );
+          const reply =
+            replies.findLast((message) => message.turnId === latest.turnId) ?? replies.at(-1);
+          if (reply) return Option.some(truncate(reply.text));
+          // Settled with nothing to say (interrupted, errored): stop waiting.
+          if (!priorTurn && (latest.state === "error" || latest.state === "interrupted")) {
+            return Option.some(null);
+          }
+          return Option.none();
+        });
+
+        // Each event on the thread wakes one re-check; nothing polls on a timer.
+        const awaitReply = Effect.gen(function* () {
+          const wake = yield* Queue.sliding<void>(1);
+          // Subscribe before the first check so a reply landing in between still wakes us.
+          yield* engine.streamDomainEvents.pipe(
+            Stream.filter((event) => wakesReplyWait(event, targetId)),
+            Stream.runForEach(() => Queue.offer(wake, undefined)),
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          const first = yield* checkReply;
+          if (Option.isSome(first)) return first;
+          return yield* Effect.gen(function* () {
+            while (true) {
+              yield* Queue.take(wake);
+              const next = yield* checkReply;
+              if (Option.isSome(next)) return next.value;
+            }
+          }).pipe(Effect.timeoutOption(Duration.millis(waitMs)));
+        }).pipe(Effect.scoped);
+        const outcome = waitMs === 0 ? yield* checkReply : yield* awaitReply;
+        return { targetId, outcome };
+      });
+      const { targetId, outcome } = yield* registeredAsWaiting(askAndAwaitReply);
       const answer = Option.getOrNull(outcome);
 
       const where = destination.kind === "project" ? "a new conversation" : "that conversation";
@@ -827,6 +898,7 @@ const callComputerAs = Effect.fn("WorkspaceConsult.callComputerAs")(function* (
   source: RelayedEnvironmentSource,
   input: WorkspaceConsultInput,
   timeoutMs: number,
+  waits: ConsultWaitRegistry,
 ) {
   const environment = yield* ServerEnvironment;
   const descriptor = yield* environment.getDescriptor;
@@ -855,7 +927,7 @@ const callComputerAs = Effect.fn("WorkspaceConsult.callComputerAs")(function* (
     getAgentByThreadId: store.getByThreadId,
     getThreadShellById: projection.getThreadShellById,
   }).pipe(Effect.mapError(failed("resolving the calling chat")));
-  const upstream = yield* readLocalUpstream(callerThreadId);
+  const upstream = yield* readLocalUpstream(callerThreadId, waits);
   const caller: RemoteConsultCaller = {
     ...base,
     label: senderLabelOf(
@@ -907,6 +979,7 @@ const encodeSearchCursor = Schema.encodeSync(SearchCursor);
 export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(function* (
   input: WorkspaceConsultInput,
   askLog: ConsultAskLog,
+  waits: ConsultWaitRegistry = processConsultWaits,
 ) {
   const invocation = yield* McpInvocationContext.McpInvocationContext;
   if (!invocation.capabilities.has("collaboration")) {
@@ -920,6 +993,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
     },
     input,
     askLog,
+    waits,
   );
 });
 
@@ -932,6 +1006,7 @@ export const consultAs = Effect.fn("WorkspaceConsult.as")(function* (
   invocation: ConsultCaller,
   input: WorkspaceConsultInput,
   askLog: ConsultAskLog,
+  waits: ConsultWaitRegistry = processConsultWaits,
 ) {
   const relays = yield* RelayedEnvironments;
   const { managesAgents } = invocation;
@@ -947,6 +1022,7 @@ export const consultAs = Effect.fn("WorkspaceConsult.as")(function* (
       source,
       call,
       timeoutMs,
+      waits,
     );
   const tagged = (source: RelayedEnvironmentSource, result: WorkspaceConsultResult) => ({
     ...result,
@@ -987,7 +1063,7 @@ export const consultAs = Effect.fn("WorkspaceConsult.as")(function* (
     ...(invocation.readsEverything === true ? { readsEverything: true } : {}),
   };
   // Named this one: nothing else is consulted.
-  if (input.environmentId !== undefined) return yield* runConsult(actor, input, askLog);
+  if (input.environmentId !== undefined) return yield* runConsult(actor, input, askLog, waits);
 
   if (input.action === "search_threads") {
     const { cursor, ...search } = input;
@@ -998,7 +1074,7 @@ export const consultAs = Effect.fn("WorkspaceConsult.as")(function* (
         : { ...search, cursor: resuming[key] };
     const wanted = (key: string) => resuming === null || resuming[key] !== undefined;
     const here: WorkspaceConsultResult = wanted(HERE_CURSOR)
-      ? yield* runConsult(actor, part(HERE_CURSOR), askLog)
+      ? yield* runConsult(actor, part(HERE_CURSOR), askLog, waits)
       : { action: "search_threads", status: "", matches: [] };
     const sources = (yield* relays.sources).filter((source) => wanted(source.environmentId));
     const answers = yield* Effect.forEach(
@@ -1039,7 +1115,7 @@ export const consultAs = Effect.fn("WorkspaceConsult.as")(function* (
   }
 
   if (input.action === "list_threads" || input.action === "list_projects") {
-    const here = yield* runConsult(actor, input, askLog);
+    const here = yield* runConsult(actor, input, askLog, waits);
     const sources = yield* relays.sources;
     if (sources.length === 0) return here;
     const answers = yield* Effect.forEach(
@@ -1091,7 +1167,7 @@ export const consultAs = Effect.fn("WorkspaceConsult.as")(function* (
     };
   }
 
-  return yield* runConsult(actor, input, askLog).pipe(
+  return yield* runConsult(actor, input, askLog, waits).pipe(
     Effect.catchTag("WorkspaceConsultNotFoundError", (notFound) =>
       Effect.gen(function* () {
         // Not here, so nothing was sent: safe to try the connected computers.
@@ -1129,6 +1205,7 @@ export const consultAs = Effect.fn("WorkspaceConsult.as")(function* (
 export const handleRemoteConsult = Effect.fn("WorkspaceConsult.handleRemote")(function* (
   request: RemoteConsultRequest,
   askLog: ConsultAskLog,
+  waits: ConsultWaitRegistry = processConsultWaits,
 ) {
   const environment = yield* ServerEnvironment;
   const { caller, input } = request;
@@ -1151,12 +1228,14 @@ export const handleRemoteConsult = Effect.fn("WorkspaceConsult.handleRemote")(fu
       label: `${caller.label.trim() || ANOTHER_CHAT_LABEL} (${caller.computer})`,
       upstream: {
         chats: new Set(caller.waitingThreadIds),
+        senders: new Set(caller.waitingThreadIds),
         depth: caller.upstreamDepth,
         delegated: caller.delegated,
       },
     },
     local,
     askLog,
+    waits,
   );
 });
 

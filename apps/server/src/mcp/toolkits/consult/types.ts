@@ -215,9 +215,9 @@ export const RemoteConsultCaller = Schema.Struct({
   threadId: ThreadId,
   /** The name the asked chat shows: the calling chat's title or its agent's name. */
   label: Schema.String,
-  /** How many chats this request had already passed through. */
+  /** How many chats were still blocked waiting on this request when it left. */
   upstreamDepth: Schema.Int,
-  /** Chats on this computer that are waiting on the caller, so asking one back would loop. */
+  /** Chats on this computer still waiting on the caller, so asking one back would loop. */
   waitingThreadIds: Schema.Array(ThreadId),
   /** Whether delegated work reached the caller, which may not open new conversations. */
   delegated: Schema.Boolean,

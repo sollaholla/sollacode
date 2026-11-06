@@ -57,8 +57,8 @@ Chats asking chats can loop, so the server refuses an `ask` that would:
 
 - reach the asking chat’s own family: the chat itself, its main chat, and every side chat of that main chat (for an agent’s side chats and workers, the agent’s own chat too). Those talk through `thread_collaboration` instead: `query_related_chat` reads one, and `message_related_chat` sends it a message without waiting for a reply, up to 20 in 10 minutes. A stopped agent's chat refuses those messages too.
 - reach the orchestrator, the Agent Builder, or a delegated worker’s chat. The one exception is [another computer's orchestrator](#having-another-computers-orchestrator-act).
-- reach a chat this one is answering for, directly or further up the chain (A asks B while answering a question from B).
-- pass one request along more than three times: you ask A, A asks B, B asks C, C asks D, and D has to answer itself. A message from you or the orchestrator starts a new chain.
+- reach a chat that is still waiting on this one's answer, directly or further up the chain (A asks B while answering a question from B). Once the asker's wait has returned — it got its reply, sent without waiting (`waitMs` 0), or its wait timed out — messaging it back is an ordinary message again.
+- leave more than three chats blocked waiting along one chain: you ask A and wait, A asks B and waits, B asks C and waits, and C has to answer itself. Only live waits count, so a send-only message or an ask already answered doesn't deepen the chain, and a long-running chat nobody is waiting on can always ask. A message from you or the orchestrator starts a new chain.
 - reach a stopped agent’s chat. An agent under your control still receives it, since you see it.
 - go past 20 asks from one chat in 10 minutes.
 - open a new chat when the asking chat already created 10 that aren’t archived, or when it is a delegated worker. A worker can still message existing chats.
