@@ -15,6 +15,7 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import { installDesktopIpcHandlers } from "../ipc/DesktopIpcHandlers.ts";
 import * as DesktopAppIdentity from "./DesktopAppIdentity.ts";
+import { QUIT_RUNNING_APP_ARGUMENT } from "./DesktopLifecycle.logic.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopMenuBar from "../window/DesktopMenuBar.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
@@ -254,6 +255,15 @@ const startup = Effect.gen(function* () {
   });
   const userDataPath = yield* appIdentity.resolveUserDataPath;
   yield* electronApp.setPath("userData", userDataPath);
+  if (environment.platform === "win32") {
+    // The lock is per user data folder, so it has to come after setPath. Without
+    // it the shortcut would start a second app beside the one in the tray.
+    const isOnlyCopy = yield* electronApp.requestSingleInstanceLock;
+    if (!isOnlyCopy || process.argv.includes(QUIT_RUNNING_APP_ARGUMENT)) {
+      yield* electronApp.exit(0);
+      return;
+    }
+  }
   yield* logStartupInfo("runtime logging configured", { logDir: environment.logDir });
   yield* desktopSettings.load;
 

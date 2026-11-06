@@ -21,9 +21,10 @@ import {
 } from "./DesktopMenuBar.logic.ts";
 
 /**
- * The bolt in the macOS menu bar. Closing the window only hides it, so this is
- * how the app stays visible and reachable while its chats keep working. Quitting
- * is a choice made here or with Cmd+Q. Other platforms have no menu bar item.
+ * The bolt in the macOS menu bar and the icon in the Windows tray. Closing the
+ * window only hides it, so this is how the app stays visible and reachable while
+ * its chats keep working. Quitting is a choice made here or from the app menu.
+ * Linux has neither.
  */
 export class DesktopMenuBar extends Context.Service<
   DesktopMenuBar,
@@ -91,18 +92,22 @@ export const make = Effect.gen(function* () {
   };
 
   const configure = Effect.gen(function* () {
-    if (environment.platform !== "darwin" || tray !== null) return;
-    const iconPath = yield* assets.resolveResourcePath(TEMPLATE_ICON_FILE);
+    const isMac = environment.platform === "darwin";
+    if ((!isMac && environment.platform !== "win32") || tray !== null) return;
+    const iconPath = isMac
+      ? yield* assets.resolveResourcePath(TEMPLATE_ICON_FILE)
+      : (yield* assets.iconPaths).ico;
     if (Option.isNone(iconPath)) {
       yield* logWarning("menu bar icon is missing");
       return;
     }
     const image = Electron.nativeImage.createFromPath(iconPath.value);
     // A template image is drawn by macOS in black or white to suit the bar.
-    image.setTemplateImage(true);
+    if (isMac) image.setTemplateImage(true);
     const created = new Electron.Tray(image);
     created.setToolTip(environment.displayName);
-    created.on("click", () => created.popUpContextMenu(menu()));
+    // On Windows a click on a tray icon opens the app; the menu is a right click.
+    created.on("click", () => (isMac ? created.popUpContextMenu(menu()) : openApp()));
     created.on("right-click", () => created.popUpContextMenu(menu()));
     tray = created;
   }).pipe(Effect.catchCause((cause) => logWarning("menu bar icon could not start", { cause })));
@@ -110,7 +115,8 @@ export const make = Effect.gen(function* () {
   const publishStats = (next: DesktopMenuBarStats) =>
     Effect.sync(() => {
       stats = next;
-      tray?.setTitle(menuBarTitle(next));
+      if (environment.platform === "darwin") tray?.setTitle(menuBarTitle(next));
+      else tray?.setToolTip(`${environment.displayName}\n${menuBarSummary(next)}`);
     });
 
   return { configure, publishStats };

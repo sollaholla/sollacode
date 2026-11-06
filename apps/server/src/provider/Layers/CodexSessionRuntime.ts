@@ -169,6 +169,17 @@ function elicitationHeader(propertyName: string, property: McpFormProperty): str
   return candidate.slice(0, 12) || "Confirm";
 }
 
+/** Codex asking to run an MCP tool, rather than the MCP server asking the person something. */
+export function isMcpToolApproval(payload: EffectCodexSchema.McpServerElicitationRequestParams) {
+  const meta = payload._meta;
+  return (
+    typeof meta === "object" &&
+    meta !== null &&
+    "codex_approval_kind" in meta &&
+    meta.codex_approval_kind === "mcp_tool_call"
+  );
+}
+
 export function mcpFormElicitationQuestions(
   payload: EffectCodexSchema.McpServerElicitationRequestParams,
 ): ReadonlyArray<EffectCodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion> | null {
@@ -555,6 +566,22 @@ function readResumeCursorFork(resumeCursor: ProviderSession["resumeCursor"]): bo
   return isCodexResumeCursorSchema(resumeCursor) && resumeCursor.fork === true;
 }
 
+/**
+ * Full access runs everything without a person answering. Codex's own "never"
+ * cannot do that: it refuses commands it rates dangerous, such as a recursive
+ * delete, because there is nobody to ask. So Codex asks here, and the session
+ * accepts each request itself. See `acceptsEveryRequest`.
+ */
+const FULL_ACCESS_APPROVAL_POLICY = {
+  granular: {
+    sandbox_approval: true,
+    rules: true,
+    mcp_elicitations: true,
+    skill_approval: true,
+    request_permissions: false,
+  },
+} satisfies EffectCodexSchema.V2ThreadStartParams__AskForApproval;
+
 function runtimeModeToThreadConfig(input: RuntimeMode): {
   readonly approvalPolicy: EffectCodexSchema.V2ThreadStartParams__AskForApproval;
   readonly sandbox: EffectCodexSchema.V2ThreadStartParams__SandboxMode;
@@ -584,7 +611,7 @@ function runtimeModeToThreadConfig(input: RuntimeMode): {
     case "full-access":
     default:
       return {
-        approvalPolicy: "never",
+        approvalPolicy: FULL_ACCESS_APPROVAL_POLICY,
         sandbox: "danger-full-access",
         approvalsReviewer: "user",
       };
@@ -1273,8 +1300,16 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
+    // The runtime mode is fixed for a session: changing it restarts the session.
+    const acceptsEveryRequest = options.runtimeMode === "full-access";
+
     yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
       Effect.gen(function* () {
+        if (acceptsEveryRequest) {
+          return {
+            decision: "accept",
+          } satisfies EffectCodexSchema.CommandExecutionRequestApprovalResponse;
+        }
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("command-approval-request"));
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
@@ -1331,6 +1366,11 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
       Effect.gen(function* () {
+        if (acceptsEveryRequest) {
+          return {
+            decision: "accept",
+          } satisfies EffectCodexSchema.FileChangeRequestApprovalResponse;
+        }
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("file-change-approval-request"),
         );
@@ -1439,6 +1479,12 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("mcpServer/elicitation/request", (payload) =>
       Effect.gen(function* () {
+        if (acceptsEveryRequest && isMcpToolApproval(payload)) {
+          return {
+            action: "accept" as const,
+            content: {},
+          } satisfies EffectCodexSchema.McpServerElicitationRequestResponse;
+        }
         const questions = mcpFormElicitationQuestions(payload);
         if (!questions) {
           return {

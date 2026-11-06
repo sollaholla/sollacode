@@ -11,14 +11,15 @@ import {
 describe("shouldHideWindowOnClose", () => {
   const close = { platform: "darwin", quitAllowed: false, windowIsMain: true } as const;
 
-  it("puts the app's window away on macOS, keeping its work alive", () => {
+  it("puts the app's window away on macOS and Windows, keeping its work alive", () => {
     expect(shouldHideWindowOnClose(close)).toBe(true);
+    expect(shouldHideWindowOnClose({ ...close, platform: "win32" })).toBe(true);
   });
 
   it("lets a real quit, other windows and other platforms close", () => {
     expect(shouldHideWindowOnClose({ ...close, quitAllowed: true })).toBe(false);
     expect(shouldHideWindowOnClose({ ...close, windowIsMain: false })).toBe(false);
-    expect(shouldHideWindowOnClose({ ...close, platform: "win32" })).toBe(false);
+    expect(shouldHideWindowOnClose({ ...close, platform: "linux" })).toBe(false);
   });
 });
 

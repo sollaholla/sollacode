@@ -213,9 +213,14 @@ try {
   # Give the MCP response time to flush before closing the process that served it.
   Start-Sleep -Seconds 3
   $desktop = Get-Process -Id $WaitPid -ErrorAction Stop
-  if (-not $desktop.CloseMainWindow()) {
-    throw "Solla Code did not accept a graceful close request; the installer was not started."
-  }
+  # The desktop backend intentionally runs Electron as Node. Never leak that
+  # flag into the GUI processes started below.
+  Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+
+  # Closing the window only puts Solla Code in the tray, and a window already
+  # there has no handle to close. A second launch with this argument asks the
+  # running copy to quit properly.
+  $null = Start-DetachedProcess -Path $Target -Arguments "--solla-quit"
   if (-not $desktop.WaitForExit(120000)) {
     throw "Solla Code did not close within 120 seconds; the installer was not started."
   }
@@ -235,9 +240,6 @@ try {
     throw "The Solla Code installer completed but the application executable is missing."
   }
 
-  # The desktop backend intentionally runs Electron as Node. Never leak that
-  # flag into the relaunched GUI process.
-  Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
   # The marker tells the relaunched app it is being health-checked, so it
   # leaves a database compaction scheduled from Settings for the next start
   # instead of spending minutes on it before answering.

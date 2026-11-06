@@ -1,16 +1,23 @@
 import { withoutUpdateLaunchArgument } from "@t3tools/shared/databaseCompaction";
 
+/** Asks a running copy on Windows to quit, which closing its window no longer does. */
+export const QUIT_RUNNING_APP_ARGUMENT = "--solla-quit";
+
 /**
- * Closing the app's window on macOS hides it. Its chats, terminals and browser
- * tabs live in that window, so destroying it would end work the person only
- * meant to put away. The menu bar icon and the Dock bring it back.
+ * Closing the app's window on macOS and Windows hides it. Its chats, terminals
+ * and browser tabs live in that window, so destroying it would end work the
+ * person only meant to put away. The menu bar or tray icon brings it back.
  */
 export function shouldHideWindowOnClose(input: {
   readonly platform: NodeJS.Platform;
   readonly quitAllowed: boolean;
   readonly windowIsMain: boolean;
 }): boolean {
-  return input.platform === "darwin" && !input.quitAllowed && input.windowIsMain;
+  return (
+    (input.platform === "darwin" || input.platform === "win32") &&
+    !input.quitAllowed &&
+    input.windowIsMain
+  );
 }
 
 export function shouldInterceptWindowCloseForQuit(input: {

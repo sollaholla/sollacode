@@ -129,6 +129,12 @@ matching sandbox flag, and replaces the host when that grant changes. A dead hos
 the session and emits a recoverable exit; restarting resumes its saved cursor. New adapters
 must verify host-exit recovery and permission downgrade as well as successful initial startup.
 
+Codex shows why a countercheck needs a destructive command. Its `never` approval policy refuses
+commands it rates dangerous, such as a recursive delete, even with no sandbox, because nobody can
+be asked. Full access therefore uses a `granular` policy, and the session accepts each request
+itself. That policy also raises one approval per MCP tool call, which the session accepts too,
+while a question from an MCP server still reaches the person.
+
 ## Muse activity and terminal ordering
 
 Muse's session lifecycle notifications can continue even when a saved session cannot materialize a live view sidecar. In that mode, view/page is authoritative for transcript delivery and is read through the catalog host, which never loads or owns the thread session. A successful page response from the owning host can still be a stale loaded view. The read-only host must not resume, admit a turn, or acquire the session writer lease. A live terminal is not proof that earlier assistant items have reached Solla. It must not advance the transcript cursor past unread items or stop reconciliation before the final snapshot is delivered.

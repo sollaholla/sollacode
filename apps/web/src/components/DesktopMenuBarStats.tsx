@@ -15,7 +15,7 @@ function menuBarStatus(status: ReturnType<typeof resolveSidebarV2Status>) {
 }
 
 /**
- * Tells the macOS menu bar item what every computer's chats are doing. This
+ * Tells the menu bar or tray icon what every computer's chats are doing. This
  * window is the one place that knows, and it stays alive while hidden.
  */
 export function DesktopMenuBarStats() {

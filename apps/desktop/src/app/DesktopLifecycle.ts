@@ -20,6 +20,7 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import {
   observeDetachedPromise,
   sendIntentionalShutdownToLiveWindows,
+  QUIT_RUNNING_APP_ARGUMENT,
   shouldHideWindowOnClose,
   shouldInterceptWindowCloseForQuit,
   withDesktopRelaunchArguments,
@@ -332,6 +333,19 @@ export const make = DesktopLifecycle.of({
           windowCloseQuitRequested = true;
           runDetached("window-close-quit", electronApp.quit);
         });
+      },
+    );
+    // A second launch on Windows hands over here, because the first copy may be
+    // sitting in the tray: the shortcut has to bring it back, not start another.
+    yield* electronApp.on(
+      "second-instance",
+      (_event: Electron.Event, argv: ReadonlyArray<string>) => {
+        runDetached(
+          "second-instance",
+          argv.includes(QUIT_RUNNING_APP_ARGUMENT)
+            ? electronApp.quit
+            : desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.secondInstance")),
+        );
       },
     );
     yield* electronApp.on("activate", () => {

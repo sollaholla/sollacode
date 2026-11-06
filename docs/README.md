@@ -28,7 +28,7 @@ Solla Code is an independent fork. Start with [fork identity and compatibility n
   - [Background service](./user/background-service.md)
   - [Provider usage and resets](./user/provider-usage.md)
   - [Paused threads](./user/paused-threads.md)
-  - [Mac menu bar](./user/mac-menu-bar.md)
+  - [Menu bar and tray](./user/mac-menu-bar.md)
   - [Model restrictions](./user/model-restrictions.md)
   - [Managing projects: rename, delete, storage, and token usage](./user/projects.md)
   - [Storage and conversation cleanup](./user/storage.md)

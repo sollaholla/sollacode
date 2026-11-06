@@ -23,6 +23,7 @@ import {
   hydrateCodexBackgroundTaskMetadata,
   isRecoverableThreadResumeError,
   mcpFormElicitationContent,
+  isMcpToolApproval,
   mcpFormElicitationQuestions,
   openCodexThread,
   stopCodexBackgroundTask,
@@ -111,7 +112,15 @@ describe("buildTurnStartParams", () => {
 
     NodeAssert.deepStrictEqual(params, {
       threadId: "provider-thread-1",
-      approvalPolicy: "never",
+      approvalPolicy: {
+        granular: {
+          sandbox_approval: true,
+          rules: true,
+          mcp_elicitations: true,
+          skill_approval: true,
+          request_permissions: false,
+        },
+      },
       approvalsReviewer: "user",
       sandboxPolicy: {
         type: "dangerFullAccess",
@@ -329,6 +338,22 @@ describe("hasConfiguredMcpServer", () => {
 });
 
 describe("MCP form elicitation", () => {
+  it("tells Codex asking to run a tool from a server asking the person", () => {
+    const request = {
+      threadId: "thread-1",
+      serverName: "acme",
+      mode: "form",
+      message: "Allow this?",
+      requestedSchema: { type: "object", properties: {} },
+    } as const;
+    NodeAssert.equal(
+      isMcpToolApproval({ ...request, _meta: { codex_approval_kind: "mcp_tool_call" } }),
+      true,
+    );
+    NodeAssert.equal(isMcpToolApproval(request), false);
+    NodeAssert.equal(isMcpToolApproval({ ...request, _meta: { other: true } }), false);
+  });
+
   const payload: EffectCodexSchema.McpServerElicitationRequestParams = {
     mode: "form",
     message:
