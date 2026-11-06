@@ -21,6 +21,7 @@ export const WorkspaceOrchestrationInput = Schema.Struct({
     "describe_thread",
     "send_to_thread",
     "interrupt_thread",
+    "close_side_chat",
     "list_terminals",
     "read_terminal",
     "write_to_terminal",
@@ -28,7 +29,7 @@ export const WorkspaceOrchestrationInput = Schema.Struct({
   ]),
   threadId: Schema.optional(ThreadId).annotate({
     description:
-      "A thread id returned by list_threads. Required for describe_thread, send_to_thread, interrupt_thread, read_terminal and write_to_terminal. Optional for list_terminals to restrict to one thread.",
+      "A thread id returned by list_threads. Required for describe_thread, send_to_thread, interrupt_thread, close_side_chat, read_terminal and write_to_terminal. Optional for list_terminals to restrict to one thread.",
   }),
   terminalId: Schema.optional(TrimmedNonEmptyString).annotate({
     description:
@@ -151,6 +152,12 @@ export const WorkspaceOrchestrationResult = Schema.Union([
     interrupted: Schema.Boolean,
   }),
   Schema.Struct({
+    action: Schema.Literal("close_side_chat"),
+    threadId: ThreadId,
+    /** `archived` now, or `after_this_turn` when a side chat closed itself. */
+    closed: Schema.Literals(["archived", "after_this_turn"]),
+  }),
+  Schema.Struct({
     action: Schema.Literal("list_terminals"),
     terminals: Schema.Array(WorkspaceTerminalDetail),
     totalCount: Schema.Number,
@@ -224,6 +231,18 @@ export class WorkspaceOrchestrationOperationFailedError extends Schema.TaggedErr
   }
 }
 
+/** Asked to close something that may not be closed; says what to do instead. */
+export class WorkspaceOrchestrationRefusedError extends Schema.TaggedErrorClass<WorkspaceOrchestrationRefusedError>()(
+  "WorkspaceOrchestrationRefusedError",
+  {
+    reason: Schema.String,
+  },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
 export class WorkspaceOrchestrationInvalidInputError extends Schema.TaggedErrorClass<WorkspaceOrchestrationInvalidInputError>()(
   "WorkspaceOrchestrationInvalidInputError",
   {
@@ -254,5 +273,6 @@ export const WorkspaceOrchestrationError = Schema.Union([
   WorkspaceOrchestrationOperationFailedError,
   WorkspaceOrchestrationInvalidInputError,
   WorkspaceOrchestrationTerminalNotFoundError,
+  WorkspaceOrchestrationRefusedError,
 ]);
 export type WorkspaceOrchestrationError = typeof WorkspaceOrchestrationError.Type;

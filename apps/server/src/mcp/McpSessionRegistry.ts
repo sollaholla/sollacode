@@ -13,8 +13,8 @@ import * as McpProviderSession from "./McpProviderSession.ts";
 
 /**
  * Capabilities every thread gets by default. `"collaboration"` opens
- * workspace_consult, the read actions of workspace_orchestration and
- * agent_collaboration list_agents to every chat. `"vm"` is deliberately NOT
+ * workspace_consult, the read actions and close_side_chat of
+ * workspace_orchestration, and agent_collaboration list_agents to every chat. `"vm"` is deliberately NOT
  * here — it marks a thread as owned by a custom agent (gating agent_workspace)
  * and is granted per-thread in ProviderService.prepareMcpSession.
  */

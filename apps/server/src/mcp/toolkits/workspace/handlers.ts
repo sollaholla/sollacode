@@ -14,6 +14,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -25,6 +26,7 @@ import {
   ORCHESTRATOR_ONLY_WORKSPACE_ACTIONS,
   WorkspaceOrchestrationInvalidInputError,
   WorkspaceOrchestrationOperationFailedError,
+  WorkspaceOrchestrationRefusedError,
   WorkspaceOrchestrationScopeError,
   WorkspaceOrchestrationTerminalNotFoundError,
   WorkspaceOrchestrationThreadNotFoundError,
@@ -130,6 +132,9 @@ export function summarizeThread(
     terminals: compactTerminals(context.terminals ?? []),
   };
 }
+
+/** How long a side chat that closed itself may run on before the close is dropped. */
+const SELF_CLOSE_WAIT = "30 minutes";
 
 export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.handle")(function* (
   input: WorkspaceOrchestrationInput,
@@ -496,6 +501,105 @@ export const handleWorkspaceOrchestration = Effect.fn("WorkspaceOrchestration.ha
         );
 
       return { action: "interrupt_thread" as const, threadId: thread.id, interrupted: true };
+    }
+
+    case "close_side_chat": {
+      const threadId = yield* requireThreadId();
+      const thread = yield* requireThread(threadId);
+      if (thread.isSideChat !== true) {
+        return yield* new WorkspaceOrchestrationRefusedError({
+          reason: `"${thread.title}" is not a side chat, so it can't be closed this way.`,
+        });
+      }
+      const closeNow = Effect.gen(function* () {
+        const randomId = crypto.randomUUIDv4.pipe(
+          Effect.mapError(
+            () =>
+              new WorkspaceOrchestrationOperationFailedError({
+                operation: "generating command identifiers",
+              }),
+          ),
+        );
+        const closing = (yield* projection.getThreadShellById(threadId).pipe(
+          Effect.mapError(
+            () =>
+              new WorkspaceOrchestrationOperationFailedError({
+                operation: "reading the side chat",
+                threadId,
+              }),
+          ),
+        )).pipe(Option.getOrNull);
+        // Closed some other way while waiting for its turn to end.
+        if (closing === null || closing.archivedAt !== null) return;
+        const failedTo = (operation: string) => () =>
+          new WorkspaceOrchestrationOperationFailedError({ operation, threadId });
+        yield* engine
+          .dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make(yield* randomId),
+            threadId,
+          })
+          .pipe(Effect.mapError(failedTo("archiving the side chat")));
+        // The same cleanup a person's close gets: nothing keeps running behind it.
+        if (closing.session !== null && closing.session.status !== "stopped") {
+          yield* engine
+            .dispatch({
+              type: "thread.session.stop",
+              commandId: CommandId.make(yield* randomId),
+              threadId,
+              createdAt: DateTime.formatIso(yield* DateTime.now),
+            })
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("could not stop a closed side chat's session", {
+                  threadId,
+                  cause,
+                }),
+              ),
+            );
+        }
+        yield* terminalManager.close({ threadId }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("could not close a closed side chat's terminals", {
+              threadId,
+              cause,
+            }),
+          ),
+        );
+      });
+
+      if (threadId === invocation.threadId) {
+        // Archiving now would stop the very turn making this call, cutting off
+        // its reply, so a side chat leaves when its turn ends.
+        yield* engine.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "thread.session-set" &&
+              event.aggregateId === threadId &&
+              event.payload.session.activeTurnId === null,
+          ),
+          Stream.runHead,
+          Effect.timeoutOption(SELF_CLOSE_WAIT),
+          Effect.flatMap((ended) => (Option.isSome(ended) ? closeNow : Effect.void)),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("a side chat could not close itself", { threadId, cause }),
+          ),
+          Effect.forkDetach,
+        );
+        return {
+          action: "close_side_chat" as const,
+          threadId,
+          closed: "after_this_turn" as const,
+        };
+      }
+
+      if (isThreadWorking(thread, DateTime.toEpochMillis(yield* DateTime.now))) {
+        return yield* new WorkspaceOrchestrationRefusedError({
+          reason: `"${thread.title}" is still working, so closing it would cut that off. Wait until it finishes, or ask it to close itself.`,
+        });
+      }
+      yield* closeNow;
+      return { action: "close_side_chat" as const, threadId, closed: "archived" as const };
     }
 
     case "call_user": {

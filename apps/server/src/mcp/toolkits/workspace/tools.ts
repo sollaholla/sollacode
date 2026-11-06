@@ -13,7 +13,8 @@ import {
 } from "./types.ts";
 
 /**
- * Workspace-wide reads for every chat, and writes for the orchestrator thread.
+ * Workspace-wide reads and side-chat closing for every chat, and writes for the
+ * orchestrator thread.
  *
  * The existing `thread_collaboration` toolkit deliberately scopes a caller to
  * its own side-chat family. Any chat may look across every thread and terminal
@@ -25,7 +26,7 @@ import {
  */
 export const WorkspaceOrchestrationTool = Tool.make("workspace_orchestration", {
   description:
-    "Inspect every thread in this Solla Code workspace; the orchestrator thread can also act on them. Any chat may use the read actions: list_threads to see all threads except the caller's own, with their status, what each is blocked on, and which terminals they have open. Match a project a person names against projectTitle, not the thread title; side chats need includeSideChats. isWorking matches the sidebar's Working: a turn in flight, scheduled pendingWork, or backgroundTaskCount tasks still running after the turn. describe_thread for one thread's detail; list_terminals to see every live terminal; read_terminal to read a terminal's current output. Orchestrator thread only: write_to_terminal to type into a live terminal; send_to_thread to write a message into any thread exactly as if the user typed it; interrupt_thread to stop an in-flight turn; call_user to ring the person for a live voice call with you (give a one-sentence callReason), when something needs their attention or decision, or an update is worth saying out loud. A call says what they hear; for anything else, write in this chat. Other chats message a thread or agent with workspace_consult ask (waitMs 0 just sends).",
+    "Inspect every thread in this Solla Code workspace and close side chats; the orchestrator thread can also act on them. Any chat may use the read actions and close_side_chat: list_threads to see all threads except the caller's own, with their status, what each is blocked on, and which terminals they have open. Match a project a person names against projectTitle, not the thread title; side chats need includeSideChats. isWorking matches the sidebar's Working: a turn in flight, scheduled pendingWork, or backgroundTaskCount tasks still running after the turn. close_side_chat to close any side chat, archiving it so the person can restore it: it refuses anything that isn't a side chat and any side chat still working, and a side chat closing itself closes when its turn ends. describe_thread for one thread's detail; list_terminals to see every live terminal; read_terminal to read a terminal's current output. Orchestrator thread only: write_to_terminal to type into a live terminal; send_to_thread to write a message into any thread exactly as if the user typed it; interrupt_thread to stop an in-flight turn; call_user to ring the person for a live voice call with you (give a one-sentence callReason), when something needs their attention or decision, or an update is worth saying out loud. A call says what they hear; for anything else, write in this chat. Other chats message a thread or agent with workspace_consult ask (waitMs 0 just sends).",
   parameters: WorkspaceOrchestrationInput,
   success: WorkspaceOrchestrationResult,
   failure: WorkspaceOrchestrationError,

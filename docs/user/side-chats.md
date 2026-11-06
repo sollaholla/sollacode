@@ -49,6 +49,8 @@ Side chats belonging to custom agents stay attached to their agent and cannot be
 Previously promoted agent side chats are reattached to their original agent when the server starts,
 preserving the existing conversation.
 
+Agents can close side chats too. Any chat, including another side chat and the orchestrator, can close any side chat, and a side chat can close itself. It works like your own close: the conversation is archived, not deleted, and you can restore it from Archived. A side chat that is still working can't be closed by another chat, so its work is never cut off. One that closes itself finishes its reply first, then closes when its turn ends. Only side chats can be closed this way, never main chats.
+
 If archiving reports a full database or disk, free space on the machine running Solla, then retry.
 For a remote connection, this is the server's disk, not your phone's storage. A database-open error
 also calls out folder permissions as a possible cause. A failed archive leaves the conversation

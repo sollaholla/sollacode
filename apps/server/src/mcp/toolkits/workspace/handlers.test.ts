@@ -9,8 +9,10 @@ import {
   ProviderInstanceId,
   TerminalSessionLookupError,
   ThreadId,
+  TurnId,
   type IsoDateTime,
   type OrchestrationCommand,
+  type OrchestrationEvent,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   type TerminalSessionSnapshot,
@@ -20,6 +22,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -149,6 +152,7 @@ const makeTerminalSummary = (overrides: Partial<TerminalSummary> = {}): Terminal
 const makeHarness = (
   threads: ReadonlyArray<OrchestrationThreadShell> = DEFAULT_THREADS,
   options: {
+    readonly events?: Stream.Stream<OrchestrationEvent>;
     readonly terminals?: ReadonlyArray<TerminalSummary>;
     readonly snapshots?: ReadonlyArray<TerminalSessionSnapshot>;
     readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
@@ -158,6 +162,7 @@ const makeHarness = (
 ) => {
   const commands: Array<OrchestrationCommand> = [];
   const writes: Array<TerminalWriteInput> = [];
+  const closedTerminals: Array<string> = [];
   const terminals = [...(options.terminals ?? [])];
   const snapshots = new Map(
     (options.snapshots ?? []).map((snapshot) => [
@@ -195,7 +200,7 @@ const makeHarness = (
         return { sequence: commands.length };
       }),
     readEvents: () => Stream.empty,
-    streamDomainEvents: Stream.empty,
+    streamDomainEvents: options.events ?? Stream.empty,
     latestSequence: Effect.sync(() => commands.length),
   });
 
@@ -227,7 +232,10 @@ const makeHarness = (
     resize: () => Effect.void,
     clear: () => Effect.void,
     restart: () => Effect.die("unused"),
-    close: () => Effect.void,
+    close: (input) =>
+      Effect.sync(() => {
+        closedTerminals.push(input.threadId);
+      }),
     subscribe: () => Effect.succeed(() => undefined),
     subscribeMetadata: () => Effect.succeed(() => undefined),
     getLayout: () => Effect.succeed({ layout: null }),
@@ -248,6 +256,7 @@ const makeHarness = (
     commands,
     writes,
     rings,
+    closedTerminals,
     layer: Layer.mergeAll(projectionLayer, engineLayer, terminalLayer, callsLayer),
   };
 };
@@ -349,6 +358,126 @@ it.layer(NodeServices.layer)("workspace orchestration toolkit", (it) => {
       }
       expect(harness.commands).toHaveLength(0);
       expect(harness.writes).toHaveLength(0);
+    }),
+  );
+
+  const commandTypes = (harness: ReturnType<typeof makeHarness>) =>
+    harness.commands.map((command) => command.type);
+
+  it.effect("lets any chat close a side chat, with the same cleanup a person's close gets", () =>
+    Effect.gen(function* () {
+      const live = DEFAULT_THREADS.map((thread) =>
+        thread.id === sideChatThreadId
+          ? { ...thread, session: readySession(sideChatThreadId) }
+          : thread,
+      );
+      for (const caller of [ORCHESTRATOR_THREAD_ID, blockedThreadId]) {
+        const harness = makeHarness(live);
+        const result = yield* runAs(
+          caller,
+          harness,
+          handleWorkspaceOrchestration({ action: "close_side_chat", threadId: sideChatThreadId }),
+        );
+        expect(result).toEqual({
+          action: "close_side_chat",
+          threadId: sideChatThreadId,
+          closed: "archived",
+        });
+        expect(commandTypes(harness)).toEqual(["thread.archive", "thread.session.stop"]);
+        expect(harness.closedTerminals).toEqual([sideChatThreadId]);
+      }
+    }),
+  );
+
+  it.effect("lets one side chat close another", () =>
+    Effect.gen(function* () {
+      const otherSide = ThreadId.make("side-other");
+      const harness = makeHarness([
+        ...DEFAULT_THREADS,
+        makeThread(otherSide, "Other side", { isSideChat: true }),
+      ]);
+      yield* runAs(
+        otherSide,
+        harness,
+        handleWorkspaceOrchestration({ action: "close_side_chat", threadId: sideChatThreadId }),
+      );
+      expect(commandTypes(harness)).toEqual(["thread.archive"]);
+    }),
+  );
+
+  it.effect("never closes a main chat", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const error = yield* Effect.flip(
+        runAs(
+          ORCHESTRATOR_THREAD_ID,
+          harness,
+          handleWorkspaceOrchestration({ action: "close_side_chat", threadId: blockedThreadId }),
+        ),
+      );
+      expect((error as { readonly _tag: string })._tag).toBe("WorkspaceOrchestrationRefusedError");
+      expect(harness.commands).toHaveLength(0);
+    }),
+  );
+
+  it.effect("won't cut off a side chat that is still working", () =>
+    Effect.gen(function* () {
+      const working = DEFAULT_THREADS.map((thread) =>
+        thread.id === sideChatThreadId
+          ? {
+              ...thread,
+              session: {
+                ...readySession(sideChatThreadId),
+                status: "running" as const,
+                activeTurnId: TurnId.make("turn-side"),
+              },
+            }
+          : thread,
+      );
+      const harness = makeHarness(working);
+      const error = yield* Effect.flip(
+        runAs(
+          ORCHESTRATOR_THREAD_ID,
+          harness,
+          handleWorkspaceOrchestration({ action: "close_side_chat", threadId: sideChatThreadId }),
+        ),
+      );
+      expect((error as { readonly _tag: string })._tag).toBe("WorkspaceOrchestrationRefusedError");
+      expect(error.message).toContain("still working");
+      expect(harness.commands).toHaveLength(0);
+    }),
+  );
+
+  it.effect("closes a side chat that closed itself only once its turn ends", () =>
+    Effect.gen(function* () {
+      const events = yield* PubSub.unbounded<OrchestrationEvent>();
+      const harness = makeHarness(DEFAULT_THREADS, { events: Stream.fromPubSub(events) });
+      const settle = Effect.gen(function* () {
+        for (let tick = 0; tick < 40; tick += 1) yield* Effect.yieldNow;
+      });
+      const result = yield* runAs(
+        sideChatThreadId,
+        harness,
+        handleWorkspaceOrchestration({ action: "close_side_chat", threadId: sideChatThreadId }),
+      );
+      expect(result).toMatchObject({ closed: "after_this_turn" });
+      yield* settle;
+      expect(harness.commands).toHaveLength(0);
+
+      const sessionSet = (threadId: ThreadId, activeTurnId: string | null) =>
+        ({
+          type: "thread.session-set",
+          aggregateId: threadId,
+          payload: { session: { activeTurnId } },
+        }) as unknown as OrchestrationEvent;
+      yield* PubSub.publish(events, sessionSet(sideChatThreadId, "turn-1"));
+      yield* PubSub.publish(events, sessionSet(blockedThreadId, null));
+      yield* settle;
+      expect(harness.commands).toHaveLength(0);
+
+      yield* PubSub.publish(events, sessionSet(sideChatThreadId, null));
+      yield* settle;
+      expect(commandTypes(harness)).toEqual(["thread.archive"]);
     }),
   );
 
