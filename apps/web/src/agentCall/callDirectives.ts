@@ -60,10 +60,10 @@ export function callRosterInstructions(
     ...(agents.length === 0
       ? []
       : [
-          "If the person asks to talk to one of the agents on your transfer list, say exactly 'Transferring you to <Name>.' and nothing after it; the call moves to them. If they ask for someone not on that list, say you can't reach them.",
+          "If the person asks to talk to, be transferred to, or be put through to one of the agents on your transfer list, say exactly 'Transferring you to <Name>.' and nothing after it; the call moves to them at once. Moving the call is yours alone, never your work's: never delegate a transfer or start work for one. If they ask for someone not on that list, say you can't reach them.",
           ...nameLines("Your transfer list:", agents),
         ]),
-    "You can also bring anyone on your call list onto this call. To add someone, end what you say with exactly 'Adding <Name> to the call.', one sentence for each person. To drop someone, end with exactly 'Removing <Name> from the call.'",
+    "You can also bring anyone on your call list onto this call yourself, never by starting work. To add someone, end what you say with exactly 'Adding <Name> to the call.', one sentence for each person. To drop someone, end with exactly 'Removing <Name> from the call.'",
     "Once someone is on the call, what the person says to them by name, or to everyone, goes to them too, and their replies come back with their name. Read those out as theirs.",
     ...nameLines(
       "Your call list:",
@@ -275,6 +275,31 @@ export function resolveSpokenNames<
     else if (!found.includes(entry)) found.push(entry);
   }
   return { found, missing };
+}
+
+/**
+ * The agent a transfer names. The voice is told to end with the name alone,
+ * but real voices tack words on ("Transferring you to Scout now, one
+ * moment."), so when the whole tail fits nobody, trailing words are dropped
+ * one at a time (at most three) until exactly one agent fits. The name still
+ * has to open the tail, so a sentence that merely mentions an agent further
+ * in never lands on them. Null when nobody fits, or more than one does.
+ */
+export function resolveTransferTarget<
+  Entry extends { readonly name: string; readonly vmAgentId: string | null },
+>(spoken: string, entries: ReadonlyArray<Entry>): Entry | null {
+  const words = spoken.split(/\s+/u).filter((word) => word.length > 0);
+  const minimum = Math.max(1, words.length - 3);
+  for (let keep = words.length; keep >= minimum; keep -= 1) {
+    const { found } = resolveSpokenNames(words.slice(0, keep).join(" "), entries, {
+      agentsOnly: true,
+    });
+    if (found.length === 1) return found[0] ?? null;
+    // Several fit what was said: moving the call on a guess is worse than
+    // asking, and dropping words would only blur it further.
+    if (found.length > 1) return null;
+  }
+  return null;
 }
 
 /**

@@ -467,9 +467,12 @@ Your microphone choice and mute state carry over. If the new call can't be place
 Only agents can take a transferred call, and only the ones the agent was told about when the call
 connected: your other agents on that computer that aren't stopped. Ask for anyone else and the
 agent says it can't reach them. A name that comes out a little differently in the transcript, such
-as "Greg" for "Gregg", still finds the agent when only one fits. The agent has to say the phrase as
-its own sentence: "I won't be transferring you to Gregg." or a reply it reads out that mentions a
-transfer doesn't move the call.
+as "Greg" for "Gregg", still finds the agent when only one fits, and a few words the agent tacks on
+after the name ("Transferring you to Gregg now, one moment.") don't lose it either. The agent has
+to say the phrase as its own sentence: "I won't be transferring you to Gregg." or a reply it reads
+out that mentions a transfer doesn't move the call. If the agent announces a transfer to a name
+nobody on its list fits, it corrects itself out loud and the screen says the call stayed, instead
+of leaving you waiting on a transfer that never comes.
 
 If you opened the call from its own page (a call notification), that page moves to the new call
 too, so minimising the call shows the call you're on, not the one you left.

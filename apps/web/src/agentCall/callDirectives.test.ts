@@ -8,6 +8,7 @@ import {
   readCallDirectives,
   resolveRosterName,
   resolveSpokenNames,
+  resolveTransferTarget,
 } from "./callDirectives";
 
 const entry = (name: string, agent: boolean) => ({
@@ -188,7 +189,7 @@ describe("callRosterInstructions", () => {
     expect(callRosterInstructions([])).toEqual([]);
     const lines = callRosterInstructions([gregg, nova, entry("Release notes", false)]);
     expect(lines).toEqual([
-      "If the person asks to talk to one of the agents on your transfer list, say exactly 'Transferring you to <Name>.' and nothing after it; the call moves to them. If they ask for someone not on that list, say you can't reach them.",
+      "If the person asks to talk to, be transferred to, or be put through to one of the agents on your transfer list, say exactly 'Transferring you to <Name>.' and nothing after it; the call moves to them at once. Moving the call is yours alone, never your work's: never delegate a transfer or start work for one. If they ask for someone not on that list, say you can't reach them.",
       "Your transfer list: Gregg, Nóva.",
       expect.stringContaining("end what you say with exactly 'Adding <Name> to the call.'"),
       expect.stringContaining("Read those out as theirs."),
@@ -248,6 +249,32 @@ describe("resolveRosterName", () => {
 
   it("folds names the same way on both sides", () => {
     expect(foldCallName("  Zoë’s  “Plan” ")).toBe("zoe s plan");
+  });
+});
+
+describe("resolveTransferTarget", () => {
+  it("finds the agent even when the voice tacks words on after the name", () => {
+    expect(resolveTransferTarget("Gregg", roster)).toBe(gregg);
+    expect(resolveTransferTarget("Gregg now", roster)).toBe(gregg);
+    expect(resolveTransferTarget("Gregg now, one moment", roster)).toBe(gregg);
+    expect(resolveTransferTarget("Nova right away", roster)).toBe(nova);
+    expect(resolveTransferTarget("the Nova chat now", roster)).toBe(nova);
+  });
+
+  it("never lands on a chat, a list, or a name said further in", () => {
+    // Only agents take a transferred call.
+    expect(resolveTransferTarget("Release notes draft", roster)).toBeNull();
+    // Two people is not a transfer.
+    expect(resolveTransferTarget("Gregg and Nova", roster)).toBeNull();
+    // The name has to open the tail, not appear later in it.
+    expect(resolveTransferTarget("the person who briefed Gregg", roster)).toBeNull();
+    expect(resolveTransferTarget("Morgan", roster)).toBeNull();
+    expect(resolveTransferTarget("", roster)).toBeNull();
+  });
+
+  it("stops at an ambiguous name instead of guessing", () => {
+    const twins = [entry("Mira", true), entry("Mila", true)];
+    expect(resolveTransferTarget("Mia right away", twins)).toBeNull();
   });
 });
 

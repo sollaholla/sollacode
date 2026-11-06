@@ -985,13 +985,57 @@ describe("transfer by voice", () => {
     expect(callScreenText()).not.toContain("Transferring to");
   });
 
-  it("does nothing for a name that is not an agent on the roster", async () => {
+  it("moves the call even when the voice tacks words on after the name", async () => {
+    const gregg = { ...nova, vmAgentId: greggEntry.vmAgentId, name: "Gregg", threadId: "thread-2" };
+    mocks.agents = [nova, gregg] as Array<VmAgent>;
+    mocks.roster.entries = [greggEntry, notesEntry];
+    const transferred: AgentCall = {
+      ...ringingCall,
+      callId: AgentCallId.make("call-2"),
+      vmAgentId: greggEntry.vmAgentId!,
+      direction: "outgoing",
+      reason: "user",
+      topic: null,
+    };
+    mocks.placeCall.mockResolvedValueOnce({ _tag: "Success", value: transferred } as never);
+    await goLive();
+
+    // The person asked for a transfer; the voice announced it with trailing
+    // words. The recipient must still be rung: this is the reported bug where
+    // the transfer died silently and the person had to call them by hand.
+    await voiceSays("Sure thing. Transferring you to Gregg now, one moment.");
+    expect(mocks.session.endAfterReply).toHaveBeenCalledOnce();
+    expect(callScreenText()).toContain("Transferring to Gregg…");
+    await act(async () => {
+      mocks.session.state = "idle";
+      sessionCallbacks().onStateChange?.("idle");
+    });
+    const options = mocks.createLiveVoiceSession.mock.calls[1]![0] as VoiceSessionOptions;
+    await act(async () => {
+      await expect(options.live?.startBody?.()).resolves.toMatchObject({ callId: "call-2" });
+    });
+    expect(mocks.placeCall).toHaveBeenCalledWith({
+      environmentId: "host-1",
+      input: { vmAgentId: "agent-2" },
+    });
+  });
+
+  it("corrects the voice for a name that is not an agent on the roster", async () => {
     mocks.roster.entries = [greggEntry, notesEntry];
     await goLive();
+    mocks.session.instruct.mockClear();
     await voiceSays("Transferring you to Release notes.");
     await voiceSays("Transferring you to Morgan.");
+    // The call never moves, and the voice is told to put it right instead of
+    // leaving the person waiting on a transfer that never comes.
     expect(mocks.session.endAfterReply).not.toHaveBeenCalled();
+    expect(mocks.placeCall).not.toHaveBeenCalled();
     expect(callScreenText()).not.toContain("Transferring to");
+    const told = mocks.session.instruct.mock.calls.map(([text]) => String(text));
+    expect(told.some((text) => text.includes("No agent called Release notes"))).toBe(true);
+    expect(told.some((text) => text.includes("No agent called Morgan"))).toBe(true);
+    expect(told.every((text) => /Tell the person now/u.test(text))).toBe(true);
+    expect(callScreenText()).toContain("No agent called Morgan");
   });
 });
 

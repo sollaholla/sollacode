@@ -76,6 +76,7 @@ import {
   callRosterInstructions,
   readCallDirectives,
   resolveSpokenNames,
+  resolveTransferTarget,
 } from "./callDirectives";
 import { isPhoneAppWebView, postAgentCallNativeMessage } from "./phoneAppBridge";
 
@@ -531,9 +532,17 @@ export function AgentCallProvider({ children }: { readonly children: ReactNode }
       const roster = call.roster ?? [];
       const [first] = directives;
       if (first?.kind === "transfer") {
-        const { found } = resolveSpokenNames(first.name, roster, { agentsOnly: true });
-        const [target] = found;
-        if (found.length !== 1 || target === undefined || target.vmAgentId === null) return;
+        const target = resolveTransferTarget(first.name, roster);
+        if (target === null || target.vmAgentId === null) {
+          // The voice told the person the call is moving; staying silent here
+          // would leave them waiting on a transfer that never comes.
+          reportParticipantError(
+            generation,
+            `No agent called ${first.name} is on the transfer list, so the call stays here.`,
+            { correct: true },
+          );
+          return;
+        }
         if (target.vmAgentId === call.agent.vmAgentId) return;
         transferRef.current = {
           generation,
