@@ -223,6 +223,7 @@ describe("thread pause", () => {
     expect(classifyThreadPause("HTTP 429: too many requests")).toBe("usage-limit");
     expect(classifyThreadPause("HTTP 402 Payment Required")).toBe("out-of-credits");
     expect(classifyThreadPause("403 Forbidden")).toBe("access-refused");
+    expect(classifyThreadPause("Not logged in · Please run /login")).toBe("signed-out");
     expect(classifyThreadPause("model not found: grok-retired")).toBe("model-unavailable");
     expect(classifyThreadPause("API error: 503 service unavailable")).toBe("provider-unavailable");
     expect(classifyThreadPause("something else went wrong")).toBe("stopped");
@@ -231,6 +232,7 @@ describe("thread pause", () => {
   it("says it in one short line", () => {
     expect(describeThreadPause("usage-limit", "Claude")).toBe("Claude is out of usage");
     expect(describeThreadPause("model-unavailable", "Claude")).toBe("This model isn't available");
+    expect(describeThreadPause("signed-out", "Claude")).toBe("Claude isn't signed in");
   });
 });
 

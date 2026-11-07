@@ -2167,6 +2167,51 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ),
       );
 
+      it.effect("reports a Claude CLI with no account as signed out, not authenticated", () =>
+        Effect.gen(function* () {
+          // What the SDK init returns with no login: the CLI still starts and
+          // lists models, so only the account fields tell the two apart.
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ tokenSource: "none", apiProvider: "firstParty" }),
+          );
+          assert.strictEqual(status.status, "error");
+          assert.strictEqual(status.auth.status, "unauthenticated");
+          assert.include(status.message ?? "", "isn't signed in");
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.257\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("keeps an API key or auth token signed in when no account is linked", () =>
+        Effect.gen(function* () {
+          for (const account of [
+            { tokenSource: "none", apiKeySource: "ANTHROPIC_API_KEY", apiProvider: "firstParty" },
+            { tokenSource: "ANTHROPIC_AUTH_TOKEN", apiProvider: "firstParty" },
+          ]) {
+            const status = yield* checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              claudeCapabilities(account),
+            );
+            assert.strictEqual(status.auth.status, "authenticated", account.tokenSource);
+          }
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.257\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
       it.effect("gives a custom Claude model id the same effort picker as the catalog", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(

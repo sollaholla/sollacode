@@ -51,6 +51,7 @@ export type ThreadPauseReason =
   | "usage-limit"
   | "out-of-credits"
   | "access-refused"
+  | "signed-out"
   | "model-unavailable"
   | "provider-unavailable"
   | "stopped";
@@ -63,6 +64,10 @@ const THREAD_PAUSE_PATTERNS: ReadonlyArray<readonly [ThreadPauseReason, RegExp]>
   [
     "usage-limit",
     /usage limit|rate[- ]?limit|session limit|hit your|quota|resource_exhausted|\b429\b|too many requests/i,
+  ],
+  [
+    "signed-out",
+    /not logged in|please run \/login|not (?:signed|logged) in|oauth token has expired/i,
   ],
   ["access-refused", /\b40[13]\b|forbidden|unauthori[sz]ed|permission denied|access denied/i],
   ["model-unavailable", /model (?:not found|is (?:no longer |not )available)|unknown model/i],
@@ -85,6 +90,8 @@ export function describeThreadPause(reason: ThreadPauseReason, provider: string)
       return `${provider} is out of credits`;
     case "access-refused":
       return `${provider} refused this request`;
+    case "signed-out":
+      return `${provider} isn't signed in`;
     case "model-unavailable":
       return "This model isn't available";
     case "provider-unavailable":

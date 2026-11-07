@@ -745,6 +745,25 @@ function claudeAuthMetadata(input: {
   return undefined;
 }
 
+const CLAUDE_SIGNED_OUT_MESSAGE =
+  "Claude isn't signed in on this computer. Sign in to Claude, then refresh.";
+
+/**
+ * The CLI starts and lists models without an account, so a finished probe is
+ * not proof of sign-in. Signed out, it reports `tokenSource: "none"` on the
+ * first-party API with no key, email or plan; an API key, an auth token, or a
+ * Bedrock or Vertex backend each say otherwise.
+ */
+function isSignedOutClaudeAccount(account: ClaudeCapabilitiesProbe): boolean {
+  return (
+    account.tokenSource === "none" &&
+    account.apiKeySource === undefined &&
+    account.email === undefined &&
+    account.subscriptionType === undefined &&
+    (account.apiProvider ?? "firstParty") === "firstParty"
+  );
+}
+
 function apiProviderAuthMetadata(
   apiProvider: string | undefined,
 ): { readonly type: string; readonly label: string } | undefined {
@@ -813,6 +832,8 @@ type ClaudeCapabilitiesProbe = {
   readonly email: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
+  /** Where an API key came from (`ANTHROPIC_API_KEY`, an apiKeyHelper, …), when one is set. */
+  readonly apiKeySource?: string | undefined;
   /**
    * Active API backend reported by the SDK's `AccountInfo`. Anthropic OAuth
    * login only applies when `"firstParty"`; for Amazon Bedrock (`"bedrock"`)
@@ -964,6 +985,7 @@ const probeClaudeCapabilities = (
             readonly email?: string;
             readonly subscriptionType?: string;
             readonly tokenSource?: string;
+            readonly apiKeySource?: string;
             readonly apiProvider?: string;
           }
         | undefined;
@@ -971,6 +993,7 @@ const probeClaudeCapabilities = (
         email: account?.email,
         subscriptionType: account?.subscriptionType,
         tokenSource: account?.tokenSource,
+        apiKeySource: account?.apiKeySource,
         apiProvider: account?.apiProvider,
         slashCommands: parseClaudeInitializationCommands(init.commands),
         models: mergeClaudeDiscoveredModels([], init.models),
@@ -1167,6 +1190,24 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         status: "warning",
         auth: { status: "unknown" },
         message: "Could not verify Claude authentication status from initialization result.",
+      },
+    });
+  }
+
+  if (isSignedOutClaudeAccount(capabilities)) {
+    return buildServerProvider({
+      presentation: CLAUDE_PRESENTATION,
+      enabled: claudeSettings.enabled,
+      checkedAt,
+      models,
+      slashCommands: dedupedSlashCommands,
+      skills,
+      probe: {
+        installed: true,
+        version: parsedVersion,
+        status: "error",
+        auth: { status: "unauthenticated" },
+        message: CLAUDE_SIGNED_OUT_MESSAGE,
       },
     });
   }
