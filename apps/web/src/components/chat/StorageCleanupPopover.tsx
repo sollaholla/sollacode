@@ -70,13 +70,6 @@ export function StorageCleanupPopover({
   const start = useAtomCommand(serverEnvironment.startStorageCleanup, { reportFailure: false });
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
-  // Storage cleanup is not a project in the sidebar, so its chats are reached here.
-  const projects = useProjects();
-  const threads = useThreadShells();
-  const lastCleanup = useMemo(
-    () => storageCleanupThreads(threads, projects, environmentId)[0] ?? null,
-    [environmentId, projects, threads],
-  );
 
   const create = async () => {
     if (inFlight.current || !connected || !supported) return;
@@ -186,23 +179,46 @@ export function StorageCleanupPopover({
                   : "Opening thread…"
                 : "Create cleanup thread"}
           </Button>
-          {lastCleanup && !created ? (
-            <Button
-              className="w-full"
-              variant="outline"
-              onClick={() => {
+          {created ? null : (
+            <LastCleanupButton
+              environmentId={environmentId}
+              onOpen={(threadId) => {
                 setOpen(false);
                 void navigate({
                   to: "/$environmentId/$threadId",
-                  params: { environmentId, threadId: lastCleanup.id },
+                  params: { environmentId, threadId },
                 });
               }}
-            >
-              Open last cleanup thread
-            </Button>
-          ) : null}
+            />
+          )}
         </div>
       </PopoverPopup>
     </Popover>
+  );
+}
+
+/**
+ * Storage cleanup is not a project in the sidebar, so its last chat is reached
+ * from here. Mounted only while the popup is open: it reads every project and
+ * chat, and the chip itself must not re-render on each chat update.
+ */
+function LastCleanupButton({
+  environmentId,
+  onOpen,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly onOpen: (threadId: ThreadId) => void;
+}) {
+  const projects = useProjects();
+  const threads = useThreadShells();
+  const lastCleanup = useMemo(
+    () => storageCleanupThreads(threads, projects, environmentId)[0] ?? null,
+    [environmentId, projects, threads],
+  );
+  if (!lastCleanup) return null;
+  return (
+    <Button className="w-full" variant="outline" onClick={() => onOpen(lastCleanup.id)}>
+      Open last cleanup thread
+    </Button>
   );
 }

@@ -42,6 +42,8 @@ vi.mock("~/state/entities", async () => {
     useThreadDetail: () => (useReady("detail") ? { id: "cleanup-thread" } : null),
     useThreadStatus: () => "synchronizing",
     useEnvironmentThreadRefs: () => [{ environmentId: "host", threadId: "unrelated-thread" }],
+    useProjects: () => [],
+    useThreadShells: () => [],
   };
 });
 vi.mock("~/state/environments", () => ({

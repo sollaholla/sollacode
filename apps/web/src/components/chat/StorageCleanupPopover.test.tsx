@@ -22,6 +22,8 @@ vi.mock("~/state/environments", () => ({ useEnvironment: () => mocks.environment
 vi.mock("~/state/entities", () => ({
   useProject: (ref: unknown) => (ref ? mocks.project() : null),
   useThreadShell: (ref: unknown) => (ref ? mocks.thread() : null),
+  useProjects: () => [],
+  useThreadShells: () => [],
 }));
 vi.mock("~/state/server", () => ({ serverEnvironment: { startStorageCleanup: {} } }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => mocks.start }));
