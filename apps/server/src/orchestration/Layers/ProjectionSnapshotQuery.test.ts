@@ -3901,6 +3901,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             title: "Measured",
             archivedAt: null,
             updatedAt: now,
+            sideChatParentThreadId: null,
             worktreePath: "/tmp/stats-worktree",
             historyBytes: stored[0]!.bytes,
             messages: 1,
