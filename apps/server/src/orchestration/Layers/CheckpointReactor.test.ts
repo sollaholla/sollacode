@@ -830,23 +830,6 @@ describe("CheckpointReactor", () => {
       seedFilesystemCheckpoints: false,
     });
     const createdAt = "2026-01-01T00:00:00.000Z";
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("cmd-session-set-refused"),
-        threadId: ThreadId.make("thread-1"),
-        session: {
-          threadId: ThreadId.make("thread-1"),
-          status: "ready",
-          providerName: "codex",
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: createdAt,
-        },
-        createdAt,
-      }),
-    );
     for (const turn of ["turn-refused-1", "turn-refused-2"]) {
       harness.provider.emit({
         type: "turn.completed",
