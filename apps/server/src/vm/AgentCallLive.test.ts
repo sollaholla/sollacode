@@ -1943,6 +1943,64 @@ it.effect("a yes reaches a Codex approval past the voice's own reply and later w
   }),
 );
 
+it.effect("a mid-call yes approves the Codex escalation the call read out", () => {
+  // The reported flow: the call was not placed for the approval — the chat
+  // escalated an elevated command mid-call, the voice read it out, and the
+  // person's yes must bind to that escalation's card.
+  const f = fixture();
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    yield* Effect.gen(function* () {
+      const calls = yield* AgentCalls;
+      const live = yield* makeAgentCallLive;
+      const rung = yield* calls.ring({
+        vmAgentId,
+        reason: "question",
+        topic: "Anything to run?",
+        key: "input:thread-scout:scan",
+      });
+      if (rung.status !== "ringing") return assert.fail(rung.status);
+      yield* live.start({ callId: rung.call.callId, ...offer }, "Sol's iPhone");
+      const running = {
+        session: session("running", null, "codex"),
+        latestTurn: turn("running", null, { requestedSecond: 1 }),
+      };
+      const context =
+        "assistant [0-900ms]: Hello.\nuser [1000-1600ms]: Run the disk inventory on C.";
+      const updates = yield* live.delegate({
+        sessionId: "live-call",
+        delegationId: "d1",
+        sequence: 1,
+        context,
+      });
+      const escalation = activity("approval.requested", {
+        requestId: "scan-1",
+        detail: 'diskusage.exe --summarize "C:\\"',
+      });
+      f.setShell({ hasPendingApprovals: true, ...running });
+      f.setThread({ activities: [escalation], ...running });
+      const heard = yield* Stream.runHead(
+        updates.pipe(Stream.filter((event) => event.status === "pending-approval")),
+      );
+      assert.include(Option.getOrUndefined(heard)?.text ?? "", "diskusage.exe");
+      // Reading it out takes a while; a newer delegation at once would mean it went unheard.
+      yield* TestClock.adjust("10 seconds");
+      yield* live
+        .delegate({
+          sessionId: "live-call",
+          delegationId: "d2",
+          sequence: 2,
+          context: `${context}\nassistant [1700-2500ms]: I need your approval for diskusage. Say yes to approve it, or no to turn it down.\nuser [2600-2900ms]: Yes, go ahead.`,
+        })
+        .pipe(Effect.asVoid);
+      const command = f.dispatched.find((entry) => entry.type === "thread.approval.respond");
+      if (command?.type !== "thread.approval.respond") return assert.fail("expected a decision");
+      assert.strictEqual(command.requestId, "scan-1");
+      assert.strictEqual(command.decision, "accept");
+    }).pipe(Effect.provide(f.layer(events)));
+  }).pipe(Effect.scoped);
+});
+
 it.effect("a sign-in request is never answered by voice", () =>
   Effect.gen(function* () {
     const command = yield* spokenApprovalCall({
