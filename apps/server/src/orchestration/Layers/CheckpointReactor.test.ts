@@ -818,6 +818,53 @@ describe("CheckpointReactor", () => {
     ).toBe(true);
   });
 
+  it("says once, not every turn, that a folder git won't use can't be checkpointed", async () => {
+    // A .git that git does not accept passes the reactor's quick check but fails
+    // detection, as a folder git refuses over its owner does.
+    const broken = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "checkpoint-refused-"));
+    tempDirs.push(broken);
+    NodeFS.mkdirSync(NodePath.join(broken, ".git"));
+    const harness = await createHarness({
+      projectWorkspaceRoot: broken,
+      providerSessionCwd: broken,
+      seedFilesystemCheckpoints: false,
+    });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-refused"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+    for (const turn of ["turn-refused-1", "turn-refused-2"]) {
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.make(`evt-${turn}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId(turn),
+        payload: { state: "completed" },
+      });
+    }
+    await harness.drain();
+    const failures = (await harness.readModel()).threads
+      .find((entry) => entry.id === ThreadId.make("thread-1"))
+      ?.activities.filter((activity) => activity.kind === "checkpoint.capture.failed");
+    expect(failures).toHaveLength(1);
+  });
+
   it("captures pre-turn baseline from project workspace root when thread worktree is unset", async () => {
     const harness = await createHarness({
       hasSession: false,

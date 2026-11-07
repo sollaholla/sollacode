@@ -106,3 +106,19 @@ what was left out. Folders that couldn't be read are counted as such, so the siz
 
 The first start after updating measures existing chat history once, which can make that start
 take a little longer on a large install.
+
+## When checkpoints can't be taken
+
+After each turn, Solla Code saves a checkpoint of the project folder so you can see the turn's diff
+and restore it. This needs the folder to be a git repository that git will use. A folder that isn't
+a repository just goes without checkpoints.
+
+Git refuses a repository owned by another account. On Windows that includes any folder an
+administrator, or an elevated process, created. Solla Code then says "Git won't use this folder
+because it is owned by …" and gives the command that allows it:
+
+```
+git config --global --add safe.directory C:/path/to/project
+```
+
+The message appears once per chat, not after every turn, and again only if the reason changes.

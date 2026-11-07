@@ -122,7 +122,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const appendCaptureFailureActivity = (input: {
+  const appendCaptureFailure = (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId | null;
     readonly detail: string;
@@ -152,6 +152,23 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
+
+  // The last capture failure shown per thread. A folder that can't be
+  // checkpointed fails the same way on every turn; say it once, and again only
+  // when the reason changes or a capture succeeds in between.
+  const lastCaptureFailure = new Map<ThreadId, string>();
+
+  const appendCaptureFailureActivity = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly detail: string;
+    readonly createdAt: string;
+  }) =>
+    Effect.suspend(() => {
+      if (lastCaptureFailure.get(input.threadId) === input.detail) return Effect.void;
+      lastCaptureFailure.set(input.threadId, input.detail);
+      return appendCaptureFailure(input).pipe(Effect.asVoid);
+    });
 
   const resolveSessionRuntimeForThread = Effect.fn("resolveSessionRuntimeForThread")(function* (
     threadId: ThreadId,
@@ -263,6 +280,7 @@ const make = Effect.gen(function* () {
       cwd: input.cwd,
       checkpointRef: targetCheckpointRef,
     });
+    lastCaptureFailure.delete(input.threadId);
 
     // Refresh the workspace entry index so the @-mention file picker
     // reflects files created or deleted during this turn.

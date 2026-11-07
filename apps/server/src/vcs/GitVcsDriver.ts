@@ -12,6 +12,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import {
   GitCommandError,
   VcsProcessExitError,
+  VcsRepositoryDetectionError,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
   type VcsCreateRefInput,
@@ -367,6 +368,22 @@ function parseGitRemoteVerboseOutput(
   return remotes;
 }
 
+/**
+ * Git refuses a repository owned by another account ("dubious ownership"),
+ * which on Windows is any folder an elevated process created. It is still a
+ * repository, so say why git won't use it and how to allow it rather than
+ * reporting no repository at all.
+ */
+export function gitOwnershipRefusal(stderr: string, cwd: string): string | null {
+  if (!/dubious ownership/iu.test(stderr)) return null;
+  const owner = /is owned by:\s*\n\s*(\S[^\n(]*?)\s*(?:\(|\n)/u.exec(stderr)?.[1]?.trim();
+  const path = cwd.replaceAll("\\", "/");
+  return [
+    `Git won't use this folder because it is owned by ${owner ? owner.replaceAll("/", "\\") : "another account"}, not the account Solla Code runs as.`,
+    `To allow it, run: git config --global --add safe.directory ${path}`,
+  ].join(" ");
+}
+
 const gitCommand = (
   process: VcsProcess.VcsProcess["Service"],
   operation: string,
@@ -412,7 +429,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     ignoreClassifier: "native" as const,
   };
 
-  const isInsideWorkTree: VcsDriver.VcsDriver["Service"]["isInsideWorkTree"] = (cwd) =>
+  const workTreeProbe = (cwd: string) =>
     gitCommand(
       vcsProcess,
       "GitVcsDriver.isInsideWorkTree",
@@ -423,7 +440,12 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         timeoutMs: 5_000,
         maxOutputBytes: 4_096,
       },
-    ).pipe(Effect.map((result) => result.exitCode === 0 && result.stdout.trim() === "true"));
+    );
+
+  const isInsideWorkTree: VcsDriver.VcsDriver["Service"]["isInsideWorkTree"] = (cwd) =>
+    workTreeProbe(cwd).pipe(
+      Effect.map((result) => result.exitCode === 0 && result.stdout.trim() === "true"),
+    );
 
   const execute: VcsDriver.VcsDriver["Service"]["execute"] = (input) =>
     gitCommand(vcsProcess, input.operation, input.cwd, input.args, {
@@ -440,7 +462,16 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
   const detectRepository: VcsDriver.VcsDriver["Service"]["detectRepository"] = Effect.fn(
     "detectRepository",
   )(function* (cwd) {
-    if (!(yield* isInsideWorkTree(cwd))) {
+    const probe = yield* workTreeProbe(cwd);
+    if (probe.exitCode !== 0 || probe.stdout.trim() !== "true") {
+      const refusal = gitOwnershipRefusal(probe.stderr, cwd);
+      if (refusal !== null) {
+        return yield* new VcsRepositoryDetectionError({
+          operation: "GitVcsDriver.detectRepository",
+          cwd,
+          detail: refusal,
+        });
+      }
       return null;
     }
 

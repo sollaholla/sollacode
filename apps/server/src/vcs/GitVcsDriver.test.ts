@@ -108,3 +108,29 @@ it.effect("GitVcsDriver forwards execute env to the VCS process", () => {
     ),
   );
 });
+
+it("names the owner and the command that allows a refused folder", () => {
+  const stderr = [
+    "fatal: detected dubious ownership in repository at 'C:/Users/me/acme'",
+    "'C:/Users/me/acme' is owned by:",
+    "\tBUILTIN/Administrators (S-1-5-32-544)",
+    "but the current user is:",
+    "\tSTUDIO/me (S-1-5-21-1-2-3-1001)",
+    "To add an exception for this directory, call:",
+    "",
+    "\tgit config --global --add safe.directory C:/Users/me/acme",
+  ].join("\n");
+  assert.strictEqual(
+    GitVcsDriver.gitOwnershipRefusal(stderr, "C:\\Users\\me\\acme"),
+    "Git won't use this folder because it is owned by BUILTIN\\Administrators, not the account Solla Code runs as. To allow it, run: git config --global --add safe.directory C:/Users/me/acme",
+  );
+});
+
+it("leaves a folder that simply is not a repository alone", () => {
+  assert.isNull(
+    GitVcsDriver.gitOwnershipRefusal(
+      "fatal: not a git repository (or any of the parent directories): .git",
+      "/tmp/x",
+    ),
+  );
+});
