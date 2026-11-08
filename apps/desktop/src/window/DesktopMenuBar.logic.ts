@@ -68,6 +68,26 @@ function formatUptime(seconds: number): string {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
+/** How to ask the OS for a process's resident memory without a shell. */
+export function processMemoryCommand(
+  platform: NodeJS.Platform,
+  pid: number,
+): { readonly command: string; readonly args: ReadonlyArray<string> } {
+  return platform === "win32"
+    ? { command: "tasklist", args: ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"] }
+    : { command: "/bin/ps", args: ["-o", "rss=", "-p", String(pid)] };
+}
+
+/** Bytes from `processMemoryCommand`'s output, or 0 when the process is gone. */
+export function parseProcessMemoryBytes(platform: NodeJS.Platform, stdout: string): number {
+  // tasklist's last CSV column is "1,818,032 K", with locale-specific separators.
+  const kilobytes =
+    platform === "win32"
+      ? Number(/"([^"]*)"\s*$/u.exec(stdout.trim())?.[1]?.replace(/\D/gu, "") ?? 0)
+      : Number(stdout.trim());
+  return Number.isFinite(kilobytes) ? kilobytes * 1024 : 0;
+}
+
 /** The app's own footprint, read each time the menu opens. */
 export function menuBarResources(input: {
   readonly memoryBytes: number;

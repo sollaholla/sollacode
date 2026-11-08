@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off - The tray opens from a native callback outside any Effect.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,6 +23,8 @@ import {
   menuBarSummary,
   menuBarTitle,
   openThreadMenuAction,
+  parseProcessMemoryBytes,
+  processMemoryCommand,
 } from "./DesktopMenuBar.logic.ts";
 
 /**
@@ -50,10 +57,37 @@ export const make = Effect.gen(function* () {
   let tray: Electron.Tray | null = null;
   let stats = EMPTY_MENU_BAR_STATS;
 
-  const resources = () => {
+  // The server is a plain child process, so Electron's metrics don't include it
+  // and it is usually the largest part. Asked only when the menu opens.
+  const readServerMemoryBytes = async (): Promise<number> => {
+    try {
+      const runtime = await NodeFSP.readFile(
+        NodePath.join(environment.stateDir, "server-runtime.json"),
+        "utf8",
+      );
+      const { pid } = JSON.parse(runtime) as { readonly pid?: unknown };
+      if (typeof pid !== "number") return 0;
+      const { command, args } = processMemoryCommand(environment.platform, pid);
+      const stdout = await new Promise<string>((resolve) => {
+        NodeChildProcess.execFile(
+          command,
+          [...args],
+          { timeout: 1_000, windowsHide: true },
+          (_error, output) => resolve(output),
+        );
+      });
+      return parseProcessMemoryBytes(environment.platform, stdout);
+    } catch {
+      return 0;
+    }
+  };
+
+  const resources = (serverMemoryBytes: number) => {
     const metrics = Electron.app.getAppMetrics();
     return menuBarResources({
-      memoryBytes: metrics.reduce((sum, entry) => sum + entry.memory.workingSetSize * 1024, 0),
+      memoryBytes:
+        metrics.reduce((sum, entry) => sum + entry.memory.workingSetSize * 1024, 0) +
+        serverMemoryBytes,
       cpuPercent: metrics.reduce((sum, entry) => sum + entry.cpu.percentCPUUsage, 0),
       uptimeSeconds: process.uptime(),
     });
@@ -69,11 +103,11 @@ export const make = Effect.gen(function* () {
     );
 
   // Built fresh on every open, so the numbers are never older than the click.
-  const menu = () => {
+  const menu = (serverMemoryBytes: number) => {
     const chats = menuBarChatLines(stats);
     return Electron.Menu.buildFromTemplate([
       { label: menuBarSummary(stats), enabled: false },
-      { label: resources(), enabled: false },
+      { label: resources(serverMemoryBytes), enabled: false },
       ...(chats.length === 0 ? [] : [{ type: "separator" as const }]),
       ...chats.map(({ label, chat }) =>
         chat === undefined
@@ -107,8 +141,13 @@ export const make = Effect.gen(function* () {
     const created = new Electron.Tray(image);
     created.setToolTip(environment.displayName);
     // On Windows a click on a tray icon opens the app; the menu is a right click.
-    created.on("click", () => (isMac ? created.popUpContextMenu(menu()) : openApp()));
-    created.on("right-click", () => created.popUpContextMenu(menu()));
+    const openMenu = () => {
+      void readServerMemoryBytes().then((bytes) => {
+        if (tray === created) created.popUpContextMenu(menu(bytes));
+      });
+    };
+    created.on("click", () => (isMac ? openMenu() : openApp()));
+    created.on("right-click", openMenu);
     tray = created;
   }).pipe(Effect.catchCause((cause) => logWarning("menu bar icon could not start", { cause })));
 

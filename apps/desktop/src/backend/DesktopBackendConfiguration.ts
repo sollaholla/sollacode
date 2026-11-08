@@ -426,7 +426,20 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       // aborting the backend at Node's ~4GB default old-space cap (V8 OOM,
       // "young object promotion failed"). Bounded snapshots are the real fix;
       // this keeps one bad burst from killing the whole app.
-      args: ["--max-old-space-size=8192", environment.backendEntryPath, "--bootstrap-fd", "3"],
+      args: [
+        "--max-old-space-size=8192",
+        // Lets a maintainer capture the heap of a long-running server by
+        // sending it SIGUSR2. Windows has no such signal.
+        ...(environment.platform === "win32"
+          ? []
+          : [
+              "--heapsnapshot-signal=SIGUSR2",
+              `--diagnostic-dir=${environment.path.join(environment.stateDir, "logs")}`,
+            ]),
+        environment.backendEntryPath,
+        "--bootstrap-fd",
+        "3",
+      ],
       entryPath: environment.backendEntryPath,
       cwd: environment.backendCwd,
       env: {
