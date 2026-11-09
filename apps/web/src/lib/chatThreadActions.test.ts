@@ -1,5 +1,10 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import {
+  AGENT_BUILDER_THREAD_ID,
+  EnvironmentId,
+  ORCHESTRATOR_THREAD_ID,
+  ProjectId,
+} from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveThreadActionProjectRef,
@@ -21,6 +26,31 @@ function createContext(overrides: Partial<ChatThreadActionContext> = {}): ChatTh
     ...overrides,
   };
 }
+
+describe("new chats from the standing chats", () => {
+  it.each([ORCHESTRATOR_THREAD_ID, AGENT_BUILDER_THREAD_ID])(
+    "start in the default project from %s, not its folder",
+    (id) => {
+      expect(
+        resolveThreadActionProjectRef(
+          createContext({
+            activeThread: { id, environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID },
+          }),
+        ),
+      ).toEqual(scopeProjectRef(ENVIRONMENT_ID, FALLBACK_PROJECT_ID));
+    },
+  );
+
+  it("still start in the current project from any other chat", () => {
+    expect(
+      resolveThreadActionProjectRef(
+        createContext({
+          activeThread: { id: "thread-1", environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID },
+        }),
+      ),
+    ).toEqual(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID));
+  });
+});
 
 describe("chatThreadActions", () => {
   it("only applies the start-from-origin default to new worktree drafts", () => {

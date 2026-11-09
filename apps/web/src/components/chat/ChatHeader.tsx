@@ -17,6 +17,7 @@ import {
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
+import { isSingletonChat } from "~/lib/chatThreadActions";
 import { HostVitalsChip } from "./HostVitalsChip";
 import { ThreadTitle } from "./ThreadTitle";
 import { OpenInPicker } from "./OpenInPicker";
@@ -126,7 +127,7 @@ export const ChatHeader = memo(function ChatHeader({
             tight: it shrinks (its name truncates) down to a floor, while the
             title keeps a tappable minimum of its own. As `shrink-0` a long
             project name left the title a few pixels wide on a phone. */}
-        {activeProjectName ? (
+        {activeProjectName && !isSingletonChat(activeThreadId) ? (
           <span className="inline-flex min-w-[5.5rem] shrink items-center gap-2">
             <Tooltip>
               <TooltipTrigger
