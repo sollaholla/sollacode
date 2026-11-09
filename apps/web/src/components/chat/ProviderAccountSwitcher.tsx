@@ -97,13 +97,15 @@ export const ProviderAccountSwitcher = memo(function ProviderAccountSwitcher(
               className="size-8"
               iconClassName="size-7"
             />
-            <div className="min-w-0">
+            <div className="flex min-w-0 flex-col items-start">
               {accountIdentity.sensitive ? (
                 <RedactedSensitiveText
                   value={accountIdentity.sensitive}
                   ariaLabel="Toggle provider account visibility"
                   revealTooltip="Click to reveal account"
                   hideTooltip="Click to hide account"
+                  confirmationMode="inline"
+                  confirmationMessage="Reveal the signed-in account? Make sure nobody else can see your screen."
                   className="max-w-full truncate font-sans text-sm font-medium leading-normal text-foreground"
                 />
               ) : (
