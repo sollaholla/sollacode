@@ -67,9 +67,6 @@ export const MobileTopBar = memo(function MobileTopBar({
           className="size-6 shrink-0 object-contain"
           src="/solla-code-mark.png"
         />
-        <span className="truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">
-          {APP_BASE_NAME}
-        </span>
       </Link>
       {/* The far right: the remote machine's battery and disk, then whatever a
           screen parks here (see mobileTopBarSlot) -- an agent's avatar lands

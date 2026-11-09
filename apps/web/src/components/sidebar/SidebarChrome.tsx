@@ -2,7 +2,6 @@ import { SettingsIcon } from "lucide-react";
 import { memo, useCallback } from "react";
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 
-import { APP_BASE_NAME } from "../../branding";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import {
@@ -82,9 +81,6 @@ function SidebarBrand() {
         className="size-6 shrink-0 object-contain"
         src="/solla-code-mark.png"
       />
-      <span className="truncate text-[15px] font-semibold tracking-[-0.01em] text-sidebar-foreground">
-        {APP_BASE_NAME}
-      </span>
     </Link>
   );
 }
